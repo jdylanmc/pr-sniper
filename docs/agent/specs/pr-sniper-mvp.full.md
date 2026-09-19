@@ -1,0 +1,138 @@
+# PR Sniper MVP: Supporting Requirements
+
+- Spec ID: SPEC-PR-SNIPER-MVP
+- Source: [`../discovery/pr-sniper-mvp.md`](../discovery/pr-sniper-mvp.md)
+- Source revision: 8
+- Source SHA-256: `b0386c81299d36e44fa9efc0ab6938272b8aa9e1ed4872d291cb6ea236a459da`
+- Nano authority: [PR Sniper MVP](./pr-sniper-mvp.nano.md)
+
+## Authority
+
+The nano sibling is the settled product authority. This document explains and traces that intent; it does not override it.
+
+## Problem and Users
+
+The primary user is a human reviewer whose pull-request workload spans repositories and teammates. Teammate authors receive machine-authored feedback through GitHub. PR Sniper detects eligible work, invokes the configured local agent, publishes validated comments, follows its own unresolved conversations, and prepares the final human handoff.
+
+## Outcomes and Success
+
+The MVP succeeds when every nano acceptance criterion is demonstrated in a reproducible macOS application flow. Quantitative adoption, latency, defect-detection, and cost targets remain unknown and are not invented here.
+
+## Scope and Non-goals
+
+Scope includes a Tauri menu-bar application, local settings and state, scheduled GitHub polling, watched-author and reviewer-assignment triggers, GitHub CLI bootstrap credentials, GitHub Copilot CLI review, comment publication, follow-up replies, queueing, notifications, and Setup Doctor. The nano non-goals exclude Azure DevOps, Windows release, embedded human diff review, leaderboards, hosted team state, native OAuth, production updater feeds, and provider approval submission.
+
+## Constraints and Dependencies
+
+The application runs monitoring only while its tray process is active, with opt-in launch at login. GitHub and the selected local agent remain external dependencies with independent authentication and limits. Pull-request content is untrusted. The configured agent runs with the current user's access, so PR Sniper does not claim sandbox isolation and must constrain the review workflow without implying a stronger operating-system boundary.
+
+## Confirmed Facts
+
+- Both Electron and Tauri passed the disposable macOS tray, hidden-window, timer, notification, subprocess, cancellation, and packaging probe; Dylan selected Tauri.
+- Read-only GitHub polling retrieved identity, pull requests, changed files with pagination, review state, reviewer assignments, and revision SHA; normal repository APIs have materially more rate-limit capacity than global search.
+- A real GitHub Copilot CLI review produced normalized JSON and independently identified a defect also found by a human reviewer and official Go documentation.
+- GitHub CLI credentials act as the signed-in human, so an `APPROVE` event cannot honestly represent a distinct automation identity.
+- GitHub pending reviews support batching inline comments before one visible review submission.
+
+## Assumptions
+
+- GitHub's current pending-review and comment APIs remain available for the MVP.
+- The selected agent adapter can enforce a read-only review tool policy; an untrusted pull request is blocked when the adapter cannot enforce it.
+- macOS secure storage and application-signing behavior can support local credential handling without placing tokens in ordinary files.
+
+## Contradictions
+
+None remain in the aligned source. Earlier plans for automated provider approval were removed from the MVP because GitHub CLI would attribute approval to the signed-in human.
+
+## Alternatives and Examples
+
+Electron remains a fallback only if later Windows or process-control evidence exposes material Tauri friction. Hosted webhooks are deferred because scheduled polling satisfies the MVP. A reviewer-assignment trigger may select an author outside the trusted watchlist; that pull request remains eligible but requires confirmation before agent execution. A head change before visible submission discards the pending review; a head change after submission records a stale-after-publication state, stops further comments, and queues the new revision only if it remains eligible. Eligibility loss stops without requeue.
+
+## Product Requirements
+
+- PR-001 [AC-001]: The application shall use Tauri, present as a macOS menu-bar utility without a persistent main window, expose status, queue, settings, Setup Doctor, and quit actions, and support opt-in launch at login.
+- PR-002 [AC-001]: Closing settings or queue windows shall not stop monitoring; quitting the tray process shall stop monitoring.
+- PR-003 [AC-002]: Repository settings shall support add, edit, disable, re-enable, and remove without a hard-coded product maximum, while surfacing provider and local-resource limits.
+- PR-004 [AC-003]: Global defaults and per-repository overrides shall cover fixed interval or five-field cron schedule with explicit time zone, watched GitHub identities, reviewer-assignment trigger, agent adapter, model or named-agent selector, prompt, automatic agent start, and automatic comment publication.
+- PR-005 [AC-003]: Settings shall show each effective automation gate and reject unsupported combinations before saving.
+- PR-006 [AC-004]: The scheduler shall run only while PR Sniper is active, prevent concurrent checks for the same repository, tolerate sleep and missed intervals, and record last attempt, last success, next run, and last failure.
+- PR-007 [AC-005]: The GitHub provider shall poll configured repositories incrementally and filter by stable author identity or requested-reviewer identity before checkout or agent invocation.
+- PR-008 [AC-006]: A review-job identity shall include provider, repository, pull request, head revision, and trigger-policy identity; successful work shall not run or publish twice, and a new head revision shall be independently eligible.
+- PR-009 [AC-006]: Persisted jobs shall recover after restart into an honest queued, interrupted, waiting, completed, stale-after-publication, or failed state.
+- PR-010 [AC-007]: The MVP shall verify an authenticated GitHub CLI identity and effective capabilities while expressing domain operations through a provider client rather than parsed GitHub CLI presentation output.
+- PR-011 [AC-007]: Credential providers shall remain separate from pull-request domain operations so native GitHub App user OAuth can later coexist with or replace GitHub CLI credentials.
+- PR-012 [AC-008]: Setup Doctor shall distinguish missing executable, broken executable or shim, signed-out state, wrong identity, missing permission, and ready state.
+- PR-013 [AC-008]: Setup Doctor shall show each declared command, purpose, source, expected effects, and possible administrator prompt before explicit confirmation, execute only structured declared commands, stream redacted output, rerun health checks, and make repeated successful setup a no-op.
+- PR-014 [AC-009]: The MVP shall provide a GitHub Copilot CLI adapter and a registry that probes candidate path, identity, version, health, and capabilities before presenting an adapter as available.
+- PR-015 [AC-009]: Agent authentication shall remain owned by the agent tool, and the adapter contract shall not change provider or monitoring domain models when another local agent is added.
+- PR-016 [AC-010]: The normalized result shall contain a one-sentence synopsis, every changed file in a validated order, findings with path, location, severity, title, explanation, and confidence, a machine decision, session and usage metadata, or explicit failure.
+- PR-017 [AC-010]: The agent shall receive the complete changed-file set and sufficient repository context for pull requests containing hundreds of files; the interface may collapse or virtualize but shall not omit files.
+- PR-018 [AC-010]: The queue shall preserve validated agent order and use bytewise ascending changed-file path order as the deterministic fallback.
+- PR-019 [AC-011]: Agent execution shall be cancellable, time-bounded, observable, and separate from the validated provider-publication operation; invalid or partial output shall fail schema validation and never publish.
+- PR-020 [AC-011]: The review workflow shall expose pull-request metadata, diffs, repository reads, and search, and shall not execute repository code, builds, tests, hooks, or installation commands.
+- PR-021 [AC-011]: Fork pull requests and authors outside the configured trusted watchlist shall require confirmation while enforceable tool restrictions remain active; when an adapter cannot enforce those restrictions, the untrusted review shall be blocked and confirmation shall not override the block.
+- PR-022 [AC-003]: Immediately before agent invocation, PR Sniper shall revalidate head revision, open and non-draft lifecycle state, trigger eligibility, repository enabled state, trust confirmation, and the effective agent-start gate; disabled automatic start requires explicit human start.
+- PR-023 [AC-012]: Inline findings shall bind to the reviewed head revision and valid diff locations; unmappable findings shall remain visible locally rather than being dropped or posted incorrectly.
+- PR-024 [AC-012]: Inline findings shall be assembled as a pending GitHub review and become visible through one `COMMENT` submission only after final revalidation.
+- PR-025 [AC-012]: Before and after every provider mutation, PR Sniper shall revalidate head revision, open and non-draft lifecycle state, trigger eligibility, repository enabled state, trust confirmation, and the effective publication gate.
+- PR-026 [AC-012]: A head change before visible submission shall discard the pending review and queue the new revision only if it is currently eligible; eligibility loss shall stop publication without requeueing ineligible work.
+- PR-027 [AC-012]: A head change after visible submission shall stop further publication, record stale-after-publication, and queue the new revision only if currently eligible; eligibility loss without a new eligible head shall stop without requeue.
+- PR-028 [AC-012]: Provider failures shall preserve pending output and mutation identity, reconcile remote state, and permit idempotent retry without claiming unconfirmed success.
+- PR-029 [AC-013]: PR Sniper shall monitor unresolved threads created by its own reviews and create a follow-up job keyed by owned-thread ID, triggering external-comment ID, and reviewed head revision.
+- PR-030 [AC-013]: Each follow-up key may publish at most one concise signed reply across polling and restart when the agent produces evidence-backed new information; unchanged answers, acknowledgment-only filler, speculation, and duplicates shall not publish, while a later external comment creates a new key and human-judgment questions move the job to waiting for human input.
+- PR-031 [AC-014]: Every machine-authored review summary, reply, and machine sign-off shall end with the exact signature ` PR Sniper`.
+- PR-032 [AC-015]: The application shall use `` as its canonical crosshair brand mark and render a legible platform-appropriate menu-bar icon.
+- PR-033 [AC-016]: The queue shall distinguish queued, reviewing, waiting for author, waiting for human input, machine-signed-off, stale-after-publication, and failed states; machine-signed-off and human-input-required items shall sort ahead of routine states.
+- PR-034 [AC-016]: Native notifications shall cover confirmation required, human input required, ready for human review, and failure, deduplicate repeated state transitions, and open the exact queue item or GitHub pull request.
+- PR-035 [AC-017]: Machine-sign-off handoff shall state that automated review completed, request final human review, and never represent machine sign-off as human approval.
+- PR-036 [AC-017]: The MVP shall never submit a provider `APPROVE` event.
+- PR-037 [AC-018]: Local persistence shall contain repository configuration, schedules, poll cursors, jobs, state transitions, pending-review identities, publication receipts, retry budgets, and notification deduplication records.
+- PR-038 [AC-018]: Credentials and refresh tokens shall use operating-system secure storage; prompts, child-process arguments, ordinary configuration, and logs shall not contain provider secrets.
+- PR-039 [AC-018]: Structured redacted logs shall expose provider, repository, agent, scheduler, persistence, and publication health from Settings.
+- PR-040 [AC-019]: Automatic retry shall apply only to provider rate limits, transient network or transport failures, provider server failures, transient checkout fetch or input/output failures, and agent launch, timeout, or temporary-exit failures before any provider mutation.
+- PR-041 [AC-019]: Authentication, permission, configuration, cancellation, schema-validation, stale-revision, ineligibility, and explicit-provider-rejection failures shall require correction or human action and shall not consume automatic retries.
+- PR-042 [AC-019]: Each persisted job-operation identity shall receive one budget whose initial attempt starts a 15-minute deadline and permits at most three retries; provider timing takes precedence and otherwise exponential backoff with jitter applies.
+- PR-043 [AC-019]: Restart shall preserve attempt count and deadline; an expired deadline shall enter visible manual-retry state without another automatic attempt, and explicit manual retry shall create a new budget.
+- PR-044 [AC-019]: Every externally visible operation shall retain repository, pull request, head revision, trigger policy, operation type, attempted mutation, pending-review identity, owned-thread ID, triggering external-comment ID when applicable, confirmed receipt, retry count, and retry deadline for reconciliation.
+
+## Product Decisions
+
+- PD-001 [AC-001]: Tauri is the selected desktop stack; Electron is a fallback only if later cross-platform evidence establishes a blocker.
+- PD-002 [AC-001]: macOS is the first release platform, monitoring runs in the tray process, and launch at login is opt-in.
+- PD-003 [AC-007]: GitHub is the first provider, GitHub CLI is the bootstrap credential, and native GitHub App user OAuth is deferred.
+- PD-004 [AC-009]: GitHub Copilot CLI is the first review agent behind a pluggable local-agent contract.
+- PD-005 [AC-011]: The current-user agent is trusted and not described as sandboxed, while pull-request content remains untrusted input and the product constrains the review workflow.
+- PD-006 [AC-012]: Initial-review publication uses one pending-review `COMMENT` submission after revalidation; the only other GitHub mutation is an idempotent reply to a PR Sniper-owned thread under PR-025 and PR-028–PR-030, and the MVP has no `APPROVE` path.
+- PD-007 [AC-013]: PR Sniper follows only unresolved threads it created and replies only with concise meaningful additions.
+- PD-008 [AC-014]: The canonical machine signature is ` PR Sniper`.
+- PD-009 [AC-015]: The canonical application mark is ``.
+- PD-010 [AC-017]: Final review remains human-owned; automated provider approval is deferred until a distinct automation identity exists, with future policy modeled as `off`, `manual`, or `automatic`.
+- PD-011 [AC-019]: Each persisted job-operation retry budget starts with the initial attempt, permits three retries within 15 minutes, persists across restart, and resets only after explicit manual retry.
+
+## Traceability
+
+| Nano authority | Supporting requirements | Discovery basis |
+| --- | --- | --- |
+| AC-001 | PR-001–PR-002, PD-001–PD-002 | Tray POCs and Tauri selection |
+| AC-002 | PR-003 | Repository and monorepository product context |
+| AC-003 | PR-004–PR-005, PR-022 | Monitoring, settings, and pre-invocation gate decisions |
+| AC-004 | PR-006 | Scheduled polling decision |
+| AC-005 | PR-007 | GitHub filtering POC |
+| AC-006 | PR-008–PR-009 | Head-SHA deduplication evidence |
+| AC-007 | PR-010–PR-011, PD-003 | GitHub credential/provider POC |
+| AC-008 | PR-012–PR-013 | Setup Doctor decision |
+| AC-009 | PR-014–PR-015, PD-004 | Local agent inventory and Copilot POC |
+| AC-010 | PR-016–PR-018 | Real agent-review POC and complete-file decision |
+| AC-011 | PR-019–PR-021, PD-005 | Cancellation evidence and trust decision |
+| AC-012 | PR-023–PR-028, PD-006 | GitHub review API evidence and race decision |
+| AC-013 | PR-029–PR-030, PD-007 | Conversation-loop decision |
+| AC-014 | PR-031, PD-008 | Signature decision |
+| AC-015 | PR-032, PD-009 | Icon decision |
+| AC-016 | PR-033–PR-034 | Queue and notification issues |
+| AC-017 | PR-035–PR-036, PD-010 | Human-handoff and approval-identity decisions |
+| AC-018 | PR-037–PR-039 | Secure-storage evidence and persistence decisions |
+| AC-019 | PR-040–PR-044, PD-011 | Provider and agent failure evidence |
+
+## Open Questions
+
+None block the MVP product requirements. Database choice, GitHub API client and REST/GraphQL split, checkout strategy, internal concurrency, and future credential migration remain implementation design questions rather than product decisions.
