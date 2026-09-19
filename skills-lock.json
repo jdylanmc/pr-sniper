@@ -1,0 +1,175 @@
+{
+  "version": 1,
+  "skills": {
+    "automate-this": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "4baecc6c060b88e96e7151e9d0247642ab6f4ecd9253f4966648bf1018c40a21"
+    },
+    "breakdown-tickets": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "1b9985aa835d4e3de431cfca16de42703602b67e3a73a467877dad466ff328c3"
+    },
+    "caveman": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "d98d870ca2d96d767ab04ebb628f64fd8e4e877086f042754551cb1af03bb5d0"
+    },
+    "changelog": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "8e61da16279c462b236f20c72a950de1407507784215d533dce5e5ddc7018dec"
+    },
+    "chart-a-course": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "88690534a28717bc49ea5ee1f00d05d36bb6de092f7703099411a8da9e05927c"
+    },
+    "conflicts": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "d2a1a7a4321e511e8b185e8cc52172f275385d8be1dfdbd1ea6f4418d859df78"
+    },
+    "discovery": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "6d2ff4c04908f87cc8f45fb614637989d78082bd38d49d343db32d2cccdcf2fd"
+    },
+    "doctrine": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "254a511cafc0f35b2a18bd28a3d5c5f37e1e60f4fde459c40d813f5d23e32c11"
+    },
+    "domain-modeling": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "8a9cda5a78f7c63a5c7511f5462377d0b1d39cea9c23b781332d4d6d0c103ed6"
+    },
+    "eli5": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "e28c0af7cdcb8a6f97b89887961f229b68d3a752e1fc114a4ae10ad0b5113689"
+    },
+    "evolve-architecture": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "0acfd15f698008bbc9e5b351b227dec5ab01771ba04c70f3755d54591ccc5a3e"
+    },
+    "handoff": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "1192985e5f4a187471baa90a09c12423b55713a781dd0640907826294f86f86c"
+    },
+    "interrogate": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "9f3fbf1589f44f977c7c39521c469ecaa74c409150096128b511c849f7f3b28a"
+    },
+    "joe-mode": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "21af741aef915f99dbdb509e09969e37cdb29e8d95d20ea3e0944e9c64f9137b"
+    },
+    "joe-mode-paseo": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "7af6e8cd6d9aae577cc590a31fc0b19ca40556c34eaebfb707df141e6cc93a44"
+    },
+    "migration": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "081f7b93b9d62168030f8aac576c280ce98e6fad702e03e012789e05c67f901e"
+    },
+    "patch": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "17980c8a3d4dcae5137d026f8d4212941ddc0ff22fdf746c213b4746cd1cd7ec"
+    },
+    "poc": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "f3a6856f86fdb0e1572bc373bf3c5a9961e1711fa0b6c349b6e24e4c50018722"
+    },
+    "refactor": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "9ae634d284b9dd821cda576e26386d7a762caf3504d80e18e2d0cf1228395553"
+    },
+    "research": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "892924b0aa1ef6c4c0f7e6e0d86bafa17663528a220bbaffe7895155e91ee7dc"
+    },
+    "retro": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "6f5cacdc368419e9c4d8dd698ef6bec078d12866e7aed523d3734309bf773800"
+    },
+    "roast": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "423e248eb063136d896119f92f769d0fd3cd69e2cd98889c9e12608658bfd710"
+    },
+    "scout": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "8a6c419ea281056174df87654688e7483d75c7fcbc76acdf2e0c6344fe6ae35d"
+    },
+    "setup": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "d247eeee7b8500cd1b4348f30b260f5b2ded414e9ea9e4176ae57224c436ccf2"
+    },
+    "shepherd": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "1a27d23713bed53167dda284d899b4db78f18aa2f5e24e14b8a649ed4ffa0132"
+    },
+    "ship": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "ab79aa338e76da3931e7bbd84a54b70bb1b097759e5a60aafa28066cb03f5eb2"
+    },
+    "specify": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "4a3e149bcd27faca74e08dc5d7b66f4992d11cb9e82ca3e88f6464aab0b74ca5"
+    },
+    "squadron": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "d8bbe20441a6b6ffbd5d7d1280db61ddc1161fd702226dd041bce41ba2118f6e"
+    },
+    "status-report": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "8714b5d50e7a0f0ca1cc0b0255eb8c1c9b588f7a09ad04df11bfecfecfa26b60"
+    },
+    "synthesize": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "67eb19958c25608d062d70c3c81bd2b8b15c13fa090ed2a1d475066ed744a5f0"
+    },
+    "tdd": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "4c9869c5f9d8372af3ddb9b69eb989a18d264b30f5a666a2e6658c2b4bacc470"
+    },
+    "triage": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "fda82a58578b00661af488df27757637061567c37290633b825f5a53a97c1ffb"
+    },
+    "verify": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "39b60ae479a3f8c531b94912e714cea82338d8c89e1528cbe271a2e5101c777d"
+    },
+    "wait-what": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "9d4616479556e1e7f371d7c1731b1f1c8ae660a04ae4807371d48ad2b41db9b1"
+    }
+  }
+}

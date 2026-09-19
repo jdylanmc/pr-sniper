@@ -1,0 +1,1 @@
+Reproduce a bug or regression, establish its actual cause, repair the responsible mechanism, prove the original problem is fixed without breaking surrounding behavior, and shepherd the change through delivery to completion.

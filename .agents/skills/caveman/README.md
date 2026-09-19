@@ -1,0 +1,56 @@
+# caveman
+
+Talk like smart caveman. Same brain, fewer tokens.
+
+## What it does
+
+Compress model responses to caveman-style prose by dropping articles, filler,
+pleasantries, and verbal padding. Preserve actual uncertainty, evidence,
+technical detail, code blocks,
+error strings, and symbols. Result depends on model and workload; no aggregate
+reduction or quality-equivalence claim is published, and mode persists until
+changed or stopped.
+
+Only the human activates this session mode. Shared commit formatting and terse
+agent-to-agent messages do not activate it or establish factual correctness.
+
+Six intensity levels:
+
+| Level | What change |
+|-------|-------------|
+| `lite` | Drop filler, preserve uncertainty. Sentences stay full. Professional but tight. |
+| `full` | Default. Drop articles, fragments OK, short synonyms. |
+| `ultra` | Bare fragments where meaning survives. No invented abbreviations or causal arrows. |
+| `wenyan-lite` | Classical Chinese register, light compression. |
+| `wenyan-full` | Maximum 文言文 compression. |
+| `wenyan-ultra` | Extreme classical compression. |
+
+Auto-clarity rule: caveman drops to normal prose for security warnings, irreversible-action confirmations, multi-step sequences where fragment ambiguity risks misread, and when user repeats a question. Resumes after the clear part.
+
+## How to invoke
+
+```
+/caveman              # full mode (default)
+/caveman lite         # lighter compression
+/caveman ultra        # extreme compression
+/caveman wenyan-full  # classical Chinese
+stop caveman          # back to normal prose
+```
+
+## Example output
+
+Question: "Why does my React component re-render?"
+
+Normal prose:
+> Your component re-renders because you create a new object reference each render. Wrapping it in `useMemo` will fix the issue.
+
+Caveman (full):
+> New object ref each render. Inline object prop = new ref = re-render. Wrap in `useMemo`.
+
+Caveman (ultra):
+> Inline object prop, new reference, re-render. `useMemo`.
+
+## See also
+
+- [`SKILL.md`](./SKILL.md): full LLM-facing instructions
+- [Library README](https://github.com/jdylanmc/agent-skills#readme): source collection and installation boundaries (online)
