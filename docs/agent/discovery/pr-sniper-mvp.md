@@ -2,11 +2,11 @@
 
 ## Revision
 
-- Revision: 8
+- Revision: 9
 - Subject: PR Sniper MVP feasibility and foundational architecture
 - Rehydration mode: cold start
-- Recovery state: foundation missing
-- Alignment: verified by Dylan McCurry on 2026-09-18
+- Recovery state: none
+- Alignment: verified by Dylan McCurry on 2026-09-19
 - Lifetime: durable repository artifact
 
 ## Question and boundaries
@@ -669,3 +669,86 @@ settled them as follows:
 - Restart preserves the attempt count and deadline. An expired deadline enters
   manual-retry state without another automatic attempt. Explicit manual retry
   creates a new budget.
+
+## Cycle 5 implementation-readiness evidence
+
+### Rehydration
+
+- Rehydrated from the durable revision-8 foundation merged to `main` by pull
+  request 20 at commit `dc2327014597f411b0a4db7685c4fd8ef1fb6f9c`.
+- The approved nano specification remains the product authority.
+- The product repository contains no application implementation yet.
+
+### Copilot CLI tool-policy proof
+
+The isolated synthetic probe is retained at
+`files/poc-agent-tool-policy`.
+
+The probe invoked GitHub Copilot CLI with:
+
+- custom instructions disabled;
+- built-in MCP servers disabled;
+- only `view` and `rg` exposed through `--available-tools`;
+- automatic permission for only that exposed set.
+
+The agent successfully read the synthetic source file. It reported shell as
+unavailable, did not execute the requested shell command, and made no file
+changes. The JSONL transcript contains one `view` tool execution and no shell
+execution.
+
+Confirmed result: the GitHub Copilot CLI adapter can mechanically expose a
+read-only review tool surface. `--allow-all-tools` does not widen beyond the
+explicit `--available-tools` set used by the invocation.
+
+### GitHub review-mutation proof
+
+Dylan explicitly approved a disposable mutation proof in
+`jdylanmc/pr-sniper`.
+
+The probe:
+
+1. created temporary branch `poc/github-review-mutations-20260919`;
+2. opened draft pull request 21 with one synthetic changed file;
+3. created pending review `5255617457` bound to head
+   `0053d8bb490d1e89568d0fed1ea2fb51fe42e665`;
+4. verified the review was remote state `PENDING`;
+5. submitted it as one visible `COMMENT` review;
+6. verified inline comment `4053079491` remained bound to the reviewed commit,
+   path, and line;
+7. posted signed reply `4053079813` to that owned thread;
+8. reconciled review and comment receipts and selected
+   `skip-duplicate-reply`;
+9. closed the pull request without merge;
+10. deleted the remote branch, disposable worktree, and local branch.
+
+Both visible machine-authored comments ended with ` PR Sniper`. The primary
+checkout returned clean and `main` was unchanged.
+
+Artifacts are retained at `files/poc-github-mutations`, including creation,
+submission, comment, reply, and reconciliation JSON.
+
+### Cycle 5 aligned result
+
+Dylan verified these findings on 2026-09-19.
+
+Confirmed:
+
+- Copilot CLI can enforce the MVP's read-only review tool surface.
+- GitHub supports the specified pending-review-to-`COMMENT` publication path.
+- GitHub supports a signed reply attached to a PR Sniper-owned inline thread.
+- Confirmed provider receipts contain enough stable identity to reconcile and
+  suppress a duplicate reply.
+- The POC cleanup left no merge or branch on the shared repository.
+
+### Cycle 5 frontier
+
+Status: ready.
+
+No additional product Discovery or pre-implementation POC blocks the MVP.
+Database choice, GitHub REST/GraphQL allocation, checkout strategy, and internal
+concurrency remain implementation architecture decisions. Stale-head race
+injection, hundreds-file coverage, restart recovery, and retry timing belong in
+implementation integration tests against disposable fixtures.
+
+Next action: hold implementation until Dylan finalizes and invokes Joe Mode,
+then begin foundational implementation from the approved specification.
