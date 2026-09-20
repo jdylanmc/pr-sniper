@@ -584,15 +584,36 @@ fn assert_same_remote_exclusion(lifecycle: &str) {
         id: "902".into(),
         name: "example/unrelated".into(),
     };
+    let unrelated_connection = unrelated.connection.clone();
     monitor
         .finish(&store, tickets.pop().unwrap(), Ok(unrelated), 1101)
         .unwrap();
     assert!(monitor.begin(&current, 1102, false).unwrap().is_empty());
+    let mut scheduled = monitor.begin(&current, 2000, false).unwrap();
+    assert_eq!(
+        scheduled
+            .iter()
+            .map(|ticket| ticket.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["example/unrelated"],
+        "{lifecycle}: a due tick must not overlap the old remote read"
+    );
     monitor
-        .finish(&store, old_ticket, Ok(result(vec![candidate()])), 1103)
+        .finish(
+            &store,
+            scheduled.pop().unwrap(),
+            Ok(PollResult {
+                connection: unrelated_connection,
+                pull_requests: vec![],
+            }),
+            2001,
+        )
+        .unwrap();
+    monitor
+        .finish(&store, old_ticket, Ok(result(vec![candidate()])), 2002)
         .unwrap();
     assert!(fixture.store().load_queue().unwrap().is_empty());
-    let after_release = monitor.begin(&current, 1104, true).unwrap();
+    let after_release = monitor.begin(&current, 2003, true).unwrap();
     assert_eq!(
         after_release
             .iter()
