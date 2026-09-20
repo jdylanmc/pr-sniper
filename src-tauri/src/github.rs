@@ -1,4 +1,5 @@
 pub mod http;
+pub mod metadata;
 pub mod provider;
 
 use serde::Serialize;
