@@ -460,9 +460,11 @@ pub fn run() {
                 Some(_) => return Err("PR_SNIPER_DATA_DIR must be an absolute path.".into()),
                 None => app.path().app_data_dir()?,
             };
+            let store = Store::new(root);
+            let monitor = monitoring::Monitor::restore(&store)?;
             app.manage(Host {
-                store: Mutex::new(Store::new(root)),
-                monitor: Mutex::new(monitoring::Monitor::default()),
+                store: Mutex::new(store),
+                monitor: Mutex::new(monitor),
                 error: Mutex::new(None),
                 isolated,
                 quitting: AtomicBool::new(false),

@@ -180,6 +180,15 @@ disabled, removed, retargeted or changed-policy attempts cannot admit old result
 Closing a window does not stop checks; Quit ends the host. Full interrupted-job
 recovery and retry budgets belong to a later delivery, not this basic queue.
 
+Intervals use elapsed UTC seconds. A fresh host schedules the first interval
+after the configured duration; Check Now can run sooner. A missed cadence is
+coalesced into one check, never a burst of overlapping catch-up work. Cron uses
+Croner 4 with chrono-tz: fixed wall times skipped by a spring daylight transition
+run at the first valid instant after the gap; a fixed time repeated in autumn
+runs only in the first occurrence. Wildcard cron follows chronological minutes
+through the repeated hour. Calendar occurrences use the configured IANA zone,
+not the host's local-zone setting.
+
 Install and authenticate the official GitHub CLI yourself. PR Sniper never runs
 login, logout, installation or credential-configuration commands. It uses the
 trusted current user's `gh` from an absolute PATH directory, with Homebrew's
