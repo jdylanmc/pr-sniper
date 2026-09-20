@@ -281,6 +281,7 @@ fn next_page(path: &str, response: &Response) -> Result<Option<String>, Connecti
         .ok_or(ConnectionError::IncompleteRead)?;
     let mut next = None;
     let mut last = None;
+    let mut relations = HashSet::new();
     for item in link.split(',') {
         let (target, relation) = item
             .trim()
@@ -303,6 +304,7 @@ fn next_page(path: &str, response: &Response) -> Result<Option<String>, Connecti
             .query_pairs()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
+        let unique: BTreeMap<_, _> = pairs.iter().cloned().collect();
         let mut expected = query.clone();
         let number = pairs
             .iter()
@@ -310,11 +312,10 @@ fn next_page(path: &str, response: &Response) -> Result<Option<String>, Connecti
             .and_then(|(_, value)| value.parse::<u64>().ok())
             .ok_or(ConnectionError::IncompleteRead)?;
         expected.insert("page".into(), number.to_string());
-        if pairs.len() != expected.len()
-            || pairs
-                .iter()
-                .any(|(key, value)| expected.get(key) != Some(value))
-        {
+        if pairs.len() != unique.len() || unique != expected {
+            return Err(ConnectionError::IncompleteRead);
+        }
+        if !relations.insert(relation.trim()) {
             return Err(ConnectionError::IncompleteRead);
         }
         match relation.trim() {

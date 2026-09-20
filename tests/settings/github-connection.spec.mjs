@@ -1,5 +1,30 @@
 import { expect, test } from "./fixtures.mjs";
 
+const verified = {
+  identity: { id: "6954990", login: "jdylanmc" },
+  repository: { id: "1376547672", name: "jdylanmc/pr-sniper" },
+  capabilities: { read: true, comment: "available" },
+};
+
+async function githubFixture(page, store, handler) {
+  await store("save_repository", { repository: "jdylanmc/pr-sniper" });
+  await page.exposeFunction("__githubResponse", handler);
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      if (
+        !["verify_github_connection", "read_github_metadata"].includes(command)
+      )
+        return original(command, args);
+      const response = await window.__githubResponse(command, args);
+      if ("error" in response) throw response.error;
+      return response.ok;
+    };
+  });
+  await page.goto("/?view=settings");
+  return page.getByRole("article", { name: "jdylanmc/pr-sniper", exact: true });
+}
+
 test("verifying GitHub preserves drafts and does not enable automation", async ({
   page,
   store,
@@ -46,4 +71,138 @@ test("verifying GitHub preserves drafts and does not enable automation", async (
     },
   ]);
   expect((await store("snapshot")).settings).toEqual(before);
+});
+
+for (const [error, expected] of [
+  ["missing_cli", "GitHub CLI is missing"],
+  ["broken_cli", "CLI or its shim is broken"],
+  ["signed_out", "credentials are missing or rejected"],
+  ["wrong_identity", "does not match"],
+  ["missing_read_permission", "denied repository or pull-request read"],
+  ["rate_limited", "rate limited"],
+  ["network", "Could not reach GitHub securely"],
+  ["provider_failure", "could not complete this read"],
+  ["incomplete_read", "No partial result was accepted"],
+  ["gho_untrusted_secret_error_body", "No raw error details"],
+]) {
+  test(`connection reports ${error} without enabling metadata or leaking errors`, async ({
+    page,
+    store,
+  }) => {
+    const card = await githubFixture(page, store, () => ({ error }));
+    await card
+      .getByRole("button", { name: "Verify GitHub connection", exact: true })
+      .click();
+    await expect(card.getByRole("status")).toContainText(expected);
+    await expect(
+      card.getByRole("button", { name: "Read PR metadata", exact: true }),
+    ).toBeDisabled();
+    await expect(page.locator("body")).not.toContainText(
+      "gho_untrusted_secret",
+    );
+  });
+}
+
+for (const [comment, message] of [
+  ["unknown", "Comment permission unverified"],
+  ["unavailable", "Comment permission unavailable"],
+]) {
+  test(`read access does not fabricate ${comment} comment permission`, async ({
+    page,
+    store,
+  }) => {
+    const card = await githubFixture(page, store, () => ({
+      ok: { ...verified, capabilities: { read: true, comment } },
+    }));
+    await card
+      .getByRole("button", { name: "Verify GitHub connection", exact: true })
+      .click();
+    await expect(card.getByRole("status")).toContainText(message);
+    await expect(card.getByRole("status")).toContainText(
+      "not publication authorization",
+    );
+  });
+}
+
+test("metadata pins verified identities, renders all files safely and clears failed results", async ({
+  page,
+  store,
+}) => {
+  let reads = 0;
+  const calls = [];
+  const card = await githubFixture(page, store, (command, args) => {
+    calls.push({ command, args });
+    if (command === "verify_github_connection") return { ok: verified };
+    if (++reads > 1) return { error: "revision_changed" };
+    return {
+      ok: [
+        {
+          number: 31,
+          title: "<script>bad()</script>",
+          state: "open",
+          draft: false,
+          head_sha: "a".repeat(40),
+          author: { id: "42", login: "author" },
+          requested_reviewers: [{ id: "6954990", login: "jdylanmc" }],
+          files: [
+            { path: "first.rs", status: "added" },
+            { path: "last.rs", status: "renamed" },
+          ],
+        },
+      ],
+    };
+  });
+  await card
+    .getByRole("button", { name: "Verify GitHub connection", exact: true })
+    .click();
+  await card
+    .getByRole("button", { name: "Read PR metadata", exact: true })
+    .click();
+  await expect(card.getByRole("status")).toContainText(
+    "1 PRs, 2 changed files",
+  );
+  await card.locator("summary").click();
+  await expect(card.locator("li")).toHaveText([
+    "added: first.rs",
+    "renamed: last.rs",
+  ]);
+  await expect(card.locator("script")).toHaveCount(0);
+  expect(calls[1].args.expectedAccountId).toBe("6954990");
+  expect(calls[1].args.expectedRepositoryId).toBe("1376547672");
+  await card
+    .getByRole("button", { name: "Read PR metadata", exact: true })
+    .click();
+  await expect(card.getByRole("status")).toContainText(
+    "changed during the read",
+  );
+  await expect(card.locator("summary")).toHaveCount(0);
+  await expect(
+    card.getByRole("button", { name: "Read PR metadata", exact: true }),
+  ).toBeDisabled();
+});
+
+test("retargeting a local repository invalidates the old connection", async ({
+  page,
+  store,
+}) => {
+  const card = await githubFixture(page, store, () => ({ ok: verified }));
+  await card
+    .getByRole("button", { name: "Verify GitHub connection", exact: true })
+    .click();
+  await expect(card.getByRole("status")).toContainText("jdylanmc (6954990)");
+  await card.getByRole("button", { name: "Edit", exact: true }).click();
+  await card
+    .getByLabel("Repository name", { exact: true })
+    .fill("other/target");
+  await card
+    .getByRole("button", { name: "Save repository", exact: true })
+    .click();
+  const target = page.getByRole("article", {
+    name: "other/target",
+    exact: true,
+  });
+  await expect(target.getByRole("status")).toContainText("Not verified");
+  await expect(
+    target.getByRole("button", { name: "Read PR metadata", exact: true }),
+  ).toBeDisabled();
 });
