@@ -1,4 +1,4 @@
-use pr_sniper_lib::storage::{Settings, Store};
+use pr_sniper_lib::storage::{DiagnosticEvent, Settings, Store};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::io::{self, Read};
@@ -10,6 +10,11 @@ struct Request {
     command: String,
     #[serde(default)]
     args: Value,
+}
+
+fn recorded_settings(store: &Store, settings: Settings) -> Result<Value, String> {
+    store.record(DiagnosticEvent::SettingsSaved)?;
+    serde_json::to_value(settings).map_err(|_| "Cannot encode settings.".into())
 }
 
 fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
@@ -37,8 +42,7 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             let repository = request.args["repository"]
                 .as_str()
                 .ok_or("Repository name is required.")?;
-            serde_json::to_value(store.add_repository(repository)?)
-                .map_err(|_| "Cannot encode settings.".into())
+            recorded_settings(store, store.add_repository(repository)?)
         }
         "update_repository" => {
             let id = request.args["id"]
@@ -50,21 +54,18 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             let enabled = request.args["enabled"]
                 .as_bool()
                 .ok_or("Enabled state is required.")?;
-            serde_json::to_value(store.update_repository(id, name, enabled)?)
-                .map_err(|_| "Cannot encode settings.".into())
+            recorded_settings(store, store.update_repository(id, name, enabled)?)
         }
         "remove_repository" => {
             let id = request.args["id"]
                 .as_str()
                 .ok_or("Repository ID is required.")?;
-            serde_json::to_value(store.remove_repository(id)?)
-                .map_err(|_| "Cannot encode settings.".into())
+            recorded_settings(store, store.remove_repository(id)?)
         }
         "save_defaults" => {
             let policy = serde_json::from_value(request.args["policy"].clone())
                 .map_err(|_| "Unsupported policy configuration.")?;
-            serde_json::to_value(store.save_defaults(policy)?)
-                .map_err(|_| "Cannot encode settings.".into())
+            recorded_settings(store, store.save_defaults(policy)?)
         }
         "save_repository_policy" => {
             let id = request.args["id"]
@@ -72,8 +73,7 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
                 .ok_or("Repository ID is required.")?;
             let overrides = serde_json::from_value(request.args["overrides"].clone())
                 .map_err(|_| "Unsupported policy override configuration.")?;
-            serde_json::to_value(store.save_repository_policy(id, overrides)?)
-                .map_err(|_| "Cannot encode settings.".into())
+            recorded_settings(store, store.save_repository_policy(id, overrides)?)
         }
         command => Err(format!("Unsupported settings test command: {command}")),
     }

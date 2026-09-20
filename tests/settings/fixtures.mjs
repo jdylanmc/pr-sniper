@@ -51,8 +51,41 @@ export const test = base.extend({
   store: async ({ dataRoot }, use) => {
     await use((command, args) => invokeStore(dataRoot, command, args));
   },
-  page: async ({ page, store }, use) => {
-    await page.exposeFunction("__settingsInvoke", store);
+  ipc: async ({ store }, use) => {
+    const next = new Map();
+    const gates = new Set();
+    const holdNext = (command) => {
+      if (next.has(command)) throw new Error(`Already holding ${command}`);
+      const arrived = Promise.withResolvers();
+      const gate = Promise.withResolvers();
+      const hold = { arrived, gate };
+      next.set(command, hold);
+      gates.add(gate);
+      return { arrived: arrived.promise, release: () => gate.resolve() };
+    };
+    const invoke = async (command, args) => {
+      const hold = next.get(command);
+      if (!hold) return store(command, args);
+      next.delete(command);
+      // Run the real Store first, then hold only the external IPC reply.
+      const result = await store(command, args).then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      );
+      hold.arrived.resolve();
+      await hold.gate.promise;
+      gates.delete(hold.gate);
+      if ("error" in result) throw result.error;
+      return result.value;
+    };
+    try {
+      await use({ holdNext, invoke });
+    } finally {
+      for (const gate of gates) gate.resolve();
+    }
+  },
+  page: async ({ page, ipc }, use) => {
+    await page.exposeFunction("__settingsInvoke", ipc.invoke);
     await page.addInitScript(() => {
       const pending = new Set();
       window.__TAURI_INTERNALS__ = {
@@ -63,7 +96,9 @@ export const test = base.extend({
           return settled;
         },
       };
-      window.__settingsIdle = () => Promise.all([...pending]);
+      window.__settingsIdle = async () => {
+        while (pending.size) await Promise.allSettled([...pending]);
+      };
     });
     await use(page);
   },
