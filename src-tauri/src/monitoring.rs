@@ -86,6 +86,11 @@ pub struct Monitor {
 }
 
 impl Monitor {
+    pub fn checkpoint(&self, store: &Store) -> Result<(), String> {
+        store.save_poll_cursors(&self.cursors)?;
+        store.save_polling_health(&self.snapshot())
+    }
+
     pub fn restore(store: &Store) -> Result<Self, String> {
         Ok(Self {
             entries: BTreeMap::new(),
