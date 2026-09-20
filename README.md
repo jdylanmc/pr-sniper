@@ -178,6 +178,10 @@ in `state/poll-cursors.json`. Polling includes updates equal to the saved timest
 stops before older pages and never advances on failed reads. Eligibility-policy
 changes, disabling/removal and retargeting invalidate the relevant cursor; queue
 history still deduplicates already detected remote revisions.
+Multi-page polling re-reads the visited lightweight pages in reverse order before
+accepting the result. Detected page or pagination changes fail as an incomplete
+read without advancing the cursor; there is no automatic retry of that attempt.
+Single-page incremental reads do not fetch older pages for this check.
 
 `state/polling.json` contains safe schedule-health observations (last attempt,
 success, next run, in-flight state and classified failure). A failed read never
@@ -188,7 +192,8 @@ recovery and retry budgets belong to a later delivery, not this basic queue.
 
 Intervals use elapsed UTC seconds. A fresh host schedules the first interval
 after the configured duration; Check Now can run sooner. A missed cadence is
-coalesced into one check, never a burst of overlapping catch-up work. Cron uses
+coalesced into one check, never a burst of overlapping catch-up work. Active
+repository exclusion survives removal/readdition and retargeting. Cron uses
 Croner 4 with chrono-tz: fixed wall times skipped by a spring daylight transition
 run at the first valid instant after the gap; a fixed time repeated in autumn
 runs only in the first occurrence. Wildcard cron follows chronological minutes
