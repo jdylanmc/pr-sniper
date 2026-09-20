@@ -34,6 +34,12 @@ struct Snapshot {
     version: &'static str,
 }
 
+#[derive(Serialize)]
+struct GithubMetadata {
+    connection: Connection,
+    pull_requests: Vec<PullRequest>,
+}
+
 fn record(app: &tauri::AppHandle, event: DiagnosticEvent) {
     let host = app.state::<Host>();
     let result = host
@@ -208,7 +214,7 @@ async fn read_github_metadata(
     id: String,
     expected_account_id: String,
     expected_repository_id: String,
-) -> Result<Vec<PullRequest>, ConnectionError> {
+) -> Result<GithubMetadata, ConnectionError> {
     let repository = configured_repository(&host, &id)?;
     let name = repository.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
@@ -217,7 +223,11 @@ async fn read_github_metadata(
         if connection.repository.id != expected_repository_id {
             return Err(ConnectionError::RepositoryChanged);
         }
-        client.pull_requests(&connection.repository)
+        let pull_requests = client.pull_requests(&connection.repository)?;
+        Ok(GithubMetadata {
+            connection,
+            pull_requests,
+        })
     })
     .await
     .map_err(|_| ConnectionError::ProviderFailure)?;

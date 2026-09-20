@@ -310,3 +310,21 @@ fn provider_response_bodies_never_escape_safe_serialized_errors() {
         assert!(!format!("{error:?}").contains("fixture-secret-do-not-copy"));
     }
 }
+
+#[test]
+fn secondary_rate_limit_without_retry_header_is_not_a_permission_error() {
+    let mut limited = response(
+        403,
+        json!({
+            "message": "You have exceeded a secondary rate limit. Please wait a few minutes before you try again."
+        }),
+    );
+    limited
+        .headers
+        .insert("x-ratelimit-remaining".into(), "4999".into());
+    let transport = FixtureTransport {
+        responses: BTreeMap::from([(USER, Ok(limited))]),
+    };
+    let result = GithubClient::new(transport).connect("jdylanmc/pr-sniper", None);
+    assert_eq!(result, Err(ConnectionError::RateLimited));
+}

@@ -135,21 +135,24 @@ test("metadata pins verified identities, renders all files safely and clears fai
     if (command === "verify_github_connection") return { ok: verified };
     if (++reads > 1) return { error: "revision_changed" };
     return {
-      ok: [
-        {
-          number: 31,
-          title: "<script>bad()</script>",
-          state: "open",
-          draft: false,
-          head_sha: "a".repeat(40),
-          author: { id: "42", login: "author" },
-          requested_reviewers: [{ id: "6954990", login: "jdylanmc" }],
-          files: [
-            { path: "first.rs", status: "added" },
-            { path: "last.rs", status: "renamed" },
-          ],
-        },
-      ],
+      ok: {
+        connection: verified,
+        pull_requests: [
+          {
+            number: 31,
+            title: "<script>bad()</script>",
+            state: "open",
+            draft: false,
+            head_sha: "a".repeat(40),
+            author: { id: "42", login: "author" },
+            requested_reviewers: [{ id: "6954990", login: "jdylanmc" }],
+            files: [
+              { path: "first.rs", status: "added" },
+              { path: "last.rs", status: "renamed" },
+            ],
+          },
+        ],
+      },
     };
   });
   await card
@@ -205,4 +208,43 @@ test("retargeting a local repository invalidates the old connection", async ({
   await expect(
     target.getByRole("button", { name: "Read PR metadata", exact: true }),
   ).toBeDisabled();
+});
+
+test("metadata replaces stale capability evidence for the same account and repository", async ({
+  page,
+  store,
+}) => {
+  const capabilities = ["unavailable", "unknown", "available"];
+  let reads = 0;
+  const card = await githubFixture(page, store, (command) => {
+    if (command === "verify_github_connection") return { ok: verified };
+    return {
+      ok: {
+        connection: {
+          ...verified,
+          capabilities: { read: true, comment: capabilities[reads++] },
+        },
+        pull_requests: [],
+      },
+    };
+  });
+  await card
+    .getByRole("button", { name: "Verify GitHub connection", exact: true })
+    .click();
+  await expect(card.getByRole("status")).toContainText(
+    "Comment scope available",
+  );
+  for (const message of [
+    "Comment permission unavailable",
+    "Comment permission unverified",
+    "Comment scope available",
+  ]) {
+    await card
+      .getByRole("button", { name: "Read PR metadata", exact: true })
+      .click();
+    await expect(card.getByRole("status")).toContainText(message);
+    await expect(card.getByRole("status")).toContainText(
+      "Complete metadata: 0 PRs",
+    );
+  }
 });
