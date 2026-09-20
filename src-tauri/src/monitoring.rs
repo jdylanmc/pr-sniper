@@ -1,6 +1,6 @@
 use crate::github::{
     metadata::{Lifecycle, PullRequest},
-    provider::Connection,
+    provider::{Connection, GithubClient, Transport},
     ConnectionError,
 };
 use crate::policy::{Policy, Schedule};
@@ -34,6 +34,20 @@ pub struct PollTicket {
 pub struct PollResult {
     pub connection: Connection,
     pub pull_requests: Vec<PullRequest>,
+}
+
+pub fn poll<T: Transport>(
+    ticket: &PollTicket,
+    mut client: impl FnMut() -> Result<GithubClient<T>, ConnectionError>,
+) -> Result<PollResult, ConnectionError> {
+    let client = client()?;
+    let connection = client.connect(&ticket.name, ticket.expected_account_id.as_deref())?;
+    let pull_requests =
+        client.poll_pull_requests_since(&connection.repository, ticket.updated_after.as_deref())?;
+    Ok(PollResult {
+        connection,
+        pull_requests,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +101,20 @@ pub struct Monitor {
 }
 
 impl Monitor {
+    pub fn prepare_checks(
+        &mut self,
+        store: &Store,
+        now: i64,
+        check_now: bool,
+    ) -> Result<Vec<PollTicket>, String> {
+        let settings = store.load_settings()?;
+        let tickets = self
+            .begin(&settings, now, check_now)
+            .map_err(|_| "Cannot calculate repository schedules.")?;
+        self.checkpoint(store)?;
+        Ok(tickets)
+    }
+
     pub fn checkpoint(&self, store: &Store) -> Result<(), String> {
         store.save_poll_cursors(&self.cursors)?;
         store.save_polling_health(&self.snapshot())

@@ -61,33 +61,16 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
     }
     let tickets = {
         let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
-        let settings = store.load_settings()?;
         let mut monitor = host
             .monitor
             .lock()
             .map_err(|_| "Monitoring is unavailable.")?;
-        let tickets = monitor
-            .begin(&settings, now_seconds(), immediate)
-            .map_err(|_| "Cannot calculate repository schedules.")?;
-        monitor.checkpoint(&store)?;
-        tickets
+        monitor.prepare_checks(&store, now_seconds(), immediate)?
     };
     for ticket in tickets {
         let app = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            let result = (|| {
-                let client = github::client()?;
-                let connection =
-                    client.connect(&ticket.name, ticket.expected_account_id.as_deref())?;
-                let pull_requests = client.poll_pull_requests_since(
-                    &connection.repository,
-                    ticket.updated_after.as_deref(),
-                )?;
-                Ok(monitoring::PollResult {
-                    connection,
-                    pull_requests,
-                })
-            })();
+            let result = monitoring::poll(&ticket, github::client);
             let host = app.state::<Host>();
             if host.quitting.load(Ordering::SeqCst) {
                 return;
