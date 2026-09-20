@@ -169,7 +169,14 @@ impl Monitor {
             let known = self.entries.get(&repository.id).filter(|entry| {
                 entry.schedule == policy.schedule && entry.health.name == repository.name
             });
-            if known.is_some_and(|entry| entry.health.in_flight) {
+            let remote_id = cursor
+                .map(|cursor| &cursor.remote_id)
+                .or_else(|| known.and_then(|entry| entry.remote_id.as_ref()));
+            if self.entries.values().any(|entry| {
+                entry.health.in_flight
+                    && (entry.health.name == repository.name
+                        || remote_id.is_some_and(|id| entry.remote_id.as_ref() == Some(id)))
+            }) {
                 continue;
             }
             let next_result = match known {

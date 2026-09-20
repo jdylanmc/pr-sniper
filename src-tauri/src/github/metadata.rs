@@ -321,6 +321,7 @@ impl<T: Transport> GithubClient<T> {
         let mut result = Vec::new();
         let mut advertised_last = None;
         let mut previous_update = None;
+        let mut observations = Vec::new();
         loop {
             if !seen.insert(path.clone()) || seen.len() > 10_000 {
                 return Err(ConnectionError::IncompleteRead);
@@ -352,14 +353,28 @@ impl<T: Transport> GithubClient<T> {
                 }
                 result.push(item.clone());
             }
+            if ordered {
+                observations.push((path.clone(), value, response.headers.get("link").cloned()));
+            }
             if crossed_cursor {
-                return Ok(result);
+                break;
             }
             match next {
                 Some(next) => path = next,
-                None => return Ok(result),
+                None => break,
             }
         }
+        // Closing or reordering a PR can shift offsets without duplicate IDs or broken links.
+        // Reconcile every visited page before accepting a multi-page polling sweep.
+        if observations.len() > 1 {
+            for (path, value, link) in observations.into_iter().rev() {
+                let (current, response) = self.read(&path)?;
+                if current != value || response.headers.get("link") != link.as_ref() {
+                    return Err(ConnectionError::IncompleteRead);
+                }
+            }
+        }
+        Ok(result)
     }
 }
 

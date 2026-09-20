@@ -26,6 +26,8 @@ No release/versioning policy has been established yet.
   Check Now action, visible schedule health and a durable basic revision queue.
   Stable watched-author or individual requested-reviewer matches select work
   without changed-file hydration; repeated revision/policy matches are deduplicated.
+  Multi-page changes fail visibly rather than checkpointing an incomplete read;
+  active checks remain non-overlapping across repository removal and readdition.
   Fork and untrusted-author work visibly waits for confirmation. This does not
   run agents or publish comments. See [#3](https://github.com/jdylanmc/pr-sniper/issues/3),
   [#8](https://github.com/jdylanmc/pr-sniper/issues/8) and
