@@ -34,9 +34,25 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             serde_json::to_value(store.add_repository(repository)?)
                 .map_err(|_| "Cannot encode settings.".into())
         }
-        // GREEN connects these IPC arms to the same Store operations as the app.
-        "update_repository" | "remove_repository" => {
-            Err("Repository editing and removal are not implemented.".into())
+        "update_repository" => {
+            let id = request.args["id"]
+                .as_str()
+                .ok_or("Repository ID is required.")?;
+            let name = request.args["repository"]
+                .as_str()
+                .ok_or("Repository name is required.")?;
+            let enabled = request.args["enabled"]
+                .as_bool()
+                .ok_or("Enabled state is required.")?;
+            serde_json::to_value(store.update_repository(id, name, enabled)?)
+                .map_err(|_| "Cannot encode settings.".into())
+        }
+        "remove_repository" => {
+            let id = request.args["id"]
+                .as_str()
+                .ok_or("Repository ID is required.")?;
+            serde_json::to_value(store.remove_repository(id)?)
+                .map_err(|_| "Cannot encode settings.".into())
         }
         command => Err(format!("Unsupported settings test command: {command}")),
     }

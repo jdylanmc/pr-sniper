@@ -106,6 +106,27 @@ fn save_repository(host: State<'_, Host>, repository: String) -> Result<Settings
 }
 
 #[tauri::command]
+fn update_repository(
+    host: State<'_, Host>,
+    id: String,
+    repository: String,
+    enabled: bool,
+) -> Result<Settings, String> {
+    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+    let settings = store.update_repository(&id, &repository, enabled)?;
+    store.record(DiagnosticEvent::SettingsSaved)?;
+    Ok(settings)
+}
+
+#[tauri::command]
+fn remove_repository(host: State<'_, Host>, id: String) -> Result<Settings, String> {
+    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+    let settings = store.remove_repository(&id)?;
+    store.record(DiagnosticEvent::SettingsSaved)?;
+    Ok(settings)
+}
+
+#[tauri::command]
 fn diagnostics(host: State<'_, Host>) -> Result<Vec<Diagnostic>, String> {
     host.store
         .lock()
@@ -154,6 +175,8 @@ pub fn run() {
             snapshot,
             save_login,
             save_repository,
+            update_repository,
+            remove_repository,
             diagnostics,
             open_diagnostics
         ])

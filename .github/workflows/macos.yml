@@ -24,6 +24,8 @@ jobs:
       - run: npm run format:check
       - run: npm run lint
       - run: npm test
+      - run: npm exec playwright install chromium
+      - run: npm run test:settings
       - run: npm run bundle
       - name: Compile native acceptance harness
         run: swiftc tests/macos-native-smoke.swift -o "$RUNNER_TEMP/pr-sniper-native-smoke"
