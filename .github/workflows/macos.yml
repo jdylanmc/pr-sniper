@@ -1,0 +1,36 @@
+name: macOS foundation
+
+on:
+  pull_request:
+  push:
+    branches: [main, feat/macos-foundation]
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm test
+      - run: npm run bundle
+      - name: Compile native acceptance harness
+        run: swiftc tests/macos-native-smoke.swift -o "$RUNNER_TEMP/pr-sniper-native-smoke"
+      - name: Archive bundle with executable permissions
+        run: ditto -c -k --sequesterRsrc --keepParent "src-tauri/target/release/bundle/macos/PR Sniper.app" "$RUNNER_TEMP/PR-Sniper-macos.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr-sniper-macos-local
+          path: ${{ runner.temp }}/PR-Sniper-macos.zip
+          if-no-files-found: error
