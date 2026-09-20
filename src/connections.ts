@@ -131,17 +131,21 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
     details.replaceChildren();
     try {
       if (metadata && pinned) {
-        const pulls = await invoke<PullRequest[]>("read_github_metadata", {
+        const result = await invoke<{
+          connection: Connection;
+          pull_requests: PullRequest[];
+        }>("read_github_metadata", {
           id: repository.id,
           expectedAccountId: pinned.identity.id,
           expectedRepositoryId: pinned.repository.id,
         });
         if (!root.isConnected) return;
+        const pulls = result.pull_requests;
         observation = {
           name: repository.name,
-          connection: pinned,
+          connection: result.connection,
           pulls,
-          message: `${describe(pinned)} Complete metadata: ${pulls.length} PRs, ${pulls.reduce((sum, pull) => sum + pull.files.length, 0)} changed files. Last read ${new Date().toLocaleTimeString()}.`,
+          message: `${describe(result.connection)} Complete metadata: ${pulls.length} PRs, ${pulls.reduce((sum, pull) => sum + pull.files.length, 0)} changed files. Last read ${new Date().toLocaleTimeString()}.`,
         };
         renderPulls(pulls);
       } else {

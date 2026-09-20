@@ -328,3 +328,66 @@ fn base_repository_must_match_the_verified_remote_identity() {
 
     assert_eq!(read(transport), Err(ConnectionError::RepositoryChanged));
 }
+
+#[test]
+fn advertised_last_page_cannot_disappear_on_a_later_page() {
+    for terminal in [None, Some("<https://api.github.com/repos/jdylanmc/pr-sniper/pulls?state=all&sort=created&direction=asc&per_page=100&page=2>; rel=\"last\"")] {
+        let mut transport = ready_transport();
+        transport.reply(LIST, linked(
+            json!([detail()]),
+            "<https://api.github.com/repos/jdylanmc/pr-sniper/pulls?state=all&sort=created&direction=asc&per_page=100&page=2>; rel=\"next\", <https://api.github.com/repos/jdylanmc/pr-sniper/pulls?state=all&sort=created&direction=asc&per_page=100&page=3>; rel=\"last\"",
+        ));
+        let mut second = detail();
+        second["id"] = json!(1002);
+        second["number"] = json!(32);
+        transport.reply(LIST_NEXT, match terminal {
+            Some(link) => linked(json!([second.clone()]), link),
+            None => response(200, json!([second.clone()])),
+        });
+        transport.reply("/repos/jdylanmc/pr-sniper/pulls/32", response(200, second));
+        transport.reply("/repos/jdylanmc/pr-sniper/pulls/32/files?per_page=100&page=1", response(200, json!([file()])));
+        transport.reply("/repos/jdylanmc/pr-sniper/pulls/32/requested_reviewers", response(200, json!({"users": [], "teams": []})));
+        assert_eq!(read(transport), Err(ConnectionError::IncompleteRead));
+    }
+}
+
+#[test]
+fn advertised_next_page_cannot_be_an_empty_terminal_tail() {
+    let mut transport = ready_transport();
+    transport.reply(LIST, linked(json!([detail()]),
+        "<https://api.github.com/repos/jdylanmc/pr-sniper/pulls?state=all&sort=created&direction=asc&per_page=100&page=2>; rel=\"next\""));
+    transport.reply(LIST_NEXT, response(200, json!([])));
+    assert_eq!(read(transport), Err(ConnectionError::IncompleteRead));
+}
+
+#[test]
+fn advertised_three_page_read_returns_all_distinct_pull_requests() {
+    let mut transport = ready_transport();
+    for (number, id, list_path, detail_path, files_path, reviewers_path, link) in [
+        (31, 1001, LIST, DETAIL, FILES, REVIEWERS,
+         Some("<https://api.github.com/repos/jdylanmc/pr-sniper/pulls?state=all&sort=created&direction=asc&per_page=100&page=2>; rel=\"next\", <https://api.github.com/repos/jdylanmc/pr-sniper/pulls?state=all&sort=created&direction=asc&per_page=100&page=3>; rel=\"last\"")),
+        (32, 1002, LIST_NEXT, "/repos/jdylanmc/pr-sniper/pulls/32", "/repos/jdylanmc/pr-sniper/pulls/32/files?per_page=100&page=1", "/repos/jdylanmc/pr-sniper/pulls/32/requested_reviewers",
+         Some("<https://api.github.com/repos/jdylanmc/pr-sniper/pulls?state=all&sort=created&direction=asc&per_page=100&page=3>; rel=\"next\", <https://api.github.com/repos/jdylanmc/pr-sniper/pulls?state=all&sort=created&direction=asc&per_page=100&page=3>; rel=\"last\"")),
+        (33, 1003, "/repos/jdylanmc/pr-sniper/pulls?state=all&sort=created&direction=asc&per_page=100&page=3", "/repos/jdylanmc/pr-sniper/pulls/33", "/repos/jdylanmc/pr-sniper/pulls/33/files?per_page=100&page=1", "/repos/jdylanmc/pr-sniper/pulls/33/requested_reviewers", None),
+    ] {
+        let mut pull = detail();
+        pull["id"] = json!(id);
+        pull["number"] = json!(number);
+        pull["changed_files"] = json!(0);
+        transport.reply(list_path, match link {
+            Some(link) => linked(json!([pull.clone()]), link),
+            None => response(200, json!([pull.clone()])),
+        });
+        transport.reply(detail_path, response(200, pull));
+        transport.reply(files_path, response(200, json!([])));
+        transport.reply(reviewers_path, response(200, json!({"users": [], "teams": []})));
+    }
+    let pulls = read(transport).unwrap();
+    assert_eq!(
+        pulls
+            .iter()
+            .map(|pull| pull.id.as_str())
+            .collect::<Vec<_>>(),
+        ["1001", "1002", "1003"]
+    );
+}

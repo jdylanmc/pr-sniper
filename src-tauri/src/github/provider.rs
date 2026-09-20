@@ -103,6 +103,14 @@ impl<T: Transport> GithubClient<T> {
 
     pub(super) fn read(&self, path: &str) -> Result<(Value, Response), ConnectionError> {
         let response = self.transport.get(path)?;
+        let rate_limit_message = response.status == 403
+            && serde_json::from_slice::<Value>(&response.body)
+                .ok()
+                .and_then(|body| body["message"].as_str().map(str::to_ascii_lowercase))
+                .is_some_and(|message| {
+                    message.contains("secondary rate limit")
+                        || message.contains("api rate limit exceeded")
+                });
         match response.status {
             200 => (),
             401 => return Err(ConnectionError::SignedOut),
@@ -111,7 +119,8 @@ impl<T: Transport> GithubClient<T> {
                 .headers
                 .get("x-ratelimit-remaining")
                 .is_some_and(|v| v == "0")
-                || response.headers.contains_key("retry-after") =>
+                || response.headers.contains_key("retry-after")
+                || rate_limit_message =>
             {
                 return Err(ConnectionError::RateLimited)
             }

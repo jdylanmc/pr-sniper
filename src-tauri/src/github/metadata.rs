@@ -212,6 +212,7 @@ impl<T: Transport> GithubClient<T> {
         let mut path = first.to_string();
         let mut seen = HashSet::new();
         let mut result = Vec::new();
+        let mut advertised_last = None;
         loop {
             if !seen.insert(path.clone()) || seen.len() > 10_000 {
                 return Err(ConnectionError::IncompleteRead);
@@ -221,8 +222,8 @@ impl<T: Transport> GithubClient<T> {
             if page.len() > 100 {
                 return Err(ConnectionError::InvalidResponse);
             }
-            let next = next_page(&path, &response)?;
-            if page.is_empty() && next.is_some() {
+            let next = next_page(&path, &response, &mut advertised_last)?;
+            if page.is_empty() && (next.is_some() || seen.len() > 1) {
                 return Err(ConnectionError::IncompleteRead);
             }
             result.extend(page.iter().cloned());
@@ -265,10 +266,11 @@ fn optional_text(value: Option<&Value>) -> Result<Option<String>, ConnectionErro
     }
 }
 
-fn next_page(path: &str, response: &Response) -> Result<Option<String>, ConnectionError> {
-    let Some(link) = response.headers.get("link") else {
-        return Ok(None);
-    };
+fn next_page(
+    path: &str,
+    response: &Response,
+    advertised_last: &mut Option<u64>,
+) -> Result<Option<String>, ConnectionError> {
     let current = reqwest::Url::parse(&format!("https://api.github.com{path}"))
         .map_err(|_| ConnectionError::IncompleteRead)?;
     let query: BTreeMap<_, _> = current
@@ -279,6 +281,13 @@ fn next_page(path: &str, response: &Response) -> Result<Option<String>, Connecti
         .get("page")
         .and_then(|page| page.parse::<u64>().ok())
         .ok_or(ConnectionError::IncompleteRead)?;
+    let Some(link) = response.headers.get("link") else {
+        return if advertised_last.is_some_and(|last| last > page) {
+            Err(ConnectionError::IncompleteRead)
+        } else {
+            Ok(None)
+        };
+    };
     let mut next = None;
     let mut last = None;
     let mut relations = HashSet::new();
@@ -334,7 +343,13 @@ fn next_page(path: &str, response: &Response) -> Result<Option<String>, Connecti
             _ => return Err(ConnectionError::IncompleteRead),
         }
     }
-    if next.is_none() && last.is_some_and(|last| last > page) {
+    if let Some(last) = last {
+        if last < page || advertised_last.is_some_and(|previous| last < previous) {
+            return Err(ConnectionError::IncompleteRead);
+        }
+        *advertised_last = Some(last);
+    }
+    if next.is_none() && advertised_last.is_some_and(|last| last > page) {
         return Err(ConnectionError::IncompleteRead);
     }
     Ok(next)
