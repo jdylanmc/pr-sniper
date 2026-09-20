@@ -42,7 +42,7 @@ Run from the repository root:
 
 ```sh
 cargo test --manifest-path src-tauri/Cargo.toml --locked \
-  --test settings_persistence --test diagnostics
+  --test settings_persistence --test diagnostics --test startup_registration
 ```
 
 If Rust is installed but not on the shell path, use the existing selected
@@ -59,6 +59,13 @@ visible I/O errors, independent configuration/state, append-only typed
 diagnostics, safe rejection of synthetic secret payloads and rotation before a
 write would exceed the 256 KiB current-log limit. They do not touch macOS
 launch-at-login configuration or access credentials.
+
+LaunchAgent tests use only fixture plist/executable paths: missing, valid,
+malformed, stale and unreadable registrations, explicit request/removal, escaped
+paths and failed-save rollback. A valid registration is not evidence of
+effective macOS launch state. Settings must keep the saved request and validated
+registration status distinct and warn that macOS Login Items can still prevent
+launch.
 
 Retain command output and distinguish a behavior assertion failure from a
 missing compiler, missing package, compilation failure or unexecuted test.

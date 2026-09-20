@@ -4,7 +4,7 @@ import "./style.css";
 
 interface Snapshot {
   settings: { launch_at_login: boolean } | null;
-  login_enabled: boolean | null;
+  login_registration: "absent" | "registered" | "invalid" | null;
   isolated: boolean;
   error: string | null;
   version: string;
@@ -49,33 +49,38 @@ async function load() {
     if (view === "settings") {
       content.innerHTML = `
         <h2>Startup</h2>
-        <label><input id="login" type="checkbox" /> Launch PR Sniper at login</label>
+        <label><input id="login" type="checkbox" /> Request launch at login</label>
         <p>Off by default. Changed only by your explicit choice here, never on application startup.</p>
         <p id="login-note"></p>
         <button id="diagnostics">Open redacted diagnostics</button>
         <h2>Connections</h2>
         <p>GitHub and review-agent setup are not implemented in this foundation.</p>`;
       const login = content.querySelector<HTMLInputElement>("#login")!;
-      login.checked = state.login_enabled === true;
+      login.checked = state.settings?.launch_at_login === true;
       login.disabled =
         state.isolated ||
         state.settings === null ||
-        state.login_enabled === null;
+        state.login_registration === null;
       content.querySelector("#login-note")!.textContent = state.isolated
         ? "Isolated development run: changing macOS login items is disabled."
-        : state.settings?.launch_at_login !== state.login_enabled
-          ? "macOS login state differs from your saved preference. macOS is authoritative; no startup change was made."
-          : "Current macOS login state is shown above.";
+        : state.login_registration === "registered"
+          ? "Registration targets this application. macOS may still prevent login launch; check Login Items. The checkbox shows your saved request, not effective macOS state."
+          : state.login_registration === "absent"
+            ? "No launch registration exists. The checkbox shows your saved request; startup never reapplies it."
+            : "The launch registration is invalid or targets a different application. No startup change was made. The checkbox shows only your saved request.";
       login.addEventListener("change", async () => {
         login.disabled = true;
         try {
           await invoke("save_login", { enabled: login.checked });
           await load();
-        } catch {
-          // Reload OS truth even if persistence or diagnostics failed after a change.
+        } catch (cause) {
+          // Refresh saved intent and registration after a partial or failed change.
           await load();
           showError(
-            "Could not complete the startup preference change. Verify the displayed macOS state and local storage permissions.",
+            cause ===
+              "Settings were not saved and the previous login registration could not be restored. Inspect macOS Login Items."
+              ? "Settings were not saved and the previous registration could not be restored. Check macOS Login Items before relying on startup."
+              : "Could not complete the startup preference change. Check the saved request, registration status, local permissions and macOS Login Items.",
           );
         }
       });
