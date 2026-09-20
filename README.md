@@ -187,6 +187,12 @@ Single-page incremental reads do not fetch older pages for this check.
 success, next run, in-flight state and classified failure). A failed read never
 becomes an empty successful check. Settings are reloaded after network work;
 disabled, removed, retargeted or changed-policy attempts cannot admit old results.
+After enumeration, polling reacquires the current CLI credential and rechecks
+account identity, remote identity and read access before admission. A local
+sign-out or account switch during a delayed read rejects the captured result.
+If persisting dispatch state fails, all undispatched checks are released with a
+visible failure. Correcting storage allows Check Now and the next scheduled run;
+the failure does not leave nonexistent work marked in flight.
 Closing a window does not stop checks; Quit ends the host. Full interrupted-job
 recovery and retry budgets belong to a later delivery, not this basic queue.
 
