@@ -77,10 +77,9 @@ fn check_now_preserves_cadence_and_suppresses_an_overlapping_scheduled_check() {
         monitor.snapshot()[0].last_failure,
         Some(ConnectionError::Network)
     );
-    let persisted: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(fixture.path().join("state/polling.json")).unwrap(),
-    )
-    .unwrap();
+    let persisted: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(fixture.path().join("state/polling.json")).unwrap())
+            .unwrap();
     assert_eq!(persisted[0]["last_attempt"], 1100);
     assert_eq!(persisted[0]["last_success"], serde_json::Value::Null);
     assert_eq!(persisted[0]["last_failure"], "network");
