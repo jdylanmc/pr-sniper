@@ -547,3 +547,68 @@ fn host_checkpoint_must_preserve_cursor_invalidation_across_restart() {
 
     assert_eq!(ticket.updated_after, None);
 }
+
+fn assert_same_remote_exclusion(lifecycle: &str) {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let settings = configured(&store);
+    let old_id = &settings.repositories[0].id;
+    let mut monitor = Monitor::default();
+    let old_ticket = monitor.begin(&settings, 1000, true).unwrap().pop().unwrap();
+    match lifecycle {
+        "remove" => {
+            store.remove_repository(old_id).unwrap();
+        }
+        "retarget" => {
+            store
+                .update_repository(old_id, "example/retargeted", true)
+                .unwrap();
+        }
+        _ => unreachable!(),
+    }
+    store.add_repository("example/unrelated").unwrap();
+    let current = store.add_repository("example/project").unwrap();
+
+    let mut tickets = monitor.begin(&current, 1100, true).unwrap();
+
+    assert_eq!(
+        tickets
+            .iter()
+            .map(|ticket| ticket.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["example/unrelated"],
+        "{lifecycle}: the old example/project read is still outstanding"
+    );
+    let mut unrelated = result(vec![]);
+    unrelated.connection.repository = RemoteRepository {
+        id: "902".into(),
+        name: "example/unrelated".into(),
+    };
+    monitor
+        .finish(&store, tickets.pop().unwrap(), Ok(unrelated), 1101)
+        .unwrap();
+    assert!(monitor.begin(&current, 1102, false).unwrap().is_empty());
+    monitor
+        .finish(&store, old_ticket, Ok(result(vec![candidate()])), 1103)
+        .unwrap();
+    assert!(fixture.store().load_queue().unwrap().is_empty());
+    let after_release = monitor.begin(&current, 1104, true).unwrap();
+    assert_eq!(
+        after_release
+            .iter()
+            .filter(|ticket| ticket.name == "example/project")
+            .count(),
+        1,
+        "{lifecycle}: new configuration must become runnable after the old read ends"
+    );
+}
+
+#[test]
+fn remove_and_readd_cannot_overlap_an_existing_read_for_the_same_remote() {
+    assert_same_remote_exclusion("remove");
+}
+
+#[test]
+fn retarget_and_readd_cannot_overlap_an_existing_read_for_the_same_remote() {
+    assert_same_remote_exclusion("retarget");
+}
