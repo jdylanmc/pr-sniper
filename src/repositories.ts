@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { clearDraft, lockSettings } from "./drafts";
 import {
   renderPolicyForm,
   renderPolicySummary,
@@ -18,7 +19,7 @@ export function renderRepositories(
   root: HTMLElement,
   repositories: Repository[] | null,
   defaults: Policy | null,
-  reload: () => Promise<void>,
+  reload: (warning?: string | null) => Promise<void>,
   showError: (message: string) => void,
 ) {
   root.innerHTML = `
@@ -26,35 +27,38 @@ export function renderRepositories(
     <p>Saved configuration only. GitHub access and monitoring have not been verified or started.
     No application-defined repository limit; local storage failures are reported here.
     Provider rate limits will be available when GitHub is connected.</p>
-    <form id="add-repository">
+    <form id="add-repository" data-draft-key="add">
       <label for="repository">GitHub repository</label>
-      <input id="repository" type="text" placeholder="owner/repository or https://github.com/owner/repository" required />
+      <input id="repository" name="repository" type="text" placeholder="owner/repository or https://github.com/owner/repository" required />
       <button type="submit">Add repository</button>
     </form>
     <div id="repositories"></div>`;
 
-  async function save(command: string, args: Record<string, unknown>) {
-    const controls = root.querySelectorAll<
-      HTMLInputElement | HTMLButtonElement
-    >("input,button");
-    controls.forEach((control) => (control.disabled = true));
+  async function save(
+    command: string,
+    args: Record<string, unknown>,
+    form: HTMLFormElement | null = null,
+  ) {
+    const unlock = lockSettings(root);
     try {
-      await invoke(command, args);
-      await reload();
+      const result = await invoke<{ warning: string | null }>(command, args);
+      clearDraft(form);
+      await reload(result.warning);
     } catch (cause) {
       showError(
         typeof cause === "string"
           ? cause
           : "Could not save repository settings. Check local storage permissions.",
       );
-      controls.forEach((control) => (control.disabled = false));
+    } finally {
+      unlock();
     }
   }
 
   const input = root.querySelector<HTMLInputElement>("#repository")!;
   root.querySelector("form")!.addEventListener("submit", (event) => {
     event.preventDefault();
-    void save("save_repository", { repository: input.value });
+    void save("save_repository", { repository: input.value }, input.form);
   });
   if (repositories === null) {
     root
@@ -82,6 +86,10 @@ export function renderRepositories(
       ? "Enabled configuration (not monitoring)"
       : "Disabled";
     const editor = card.querySelector<HTMLElement>(".editor")!;
+    card.querySelector<HTMLButtonElement>(".policy")!.dataset.openDraft =
+      `policy:${repository.id}`;
+    card.querySelector<HTMLButtonElement>(".edit")!.dataset.openDraft =
+      `repository:${repository.id}`;
     if (defaults) {
       renderPolicySummary(
         card.querySelector(".policy-summary")!,
@@ -108,19 +116,24 @@ export function renderRepositories(
     card.querySelector(".edit")!.addEventListener("click", () => {
       editor.innerHTML = `
         <form>
-          <label>Repository name <input type="text" required /></label>
+          <label>Repository name <input name="repository" type="text" required /></label>
           <button type="submit">Save repository</button>
           <button type="button" class="cancel">Cancel</button>
         </form>`;
       const name = editor.querySelector("input")!;
       name.value = repository.name;
+      name.form!.dataset.draftKey = `repository:${repository.id}`;
       editor.querySelector("form")!.addEventListener("submit", (event) => {
         event.preventDefault();
-        void save("update_repository", {
-          id: repository.id,
-          repository: name.value,
-          enabled: repository.enabled,
-        });
+        void save(
+          "update_repository",
+          {
+            id: repository.id,
+            repository: name.value,
+            enabled: repository.enabled,
+          },
+          name.form,
+        );
       });
       editor
         .querySelector(".cancel")!

@@ -44,16 +44,18 @@ executable paths, never the user's actual login-item locations.
 
 Review regressions exercise diagnostics failure after configuration has already
 committed. All five mutation commands in the bridge include the native
-`SettingsSaved` diagnostics phase; tests require both authoritative visible
+`SettingsSaved` diagnostics phase through the shared production
+`Store::finish_settings_save` result boundary; tests require both authoritative visible
 saved state and an explicit warning, without fixing the mutation response DTO.
 They separately preserve the no-commit contract for failed configuration writes.
 
 Draft-lifecycle tests keep unrelated global/repository edits across saves and
 ensure inherited fields still follow changed defaults. A fixture can hold one
 real Store reply at the IPC boundary, allowing deterministic focus/save races
-without sleeps or fake persistence. Only the submitting policy form must be
-disabled while its reply is pending; inherited disabled controls remain disabled
-when a save fails.
+without sleeps or fake persistence. The submitting policy form must be disabled
+while its reply is pending; the implementation serializes Settings mutations by
+temporarily disabling the other controls too. Inherited disabled controls remain
+disabled when a save fails.
 
 The tests do not exercise native Tauri command registration, macOS WebKit,
 menu-bar behavior, or login-item integration. It never launches the native

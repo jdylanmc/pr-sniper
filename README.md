@@ -78,7 +78,9 @@ preference. Settings accepts `owner/repository` or an HTTPS `github.com` URL,
 normalizes case and clone suffixes, and prevents duplicates. Rename, disable,
 re-enable and confirmed removal operate on stable local repository identities;
 they do not contact GitHub. There is no application-defined repository-count
-limit. Storage failures are visible, not reported as successful saves.
+limit. Failed configuration writes are visible, not reported as successful saves.
+If configuration commits but recording diagnostics fails, Settings shows the
+committed state with a separate warning, rather than reporting a failed save.
 
 **Global defaults** and each repository's **Policy** cover interval or five-field
 cron schedules in an explicit time zone, watched GitHub identities, the
@@ -88,6 +90,9 @@ An unchecked **Override** box inherits the current global value; unchecking a
 saved override resets it. Every repository shows the saved effective value and
 source. Both gates start off; manual agent start does not imply permission to
 publish. No monitoring or provider action occurs in this increment.
+Unrelated saves preserve draft fields while untouched inherited fields follow
+current defaults. Settings controls are temporarily disabled during a repository
+or policy save; a failed write restores their previous editable/inherited state.
 
 Watched identities use one `numeric GitHub account ID:login` per line. The stable
 ID is the future matching key; the login is only a display label. Repository

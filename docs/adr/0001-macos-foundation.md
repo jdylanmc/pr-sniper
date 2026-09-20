@@ -34,6 +34,13 @@ patterns, and never copies policy text or repository data into host diagnostics.
 Arbitrary user-authored text must still be kept nonsecret; credentials belong in
 the later secure-storage flow.
 
+Configuration commit and diagnostics are distinct outcomes. Native commands and
+the browser bridge share the production save-result boundary: a committed save
+returns settings plus an optional safe diagnostics warning, not a false failure.
+Settings refreshes preserve only edited form groups; untouched inherited fields
+use current defaults. Edits invalidate pending focus refreshes, and configuration
+saves hold controls stable until their response is reconciled.
+
 Launch at login is an explicit Settings operation that writes the application's
 own LaunchAgent plist. Settings distinguishes saved intent from absent, invalid
 or structurally valid registration for the current executable; none proves
