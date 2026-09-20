@@ -18,6 +18,10 @@ pub enum DiagnosticEvent {
     SettingsSaved,
     QuitRequested,
     HostFailure,
+    GithubConnectionChecked,
+    GithubConnectionFailed,
+    GithubMetadataRead,
+    GithubReadFailed,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

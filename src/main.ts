@@ -73,7 +73,7 @@ async function load(warning: string | null = null, focusRefresh = false) {
         <section id="global-policy"></section>
         <section id="repository-settings"></section>
         <h2>Connections</h2>
-        <p>GitHub and review-agent setup are not implemented in this foundation.</p>`;
+        <p>Verify the current GitHub CLI account on each repository above. Credentials remain in memory only; PR Sniper never signs in, stores a token, or changes provider state. Agent authentication and Setup Doctor remain separate, unimplemented work.</p>`;
       if (state.settings)
         renderPolicyForm(
           content.querySelector("#global-policy")!,
@@ -145,11 +145,11 @@ async function load(warning: string | null = null, focusRefresh = false) {
             .join("\n")
         : "No host events recorded.";
     } else if (view === "queue") {
-      content.innerHTML = `<h2>No review queue yet</h2><p>This foundation does not connect to GitHub, poll repositories, run reviews or publish comments. Queue behavior arrives in a later slice.</p>`;
+      content.innerHTML = `<h2>No review queue yet</h2><p>Settings can verify GitHub connections and read PR metadata. Polling, reviews and comment publication are not implemented. Queue behavior arrives in a later slice.</p>`;
     } else if (view === "doctor") {
       content.innerHTML = `<h2>Setup Doctor is not implemented yet</h2><p>No executables, accounts or permissions have been checked. This foundation runs no install or sign-in commands.</p><p>Use Settings to inspect redacted host diagnostics. Provider and agent health checks arrive in a later slice.</p>`;
     } else {
-      content.innerHTML = `<h2>Menu-bar host is running</h2><p>Monitoring is not implemented. No repositories are connected, no background reviews are running, and no comments will be published.</p><p id="version"></p>`;
+      content.innerHTML = `<h2>Menu-bar host is running</h2><p>Verify GitHub connections and read complete PR metadata explicitly in Settings. Monitoring is not implemented, no background reviews are running, and no comments will be published.</p><p id="version"></p>`;
       content.querySelector("#version")!.textContent =
         `PR Sniper ${state.version}`;
     }
