@@ -107,3 +107,60 @@ fn waking_after_many_missed_intervals_creates_only_one_check() {
         .unwrap();
     assert!(monitor.begin(&settings, 10_001, false).unwrap().is_empty());
 }
+
+#[test]
+fn spring_gap_runs_fixed_wall_time_at_the_first_valid_instant() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let mut settings = store.add_repository("example/project").unwrap();
+    settings.defaults.schedule = Schedule::Cron {
+        expression: "30 2 * * *".into(),
+        timezone: "America/New_York".into(),
+    };
+    store.save_settings(&settings).unwrap();
+    let mut monitor = Monitor::default();
+
+    monitor.begin(&settings, 1_772_953_140, false).unwrap();
+
+    // 2026-03-08 01:59 EST -> 03:00 EDT; local 02:30 does not exist.
+    assert_eq!(monitor.snapshot()[0].next_run, 1_772_953_200);
+}
+
+#[test]
+fn fall_fold_runs_a_fixed_wall_time_only_on_its_first_occurrence() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let mut settings = store.add_repository("example/project").unwrap();
+    settings.defaults.schedule = Schedule::Cron {
+        expression: "30 1 * * *".into(),
+        timezone: "America/New_York".into(),
+    };
+    store.save_settings(&settings).unwrap();
+    let mut monitor = Monitor::default();
+    monitor.begin(&settings, 1_793_510_940, false).unwrap();
+    assert_eq!(monitor.snapshot()[0].next_run, 1_793_511_000);
+
+    let tickets = monitor.begin(&settings, 1_793_511_000, false).unwrap();
+
+    assert_eq!(tickets.len(), 1);
+    // Next fixed 01:30 is November 2 at 06:30 UTC, not the repeated November 1 hour.
+    assert_eq!(monitor.snapshot()[0].next_run, 1_793_601_000);
+}
+
+#[test]
+fn wildcard_minutes_follow_chronology_through_the_repeated_fall_hour() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let mut settings = store.add_repository("example/project").unwrap();
+    settings.defaults.schedule = Schedule::Cron {
+        expression: "* 1 * * *".into(),
+        timezone: "America/New_York".into(),
+    };
+    store.save_settings(&settings).unwrap();
+    let mut monitor = Monitor::default();
+
+    monitor.begin(&settings, 1_793_512_740, false).unwrap();
+
+    // 01:59 EDT is followed by 01:00 EST, at 06:00 UTC.
+    assert_eq!(monitor.snapshot()[0].next_run, 1_793_512_800);
+}
