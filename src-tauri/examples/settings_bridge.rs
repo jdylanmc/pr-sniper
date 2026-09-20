@@ -20,13 +20,19 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             store.save_settings(&settings)?;
             Ok(Value::Null)
         }
-        "snapshot" => Ok(json!({
-            "settings": store.load_settings()?,
-            "login_registration": "absent",
-            "isolated": true,
-            "error": null,
-            "version": env!("CARGO_PKG_VERSION")
-        })),
+        "snapshot" => {
+            let (settings, error) = match store.load_settings() {
+                Ok(settings) => (Some(settings), None),
+                Err(error) => (None, Some(error)),
+            };
+            Ok(json!({
+                "settings": settings,
+                "login_registration": "absent",
+                "isolated": true,
+                "error": error,
+                "version": env!("CARGO_PKG_VERSION")
+            }))
+        }
         "save_repository" => {
             let repository = request.args["repository"]
                 .as_str()

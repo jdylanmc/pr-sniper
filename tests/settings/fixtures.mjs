@@ -40,20 +40,30 @@ function invokeStore(root, command, args = {}) {
 }
 
 export const test = base.extend({
-  store: async ({}, use) => {
+  dataRoot: async ({}, use) => {
     const root = await mkdtemp(join(tmpdir(), "pr-sniper-settings-"));
     try {
-      await use((command, args) => invokeStore(root, command, args));
+      await use(root);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   },
+  store: async ({ dataRoot }, use) => {
+    await use((command, args) => invokeStore(dataRoot, command, args));
+  },
   page: async ({ page, store }, use) => {
     await page.exposeFunction("__settingsInvoke", store);
     await page.addInitScript(() => {
+      const pending = new Set();
       window.__TAURI_INTERNALS__ = {
-        invoke: (command, args) => window.__settingsInvoke(command, args),
+        invoke: (command, args) => {
+          const request = window.__settingsInvoke(command, args);
+          const settled = request.finally(() => pending.delete(settled));
+          pending.add(settled);
+          return settled;
+        },
       };
+      window.__settingsIdle = () => Promise.all([...pending]);
     });
     await use(page);
   },
