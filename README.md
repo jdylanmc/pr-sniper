@@ -173,6 +173,12 @@ work wait for trust confirmation, never automatic execution; trusted work
 still waits for human start or an unimplemented agent. No queue item represents
 a completed review or publication.
 
+Successful incremental boundaries and verified account/remote identities persist
+in `state/poll-cursors.json`. Polling includes updates equal to the saved timestamp,
+stops before older pages and never advances on failed reads. Eligibility-policy
+changes, disabling/removal and retargeting invalidate the relevant cursor; queue
+history still deduplicates already detected remote revisions.
+
 `state/polling.json` contains safe schedule-health observations (last attempt,
 success, next run, in-flight state and classified failure). A failed read never
 becomes an empty successful check. Settings are reloaded after network work;
@@ -188,6 +194,8 @@ run at the first valid instant after the gap; a fixed time repeated in autumn
 runs only in the first occurrence. Wildcard cron follows chronological minutes
 through the repeated hour. Calendar occurrences use the configured IANA zone,
 not the host's local-zone setting.
+An impossible calendar remains a visible per-repository configuration failure
+without blocking other repositories. Correct its schedule in Settings.
 
 Install and authenticate the official GitHub CLI yourself. PR Sniper never runs
 login, logout, installation or credential-configuration commands. It uses the

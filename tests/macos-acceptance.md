@@ -112,3 +112,44 @@ Stop only the recorded test-owned PID if failure leaves it running; never kill
 processes by name. Remove only the exact temporary fixture/install directory
 created for this run after preserving needed evidence. Do not delete the
 developer's application or application data.
+
+## Scheduled polling acceptance (P4)
+
+`tests/macos-polling-smoke.swift` is a separate Accessibility-only harness for
+P4. It does not require Screen Recording or prove icon appearance. Its preflight
+checks existing access without requesting or changing permissions:
+
+```sh
+swift tests/macos-polling-smoke.swift --preflight
+```
+
+The integration owner prepares a fresh owned data directory with exactly one
+enabled, permitted GitHub repository, a one-minute interval, launch-at-login
+off and both automation gates off. Use the real stable watched-author ID for
+an existing open non-draft fork PR; never create or modify provider data just
+to make the test pass.
+
+```sh
+swift tests/macos-polling-smoke.swift \
+  "/absolute/PR Sniper.app" "/absolute/owned-data-fixture" \
+  "/absolute/expected-queue.json"
+```
+
+The optional expected-queue file contains public fixture facts:
+`repository_id`, `repository_name`, `pull_request_id`, `number`, `title` and
+`head_sha`. Recheck them live immediately before the run. IDs are decimal
+strings. The fixture file is private test evidence, not repository configuration.
+
+The harness launches only its supplied bundle, checks scheduled success while
+Settings/Queue windows are closed, invokes native Check Now without changing
+cadence, reopens the windows and checks actual Quit across the next due time.
+When an expected revision is supplied, it also checks native Queue text,
+watched-author eligibility, fork trust-confirmation waiting and repeated-poll
+deduplication through real persisted state. Without that input, eligible-live
+queue acceptance remains explicitly unverified.
+
+Bind output to the exact commit, executable hash and isolated configuration.
+The harness preserves its data directory and terminates only its own process
+on failure. A timeout, forced cleanup, interruption, failed provider read or
+missing Accessibility observation is not a native pass. Coordinate the run
+with other agents; never launch a second instance to work around a failed test.
