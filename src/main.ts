@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { renderMonitoring } from "./monitoring";
 import crosshair from "./crosshair.svg";
 import "./style.css";
 import { mountSettings } from "./settings";
@@ -68,13 +69,11 @@ async function load() {
             .join("\n")
         : "No host events recorded.";
     } else if (view === "queue") {
-      content.innerHTML = `<h2>No review queue yet</h2><p>Settings can verify GitHub connections and read PR metadata. Polling, reviews and comment publication are not implemented. Queue behavior arrives in a later slice.</p>`;
+      renderMonitoring(content, showError);
     } else if (view === "doctor") {
       content.innerHTML = `<h2>Setup Doctor is not implemented yet</h2><p>No executables, accounts or permissions have been checked. This foundation runs no install or sign-in commands.</p><p>Use Settings to inspect redacted host diagnostics. Provider and agent health checks arrive in a later slice.</p>`;
     } else {
-      content.innerHTML = `<h2>Menu-bar host is running</h2><p>Verify GitHub connections and read complete PR metadata explicitly in Settings. Monitoring is not implemented, no background reviews are running, and no comments will be published.</p><p id="version"></p>`;
-      content.querySelector("#version")!.textContent =
-        `PR Sniper ${state.version}`;
+      renderMonitoring(content, showError);
     }
   } catch {
     if (revision !== loadRevision) return;

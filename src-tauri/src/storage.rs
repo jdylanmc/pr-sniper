@@ -216,6 +216,49 @@ impl Store {
         Ok(settings)
     }
 
+    pub fn load_queue(&self) -> Result<Vec<crate::monitoring::QueueJob>, String> {
+        match fs::read(self.root.join("state/queue.json")) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|_| "Review queue is invalid; no polling result was saved.".into()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+            Err(_) => Err("Cannot read the review queue. Check local file permissions.".into()),
+        }
+    }
+
+    pub(crate) fn save_queue(&self, jobs: &[crate::monitoring::QueueJob]) -> Result<(), String> {
+        self.write_state("queue.json", jobs)
+    }
+
+    pub fn save_polling_health(
+        &self,
+        health: &[crate::monitoring::ScheduleHealth],
+    ) -> Result<(), String> {
+        self.write_state("polling.json", health)
+    }
+
+    fn write_state<T: Serialize + ?Sized>(&self, name: &str, value: &T) -> Result<(), String> {
+        let directory = self.root.join("state");
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&directory)
+            .map_err(|_| "Cannot create polling state directory.")?;
+        let bytes = serde_json::to_vec_pretty(value).map_err(|_| "Cannot encode polling state.")?;
+        let temporary = directory.join(format!("{name}.tmp"));
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temporary)
+            .map_err(|_| "Cannot write polling state.")?;
+        file.write_all(&bytes)
+            .and_then(|_| file.sync_all())
+            .map_err(|_| "Cannot flush polling state.")?;
+        fs::rename(temporary, directory.join(name))
+            .map_err(|_| "Cannot replace polling state.".into())
+    }
+
     pub fn load_settings(&self) -> Result<Settings, String> {
         let path = self.root.join("config/settings.json");
         let bytes = match fs::read(path) {

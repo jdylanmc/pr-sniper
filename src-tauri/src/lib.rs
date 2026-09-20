@@ -1,5 +1,6 @@
 pub mod discovery;
 pub mod github;
+pub mod monitoring;
 pub mod policy;
 pub mod startup;
 pub mod storage;
@@ -20,10 +21,93 @@ use tauri::{
 
 struct Host {
     store: Mutex<Store>,
+    monitor: Mutex<monitoring::Monitor>,
     error: Mutex<Option<String>>,
     isolated: bool,
     quitting: AtomicBool,
     registration: LoginRegistration,
+}
+
+#[derive(Serialize)]
+struct MonitoringSnapshot {
+    health: Vec<monitoring::ScheduleHealth>,
+    jobs: Vec<monitoring::QueueJob>,
+}
+
+#[tauri::command]
+fn monitoring_snapshot(host: State<'_, Host>) -> Result<MonitoringSnapshot, String> {
+    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+    let monitor = host
+        .monitor
+        .lock()
+        .map_err(|_| "Monitoring is unavailable.")?;
+    Ok(MonitoringSnapshot {
+        health: monitor.snapshot(),
+        jobs: store.load_queue()?,
+    })
+}
+
+fn now_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|time| time.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
+    let host = app.state::<Host>();
+    if host.quitting.load(Ordering::SeqCst) {
+        return Err("PR Sniper is quitting.".into());
+    }
+    let tickets = {
+        let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+        let settings = store.load_settings()?;
+        let mut monitor = host
+            .monitor
+            .lock()
+            .map_err(|_| "Monitoring is unavailable.")?;
+        let tickets = monitor
+            .begin(&settings, now_seconds(), immediate)
+            .map_err(|_| "Cannot calculate repository schedules.")?;
+        store.save_polling_health(&monitor.snapshot())?;
+        tickets
+    };
+    for ticket in tickets {
+        let app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let result = (|| {
+                let client = github::client()?;
+                let connection =
+                    client.connect(&ticket.name, ticket.expected_account_id.as_deref())?;
+                let pull_requests = client.poll_pull_requests(&connection.repository)?;
+                Ok(monitoring::PollResult {
+                    connection,
+                    pull_requests,
+                })
+            })();
+            let host = app.state::<Host>();
+            if host.quitting.load(Ordering::SeqCst) {
+                return;
+            }
+            let saved = (|| {
+                let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+                let mut monitor = host
+                    .monitor
+                    .lock()
+                    .map_err(|_| "Monitoring is unavailable.")?;
+                monitor.finish(&store, ticket, result, now_seconds())
+            })();
+            if let Err(error) = saved {
+                report(&app, error);
+            }
+        });
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn check_now(app: tauri::AppHandle) -> Result<(), String> {
+    start_checks(&app, true)
 }
 
 #[derive(Serialize)]
@@ -350,6 +434,8 @@ pub fn run() {
             choose_repository_folder,
             discover_repositories,
             resolve_github_person,
+            monitoring_snapshot,
+            check_now,
             save_login,
             save_repository,
             update_repository,
@@ -373,6 +459,7 @@ pub fn run() {
             };
             app.manage(Host {
                 store: Mutex::new(Store::new(root)),
+                monitor: Mutex::new(monitoring::Monitor::default()),
                 error: Mutex::new(None),
                 isolated,
                 quitting: AtomicBool::new(false),
@@ -386,13 +473,7 @@ pub fn run() {
             record(app.handle(), DiagnosticEvent::SessionStarted);
             let status = MenuItem::with_id(app, "status", "Status", true, None::<&str>)?;
             let queue = MenuItem::with_id(app, "queue", "Review Queue", true, None::<&str>)?;
-            let check = MenuItem::with_id(
-                app,
-                "check",
-                "Check Now (not implemented)",
-                false,
-                None::<&str>,
-            )?;
+            let check = MenuItem::with_id(app, "check", "Check Now", true, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
             let doctor = MenuItem::with_id(app, "doctor", "Setup Doctor", true, None::<&str>)?;
             let separator = PredefinedMenuItem::separator(app)?;
@@ -412,6 +493,12 @@ pub fn run() {
                 .menu(&menu)
                 .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| {
+                    if event.id.as_ref() == "check" {
+                        if let Err(error) = start_checks(app, true) {
+                            report(app, error);
+                        }
+                        return;
+                    }
                     if event.id.as_ref() == "quit" {
                         record(app, DiagnosticEvent::QuitRequested);
                         app.state::<Host>().quitting.store(true, Ordering::SeqCst);
@@ -430,6 +517,18 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    if handle.state::<Host>().quitting.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    if let Err(error) = start_checks(&handle, false) {
+                        report(&handle, error);
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            });
             Ok(())
         })
         .on_window_event(|window, event| {

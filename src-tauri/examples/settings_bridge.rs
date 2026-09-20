@@ -19,6 +19,13 @@ fn recorded_settings(store: &Store, settings: Settings) -> Result<Value, String>
 
 fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
     match request.command.as_str() {
+        "monitoring_snapshot" => {
+            let mut monitor = pr_sniper_lib::monitoring::Monitor::default();
+            monitor
+                .begin(&store.load_settings()?, 0, false)
+                .map_err(|_| "Cannot calculate repository schedules.")?;
+            Ok(json!({ "health": monitor.snapshot(), "jobs": store.load_queue()? }))
+        }
         "seed_settings" => {
             let settings: Settings = serde_json::from_value(request.args)
                 .map_err(|_| "Invalid settings test fixture.".to_string())?;

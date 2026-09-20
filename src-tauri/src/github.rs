@@ -2,7 +2,7 @@ pub mod http;
 pub mod metadata;
 pub mod provider;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 pub mod credentials;
 
@@ -12,7 +12,7 @@ pub struct Identity {
     pub login: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionError {
     WrongIdentity,

@@ -52,7 +52,82 @@ impl<T: Transport> GithubClient<T> {
         &self,
         repository: &RemoteRepository,
     ) -> Result<Vec<PullRequest>, ConnectionError> {
-        self.pull_requests(repository)
+        let name = crate::storage::canonical_repository(&repository.name)
+            .map_err(|_| ConnectionError::InvalidRepository)?;
+        let list = self.pages(&format!(
+            "/repos/{name}/pulls?state=open&sort=updated&direction=desc&per_page=100&page=1"
+        ))?;
+        let mut ids = HashSet::new();
+        let mut numbers = HashSet::new();
+        let mut result = Vec::new();
+        for detail in list {
+            let id = decimal_id(&detail["id"])?;
+            let number = unsigned(&detail["number"])?;
+            if number == 0 || !ids.insert(id.clone()) || !numbers.insert(number) {
+                return Err(ConnectionError::IncompleteRead);
+            }
+            let base_repository_id = decimal_id(&detail["base"]["repo"]["id"])?;
+            if base_repository_id != repository.id {
+                return Err(ConnectionError::RepositoryChanged);
+            }
+            let state = match detail["state"].as_str() {
+                Some("open") => Lifecycle::Open,
+                Some("closed") => Lifecycle::Closed,
+                _ => return Err(ConnectionError::InvalidResponse),
+            };
+            let author = match detail.get("user") {
+                Some(Value::Null) => None,
+                Some(user) => Some(verify_identity(user, None)?),
+                None => return Err(ConnectionError::InvalidResponse),
+            };
+            let head_repository_id = match detail["head"].get("repo") {
+                Some(Value::Null) => None,
+                Some(repo) => Some(decimal_id(&repo["id"])?),
+                None => return Err(ConnectionError::InvalidResponse),
+            };
+            let mut reviewer_ids = HashSet::new();
+            let requested_reviewers = array(&detail["requested_reviewers"])?
+                .iter()
+                .map(|value| {
+                    let identity = verify_identity(value, None)?;
+                    if !reviewer_ids.insert(identity.id.clone()) {
+                        return Err(ConnectionError::IncompleteRead);
+                    }
+                    Ok(identity)
+                })
+                .collect::<Result<_, _>>()?;
+            let mut team_ids = HashSet::new();
+            let requested_teams = array(&detail["requested_teams"])?
+                .iter()
+                .map(|value| {
+                    let id = decimal_id(&value["id"])?;
+                    if !team_ids.insert(id.clone()) {
+                        return Err(ConnectionError::IncompleteRead);
+                    }
+                    Ok(RequestedTeam {
+                        id,
+                        slug: text(&value["slug"])?,
+                    })
+                })
+                .collect::<Result<_, _>>()?;
+            result.push(PullRequest {
+                id,
+                number,
+                title: text(&detail["title"])?,
+                author,
+                requested_reviewers,
+                requested_teams,
+                state,
+                draft: boolean(&detail, "draft")?,
+                head_sha: sha(&detail["head"]["sha"])?,
+                base_sha: sha(&detail["base"]["sha"])?,
+                head_repository_id,
+                base_repository_id,
+                updated_at: text(&detail["updated_at"])?,
+                files: Vec::new(),
+            });
+        }
+        Ok(result)
     }
 
     pub fn pull_requests(
