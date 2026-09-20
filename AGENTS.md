@@ -38,8 +38,12 @@ workers load the full selected texts before applying them.
 
 ### Delivery coordination
 
-The human merges PRs. Agents must not merge, approve on the human's behalf,
-enable automatic merging or bypass provider protections.
+The human merges PRs by default. Exception: Dylan's explicitly designated
+independent PR coordinator may review and merge PRs in `jdylanmc/pr-sniper`
+as `jdylanmc` under the [merge gate](.agents/skills/joe-mode-paseo/MERGE.md)
+until Dylan revokes the grant; changes to this exception remain human-merged.
+Agents must not submit approval votes, enable automatic merging or bypass
+provider protections.
 
 Use one repository PM and shared owner board, isolated delivery worktrees,
 independent review, relevant verification and maintained PR custody. Preserve
