@@ -48,6 +48,13 @@ pub struct ChangedFile {
 }
 
 impl<T: Transport> GithubClient<T> {
+    pub fn poll_pull_requests(
+        &self,
+        repository: &RemoteRepository,
+    ) -> Result<Vec<PullRequest>, ConnectionError> {
+        self.pull_requests(repository)
+    }
+
     pub fn pull_requests(
         &self,
         repository: &RemoteRepository,
