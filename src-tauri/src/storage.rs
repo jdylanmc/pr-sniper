@@ -48,6 +48,33 @@ pub struct Repository {
     pub enabled: bool,
 }
 
+fn canonical_repository(input: &str) -> Result<String, String> {
+    let lower = input.trim().to_ascii_lowercase();
+    let path = lower.strip_prefix("https://github.com/").unwrap_or(&lower);
+    let path = path.trim_end_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let parts: Vec<_> = path.split('/').collect();
+    let valid = parts.len() == 2
+        && !parts[0].is_empty()
+        && parts[0].len() <= 39
+        && !parts[0].starts_with('-')
+        && !parts[0].ends_with('-')
+        && parts[0]
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        && !parts[1].is_empty()
+        && parts[1].len() <= 100
+        && parts[1] != "."
+        && parts[1] != ".."
+        && parts[1]
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b));
+    if !valid {
+        return Err("Enter owner/repository or an HTTPS github.com repository URL (no credentials, query or fragment).".into());
+    }
+    Ok(path.to_string())
+}
+
 pub struct Store {
     root: PathBuf,
 }
@@ -96,20 +123,7 @@ impl Store {
     }
 
     pub fn add_repository(&self, repository: &str) -> Result<Settings, String> {
-        let name = repository.trim().to_ascii_lowercase();
-        let parts: Vec<_> = name.split('/').collect();
-        if parts.len() != 2
-            || parts.iter().any(|part| {
-                part.is_empty()
-                    || *part == "."
-                    || *part == ".."
-                    || !part
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
-            })
-        {
-            return Err("Enter a GitHub repository as owner/repository.".into());
-        }
+        let name = canonical_repository(repository)?;
         let mut settings = self.load_settings()?;
         if settings.repositories.iter().any(|repo| repo.name == name) {
             return Err("This GitHub repository is already configured.".into());
@@ -120,6 +134,44 @@ impl Store {
             name,
             enabled: true,
         });
+        self.save_settings(&settings)?;
+        Ok(settings)
+    }
+
+    pub fn update_repository(
+        &self,
+        id: &str,
+        repository: &str,
+        enabled: bool,
+    ) -> Result<Settings, String> {
+        let name = canonical_repository(repository)?;
+        let mut settings = self.load_settings()?;
+        if settings
+            .repositories
+            .iter()
+            .any(|repo| repo.id != id && repo.name == name)
+        {
+            return Err("This GitHub repository is already configured.".into());
+        }
+        let repo = settings
+            .repositories
+            .iter_mut()
+            .find(|repo| repo.id == id)
+            .ok_or("Repository no longer exists. Reload Settings.")?;
+        repo.name = name;
+        repo.enabled = enabled;
+        self.save_settings(&settings)?;
+        Ok(settings)
+    }
+
+    pub fn remove_repository(&self, id: &str) -> Result<Settings, String> {
+        let mut settings = self.load_settings()?;
+        let index = settings
+            .repositories
+            .iter()
+            .position(|repo| repo.id == id)
+            .ok_or("Repository no longer exists. Reload Settings.")?;
+        settings.repositories.remove(index);
         self.save_settings(&settings)?;
         Ok(settings)
     }

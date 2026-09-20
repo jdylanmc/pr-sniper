@@ -1,16 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
+import { renderRepositories, type Repository } from "./repositories";
 import crosshair from "./crosshair.svg";
 import "./style.css";
 
 interface Snapshot {
   settings: {
     launch_at_login: boolean;
-    repositories?: {
-      id: string;
-      provider: "github";
-      name: string;
-      enabled: boolean;
-    }[];
+    repositories?: Repository[];
   } | null;
   login_registration: "absent" | "registered" | "invalid" | null;
   isolated: boolean;
@@ -61,46 +57,15 @@ async function load() {
         <p>Off by default. Changed only by your explicit choice here, never on application startup.</p>
         <p id="login-note"></p>
         <button id="diagnostics">Open redacted diagnostics</button>
-        <h2>Watched repositories</h2>
-        <p>Saved configuration only. GitHub access and monitoring have not been verified or started.</p>
-        <form id="add-repository">
-          <label for="repository">GitHub repository</label>
-          <input id="repository" name="repository" type="text" placeholder="owner/repository" required />
-          <button type="submit">Add repository</button>
-        </form>
-        <ul id="repositories"></ul>
+        <section id="repository-settings"></section>
         <h2>Connections</h2>
         <p>GitHub and review-agent setup are not implemented in this foundation.</p>`;
-      const repositoryForm =
-        content.querySelector<HTMLFormElement>("#add-repository")!;
-      const repositoryInput =
-        content.querySelector<HTMLInputElement>("#repository")!;
-      const addButton =
-        repositoryForm.querySelector<HTMLButtonElement>("button")!;
-      repositoryInput.disabled = addButton.disabled = state.settings === null;
-      for (const repository of state.settings?.repositories ?? []) {
-        const item = document.createElement("li");
-        item.textContent = repository.name;
-        content.querySelector("#repositories")!.append(item);
-      }
-      repositoryForm.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        addButton.disabled = true;
-        error.hidden = true;
-        try {
-          await invoke("save_repository", {
-            repository: repositoryInput.value,
-          });
-          await load();
-        } catch (cause) {
-          showError(
-            typeof cause === "string"
-              ? cause
-              : "Could not save the repository. Check the repository name and local storage permissions.",
-          );
-          addButton.disabled = false;
-        }
-      });
+      renderRepositories(
+        content.querySelector("#repository-settings")!,
+        state.settings === null ? null : (state.settings.repositories ?? []),
+        load,
+        showError,
+      );
       const login = content.querySelector<HTMLInputElement>("#login")!;
       login.checked = state.settings?.launch_at_login === true;
       login.disabled =
