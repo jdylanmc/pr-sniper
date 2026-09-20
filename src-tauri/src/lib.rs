@@ -1,7 +1,9 @@
+pub mod github;
 pub mod policy;
 pub mod startup;
 pub mod storage;
 
+use github::{metadata::PullRequest, provider::Connection, ConnectionError};
 use serde::Serialize;
 use startup::{LoginRegistration, RegistrationStatus};
 use std::sync::{
@@ -30,6 +32,12 @@ struct Snapshot {
     isolated: bool,
     error: Option<String>,
     version: &'static str,
+}
+
+#[derive(Serialize)]
+struct GithubMetadata {
+    connection: Connection,
+    pull_requests: Vec<PullRequest>,
 }
 
 fn record(app: &tauri::AppHandle, event: DiagnosticEvent) {
@@ -156,6 +164,87 @@ fn diagnostics(host: State<'_, Host>) -> Result<Vec<Diagnostic>, String> {
         .diagnostics()
 }
 
+fn configured_repository(host: &Host, id: &str) -> Result<String, ConnectionError> {
+    let settings = host
+        .store
+        .lock()
+        .map_err(|_| ConnectionError::Configuration)?
+        .load_settings()
+        .map_err(|_| ConnectionError::Configuration)?;
+    settings
+        .repositories
+        .into_iter()
+        .find(|repository| repository.id == id)
+        .map(|repository| repository.name)
+        .ok_or(ConnectionError::Configuration)
+}
+
+#[tauri::command]
+async fn verify_github_connection(
+    app: tauri::AppHandle,
+    host: State<'_, Host>,
+    id: String,
+    expected_account_id: Option<String>,
+) -> Result<Connection, ConnectionError> {
+    let repository = configured_repository(&host, &id)?;
+    let name = repository.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        github::client()?.connect(&name, expected_account_id.as_deref())
+    })
+    .await
+    .map_err(|_| ConnectionError::ProviderFailure)?;
+    if configured_repository(&host, &id)? != repository {
+        return Err(ConnectionError::RepositoryChanged);
+    }
+    record(
+        &app,
+        if result.is_ok() {
+            DiagnosticEvent::GithubConnectionChecked
+        } else {
+            DiagnosticEvent::GithubConnectionFailed
+        },
+    );
+    result
+}
+
+#[tauri::command]
+async fn read_github_metadata(
+    app: tauri::AppHandle,
+    host: State<'_, Host>,
+    id: String,
+    expected_account_id: String,
+    expected_repository_id: String,
+) -> Result<GithubMetadata, ConnectionError> {
+    let repository = configured_repository(&host, &id)?;
+    let name = repository.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let client = github::client()?;
+        let connection = client.connect(&name, Some(&expected_account_id))?;
+        if connection.repository.id != expected_repository_id {
+            return Err(ConnectionError::RepositoryChanged);
+        }
+        let pull_requests = client.pull_requests(&connection.repository)?;
+        Ok(GithubMetadata {
+            connection,
+            pull_requests,
+        })
+    })
+    .await
+    .map_err(|_| ConnectionError::ProviderFailure)?;
+    if configured_repository(&host, &id)? != repository {
+        return Err(ConnectionError::RepositoryChanged);
+    }
+    record(
+        &app,
+        if result.is_ok() {
+            DiagnosticEvent::GithubMetadataRead
+        } else {
+            DiagnosticEvent::GithubReadFailed
+        },
+    );
+    result
+}
+
 #[tauri::command]
 fn open_diagnostics(app: tauri::AppHandle) -> Result<(), String> {
     open_window(&app, "diagnostics", "Diagnostics")
@@ -201,6 +290,8 @@ pub fn run() {
             remove_repository,
             save_defaults,
             save_repository_policy,
+            verify_github_connection,
+            read_github_metadata,
             diagnostics,
             open_diagnostics
         ])

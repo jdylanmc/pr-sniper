@@ -7,6 +7,13 @@ No release/versioning policy has been established yet.
 
 ### Added
 
+- Verify configured GitHub repositories with the current CLI account and stable
+  account ID, distinguish read access from comment scope, and read complete
+  paginated PR, reviewer and changed-file metadata in Settings. CLI, identity,
+  permission, rate-limit and incomplete-read failures remain visible. Credentials
+  stay in memory; no sign-in, provider mutation or automation enablement occurs.
+  See [#5](https://github.com/jdylanmc/pr-sniper/issues/5).
+
 - Manage watched GitHub repositories from Settings, with canonical duplicate
   protection, stable identities, rename/enable controls and confirmed removal
   persisted across restarts. Configure global review-policy defaults and
