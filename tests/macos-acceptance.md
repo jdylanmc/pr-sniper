@@ -41,7 +41,8 @@ Automated storage tests do not establish native window or menu-bar behavior.
 Run from the repository root:
 
 ```sh
-cargo test --manifest-path src-tauri/Cargo.toml --test settings_persistence
+cargo test --manifest-path src-tauri/Cargo.toml --locked \
+  --test settings_persistence --test diagnostics
 ```
 
 If Rust is installed but not on the shell path, use the existing selected
@@ -51,9 +52,13 @@ toolchain rather than installing a global package. On a rustup host:
 export PATH="$(dirname "$(rustup which cargo)"):$PATH"
 ```
 
-The test writes to a unique temporary directory and reads through a fresh
-storage instance. It must fail if saving becomes a no-op or loading always
-returns defaults. It does not touch macOS launch-at-login configuration.
+The tests write to unique temporary directories and read through fresh storage
+instances. Persistence must fail if saving becomes a no-op or loading always
+returns defaults. Additional cases cover explicit opt-out, invalid settings,
+visible I/O errors, independent configuration/state, append-only typed
+diagnostics, safe rejection of synthetic secret payloads and rotation before a
+write would exceed the 256 KiB current-log limit. They do not touch macOS
+launch-at-login configuration or access credentials.
 
 Retain command output and distinguish a behavior assertion failure from a
 missing compiler, missing package, compilation failure or unexecuted test.
