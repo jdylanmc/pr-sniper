@@ -164,3 +164,31 @@ fn wildcard_minutes_follow_chronology_through_the_repeated_fall_hour() {
     // 01:59 EDT is followed by 01:00 EST, at 06:00 UTC.
     assert_eq!(monitor.snapshot()[0].next_run, 1_793_512_800);
 }
+
+#[test]
+fn an_impossible_calendar_reports_failure_without_starving_another_repository() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    store.add_repository("example/impossible").unwrap();
+    let mut settings = store.add_repository("example/interval").unwrap();
+    settings.repositories[0].overrides.schedule = Some(Schedule::Cron {
+        expression: "0 0 30 2 *".into(),
+        timezone: "UTC".into(),
+    });
+    store.save_settings(&settings).unwrap();
+    let impossible_id = &settings.repositories[0].id;
+    let mut monitor = Monitor::default();
+
+    let tickets = monitor.begin(&settings, 1_768_485_540, true).unwrap();
+
+    assert_eq!(tickets.len(), 1);
+    assert_eq!(tickets[0].name, "example/interval");
+    let health = monitor.snapshot();
+    let failed = health
+        .iter()
+        .find(|row| &row.repository_id == impossible_id)
+        .unwrap();
+    assert_eq!(failed.last_failure, Some(ConnectionError::Configuration));
+    assert_eq!(failed.last_success, None);
+    assert!(!failed.in_flight);
+}
