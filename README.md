@@ -94,6 +94,14 @@ ID is the future matching key; the login is only a display label. Repository
 access, account identities and adapter/model availability are **not verified**
 by this configuration screen. Never put credentials in the prompt or other
 configuration fields.
+
+Saving validates the effective policy on the Rust storage boundary, including
+positive whole-minute intervals, five-field cron syntax, IANA time zones,
+unique positive account IDs, nonempty prompts/selectors and supported adapter
+and selector shapes. Recognized GitHub token patterns are rejected without
+echoing them. This is not a general-purpose secret detector: all configuration
+must remain nonsecret. Invalid input does not replace the last valid saved
+configuration; malformed or unreadable files are reported rather than reset.
 `state/diagnostics.jsonl` records timestamped, fixed-schema host events, capped at
 256 KiB plus one rotated file. **Settings > Open redacted diagnostics** opens
 an in-app reader, not an arbitrary filesystem or shell interface.
