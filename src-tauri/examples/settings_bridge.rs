@@ -1,4 +1,4 @@
-use pr_sniper_lib::storage::{DiagnosticEvent, Settings, Store};
+use pr_sniper_lib::storage::{Settings, Store};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::io::{self, Read};
@@ -13,8 +13,8 @@ struct Request {
 }
 
 fn recorded_settings(store: &Store, settings: Settings) -> Result<Value, String> {
-    store.record(DiagnosticEvent::SettingsSaved)?;
-    serde_json::to_value(settings).map_err(|_| "Cannot encode settings.".into())
+    serde_json::to_value(store.finish_settings_save(settings))
+        .map_err(|_| "Cannot encode settings.".into())
 }
 
 fn dispatch(store: &Store, request: Request) -> Result<Value, String> {

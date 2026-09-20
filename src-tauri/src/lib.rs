@@ -8,7 +8,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex,
 };
-use storage::{Diagnostic, DiagnosticEvent, Settings, Store};
+use storage::{Diagnostic, DiagnosticEvent, SavedSettings, Settings, Store};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
@@ -99,11 +99,10 @@ fn save_login(host: State<'_, Host>, enabled: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn save_repository(host: State<'_, Host>, repository: String) -> Result<Settings, String> {
+fn save_repository(host: State<'_, Host>, repository: String) -> Result<SavedSettings, String> {
     let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
     let settings = store.add_repository(&repository)?;
-    store.record(DiagnosticEvent::SettingsSaved)?;
-    Ok(settings)
+    Ok(store.finish_settings_save(settings))
 }
 
 #[tauri::command]
@@ -112,28 +111,28 @@ fn update_repository(
     id: String,
     repository: String,
     enabled: bool,
-) -> Result<Settings, String> {
+) -> Result<SavedSettings, String> {
     let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
     let settings = store.update_repository(&id, &repository, enabled)?;
-    store.record(DiagnosticEvent::SettingsSaved)?;
-    Ok(settings)
+    Ok(store.finish_settings_save(settings))
 }
 
 #[tauri::command]
-fn remove_repository(host: State<'_, Host>, id: String) -> Result<Settings, String> {
+fn remove_repository(host: State<'_, Host>, id: String) -> Result<SavedSettings, String> {
     let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
     let settings = store.remove_repository(&id)?;
-    store.record(DiagnosticEvent::SettingsSaved)?;
-    Ok(settings)
+    Ok(store.finish_settings_save(settings))
 }
 
 #[tauri::command]
-fn save_defaults(host: State<'_, Host>, policy: serde_json::Value) -> Result<Settings, String> {
+fn save_defaults(
+    host: State<'_, Host>,
+    policy: serde_json::Value,
+) -> Result<SavedSettings, String> {
     let policy = serde_json::from_value(policy).map_err(|_| "Unsupported policy configuration.")?;
     let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
     let settings = store.save_defaults(policy)?;
-    store.record(DiagnosticEvent::SettingsSaved)?;
-    Ok(settings)
+    Ok(store.finish_settings_save(settings))
 }
 
 #[tauri::command]
@@ -141,13 +140,12 @@ fn save_repository_policy(
     host: State<'_, Host>,
     id: String,
     overrides: serde_json::Value,
-) -> Result<Settings, String> {
+) -> Result<SavedSettings, String> {
     let overrides = serde_json::from_value(overrides)
         .map_err(|_| "Unsupported policy override configuration.")?;
     let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
     let settings = store.save_repository_policy(&id, overrides)?;
-    store.record(DiagnosticEvent::SettingsSaved)?;
-    Ok(settings)
+    Ok(store.finish_settings_save(settings))
 }
 
 #[tauri::command]

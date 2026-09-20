@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { clearDraft, lockSettings } from "./drafts";
 
 export type Schedule =
   | { kind: "interval"; minutes: number; timezone: string }
@@ -117,12 +118,13 @@ export function renderPolicyForm(
   root: HTMLElement,
   defaults: Policy,
   repository: { id: string; overrides?: PolicyOverrides } | null,
-  reload: () => Promise<void>,
+  reload: (warning?: string | null) => Promise<void>,
   showError: (message: string) => void,
 ) {
   const overrides = repository?.overrides ?? {};
   const policy = effectivePolicy(defaults, overrides);
   const form = document.createElement("form");
+  form.dataset.draftKey = repository ? `policy:${repository.id}` : "defaults";
   form.setAttribute(
     "aria-label",
     repository ? "Repository policy" : "Global defaults",
@@ -131,7 +133,8 @@ export function renderPolicyForm(
   for (const { key, title, override } of fields) {
     const group = document.createElement("div");
     group.className = "policy-field";
-    group.innerHTML = `${repository ? `<label><input type="checkbox" data-override="${key}" /> Override ${override}</label>` : ""}
+    group.dataset.draftGroup = key;
+    group.innerHTML = `${repository ? `<label><input type="checkbox" name="override.${key}" data-override="${key}" /> Override ${override}</label>` : ""}
       <fieldset data-field="${key}"><legend>${title}</legend>${controls[key]}</fieldset>`;
     form.append(group);
   }
@@ -221,7 +224,7 @@ export function renderPolicyForm(
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    submit.disabled = true;
+    const unlock = lockSettings(form);
     try {
       const kind = value("selector-kind");
       if (
@@ -270,6 +273,7 @@ export function renderPolicyForm(
         automatic_agent_start: checkbox("start").checked,
         automatic_comment_publication: checkbox("publish").checked,
       };
+      let warning: string | null;
       if (repository) {
         const selectedOverrides: PolicyOverrides = {
           schedule: overrideControl("schedule").checked
@@ -300,14 +304,18 @@ export function renderPolicyForm(
             ? current.automatic_comment_publication
             : undefined,
         };
-        await invoke("save_repository_policy", {
-          id: repository.id,
-          overrides: selectedOverrides,
-        });
+        ({ warning } = await invoke<{ warning: string | null }>(
+          "save_repository_policy",
+          { id: repository.id, overrides: selectedOverrides },
+        ));
       } else {
-        await invoke("save_defaults", { policy: current });
+        ({ warning } = await invoke<{ warning: string | null }>(
+          "save_defaults",
+          { policy: current },
+        ));
       }
-      await reload();
+      clearDraft(form);
+      await reload(warning);
     } catch (cause) {
       showError(
         typeof cause === "string"
@@ -316,7 +324,8 @@ export function renderPolicyForm(
             ? cause.message
             : "Could not save policy settings.",
       );
-      submit.disabled = false;
+    } finally {
+      unlock();
     }
   });
 }

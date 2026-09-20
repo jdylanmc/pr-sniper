@@ -37,6 +37,12 @@ pub struct Settings {
     pub repositories: Vec<Repository>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct SavedSettings {
+    pub settings: Settings,
+    pub warning: Option<String>,
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Provider {
@@ -236,6 +242,14 @@ impl Store {
             .overrides = overrides;
         self.save_settings(&settings)?;
         Ok(settings)
+    }
+
+    pub fn finish_settings_save(&self, settings: Settings) -> SavedSettings {
+        let warning = self.record(DiagnosticEvent::SettingsSaved).err().map(|_| {
+            "Settings saved, but host diagnostics could not be recorded. Check local storage permissions."
+                .to_string()
+        });
+        SavedSettings { settings, warning }
     }
 
     pub fn record(&self, event: DiagnosticEvent) -> Result<(), String> {
