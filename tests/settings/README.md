@@ -19,9 +19,15 @@ The bridge and native command call the same production Store operation.
 The repository lifecycle test adds two records, then checks canonical URL
 rename, duplicate add/rename rejection, disable/re-enable, and confirmed
 removal. Fresh reads protect immutable identity, the independent neighboring
-record, and the startup preference throughout. Its current RED is the missing
-Edit control; GREEN must connect the bridge's explicit unimplemented
-`update_repository` and `remove_repository` arms to the matching Store methods.
+record, and the startup preference throughout. Both lifecycle commands call the
+same production Store operations as the native app.
+
+The policy test exercises nondefault global settings, complete per-repository
+overrides, an independently inheriting neighbor, and reset to changed defaults.
+Fresh Store reads and reloaded forms protect policy persistence, effective
+values and provenance, and independent agent-start/publication gates. Its RED
+is the missing Global defaults form; GREEN must connect `save_defaults` and
+`save_repository_policy` bridge arms to the production Store operations.
 
 The tests do not exercise native Tauri command registration, macOS WebKit,
 menu-bar behavior, or login-item integration. It never launches the native
