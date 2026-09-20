@@ -40,12 +40,16 @@ pub fn poll<T: Transport>(
     ticket: &PollTicket,
     mut client: impl FnMut() -> Result<GithubClient<T>, ConnectionError>,
 ) -> Result<PollResult, ConnectionError> {
-    let client = client()?;
-    let connection = client.connect(&ticket.name, ticket.expected_account_id.as_deref())?;
+    let reader = client()?;
+    let connection = reader.connect(&ticket.name, ticket.expected_account_id.as_deref())?;
     let pull_requests =
-        client.poll_pull_requests_since(&connection.repository, ticket.updated_after.as_deref())?;
+        reader.poll_pull_requests_since(&connection.repository, ticket.updated_after.as_deref())?;
+    let current = client()?.connect(&ticket.name, Some(&connection.identity.id))?;
+    if current.repository.id != connection.repository.id {
+        return Err(ConnectionError::RepositoryChanged);
+    }
     Ok(PollResult {
-        connection,
+        connection: current,
         pull_requests,
     })
 }
@@ -111,7 +115,15 @@ impl Monitor {
         let tickets = self
             .begin(&settings, now, check_now)
             .map_err(|_| "Cannot calculate repository schedules.")?;
-        self.checkpoint(store)?;
+        if let Err(error) = self.checkpoint(store) {
+            for ticket in &tickets {
+                if let Some(entry) = self.entries.get_mut(&ticket.repository_id) {
+                    entry.health.in_flight = false;
+                    entry.health.last_failure = Some(ConnectionError::Configuration);
+                }
+            }
+            return Err(error);
+        }
         Ok(tickets)
     }
 

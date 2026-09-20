@@ -28,6 +28,8 @@ No release/versioning policy has been established yet.
   without changed-file hydration; repeated revision/policy matches are deduplicated.
   Multi-page changes fail visibly rather than checkpointing an incomplete read;
   active checks remain non-overlapping across repository removal and readdition.
+  Delayed reads revalidate the current account and access before admission;
+  failed local dispatch writes release checks instead of leaving them stuck.
   Fork and untrusted-author work visibly waits for confirmation. This does not
   run agents or publish comments. See [#3](https://github.com/jdylanmc/pr-sniper/issues/3),
   [#8](https://github.com/jdylanmc/pr-sniper/issues/8) and
