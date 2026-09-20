@@ -7,7 +7,8 @@
 - Provider tooling: `gh`; pass `--repo jdylanmc/pr-sniper` on issue/PR commands.
 - Resolve the authenticated identity with
   `gh api --hostname github.com user --jq .login`, not Git author settings.
-- Integration branch: `main`. Humans merge PRs.
+- Integration branch: `main`. Merge authority follows
+  [delivery coordination](../../AGENTS.md#delivery-coordination).
 - Default view: the repository's open issues, not only issues assigned to the
   authenticated user. Hydrate candidates and select only the approved MVP.
 
@@ -58,7 +59,7 @@ accessible artifact rather than silently truncating it.
 Create PRs against `main` from owned isolated worktrees. Independent review,
 relevant checks and current-base evidence are required before claiming
 readiness. Missing application CI or lint is a foundation task, not a passed
-check. Only the human merges; setup does not close or mark existing issues
-ready automatically.
+check. Merge authority follows [delivery coordination](../../AGENTS.md#delivery-coordination);
+setup does not close or mark existing issues ready automatically.
 
 **PRs as a request surface: no.**
