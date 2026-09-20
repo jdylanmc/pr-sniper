@@ -15,8 +15,8 @@ struct Request {
 fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
     match request.command.as_str() {
         "seed_settings" => {
-            let settings: Settings =
-                serde_json::from_value(request.args).map_err(|error| error.to_string())?;
+            let settings: Settings = serde_json::from_value(request.args)
+                .map_err(|_| "Invalid settings test fixture.".to_string())?;
             store.save_settings(&settings)?;
             Ok(Value::Null)
         }
@@ -33,6 +33,10 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
                 .ok_or("Repository name is required.")?;
             serde_json::to_value(store.add_repository(repository)?)
                 .map_err(|_| "Cannot encode settings.".into())
+        }
+        // GREEN connects these IPC arms to the same Store operations as the app.
+        "update_repository" | "remove_repository" => {
+            Err("Repository editing and removal are not implemented.".into())
         }
         command => Err(format!("Unsupported settings test command: {command}")),
     }
