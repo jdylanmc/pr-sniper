@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -27,11 +28,30 @@ pub enum Adapter {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case", from = "SelectorInput")]
 pub enum Selector {
     Default,
     Model { value: String },
     Agent { value: String },
+}
+
+// Serde's internally tagged unit variants otherwise ignore extra fields.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum SelectorInput {
+    Default {},
+    Model { value: String },
+    Agent { value: String },
+}
+
+impl From<SelectorInput> for Selector {
+    fn from(value: SelectorInput) -> Self {
+        match value {
+            SelectorInput::Default {} => Self::Default,
+            SelectorInput::Model { value } => Self::Model { value },
+            SelectorInput::Agent { value } => Self::Agent { value },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +82,89 @@ impl Default for Policy {
             automatic_agent_start: false,
             automatic_comment_publication: false,
         }
+    }
+}
+
+fn contains_credential(value: &str) -> bool {
+    [
+        "ghp_",
+        "gho_",
+        "ghu_",
+        "ghs_",
+        "ghr_",
+        "github_pat_",
+        "-----BEGIN PRIVATE KEY",
+        "-----BEGIN RSA PRIVATE KEY",
+    ]
+    .iter()
+    .any(|prefix| value.contains(prefix))
+}
+
+impl Policy {
+    pub fn validate(&self) -> Result<(), String> {
+        let timezone = match &self.schedule {
+            Schedule::Interval { minutes, timezone } => {
+                if *minutes == 0 {
+                    return Err("Interval must be a positive whole number of minutes.".into());
+                }
+                timezone
+            }
+            Schedule::Cron {
+                expression,
+                timezone,
+            } => {
+                if expression.split_whitespace().count() != 5
+                    || expression.parse::<croner::Cron>().is_err()
+                {
+                    return Err(
+                        "Enter a valid five-field cron expression (minute hour day month weekday)."
+                            .into(),
+                    );
+                }
+                timezone
+            }
+        };
+        if timezone.parse::<chrono_tz::Tz>().is_err() {
+            return Err(
+                "Enter an explicit IANA time zone, such as UTC or America/New_York.".into(),
+            );
+        }
+        let mut identities = HashSet::new();
+        for identity in &self.watched_authors {
+            let valid_id = identity
+                .id
+                .parse::<u64>()
+                .ok()
+                .filter(|id| *id > 0 && id.to_string() == identity.id);
+            if valid_id.is_none() || !identities.insert(&identity.id) {
+                return Err(
+                    "Watched GitHub account IDs must be unique positive decimal numbers.".into(),
+                );
+            }
+            if identity.login.trim().is_empty() || identity.login.chars().any(char::is_whitespace) {
+                return Err("Each watched GitHub identity needs a nonempty login display label without whitespace.".into());
+            }
+            if contains_credential(&identity.login) {
+                return Err("Credentials and tokens must not be stored in configuration.".into());
+            }
+        }
+        if let Selector::Model { value } | Selector::Agent { value } = &self.selector {
+            if value.trim().is_empty() {
+                return Err(
+                    "Enter a model or named-agent identifier, or select Adapter default.".into(),
+                );
+            }
+            if contains_credential(value) {
+                return Err("Credentials and tokens must not be stored in configuration.".into());
+            }
+        }
+        if self.prompt.trim().is_empty() {
+            return Err("Review prompt must not be empty.".into());
+        }
+        if contains_credential(&self.prompt) {
+            return Err("Credentials and tokens must not be stored in configuration.".into());
+        }
+        Ok(())
     }
 }
 

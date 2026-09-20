@@ -1,5 +1,6 @@
 use crate::policy::{Policy, PolicyOverrides};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -54,6 +55,24 @@ pub struct Repository {
 }
 
 impl Settings {
+    fn validate(&self) -> Result<(), String> {
+        self.defaults.validate()?;
+        let mut ids = HashSet::new();
+        let mut names = HashSet::new();
+        for repository in &self.repositories {
+            if uuid::Uuid::parse_str(&repository.id).is_err() || !ids.insert(&repository.id) {
+                return Err("Repository identities must be valid and unique.".into());
+            }
+            if canonical_repository(&repository.name)? != repository.name
+                || !names.insert(&repository.name)
+            {
+                return Err("Repository names must be canonical and unique.".into());
+            }
+            repository.overrides.effective(&self.defaults).validate()?;
+        }
+        Ok(())
+    }
+
     pub fn effective_policy(&self, id: &str) -> Option<Policy> {
         self.repositories
             .iter()
@@ -105,11 +124,16 @@ impl Store {
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Settings::default()),
             Err(_) => return Err("Cannot read settings. Check local file permissions.".into()),
         };
-        serde_json::from_slice(&bytes)
-            .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.".into())
+        let settings: Settings = serde_json::from_slice(&bytes)
+            .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.")?;
+        settings
+            .validate()
+            .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.")?;
+        Ok(settings)
     }
 
     pub fn save_settings(&self, settings: &Settings) -> Result<(), String> {
+        settings.validate()?;
         // Never silently replace unreadable or corrupt existing configuration.
         self.load_settings()?;
         let directory = self.root.join("config");

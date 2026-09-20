@@ -41,6 +41,14 @@ app.innerHTML = `
 app.querySelector("h1")!.textContent = titles[view] ?? "Status";
 const content = app.querySelector<HTMLElement>("#content")!;
 const error = app.querySelector<HTMLElement>("#error")!;
+let dirty = false;
+let loadRevision = 0;
+content.addEventListener("input", () => {
+  dirty = true;
+});
+content.addEventListener("change", () => {
+  dirty = true;
+});
 
 function showError(message: string) {
   error.textContent = message;
@@ -48,9 +56,12 @@ function showError(message: string) {
 }
 
 async function load() {
+  const revision = ++loadRevision;
   error.hidden = true;
   try {
     const state = await invoke<Snapshot>("snapshot");
+    if (revision !== loadRevision) return;
+    dirty = false;
     if (state.error) showError(state.error);
     if (view === "settings") {
       content.innerHTML = `
@@ -151,4 +162,6 @@ async function load() {
 }
 
 void load();
-window.addEventListener("focus", () => void load());
+window.addEventListener("focus", () => {
+  if (!dirty) void load();
+});
