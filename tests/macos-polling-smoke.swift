@@ -225,6 +225,9 @@ func run() throws {
                 "Scheduled polling did not retain a windowless host")
     print("PASS scheduled attempt=\(scheduled.last_attempt!) succeeded with Settings and Queue closed")
 
+    try waitFor("distinct wall-clock second for Check Now") {
+        Int64(Date().timeIntervalSince1970) > scheduled.last_attempt!
+    }
     try choose(application, title: "Check Now")
     try waitFor("immediate check before the next scheduled run") {
         guard let health = try readHealth(root, repositoryID: repositoryID) else { return false }
