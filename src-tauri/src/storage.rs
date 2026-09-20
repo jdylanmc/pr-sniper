@@ -29,6 +29,23 @@ pub struct Diagnostic {
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub launch_at_login: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repositories: Vec<Repository>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Provider {
+    Github,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Repository {
+    pub id: String,
+    pub provider: Provider,
+    pub name: String,
+    pub enabled: bool,
 }
 
 pub struct Store {
@@ -76,6 +93,35 @@ impl Store {
         fs::rename(temporary, directory.join("settings.json"))
             .map_err(|_| "Cannot replace settings.".to_string())?;
         Ok(())
+    }
+
+    pub fn add_repository(&self, repository: &str) -> Result<Settings, String> {
+        let name = repository.trim().to_ascii_lowercase();
+        let parts: Vec<_> = name.split('/').collect();
+        if parts.len() != 2
+            || parts.iter().any(|part| {
+                part.is_empty()
+                    || *part == "."
+                    || *part == ".."
+                    || !part
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
+            })
+        {
+            return Err("Enter a GitHub repository as owner/repository.".into());
+        }
+        let mut settings = self.load_settings()?;
+        if settings.repositories.iter().any(|repo| repo.name == name) {
+            return Err("This GitHub repository is already configured.".into());
+        }
+        settings.repositories.push(Repository {
+            id: uuid::Uuid::new_v4().to_string(),
+            provider: Provider::Github,
+            name,
+            enabled: true,
+        });
+        self.save_settings(&settings)?;
+        Ok(settings)
     }
 
     pub fn record(&self, event: DiagnosticEvent) -> Result<(), String> {
