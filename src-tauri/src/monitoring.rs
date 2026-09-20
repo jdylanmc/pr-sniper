@@ -16,6 +16,7 @@ pub struct ScheduleHealth {
     pub last_attempt: Option<i64>,
     pub last_success: Option<i64>,
     pub next_run: i64,
+    pub schedule_available: bool,
     pub last_failure: Option<ConnectionError>,
     pub in_flight: bool,
 }
@@ -124,7 +125,11 @@ impl Monitor {
             })
         });
         self.entries.retain(|id, entry| {
-            entry.health.in_flight || settings.repositories.iter().any(|repo| &repo.id == id)
+            entry.health.in_flight
+                || settings
+                    .repositories
+                    .iter()
+                    .any(|repo| &repo.id == id && repo.enabled)
         });
         let mut tickets = Vec::new();
         for repository in &settings.repositories {
@@ -133,7 +138,23 @@ impl Monitor {
             }
             let policy = repository.overrides.effective(&settings.defaults);
             let cursor = self.cursors.get(&repository.id);
-            let next = next_run(&policy.schedule, now)?;
+            let known = self.entries.get(&repository.id).filter(|entry| {
+                entry.schedule == policy.schedule && entry.health.name == repository.name
+            });
+            if known.is_some_and(|entry| entry.health.in_flight) {
+                continue;
+            }
+            let next_result = match known {
+                Some(entry) if !entry.health.schedule_available => {
+                    Err(ConnectionError::Configuration)
+                }
+                Some(entry) if now < entry.health.next_run => Ok(entry.health.next_run),
+                _ => next_run(&policy.schedule, now),
+            };
+            let (next, available) = match next_result {
+                Ok(next) => (next, true),
+                Err(_) => (0, false),
+            };
             let entry = self
                 .entries
                 .entry(repository.id.clone())
@@ -144,6 +165,7 @@ impl Monitor {
                         last_attempt: None,
                         last_success: None,
                         next_run: next,
+                        schedule_available: available,
                         last_failure: None,
                         in_flight: false,
                     },
@@ -163,6 +185,12 @@ impl Monitor {
             if entry.schedule != policy.schedule {
                 entry.schedule = policy.schedule.clone();
                 entry.health.next_run = next;
+            }
+            entry.health.schedule_available = available;
+            if !available {
+                entry.health.next_run = 0;
+                entry.health.last_failure = Some(ConnectionError::Configuration);
+                continue;
             }
             let due = now >= entry.health.next_run;
             if !due && !check_now {
