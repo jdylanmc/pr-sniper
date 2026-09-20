@@ -222,3 +222,98 @@ fn initial_poll_never_returns_a_partial_success_when_a_later_page_fails() {
         &[OPEN_FIRST, OPEN_SECOND]
     );
 }
+
+struct MovingOpenList {
+    pulls: RefCell<Vec<Value>>,
+    changed: std::cell::Cell<bool>,
+    close_first: bool,
+}
+
+impl MovingOpenList {
+    fn new(close_first: bool) -> Self {
+        Self {
+            pulls: RefCell::new(
+                (1..=250)
+                    .map(|number| {
+                        let mut pull = pull_request(number);
+                        let minute = 20 * 60 + 59 - number;
+                        pull["updated_at"] = json!(format!(
+                            "2026-09-20T{:02}:{:02}:00Z",
+                            minute / 60,
+                            minute % 60
+                        ));
+                        pull
+                    })
+                    .collect(),
+            ),
+            changed: std::cell::Cell::new(false),
+            close_first,
+        }
+    }
+}
+
+impl Transport for &MovingOpenList {
+    fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+        let prefix =
+            "/repos/example/project/pulls?state=open&sort=updated&direction=desc&per_page=100&page=";
+        let page: usize = path.strip_prefix(prefix).unwrap().parse().unwrap();
+        if page == 2 && !self.changed.replace(true) {
+            let mut pulls = self.pulls.borrow_mut();
+            if self.close_first {
+                pulls.remove(0);
+            } else {
+                let mut updated = pulls.remove(100);
+                updated["updated_at"] = json!("2026-09-20T21:01:00Z");
+                pulls.insert(0, updated);
+            }
+        }
+        let pulls = self.pulls.borrow();
+        let start = (page - 1) * 100;
+        let body = &pulls[start.min(pulls.len())..(start + 100).min(pulls.len())];
+        let mut headers = BTreeMap::new();
+        if page < 3 {
+            headers.insert(
+                "link".into(),
+                format!(
+                    "<https://api.github.com{prefix}{}>; rel=\"next\", <https://api.github.com{prefix}3>; rel=\"last\"",
+                    page + 1
+                ),
+            );
+        }
+        Ok(Response {
+            status: 200,
+            headers,
+            body: serde_json::to_vec(body).unwrap(),
+        })
+    }
+}
+
+#[test]
+fn closing_a_first_page_pr_cannot_silently_skip_the_open_page_boundary() {
+    let transport = MovingOpenList::new(true);
+
+    let result = GithubClient::new(&transport).poll_pull_requests(&repository());
+
+    match result {
+        Ok(pulls) => assert!(
+            pulls.iter().any(|pull| pull.number == 101),
+            "PR 101 stayed open but shifted behind the offset after PR 1 closed"
+        ),
+        Err(error) => assert_eq!(error, ConnectionError::IncompleteRead),
+    }
+}
+
+#[test]
+fn a_pr_reordered_across_pages_is_complete_or_explicitly_incomplete() {
+    let transport = MovingOpenList::new(false);
+
+    let result = GithubClient::new(&transport).poll_pull_requests(&repository());
+
+    match result {
+        Ok(pulls) => assert!(
+            pulls.iter().any(|pull| pull.number == 101),
+            "Updated PR 101 moved into a page already read"
+        ),
+        Err(error) => assert_eq!(error, ConnectionError::IncompleteRead),
+    }
+}
