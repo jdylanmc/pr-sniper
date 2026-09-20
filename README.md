@@ -4,9 +4,9 @@ A macOS menu-bar application for human-owned pull request review. Built with
 Tauri 2, Rust and vanilla TypeScript. The tray exposes **Status**, **Review
 Queue**, **Settings**, **Setup Doctor** and **Quit PR Sniper**.
 
-This increment does **not** connect to GitHub, poll repositories, run agents,
-publish comments or perform setup checks. These surfaces say so explicitly;
-Check Now is disabled. Product scope lives in the
+Settings can explicitly verify a configured GitHub connection and read complete
+pull-request metadata. This increment does **not** poll repositories, run agents,
+publish comments or perform automated setup. Check Now is disabled. Product scope lives in the
 [approved specification](docs/agent/specs/pr-sniper-mvp.nano.md), not this
 implementation summary.
 
@@ -89,15 +89,16 @@ agent selector, a review prompt and two independent automation gates.
 An unchecked **Override** box inherits the current global value; unchecking a
 saved override resets it. Every repository shows the saved effective value and
 source. Both gates start off; manual agent start does not imply permission to
-publish. No monitoring or provider action occurs in this increment.
+publish. No monitoring or provider mutation occurs in this increment.
 Unrelated saves preserve draft fields while untouched inherited fields follow
 current defaults. Settings controls are temporarily disabled during a repository
 or policy save; a failed write restores their previous editable/inherited state.
 
 Watched identities use one `numeric GitHub account ID:login` per line. The stable
 ID is the future matching key; the login is only a display label. Repository
-access, account identities and adapter/model availability are **not verified**
-by this configuration screen. Never put credentials in the prompt or other
+access and the signed-in account are verified separately by the explicit
+connection action; watched labels and adapter/model availability are not.
+Never put credentials in the prompt or other
 configuration fields.
 
 Saving validates the effective policy on the Rust storage boundary, including
@@ -112,9 +113,58 @@ configuration; malformed or unreadable files are reported rather than reset.
 an in-app reader, not an arbitrary filesystem or shell interface.
 Invalid settings are reported rather than silently reset or overwritten.
 
-No credential is requested or stored in this foundation. Future credentials
-belong in macOS secure storage, never config, state or diagnostics.
+GitHub CLI credentials are acquired in memory, never saved by PR Sniper.
+Any future app-owned persisted credentials must use macOS secure storage,
+never config, state or diagnostics.
 See the [bounded architecture decision](docs/adr/0001-macos-foundation.md).
+
+## Read-only GitHub connection
+
+Install and authenticate the official GitHub CLI yourself. PR Sniper never runs
+login, logout, installation or credential-configuration commands. It uses the
+trusted current user's `gh` from an absolute PATH directory, with Homebrew's
+usual directories as Finder-launch fallbacks. A bounded version/health probe
+rejects missing or broken executables and shims; this is not a cryptographic
+provenance check or a sandbox for an untrusted executable.
+
+In **Settings**, add a repository, then choose **Verify GitHub connection** on
+its card. Optionally enter the expected stable decimal GitHub account ID; the
+verified ID is filled in for subsequent checks. This pin is window-session state,
+not a persisted account selection. A different account fails visibly instead
+of silently switching identities. Connections use saved repository names,
+not unsaved rename drafts.
+
+The application verifies `/user`, repository metadata and an actual PR read.
+Read access is separate from comment capability: classic OAuth `repo` or
+`public_repo` scopes are checked against the repository visibility and archived
+state. Scope availability is **not publication authorization** or proof that an
+individual PR is unlocked or unrestricted. Credentials without scope evidence
+(including fine-grained tokens) show comment permission **unverified**, never
+fabricated write permission. No mutation is used to probe permissions.
+
+**Read PR metadata** rechecks the verified account and remote repository ID,
+then reads every PR page, each PR's full changed-file pages and requested users
+and teams. It includes closed/merged PRs and explicit deleted-account/fork states.
+Head changes, malformed pages, duplicate entries, incomplete file counts,
+GitHub's 3,000-file cap and failed pages produce an error, not partial success.
+No file is checked out or executed. This is metadata, not a guarantee of complete
+diff text. Retargeting a saved repository invalidates its previous connection.
+
+Authentication, CLI, permission, rate-limit, timeout, network and provider failures
+remain visible. No automatic retry or automation enablement occurs. Diagnostics
+record only fixed connection/read success or failure events, never raw provider
+bodies, tokens or subprocess output. HTTPS credentials travel only in a sensitive
+authorization header; redirects are disabled.
+
+For an explicit real read-only smoke using the same native client:
+
+```sh
+cargo run --manifest-path src-tauri/Cargo.toml --locked --example github_read -- \
+  jdylanmc/pr-sniper 6954990 --metadata
+```
+
+Use your own expected account ID when appropriate. This prints verified public
+identity, capability and aggregate metadata counts, never a credential.
 
 `npm run test:settings` exercises the production Settings UI against real Rust
 storage with temporary data and fresh process reads. See

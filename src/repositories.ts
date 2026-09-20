@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { renderConnection } from "./connections";
 import { clearDraft, lockSettings } from "./drafts";
 import {
   renderPolicyForm,
@@ -24,9 +25,9 @@ export function renderRepositories(
 ) {
   root.innerHTML = `
     <h2>Watched repositories</h2>
-    <p>Saved configuration only. GitHub access and monitoring have not been verified or started.
+    <p>Configuration changes do not start monitoring. Verify GitHub access explicitly for each saved repository.
     No application-defined repository limit; local storage failures are reported here.
-    Provider rate limits will be available when GitHub is connected.</p>
+    Provider read failures and rate limits appear beside the connection.</p>
     <form id="add-repository" data-draft-key="add">
       <label for="repository">GitHub repository</label>
       <input id="repository" name="repository" type="text" placeholder="owner/repository or https://github.com/owner/repository" required />
@@ -80,8 +81,10 @@ export function renderRepositories(
         <button type="button" class="remove">Remove</button>
       </div>
       <div class="policy-summary"></div>
+      <section class="connection"></section>
       <div class="editor"></div>`;
     card.querySelector("h3")!.textContent = repository.name;
+    renderConnection(card.querySelector(".connection")!, repository);
     card.querySelector(".repository-state")!.textContent = repository.enabled
       ? "Enabled configuration (not monitoring)"
       : "Disabled";

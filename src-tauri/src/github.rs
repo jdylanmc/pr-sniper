@@ -15,7 +15,6 @@ pub struct Identity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionError {
-    NotImplemented,
     WrongIdentity,
     InvalidResponse,
     MissingCli,
@@ -30,6 +29,15 @@ pub enum ConnectionError {
     RevisionChanged,
     InvalidRepository,
     RepositoryChanged,
+    Configuration,
+}
+
+pub fn client() -> Result<provider::GithubClient<http::HttpTransport>, ConnectionError> {
+    use credentials::CredentialSource;
+    let credential = credentials::GhCredentialSource::discover()?.acquire()?;
+    Ok(provider::GithubClient::new(http::HttpTransport::new(
+        credential,
+    )?))
 }
 
 pub fn verify_identity(
