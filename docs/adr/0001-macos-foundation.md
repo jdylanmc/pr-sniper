@@ -41,6 +41,25 @@ Settings refreshes preserve only edited form groups; untouched inherited fields
 use current defaults. Edits invalidate pending focus refreshes, and configuration
 saves hold controls stable until their response is reconciled.
 
+GitHub connection now has separate credential and provider boundaries.
+The credential source runs only bounded `gh --version` and `gh auth token
+--hostname github.com` commands; captured secrets are transient and never
+serialized or persisted by the application. GitHub CLI retains ownership of its
+existing credential storage. No unused app Keychain store is introduced.
+The provider client uses typed domain results over GET-only HTTPS, not CLI
+presentation tables. Sensitive authorization headers never enter process argv,
+diagnostics or frontend state; redirects are disabled.
+
+Connections verify the stable account ID, canonical remote repository ID and
+real PR-read capability. OAuth scope evidence is distinct from read access and
+from item-specific publication permission; absent scope introspection remains
+unknown. An explicit read exhausts REST pagination and checks changed-file
+counts and revision stability. No partial metadata is returned on failure.
+The local repository UUID remains separate from remote identity; native commands
+recheck saved names after asynchronous reads, and UI observations are invalidated
+on retarget. Connection actions preserve the existing Settings draft/save
+boundary and never alter an effective policy or its automation gates.
+
 Launch at login is an explicit Settings operation that writes the application's
 own LaunchAgent plist. Settings distinguishes saved intent from absent, invalid
 or structurally valid registration for the current executable; none proves
