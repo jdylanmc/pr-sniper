@@ -31,6 +31,21 @@ h1 {
 h2 {
   font-size: 18px;
 }
+h3 {
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+article {
+  border: 1px solid #80979d;
+  border-radius: 8px;
+  margin-top: 16px;
+  padding: 16px;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .eyebrow {
   margin: 0 0 4px;
   font-size: 11px;
@@ -46,9 +61,45 @@ label {
   align-items: center;
   font-weight: 600;
 }
-input {
+input[type="checkbox"] {
   width: 18px;
   height: 18px;
+}
+input[type="text"],
+input[type="number"],
+select,
+textarea {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 8px;
+  margin: 8px 0;
+  font: inherit;
+}
+fieldset {
+  border: 1px solid #80979d;
+  border-radius: 6px;
+  margin: 8px 0;
+  min-width: 0;
+}
+fieldset label:has(input:not([type="checkbox"])),
+fieldset label:has(textarea),
+fieldset label:has(select) {
+  display: block;
+}
+.policy-field {
+  margin: 16px 0;
+}
+.policy-value,
+.hint {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.policy-value {
+  margin: 5px 0;
+}
+[hidden] {
+  display: none !important;
 }
 button {
   color: white;

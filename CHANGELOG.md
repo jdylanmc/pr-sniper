@@ -7,6 +7,18 @@ No release/versioning policy has been established yet.
 
 ### Added
 
+- Manage watched GitHub repositories from Settings, with canonical duplicate
+  protection, stable identities, rename/enable controls and confirmed removal
+  persisted across restarts. Configure global review-policy defaults and
+  per-repository overrides with visible inherited sources and independent
+  automatic agent-start and comment-publication gates. This configures future monitoring;
+  it does not connect to GitHub or start reviews. See [#4](https://github.com/jdylanmc/pr-sniper/issues/4)
+  and [#11](https://github.com/jdylanmc/pr-sniper/issues/11).
+  Invalid schedules, identities and supported credential patterns are rejected
+  before saving; failed configuration writes preserve existing data. Committed
+  settings remain visible if diagnostics fails, with an explicit warning.
+  Unrelated saves and asynchronous focus refreshes preserve unsaved policy edits.
+
 - Locally buildable macOS menu-bar foundation with a font-independent crosshair,
   queue/status/setup placeholders, persistent startup preference, explicit
   opt-in launch at login, and redacted host diagnostics accessible from Settings.

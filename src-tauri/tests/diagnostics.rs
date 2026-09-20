@@ -46,6 +46,7 @@ fn diagnostic_writes_preserve_separate_configuration() {
         .store()
         .save_settings(&Settings {
             launch_at_login: true,
+            ..Settings::default()
         })
         .unwrap();
     let settings = fixture.path().join("config/settings.json");

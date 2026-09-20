@@ -172,3 +172,54 @@ fn failed_registration_write_leaves_settings_and_prior_bytes_unchanged() {
     );
     assert!(!fixture.path().join("config/settings.json").exists());
 }
+
+#[test]
+fn login_changes_preserve_repository_defaults_and_overrides() {
+    use pr_sniper_lib::policy::{Policy, PolicyOverrides};
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let saved = store.add_repository("octo/hello-world").unwrap();
+    store
+        .save_defaults(Policy {
+            prompt: "Nondefault global instructions.".into(),
+            automatic_agent_start: true,
+            ..Policy::default()
+        })
+        .unwrap();
+    store
+        .save_repository_policy(
+            &saved.repositories[0].id,
+            PolicyOverrides {
+                prompt: Some("Repository-specific instructions.".into()),
+                automatic_comment_publication: Some(true),
+                ..PolicyOverrides::default()
+            },
+        )
+        .unwrap();
+    let before = store.load_settings().unwrap();
+    let registration = registration(&fixture);
+    for enabled in [true, false] {
+        registration.set_enabled(&store, enabled).unwrap();
+        let reopened = fixture.store().load_settings().unwrap();
+        assert_eq!(reopened.launch_at_login, enabled);
+        assert_eq!(reopened.defaults, before.defaults);
+        assert_eq!(reopened.repositories, before.repositories);
+    }
+}
+
+#[test]
+fn failed_login_change_preserves_full_policy_config_and_registration_bytes() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    store.add_repository("octo/hello-world").unwrap();
+    let registration = registration(&fixture);
+    registration.set_enabled(&store, true).unwrap();
+    let config = fixture.path().join("config/settings.json");
+    let plist = fixture.path().join("PR Sniper.plist");
+    let before_config = fs::read(&config).unwrap();
+    let before_registration = fs::read(&plist).unwrap();
+    fs::create_dir(fixture.path().join("config/settings.json.tmp")).unwrap();
+    assert!(registration.set_enabled(&store, false).is_err());
+    assert_eq!(fs::read(config).unwrap(), before_config);
+    assert_eq!(fs::read(plist).unwrap(), before_registration);
+}

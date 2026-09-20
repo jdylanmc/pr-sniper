@@ -1,9 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
+import { renderRepositories, type Repository } from "./repositories";
+import { renderPolicyForm, type Policy } from "./policy";
+import { captureDrafts, hasDrafts, restoreDrafts, trackDrafts } from "./drafts";
 import crosshair from "./crosshair.svg";
 import "./style.css";
 
 interface Snapshot {
-  settings: { launch_at_login: boolean } | null;
+  settings: {
+    launch_at_login: boolean;
+    defaults: Policy;
+    repositories?: Repository[];
+  } | null;
   login_registration: "absent" | "registered" | "invalid" | null;
   isolated: boolean;
   error: string | null;
@@ -26,7 +33,7 @@ const titles: Record<string, string> = {
 };
 app.innerHTML = `
   <header><img src="${crosshair}" alt="PR Sniper crosshair" /><div>
-    <p class="eyebrow">PR SNIPER / FOUNDATION</p>
+    <p class="eyebrow">PR SNIPER</p>
     <h1></h1>
   </div></header>
   <p id="error" role="alert" hidden></p>
@@ -35,17 +42,25 @@ app.innerHTML = `
 app.querySelector("h1")!.textContent = titles[view] ?? "Status";
 const content = app.querySelector<HTMLElement>("#content")!;
 const error = app.querySelector<HTMLElement>("#error")!;
+const editRevision = trackDrafts(content);
+let loadRevision = 0;
 
 function showError(message: string) {
   error.textContent = message;
   error.hidden = false;
 }
 
-async function load() {
+async function load(warning: string | null = null, focusRefresh = false) {
+  const revision = ++loadRevision;
+  const edits = editRevision();
   error.hidden = true;
   try {
     const state = await invoke<Snapshot>("snapshot");
-    if (state.error) showError(state.error);
+    if (revision !== loadRevision || (focusRefresh && edits !== editRevision()))
+      return;
+    const drafts = captureDrafts(content);
+    const messages = [state.error, warning].filter(Boolean);
+    if (messages.length) showError(messages.join("\n"));
     if (view === "settings") {
       content.innerHTML = `
         <h2>Startup</h2>
@@ -53,8 +68,27 @@ async function load() {
         <p>Off by default. Changed only by your explicit choice here, never on application startup.</p>
         <p id="login-note"></p>
         <button id="diagnostics">Open redacted diagnostics</button>
+        <h2>Global defaults</h2>
+        <p>These defaults apply unless a repository overrides a field. Agent start and comment publication are independent gates, both off by default. Future execution must recheck current settings; saved gates do not authorize action forever.</p>
+        <section id="global-policy"></section>
+        <section id="repository-settings"></section>
         <h2>Connections</h2>
         <p>GitHub and review-agent setup are not implemented in this foundation.</p>`;
+      if (state.settings)
+        renderPolicyForm(
+          content.querySelector("#global-policy")!,
+          state.settings.defaults,
+          null,
+          load,
+          showError,
+        );
+      renderRepositories(
+        content.querySelector("#repository-settings")!,
+        state.settings === null ? null : (state.settings.repositories ?? []),
+        state.settings?.defaults ?? null,
+        load,
+        showError,
+      );
       const login = content.querySelector<HTMLInputElement>("#login")!;
       login.checked = state.settings?.launch_at_login === true;
       login.disabled =
@@ -95,6 +129,7 @@ async function load() {
             showError("Could not open diagnostics.");
           }
         });
+      restoreDrafts(content, drafts);
     } else if (view === "diagnostics") {
       content.innerHTML = `<p>Local host events only. Tokens, commands, paths and provider data are never recorded. Most recent log, up to 256 KiB.</p><button id="refresh">Refresh</button><pre id="log"></pre>`;
       content
@@ -119,11 +154,19 @@ async function load() {
         `PR Sniper ${state.version}`;
     }
   } catch {
+    if (revision !== loadRevision) return;
     showError(
-      "Could not read application status or diagnostics. Check local storage permissions; no raw error details are exposed.",
+      [
+        "Could not read application status or diagnostics. Check local storage permissions; no raw error details are exposed.",
+        warning,
+      ]
+        .filter(Boolean)
+        .join("\n"),
     );
   }
 }
 
 void load();
-window.addEventListener("focus", () => void load());
+window.addEventListener("focus", () => {
+  if (!hasDrafts(content) && !content.dataset.saving) void load(null, true);
+});

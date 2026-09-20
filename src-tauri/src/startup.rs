@@ -1,4 +1,4 @@
-use crate::storage::{Settings, Store};
+use crate::storage::Store;
 use plist::{Dictionary, Value};
 use serde::Serialize;
 use std::fs::{self, OpenOptions};
@@ -102,7 +102,7 @@ impl LoginRegistration {
     }
 
     pub fn set_enabled(&self, store: &Store, enabled: bool) -> Result<(), String> {
-        store.load_settings()?;
+        let mut settings = store.load_settings()?;
         let previous = self.read()?;
         let registration = if enabled {
             let metadata = fs::metadata(&self.executable)
@@ -136,9 +136,8 @@ impl LoginRegistration {
             None
         };
         self.replace(registration.as_deref())?;
-        if let Err(error) = store.save_settings(&Settings {
-            launch_at_login: enabled,
-        }) {
+        settings.launch_at_login = enabled;
+        if let Err(error) = store.save_settings(&settings) {
             if self.replace(previous.as_deref()).is_err() {
                 return Err("Settings were not saved and the previous login registration could not be restored. Inspect macOS Login Items.".into());
             }
