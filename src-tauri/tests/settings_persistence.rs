@@ -1,37 +1,8 @@
 use pr_sniper_lib::storage::{Settings, Store};
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
-static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
-
-struct Fixture(PathBuf);
-
-impl Fixture {
-    fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "pr-sniper-settings-test-{}-{}",
-            std::process::id(),
-            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&path).expect("create isolated settings fixture");
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-
-    fn store(&self) -> Store {
-        Store::new(self.0.clone())
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).expect("remove this test's settings fixture");
-    }
-}
+mod support;
+use support::Fixture;
 
 #[test]
 fn explicit_login_preference_survives_a_fresh_store() {
