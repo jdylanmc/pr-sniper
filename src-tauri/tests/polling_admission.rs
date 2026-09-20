@@ -532,7 +532,7 @@ fn host_checkpoint_must_preserve_cursor_invalidation_across_restart() {
         .update_repository(id, "example/project", false)
         .unwrap();
     assert!(monitor.begin(&disabled, 1050, false).unwrap().is_empty());
-    store.save_polling_health(&monitor.snapshot()).unwrap();
+    monitor.checkpoint(&store).unwrap();
     drop(monitor);
     let mut restarted = Monitor::restore(&fixture.store()).unwrap();
     let enabled = store
