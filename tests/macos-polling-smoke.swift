@@ -24,8 +24,36 @@ func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
     return value
 }
 
+func typedElements(_ value: CFTypeRef?) -> [AXUIElement] {
+    guard let value, CFGetTypeID(value) == CFArrayGetTypeID() else { return [] }
+    let array = unsafeBitCast(value, to: CFArray.self)
+    return (0..<CFArrayGetCount(array)).compactMap { index in
+        guard let pointer = CFArrayGetValueAtIndex(array, index) else { return nil }
+        let item = unsafeBitCast(pointer, to: CFTypeRef.self)
+        guard CFGetTypeID(item) == AXUIElementGetTypeID() else {
+            print("AX array contains unexpected type=\(CFGetTypeID(item)) index=\(index)")
+            return nil
+        }
+        return unsafeBitCast(item, to: AXUIElement.self)
+    }
+}
+
 func elements(_ element: AXUIElement, _ name: String) -> [AXUIElement] {
-    attribute(element, name) as? [AXUIElement] ?? []
+    typedElements(attribute(element, name))
+}
+
+func extrasMenu(_ application: AXUIElement) -> AXUIElement? {
+    guard let value = attribute(application, "AXExtrasMenuBar"),
+          CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+    return unsafeBitCast(value, to: AXUIElement.self)
+}
+
+func sameProcess(_ element: AXUIElement, _ application: AXUIElement) -> Bool {
+    var elementPID: pid_t = 0
+    var applicationPID: pid_t = 0
+    return AXUIElementGetPid(element, &elementPID) == .success
+        && AXUIElementGetPid(application, &applicationPID) == .success
+        && elementPID == applicationPID
 }
 
 func text(_ element: AXUIElement, _ name: String) -> String {
@@ -46,34 +74,52 @@ func diagnoseOwnedAccessibility(_ application: AXUIElement) {
                  kAXChildrenAttribute, "AXManualAccessibility", "AXEnhancedUserInterface"] {
         var value: CFTypeRef?
         let result = AXUIElementCopyAttributeValue(application, name as CFString, &value)
-        let count = (value as? [AXUIElement])?.count
+        let count = value.flatMap {
+            CFGetTypeID($0) == CFArrayGetTypeID()
+                ? CFArrayGetCount(unsafeBitCast($0, to: CFArray.self)) : nil
+        }
         print("AX diagnostic \(name) result=\(result.rawValue) count=\(count.map(String.init) ?? "not-array")")
+        if let value, CFGetTypeID(value) == CFBooleanGetTypeID() {
+            print("AX diagnostic \(name) boolean=\(CFBooleanGetValue(unsafeBitCast(value, to: CFBoolean.self)))")
+        }
+        for element in typedElements(value).prefix(10) {
+            print("AX identity \(name) equalApp=\(CFEqual(element, application)) samePID=\(sameProcess(element, application)) role=\(text(element, kAXRoleAttribute)) title=\(text(element, kAXTitleAttribute))")
+        }
     }
+    var seen: [AXUIElement] = []
     func dump(_ element: AXUIElement, depth: Int) {
-        guard depth <= 4 else { return }
+        guard depth <= 4 && !seen.contains(where: { CFEqual($0, element) }) else { return }
+        seen.append(element)
         print("AX owned tree depth=\(depth) role=\(text(element, kAXRoleAttribute)) title=\(text(element, kAXTitleAttribute))")
         for child in elements(element, kAXChildrenAttribute).prefix(20) {
             dump(child, depth: depth + 1)
         }
     }
-    dump(application, depth: 0)
     for window in elements(application, kAXWindowsAttribute).prefix(10) {
-        dump(window, depth: 1)
+        if !CFEqual(window, application) && text(window, kAXRoleAttribute) == kAXWindowRole {
+            dump(window, depth: 0)
+        }
+    }
+    if let extras = extrasMenu(application), sameProcess(extras, application) {
+        dump(extras, depth: 0)
+    }
+    var direct: CFArray?
+    let result = AXUIElementCopyAttributeValues(application, kAXWindowsAttribute as CFString, 0, 10, &direct)
+    print("AX direct windows result=\(result.rawValue) count=\(direct.map(CFArrayGetCount) ?? -1)")
+    for window in typedElements(direct) {
+        print("AX direct window equalApp=\(CFEqual(window, application)) role=\(text(window, kAXRoleAttribute)) title=\(text(window, kAXTitleAttribute))")
     }
 }
 
-func descendants(_ element: AXUIElement, depth: Int = 0) -> [AXUIElement] {
-    if depth == 16 { return [] }
-    var children = elements(element, kAXChildrenAttribute)
-    if depth == 0 {
-        for name in [kAXMenuBarAttribute, "AXExtrasMenuBar"] {
-            if let value = attribute(element, name),
-               CFGetTypeID(value) == AXUIElementGetTypeID() {
-                children.append(unsafeBitCast(value, to: AXUIElement.self))
-            }
-        }
+func descendants(_ element: AXUIElement) -> [AXUIElement] {
+    var pending = [(element, 0)]
+    var result: [AXUIElement] = []
+    while let (next, depth) = pending.popLast(), result.count < 2500 {
+        if depth > 24 || result.contains(where: { CFEqual($0, next) }) { continue }
+        result.append(next)
+        pending.append(contentsOf: elements(next, kAXChildrenAttribute).map { ($0, depth + 1) })
     }
-    return [element] + children.flatMap { descendants($0, depth: depth + 1) }
+    return result
 }
 
 func waitFor(_ message: String, seconds: TimeInterval = 15,
@@ -92,17 +138,25 @@ func press(_ element: AXUIElement, _ description: String) throws {
 }
 
 func menuItem(_ application: AXUIElement, title: String) -> AXUIElement? {
-    descendants(application).first {
+    guard let extras = extrasMenu(application), sameProcess(extras, application) else { return nil }
+    return descendants(extras).first {
+        sameProcess($0, application) &&
         text($0, kAXRoleAttribute) == kAXMenuItemRole && text($0, kAXTitleAttribute) == title
     }
 }
 
 func openTray(_ application: AXUIElement) throws {
     if menuItem(application, title: "Quit PR Sniper") != nil { return }
-    for item in descendants(application).filter({
-        text($0, kAXRoleAttribute) == kAXMenuBarItemRole
+    guard let extras = extrasMenu(application), sameProcess(extras, application) else {
+        throw PollingSmokeFailure.failed("No owned AXExtrasMenuBar")
+    }
+    for item in descendants(extras).filter({
+        sameProcess($0, application) && text($0, kAXRoleAttribute) == kAXMenuBarItemRole
     }).reversed() {
-        try press(item, "open native tray")
+        let result = AXUIElementPerformAction(item, kAXPressAction as CFString)
+        print("AX owned tray press result=\(result.rawValue)")
+        try require(result == .success || result == .cannotComplete,
+                    "Cannot open owned tray: \(result.rawValue)")
         RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         if menuItem(application, title: "Quit PR Sniper") != nil { return }
         _ = AXUIElementPerformAction(item, kAXCancelAction as CFString)
@@ -121,10 +175,19 @@ func choose(_ application: AXUIElement, title: String) throws {
 }
 
 func visibleWindow(_ application: AXUIElement, title: String) -> AXUIElement? {
-    elements(application, kAXWindowsAttribute).first {
-        text($0, kAXTitleAttribute) == "PR Sniper - \(title)"
-            && attribute($0, kAXMinimizedAttribute) as? Bool != true
+    func matches(_ element: AXUIElement) -> Bool {
+        !CFEqual(element, application) && sameProcess(element, application)
+            && text(element, kAXRoleAttribute) == kAXWindowRole
+            && text(element, kAXTitleAttribute) == "PR Sniper - \(title)"
+            && attribute(element, kAXMinimizedAttribute) as? Bool != true
     }
+    if let window = elements(application, kAXWindowsAttribute).first(where: matches) {
+        return window
+    }
+    var direct: CFArray?
+    guard AXUIElementCopyAttributeValues(application, kAXWindowsAttribute as CFString,
+                                        0, 10, &direct) == .success else { return nil }
+    return typedElements(direct).first(where: matches)
 }
 
 func closeWindow(_ application: AXUIElement, title: String) throws {
@@ -284,7 +347,7 @@ func run() throws {
     let application = AXUIElementCreateApplication(process.processIdentifier)
     try waitFor("native startup and persisted schedule") {
         let health = try readHealth(root, repositoryID: repositoryID)
-        return process.isRunning && descendants(application).count > 1 && health != nil
+        return process.isRunning && extrasMenu(application) != nil && health != nil
     }
     enableOwnedAccessibilityTree(application)
     try require(elements(application, kAXWindowsAttribute).isEmpty,
