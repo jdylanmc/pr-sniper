@@ -1,15 +1,17 @@
 pub mod provider;
 
+use serde::Serialize;
 use serde_json::Value;
 pub mod credentials;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Identity {
     pub id: String,
     pub login: String,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ConnectionError {
     NotImplemented,
     WrongIdentity,
@@ -18,6 +20,14 @@ pub enum ConnectionError {
     BrokenCli,
     SignedOut,
     Timeout,
+    MissingReadPermission,
+    RateLimited,
+    Network,
+    ProviderFailure,
+    IncompleteRead,
+    RevisionChanged,
+    InvalidRepository,
+    RepositoryChanged,
 }
 
 pub fn verify_identity(
