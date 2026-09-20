@@ -25,9 +25,22 @@ same production Store operations as the native app.
 The policy test exercises nondefault global settings, complete per-repository
 overrides, an independently inheriting neighbor, and reset to changed defaults.
 Fresh Store reads and reloaded forms protect policy persistence, effective
-values and provenance, and independent agent-start/publication gates. Its RED
-is the missing Global defaults form; GREEN must connect `save_defaults` and
-`save_repository_policy` bridge arms to the production Store operations.
+values and provenance, and independent agent-start/publication gates. Both
+policy commands use production Store methods.
+
+The error tests require visible rejection of invalid time zones with the
+previous configuration bytes intact, preserve unsaved edits across focus,
+and characterize malformed/unreadable data and failed atomic replacement.
+Filesystem faults affect only each test's temporary root; unreadable fixture
+permissions are restored before cleanup. The bridge mirrors the native
+snapshot's `settings: null` plus safe error on failed reads. A forty-repository
+fixture checks rendering and reload, not unlimited physical resource capacity.
+
+`src-tauri/tests/policy_validation.rs` covers semantic validation at both
+global and override save boundaries, supported schedules, strict unsupported
+shapes, synthetic credential rejection, sparse overrides and fresh effective
+policy reads. Startup regression tests use only fixture-owned plist and
+executable paths, never the user's actual login-item locations.
 
 The tests do not exercise native Tauri command registration, macOS WebKit,
 menu-bar behavior, or login-item integration. It never launches the native
