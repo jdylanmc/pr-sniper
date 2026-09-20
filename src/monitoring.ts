@@ -6,6 +6,7 @@ interface Health {
   last_attempt: number | null;
   last_success: number | null;
   next_run: number;
+  schedule_available: boolean;
   last_failure: string | null;
   in_flight: boolean;
 }
@@ -52,7 +53,7 @@ export function renderMonitoring(
           "No enabled repositories scheduled. Configure repositories in Settings.";
       for (const item of snapshot.health) {
         const row = document.createElement("p");
-        row.textContent = `${item.name}: ${item.in_flight ? "Checking" : "Waiting"}. Last attempt: ${time(item.last_attempt)}. Last success: ${time(item.last_success)}. Next run: ${time(item.next_run)}. Last failure: ${item.last_failure ?? "None"}.`;
+        row.textContent = `${item.name}: ${item.in_flight ? "Checking" : "Waiting"}. Last attempt: ${time(item.last_attempt)}. Last success: ${time(item.last_success)}. Next run: ${item.schedule_available ? time(item.next_run) : "Unavailable: correct this schedule in Settings"}. Last failure: ${item.last_failure ?? "None"}.`;
         health.append(row);
       }
       if (!snapshot.jobs.length)
