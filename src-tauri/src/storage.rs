@@ -87,7 +87,7 @@ impl Settings {
     }
 }
 
-fn canonical_repository(input: &str) -> Result<String, String> {
+pub(crate) fn canonical_repository(input: &str) -> Result<String, String> {
     let lower = input.trim().to_ascii_lowercase();
     let path = lower.strip_prefix("https://github.com/").unwrap_or(&lower);
     let path = path.trim_end_matches('/');

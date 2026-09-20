@@ -42,6 +42,7 @@ impl Transport for ConnectionTransport {
                 "disabled": false,
                 "permissions": {"pull": true, "push": true}
             }),
+            "/repos/jdylanmc/pr-sniper/pulls?state=open&per_page=1" => json!([]),
             _ => panic!("unexpected GET path: {path}"),
         };
         Ok(Response {
