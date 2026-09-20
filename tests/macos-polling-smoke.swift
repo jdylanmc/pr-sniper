@@ -32,6 +32,36 @@ func text(_ element: AXUIElement, _ name: String) -> String {
     attribute(element, name) as? String ?? ""
 }
 
+func enableOwnedAccessibilityTree(_ application: AXUIElement) {
+    let timeout = AXUIElementSetMessagingTimeout(application, 2)
+    print("AX messaging timeout result=\(timeout.rawValue)")
+    for name in ["AXManualAccessibility", "AXEnhancedUserInterface"] {
+        let result = AXUIElementSetAttributeValue(application, name as CFString, kCFBooleanTrue)
+        print("AX owned-app \(name)=true result=\(result.rawValue)")
+    }
+}
+
+func diagnoseOwnedAccessibility(_ application: AXUIElement) {
+    for name in [kAXWindowsAttribute, kAXFocusedWindowAttribute, kAXMainWindowAttribute,
+                 kAXChildrenAttribute, "AXManualAccessibility", "AXEnhancedUserInterface"] {
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(application, name as CFString, &value)
+        let count = (value as? [AXUIElement])?.count
+        print("AX diagnostic \(name) result=\(result.rawValue) count=\(count.map(String.init) ?? "not-array")")
+    }
+    func dump(_ element: AXUIElement, depth: Int) {
+        guard depth <= 4 else { return }
+        print("AX owned tree depth=\(depth) role=\(text(element, kAXRoleAttribute)) title=\(text(element, kAXTitleAttribute))")
+        for child in elements(element, kAXChildrenAttribute).prefix(20) {
+            dump(child, depth: depth + 1)
+        }
+    }
+    dump(application, depth: 0)
+    for window in elements(application, kAXWindowsAttribute).prefix(10) {
+        dump(window, depth: 1)
+    }
+}
+
 func descendants(_ element: AXUIElement, depth: Int = 0) -> [AXUIElement] {
     if depth == 16 { return [] }
     var children = elements(element, kAXChildrenAttribute)
@@ -237,6 +267,7 @@ func run() throws {
     ]) { _, new in new }
     defer {
         if process.isRunning {
+            diagnoseOwnedAccessibility(AXUIElementCreateApplication(process.processIdentifier))
             process.terminate()
             let deadline = Date().addingTimeInterval(5)
             while process.isRunning && Date() < deadline {
@@ -255,6 +286,7 @@ func run() throws {
         let health = try readHealth(root, repositoryID: repositoryID)
         return process.isRunning && descendants(application).count > 1 && health != nil
     }
+    enableOwnedAccessibilityTree(application)
     try require(elements(application, kAXWindowsAttribute).isEmpty,
                 "Startup unexpectedly exposes a persistent window")
 
