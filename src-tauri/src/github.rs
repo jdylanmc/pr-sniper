@@ -1,3 +1,5 @@
+pub mod provider;
+
 use serde_json::Value;
 pub mod credentials;
 
