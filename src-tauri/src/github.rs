@@ -14,8 +14,23 @@ pub enum ConnectionError {
 }
 
 pub fn verify_identity(
-    _response: &Value,
-    _expected_account_id: Option<&str>,
+    response: &Value,
+    expected_account_id: Option<&str>,
 ) -> Result<Identity, ConnectionError> {
-    Err(ConnectionError::NotImplemented)
+    let id = response["id"]
+        .as_u64()
+        .filter(|id| *id > 0)
+        .ok_or(ConnectionError::InvalidResponse)?
+        .to_string();
+    let login = response["login"]
+        .as_str()
+        .filter(|login| !login.is_empty() && !login.chars().any(char::is_whitespace))
+        .ok_or(ConnectionError::InvalidResponse)?;
+    if expected_account_id.is_some_and(|expected| expected != id) {
+        return Err(ConnectionError::WrongIdentity);
+    }
+    Ok(Identity {
+        id,
+        login: login.into(),
+    })
 }
