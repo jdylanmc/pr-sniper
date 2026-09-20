@@ -4,7 +4,7 @@ The approved MVP selects Tauri instead of Electron and macOS before Windows.
 Tauri 2 owns the menu bar, lazy windows, single-instance enforcement and explicit
 quit lifecycle; a vanilla TypeScript/Vite frontend provides small local surfaces
 without a component framework. Closing a window hides it, while quitting ends
-the event loop; there is no scheduler or child process in this foundation.
+the event loop.
 
 Configuration and host diagnostics occupy separate `config/` and `state/`
 directories under the application data root. Settings are strict typed JSON,
@@ -28,7 +28,7 @@ The storage save boundary validates complete effective policies before atomic
 replacement; load rejects invalid data instead of inventing defaults. Missing
 new fields in the established host-only format use defined defaults, preserving
 the startup preference without a migration framework. Croner validates five-field
-cron syntax and chrono-tz validates IANA zone names; neither executes schedules.
+cron syntax and chrono-tz validates IANA zone names.
 Configuration accepts no credential fields, rejects recognizable GitHub token
 patterns, and never copies policy text or repository data into host diagnostics.
 Arbitrary user-authored text must still be kept nonsecret; credentials belong in
@@ -59,6 +59,25 @@ The local repository UUID remains separate from remote identity; native commands
 recheck saved names after asynchronous reads, and UI observations are invalidated
 on retarget. Connection actions preserve the existing Settings draft/save
 boundary and never alter an effective policy or its automation gates.
+
+The native host now owns monitoring independently of window lifetime. A short
+host tick asks a clock-driven monitor for due work, marks each repository
+in-flight before dispatch, and runs blocking credential/provider reads outside
+the settings lock. Check Now shares that boundary rather than resetting the
+schedule. Settings saves and admission serialize through the same store lock;
+admission reloads current enabled state, repository name and effective policy.
+The provider's polling path reads open PR metadata without historical or file
+hydration; the explicit manual reader retains its original complete behavior.
+
+The basic queue uses atomic application-owned state files. Jobs use verified
+remote repository and PR identities, head revision and a deterministic trigger
+key based on sorted watched account IDs, reviewer-trigger state and the verified
+account. Login labels and trigger match order are not identity. Queue rows are
+detected revisions, not successful reviews. Trust confirmation and human-start
+waits do not grant execution, and agent/publication adapters remain absent.
+Polling health records closed-schema failure classifications, never raw provider
+responses or credentials. This is not the later interrupted-operation recovery
+or retry-budget implementation.
 
 Launch at login is an explicit Settings operation that writes the application's
 own LaunchAgent plist. Settings distinguishes saved intent from absent, invalid
