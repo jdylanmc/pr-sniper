@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": {"node": ">=24.20.0 <25"},
+  "engines": {
+    "node": ">=24.20.0 <25"
+  },
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
@@ -14,7 +16,9 @@
     "test": "cargo test --manifest-path src-tauri/Cargo.toml --locked",
     "bundle": "tauri build --bundles app"
   },
-  "dependencies": {"@tauri-apps/api": "2.11.1"},
+  "dependencies": {
+    "@tauri-apps/api": "2.11.1"
+  },
   "devDependencies": {
     "@tauri-apps/cli": "2.11.4",
     "prettier": "3.9.6",
