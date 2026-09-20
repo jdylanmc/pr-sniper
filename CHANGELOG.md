@@ -22,6 +22,15 @@ No release/versioning policy has been established yet.
 
 ### Added
 
+- Monitor enabled GitHub repositories in the menu-bar host, with an immediate
+  Check Now action, visible schedule health and a durable basic revision queue.
+  Stable watched-author or individual requested-reviewer matches select work
+  without changed-file hydration; repeated revision/policy matches are deduplicated.
+  Fork and untrusted-author work visibly waits for confirmation. This does not
+  run agents or publish comments. See [#3](https://github.com/jdylanmc/pr-sniper/issues/3),
+  [#8](https://github.com/jdylanmc/pr-sniper/issues/8) and
+  [#9](https://github.com/jdylanmc/pr-sniper/issues/9).
+
 - Verify configured GitHub repositories with the current CLI account and stable
   account ID, distinguish read access from comment scope, and read complete
   paginated PR, reviewer and changed-file metadata in Settings. CLI, identity,
