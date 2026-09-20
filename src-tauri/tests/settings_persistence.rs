@@ -157,7 +157,7 @@ fn failed_save_reports_an_error_and_preserves_the_conflicting_file() {
 }
 
 #[test]
-fn ordinary_configuration_contains_only_the_host_preference() {
+fn ordinary_configuration_contains_only_nonsecret_settings() {
     let fixture = Fixture::new();
     fs::create_dir(fixture.path().join("state")).unwrap();
     let state_path = fixture.path().join("state/fixture-state.json");
@@ -173,7 +173,22 @@ fn ordinary_configuration_contains_only_the_host_preference() {
 
     let bytes = fs::read(fixture.path().join("config/settings.json")).unwrap();
     let persisted: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(persisted, serde_json::json!({ "launch_at_login": true }));
+    assert_eq!(
+        persisted,
+        serde_json::json!({
+            "launch_at_login": true,
+            "defaults": {
+                "schedule": {"kind":"interval","minutes":15,"timezone":"UTC"},
+                "watched_authors": [],
+                "reviewer_assignment": true,
+                "adapter": "copilot",
+                "selector": {"kind":"default"},
+                "prompt": "Review this pull request for actionable defects.",
+                "automatic_agent_start": false,
+                "automatic_comment_publication": false
+            }
+        })
+    );
     assert_eq!(
         fs::read(state_path).unwrap(),
         b"{\"cursor\":\"untouched\"}",

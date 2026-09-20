@@ -1,6 +1,6 @@
 # PR Sniper
 
-A macOS menu-bar foundation for human-owned pull request review. Built with
+A macOS menu-bar application for human-owned pull request review. Built with
 Tauri 2, Rust and vanilla TypeScript. The tray exposes **Status**, **Review
 Queue**, **Settings**, **Setup Doctor** and **Quit PR Sniper**.
 
@@ -73,7 +73,27 @@ notarization, updates, Homebrew and Windows packages are out of scope.
 
 The default data root is
 `~/Library/Application Support/com.jdylanmc.pr-sniper/`.
-`config/settings.json` stores only the startup preference.
+`config/settings.json` stores nonsecret repository configuration and the startup
+preference. Settings accepts `owner/repository` or an HTTPS `github.com` URL,
+normalizes case and clone suffixes, and prevents duplicates. Rename, disable,
+re-enable and confirmed removal operate on stable local repository identities;
+they do not contact GitHub. There is no application-defined repository-count
+limit. Storage failures are visible, not reported as successful saves.
+
+**Global defaults** and each repository's **Policy** cover interval or five-field
+cron schedules in an explicit time zone, watched GitHub identities, the
+reviewer-assignment trigger, Copilot adapter configuration, a model or named
+agent selector, a review prompt and two independent automation gates.
+An unchecked **Override** box inherits the current global value; unchecking a
+saved override resets it. Every repository shows the saved effective value and
+source. Both gates start off; manual agent start does not imply permission to
+publish. No monitoring or provider action occurs in this increment.
+
+Watched identities use one `numeric GitHub account ID:login` per line. The stable
+ID is the future matching key; the login is only a display label. Repository
+access, account identities and adapter/model availability are **not verified**
+by this configuration screen. Never put credentials in the prompt or other
+configuration fields.
 `state/diagnostics.jsonl` records timestamped, fixed-schema host events, capped at
 256 KiB plus one rotated file. **Settings > Open redacted diagnostics** opens
 an in-app reader, not an arbitrary filesystem or shell interface.
@@ -82,6 +102,11 @@ Invalid settings are reported rather than silently reset or overwritten.
 No credential is requested or stored in this foundation. Future credentials
 belong in macOS secure storage, never config, state or diagnostics.
 See the [bounded architecture decision](docs/adr/0001-macos-foundation.md).
+
+`npm run test:settings` exercises the production Settings UI against real Rust
+storage with temporary data and fresh process reads. See
+[Settings behavioral tests](tests/settings/README.md) for setup and the boundary
+between browser proof and native macOS verification.
 
 ## Crosshair assets
 

@@ -1,3 +1,4 @@
+pub mod policy;
 pub mod startup;
 pub mod storage;
 
@@ -127,6 +128,29 @@ fn remove_repository(host: State<'_, Host>, id: String) -> Result<Settings, Stri
 }
 
 #[tauri::command]
+fn save_defaults(host: State<'_, Host>, policy: serde_json::Value) -> Result<Settings, String> {
+    let policy = serde_json::from_value(policy).map_err(|_| "Unsupported policy configuration.")?;
+    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+    let settings = store.save_defaults(policy)?;
+    store.record(DiagnosticEvent::SettingsSaved)?;
+    Ok(settings)
+}
+
+#[tauri::command]
+fn save_repository_policy(
+    host: State<'_, Host>,
+    id: String,
+    overrides: serde_json::Value,
+) -> Result<Settings, String> {
+    let overrides = serde_json::from_value(overrides)
+        .map_err(|_| "Unsupported policy override configuration.")?;
+    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+    let settings = store.save_repository_policy(&id, overrides)?;
+    store.record(DiagnosticEvent::SettingsSaved)?;
+    Ok(settings)
+}
+
+#[tauri::command]
 fn diagnostics(host: State<'_, Host>) -> Result<Vec<Diagnostic>, String> {
     host.store
         .lock()
@@ -177,6 +201,8 @@ pub fn run() {
             save_repository,
             update_repository,
             remove_repository,
+            save_defaults,
+            save_repository_policy,
             diagnostics,
             open_diagnostics
         ])
