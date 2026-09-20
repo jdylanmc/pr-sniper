@@ -1,15 +1,23 @@
 import { invoke } from "@tauri-apps/api/core";
+import {
+  renderPolicyForm,
+  renderPolicySummary,
+  type Policy,
+  type PolicyOverrides,
+} from "./policy";
 
 export interface Repository {
   id: string;
   provider: "github";
   name: string;
   enabled: boolean;
+  overrides?: PolicyOverrides;
 }
 
 export function renderRepositories(
   root: HTMLElement,
   repositories: Repository[] | null,
+  defaults: Policy | null,
   reload: () => Promise<void>,
   showError: (message: string) => void,
 ) {
@@ -63,15 +71,29 @@ export function renderRepositories(
       <p class="repository-state"></p>
       <div class="actions">
         <button type="button" class="edit">Edit</button>
+        <button type="button" class="policy">Policy</button>
         <button type="button" class="toggle"></button>
         <button type="button" class="remove">Remove</button>
       </div>
+      <div class="policy-summary"></div>
       <div class="editor"></div>`;
     card.querySelector("h3")!.textContent = repository.name;
     card.querySelector(".repository-state")!.textContent = repository.enabled
       ? "Enabled configuration (not monitoring)"
       : "Disabled";
     const editor = card.querySelector<HTMLElement>(".editor")!;
+    if (defaults) {
+      renderPolicySummary(
+        card.querySelector(".policy-summary")!,
+        defaults,
+        repository.overrides ?? {},
+      );
+      card
+        .querySelector(".policy")!
+        .addEventListener("click", () =>
+          renderPolicyForm(editor, defaults, repository, reload, showError),
+        );
+    }
     const toggle = card.querySelector<HTMLButtonElement>(".toggle")!;
     toggle.textContent = repository.enabled ? "Disable" : "Re-enable";
     toggle.addEventListener(

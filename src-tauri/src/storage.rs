@@ -1,3 +1,4 @@
+use crate::policy::{Policy, PolicyOverrides};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
@@ -29,6 +30,8 @@ pub struct Diagnostic {
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub launch_at_login: bool,
+    #[serde(default)]
+    pub defaults: Policy,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repositories: Vec<Repository>,
 }
@@ -46,6 +49,17 @@ pub struct Repository {
     pub provider: Provider,
     pub name: String,
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "PolicyOverrides::is_empty")]
+    pub overrides: PolicyOverrides,
+}
+
+impl Settings {
+    pub fn effective_policy(&self, id: &str) -> Option<Policy> {
+        self.repositories
+            .iter()
+            .find(|repository| repository.id == id)
+            .map(|repository| repository.overrides.effective(&self.defaults))
+    }
 }
 
 fn canonical_repository(input: &str) -> Result<String, String> {
@@ -133,6 +147,7 @@ impl Store {
             provider: Provider::Github,
             name,
             enabled: true,
+            overrides: PolicyOverrides::default(),
         });
         self.save_settings(&settings)?;
         Ok(settings)
@@ -172,6 +187,29 @@ impl Store {
             .position(|repo| repo.id == id)
             .ok_or("Repository no longer exists. Reload Settings.")?;
         settings.repositories.remove(index);
+        self.save_settings(&settings)?;
+        Ok(settings)
+    }
+
+    pub fn save_defaults(&self, policy: Policy) -> Result<Settings, String> {
+        let mut settings = self.load_settings()?;
+        settings.defaults = policy;
+        self.save_settings(&settings)?;
+        Ok(settings)
+    }
+
+    pub fn save_repository_policy(
+        &self,
+        id: &str,
+        overrides: PolicyOverrides,
+    ) -> Result<Settings, String> {
+        let mut settings = self.load_settings()?;
+        settings
+            .repositories
+            .iter_mut()
+            .find(|repository| repository.id == id)
+            .ok_or("Repository no longer exists. Reload Settings.")?
+            .overrides = overrides;
         self.save_settings(&settings)?;
         Ok(settings)
     }

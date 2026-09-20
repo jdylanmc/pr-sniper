@@ -9,7 +9,9 @@ No release/versioning policy has been established yet.
 
 - Manage watched GitHub repositories from Settings, with canonical duplicate
   protection, stable identities, rename/enable controls and confirmed removal
-  persisted across restarts. This configures future monitoring;
+  persisted across restarts. Configure global review-policy defaults and
+  per-repository overrides with visible inherited sources and independent
+  automatic agent-start and comment-publication gates. This configures future monitoring;
   it does not connect to GitHub or start reviews. See [#4](https://github.com/jdylanmc/pr-sniper/issues/4)
   and [#11](https://github.com/jdylanmc/pr-sniper/issues/11).
 

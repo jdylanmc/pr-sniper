@@ -1,11 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { renderRepositories, type Repository } from "./repositories";
+import { renderPolicyForm, type Policy } from "./policy";
 import crosshair from "./crosshair.svg";
 import "./style.css";
 
 interface Snapshot {
   settings: {
     launch_at_login: boolean;
+    defaults: Policy;
     repositories?: Repository[];
   } | null;
   login_registration: "absent" | "registered" | "invalid" | null;
@@ -30,7 +32,7 @@ const titles: Record<string, string> = {
 };
 app.innerHTML = `
   <header><img src="${crosshair}" alt="PR Sniper crosshair" /><div>
-    <p class="eyebrow">PR SNIPER / FOUNDATION</p>
+    <p class="eyebrow">PR SNIPER</p>
     <h1></h1>
   </div></header>
   <p id="error" role="alert" hidden></p>
@@ -57,12 +59,24 @@ async function load() {
         <p>Off by default. Changed only by your explicit choice here, never on application startup.</p>
         <p id="login-note"></p>
         <button id="diagnostics">Open redacted diagnostics</button>
+        <h2>Global defaults</h2>
+        <p>These defaults apply unless a repository overrides a field. Agent start and comment publication are independent gates, both off by default. Future execution must recheck current settings; saved gates do not authorize action forever.</p>
+        <section id="global-policy"></section>
         <section id="repository-settings"></section>
         <h2>Connections</h2>
         <p>GitHub and review-agent setup are not implemented in this foundation.</p>`;
+      if (state.settings)
+        renderPolicyForm(
+          content.querySelector("#global-policy")!,
+          state.settings.defaults,
+          null,
+          load,
+          showError,
+        );
       renderRepositories(
         content.querySelector("#repository-settings")!,
         state.settings === null ? null : (state.settings.repositories ?? []),
+        state.settings?.defaults ?? null,
         load,
         showError,
       );
