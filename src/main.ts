@@ -63,11 +63,13 @@ async function load() {
         state.login_registration === null;
       content.querySelector("#login-note")!.textContent = state.isolated
         ? "Isolated development run: changing macOS login items is disabled."
-        : state.login_registration === "registered"
-          ? "Registration targets this application. macOS may still prevent login launch; check Login Items. The checkbox shows your saved request, not effective macOS state."
-          : state.login_registration === "absent"
-            ? "No launch registration exists. The checkbox shows your saved request; startup never reapplies it."
-            : "The launch registration is invalid or targets a different application. No startup change was made. The checkbox shows only your saved request.";
+        : state.login_registration === null
+          ? "Launch registration status is unavailable. No startup change was made. Check the error above; the checkbox shows only your saved request."
+          : state.login_registration === "registered"
+            ? "Registration targets this application. macOS may still prevent login launch; check Login Items. The checkbox shows your saved request, not effective macOS state."
+            : state.login_registration === "absent"
+              ? "No launch registration exists. The checkbox shows your saved request; startup never reapplies it."
+              : "The launch registration is invalid or targets a different application. No startup change was made. The checkbox shows only your saved request.";
       login.addEventListener("change", async () => {
         login.disabled = true;
         try {
