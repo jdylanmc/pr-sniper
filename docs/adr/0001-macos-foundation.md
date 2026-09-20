@@ -15,6 +15,32 @@ command, config field or log event. Later credential work must use macOS secure
 storage, not extend these files with tokens; no unused Keychain adapter is
 introduced before there is an exercised credential flow.
 
+Repository configuration extends that same typed settings file. Each configured
+repository has an immutable local UUID separate from its canonical GitHub name;
+editing the name or enabled state preserves identity. This does not claim a
+verified GitHub repository ID. Watched accounts use decimal GitHub account IDs
+as strings, with unverified login labels kept separate from their matching key.
+Global defaults and sparse repository overrides resolve field by field; explicit
+false, empty watchlists and the adapter-default selector are not inheritance.
+Both automatic-start and publication default off and remain independent.
+
+The storage save boundary validates complete effective policies before atomic
+replacement; load rejects invalid data instead of inventing defaults. Missing
+new fields in the established host-only format use defined defaults, preserving
+the startup preference without a migration framework. Croner validates five-field
+cron syntax and chrono-tz validates IANA zone names; neither executes schedules.
+Configuration accepts no credential fields, rejects recognizable GitHub token
+patterns, and never copies policy text or repository data into host diagnostics.
+Arbitrary user-authored text must still be kept nonsecret; credentials belong in
+the later secure-storage flow.
+
+Configuration commit and diagnostics are distinct outcomes. Native commands and
+the browser bridge share the production save-result boundary: a committed save
+returns settings plus an optional safe diagnostics warning, not a false failure.
+Settings refreshes preserve only edited form groups; untouched inherited fields
+use current defaults. Edits invalidate pending focus refreshes, and configuration
+saves hold controls stable until their response is reconciled.
+
 Launch at login is an explicit Settings operation that writes the application's
 own LaunchAgent plist. Settings distinguishes saved intent from absent, invalid
 or structurally valid registration for the current executable; none proves

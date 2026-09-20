@@ -1,4 +1,6 @@
+use crate::policy::{Policy, PolicyOverrides};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -29,6 +31,87 @@ pub struct Diagnostic {
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub launch_at_login: bool,
+    #[serde(default)]
+    pub defaults: Policy,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repositories: Vec<Repository>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SavedSettings {
+    pub settings: Settings,
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Provider {
+    Github,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Repository {
+    pub id: String,
+    pub provider: Provider,
+    pub name: String,
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "PolicyOverrides::is_empty")]
+    pub overrides: PolicyOverrides,
+}
+
+impl Settings {
+    fn validate(&self) -> Result<(), String> {
+        self.defaults.validate()?;
+        let mut ids = HashSet::new();
+        let mut names = HashSet::new();
+        for repository in &self.repositories {
+            if uuid::Uuid::parse_str(&repository.id).is_err() || !ids.insert(&repository.id) {
+                return Err("Repository identities must be valid and unique.".into());
+            }
+            if canonical_repository(&repository.name)? != repository.name
+                || !names.insert(&repository.name)
+            {
+                return Err("Repository names must be canonical and unique.".into());
+            }
+            repository.overrides.effective(&self.defaults).validate()?;
+        }
+        Ok(())
+    }
+
+    pub fn effective_policy(&self, id: &str) -> Option<Policy> {
+        self.repositories
+            .iter()
+            .find(|repository| repository.id == id)
+            .map(|repository| repository.overrides.effective(&self.defaults))
+    }
+}
+
+fn canonical_repository(input: &str) -> Result<String, String> {
+    let lower = input.trim().to_ascii_lowercase();
+    let path = lower.strip_prefix("https://github.com/").unwrap_or(&lower);
+    let path = path.trim_end_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let parts: Vec<_> = path.split('/').collect();
+    let valid = parts.len() == 2
+        && !parts[0].is_empty()
+        && parts[0].len() <= 39
+        && !parts[0].starts_with('-')
+        && !parts[0].ends_with('-')
+        && parts[0]
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        && !parts[1].is_empty()
+        && parts[1].len() <= 100
+        && parts[1] != "."
+        && parts[1] != ".."
+        && parts[1]
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b));
+    if !valid {
+        return Err("Enter owner/repository or an HTTPS github.com repository URL (no credentials, query or fragment).".into());
+    }
+    Ok(path.to_string())
 }
 
 pub struct Store {
@@ -47,11 +130,16 @@ impl Store {
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Settings::default()),
             Err(_) => return Err("Cannot read settings. Check local file permissions.".into()),
         };
-        serde_json::from_slice(&bytes)
-            .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.".into())
+        let settings: Settings = serde_json::from_slice(&bytes)
+            .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.")?;
+        settings
+            .validate()
+            .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.")?;
+        Ok(settings)
     }
 
     pub fn save_settings(&self, settings: &Settings) -> Result<(), String> {
+        settings.validate()?;
         // Never silently replace unreadable or corrupt existing configuration.
         self.load_settings()?;
         let directory = self.root.join("config");
@@ -76,6 +164,92 @@ impl Store {
         fs::rename(temporary, directory.join("settings.json"))
             .map_err(|_| "Cannot replace settings.".to_string())?;
         Ok(())
+    }
+
+    pub fn add_repository(&self, repository: &str) -> Result<Settings, String> {
+        let name = canonical_repository(repository)?;
+        let mut settings = self.load_settings()?;
+        if settings.repositories.iter().any(|repo| repo.name == name) {
+            return Err("This GitHub repository is already configured.".into());
+        }
+        settings.repositories.push(Repository {
+            id: uuid::Uuid::new_v4().to_string(),
+            provider: Provider::Github,
+            name,
+            enabled: true,
+            overrides: PolicyOverrides::default(),
+        });
+        self.save_settings(&settings)?;
+        Ok(settings)
+    }
+
+    pub fn update_repository(
+        &self,
+        id: &str,
+        repository: &str,
+        enabled: bool,
+    ) -> Result<Settings, String> {
+        let name = canonical_repository(repository)?;
+        let mut settings = self.load_settings()?;
+        if settings
+            .repositories
+            .iter()
+            .any(|repo| repo.id != id && repo.name == name)
+        {
+            return Err("This GitHub repository is already configured.".into());
+        }
+        let repo = settings
+            .repositories
+            .iter_mut()
+            .find(|repo| repo.id == id)
+            .ok_or("Repository no longer exists. Reload Settings.")?;
+        repo.name = name;
+        repo.enabled = enabled;
+        self.save_settings(&settings)?;
+        Ok(settings)
+    }
+
+    pub fn remove_repository(&self, id: &str) -> Result<Settings, String> {
+        let mut settings = self.load_settings()?;
+        let index = settings
+            .repositories
+            .iter()
+            .position(|repo| repo.id == id)
+            .ok_or("Repository no longer exists. Reload Settings.")?;
+        settings.repositories.remove(index);
+        self.save_settings(&settings)?;
+        Ok(settings)
+    }
+
+    pub fn save_defaults(&self, policy: Policy) -> Result<Settings, String> {
+        let mut settings = self.load_settings()?;
+        settings.defaults = policy;
+        self.save_settings(&settings)?;
+        Ok(settings)
+    }
+
+    pub fn save_repository_policy(
+        &self,
+        id: &str,
+        overrides: PolicyOverrides,
+    ) -> Result<Settings, String> {
+        let mut settings = self.load_settings()?;
+        settings
+            .repositories
+            .iter_mut()
+            .find(|repository| repository.id == id)
+            .ok_or("Repository no longer exists. Reload Settings.")?
+            .overrides = overrides;
+        self.save_settings(&settings)?;
+        Ok(settings)
+    }
+
+    pub fn finish_settings_save(&self, settings: Settings) -> SavedSettings {
+        let warning = self.record(DiagnosticEvent::SettingsSaved).err().map(|_| {
+            "Settings saved, but host diagnostics could not be recorded. Check local storage permissions."
+                .to_string()
+        });
+        SavedSettings { settings, warning }
     }
 
     pub fn record(&self, event: DiagnosticEvent) -> Result<(), String> {
