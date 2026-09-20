@@ -15,8 +15,13 @@ command, config field or log event. Later credential work must use macOS secure
 storage, not extend these files with tokens; no unused Keychain adapter is
 introduced before there is an exercised credential flow.
 
-Launch at login is an explicit Settings operation backed by the native autostart
-plugin's LaunchAgent. macOS state is authoritative, and saved intent is never
-applied at startup. An isolated data-root override disables login mutation,
+Launch at login is an explicit Settings operation that writes the application's
+own LaunchAgent plist. Settings distinguishes saved intent from absent, invalid
+or structurally valid registration for the current executable; none proves
+effective launchd state or overrides macOS Login Items. This replaces the
+autostart plugin's existence-only Boolean, which could misreport damaged or
+stale registrations. Plist encoding handles special path characters, and a
+settings-write failure restores the previous registration bytes.
+Saved intent is never applied at startup. An isolated data-root override disables login mutation,
 allowing local acceptance runs without changing host startup. This avoids
 turning a developer launch or stale preference into silent OS registration.

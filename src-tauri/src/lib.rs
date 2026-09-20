@@ -1,6 +1,8 @@
+pub mod startup;
 pub mod storage;
 
 use serde::Serialize;
+use startup::{LoginRegistration, RegistrationStatus};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex,
@@ -11,19 +13,19 @@ use tauri::{
     tray::TrayIconBuilder,
     Manager, State, WebviewUrl, WebviewWindowBuilder,
 };
-use tauri_plugin_autostart::ManagerExt;
 
 struct Host {
     store: Mutex<Store>,
     error: Mutex<Option<String>>,
     isolated: bool,
     quitting: AtomicBool,
+    registration: LoginRegistration,
 }
 
 #[derive(Serialize)]
 struct Snapshot {
     settings: Option<Settings>,
-    login_enabled: Option<bool>,
+    login_registration: Option<RegistrationStatus>,
     isolated: bool,
     error: Option<String>,
     version: &'static str,
@@ -50,7 +52,7 @@ fn report(app: &tauri::AppHandle, error: String) {
 }
 
 #[tauri::command]
-fn snapshot(app: tauri::AppHandle, host: State<'_, Host>) -> Result<Snapshot, String> {
+fn snapshot(host: State<'_, Host>) -> Result<Snapshot, String> {
     let mut error = host
         .error
         .lock()
@@ -68,16 +70,16 @@ fn snapshot(app: tauri::AppHandle, host: State<'_, Host>) -> Result<Snapshot, St
             None
         }
     };
-    let login_enabled = match app.autolaunch().is_enabled() {
-        Ok(enabled) => Some(enabled),
-        Err(_) => {
-            error = Some("Cannot read macOS launch-at-login status.".into());
+    let login_registration = match host.registration.status() {
+        Ok(status) => Some(status),
+        Err(message) => {
+            error = Some(message);
             None
         }
     };
     Ok(Snapshot {
         settings,
-        login_enabled,
+        login_registration,
         isolated: host.isolated,
         error,
         version: env!("CARGO_PKG_VERSION"),
@@ -85,35 +87,12 @@ fn snapshot(app: tauri::AppHandle, host: State<'_, Host>) -> Result<Snapshot, St
 }
 
 #[tauri::command]
-fn save_login(app: tauri::AppHandle, host: State<'_, Host>, enabled: bool) -> Result<(), String> {
+fn save_login(host: State<'_, Host>, enabled: bool) -> Result<(), String> {
     if host.isolated {
         return Err("Launch at login cannot be changed in an isolated development run.".into());
     }
     let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
-    store.load_settings()?;
-    let manager = app.autolaunch();
-    let previous = manager
-        .is_enabled()
-        .map_err(|_| "Cannot read macOS launch-at-login status.")?;
-    let change = if enabled {
-        manager.enable()
-    } else {
-        manager.disable()
-    };
-    change.map_err(|_| "macOS could not update launch at login. No preference was saved.")?;
-    if let Err(error) = store.save_settings(&Settings {
-        launch_at_login: enabled,
-    }) {
-        let rollback = if previous {
-            manager.enable()
-        } else {
-            manager.disable()
-        };
-        if rollback.is_err() {
-            return Err("Settings were not saved and launch at login could not be restored. Check macOS Login Items.".into());
-        }
-        return Err(error);
-    }
+    host.registration.set_enabled(&store, enabled)?;
     store.record(DiagnosticEvent::SettingsSaved)?;
     Ok(())
 }
@@ -163,10 +142,6 @@ fn open_window(app: &tauri::AppHandle, label: &str, title: &str) -> Result<(), S
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|_, _, _| {}))
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
-        ))
         .invoke_handler(tauri::generate_handler![
             snapshot,
             save_login,
@@ -188,6 +163,12 @@ pub fn run() {
                 error: Mutex::new(None),
                 isolated,
                 quitting: AtomicBool::new(false),
+                registration: LoginRegistration::new(
+                    app.path()
+                        .home_dir()?
+                        .join("Library/LaunchAgents/PR Sniper.plist"),
+                    std::env::current_exe()?.canonicalize()?,
+                ),
             });
             record(app.handle(), DiagnosticEvent::SessionStarted);
             let status = MenuItem::with_id(app, "status", "Status", true, None::<&str>)?;

@@ -40,8 +40,11 @@ PR_SNIPER_DATA_DIR="$(mktemp -d)" npm run tauri -- dev
 
 That override never changes login items and disables the startup checkbox.
 Launch-at-login registration requires an explicit Settings change in a normal
-installed-app run. Startup merely reads macOS state; it does not enable, disable
-or reapply the saved preference.
+installed-app run. The checkbox shows your saved request, not effective macOS
+state. The separate registration status validates the owned plist and current
+executable; even a valid registration may be disabled by macOS Login Items.
+Startup only inspects registration: it does not enable, disable or reapply the
+saved preference.
 
 ## Check and bundle
 
