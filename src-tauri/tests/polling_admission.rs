@@ -352,3 +352,198 @@ fn successful_poll_supplies_the_newest_update_cursor_to_the_next_check() {
     let retry = monitor.begin(&settings, 1200, true).unwrap().pop().unwrap();
     assert_eq!(retry.updated_after.as_deref(), Some("2026-09-20T20:02:00Z"));
 }
+
+#[test]
+fn restored_monitor_keeps_verified_identity_cursor_and_durable_deduplication() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let settings = configured(&store);
+    poll(
+        &mut Monitor::default(),
+        &store,
+        1000,
+        result(vec![candidate()]),
+    );
+    drop(store);
+    let reopened = fixture.store();
+    let mut monitor = Monitor::restore(&reopened).unwrap();
+
+    let ticket = monitor.begin(&settings, 1100, true).unwrap().pop().unwrap();
+
+    assert_eq!(
+        ticket.updated_after.as_deref(),
+        Some("2026-09-20T20:00:00Z")
+    );
+    assert_eq!(ticket.expected_account_id.as_deref(), Some("7"));
+    assert_eq!(ticket.expected_repository_id.as_deref(), Some("900"));
+    monitor
+        .finish(&reopened, ticket, Ok(result(vec![candidate()])), 1101)
+        .unwrap();
+    assert_eq!(fixture.store().load_queue().unwrap().len(), 1);
+}
+
+#[test]
+fn watchlist_order_and_display_labels_do_not_change_trigger_policy_identity() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let mut settings = configured(&store);
+    settings.defaults.watched_authors.push(WatchedIdentity {
+        id: "55".into(),
+        login: "another-author".into(),
+    });
+    store.save_settings(&settings).unwrap();
+    poll(
+        &mut Monitor::default(),
+        &store,
+        1000,
+        result(vec![candidate()]),
+    );
+    settings.defaults.watched_authors.reverse();
+    settings.defaults.watched_authors[1].login = "new-display-label".into();
+    store.save_settings(&settings).unwrap();
+    let mut monitor = Monitor::restore(&fixture.store()).unwrap();
+
+    let ticket = monitor.begin(&settings, 1100, true).unwrap().pop().unwrap();
+
+    assert_eq!(
+        ticket.updated_after.as_deref(),
+        Some("2026-09-20T20:00:00Z")
+    );
+    monitor
+        .finish(&store, ticket, Ok(result(vec![candidate()])), 1101)
+        .unwrap();
+    assert_eq!(fixture.store().load_queue().unwrap().len(), 1);
+}
+
+#[test]
+fn changed_trigger_policy_invalidates_the_cursor_and_creates_a_distinct_job() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let mut settings = configured(&store);
+    poll(
+        &mut Monitor::default(),
+        &store,
+        1000,
+        result(vec![candidate()]),
+    );
+    settings.defaults.reviewer_assignment = false;
+    store.save_settings(&settings).unwrap();
+    let mut monitor = Monitor::restore(&fixture.store()).unwrap();
+
+    let ticket = monitor.begin(&settings, 1100, true).unwrap().pop().unwrap();
+
+    assert_eq!(ticket.updated_after, None);
+    monitor
+        .finish(&store, ticket, Ok(result(vec![candidate()])), 1101)
+        .unwrap();
+    let jobs = fixture.store().load_queue().unwrap();
+    assert_eq!(jobs.len(), 2);
+    assert_ne!(jobs[0].trigger_policy, jobs[1].trigger_policy);
+}
+
+#[test]
+fn local_repository_readdition_preserves_remote_identity_deduplication() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let settings = configured(&store);
+    poll(
+        &mut Monitor::default(),
+        &store,
+        1000,
+        result(vec![candidate()]),
+    );
+    store
+        .remove_repository(&settings.repositories[0].id)
+        .unwrap();
+    let readded = store.add_repository("example/project").unwrap();
+    assert_ne!(settings.repositories[0].id, readded.repositories[0].id);
+
+    poll(
+        &mut Monitor::restore(&fixture.store()).unwrap(),
+        &store,
+        1100,
+        result(vec![candidate()]),
+    );
+
+    let jobs = fixture.store().load_queue().unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].repository_id, "900");
+}
+
+#[test]
+fn retargeting_resets_remote_verification_and_never_reuses_another_repositories_job() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let settings = configured(&store);
+    let mut monitor = Monitor::default();
+    poll(&mut monitor, &store, 1000, result(vec![candidate()]));
+    let changed = store
+        .update_repository(&settings.repositories[0].id, "example/other", true)
+        .unwrap();
+    let mut other = result(vec![candidate()]);
+    other.connection.repository = RemoteRepository {
+        id: "901".into(),
+        name: "example/other".into(),
+    };
+    other.pull_requests[0].base_repository_id = "901".into();
+    other.pull_requests[0].head_repository_id = Some("901".into());
+
+    let ticket = monitor.begin(&changed, 1100, true).unwrap().pop().unwrap();
+
+    assert_eq!(ticket.updated_after, None);
+    assert_eq!(ticket.expected_repository_id, None);
+    monitor.finish(&store, ticket, Ok(other), 1101).unwrap();
+    let jobs = fixture.store().load_queue().unwrap();
+    assert_eq!(jobs.len(), 2);
+    assert_eq!(jobs[0].repository_id, "900");
+    assert_eq!(jobs[1].repository_id, "901");
+}
+
+#[test]
+fn disabling_then_reenabling_a_live_monitor_requires_a_complete_read() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let settings = configured(&store);
+    let id = &settings.repositories[0].id;
+    let mut monitor = Monitor::default();
+    poll(&mut monitor, &store, 1000, result(vec![candidate()]));
+    let disabled = store
+        .update_repository(id, "example/project", false)
+        .unwrap();
+    assert!(monitor.begin(&disabled, 1050, false).unwrap().is_empty());
+    let enabled = store
+        .update_repository(id, "example/project", true)
+        .unwrap();
+
+    let ticket = monitor.begin(&enabled, 1100, true).unwrap().pop().unwrap();
+
+    assert_eq!(ticket.updated_after, None);
+}
+
+#[test]
+fn host_checkpoint_must_preserve_cursor_invalidation_across_restart() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let settings = configured(&store);
+    let id = &settings.repositories[0].id;
+    let mut monitor = Monitor::default();
+    poll(&mut monitor, &store, 1000, result(vec![candidate()]));
+    let disabled = store
+        .update_repository(id, "example/project", false)
+        .unwrap();
+    assert!(monitor.begin(&disabled, 1050, false).unwrap().is_empty());
+    store.save_polling_health(&monitor.snapshot()).unwrap();
+    drop(monitor);
+    let mut restarted = Monitor::restore(&fixture.store()).unwrap();
+    let enabled = store
+        .update_repository(id, "example/project", true)
+        .unwrap();
+
+    let ticket = restarted
+        .begin(&enabled, 1100, true)
+        .unwrap()
+        .pop()
+        .unwrap();
+
+    assert_eq!(ticket.updated_after, None);
+}
