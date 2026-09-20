@@ -4,9 +4,12 @@ A macOS menu-bar application for human-owned pull request review. Built with
 Tauri 2, Rust and vanilla TypeScript. The tray exposes **Status**, **Review
 Queue**, **Settings**, **Setup Doctor** and **Quit PR Sniper**.
 
-Settings can explicitly verify a configured GitHub connection and read complete
-pull-request metadata. This increment does **not** poll repositories, run agents,
-publish comments or perform automated setup. Check Now is disabled. Product scope lives in the
+The host checks enabled GitHub repositories and shows eligible revisions and
+schedule health in **Status** and **Review Queue**. **Check Now** requests an
+immediate, non-overlapping check without changing the configured schedule.
+Settings can still explicitly verify a connection and read complete PR metadata.
+Agent execution, comment publication and automated setup are not implemented.
+Product scope lives in the
 [approved specification](docs/agent/specs/pr-sniper-mvp.nano.md), not this
 implementation summary.
 
@@ -115,6 +118,8 @@ reviewer-assignment and adapter values remain preserved in storage but the
 reviewer-assignment control is not part of ordinary Settings. **Run reviews
 automatically** and **Post review comments automatically** remain independent,
 off by default; changing configuration executes neither reviews nor publication.
+Monitoring performs provider reads only; neither gate starts an agent or
+authorizes publication in this increment.
 
 Scheduling starts in the system-local time zone for a new profile. Existing
 intervals, five-field cron expressions and saved time zones remain unchanged;
@@ -153,6 +158,27 @@ never config, state or diagnostics.
 See the [bounded architecture decision](docs/adr/0001-macos-foundation.md).
 
 ## Read-only GitHub connection
+
+Monitoring uses a separate lightweight open-PR reader, never the manual
+historical/changed-file reader below. Open, non-draft revisions qualify when
+their author's stable ID is watched **or** the signed-in account is individually
+requested and the reviewer trigger is enabled. Requested teams do not imply
+individual membership. Empty watchlists are valid and do not match all authors.
+
+The basic queue persists in `state/queue.json`; identity includes GitHub, remote
+repository ID, PR ID, head SHA and a deterministic trigger-policy key. Login
+label changes and matching both triggers do not create duplicate jobs. A new
+eligible head is distinct. Reviewer-only work and fork/deleted-head-repository
+work wait for trust confirmation, never automatic execution; trusted work
+still waits for human start or an unimplemented agent. No queue item represents
+a completed review or publication.
+
+`state/polling.json` contains safe schedule-health observations (last attempt,
+success, next run, in-flight state and classified failure). A failed read never
+becomes an empty successful check. Settings are reloaded after network work;
+disabled, removed, retargeted or changed-policy attempts cannot admit old results.
+Closing a window does not stop checks; Quit ends the host. Full interrupted-job
+recovery and retry budgets belong to a later delivery, not this basic queue.
 
 Install and authenticate the official GitHub CLI yourself. PR Sniper never runs
 login, logout, installation or credential-configuration commands. It uses the
