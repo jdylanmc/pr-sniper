@@ -79,7 +79,10 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                 let client = github::client()?;
                 let connection =
                     client.connect(&ticket.name, ticket.expected_account_id.as_deref())?;
-                let pull_requests = client.poll_pull_requests(&connection.repository)?;
+                let pull_requests = client.poll_pull_requests_since(
+                    &connection.repository,
+                    ticket.updated_after.as_deref(),
+                )?;
                 Ok(monitoring::PollResult {
                     connection,
                     pull_requests,

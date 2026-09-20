@@ -51,20 +51,17 @@ impl<T: Transport> GithubClient<T> {
     pub fn poll_pull_requests_since(
         &self,
         repository: &RemoteRepository,
-        _updated_after: Option<&str>,
-    ) -> Result<Vec<PullRequest>, ConnectionError> {
-        self.poll_pull_requests(repository)
-    }
-
-    pub fn poll_pull_requests(
-        &self,
-        repository: &RemoteRepository,
+        updated_after: Option<&str>,
     ) -> Result<Vec<PullRequest>, ConnectionError> {
         let name = crate::storage::canonical_repository(&repository.name)
             .map_err(|_| ConnectionError::InvalidRepository)?;
-        let list = self.pages(&format!(
-            "/repos/{name}/pulls?state=open&sort=updated&direction=desc&per_page=100&page=1"
-        ))?;
+        let list = self.pages_with_cursor(
+            &format!(
+                "/repos/{name}/pulls?state=open&sort=updated&direction=desc&per_page=100&page=1"
+            ),
+            updated_after,
+            true,
+        )?;
         let mut ids = HashSet::new();
         let mut numbers = HashSet::new();
         let mut result = Vec::new();
@@ -136,6 +133,13 @@ impl<T: Transport> GithubClient<T> {
             });
         }
         Ok(result)
+    }
+
+    pub fn poll_pull_requests(
+        &self,
+        repository: &RemoteRepository,
+    ) -> Result<Vec<PullRequest>, ConnectionError> {
+        self.poll_pull_requests_since(repository, None)
     }
 
     pub fn pull_requests(
@@ -299,10 +303,24 @@ impl<T: Transport> GithubClient<T> {
     }
 
     fn pages(&self, first: &str) -> Result<Vec<Value>, ConnectionError> {
+        self.pages_with_cursor(first, None, false)
+    }
+
+    fn pages_with_cursor(
+        &self,
+        first: &str,
+        updated_after: Option<&str>,
+        ordered: bool,
+    ) -> Result<Vec<Value>, ConnectionError> {
+        let cutoff = updated_after
+            .map(chrono::DateTime::parse_from_rfc3339)
+            .transpose()
+            .map_err(|_| ConnectionError::Configuration)?;
         let mut path = first.to_string();
         let mut seen = HashSet::new();
         let mut result = Vec::new();
         let mut advertised_last = None;
+        let mut previous_update = None;
         loop {
             if !seen.insert(path.clone()) || seen.len() > 10_000 {
                 return Err(ConnectionError::IncompleteRead);
@@ -316,7 +334,27 @@ impl<T: Transport> GithubClient<T> {
             if page.is_empty() && (next.is_some() || seen.len() > 1) {
                 return Err(ConnectionError::IncompleteRead);
             }
-            result.extend(page.iter().cloned());
+            let mut crossed_cursor = false;
+            for item in page {
+                if ordered {
+                    let updated = item["updated_at"]
+                        .as_str()
+                        .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
+                        .ok_or(ConnectionError::InvalidResponse)?;
+                    if previous_update.is_some_and(|previous| updated > previous) {
+                        return Err(ConnectionError::IncompleteRead);
+                    }
+                    previous_update = Some(updated);
+                    if cutoff.is_some_and(|cutoff| updated < cutoff) {
+                        crossed_cursor = true;
+                        continue;
+                    }
+                }
+                result.push(item.clone());
+            }
+            if crossed_cursor {
+                return Ok(result);
+            }
             match next {
                 Some(next) => path = next,
                 None => return Ok(result),

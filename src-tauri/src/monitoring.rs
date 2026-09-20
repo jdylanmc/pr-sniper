@@ -5,6 +5,7 @@ use crate::github::{
 };
 use crate::policy::{Policy, Schedule};
 use crate::storage::{Settings, Store};
+use chrono::TimeZone;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -26,6 +27,7 @@ pub struct PollTicket {
     pub policy: Policy,
     pub expected_account_id: Option<String>,
     pub expected_repository_id: Option<String>,
+    pub updated_after: Option<String>,
 }
 
 pub struct PollResult {
@@ -130,6 +132,7 @@ impl Monitor {
                 policy,
                 expected_account_id: entry.account_id.clone(),
                 expected_repository_id: entry.remote_id.clone(),
+                updated_after: None,
             });
         }
         Ok(tickets)
@@ -148,6 +151,9 @@ impl Monitor {
             .ok_or("Polling attempt is no longer active.")?;
         entry.health.in_flight = false;
         let outcome = result.and_then(|result| {
+            if !result.connection.capabilities.read {
+                return Err(ConnectionError::MissingReadPermission);
+            }
             let settings = store
                 .load_settings()
                 .map_err(|_| ConnectionError::Configuration)?;
@@ -269,6 +275,23 @@ fn next_run(schedule: &Schedule, now: i64) -> Result<i64, ConnectionError> {
         Schedule::Interval { minutes, .. } => now
             .checked_add(i64::from(*minutes) * 60)
             .ok_or(ConnectionError::Configuration),
-        Schedule::Cron { .. } => Err(ConnectionError::Configuration),
+        Schedule::Cron {
+            expression,
+            timezone,
+        } => {
+            let zone = timezone
+                .parse::<chrono_tz::Tz>()
+                .map_err(|_| ConnectionError::Configuration)?;
+            let current = zone
+                .timestamp_opt(now, 0)
+                .single()
+                .ok_or(ConnectionError::Configuration)?;
+            expression
+                .parse::<croner::Cron>()
+                .map_err(|_| ConnectionError::Configuration)?
+                .find_next_occurrence(&current, false)
+                .map(|time| time.timestamp())
+                .map_err(|_| ConnectionError::Configuration)
+        }
     }
 }
