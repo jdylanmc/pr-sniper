@@ -1,4 +1,5 @@
 use serde_json::Value;
+pub mod credentials;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Identity {
@@ -11,6 +12,10 @@ pub enum ConnectionError {
     NotImplemented,
     WrongIdentity,
     InvalidResponse,
+    MissingCli,
+    BrokenCli,
+    SignedOut,
+    Timeout,
 }
 
 pub fn verify_identity(
