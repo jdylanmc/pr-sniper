@@ -12,6 +12,7 @@ fn explicit_login_preference_survives_a_fresh_store() {
     store
         .save_settings(&Settings {
             launch_at_login: true,
+            ..Settings::default()
         })
         .expect("persist explicit opt-in in fixture, not the OS login items");
     drop(store);
@@ -49,6 +50,7 @@ fn explicit_opt_out_replaces_the_previous_opt_in() {
         .store()
         .save_settings(&Settings {
             launch_at_login: true,
+            ..Settings::default()
         })
         .expect("arrange previous opt-in");
 
@@ -56,6 +58,7 @@ fn explicit_opt_out_replaces_the_previous_opt_in() {
         .store()
         .save_settings(&Settings {
             launch_at_login: false,
+            ..Settings::default()
         })
         .expect("persist opt-out");
 
@@ -143,6 +146,7 @@ fn failed_save_reports_an_error_and_preserves_the_conflicting_file() {
 
     let result = fixture.store().save_settings(&Settings {
         launch_at_login: true,
+        ..Settings::default()
     });
 
     assert!(
@@ -163,6 +167,7 @@ fn ordinary_configuration_contains_only_the_host_preference() {
         .store()
         .save_settings(&Settings {
             launch_at_login: true,
+            ..Settings::default()
         })
         .unwrap();
 

@@ -46,9 +46,16 @@ label {
   align-items: center;
   font-weight: 600;
 }
-input {
+input[type="checkbox"] {
   width: 18px;
   height: 18px;
+}
+input[type="text"] {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 8px;
+  margin: 8px 0;
+  font: inherit;
 }
 button {
   color: white;

@@ -12,11 +12,9 @@ are seeded through `Store::save_settings`; assertions read through a separate
 Store process and reload the UI. Persistence is not a JavaScript imitation.
 The fixture removes its own temporary data even when an assertion fails.
 
-This first RED slice demonstrates the missing Add repository control after
-the existing Settings surface has successfully read the saved startup
-preference. The bridge's `save_repository` arm is explicitly unimplemented;
-GREEN must connect it to the same production Store operation as the Tauri
-command before the full round trip can pass.
+The add-repository test checks canonical GitHub names, persistence across fresh
+Store processes and UI reload, and preservation of the startup preference.
+The bridge and native command call the same production Store operation.
 
 The test does not exercise native Tauri command registration, macOS WebKit,
 menu-bar behavior, or login-item integration. It never launches the native

@@ -27,8 +27,13 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             "error": null,
             "version": env!("CARGO_PKG_VERSION")
         })),
-        // GREEN connects this IPC arm to the same Store operation as the app command.
-        "save_repository" => Err("Repository saving is not implemented.".into()),
+        "save_repository" => {
+            let repository = request.args["repository"]
+                .as_str()
+                .ok_or("Repository name is required.")?;
+            serde_json::to_value(store.add_repository(repository)?)
+                .map_err(|_| "Cannot encode settings.".into())
+        }
         command => Err(format!("Unsupported settings test command: {command}")),
     }
 }

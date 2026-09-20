@@ -98,6 +98,14 @@ fn save_login(host: State<'_, Host>, enabled: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn save_repository(host: State<'_, Host>, repository: String) -> Result<Settings, String> {
+    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+    let settings = store.add_repository(&repository)?;
+    store.record(DiagnosticEvent::SettingsSaved)?;
+    Ok(settings)
+}
+
+#[tauri::command]
 fn diagnostics(host: State<'_, Host>) -> Result<Vec<Diagnostic>, String> {
     host.store
         .lock()
@@ -145,6 +153,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             snapshot,
             save_login,
+            save_repository,
             diagnostics,
             open_diagnostics
         ])

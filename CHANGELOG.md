@@ -7,6 +7,11 @@ No release/versioning policy has been established yet.
 
 ### Added
 
+- Add watched GitHub repositories from Settings, with canonical names and stable
+  local identities persisted across restarts. This configures future monitoring;
+  it does not connect to GitHub or start reviews. See [#4](https://github.com/jdylanmc/pr-sniper/issues/4)
+  and [#11](https://github.com/jdylanmc/pr-sniper/issues/11).
+
 - Locally buildable macOS menu-bar foundation with a font-independent crosshair,
   queue/status/setup placeholders, persistent startup preference, explicit
   opt-in launch at login, and redacted host diagnostics accessible from Settings.
