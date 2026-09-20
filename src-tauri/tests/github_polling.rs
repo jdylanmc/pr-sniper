@@ -1,8 +1,15 @@
-use pr_sniper_lib::github::provider::{GithubClient, RemoteRepository, Response, Transport};
-use pr_sniper_lib::github::ConnectionError;
+mod support;
+
+use pr_sniper_lib::github::provider::{
+    Capabilities, CommentCapability, Connection, GithubClient, RemoteRepository, Response,
+    Transport,
+};
+use pr_sniper_lib::github::{ConnectionError, Identity};
+use pr_sniper_lib::monitoring::{Monitor, PollResult};
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use support::Fixture;
 
 const OPEN_FIRST: &str =
     "/repos/example/project/pulls?state=open&sort=updated&direction=desc&per_page=100&page=1";
@@ -316,4 +323,110 @@ fn a_pr_reordered_across_pages_is_complete_or_explicitly_incomplete() {
         ),
         Err(error) => assert_eq!(error, ConnectionError::IncompleteRead),
     }
+}
+
+#[test]
+fn unstable_pages_preserve_the_durable_cursor_and_reopen_recovers_the_boundary_pr() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    store.add_repository("example/project").unwrap();
+    let connected = |pull_requests| PollResult {
+        connection: Connection {
+            identity: Identity {
+                id: "7".into(),
+                login: "reviewer".into(),
+            },
+            repository: repository(),
+            capabilities: Capabilities {
+                read: true,
+                comment: CommentCapability::Unknown,
+            },
+        },
+        pull_requests,
+    };
+    let mut monitor = Monitor::default();
+    let ticket = monitor
+        .prepare_checks(&store, 1000, true)
+        .unwrap()
+        .pop()
+        .unwrap();
+    let previous = GithubClient::new(&CursorTransport {
+        requests: RefCell::new(Vec::new()),
+        fail_second: false,
+    })
+    .poll_pull_requests_since(&repository(), Some("2026-09-20T20:01:00Z"))
+    .unwrap();
+    let mut previous = previous[0].clone();
+    previous.id = "1900".into();
+    previous.number = 900;
+    previous.updated_at = "2026-09-19T00:00:00Z".into();
+    monitor
+        .finish(&store, ticket, Ok(connected(vec![previous])), 1001)
+        .unwrap();
+    let transport = MovingOpenList::new(true);
+    let client = GithubClient::new(&transport);
+    let ticket = monitor
+        .prepare_checks(&store, 1100, true)
+        .unwrap()
+        .pop()
+        .unwrap();
+
+    let incomplete =
+        client.poll_pull_requests_since(&repository(), ticket.updated_after.as_deref());
+
+    assert_eq!(incomplete, Err(ConnectionError::IncompleteRead));
+    monitor
+        .finish(&store, ticket, incomplete.map(&connected), 1101)
+        .unwrap();
+    assert_eq!(monitor.snapshot()[0].last_success, Some(1001));
+    assert_eq!(
+        monitor.snapshot()[0].last_failure,
+        Some(ConnectionError::IncompleteRead)
+    );
+    assert_eq!(fixture.store().load_queue().unwrap().len(), 1);
+    let saved_health: Value =
+        serde_json::from_slice(&std::fs::read(fixture.path().join("state/polling.json")).unwrap())
+            .unwrap();
+    assert_eq!(saved_health[0]["last_success"], 1001);
+    drop(monitor);
+    drop(store);
+    let reopened = fixture.store();
+    let mut restarted = Monitor::restore(&reopened).unwrap();
+    let ticket = restarted
+        .prepare_checks(&reopened, 1200, true)
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(
+        ticket.updated_after.as_deref(),
+        Some("2026-09-19T00:00:00Z")
+    );
+    let stable = client.poll_pull_requests_since(&repository(), ticket.updated_after.as_deref());
+    assert!(stable
+        .as_ref()
+        .unwrap()
+        .iter()
+        .any(|pull| pull.number == 101));
+    restarted
+        .finish(&reopened, ticket, stable.map(&connected), 1201)
+        .unwrap();
+    let jobs = fixture.store().load_queue().unwrap();
+    assert_eq!(jobs.len(), 250);
+    assert_eq!(jobs.iter().filter(|job| job.number == 101).count(), 1);
+    assert!(!jobs.iter().any(|job| job.number == 1));
+    let mut restored_again = Monitor::restore(&fixture.store()).unwrap();
+    let ticket = restored_again
+        .prepare_checks(&reopened, 1300, true)
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(
+        ticket.updated_after.as_deref(),
+        Some("2026-09-20T20:57:00Z")
+    );
+    let repeated = client.poll_pull_requests_since(&repository(), ticket.updated_after.as_deref());
+    restored_again
+        .finish(&reopened, ticket, repeated.map(connected), 1301)
+        .unwrap();
+    assert_eq!(fixture.store().load_queue().unwrap().len(), 250);
 }
