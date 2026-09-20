@@ -54,6 +54,10 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             serde_json::to_value(store.remove_repository(id)?)
                 .map_err(|_| "Cannot encode settings.".into())
         }
+        // GREEN connects these IPC arms to the production policy save operations.
+        "save_defaults" | "save_repository_policy" => {
+            Err("Policy configuration is not implemented.".into())
+        }
         command => Err(format!("Unsupported settings test command: {command}")),
     }
 }
