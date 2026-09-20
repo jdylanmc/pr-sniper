@@ -69,7 +69,7 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
         let tickets = monitor
             .begin(&settings, now_seconds(), immediate)
             .map_err(|_| "Cannot calculate repository schedules.")?;
-        store.save_polling_health(&monitor.snapshot())?;
+        monitor.checkpoint(&store)?;
         tickets
     };
     for ticket in tickets {
