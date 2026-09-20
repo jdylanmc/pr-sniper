@@ -51,6 +51,27 @@ pub struct QueueJob {
     pub detected_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PollCursor {
+    pub name: String,
+    pub account_id: String,
+    pub remote_id: String,
+    pub trigger_policy: String,
+    pub updated_after: Option<String>,
+}
+
+fn trigger_policy(policy: &Policy, account_id: &str) -> Result<String, ConnectionError> {
+    let mut authors: Vec<_> = policy
+        .watched_authors
+        .iter()
+        .map(|author| author.id.as_str())
+        .collect();
+    authors.sort_unstable();
+    serde_json::to_string(&(authors, policy.reviewer_assignment, account_id))
+        .map_err(|_| ConnectionError::Configuration)
+}
+
 struct Entry {
     health: ScheduleHealth,
     schedule: Schedule,
@@ -61,9 +82,17 @@ struct Entry {
 #[derive(Default)]
 pub struct Monitor {
     entries: BTreeMap<String, Entry>,
+    cursors: BTreeMap<String, PollCursor>,
 }
 
 impl Monitor {
+    pub fn restore(store: &Store) -> Result<Self, String> {
+        Ok(Self {
+            entries: BTreeMap::new(),
+            cursors: store.load_poll_cursors()?,
+        })
+    }
+
     pub fn snapshot(&self) -> Vec<ScheduleHealth> {
         self.entries
             .values()
@@ -77,6 +106,18 @@ impl Monitor {
         now: i64,
         check_now: bool,
     ) -> Result<Vec<PollTicket>, ConnectionError> {
+        self.cursors.retain(|id, cursor| {
+            settings.repositories.iter().any(|repository| {
+                repository.id == *id
+                    && repository.enabled
+                    && repository.name == cursor.name
+                    && trigger_policy(
+                        &repository.overrides.effective(&settings.defaults),
+                        &cursor.account_id,
+                    )
+                    .is_ok_and(|key| key == cursor.trigger_policy)
+            })
+        });
         self.entries.retain(|id, entry| {
             entry.health.in_flight || settings.repositories.iter().any(|repo| &repo.id == id)
         });
@@ -86,6 +127,7 @@ impl Monitor {
                 continue;
             }
             let policy = repository.overrides.effective(&settings.defaults);
+            let cursor = self.cursors.get(&repository.id);
             let next = next_run(&policy.schedule, now)?;
             let entry = self
                 .entries
@@ -130,9 +172,13 @@ impl Monitor {
                 repository_id: repository.id.clone(),
                 name: repository.name.clone(),
                 policy,
-                expected_account_id: entry.account_id.clone(),
-                expected_repository_id: entry.remote_id.clone(),
-                updated_after: None,
+                expected_account_id: cursor
+                    .map(|value| value.account_id.clone())
+                    .or_else(|| entry.account_id.clone()),
+                expected_repository_id: cursor
+                    .map(|value| value.remote_id.clone())
+                    .or_else(|| entry.remote_id.clone()),
+                updated_after: cursor.and_then(|value| value.updated_after.clone()),
             });
         }
         Ok(tickets)
@@ -186,19 +232,17 @@ impl Monitor {
             let mut jobs = store
                 .load_queue()
                 .map_err(|_| ConnectionError::Configuration)?;
-            let mut authors: Vec<_> = policy
-                .watched_authors
-                .iter()
-                .map(|author| author.id.as_str())
-                .collect();
-            authors.sort_unstable();
-            let trigger_policy = serde_json::to_string(&(
-                authors,
-                policy.reviewer_assignment,
-                &result.connection.identity.id,
-            ))
-            .map_err(|_| ConnectionError::Configuration)?;
+            let trigger_policy = trigger_policy(&policy, &result.connection.identity.id)?;
+            let mut newest = ticket
+                .updated_after
+                .as_deref()
+                .map(chrono::DateTime::parse_from_rfc3339)
+                .transpose()
+                .map_err(|_| ConnectionError::Configuration)?;
             for pull in result.pull_requests {
+                let updated = chrono::DateTime::parse_from_rfc3339(&pull.updated_at)
+                    .map_err(|_| ConnectionError::InvalidResponse)?;
+                newest = Some(newest.map_or(updated, |previous| previous.max(updated)));
                 if pull.base_repository_id != result.connection.repository.id {
                     return Err(ConnectionError::RepositoryChanged);
                 }
@@ -255,6 +299,20 @@ impl Monitor {
             store
                 .save_queue(&jobs)
                 .map_err(|_| ConnectionError::Configuration)?;
+            let cursor = PollCursor {
+                name: ticket.name.clone(),
+                account_id: result.connection.identity.id.clone(),
+                remote_id: result.connection.repository.id.clone(),
+                trigger_policy,
+                updated_after: newest
+                    .map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+            };
+            let mut cursors = self.cursors.clone();
+            cursors.insert(ticket.repository_id.clone(), cursor);
+            store
+                .save_poll_cursors(&cursors)
+                .map_err(|_| ConnectionError::Configuration)?;
+            self.cursors = cursors;
             entry.account_id = Some(result.connection.identity.id);
             entry.remote_id = Some(result.connection.repository.id);
             Ok(())

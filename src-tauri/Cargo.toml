@@ -15,7 +15,7 @@ tauri-plugin-single-instance = "=2.4.4"
 plist = "=1.10.1"
 uuid = { version = "=1.26.1", features = ["v4"] }
 chrono-tz = "=0.10.4"
-chrono = "=0.4.45"
+chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
 croner = "=4.0.0"
 tokio = { version = "1", features = ["rt", "time", "process", "io-util", "macros"] }
 zeroize = "1"

@@ -225,6 +225,26 @@ impl Store {
         }
     }
 
+    pub fn load_poll_cursors(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, crate::monitoring::PollCursor>, String> {
+        match fs::read(self.root.join("state/poll-cursors.json")) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|_| "Polling cursors are invalid; monitoring cannot resume.".into()),
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                Ok(std::collections::BTreeMap::new())
+            }
+            Err(_) => Err("Cannot read polling cursors. Check local file permissions.".into()),
+        }
+    }
+
+    pub(crate) fn save_poll_cursors(
+        &self,
+        cursors: &std::collections::BTreeMap<String, crate::monitoring::PollCursor>,
+    ) -> Result<(), String> {
+        self.write_state("poll-cursors.json", cursors)
+    }
+
     pub(crate) fn save_queue(&self, jobs: &[crate::monitoring::QueueJob]) -> Result<(), String> {
         self.write_state("queue.json", jobs)
     }
