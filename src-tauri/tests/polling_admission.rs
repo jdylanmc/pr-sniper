@@ -327,3 +327,28 @@ fn failed_poll_keeps_prior_success_and_records_the_actual_safe_failure() {
         assert!(fixture.store().load_queue().unwrap().is_empty());
     }
 }
+
+#[test]
+fn successful_poll_supplies_the_newest_update_cursor_to_the_next_check() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let settings = configured(&store);
+    let mut newer = candidate();
+    newer.id = "1032".into();
+    newer.number = 32;
+    newer.updated_at = "2026-09-20T20:02:00Z".into();
+    let mut monitor = Monitor::default();
+    poll(&mut monitor, &store, 1000, result(vec![newer, candidate()]));
+
+    let ticket = monitor.begin(&settings, 1100, true).unwrap().pop().unwrap();
+
+    assert_eq!(
+        ticket.updated_after.as_deref(),
+        Some("2026-09-20T20:02:00Z")
+    );
+    monitor
+        .finish(&store, ticket, Err(ConnectionError::IncompleteRead), 1101)
+        .unwrap();
+    let retry = monitor.begin(&settings, 1200, true).unwrap().pop().unwrap();
+    assert_eq!(retry.updated_after.as_deref(), Some("2026-09-20T20:02:00Z"));
+}
