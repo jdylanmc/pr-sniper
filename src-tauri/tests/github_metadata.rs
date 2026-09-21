@@ -52,6 +52,22 @@ fn merged_pull_request() -> Value {
 
 struct MetadataTransport;
 
+struct AliasMetadataTransport {
+    file_endpoint: &'static str,
+}
+
+impl Transport for AliasMetadataTransport {
+    fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+        let mut response = MetadataTransport.get(path)?;
+        if let Some(link) = response.headers.get_mut("link") {
+            *link = link
+                .replace("/repos/jdylanmc/pr-sniper/", "/repositories/1376547672/")
+                .replace("/pulls/31/files?", self.file_endpoint);
+        }
+        Ok(response)
+    }
+}
+
 impl Transport for MetadataTransport {
     fn get(&self, path: &str) -> Result<Response, ConnectionError> {
         let (body, next) = match path {
@@ -207,4 +223,29 @@ fn metadata_exhausts_pull_request_and_file_pages_without_losing_verified_fields(
             },
         ])
     );
+}
+
+#[test]
+fn numeric_aliases_preserve_complete_manual_metadata_and_file_hydration() {
+    let repository = RemoteRepository {
+        id: "1376547672".into(),
+        name: "jdylanmc/pr-sniper".into(),
+    };
+    let expected = GithubClient::new(MetadataTransport)
+        .pull_requests(&repository)
+        .unwrap();
+    assert_eq!(
+        GithubClient::new(AliasMetadataTransport {
+            file_endpoint: "/pulls/31/files?",
+        })
+        .pull_requests(&repository),
+        Ok(expected)
+    );
+    for file_endpoint in ["/pulls/32/files?", "/issues/31/files?", "/pulls/31?"] {
+        assert_eq!(
+            GithubClient::new(AliasMetadataTransport { file_endpoint }).pull_requests(&repository),
+            Err(ConnectionError::IncompleteRead),
+            "{file_endpoint}"
+        );
+    }
 }

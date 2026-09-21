@@ -68,6 +68,13 @@ schedule. Settings saves and admission serialize through the same store lock;
 admission reloads current enabled state, repository name and effective policy.
 The provider's polling path reads open PR metadata without historical or file
 hydration; the explicit manual reader retains its original complete behavior.
+GitHub list timestamps are not treated as a sorting guarantee. Polling exhausts
+the open list and reconciles multi-page observations before applying its cursor;
+an old row or page cannot hide a later newer or equal-timestamp revision. This
+trades timestamp-based early-exit savings for completeness (2N list reads for an
+N-page sweep, one for a single page). Numeric-repository pagination aliases are
+accepted only for the verified immutable repository and exact list/file endpoint,
+without relaxing origin, filter, duplicate or moving-page checks.
 
 The basic queue uses atomic application-owned state files. Jobs use verified
 remote repository and PR identities, head revision and a deterministic trigger

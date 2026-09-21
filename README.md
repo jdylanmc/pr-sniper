@@ -174,14 +174,23 @@ still waits for human start or an unimplemented agent. No queue item represents
 a completed review or publication.
 
 Successful incremental boundaries and verified account/remote identities persist
-in `state/poll-cursors.json`. Polling includes updates equal to the saved timestamp,
-stops before older pages and never advances on failed reads. Eligibility-policy
-changes, disabling/removal and retargeting invalidate the relevant cursor; queue
+in `state/poll-cursors.json`. Polling includes updates equal to the saved timestamp
+and never advances on failed reads. GitHub can return timestamps out of order,
+so every open-PR page is enumerated and validated before older revisions are
+excluded from admission. The cursor reduces returned candidates, not list GETs.
+Eligibility-policy changes, disabling/removal and retargeting invalidate the
+relevant cursor; queue
 history still deduplicates already detected remote revisions.
 Multi-page polling re-reads the visited lightweight pages in reverse order before
 accepting the result. Detected page or pagination changes fail as an incomplete
 read without advancing the cursor; there is no automatic retry of that attempt.
-Single-page incremental reads do not fetch older pages for this check.
+A single-page sweep needs one list GET; an N-page sweep needs 2N list GETs,
+including reconciliation, in addition to connection/access checks. This costs
+more reads than a timestamp-based early exit but avoids missing newer PRs behind
+older rows or pages. Polling still never hydrates historical PRs or changed files.
+Both polling and manual metadata pagination accept GitHub's numeric-repository
+links only for the verified immutable repository and exact endpoint, with the
+same origin and unchanged pagination filters.
 
 `state/polling.json` contains safe schedule-health observations (last attempt,
 success, next run, in-flight state and classified failure). A failed read never

@@ -30,6 +30,9 @@ No release/versioning policy has been established yet.
   active checks remain non-overlapping across repository removal and readdition.
   Delayed reads revalidate the current account and access before admission;
   failed local dispatch writes release checks instead of leaving them stuck.
+  Verified numeric-repository pagination links are supported. Unordered update
+  timestamps no longer fail a stable poll or hide newer revisions behind older
+  pages; complete open-list sweeps replace timestamp-based early exits.
   Fork and untrusted-author work visibly waits for confirmation. This does not
   run agents or publish comments. See [#3](https://github.com/jdylanmc/pr-sniper/issues/3),
   [#8](https://github.com/jdylanmc/pr-sniper/issues/8) and

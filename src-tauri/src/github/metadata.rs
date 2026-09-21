@@ -55,12 +55,16 @@ impl<T: Transport> GithubClient<T> {
     ) -> Result<Vec<PullRequest>, ConnectionError> {
         let name = crate::storage::canonical_repository(&repository.name)
             .map_err(|_| ConnectionError::InvalidRepository)?;
-        let list = self.pages_with_cursor(
+        let cutoff = updated_after
+            .map(chrono::DateTime::parse_from_rfc3339)
+            .transpose()
+            .map_err(|_| ConnectionError::Configuration)?;
+        let list = self.read_pages(
             &format!(
                 "/repos/{name}/pulls?state=open&sort=updated&direction=desc&per_page=100&page=1"
             ),
-            updated_after,
             true,
+            &format!("/repositories/{}/pulls", repository.id),
         )?;
         let mut ids = HashSet::new();
         let mut numbers = HashSet::new();
@@ -115,7 +119,10 @@ impl<T: Transport> GithubClient<T> {
                     })
                 })
                 .collect::<Result<_, _>>()?;
-            result.push(PullRequest {
+            let updated_at = text(&detail["updated_at"])?;
+            let updated = chrono::DateTime::parse_from_rfc3339(&updated_at)
+                .map_err(|_| ConnectionError::InvalidResponse)?;
+            let pull = PullRequest {
                 id,
                 number,
                 title: text(&detail["title"])?,
@@ -128,9 +135,13 @@ impl<T: Transport> GithubClient<T> {
                 base_sha: sha(&detail["base"]["sha"])?,
                 head_repository_id,
                 base_repository_id,
-                updated_at: text(&detail["updated_at"])?,
+                updated_at,
                 files: Vec::new(),
-            });
+            };
+            // GitHub can return old rows before newer rows; the cursor cannot bound the sweep.
+            if cutoff.is_none_or(|cutoff| updated >= cutoff) {
+                result.push(pull);
+            }
         }
         Ok(result)
     }
@@ -148,9 +159,12 @@ impl<T: Transport> GithubClient<T> {
     ) -> Result<Vec<PullRequest>, ConnectionError> {
         let name = crate::storage::canonical_repository(&repository.name)
             .map_err(|_| ConnectionError::InvalidRepository)?;
-        let list = self.pages(&format!(
-            "/repos/{name}/pulls?state=all&sort=created&direction=asc&per_page=100&page=1"
-        ))?;
+        let list = self.pages(
+            &format!(
+                "/repos/{name}/pulls?state=all&sort=created&direction=asc&per_page=100&page=1"
+            ),
+            &format!("/repositories/{}/pulls", repository.id),
+        )?;
         let mut ids = HashSet::new();
         let mut numbers = HashSet::new();
         let mut result = Vec::new();
@@ -178,7 +192,10 @@ impl<T: Transport> GithubClient<T> {
             if count > 3_000 {
                 return Err(ConnectionError::IncompleteRead);
             }
-            let raw_files = self.pages(&format!("{path}/files?per_page=100&page=1"))?;
+            let raw_files = self.pages(
+                &format!("{path}/files?per_page=100&page=1"),
+                &format!("/repositories/{}/pulls/{number}/files", repository.id),
+            )?;
             if raw_files.len() as u64 != count {
                 return Err(ConnectionError::IncompleteRead);
             }
@@ -302,25 +319,20 @@ impl<T: Transport> GithubClient<T> {
         Ok(result)
     }
 
-    fn pages(&self, first: &str) -> Result<Vec<Value>, ConnectionError> {
-        self.pages_with_cursor(first, None, false)
+    fn pages(&self, first: &str, repository_alias: &str) -> Result<Vec<Value>, ConnectionError> {
+        self.read_pages(first, false, repository_alias)
     }
 
-    fn pages_with_cursor(
+    fn read_pages(
         &self,
         first: &str,
-        updated_after: Option<&str>,
-        ordered: bool,
+        reconcile: bool,
+        repository_alias: &str,
     ) -> Result<Vec<Value>, ConnectionError> {
-        let cutoff = updated_after
-            .map(chrono::DateTime::parse_from_rfc3339)
-            .transpose()
-            .map_err(|_| ConnectionError::Configuration)?;
         let mut path = first.to_string();
         let mut seen = HashSet::new();
         let mut result = Vec::new();
         let mut advertised_last = None;
-        let mut previous_update = None;
         let mut observations = Vec::new();
         loop {
             if !seen.insert(path.clone()) || seen.len() > 10_000 {
@@ -331,33 +343,13 @@ impl<T: Transport> GithubClient<T> {
             if page.len() > 100 {
                 return Err(ConnectionError::InvalidResponse);
             }
-            let next = next_page(&path, &response, &mut advertised_last)?;
+            let next = next_page(&path, &response, &mut advertised_last, repository_alias)?;
             if page.is_empty() && (next.is_some() || seen.len() > 1) {
                 return Err(ConnectionError::IncompleteRead);
             }
-            let mut crossed_cursor = false;
-            for item in page {
-                if ordered {
-                    let updated = item["updated_at"]
-                        .as_str()
-                        .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
-                        .ok_or(ConnectionError::InvalidResponse)?;
-                    if previous_update.is_some_and(|previous| updated > previous) {
-                        return Err(ConnectionError::IncompleteRead);
-                    }
-                    previous_update = Some(updated);
-                    if cutoff.is_some_and(|cutoff| updated < cutoff) {
-                        crossed_cursor = true;
-                        continue;
-                    }
-                }
-                result.push(item.clone());
-            }
-            if ordered {
+            result.extend(page.iter().cloned());
+            if reconcile {
                 observations.push((path.clone(), value, response.headers.get("link").cloned()));
-            }
-            if crossed_cursor {
-                break;
             }
             match next {
                 Some(next) => path = next,
@@ -413,6 +405,7 @@ fn next_page(
     path: &str,
     response: &Response,
     advertised_last: &mut Option<u64>,
+    repository_alias: &str,
 ) -> Result<Option<String>, ConnectionError> {
     let current = reqwest::Url::parse(&format!("https://api.github.com{path}"))
         .map_err(|_| ConnectionError::IncompleteRead)?;
@@ -445,7 +438,7 @@ fn next_page(
             .ok_or(ConnectionError::IncompleteRead)?;
         let url = reqwest::Url::parse(target).map_err(|_| ConnectionError::IncompleteRead)?;
         if url.origin() != current.origin()
-            || url.path() != current.path()
+            || (url.path() != current.path() && url.path() != repository_alias)
             || !url.username().is_empty()
             || url.password().is_some()
             || url.fragment().is_some()
@@ -475,9 +468,10 @@ fn next_page(
                 if number != page + 1 || next.is_some() {
                     return Err(ConnectionError::IncompleteRead);
                 }
+                // Accept only the verified endpoint alias, then keep requests on the named route.
                 next = Some(format!(
                     "{}?{}",
-                    url.path(),
+                    current.path(),
                     url.query().ok_or(ConnectionError::IncompleteRead)?
                 ));
             }
