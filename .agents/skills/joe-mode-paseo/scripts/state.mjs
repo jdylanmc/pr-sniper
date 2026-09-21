@@ -72,6 +72,7 @@ function validateConfig(input) {
   }
   if (config.team !== undefined && config.team !== true) throw new Error('Invalid team selection');
   if (config.team && config.wakeupMode !== 'heartbeat') throw new Error('Team mode requires the persistent PM heartbeat');
+  if (config.idleShutdown !== undefined) requireText(config.idleShutdown, 'idle shutdown authority');
   return config;
 }
 
@@ -130,6 +131,7 @@ function validateState(state) {
   if (pm.schedule !== undefined) validateJob(pm.config, pm.schedule);
   if (pm.wakeupHistory !== undefined && !Array.isArray(pm.wakeupHistory)) throw new Error('Invalid wakeup history');
   if (pm.mergeHistory !== undefined && !Array.isArray(pm.mergeHistory)) throw new Error('Invalid merge history');
+  if (pm.idleShutdownHistory !== undefined && !Array.isArray(pm.idleShutdownHistory)) throw new Error('Invalid idle shutdown history');
   if (pm.mode === 'enabled' && !pm.schedule) throw new Error('Missing schedule binding');
   if (pm.lease !== null) {
     for (const key of ['owner', 'token', 'reconciliation']) requireText(pm.lease?.[key], `Invalid lease ${key}`);
@@ -265,9 +267,20 @@ function apply(state, request) {
   if (request.op === 'inspect') return 'observed';
   const pm = state.pm;
   if (pm?.version !== 1) throw new Error('Missing or unsupported PM state');
-  if (['pause', 'stop', 'resume', 'recover', 'configure-merge', 'enable-team'].includes(request.op)) {
+  if (['pause', 'stop', 'resume', 'recover', 'configure-merge', 'configure-idle-shutdown', 'enable-team'].includes(request.op)) {
     requireText(request.human, 'human decision');
-    if (request.op === 'enable-team') {
+    if (request.op === 'configure-idle-shutdown') {
+      if (pm.mode === 'enabled') throw new Error('Idle shutdown configuration requires paused or stopped state');
+      if (pm.lease) throw new Error('Idle shutdown configuration requires released or fenced lease');
+      requireText(request.reconciliation, 'idle shutdown authority and child disposition reconciliation');
+      requireText(request.idleShutdown, 'idle shutdown authority');
+      if (pm.config.idleShutdown !== request.idleShutdown) {
+        pm.idleShutdownHistory ??= [];
+        pm.idleShutdownHistory.push({ authority: pm.config.idleShutdown ?? null,
+          human: request.human, reconciliation: request.reconciliation });
+        pm.config = validateConfig({ ...pm.config, idleShutdown: request.idleShutdown });
+      }
+    } else if (request.op === 'enable-team') {
       if (pm.mode === 'enabled') throw new Error('Team conversion requires paused state');
       if (pm.lease) throw new Error('Team conversion requires released or fenced lease');
       requireText(request.reconciliation, 'all owners and wakeups reconciled');
@@ -320,6 +333,19 @@ function apply(state, request) {
     requireText(request.reconciliation, 'current custody and pending-operation reconciliation');
   } else if (!pm.lease || pm.lease.owner !== request.owner || pm.lease.token !== request.token) {
     throw new Error('Invalid run lease');
+  }
+  if (request.op === 'suspend') {
+    if (pm.mode !== 'enabled') throw new Error('PM is not enabled');
+    requireText(pm.config.idleShutdown, 'idle shutdown authority');
+    if (!['waiting-for-human', 'no-useful-work', 'runtime-blocked'].includes(request.reason)) {
+      throw new Error('Invalid suspension reason');
+    }
+    requireText(request.evidence, 'no useful next action evidence');
+    requireText(request.disposition, 'active child disposition');
+    pm.mode = 'paused';
+    pm.control = { op: 'suspend', authority: pm.config.idleShutdown, reason: request.reason,
+      evidence: request.evidence, disposition: request.disposition };
+    return 'paused';
   }
   if (request.op === 'release') {
     requireText(request.result, 'preserved run result');
@@ -393,6 +419,7 @@ export function summarize(state) {
   const retirement = settled.map(retirementView).filter(Boolean);
   return {
     mode: pm.mode, ...(pm.config.team ? { team: true } : {}), capacity: pm.config.capacity,
+    ...(pm.control?.op === 'suspend' ? { suspension: pm.control } : {}),
     ...(pm.lease ? { lease: { owner: pm.lease.owner, token: pm.lease.token } } : {}),
     ...(pm.schedule ? { schedule: { id: pm.schedule.id, kind: pm.schedule.kind ?? 'schedule',
       cron: pm.schedule.cron, targetAgentId: pm.schedule.targetAgentId, enabled: pm.schedule.enabled } } : {}),
