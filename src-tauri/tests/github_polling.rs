@@ -97,6 +97,233 @@ fn repository() -> RemoteRepository {
     }
 }
 
+struct AliasTransport {
+    requests: RefCell<Vec<String>>,
+    target: String,
+}
+
+impl Transport for &AliasTransport {
+    fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+        self.requests.borrow_mut().push(path.into());
+        let (body, headers) = match path {
+            OPEN_FIRST => (
+                json!([pull_request(31)]),
+                BTreeMap::from([(
+                    "link".into(),
+                    format!("<{}>; rel=\"next\", <{}>; rel=\"last\"", self.target, self.target),
+                )]),
+            ),
+            OPEN_SECOND => (
+                json!([pull_request(32)]),
+                BTreeMap::from([(
+                    "link".into(),
+                    "<https://api.github.com/repositories/900/pulls?state=open&sort=updated&direction=desc&per_page=100&page=1>; rel=\"prev\", <https://api.github.com/repositories/900/pulls?state=open&sort=updated&direction=desc&per_page=100&page=1>; rel=\"first\"".into(),
+                )]),
+            ),
+            _ => panic!("unexpected endpoint: {path}"),
+        };
+        Ok(Response {
+            status: 200,
+            headers,
+            body: serde_json::to_vec(&body).unwrap(),
+        })
+    }
+}
+
+#[test]
+fn polling_accepts_pagination_alias_for_the_verified_repository_id() {
+    let transport = AliasTransport {
+        requests: RefCell::new(Vec::new()),
+        target: "https://api.github.com/repositories/900/pulls?state=open&sort=updated&direction=desc&per_page=100&page=2".into(),
+    };
+    let pulls = GithubClient::new(&transport)
+        .poll_pull_requests(&repository())
+        .unwrap();
+    assert_eq!(
+        pulls.iter().map(|pull| pull.number).collect::<Vec<_>>(),
+        [31, 32]
+    );
+    assert_eq!(
+        transport.requests.borrow().as_slice(),
+        [OPEN_FIRST, OPEN_SECOND, OPEN_SECOND, OPEN_FIRST]
+    );
+}
+
+#[test]
+fn polling_rejects_unverified_or_endpoint_changing_numeric_aliases() {
+    let valid = "https://api.github.com/repositories/900/pulls?state=open&sort=updated&direction=desc&per_page=100&page=2";
+    for target in [
+        valid.replace("/900/", "/901/"),
+        valid.replace("api.github.com", "example.com"),
+        valid.replace("https:", "http:"),
+        valid.replace("/pulls?", "/issues?"),
+        valid.replace("/pulls?", "/pulls/31/files?"),
+        valid.replace("state=open", "state=all"),
+        valid.replace("sort=updated", "sort=created"),
+        valid.replace("direction=desc", "direction=asc"),
+        valid.replace("per_page=100", "per_page=50"),
+        valid.replace("page=2", "page=3"),
+        valid.replace("https://", "https://user:password@"),
+        format!("{valid}#fragment"),
+        format!("{valid}&state=open"),
+    ] {
+        let transport = AliasTransport {
+            requests: RefCell::new(Vec::new()),
+            target: target.clone(),
+        };
+        assert_eq!(
+            GithubClient::new(&transport).poll_pull_requests(&repository()),
+            Err(ConnectionError::IncompleteRead),
+            "{target}"
+        );
+        assert_eq!(transport.requests.borrow().as_slice(), [OPEN_FIRST]);
+    }
+}
+
+struct UnorderedTransport {
+    pages: Vec<Vec<Value>>,
+    requests: RefCell<Vec<String>>,
+}
+
+impl Transport for &UnorderedTransport {
+    fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+        self.requests.borrow_mut().push(path.into());
+        let prefix = OPEN_FIRST.strip_suffix('1').unwrap();
+        let page: usize = path.strip_prefix(prefix).unwrap().parse().unwrap();
+        let mut headers = BTreeMap::new();
+        if page < self.pages.len() {
+            headers.insert(
+                "link".into(),
+                format!("<https://api.github.com{prefix}{}>; rel=\"next\"", page + 1),
+            );
+        }
+        Ok(Response {
+            status: 200,
+            headers,
+            body: serde_json::to_vec(&self.pages[page - 1]).unwrap(),
+        })
+    }
+}
+
+fn updated_pull(number: u64, updated_at: &str) -> Value {
+    let mut pull = pull_request(number);
+    pull["updated_at"] = json!(updated_at);
+    pull
+}
+
+#[test]
+fn fresh_poll_accepts_stable_unordered_timestamps_within_a_page() {
+    let transport = UnorderedTransport {
+        pages: vec![vec![
+            updated_pull(31, "2026-09-20T19:00:00Z"),
+            updated_pull(32, "2026-09-20T21:00:00Z"),
+        ]],
+        requests: RefCell::new(Vec::new()),
+    };
+    let pulls = GithubClient::new(&transport)
+        .poll_pull_requests(&repository())
+        .unwrap();
+    assert_eq!(
+        pulls.iter().map(|pull| pull.number).collect::<Vec<_>>(),
+        [31, 32]
+    );
+}
+
+#[test]
+fn incremental_poll_finds_newer_and_equal_items_after_an_entire_older_page() {
+    let transport = UnorderedTransport {
+        pages: vec![
+            vec![updated_pull(31, "2026-09-20T19:00:00Z")],
+            vec![
+                updated_pull(32, "2026-09-20T21:00:00Z"),
+                updated_pull(33, "2026-09-20T20:00:00Z"),
+            ],
+        ],
+        requests: RefCell::new(Vec::new()),
+    };
+    let pulls = GithubClient::new(&transport)
+        .poll_pull_requests_since(&repository(), Some("2026-09-20T20:00:00Z"))
+        .unwrap();
+    assert_eq!(
+        pulls.iter().map(|pull| pull.number).collect::<Vec<_>>(),
+        [32, 33]
+    );
+    assert_eq!(
+        transport.requests.borrow().as_slice(),
+        [OPEN_FIRST, OPEN_SECOND, OPEN_SECOND, OPEN_FIRST]
+    );
+}
+
+#[test]
+fn unordered_sweeps_apply_cursors_only_after_complete_enumeration() {
+    let old = updated_pull(31, "2026-09-20T19:00:00Z");
+    let equal = updated_pull(32, "2026-09-20T20:00:00Z");
+    let newer = updated_pull(33, "2026-09-20T21:00:00Z");
+    for pages in [
+        vec![vec![old.clone(), newer.clone(), equal.clone()]],
+        vec![vec![old.clone()], vec![newer.clone(), equal.clone()]],
+        vec![vec![old.clone(), equal.clone()], vec![newer.clone()]],
+        vec![vec![equal.clone()], vec![old, newer]],
+    ] {
+        for cursor in [None, Some("2026-09-20T20:00:00Z")] {
+            let transport = UnorderedTransport {
+                pages: pages.clone(),
+                requests: RefCell::new(Vec::new()),
+            };
+            let pulls = GithubClient::new(&transport)
+                .poll_pull_requests_since(&repository(), cursor)
+                .unwrap();
+            let mut numbers = pulls.iter().map(|pull| pull.number).collect::<Vec<_>>();
+            numbers.sort();
+            assert_eq!(
+                numbers,
+                if cursor.is_some() {
+                    vec![32, 33]
+                } else {
+                    vec![31, 32, 33]
+                }
+            );
+            assert_eq!(
+                transport.requests.borrow().len(),
+                if pages.len() == 1 { 1 } else { 4 }
+            );
+        }
+    }
+}
+
+#[test]
+fn cursor_filter_cannot_hide_duplicate_or_invalid_older_items() {
+    let old = updated_pull(31, "2026-09-20T19:00:00Z");
+    let mut wrong_repository = old.clone();
+    wrong_repository["base"]["repo"]["id"] = json!(901);
+    let mut wrong_timestamp = old.clone();
+    wrong_timestamp["updated_at"] = json!("invalid");
+    for (pages, error) in [
+        (
+            vec![vec![old.clone()], vec![old]],
+            ConnectionError::IncompleteRead,
+        ),
+        (
+            vec![vec![wrong_repository]],
+            ConnectionError::RepositoryChanged,
+        ),
+        (
+            vec![vec![wrong_timestamp]],
+            ConnectionError::InvalidResponse,
+        ),
+    ] {
+        let transport = UnorderedTransport {
+            pages,
+            requests: RefCell::new(Vec::new()),
+        };
+        assert_eq!(
+            GithubClient::new(&transport)
+                .poll_pull_requests_since(&repository(), Some("2026-09-20T20:00:00Z")),
+            Err(error)
+        );
+    }
+}
+
 #[test]
 fn polling_enumerates_all_open_pages_in_recently_updated_order() {
     let transport = PollTransport {
@@ -194,11 +421,14 @@ fn incremental_poll_keeps_equal_timestamp_updates_but_excludes_older_revisions()
         result.iter().map(|pr| pr.number).collect::<Vec<_>>(),
         vec![31, 32]
     );
-    assert_eq!(transport.requests.borrow().as_slice(), &[OPEN_FIRST]);
+    assert_eq!(
+        transport.requests.borrow().as_slice(),
+        &[OPEN_FIRST, OPEN_SECOND, OPEN_SECOND, OPEN_FIRST]
+    );
 }
 
 #[test]
-fn incremental_poll_does_not_read_an_older_page_after_crossing_the_cursor() {
+fn incremental_poll_cannot_ignore_a_failed_page_after_crossing_the_cursor() {
     let transport = CursorTransport {
         requests: RefCell::new(Vec::new()),
         fail_second: true,
@@ -207,11 +437,11 @@ fn incremental_poll_does_not_read_an_older_page_after_crossing_the_cursor() {
     let result = GithubClient::new(&transport)
         .poll_pull_requests_since(&repository(), Some("2026-09-20T20:00:00Z"));
 
-    assert!(
-        result.is_ok(),
-        "An irrelevant old page must not consume quota or fail a complete incremental read"
+    assert_eq!(result, Err(ConnectionError::RateLimited));
+    assert_eq!(
+        transport.requests.borrow().as_slice(),
+        &[OPEN_FIRST, OPEN_SECOND]
     );
-    assert_eq!(transport.requests.borrow().as_slice(), &[OPEN_FIRST]);
 }
 
 #[test]
@@ -429,4 +659,108 @@ fn unstable_pages_preserve_the_durable_cursor_and_reopen_recovers_the_boundary_p
         .finish(&reopened, ticket, repeated.map(connected), 1301)
         .unwrap();
     assert_eq!(fixture.store().load_queue().unwrap().len(), 250);
+}
+
+#[test]
+fn unordered_recovery_preserves_failed_cursor_and_deduplicates_after_restart() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    store.add_repository("example/project").unwrap();
+    let connected = |pull_requests| PollResult {
+        connection: Connection {
+            identity: Identity {
+                id: "7".into(),
+                login: "reviewer".into(),
+            },
+            repository: repository(),
+            capabilities: Capabilities {
+                read: true,
+                comment: CommentCapability::Unknown,
+            },
+        },
+        pull_requests,
+    };
+    let seed = UnorderedTransport {
+        pages: vec![vec![pull_request(31)]],
+        requests: RefCell::new(Vec::new()),
+    };
+    let mut monitor = Monitor::default();
+    let ticket = monitor
+        .prepare_checks(&store, 1000, true)
+        .unwrap()
+        .pop()
+        .unwrap();
+    monitor
+        .finish(
+            &store,
+            ticket,
+            GithubClient::new(&seed)
+                .poll_pull_requests(&repository())
+                .map(&connected),
+            1001,
+        )
+        .unwrap();
+    let before_cursor = std::fs::read(fixture.path().join("state/poll-cursors.json")).unwrap();
+    let before_queue = std::fs::read(fixture.path().join("state/queue.json")).unwrap();
+    let old = updated_pull(32, "2026-09-20T19:00:00Z");
+    let incomplete = UnorderedTransport {
+        pages: vec![vec![old.clone()], vec![old.clone()]],
+        requests: RefCell::new(Vec::new()),
+    };
+    let ticket = monitor
+        .prepare_checks(&store, 1100, true)
+        .unwrap()
+        .pop()
+        .unwrap();
+    let result = GithubClient::new(&incomplete)
+        .poll_pull_requests_since(&repository(), ticket.updated_after.as_deref());
+    assert_eq!(result, Err(ConnectionError::IncompleteRead));
+    monitor
+        .finish(&store, ticket, result.map(&connected), 1101)
+        .unwrap();
+    assert_eq!(monitor.snapshot()[0].last_success, Some(1001));
+    assert_eq!(
+        monitor.snapshot()[0].last_failure,
+        Some(ConnectionError::IncompleteRead)
+    );
+    assert_eq!(
+        std::fs::read(fixture.path().join("state/poll-cursors.json")).unwrap(),
+        before_cursor
+    );
+    assert_eq!(
+        std::fs::read(fixture.path().join("state/queue.json")).unwrap(),
+        before_queue
+    );
+
+    let stable = UnorderedTransport {
+        pages: vec![
+            vec![old],
+            vec![updated_pull(34, "2026-09-20T21:00:00Z"), pull_request(33)],
+        ],
+        requests: RefCell::new(Vec::new()),
+    };
+    for (now, cursor) in [
+        (1200, "2026-09-20T20:00:00Z"),
+        (1300, "2026-09-20T21:00:00Z"),
+    ] {
+        let reopened = fixture.store();
+        let mut restarted = Monitor::restore(&reopened).unwrap();
+        let ticket = restarted
+            .prepare_checks(&reopened, now, true)
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(ticket.updated_after.as_deref(), Some(cursor));
+        let pulls = GithubClient::new(&stable)
+            .poll_pull_requests_since(&repository(), ticket.updated_after.as_deref());
+        restarted
+            .finish(&reopened, ticket, pulls.map(&connected), now + 1)
+            .unwrap();
+        let jobs = reopened.load_queue().unwrap();
+        let mut numbers = jobs.iter().map(|job| job.number).collect::<Vec<_>>();
+        numbers.sort();
+        assert_eq!(numbers, [31, 33, 34]);
+        assert_eq!(restarted.snapshot()[0].last_success, Some(now + 1));
+        assert_eq!(restarted.snapshot()[0].last_failure, None);
+    }
 }
