@@ -2,6 +2,20 @@
 
 Shared Joe team contract, not another entrypoint or controller. The human starts Joe-mode; PM routes under that grant. Paseo adds durable role heartbeats.
 
+## Runtime-specific mechanics
+
+The roles, capacity, discovery, review, human-wait, recovery and preservation
+rules here apply to every Joe adapter. References below to Paseo's STATE
+operations, agent-bound heartbeats, permission APIs and workspace registration
+describe **Paseo mechanics**, not prerequisites for other runtimes.
+The [Orca adapter](../joe-mode-orca/SKILL.md) uses its
+[RUNTIME](../joe-mode-orca/RUNTIME.md) and [RUN](../joe-mode-orca/RUN.md) for
+native bindings, durable owner records, messaging, permission verification,
+recurrence and release. Those contracts preserve the same policy without
+invoking Paseo's helpers or inventing equivalent APIs. Orca uses configured
+model defaults unless the human selected an override; discovery is evidence,
+not permission to replace that choice. Session Joe and CMUX acquire no timers.
+
 ## Roles and developer slots
 
 | Role | Job | Lifetime |
@@ -95,15 +109,23 @@ Never spoof placement or archive the primary human chat.
 
 While awaiting the human, retain the exact question/input revision. Recheck
 changed answers/evidence; do not repeat the research or open another interview
-on unchanged inputs. PM's per-pass reminder below is required even when the
-question is unchanged. A heartbeat costs a turn; it is not free event delivery.
+on unchanged inputs. A heartbeat costs a turn; it is not free event delivery.
+Pass the actual human approval and its scope to the receiving role. Do not add
+a publication or execution hold merely because the work crosses a handoff.
+Where approval genuinely covers only requirements, preserve the remaining
+publication gate; ask only for that missing action, not approval of the same
+requirements again. Narrower explicit human restrictions always win.
 
 ### Surface every human wait
 
-On **every executed PM pass**, call out every agent currently waiting on the
-human in the primary coordinator conversation. Do not hide an unchanged wait
-behind quiet-pass rules or a generic "pass completed" message. Consolidate into
-one concise **Waiting on you** list: agent/role, exact question or action needed,
+Present each new or materially revised human wait in the primary coordinator
+conversation, then notify on resolution or a meaningful blocker change.
+Deduplicate by waiting owner and question/input revision, not by pass ID.
+Do not repeat unchanged questions on each heartbeat. Remind only at a separately
+human-requested interval while the team is otherwise doing useful work; a
+reminder is never a reason to keep timers alive.
+Consolidate due notifications into one concise **Waiting on you** list:
+agent/role, exact question or action needed,
 affected work, and a direct agent/conversation link when the runtime supplies a
 verified one. Otherwise give its exact project, workspace, agent title and ID;
 never invent a URL or block the reminder because links are unavailable.
@@ -111,8 +133,8 @@ never invent a URL or block the reminder because links are unavailable.
 The waiting agent supplies its question and context; Discovery owns the detailed
 interview. PM makes it findable from the primary chat, including permission,
 approval and product-decision waits from any role or descendant, not only Discovery.
-Consume callbacks promptly, then repeat outstanding reminders on each pass until
-an actual answer, withdrawal or acknowledged reassignment changes that wait.
+Consume callbacks promptly and retain outstanding waits until
+an actual answer, withdrawal or acknowledged reassignment changes them.
 Match answers to the question revision; a timer, sent prompt or completed
 monitoring pass is not an answer.
 
@@ -128,8 +150,76 @@ If pause, a busy owner or unavailable reads prevent fresh reconciliation,
 respect the dispatch gate and label any carried wait with its last verified
 state and current uncertainty. Never claim fresh waiting/completion evidence.
 This uses existing passes/callbacks, not extra timers or automatic resume.
-Unchanged passes with **no** human waits need no status chatter. Distinguish
+Unchanged passes need no status chatter, including already-presented human waits. Distinguish
 monitoring completed, work blocked, implementation finished, PR ready and merged.
+
+### Useful work or idle shutdown
+
+Do not confuse a recurring observation duty with useful progress. On each pass,
+consume returns, advance authorized review/repair/merge work, then check for
+independent eligible deliveries or a bounded, decision-relevant planning task.
+Challenge an apparent dependency against the consumer's actual agreed base:
+unmerged does not by itself mean unavailable, but do not silently adopt stacked
+PRs, change grouping or waive acceptance. Ask for a changed base only if needed;
+continue other authorized work meanwhile. Do not invent busywork to fill slots.
+
+Shepherd owns routine PR/check/ref observation; PM consumes its compact,
+timestamped report instead of repeating those provider queries. PM refreshes
+only missing, changed, stale-for-the-next-action or action-critical evidence.
+No new action and unchanged inputs need no exhaustive revalidation. Each role
+reports its next useful action, expected evidence and next due time, not just
+"running" or a successful heartbeat. A retained PR or unanswered question alone
+does not justify five-minute monitoring indefinitely.
+
+For Paseo, kickoff includes **idle shutdown**: explain and record authority to
+close dispatch, remove owned recurring jobs and retain work when no useful
+authorized next action remains. New activations save STATE's `idleShutdown`
+reference; it includes the child disposition and human-only resume boundary.
+This is part of kickoff, not another permission interview at the point of
+exhaustion. Do not infer this grant for an older board or another adapter.
+
+Apply this decision before releasing every pass:
+
+- **Useful work available:** dispatch or continue it within the existing grant.
+  Human-blocked work holds only its dependent scope, not unrelated deliveries.
+- **Real work in flight:** keep custody for implementation, review, tests or CI
+  with an owner, expected result and a concrete next observation time. Do not
+  kill a long-running task because its commit has not changed. At that time,
+  check the expected evidence and route an actual stall through bounded blocker
+  recovery. Generic "still running" never renews the wait indefinitely.
+- **Only human/external blockers or an exhausted backlog:** suspend in this
+  pass after the bounded eligibility check. No extra unchanged passes, overnight
+  monitoring or separate investigation solely to confirm a known human wait.
+- **Runtime/observation failure:** preserve uncertainty, not an empty-backlog
+  claim. Make at most one supported reconciliation attempt per unchanged
+  failure episode, recorded with `record` across passes. If safe useful work
+  remains, isolate the affected scope; otherwise suspend with the gap and exact
+  human recovery action. A new tick or a rewritten receipt is not new evidence.
+
+Suspension uses STATE's lease-fenced `suspend`, which sets the existing board
+to **paused**, not a new controller or auto-resumable waiting mode. Then delete
+the PM heartbeat and direct every owned timer-bearing role/descendant to delete
+its exact timer using the existing lifecycle. Legacy fresh mode pauses its
+owned schedule through the supported API. Record successful receipts and
+uncertain failures separately; a local pause does not stop external billing.
+Delete working timers even if another deletion fails. No automatic retry timer,
+replacement coordinator timer or archival-as-deletion shortcut.
+
+Preserve conversations, branches, PRs, worktrees, pending results and custody.
+Apply the recorded child disposition; do not abandon active children, cancel
+writes or declare obligations completed. An unresolved owner/cleanup operation
+is retained for callbacks or human recovery, not another polling loop. Late
+deletion/result callbacks use STATE's paused cleanup-only path under the saved
+human grant after the pass releases; they cannot resume work. Report once:
+delivered outcomes, unfinished scope, active work if any, precise blocker/ask,
+timer cleanup status, monitoring gaps and the human action needed to resume.
+Say **suspended; timer cleanup incomplete** when absence is unverified, never
+"stopped" merely because the board is paused. Finish the bounded turn.
+
+Human stop preempts planning/reporting: close dispatch and remove owned timers
+first, reconcile child disposition, then produce any requested retrospective.
+Neither a human answer, PR merge, role callback nor queued wake automatically
+resumes a suspended team; use the human-directed resume procedure.
 
 ### Preserve agreed knowledge through PRs
 
@@ -179,7 +269,8 @@ After reviewed repairs, it observes and accepts custody back. Other PRs continue
 
 Permission denial, missing credentials and explicit human decisions are not
 fresh-context experiments. Record the exact blocker once and repeat PM's
-human-wait reminder each pass; wait for the real grant or answer, never evade
+human-wait notification only on change; apply idle shutdown if no useful work
+remains. Wait for the real grant or answer, never evade
 it with another agent/provider. Runtime cancellation is
 not automatically a work blocker: reconcile descendants and partial writes first.
 
@@ -225,14 +316,21 @@ a hint to re-inspect, not a selection. Report unavailable discovery; do not gues
 
 ## Role heartbeats belong to PM
 
-PM owns heartbeat inventory/lifecycle: its own, plus Shepherd's and the backlog manager's while those roles exist. PM's heartbeat targets **this
+PM owns heartbeat inventory/lifecycle: its own, plus Shepherd's and the backlog
+manager's while they have actionable recurring duties. PM's heartbeat targets **this
 same PM conversation** and continues Joe-mode; it never reruns setup or starts
 another controller. Its prompt names Joe-mode continuation, the repository,
 workspace, board path, PM ownership and the pause/stop gates, then one bounded
 pass: check workers, blockers, permissions, PRs and free slots; take authorized
-next steps; reuse existing assignments; record compact progress; call out every
-human-waiting agent with its question and verified link/locator on every pass,
-even unchanged. Otherwise notify only meaningful changes.
+next steps; reuse existing assignments; record compact progress; present new or
+changed human waits with verified links/locators; apply useful-work-or-shutdown
+before returning. Notify only meaningful changes, not unchanged reminders.
+
+Keep role timers only while there is an actionable recurring duty. If Discovery
+is solely awaiting a human answer, or Shepherd is solely awaiting human merge,
+delete that role's timer and retain its conversation/custody. Other eligible
+work may keep PM active; it explicitly continues the role when inputs change.
+Role existence alone is not a reason to recreate its timer on the next pass.
 
 Developers, roasters and the PR coordinator have **no default timer**: they use
 completion notifications and PM's explicit continuation. A bounded developer
@@ -248,8 +346,14 @@ Each role checks the board's pause gate and its own assignment before acting.
 Role callbacks carry results; only PM writes the shared board under its lease.
 PM records actual wakes and gaps, checks role health, and reuses known jobs.
 Fence uncertain create/delete; do not retry into duplicates.
+An old external reviewer's unknown timer does not by itself require a new
+coordinator timer or block unrelated development. Reconcile actual overlapping
+write/merge authority; fence the affected scope when ownership is uncertain.
+If it prevents all useful work, use bounded recovery and idle shutdown rather
+than repeatedly reporting the same coordinator-activation blocker.
 
-Project pause closes dispatch first, then PM directs **all three** bound roles
+Project pause, preauthorized idle shutdown or human stop closes dispatch first,
+then PM directs **all three** bound roles and any timer-bearing descendants
 to delete their owned jobs. Reconcile in-flight effects. Retain agents needed for deletion reporting or child preservation; PM's deletion alone never proves a clean pause. Human resume verifies old absence and surviving duties before
 recreating the needed jobs with the remaining grant. Roles cannot self-resume.
 No backlog/PR duties left: delete that role's timer, accept its final result,

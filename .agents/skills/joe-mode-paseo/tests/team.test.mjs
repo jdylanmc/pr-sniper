@@ -5,6 +5,11 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { summarize, transact } from '../scripts/state.mjs';
 
+test('Paseo adapter does not extend the session controller lifetime', () => {
+  const joe = readFileSync(new URL('../../joe-mode/SKILL.md', import.meta.url), 'utf8');
+  assert.match(joe, /Paseo PM adapter[\s\S]*do(?:es)? not[\s\S]*extend this session mode's lifetime/i);
+});
+
 const permissions = { provider: 'copilot', modeId: 'agent', features: { auto_accept: true } };
 const proof = { parent: permissions, child: permissions, authority: 'human/current-grant', evidence: 'runtime/readback' };
 const config = {
@@ -39,6 +44,134 @@ function settle(b, key) {
     acceptance: 'receiver/readback', noLiveWriters: true, noUntransferredDuties: true, discoveryEnded: true });
   b.call({ op: 'archive', key, evidence: 'archive/readback' });
 }
+
+test('idle shutdown closes dispatch, preserves work and permits timer cleanup before release', t => {
+  const b = board(t, { ...config, idleShutdown: 'human/kickoff-idle-shutdown' });
+  b.reserve('shepherd', undefined, 'shepherd');
+  b.bind('shepherd');
+  b.reserve('discovery', undefined, 'discovery');
+  b.bind('discovery');
+  for (const key of ['shepherd', 'discovery']) {
+    b.call({ op: 'role-heartbeat', key, action: 'plan', settings: 'settings', evidence: 'intent' });
+    b.call({ op: 'role-heartbeat', key, action: 'created', id: `${key}-job`,
+      targetAgentId: `agent-${key}`, evidence: 'receipt' });
+  }
+  b.call({ op: 'record', key: 'human-question/r1', status: 'blocked', evidence: 'presented/question' });
+  const before = JSON.parse(readFileSync(b.file)).pm;
+  const request = { op: 'suspend', reason: 'waiting-for-human',
+    evidence: 'green-unmerged-pr-no-independent-work', disposition: 'retain-pr-and-discovery-custody' };
+  const paused = b.call(request).state.pm;
+  assert.equal(paused.mode, 'paused');
+  assert.deepEqual(paused.workers, before.workers);
+  assert.deepEqual(paused.pending, before.pending);
+  assert.deepEqual(paused.lease, before.lease);
+  assert.deepEqual(paused.schedule, before.schedule, 'local pause is not external deletion evidence');
+  assert.equal(summarize({ pm: paused }).suspension.reason, 'waiting-for-human');
+  for (let i = 0; i < 106; i++) {
+    assert.equal(transact(b.file, { op: 'claim', owner: 'pm', reconciliation: 'queued-wake' }).status, 'paused');
+  }
+  assert.throws(() => b.reserve('new-work'), /not enabled/);
+  assert.throws(() => b.bind('discovery'), /not enabled/);
+  assert.throws(() => b.call({ op: 'role-heartbeat', key: 'shepherd', action: 'plan',
+    settings: 'new', evidence: 'intent' }), /enabled|heartbeat/i);
+  for (const key of ['shepherd', 'discovery']) {
+    b.call({ op: 'role-heartbeat', key, action: 'deleted', id: `${key}-job`, evidence: 'delete-success' });
+  }
+  b.call({ op: 'record', key: 'pm-delete', status: 'observed', evidence: 'pm-job-delete-success' });
+  b.call({ op: 'release', result: 'suspension-receipt', duties: 'human-resume-only' });
+  assert.throws(() => b.call(request), /lease/);
+  const stopped = JSON.parse(readFileSync(b.file)).pm;
+  assert.equal(stopped.runs.length, 1, 'queued wakes do not create monitoring passes');
+  assert.equal(stopped.workers.filter(worker => !worker.settled).length, 2);
+  assert.throws(() => transact(b.file, { op: 'resume', schedule: job }), /human/);
+  assert.throws(() => transact(b.file, { op: 'resume', human: 'human/resume', schedule: job }), /replacement/);
+  const resumed = transact(b.file, { op: 'resume', human: 'human/resume',
+    schedule: { ...job, id: 'replacement-pm-job' },
+    replacement: { oldId: job.id, human: 'human/resume', absence: 'pm-job-delete-success',
+      reconciliation: 'same-owners-scope-and-settings' } }).state.pm;
+  assert.equal(resumed.mode, 'enabled');
+  assert.equal(summarize({ pm: resumed }).suspension, undefined);
+  assert.deepEqual(resumed.workers, stopped.workers);
+});
+
+test('suspension requires recorded kickoff authority, a current lease and complete evidence', t => {
+  const request = { op: 'suspend', reason: 'no-useful-work', evidence: 'eligibility/readback',
+    disposition: 'retain-all-work' };
+  const legacy = board(t);
+  assert.throws(() => legacy.call(request), /idle shutdown authority/);
+  for (const idleShutdown of ['', false, {}]) {
+    assert.throws(() => board(t, { ...config, idleShutdown }), /idle shutdown authority/);
+  }
+  const b = board(t, { ...config, idleShutdown: 'human/kickoff' });
+  const before = readFileSync(b.file, 'utf8');
+  for (const change of [{ reason: 'idle' }, { evidence: '' }, { disposition: '' }, { token: 'stale' }]) {
+    assert.throws(() => b.call({ ...request, ...change }), /reason|evidence|disposition|lease/);
+    assert.equal(readFileSync(b.file, 'utf8'), before);
+  }
+  assert.equal(b.call({ ...request, reason: 'runtime-blocked' }).status, 'paused');
+  assert.throws(() => b.call(request), /not enabled/);
+});
+
+test('idle shutdown retains uncertain timer custody and accepts late deletion without dispatch', t => {
+  const b = board(t, { ...config, idleShutdown: 'human/kickoff-idle-shutdown' });
+  b.reserve('shepherd', undefined, 'shepherd');
+  b.bind('shepherd');
+  b.call({ op: 'role-heartbeat', key: 'shepherd', action: 'plan', settings: 'settings', evidence: 'intent' });
+  b.call({ op: 'role-heartbeat', key: 'shepherd', action: 'created', id: 'shepherd-job',
+    targetAgentId: 'agent-shepherd', evidence: 'receipt' });
+  b.call({ op: 'suspend', reason: 'runtime-blocked', evidence: 'reconciliation-exhausted',
+    disposition: 'retain-unknown-job-custody' });
+  b.call({ op: 'record', key: 'shepherd-delete', status: 'blocked', evidence: 'transport-error' });
+  assert.throws(() => settle(b, 'shepherd'), /heartbeat/);
+  b.call({ op: 'release', result: 'timer-cleanup-incomplete', duties: 'late-callback-or-human-recovery' });
+  const before = JSON.parse(readFileSync(b.file)).pm;
+  assert.equal(before.workers[0].heartbeat.status, 'active', 'a failed deletion is not absence');
+  const management = { human: 'human/kickoff-idle-shutdown', reconciliation: 'late-delete-callback-readback' };
+  assert.equal(transact(b.file, { ...management, op: 'role-heartbeat', key: 'shepherd',
+    action: 'deleted', id: 'shepherd-job', evidence: 'actual-delete-success' }).status, 'heartbeat-recorded');
+  assert.equal(transact(b.file, { op: 'claim', owner: 'pm', reconciliation: 'callback' }).status, 'paused');
+  assert.equal(JSON.parse(readFileSync(b.file)).pm.workers[0].settled, false);
+});
+
+test('shipped recipes require idle shutdown and suppress unchanged reminder loops', () => {
+  const read = file => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+  for (const file of ['SKILL.md', 'RUN.md', 'TEAM.md', 'RUNTIME.md']) {
+    const text = read(file);
+    assert.match(text, /idle.shutdown|useful.work.or.shutdown/i, file);
+    assert.doesNotMatch(text, /including unchanged waits|even unchanged|repeat outstanding reminders on each pass/i, file);
+  }
+  assert.match(read('RUN.md'), /queued wake[\s\S]*without backlog\/provider\/agent sweeps/);
+  assert.match(read('TEAM.md'), /Only human\/external blockers[\s\S]*suspend in this[\s\S]*pass/);
+  assert.match(read('TEAM.md'), /Real work in flight[\s\S]*Do not[\s\S]*kill a long-running task/);
+  assert.match(read('TEAM.md'), /at most one supported reconciliation attempt per unchanged/);
+  assert.match(read('TEAM.md'), /Delete working timers even if another deletion fails/);
+  assert.match(read('SCENARIOS.md'), /human absent overnight/);
+});
+
+test('human kickoff can add idle shutdown to a paused existing board without resetting work', t => {
+  const b = board(t);
+  b.reserve('retained');
+  b.call({ op: 'record', key: 'pending-operation', status: 'pending', evidence: 'issued-operation' });
+  const request = { op: 'configure-idle-shutdown', human: 'human/new-kickoff',
+    idleShutdown: 'human/new-kickoff', reconciliation: 'retained-owners-and-child-disposition' };
+  assert.throws(() => transact(b.file, request), /paused|stopped/);
+  transact(b.file, { op: 'pause', human: 'human/new-kickoff', disposition: 'retain-all-work' });
+  assert.throws(() => transact(b.file, request), /lease/);
+  b.call({ op: 'release', result: 'preserved', duties: 'retained-owners' });
+  const before = JSON.parse(readFileSync(b.file)).pm;
+  for (const change of [{ human: '' }, { reconciliation: '' }, { idleShutdown: '' }]) {
+    assert.throws(() => transact(b.file, { ...request, ...change }), /human|reconciliation|authority/);
+    assert.deepEqual(JSON.parse(readFileSync(b.file)).pm, before);
+  }
+  const after = transact(b.file, request).state.pm;
+  assert.equal(after.mode, 'paused');
+  assert.equal(after.config.idleShutdown, request.idleShutdown);
+  for (const key of ['workers', 'pending', 'runs', 'schedule']) assert.deepEqual(after[key], before[key]);
+  assert.equal(transact(b.file, request).state.pm.idleShutdownHistory.length, 1);
+  const updated = transact(b.file, { ...request, idleShutdown: 'human/revised-disposition' }).state.pm;
+  assert.equal(updated.idleShutdownHistory[1].authority, request.idleShutdown);
+  assert.equal(transact(b.file, { op: 'claim', owner: 'pm', reconciliation: 'live' }).status, 'paused');
+});
 
 test('developer pool fits three features, two features plus two fixes, or six fixes', t => {
   for (const mix of [

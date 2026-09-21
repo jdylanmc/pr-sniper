@@ -1,5 +1,10 @@
 # Paseo capability gates
 
+Load [TRANSPORT](TRANSPORT.md) for missing-tool diagnosis, verified CLI selection
+and operation-specific fallback. Server catalog and harness discovery are
+different layers; provider approvals are not OS permissions. Diagnose within
+existing authority, without changing runtime configuration or dispatch gates.
+
 ## Recommended orchestration recipe
 
 Paseo's current [orchestration workflows](https://paseo.sh/docs/orchestration-workflows.md)
@@ -13,9 +18,14 @@ heartbeats under [TEAM](TEAM.md); each target executes its own create/delete.
 Each prompt executes RUN once, using Joe-mode's decisions and shared board.
 Completion callbacks handle normal progress; recurring passes catch missed
 returns, stalls, scope drift, new requirements and changes to the backlog path.
+Kickoff records idle-shutdown authority. Apply TEAM's useful-work-or-shutdown
+decision on every pass: known human waits do not justify keeping paid agent
+turns alive. Remove owned timers when no useful authorized work remains;
+retained conversations and PRs are not recurring monitoring requirements.
 Fresh scheduling remains an option only when its placement/lifetime gates pass.
 
-Use supported MCP or CLI orchestration; this recipe needs no custom SDK service. The [TypeScript SDK](https://paseo.sh/docs/sdk.md)
+Use only operation-specific supported MCP or CLI routes under TRANSPORT, not
+universal CLI equivalence; this recipe needs no custom SDK service. The [TypeScript SDK](https://paseo.sh/docs/sdk.md)
 is a client of the same daemon, not a separate scheduling guarantee. Never invent SDK scheduling methods or install a long-running service merely to wrap an available tool.
 
 A heartbeat **does not repair its own dead PM agent** or survive every provider,
@@ -66,7 +76,14 @@ Current discovered MCP exposes `create_heartbeat` (cron, prompt, optional name,
 timezone, maxRuns, expiresIn) and `delete_heartbeat` (id), **not** a target-agent
 creation argument or `pause_heartbeat`/`resume_heartbeat`.
 
-Use only MCP create/delete for this mode. The actual target role must call them in its human-authorized setup/management subflow; bootstrap/reviewer calls bind the wrong agent. Never alter `PASEO_AGENT_ID` or fake detach.
+Prefer MCP creation with complete evidence. CLI creation remains blocked on
+Paseo 0.8.0's lossy receipt; verified CLI deletion is permitted only under
+[TRANSPORT's exact-owner gates](TRANSPORT.md#heartbeat-evidence-at-paseo-080).
+This replaces the former adapter MCP-only blanket, not an explicit human
+MCP-only restriction. The actual target role must execute its own create/delete
+within its human-authorized lifecycle, including deletion under a recorded
+idle-shutdown grant; bootstrap/reviewer calls bind the wrong agent.
+Never alter `PASEO_AGENT_ID` or fake detach.
 **Do not use schedule APIs to verify heartbeats.** The current
 [MCP reference](https://paseo.sh/docs/mcp.md) limits schedule listing, inspection,
 logs, pause/resume and run-once to new-agent schedules. At source
@@ -91,7 +108,8 @@ Report status from those receipts and current agent state, stating observation g
 Configured also does not prove workers started. Human heartbeat activation/resume
 continues through SKILL's first bounded work pass and TEAM's explicit startup
 outcome; record initial dispatch separately from later recurring-wake evidence.
-The PM prompt must also require TEAM's human-wait reminder on every pass.
+The PM prompt must require TEAM's revision-deduplicated human-wait notifications
+and useful-work-or-shutdown decision, not unchanged reminders on every pass.
 Use a verified runtime-provided agent/conversation link when available; if no
 link surface exists, retain exact project/workspace/title/ID navigation details.
 Link support is optional, but presenting the actual question in the primary
@@ -102,14 +120,19 @@ For adoption/recovery, inspect the saved operation receipt and actual caller
 identity, pending changes and received wakeups. A stale receipt alone cannot prove a heartbeat remains active. For lost creation responses or uncertain current job identity/state, keep the board gated; ask the human or use a separately verified heartbeat-specific runtime surface. Empty schedule lists or schedule-only rejections prove neither heartbeat absence nor failure.
 Do not create another job to probe the uncertainty.
 
-Pause/stop closes the local board gate **before** deleting the exact owned
+Pause/stop, including preauthorized idle shutdown, closes the local board gate **before** deleting the exact owned
 heartbeat; queued prompts must return without dispatch. Keep the PM agent for
 pause/resume and unresolved duties. Human recreation requires verified complete acknowledged deletion of the exact old ID, released/fenced old pass and preserved target/scope/settings. `delete_heartbeat` returns `{success: true}`
-after deleting the caller-owned heartbeat at the source above; preserve that
-receipt as deletion evidence without a second schedule query. A transport error,
+after deleting the caller-owned heartbeat at the source above. The version-verified
+CLI instead returns `{id, status: "deleted"}`; require its full ID to match the
+exact owned request and actual caller under TRANSPORT. Preserve the distinct
+external receipt as deletion evidence without a second schedule query. A transport error,
 generic not-found or wrong-target error is not that acknowledgement. Reconcile
 uncertain delete/create responses through supported heartbeat-specific evidence
-or the human before retry/replacement.
+or the human before retry/replacement. Bound unchanged runtime failure
+reconciliation to TEAM's one attempt; do not keep other working timers alive
+to repeatedly rediscover a lost owner's deletion failure. Report incomplete
+cleanup and retain its exact ownership/evidence without inventing absence.
 Preserve applicable absolute expiry and remaining run budget; recreation must not silently extend the original grant. Stop/end permits retirement only
 after owned-wakeup absence and accepted transfer/end of all children/reporting.
 

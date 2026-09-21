@@ -11,7 +11,19 @@ controller. Missing setup/permissions/decisions return to the human anchor.
 Apply [TEAM](TEAM.md). PM owns routing and all role heartbeat lifecycle; the
 shared Shepherd owns PR inspection, the backlog manager owns deep inquiry.
 
+Missing controls follow [TRANSPORT](TRANSPORT.md)'s bounded read-only ladder
+within these same gates, not a new timerless route. An empty deferred search
+does not prove daemon outage or OS denial. A verified read-only CLI inspection
+may help; unsupported mutation/completion equivalence holds that operation.
+Never bypass intentional policy or a human MCP-only restriction.
+
 ## Claim, observe, route, persist, release
+
+For a queued wake after pause/stop/suspension, read the known board's bounded
+`inspect` first and return without backlog/provider/agent sweeps or another
+human-wait reminder. If the board cannot be read, report that narrow gap without
+dispatch. A late cleanup callback is not a new PM pass: use only the paused
+cleanup path and existing authority to record its actual result.
 
 1. **Recover authority and actual placement.** Load the saved board, human-origin
    decision, scope/non-goals, configured readiness vocabulary, host, wakeup mode
@@ -40,7 +52,10 @@ shared Shepherd owns PR inspection, the backlog manager owns deep inquiry.
    mutation. A pause racing an issued operation requires reconciliation; do not promise atomic cancellation across local state and external APIs.
 
 3. **Observe current relevant state.** Consume compact timestamped role reports; delegate deep investigation rather than load every transcript/diff into PM.
-   Obtain complete narrow queries of selected
+   Shepherd owns routine PR/check/ref observation; consume its evidence rather
+   than duplicate those queries. Refresh changed, missing or action-critical
+   facts before acting, not the whole world on an unchanged waiting pass.
+   Obtain complete narrow evidence of selected
    tickets, dependencies and linked PRs/checks/reviews; inspect relevant worktree
    refs/diffs, known workers' status/activity/descendants, pending permissions,
    owned wakeup health and custody. Record observation times and unknown coverage.
@@ -54,7 +69,7 @@ shared Shepherd owns PR inspection, the backlog manager owns deep inquiry.
    Collect each role/descendant's current human wait: exact question/action,
    affected work, question revision and verified agent link or locator. An
    internal Discovery artifact is not proof that the primary chat received
-   its questions. Apply TEAM's human-wait reporting on every pass.
+   its questions. Apply TEAM's revision-deduplicated human-wait reporting.
 
 4. **Reconcile known work before new work.** Execute
    [LIFECYCLE](../squadron/LIFECYCLE.md) for returns and ownership; require receiver inspection/acknowledgment, not enqueue success. Use `record`
@@ -195,7 +210,18 @@ shared Shepherd owns PR inspection, the backlog manager owns deep inquiry.
    callback custody **without repository dispatch authority**; only this pass's
    lease coordinates. Native provider subagents have different lifecycle rules.
 
-9. **Persist and release promptly.** Save snapshot/evidence pointers, pending
+9. **Do useful work or shut down, then persist and release.** Apply
+   [TEAM's idle-shutdown decision](TEAM.md#useful-work-or-idle-shutdown).
+   Record actual outcome changes and the next useful action with its owner,
+   expected evidence and due time. Timer receipts, unchanged checks, repeated
+   questions and new monitoring files are not progress.
+   If only human/external blockers remain or the backlog is exhausted, use
+   `suspend` under the saved kickoff grant in this pass; remove owned recurring
+   jobs and report once. Bound runtime reconciliation to one attempt per
+   unchanged failure episode; preserve uncertainty and active child disposition.
+   Real implementation/test/review/CI work may continue with a concrete due
+   observation; do not keep the team alive merely because a PR is open.
+   Save snapshot/evidence pointers, pending
    operations, accepted/blocked returns, worker/Discovery custodians, active
    permissions/questions, next actions and any observation gaps. Keep run-parent retirement outcomes/retention roles in the existing lifecycle record; do not add a cleanup controller. Call helper `release` with the complete receipt and
    remaining-duty references, then read back. Release the **pass lease**, never
@@ -210,7 +236,9 @@ shared Shepherd owns PR inspection, the backlog manager owns deep inquiry.
    target-executed and recorded under TEAM; no self-activating nested controller.
 
    **Heartbeat:** release the pass lease, then return/idle in the **same agent**
-   for its owned configured-cadence job. Each new pass claims a new fencing token.
+   for its owned configured-cadence job only while useful-work duties remain.
+   After suspension, there is no recurring polling or automatic resume.
+   Each enabled new pass claims a new fencing token.
    Between passes this agent is not terminal: wakeup, children and reporting remain concrete duties. Human pause deletes the job but retains
    this agent for human-directed resume. Retirement requires stop/end of all
    duties, verified owned-wakeup deletion and accepted child/result handoff;
@@ -220,8 +248,8 @@ shared Shepherd owns PR inspection, the backlog manager owns deep inquiry.
    accepts this receipt, then archives this terminal run through supported
    operations and verifies it. Self-archive must not interrupt final reporting.
    Retain only a concrete live role or capability blocker, not every run forever.
-   The future fresh schedule stays enabled until human pause/stop even when an
-   individual run retires.
+   The future fresh schedule stays enabled only within its recorded authority;
+   preauthorized idle shutdown pauses it, otherwise human pause/stop applies.
 
    **Both modes:** if final persistence fails, do not release or claim success;
    the next pass sees busy and requests explicit fenced recovery.
@@ -229,8 +257,8 @@ shared Shepherd owns PR inspection, the backlog manager owns deep inquiry.
 Report only observed progress, pending human decisions, human-merge readiness
 or verified orchestrator merge outcomes under MERGE,
 gaps and ownership. One completed pass/setup does not prove recurring delivery works. No indefinite idle wait inside a bounded pass.
-On every executed pass, surface **all current human waits in the primary
-coordinator chat**, including unchanged waits, using
+Surface **new or materially changed human waits in the primary
+coordinator chat**, deduplicated by owner and question revision, using
 [TEAM's concise linked reminder](TEAM.md#surface-every-human-wait). For fresh
 runners, use the recorded human-origin return channel; an unseen run transcript
 does not present questions to the human. If that return path fails, report
@@ -238,4 +266,6 @@ undelivered questions as a communication blocker, not "waiting for your answer."
 Do not send generic "pass completed" updates in place of these requests.
 The pass receipt records goal/path changes, requirements awaiting human intake,
 worker progress/direction, recovery/corrections, new assignments, and the next
-useful action. Quiet queues are allowed; never manufacture work to fill capacity.
+useful action or suspension outcome. Lead reports with delivered outcomes and
+unfinished scope, not pass counts. Quiet queues are allowed; never manufacture
+work to fill capacity or keep a timer alive.
