@@ -10,6 +10,12 @@
 
 The nano sibling is the settled product authority. This document explains and traces that intent; it does not override it.
 
+The human-approved [Settings A - Sidebar follow-up](../design/settings-default.md)
+anchors the MVP's ordinary Settings experience. It refines presentation and
+local configuration workflows without changing stored reviewer eligibility,
+per-field inheritance, existing cron support, or independent automation gates.
+Its screenshots contain synthetic design data, not implementation evidence.
+
 ## Problem and Users
 
 The primary user is a human reviewer whose pull-request workload spans repositories and teammates. Teammate authors receive machine-authored feedback through GitHub. PR Sniper detects eligible work, invokes the configured local agent, publishes validated comments, follows its own unresolved conversations, and prepares the final human handoff.

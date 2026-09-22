@@ -5,6 +5,17 @@ No release/versioning policy has been established yet.
 
 ## Unreleased
 
+### Changed
+
+- Anchor Settings to the approved compact sidebar, with repository selection,
+  readable GitHub people lookup, preserved model selections, local review
+  presets and separate review/publication switches. Settings drafts save together
+  and detect conflicting updates; existing custom prompts, cron schedules and
+  per-field overrides remain supported. Discovery reads only metadata beneath an
+  explicitly chosen folder, never repository code. Agent/model health remains
+  explicitly unavailable; no automation or approval is enabled by this change.
+  See the [approved Settings design](docs/agent/design/settings-default.md).
+
 ### Added
 
 - Verify configured GitHub repositories with the current CLI account and stable

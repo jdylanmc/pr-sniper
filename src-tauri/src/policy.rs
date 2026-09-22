@@ -100,6 +100,16 @@ fn contains_credential(value: &str) -> bool {
     .any(|prefix| value.contains(prefix))
 }
 
+pub fn validate_configuration_text(value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err("Review instructions and preset names must not be empty.".into());
+    }
+    if contains_credential(value) {
+        return Err("Credentials and tokens must not be stored in configuration.".into());
+    }
+    Ok(())
+}
+
 impl Policy {
     pub fn validate(&self) -> Result<(), String> {
         let timezone = match &self.schedule {
