@@ -122,7 +122,7 @@ never count as zero windows. Compile its native entry point first; compilation
 does not launch an app, probe permissions or establish native acceptance:
 
 ```sh
-xcrun swiftc -parse-as-library tests/macos-polling-smoke.swift \
+xcrun swiftc -parse-as-library -warnings-as-errors tests/macos-polling-smoke.swift \
   -o /absolute/owned-evidence/macos-polling-smoke
 ```
 
@@ -181,9 +181,15 @@ eligible-live queue acceptance remains explicitly unverified.
 
 Settings/Queue reopen from the tray. Natural Quit requires the guarded action,
 normal exact-process exit, a fresh `quit_requested` diagnostic and absence of
-the recorded descendant lifetimes. Child snapshots cover observed descendants,
-not every transient process or already-reparented child. Dead AX tray proxies
-are logged, not interpreted as physical tray-icon disappearance. Preserve a
+the recorded descendant lifetimes. Child snapshots interpret the native result
+as a **PID count**, rejecting errors, invalid entries and a saturated buffer.
+Traversal carries each parent's captured birth identity, rechecking it before
+and after enumeration and after reading child identities. A changed/exited
+parent fails the observation before its children acquire cleanup authority.
+Already-recorded children remain owned across reparenting and exec.
+These userspace checks are not atomic with enumeration or signaling; they do
+not cover every transient process or already-reparented, unobserved child.
+No AX message is sent to the exited process or used to infer tray disappearance. Preserve a
 separate observation for that criterion. Polling, queue, cursor and configuration
 bytes must stay unchanged through the captured next due time plus two seconds.
 Snapshots, including diagnostics, are retained under the fresh profile's
@@ -192,6 +198,14 @@ Snapshots, including diagnostics, are retained under the fresh profile's
 One 300-second monotonic budget covers the run, including a ten-second cleanup
 reserve; individual waits cannot reset it. On failure, only the recorded app
 and observed descendant lifetimes may be signaled, with PID-reuse checks.
+Before every AX message, the timeout is set and checked on that **exact
+reference**; application timeouts do not propagate to other/equal references.
+The timeout is capped at two seconds and half the remaining work budget,
+rounded down when necessary. Less than 100ms of work budget refuses another
+call; zero is never used to reset the timeout. The budget is rechecked after
+configuration and after each potentially blocking operation. Failure to set
+the timeout prevents dispatch. The budget remains cooperative, not a preemptive
+watchdog for a stalled OS call or filesystem.
 Forced cleanup never satisfies natural Quit. Cleanup failure exits nonzero and
 requires the owner to retain resource custody. No unbounded process wait,
 global input, activation workaround or permission change is permitted.
@@ -209,7 +223,7 @@ synthetic observations. It neither calls native-access APIs nor launches the
 app or a provider. Run while another delivery owns the native slot:
 
 ```sh
-xcrun swiftc -parse-as-library -D POLLING_GUARD_TESTS \
+xcrun swiftc -parse-as-library -warnings-as-errors -D POLLING_GUARD_TESTS \
   tests/macos-polling-smoke.swift tests/macos-polling-guards.swift \
   -o /absolute/owned-evidence/macos-polling-guards
 /absolute/owned-evidence/macos-polling-guards
@@ -218,6 +232,10 @@ xcrun swiftc -parse-as-library -D POLLING_GUARD_TESTS \
 The selection covers stale success, scheduled crossover, duplicate/foreign/
 disabled/unsupported actions, unavailable window snapshots, clipped text,
 cursor identity, duplicate/replaced revision jobs, all four stable-state files,
-PID reuse versus reparenting and the monotonic cleanup reserve. These synthetic
+PID-count boundaries, parent acquisition races, PID reuse versus reparenting,
+per-reference timeout configuration/refusal and the monotonic cleanup reserve.
+The macOS workflow compiles both polling entry points and executes only this
+pure guard suite, using the runner's host architecture. It does not execute the
+polling native harness or its preflight. These synthetic
 checks and native compilation do not satisfy either full native acceptance
 group. Retain complete output and real exit codes for each command.

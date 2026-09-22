@@ -36,13 +36,44 @@ struct Budget {
         try require(remaining(at: ProcessInfo.processInfo.systemUptime) > 0,
                     "Total monotonic budget exhausted; reserving cleanup time")
     }
+
+    func messagingTimeout(at now: TimeInterval) throws -> Float {
+        let available = remaining(at: now)
+        try require(now.isFinite && available.isFinite && available >= 0.1,
+                    "Insufficient work budget for bounded AX call; reserving cleanup time")
+        let selected = min(2, available / 2)
+        let timeout = Float(selected)
+        return Double(timeout) > selected ? timeout.nextDown : timeout
+    }
 }
 
 let budget = Budget()
 
-func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
+func boundedAXMessage<Reference, Result>(
+    _ reference: Reference, limit: Budget = budget,
+    now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+    configure: (Reference, Float) -> Bool, operation: () -> Result
+) throws -> Result {
+    let timeout = try limit.messagingTimeout(at: now())
+    try require(configure(reference, timeout), "Cannot establish per-reference AX messaging timeout")
+    try require(limit.remaining(at: now()) > Double(timeout),
+                "AX timeout no longer fits work budget after configuration")
+    let result = operation()
+    try require(limit.remaining(at: now()) > 0, "AX operation exhausted work budget")
+    return result
+}
+
+func axMessage(_ element: AXUIElement, _ operation: () -> AXError) throws -> AXError {
+    try boundedAXMessage(element, configure: {
+        AXUIElementSetMessagingTimeout($0, $1) == .success
+    }, operation: operation)
+}
+
+func attribute(_ element: AXUIElement, _ name: String) throws -> CFTypeRef? {
     var value: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else {
+    guard try axMessage(element, {
+        AXUIElementCopyAttributeValue(element, name as CFString, &value)
+    }) == .success else {
         return nil
     }
     return value
@@ -74,34 +105,41 @@ func observedAXElements(_ value: CFTypeRef?) throws -> [AXUIElement] {
 
 func observedAXChildren(_ element: AXUIElement) throws -> [AXUIElement] {
     var value: CFTypeRef?
-    let result = AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &value)
+    let result = try axMessage(element) {
+        AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &value)
+    }
     if result == .attributeUnsupported || result == .noValue { return [] }
     try require(result == .success, "AX children unavailable (\(result.rawValue))")
     return try observedAXElements(value)
 }
 
-func extrasMenu(_ application: AXUIElement) -> AXUIElement? {
-    guard let value = attribute(application, "AXExtrasMenuBar"),
+func extrasMenu(_ application: AXUIElement) throws -> AXUIElement? {
+    guard let value = try attribute(application, "AXExtrasMenuBar"),
           CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
     return unsafeBitCast(value, to: AXUIElement.self)
 }
 
-func sameProcess(_ element: AXUIElement, _ application: AXUIElement) -> Bool {
-    var elementPID: pid_t = 0
-    var applicationPID: pid_t = 0
-    return AXUIElementGetPid(element, &elementPID) == .success
-        && AXUIElementGetPid(application, &applicationPID) == .success
-        && elementPID == applicationPID
+func elementPID(_ element: AXUIElement) throws -> pid_t? {
+    var pid: pid_t = 0
+    let result = try axMessage(element) { AXUIElementGetPid(element, &pid) }
+    return result == .success && pid > 0 ? pid : nil
 }
 
-func text(_ element: AXUIElement, _ name: String) -> String {
-    attribute(element, name) as? String ?? ""
+func sameProcess(_ element: AXUIElement, _ application: AXUIElement) throws -> Bool {
+    guard let pid = try elementPID(element) else { return false }
+    return try pid == elementPID(application)
+}
+
+func text(_ element: AXUIElement, _ name: String) throws -> String {
+    try attribute(element, name) as? String ?? ""
 }
 
 func enableOwnedAccessibilityTree(_ application: AXUIElement) throws {
     for name in ["AXManualAccessibility", "AXEnhancedUserInterface"] {
         try budget.check()
-        let result = AXUIElementSetAttributeValue(application, name as CFString, kCFBooleanTrue)
+        let result = try axMessage(application) {
+            AXUIElementSetAttributeValue(application, name as CFString, kCFBooleanTrue)
+        }
         print("AX owned-app \(name)=true result=\(result.rawValue)")
     }
 }
@@ -151,12 +189,11 @@ func validateAction(_ targets: [ActionTarget], pid: pid_t, role: String,
                 "Action target ownership/role/title/enabled/supported-action guard failed")
 }
 
-func actionTarget(_ element: AXUIElement, application: AXUIElement) -> ActionTarget {
-    var pid: pid_t = 0
-    let result = AXUIElementGetPid(element, &pid)
+func actionTarget(_ element: AXUIElement, application: AXUIElement) throws -> ActionTarget {
+    let pid = try elementPID(element)
     var actions: CFArray?
-    let copied = AXUIElementCopyActionNames(element, &actions)
-    return ActionTarget(pid: result == .success ? pid : nil,
+    let copied = try axMessage(element) { AXUIElementCopyActionNames(element, &actions) }
+    return try ActionTarget(pid: pid,
                         role: text(element, kAXRoleAttribute), title: text(element, kAXTitleAttribute),
                         enabled: attribute(element, kAXEnabledAttribute) as? Bool,
                         actions: copied == .success ? actions as? [String] : nil,
@@ -167,41 +204,41 @@ func perform(_ candidates: [AXUIElement], application: AXUIElement, role: String
              title: String? = nil, action: String = kAXPressAction) throws {
     try budget.check()
     try require(candidates.count == 1, "Action target is missing or ambiguous: \(candidates.count)")
-    var pid: pid_t = 0
-    try require(AXUIElementGetPid(application, &pid) == .success && pid > 0,
-                "Application PID unavailable")
+    guard let pid = try elementPID(application) else {
+        throw PollingSmokeFailure.failed("Application PID unavailable")
+    }
     let currentOwner = try processIdentity(pid)
     try require(launchedIdentity != nil && currentOwner == launchedIdentity
                     && currentOwner?.executable == launchedIdentity?.executable,
                 "Owned process birth/executable identity changed before action")
-    try validateAction(candidates.map { actionTarget($0, application: application) },
+    try validateAction(candidates.map { try actionTarget($0, application: application) },
                        pid: pid, role: role, title: title, action: action)
     let target = candidates[0]
     try validateAction([actionTarget(target, application: application)],
                        pid: pid, role: role, title: title, action: action)
     try budget.check()
-    let result = AXUIElementPerformAction(target, action as CFString)
+    let result = try axMessage(target) { AXUIElementPerformAction(target, action as CFString) }
     try require(result == .success, "Owned \(title ?? role) action failed (\(result.rawValue))")
     print("ACTION pid=\(pid) role=\(role) title=\(title ?? "<close/tray>") action=\(action)")
 }
 
 func menuItems(_ application: AXUIElement, title: String) throws -> [AXUIElement] {
-    guard let extras = extrasMenu(application), sameProcess(extras, application) else { return [] }
+    guard let extras = try extrasMenu(application), try sameProcess(extras, application) else { return [] }
     return try descendants(extras).filter {
         try budget.check()
-        return sameProcess($0, application) &&
+        return try sameProcess($0, application) &&
         text($0, kAXRoleAttribute) == kAXMenuItemRole && text($0, kAXTitleAttribute) == title
     }
 }
 
 func openTray(_ application: AXUIElement) throws {
     if try !menuItems(application, title: "Quit PR Sniper").isEmpty { return }
-    guard let extras = extrasMenu(application), sameProcess(extras, application) else {
+    guard let extras = try extrasMenu(application), try sameProcess(extras, application) else {
         throw PollingSmokeFailure.failed("No owned AXExtrasMenuBar")
     }
     let items = try descendants(extras).filter {
         try budget.check()
-        return sameProcess($0, application) && text($0, kAXRoleAttribute) == kAXMenuBarItemRole
+        return try sameProcess($0, application) && text($0, kAXRoleAttribute) == kAXMenuBarItemRole
     }
     try perform(items, application: application, role: kAXMenuBarItemRole)
     try waitFor("owned native tray menu") {
@@ -242,9 +279,9 @@ func ownedWindows(_ snapshot: [[String: Any]]?, pid: pid_t) throws -> [CGRect] {
 }
 
 func screenWindows(_ application: AXUIElement) throws -> [CGRect] {
-    var pid: pid_t = 0
-    try require(AXUIElementGetPid(application, &pid) == .success && pid > 0,
-                "Cannot identify owned application")
+    guard let pid = try elementPID(application) else {
+        throw PollingSmokeFailure.failed("Cannot identify owned application")
+    }
     return try screenWindows(pid: pid)
 }
 
@@ -263,9 +300,9 @@ func whollyVisible(_ rect: CGRect?, within clips: [CGRect]) -> Bool {
     return clips.allSatisfy { validRect($0) && $0.contains(rect) }
 }
 
-func frame(_ element: AXUIElement) -> CGRect? {
-    guard let position = attribute(element, kAXPositionAttribute),
-          let size = attribute(element, kAXSizeAttribute),
+func frame(_ element: AXUIElement) throws -> CGRect? {
+    guard let position = try attribute(element, kAXPositionAttribute),
+          let size = try attribute(element, kAXSizeAttribute),
           CFGetTypeID(position) == AXValueGetTypeID(), CFGetTypeID(size) == AXValueGetTypeID() else { return nil }
     var point = CGPoint.zero
     var extent = CGSize.zero
@@ -277,13 +314,15 @@ func frame(_ element: AXUIElement) -> CGRect? {
 func visibleWindow(_ application: AXUIElement, title: String) throws -> AXUIElement? {
     func matches(_ element: AXUIElement) throws -> Bool {
         try budget.check()
-        return !CFEqual(element, application) && sameProcess(element, application)
+        return try !CFEqual(element, application) && sameProcess(element, application)
             && text(element, kAXRoleAttribute) == kAXWindowRole
             && text(element, kAXTitleAttribute) == "PR Sniper - \(title)"
             && attribute(element, kAXMinimizedAttribute) as? Bool == false
     }
     var value: CFTypeRef?
-    try require(AXUIElementCopyAttributeValue(application, kAXWindowsAttribute as CFString, &value) == .success,
+    try require(try axMessage(application, {
+        AXUIElementCopyAttributeValue(application, kAXWindowsAttribute as CFString, &value)
+    }) == .success,
                 "AX windows snapshot unavailable")
     guard let value, CFGetTypeID(value) == CFArrayGetTypeID() else {
         throw PollingSmokeFailure.failed("AX windows snapshot is not an array")
@@ -292,14 +331,15 @@ func visibleWindow(_ application: AXUIElement, title: String) throws -> AXUIElem
     var matching = try listed.filter(matches)
     if matching.isEmpty && listed.contains(where: { CFEqual($0, application) }) {
         var direct: CFArray?
-        try require(AXUIElementCopyAttributeValues(application, kAXWindowsAttribute as CFString,
-                                                  0, 10, &direct) == .success && direct != nil,
+        try require(try axMessage(application, {
+            AXUIElementCopyAttributeValues(application, kAXWindowsAttribute as CFString, 0, 10, &direct)
+        }) == .success && direct != nil,
                     "Direct AX windows snapshot unavailable")
         matching = try observedAXElements(direct).filter(matches)
     }
     try require(matching.count <= 1, "Ambiguous owned \(title) windows")
     let onscreen = try screenWindows(application)
-    guard let window = matching.first, let bounds = frame(window),
+    guard let window = matching.first, let bounds = try frame(window),
           onscreen.contains(where: {
               abs($0.minX - bounds.minX) < 2 && abs($0.minY - bounds.minY) < 2
                   && abs($0.width - bounds.width) < 2 && abs($0.height - bounds.height) < 2
@@ -315,13 +355,13 @@ func assertHidden(_ application: AXUIElement, _ process: Process) throws {
 
 func closeWindow(_ application: AXUIElement, title: String) throws {
     guard let window = try visibleWindow(application, title: title),
-          let value = attribute(window, kAXCloseButtonAttribute),
+          let value = try attribute(window, kAXCloseButtonAttribute),
           CFGetTypeID(value) == AXUIElementGetTypeID() else {
         throw PollingSmokeFailure.failed("No AX close button for \(title)")
     }
     let button = unsafeBitCast(value, to: AXUIElement.self)
-    try require(sameProcess(window, application), "Window identity changed before close")
-    try require(text(button, kAXSubroleAttribute) == kAXCloseButtonSubrole,
+    try require(try sameProcess(window, application), "Window identity changed before close")
+    try require(try text(button, kAXSubroleAttribute) == kAXCloseButtonSubrole,
                 "Window close attribute is not a semantic close button")
     try perform([button], application: application, role: kAXButtonRole)
     try waitFor("\(title) no longer on screen (healthy CG snapshot)") {
@@ -418,7 +458,7 @@ func assertQueueVisible(_ application: AXUIElement, _ expected: ExpectedQueue) t
 }
 
 func visibleStrings(_ window: AXUIElement, application: AXUIElement) throws -> [String] {
-    guard let bounds = frame(window), validRect(bounds) else {
+    guard let bounds = try frame(window), validRect(bounds) else {
         throw PollingSmokeFailure.failed("Visible window geometry unavailable")
     }
     var pending: [(AXUIElement, [CGRect], Int)] = [(window, [bounds], 0)]
@@ -429,22 +469,22 @@ func visibleStrings(_ window: AXUIElement, application: AXUIElement) throws -> [
         try require(depth <= 24 && visited.count < 2500, "Visible AX traversal exceeded bound")
         if visited.contains(where: { CFEqual($0, element) }) { continue }
         visited.append(element)
-        try require(sameProcess(element, application), "Visible AX descendant changed owner")
-        if attribute(element, "AXHidden") as? Bool == true { continue }
-        let role = text(element, kAXRoleAttribute)
+        try require(try sameProcess(element, application), "Visible AX descendant changed owner")
+        if try attribute(element, "AXHidden") as? Bool == true { continue }
+        let role = try text(element, kAXRoleAttribute)
         var childClips = clips
         if ["AXScrollArea", "AXWebArea"].contains(role) {
-            guard let clip = frame(element), validRect(clip) else {
+            guard let clip = try frame(element), validRect(clip) else {
                 throw PollingSmokeFailure.failed("Visible content clip unavailable")
             }
             childClips.append(clip)
         }
         // Only text leaves count: a container's accessible name can contain offscreen descendants.
-        if role == kAXStaticTextRole && whollyVisible(frame(element), within: childClips) {
-            let strings = [kAXValueAttribute, kAXTitleAttribute].map { text(element, $0) }
+        if try role == kAXStaticTextRole && whollyVisible(frame(element), within: childClips) {
+            let strings = try [kAXValueAttribute, kAXTitleAttribute].map { try text(element, $0) }
                 .filter { !$0.isEmpty }
             result.append(contentsOf: strings)
-            if !strings.isEmpty { print("VISIBLE text=\(strings) bounds=\(String(describing: frame(element)))") }
+            if !strings.isEmpty { print("VISIBLE text=\(strings) bounds=\(String(describing: try frame(element)))") }
         }
         pending.append(contentsOf: try observedAXChildren(element).map { ($0, childClips, depth + 1) })
     }
@@ -561,21 +601,68 @@ func processIdentity(_ pid: pid_t) throws -> OwnedProcess? {
                         executable: String(cString: path))
 }
 
-func ownedChildren(_ parent: pid_t) throws -> [OwnedProcess] {
+func childPIDs(_ pids: [pid_t], count: Int32, error: Int32) throws -> [pid_t] {
+    try require(error == 0 && count >= 0 && Int(count) < pids.count,
+                "Owned child snapshot unavailable or truncated: count=\(count) capacity=\(pids.count) errno=\(error)")
+    let children = Array(pids.prefix(Int(count)))
+    try require(children.allSatisfy { $0 > 0 } && Set(children).count == children.count,
+                "Owned child snapshot contains invalid or duplicate PIDs")
+    return children
+}
+
+func readChildPIDs(_ parent: pid_t) throws -> [pid_t] {
     var pids = [pid_t](repeating: 0, count: 256)
-    let capacity = Int32(pids.count * MemoryLayout<pid_t>.size)
     errno = 0
-    let bytes = proc_listchildpids(parent, &pids, capacity)
-    try require(bytes >= 0 && (bytes != 0 || errno == 0) && bytes < capacity
-                    && bytes % Int32(MemoryLayout<pid_t>.size) == 0,
-                "Owned child snapshot unavailable or truncated")
-    var result: [OwnedProcess] = []
-    for pid in pids.prefix(Int(bytes) / MemoryLayout<pid_t>.size) where pid > 0 {
-        guard let identity = try processIdentity(pid) else { continue }
-        try require(identity.parent == parent, "Child ancestry changed during observation")
-        result.append(identity)
+    let count = proc_listchildpids(parent, &pids, Int32(pids.count * MemoryLayout<pid_t>.size))
+    let error = errno
+    print("CHILD snapshot parent=\(parent) count=\(count) capacity=\(pids.count) errno=\(error)")
+    return try childPIDs(pids, count: count, error: error)
+}
+
+func ownedChildren(_ parent: OwnedProcess, identity: (pid_t) throws -> OwnedProcess?,
+                   enumerate: (pid_t) throws -> [pid_t],
+                   check: () throws -> Void) throws -> [OwnedProcess] {
+    func validateParent() throws {
+        try check()
+        try require(try identity(parent.pid) == parent,
+                    "Parent exited or changed lifetime during child acquisition: \(parent.pid)")
     }
+    try validateParent()
+    let pids = try enumerate(parent.pid)
+    try validateParent()
+    var result: [OwnedProcess] = []
+    for pid in pids {
+        try check()
+        guard let child = try identity(pid) else { continue }
+        try require(child.pid == pid && child.parent == parent.pid && child != parent,
+                    "Child ancestry changed during observation")
+        result.append(child)
+    }
+    // These userspace checks are not atomic with enumeration or later signaling.
+    try validateParent()
     return result
+}
+
+func sampleDescendants(_ owner: OwnedProcess, observed: inout [OwnedProcess],
+                       identity: (pid_t) throws -> OwnedProcess?,
+                       enumerate: (pid_t) throws -> [pid_t],
+                       check: () throws -> Void) throws {
+    var pending = [owner]
+    var seen: [OwnedProcess] = []
+    while let parent = pending.popLast() {
+        try check()
+        try require(seen.count < 128, "Owned descendant observation exceeded bound")
+        if seen.contains(parent) { continue }
+        seen.append(parent)
+        let children = try ownedChildren(parent, identity: identity, enumerate: enumerate, check: check)
+        for child in children {
+            if !observed.contains(child) {
+                observed.append(child)
+                print("CHILD observed pid=\(child.pid) parent=\(child.parent) birth=\(child.seconds).\(child.micros)")
+            }
+            pending.append(child)
+        }
+    }
 }
 
 func readHealth(_ root: URL, repositoryID: String) throws -> Health? {
@@ -675,21 +762,11 @@ func run() throws {
     }
     func sampleChildren() throws {
         try require(process.isRunning, "Owned process exited before child observation")
-        var pending = [process.processIdentifier]
-        var seen = Set<pid_t>()
-        while let pid = pending.popLast() {
-            try budget.check()
-            try require(seen.count < 128, "Owned descendant observation exceeded bound")
-            if !seen.insert(pid).inserted { continue }
-            let children = try ownedChildren(pid)
-            for child in children {
-                if !observedChildren.contains(child) {
-                    observedChildren.append(child)
-                    print("CHILD observed pid=\(child.pid) parent=\(child.parent) birth=\(child.seconds).\(child.micros)")
-                }
-                pending.append(child.pid)
-            }
+        guard let owner else {
+            throw PollingSmokeFailure.failed("Owned process birth identity unavailable")
         }
+        try sampleDescendants(owner, observed: &observedChildren, identity: processIdentity,
+                              enumerate: readChildPIDs, check: budget.check)
     }
     defer {
         let cleanupEnd = min(budget.start + budget.total, ProcessInfo.processInfo.systemUptime + 8)
@@ -750,11 +827,9 @@ func run() throws {
     launchedIdentity = owner
     print("OBSERVE bundle=\(bundleURL.path) executable=\(executable.path) pid=\(process.processIdentifier) data=\(root.path)")
     let application = AXUIElementCreateApplication(process.processIdentifier)
-    try require(AXUIElementSetMessagingTimeout(application, 2) == .success,
-                "Cannot establish bounded owned AX messaging timeout")
     try waitFor("native startup and persisted schedule") {
         let health = try readHealth(root, repositoryID: repositoryID)
-        return process.isRunning && extrasMenu(application) != nil && health != nil
+        return try process.isRunning && extrasMenu(application) != nil && health != nil
     }
     try enableOwnedAccessibilityTree(application)
     try assertHidden(application, process)
@@ -875,7 +950,7 @@ func run() throws {
             && ($0?["timestamp_secs"] as? Int64).map { $0 >= quitAction } == true
     }, "Fresh quit_requested diagnostic missing")
     try require(try screenWindows(pid: process.processIdentifier).isEmpty, "Owned normal window survived Quit")
-    print("OBSERVE post-Quit owned extras menu available=\(extrasMenu(application) != nil); dead AX proxy alone is not tray disappearance proof")
+    print("UNVERIFIED physical tray disappearance; no AX message sent to the exited process")
     let afterQuitBytes = try preserveState(root, evidence: evidence, label: "after-quit", config: settingsBytes)
     try validateStableState(afterQuitBytes, beforeQuitBytes)
     let interval = TimeInterval(beforeQuit.next_run + 2) - Date().timeIntervalSince1970
