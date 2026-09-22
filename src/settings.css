@@ -73,6 +73,11 @@
   opacity: 1;
   cursor: not-allowed;
 }
+.settings-window button.primary:disabled {
+  background: #eef1f5;
+  border-color: #d8dfe7;
+  color: #738091;
+}
 .settings-window :is(button, input, select, textarea, summary):focus-visible {
   outline: 3px solid #225cc5;
   outline-offset: 3px;
@@ -119,9 +124,11 @@
   font-weight: 650;
   letter-spacing: -0.4px;
 }
-.settings-brand img {
+.settings-brand svg {
   width: 28px;
   height: 28px;
+  color: #225cc5;
+  flex: none;
 }
 .settings-window .settings-caption {
   padding: 6px 0 28px 39px;
@@ -134,11 +141,23 @@
   gap: 4px;
 }
 .settings-sidebar nav button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   text-align: left;
   border: 0;
   background: transparent;
   min-height: 40px;
   padding: 9px 11px;
+}
+.settings-sidebar nav svg {
+  width: 18px;
+  height: 18px;
+  color: #67788b;
+  flex: none;
+}
+.settings-sidebar nav button[aria-current] svg {
+  color: #225cc5;
 }
 .settings-sidebar nav button[aria-current] {
   background: #dfe9fb;
@@ -215,6 +234,26 @@
   display: grid;
   place-items: center;
   flex: none;
+}
+.folder-symbol svg {
+  width: 22px;
+  height: 22px;
+  color: #617ca0;
+}
+.repo-symbol {
+  width: 31px;
+  height: 34px;
+  border: 1px solid #d8e0e9;
+  border-radius: 6px;
+  background: #f4f7fa;
+  display: grid;
+  place-items: center;
+  color: #5d718c;
+  flex: none;
+}
+.repo-symbol svg {
+  width: 16px;
+  height: 16px;
 }
 .repository-toolbar {
   display: flex;
@@ -519,6 +558,9 @@
   }
 }
 @media (max-width: 600px) {
+  .repo-symbol {
+    display: none;
+  }
   .settings-window {
     width: calc(100% - 20px);
     margin: 10px;

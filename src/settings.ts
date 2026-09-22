@@ -1,13 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { renderConnection } from "./connections";
-import {
-  effectivePolicy,
-  type Policy,
-  type PolicyOverrides,
-  type Selector,
-} from "./policy";
+import { effectivePolicy, type Policy, type Selector } from "./policy";
 import type { Repository } from "./repositories";
-import crosshair from "./crosshair.svg";
 import "./settings.css";
 
 interface Preset {
@@ -55,6 +49,20 @@ const sections: Record<Section, [string, string]> = {
   ],
   presets: ["Review presets", "Give your reviews a reusable point of view."],
 };
+const iconPaths = {
+  repositories:
+    '<path d="M4 4h11v15H6a2 2 0 0 1-2-2V4Zm0 11h11M8 8h3M8 11h3"/>',
+  people:
+    '<circle cx="9" cy="8" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2m1-15a3 3 0 0 1 0 6m2 3a5 5 0 0 1 3 5"/>',
+  reviews:
+    '<rect x="4" y="6" width="16" height="13" rx="4"/><path d="M12 3v3M8 11v2m8-2v2m-7 3h6"/>',
+  automation:
+    '<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="8" cy="18" r="2"/>',
+  presets: '<path d="M6 3h9l4 4v14H6zM14 3v5h5M9 12h7m-7 4h5"/>',
+  folder: '<path d="M3 6h7l2 2h9v12H3zM3 6V4h7l2 2"/>',
+};
+const icon = (key: keyof typeof iconPaths) =>
+  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${iconPaths[key]}</svg>`;
 const escape = (value: string) =>
   value.replace(
     /[&<>"']/g,
@@ -67,7 +75,17 @@ const escape = (value: string) =>
         "'": "&#39;",
       })[c]!,
   );
-const clone = <T>(value: T): T => structuredClone(value);
+// Settings are JSON data; older macOS webviews do not expose structuredClone.
+const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
+function newIdentity() {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 const localZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 const option = (value: string, label: string, selected: string) =>
   `<option value="${escape(value)}" ${value === selected ? "selected" : ""}>${escape(label)}</option>`;
@@ -97,11 +115,11 @@ const reason = (error: unknown) => {
 export async function mountSettings(app: HTMLElement) {
   document.body.classList.add("settings-page");
   app.className = "settings-window";
-  app.innerHTML = `<aside class="settings-sidebar"><div class="settings-brand"><img src="${crosshair}" alt="" />PR Sniper</div><p class="settings-caption">Preferences</p>
+  app.innerHTML = `<aside class="settings-sidebar"><div class="settings-brand"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><circle cx="16" cy="16" r="9" stroke="currentColor" stroke-width="1.7"/><path d="M16 2v8m0 12v8M2 16h8m12 0h8" stroke="currentColor" stroke-width="1.7"/><circle cx="16" cy="16" r="2.5" fill="currentColor"/></svg>PR Sniper</div><p class="settings-caption">Preferences</p>
     <nav aria-label="Settings sections">${Object.entries(sections)
       .map(
         ([key, [title]]) =>
-          `<button type="button" data-section="${key}">${title}</button>`,
+          `<button type="button" data-section="${key}">${icon(key as Section)}${title}</button>`,
       )
       .join("")}</nav>
     <label class="mobile-section">Section<select aria-label="Settings section">${Object.entries(
@@ -109,7 +127,7 @@ export async function mountSettings(app: HTMLElement) {
     )
       .map(([key, [title]]) => option(key, title, "repositories"))
       .join("")}</select></label></aside>
-    <div class="settings-main"><header class="settings-heading"><h1 tabindex="-1"></h1><p></p></header>
+    <div class="settings-main"><header class="settings-heading"><h1 tabindex="-1">Repositories</h1><p>Choose where PR Sniper looks for pull requests.</p></header>
     <p id="error" role="alert" hidden></p><section id="content"></section>
     <footer class="settings-savebar"><span role="status" id="save-status">Loading settings...</span><button id="reset-settings" disabled>Reset changes</button><button class="primary" id="save-settings" disabled>Save changes</button></footer></div>`;
   const content = app.querySelector<HTMLElement>("#content")!;
@@ -119,6 +137,7 @@ export async function mountSettings(app: HTMLElement) {
   const reset = app.querySelector<HTMLButtonElement>("#reset-settings")!;
   let snapshot: Snapshot;
   let saved: Settings;
+  let persisted: Settings;
   let draft: Settings;
   let section: Section = "repositories";
   let discovery: Discovery | null = null;
@@ -232,7 +251,7 @@ export async function mountSettings(app: HTMLElement) {
   }
 
   function renderRepositories() {
-    content.innerHTML = `<div class="folder-card"><div class="folder-symbol" aria-hidden="true">&#128193;</div><div><strong>${escape(draft.root_folder ?? "Choose your repository folder")}</strong><p>${discovery ? `${discovery.repositories.length} local repositories discovered` : "Only a folder you choose is scanned."}</p></div><button id="choose-folder">Choose folder...</button></div>
+    content.innerHTML = `<div class="folder-card"><div class="folder-symbol">${icon("folder")}</div><div><strong>${escape(draft.root_folder ?? "Choose your repository folder")}</strong><p>${discovery ? `${discovery.repositories.length} local repositories discovered` : "Only a folder you choose is scanned."}</p></div><button id="choose-folder">Choose folder...</button></div>
       <div class="repository-toolbar"><input id="repo-search" type="search" aria-label="Find a repository" placeholder="Find a repository..." value="${escape(query)}" /><button id="select-visible">Select visible</button></div>
       <div class="list-label"><span>Repository</span><span id="selected-count"></span></div><div class="repository-list"></div>
       <p class="settings-hint">Monitoring configuration only. Reviews and comments stay separate. No polling runs in this build.</p>
@@ -280,7 +299,7 @@ export async function mountSettings(app: HTMLElement) {
       if (existing) existing.enabled = enabled;
       else if (enabled)
         (draft.repositories ??= []).push({
-          id: crypto.randomUUID(),
+          id: newIdentity(),
           name,
           enabled,
           provider: "github",
@@ -304,7 +323,7 @@ export async function mountSettings(app: HTMLElement) {
           item.name ?? item.path.split("/").pop() ?? "Unavailable repository",
         );
         row.innerHTML = `<input type="checkbox" aria-label="Monitor ${escape(item.name ?? item.path.split("/").pop() ?? "repository")}" ${repository?.enabled ? "checked" : ""} ${!item.name ? "disabled" : ""} />
-          <div class="repository-info"><strong>${escape(item.name?.split("/")[1] ?? item.path.split("/").pop() ?? "")}</strong><p>${escape(item.name ?? item.unavailable ?? "Unavailable")}</p></div>
+          <span class="repo-symbol">${icon("repositories")}</span><div class="repository-info"><strong>${escape(item.name?.split("/")[1] ?? item.path.split("/").pop() ?? "")}</strong><p>${escape(item.name ?? item.unavailable ?? "Unavailable")}</p></div>
           ${item.name ? `<span class="repository-note">${Object.keys(repository?.overrides ?? {}).length ? "Custom settings" : "Use defaults"}</span><button class="configure">Settings</button>` : ""}`;
         row.querySelector<HTMLInputElement>("input")!.onchange = (event) => {
           select(item.name!, (event.target as HTMLInputElement).checked);
@@ -317,7 +336,7 @@ export async function mountSettings(app: HTMLElement) {
             let repo = repositories().find((r) => r.name === item.name);
             if (!repo) {
               repo = {
-                id: crypto.randomUUID(),
+                id: newIdentity(),
                 name: item.name!,
                 enabled: false,
                 provider: "github",
@@ -354,7 +373,7 @@ export async function mountSettings(app: HTMLElement) {
         if (repository) repository.name = name;
         else
           (draft.repositories ??= []).push({
-            id: crypto.randomUUID(),
+            id: newIdentity(),
             name,
             provider: "github",
             enabled: true,
@@ -412,6 +431,22 @@ export async function mountSettings(app: HTMLElement) {
       };
   }
 
+  function refreshRepositoryPolicy(
+    repository: ConfiguredRepository,
+    source: HTMLElement,
+    focus: string,
+  ) {
+    const root = source.closest<HTMLElement>(".repo-policy")!;
+    const scroller = root.closest<HTMLElement>(".dialog-body")!;
+    const scroll = scroller.scrollTop;
+    root.replaceChildren();
+    renderReview(root, repository);
+    renderPeople(root, repository);
+    renderAutomation(root, repository);
+    root.querySelector<HTMLElement>(focus)?.focus({ preventScroll: true });
+    scroller.scrollTop = scroll;
+  }
+
   function field(
     root: HTMLElement,
     key: keyof Policy,
@@ -423,6 +458,7 @@ export async function mountSettings(app: HTMLElement) {
     group.innerHTML = `${repository ? `<label class="override-toggle"><input type="checkbox" aria-label="Override ${escape(title.toLowerCase())}" ${repository.overrides?.[key] != null ? "checked" : ""} />Override ${escape(title.toLowerCase())}</label>` : ""}
       <fieldset><legend>${escape(title)}</legend></fieldset>`;
     const fieldset = group.querySelector("fieldset")!;
+    fieldset.setAttribute("aria-label", `${title} settings`);
     if (repository) {
       fieldset.disabled = repository.overrides?.[key] == null;
       group.querySelector<HTMLInputElement>("input")!.onchange = (event) => {
@@ -433,11 +469,11 @@ export async function mountSettings(app: HTMLElement) {
           if (key === "prompt") delete repository.review_preset;
           changed();
         }
-        const modal = group.closest("dialog");
-        if (modal) {
-          modal.close();
-          repositoryDialog(repository);
-        }
+        refreshRepositoryPolicy(
+          repository,
+          group,
+          `[aria-label="${CSS.escape(`Override ${title.toLowerCase()}`)}"]`,
+        );
       };
     }
     root.append(group);
@@ -452,8 +488,7 @@ export async function mountSettings(app: HTMLElement) {
       repository,
     );
     const people = policy(repository).watched_authors;
-    target.innerHTML = `<div class="people-list">${people.length ? people.map((person, i) => `<div class="person-row"><span class="person-avatar">${escape(person.login.slice(0, 2).toUpperCase())}</span><div><strong>${escape(person.login)}</strong><p>@${escape(person.login)}</p></div><button type="button" data-remove="${i}" aria-label="Remove ${escape(person.login)}">Remove</button></div>`).join("") : '<p class="settings-empty">No people added yet. Add a GitHub login to follow their pull requests.</p>'}</div>
-      <form class="person-lookup"><label>GitHub login<input name="login" placeholder="octocat" autocomplete="off" required /></label><button type="submit">Add person</button><p role="alert" hidden></p></form><p class="settings-hint">Looks up the exact login through your current GitHub CLI account and stores its stable identity. Sign in with gh auth login in your terminal if disconnected.</p>`;
+    target.innerHTML = `<div class="section-actions"><h2>People you watch</h2><button type="button" class="primary" data-add-people>Add people</button></div><div class="people-list">${people.length ? people.map((person, i) => `<div class="person-row"><span class="person-avatar">${escape(person.login.slice(0, 2).toUpperCase())}</span><div><strong>${escape(person.login)}</strong><p>@${escape(person.login)}</p></div><button type="button" data-remove="${i}" aria-label="Remove ${escape(person.login)}">Remove</button></div>`).join("") : '<p class="settings-empty">No people added yet. Add a GitHub login to follow their pull requests.</p>'}</div><p class="settings-hint">Pull requests by these people are eligible in selected repositories. Repository overrides can use a different list.</p>`;
     target
       .querySelectorAll<HTMLButtonElement>("[data-remove]")
       .forEach((button) => {
@@ -464,40 +499,62 @@ export async function mountSettings(app: HTMLElement) {
             people.filter((_, i) => i !== Number(button.dataset.remove)),
           );
           if (repository) {
-            target.closest("dialog")!.close();
-            repositoryDialog(repository);
-          } else render();
+            refreshRepositoryPolicy(repository, target, "[data-add-people]");
+          } else {
+            render();
+            content
+              .querySelector<HTMLButtonElement>("[data-add-people]")!
+              .focus();
+          }
         };
       });
-    target.querySelector("form")!.onsubmit = async (event) => {
-      event.preventDefault();
-      const input = target.querySelector<HTMLInputElement>("[name=login]")!;
-      const button = target.querySelector<HTMLButtonElement>("form button")!;
-      const alert = target.querySelector<HTMLElement>("[role=alert]")!;
-      button.disabled = true;
-      alert.hidden = true;
-      const lookupRevision = revision;
-      try {
-        const identity = await invoke<Policy["watched_authors"][number]>(
-          "resolve_github_person",
-          { login: input.value.trim().replace(/^@/, "") },
+    target.querySelector<HTMLButtonElement>("[data-add-people]")!.onclick =
+      () => {
+        const picker = dialog(
+          "Add people",
+          `<form class="person-lookup"><label>GitHub login<input name="login" placeholder="octocat" autocomplete="off" required /></label><p class="settings-hint">Looks up the exact login through your current GitHub CLI account and stores its stable identity. Sign in with gh auth login in your terminal if disconnected.</p><p role="alert" hidden></p><button type="submit" class="primary">Add person</button></form>`,
         );
-        if (!target.isConnected || lookupRevision !== revision)
-          throw "Settings changed during lookup. Add this person again.";
-        if (people.some((p) => p.id === identity.id))
-          throw "This person is already in this watchlist.";
-        updatePolicy(repository, "watched_authors", [...people, identity]);
-        if (repository) {
-          target.closest("dialog")!.close();
-          repositoryDialog(repository);
-        } else render();
-      } catch (cause) {
-        alert.textContent = reason(cause);
-        alert.hidden = false;
-      } finally {
-        button.disabled = false;
-      }
-    };
+        picker.querySelector<HTMLInputElement>("[name=login]")!.focus();
+        picker.querySelector("form")!.onsubmit = async (event) => {
+          event.preventDefault();
+          const input = picker.querySelector<HTMLInputElement>("[name=login]")!;
+          const button =
+            picker.querySelector<HTMLButtonElement>("form button")!;
+          const alert = picker.querySelector<HTMLElement>("[role=alert]")!;
+          button.disabled = true;
+          alert.hidden = true;
+          const lookupRevision = revision;
+          try {
+            const identity = await invoke<Policy["watched_authors"][number]>(
+              "resolve_github_person",
+              { login: input.value.trim().replace(/^@/, "") },
+            );
+            if (
+              !target.isConnected ||
+              !picker.open ||
+              lookupRevision !== revision
+            )
+              throw "Settings changed during lookup. Add this person again.";
+            if (people.some((p) => p.id === identity.id))
+              throw "This person is already in this watchlist.";
+            updatePolicy(repository, "watched_authors", [...people, identity]);
+            picker.close();
+            if (repository) {
+              refreshRepositoryPolicy(repository, target, "[data-add-people]");
+            } else {
+              render();
+              content
+                .querySelector<HTMLButtonElement>("[data-add-people]")!
+                .focus();
+            }
+          } catch (cause) {
+            alert.textContent = reason(cause);
+            alert.hidden = false;
+          } finally {
+            button.disabled = false;
+          }
+        };
+      };
   }
 
   function renderReview(root: HTMLElement, repository?: ConfiguredRepository) {
@@ -512,6 +569,8 @@ export async function mountSettings(app: HTMLElement) {
     const model = field(root, "selector", "Model", repository);
     const selectors: Selector[] = [{ kind: "default" }];
     for (const selection of [
+      saved.defaults.selector,
+      ...(saved.repositories ?? []).map((r) => r.overrides?.selector),
       draft.defaults.selector,
       ...repositories().map((r) => r.overrides?.selector),
     ].filter((s): s is Selector => !!s)) {
@@ -593,12 +652,13 @@ export async function mountSettings(app: HTMLElement) {
     const schedule = field(root, "schedule", "Schedule", repository);
     const existing = current.schedule;
     const local = localZone();
+    const catalogAvailable = typeof Intl.supportedValuesOf === "function";
     const zones = [
       ...new Set([
         local,
         existing.timezone,
         "UTC",
-        ...Intl.supportedValuesOf("timeZone"),
+        ...(catalogAvailable ? Intl.supportedValuesOf("timeZone") : []),
       ]),
     ];
     schedule.innerHTML = `<label class="setting-row"><span>Check for pull requests<small>Time zone: ${escape(existing.timezone)}${existing.timezone === local ? " (system local)" : " (saved)"}. Scheduling is not running in this build.</small></span><select aria-label="Check frequency">${[
@@ -620,6 +680,13 @@ export async function mountSettings(app: HTMLElement) {
         "",
       )}${option("cron", "Custom schedule (cron)", existing.kind === "cron" ? "cron" : "")}</select></label>
       <details ${existing.kind === "cron" ? "open" : ""}><summary>Advanced scheduling</summary><label>Interval minutes<input name="minutes" type="number" min="1" step="1" value="${existing.kind === "interval" ? existing.minutes : 15}" /></label><label>Cron expression<input name="cron" value="${escape(existing.kind === "cron" ? existing.expression : "0 9 * * MON-FRI")}" /></label><label>Time zone<select name="timezone" aria-label="Time zone">${zones.map((zone) => option(zone, zone === local ? `Local - ${zone}` : zone, existing.timezone)).join("")}</select></label><p class="settings-hint">Cron uses five fields: minute, hour, day, month, weekday. Existing schedules and zones are preserved unless you change them.</p></details>`;
+    if (!catalogAvailable) {
+      const notice = document.createElement("p");
+      notice.className = "settings-hint";
+      notice.textContent =
+        "The time-zone catalog is unavailable in this webview. Current, local and UTC zones remain available. Update macOS for the full catalog.";
+      schedule.querySelector("details")!.append(notice);
+    }
     const frequency = schedule.querySelector<HTMLSelectElement>(
       "[aria-label='Check frequency']",
     )!;
@@ -673,6 +740,7 @@ export async function mountSettings(app: HTMLElement) {
             if (fresh.settings) {
               draft.launch_at_login = fresh.settings.launch_at_login;
               saved.launch_at_login = fresh.settings.launch_at_login;
+              persisted.launch_at_login = fresh.settings.launch_at_login;
             }
             snapshot = fresh;
           } catch {
@@ -788,7 +856,7 @@ export async function mountSettings(app: HTMLElement) {
       )
     )
       throw "Choose a unique preset name.";
-    const preset = existing ?? { id: crypto.randomUUID(), name: "", body: "" };
+    const preset = existing ?? { id: newIdentity(), name: "", body: "" };
     preset.name = name.trim();
     preset.body = body;
     if (!existing) (draft.presets ??= []).push(preset);
@@ -841,7 +909,8 @@ export async function mountSettings(app: HTMLElement) {
       const result = await invoke<{
         settings: Settings;
         warning: string | null;
-      }>("save_preferences", { settings: draft, expected: saved });
+      }>("save_preferences", { settings: draft, expected: persisted });
+      persisted = clone(result.settings);
       saved = clone(result.settings);
       draft = clone(result.settings);
       if (result.warning) showError(result.warning);
@@ -876,10 +945,11 @@ export async function mountSettings(app: HTMLElement) {
         );
         return;
       }
+      persisted = clone(state.settings);
       saved = clone(state.settings);
-      draft = clone(state.settings);
       if (!state.settings_persisted)
-        draft.defaults.schedule.timezone = localZone();
+        saved.defaults.schedule.timezone = localZone();
+      draft = clone(saved);
       if (state.error) showError(state.error);
       render();
     } catch {

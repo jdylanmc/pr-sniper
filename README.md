@@ -82,24 +82,46 @@ limit. Failed configuration writes are visible, not reported as successful saves
 If configuration commits but recording diagnostics fails, Settings shows the
 committed state with a separate warning, rather than reporting a failed save.
 
-**Global defaults** and each repository's **Policy** cover interval or five-field
-cron schedules in an explicit time zone, watched GitHub identities, the
-reviewer-assignment trigger, Copilot adapter configuration, a model or named
-agent selector, a review prompt and two independent automation gates.
-An unchecked **Override** box inherits the current global value; unchecking a
-saved override resets it. Every repository shows the saved effective value and
-source. Both gates start off; manual agent start does not imply permission to
-publish. No monitoring or provider mutation occurs in this increment.
-Unrelated saves preserve draft fields while untouched inherited fields follow
-current defaults. Settings controls are temporarily disabled during a repository
-or policy save; a failed write restores their previous editable/inherited state.
+Settings opens the [approved A sidebar](docs/agent/design/settings-default.md):
+**Repositories**, **People**, **Review defaults**, **Automation** and **Review
+presets**. Choose a local root folder to discover GitHub remotes and select
+repositories with searchable checkboxes, or add a repository manually. Discovery
+reads bounded Git metadata only: no Git commands, hooks, includes or repository
+code execute. It skips nested symlinks, stops descending at repositories, and
+reports unreadable metadata and depth/resource limits. Linked worktrees and
+ambiguous remotes can be added manually. Saved roots are not automatically
+scanned.
 
-Watched identities use one `numeric GitHub account ID:login` per line. The stable
-ID is the future matching key; the login is only a display label. Repository
-access and the signed-in account are verified separately by the explicit
-connection action; watched labels and adapter/model availability are not.
-Never put credentials in the prompt or other
-configuration fields.
+Changes across sections remain one draft until **Save changes**; **Reset
+changes** returns to the saved state. A conflicting external update is rejected,
+not overwritten. Controls are disabled during saving and failed writes retain
+the draft. Startup registration is separate and changes immediately on explicit
+choice in **Automation > Startup and diagnostics**.
+
+Repository **Settings** offers an independent **Override** checkbox for each
+visible policy field. Unchecked fields use current global defaults. Existing
+reviewer-assignment and adapter values remain preserved in storage but the
+reviewer-assignment control is not part of ordinary Settings. **Run reviews
+automatically** and **Post review comments automatically** remain independent,
+off by default; changing configuration executes neither reviews nor publication.
+
+Scheduling starts in the system-local time zone for a new profile. Existing
+intervals, five-field cron expressions and saved time zones remain unchanged;
+**Advanced scheduling** exposes cron, custom interval and time-zone selection.
+**Model** lists Default first and preserves saved model/named-agent selections.
+Installed-model discovery and agent health are explicitly unavailable, not
+simulated.
+
+**People** resolves an exact GitHub login using the current CLI credential and
+stores the provider's stable numeric identity. Names/logins are display labels;
+IDs remain the matching key. Repository access and the signed-in account are
+verified separately. **Review presets** creates and edits named machine-local
+instructions. Import accepts inert JSON with only `name` and `body` strings
+(24 KB maximum; 80-character names and 12,000-character instructions).
+Select a preset globally or per repository; edits update selected prompts.
+Editing a prompt directly switches that field to custom instructions without
+changing other overrides. Existing custom prompts are retained.
+Never put credentials in presets, prompts or other configuration fields.
 
 Saving validates the effective policy on the Rust storage boundary, including
 positive whole-minute intervals, five-field cron syntax, IANA time zones,
@@ -109,7 +131,8 @@ echoing them. This is not a general-purpose secret detector: all configuration
 must remain nonsecret. Invalid input does not replace the last valid saved
 configuration; malformed or unreadable files are reported rather than reset.
 `state/diagnostics.jsonl` records timestamped, fixed-schema host events, capped at
-256 KiB plus one rotated file. **Settings > Open redacted diagnostics** opens
+256 KiB plus one rotated file. **Settings > Automation > Startup and diagnostics**
+opens
 an in-app reader, not an arbitrary filesystem or shell interface.
 Invalid settings are reported rather than silently reset or overwritten.
 
@@ -127,8 +150,8 @@ usual directories as Finder-launch fallbacks. A bounded version/health probe
 rejects missing or broken executables and shims; this is not a cryptographic
 provenance check or a sandbox for an untrusted executable.
 
-In **Settings**, add a repository, then choose **Verify GitHub connection** on
-its card. Optionally enter the expected stable decimal GitHub account ID; the
+In **Settings**, save a repository, then open its **Settings > Repository and
+connection > Verify GitHub connection**. Optionally enter the expected stable decimal GitHub account ID; the
 verified ID is filled in for subsequent checks. This pin is window-session state,
 not a persisted account selection. A different account fails visibly instead
 of silently switching identities. Connections use saved repository names,
