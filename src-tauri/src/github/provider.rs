@@ -49,6 +49,21 @@ impl<T: Transport> GithubClient<T> {
         Self { transport }
     }
 
+    pub fn resolve_person(&self, login: &str) -> Result<Identity, ConnectionError> {
+        if login.is_empty()
+            || login.len() > 39
+            || login.starts_with('-')
+            || login.ends_with('-')
+            || !login
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Err(ConnectionError::InvalidResponse);
+        }
+        let (user, _) = self.read(&format!("/users/{login}"))?;
+        verify_identity(&user, None)
+    }
+
     pub fn connect(
         &self,
         repository: &str,

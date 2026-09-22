@@ -5,6 +5,8 @@
 - Source revision: 8
 - Source SHA-256: `b0386c81299d36e44fa9efc0ab6938272b8aa9e1ed4872d291cb6ea236a459da`
 - Full specification: [Supporting requirements](./pr-sniper-mvp.full.md)
+- Approved Settings UX: [A - Sidebar default](../design/settings-default.md)
+  (2026-09-22 follow-up; requirements, not implementation evidence)
 
 ## Intention
 
