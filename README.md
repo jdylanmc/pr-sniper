@@ -90,13 +90,20 @@ reads bounded Git metadata only: no Git commands, hooks, includes or repository
 code execute. It skips nested symlinks, stops descending at repositories, and
 reports unreadable metadata and depth/resource limits. Linked worktrees and
 ambiguous remotes can be added manually. Saved roots are not automatically
-scanned.
+scanned. Multiple clones of the same GitHub repository share one monitoring
+checkbox and saved identity; every discovered clone path remains searchable and
+available in the row's local-clone details.
 
 Changes across sections remain one draft until **Save changes**; **Reset
 changes** returns to the saved state. A conflicting external update is rejected,
 not overwritten. Controls are disabled during saving and failed writes retain
 the draft. Startup registration is separate and changes immediately on explicit
-choice in **Automation > Startup and diagnostics**.
+choice in **Automation > Startup and diagnostics**. Closing a repository editor
+cancels its pending draft lookup; delayed replies cannot restore dismissed edits.
+Focus refreshes preserve open repository and preset forms. Dialogs retain focus,
+Escape/Close and background isolation when native dialog APIs are unavailable;
+viewport sizing also falls back for older WebKit versions. The macOS 12 minimum
+is unchanged; browser fallback coverage is not native acceptance evidence.
 
 Repository **Settings** offers an independent **Override** checkbox for each
 visible policy field. Unchecked fields use current global defaults. Existing
