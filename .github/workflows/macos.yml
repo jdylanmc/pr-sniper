@@ -29,6 +29,14 @@ jobs:
       - run: npm run bundle
       - name: Compile native acceptance harness
         run: swiftc tests/macos-native-smoke.swift -o "$RUNNER_TEMP/pr-sniper-native-smoke"
+      - name: Compile polling acceptance harness
+        run: xcrun swiftc -parse-as-library -warnings-as-errors tests/macos-polling-smoke.swift -o "$RUNNER_TEMP/pr-sniper-polling-smoke"
+      - name: Run offline polling guards
+        run: |
+          xcrun swiftc -parse-as-library -warnings-as-errors -D POLLING_GUARD_TESTS \
+            tests/macos-polling-smoke.swift tests/macos-polling-guards.swift \
+            -o "$RUNNER_TEMP/pr-sniper-polling-guards"
+          "$RUNNER_TEMP/pr-sniper-polling-guards"
       - name: Archive bundle with executable permissions
         run: ditto -c -k --sequesterRsrc --keepParent "src-tauri/target/release/bundle/macos/PR Sniper.app" "$RUNNER_TEMP/PR-Sniper-macos.zip"
       - uses: actions/upload-artifact@v4

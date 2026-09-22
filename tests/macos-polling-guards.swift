@@ -12,7 +12,215 @@ func rejects(_ name: String, _ body: () throws -> Void) throws {
 
 @main
 struct PollingGuardTests {
+    static func parentAcquisition() throws {
+        let owner = OwnedProcess(pid: 42, parent: 1, seconds: 100, micros: 0, executable: "/fixture/app")
+        let child = OwnedProcess(pid: 44, parent: 42, seconds: 101, micros: 0, executable: "/fixture/child")
+        let replacement = OwnedProcess(pid: 44, parent: 1, seconds: 102, micros: 0, executable: "/other/app")
+        let unrelated = OwnedProcess(pid: 55, parent: 44, seconds: 103, micros: 0, executable: "/other/child")
+        var observed: [OwnedProcess] = []
+        var replaced = false
+        try rejects("replacement pending parent cannot grant child ownership") {
+            try sampleDescendants(owner, observed: &observed, identity: { pid in
+                if pid == 42 { return owner }
+                if pid == 44 { return replaced ? replacement : child }
+                return unrelated
+            }, enumerate: { pid in
+                if pid == 42 { return [44] }
+                if pid == 44 {
+                    replaced = true
+                    return [55]
+                }
+                return []
+            }, check: {})
+        }
+        try require(!observed.contains(unrelated), "Replacement-parent child entered cleanup authority")
+        print("PASS rejected acquisition never adds unrelated child to signal set")
+
+        for (name, fresh): (String, OwnedProcess?) in [
+            ("parent exited before enumeration", nil),
+            ("parent PID reused before enumeration", replacement)
+        ] {
+            var enumerated = false
+            var acquired: [OwnedProcess] = []
+            try rejects(name) {
+                acquired = try ownedChildren(child, identity: { _ in fresh }, enumerate: { _ in
+                    enumerated = true
+                    return [55]
+                }, check: {})
+            }
+            try require(!enumerated && acquired.isEmpty, "Stale parent was enumerated or granted signal authority")
+        }
+        for (name, fresh): (String, OwnedProcess?) in [
+            ("parent exited during enumeration", nil),
+            ("parent reused during enumeration", replacement)
+        ] {
+            var enumerated = false
+            var inspectedChild = false
+            var acquired: [OwnedProcess] = []
+            try rejects(name) {
+                acquired = try ownedChildren(child, identity: { pid in
+                    if pid == 44 { return enumerated ? fresh : child }
+                    inspectedChild = true
+                    return unrelated
+                }, enumerate: { _ in
+                    enumerated = true
+                    return [55]
+                }, check: {})
+            }
+            try require(!inspectedChild && acquired.isEmpty,
+                        "Changed post-enumeration parent admitted a child")
+        }
+        var parentReads = 0
+        var acquired: [OwnedProcess] = []
+        try rejects("parent changes while child identities are read") {
+            acquired = try ownedChildren(child, identity: { pid in
+                if pid == 44 {
+                    parentReads += 1
+                    return parentReads < 3 ? child : replacement
+                }
+                return unrelated
+            }, enumerate: { _ in [55] }, check: {})
+        }
+        try require(acquired.isEmpty, "Late parent replacement granted signal authority")
+        let reparented = OwnedProcess(pid: 44, parent: 1, seconds: 101, micros: 0, executable: "/fixture/exec")
+        let grandchild = OwnedProcess(pid: 56, parent: 44, seconds: 104, micros: 0, executable: "/fixture/grandchild")
+        observed = [child]
+        try sampleDescendants(child, observed: &observed, identity: { pid in
+            pid == 44 ? reparented : grandchild
+        }, enumerate: { pid in pid == 44 ? [56] : [] }, check: {})
+        try require(observed == [child, grandchild],
+                    "A recorded child remains owned through reparent/exec and can own legitimate descendants")
+        print("PASS already-owned child reparent/exec preserves lifetime and descendant ownership")
+        observed = []
+        for _ in 0..<2 {
+            try sampleDescendants(owner, observed: &observed, identity: { pid in
+                [42: owner, 44: child, 56: grandchild][pid]
+            }, enumerate: { pid in [42: [Int32(44)], 44: [Int32(56)]][pid] ?? [] }, check: {})
+        }
+        try require(observed == [child, grandchild], "Repeated traversal must retain only legitimate lifetimes once")
+        print("PASS ordinary descendant traversal and repeated sampling preserve exact ownership")
+        try rejects("new child changed ancestry before admission") {
+            _ = try ownedChildren(owner, identity: { pid in pid == 42 ? owner : reparented },
+                                  enumerate: { _ in [44] }, check: {})
+        }
+    }
+
+    static func messagingBudget() throws {
+        let clock = Budget(start: 100, total: 60, cleanupReserve: 10)
+        try require(try clock.messagingTimeout(at: 100) == 2, "AX timeout must retain two-second cap")
+        try require(try clock.messagingTimeout(at: 149.5) == 0.25,
+                    "Near-deadline AX call must use at most half the remaining work budget")
+        for now in [149.8, 149.7, 149.6] {
+            let timeout = try clock.messagingTimeout(at: now)
+            try require(timeout > 0 && timeout.isFinite && Double(timeout) <= clock.remaining(at: now) / 2,
+                        "Float rounding must not increase timeout above selected budget")
+        }
+        print("PASS timeout cap, positive Float rounding and cleanup reserve")
+        for now in [149.95, 150, 151, Double.nan, Double.infinity] {
+            try rejects("insufficient or invalid AX budget at \(now)") {
+                _ = try clock.messagingTimeout(at: now)
+            }
+        }
+
+        final class Reference {
+            let name = "equal semantic AX object"
+        }
+        let app = Reference()
+        let child = Reference()
+        let equalChild = Reference()
+        var configured: [Reference] = []
+        var events: [String] = []
+        var now = 140.0
+        for reference in [app, child, equalChild, child] {
+            let returned = try boundedAXMessage(reference, limit: clock, now: { now }, configure: { actual, timeout in
+                configured.append(actual)
+                events.append("configure")
+                return actual === reference && timeout > 0 && timeout <= 2
+            }, operation: {
+                events.append("message")
+                now += 0.1
+                return 7
+            })
+            try require(returned == 7, "Bounded AX wrapper changed operation result")
+        }
+        try require(configured.count == 4 && configured[0] === app && configured[1] === child
+                        && configured[2] === equalChild && configured[3] === child
+                        && events == ["configure", "message", "configure", "message",
+                                      "configure", "message", "configure", "message"],
+                    "Every call must configure its actual reference, even equal/repeated references")
+        print("PASS exact-reference configuration precedes every message without inheritance/cache")
+
+        var operated = false
+        try rejects("failed per-reference timeout configuration prevents message") {
+            _ = try boundedAXMessage(child, limit: clock, now: { 140 },
+                                     configure: { _, _ in false }, operation: { operated = true })
+        }
+        try require(!operated, "Message dispatched after failed timeout configuration")
+        now = 149
+        try rejects("configuration consumed available call budget") {
+            _ = try boundedAXMessage(child, limit: clock, now: { now }, configure: { _, _ in
+                now = 149.6
+                return true
+            }, operation: { operated = true })
+        }
+        try require(!operated, "Message dispatched after configuration made selected timeout unsafe")
+        var configuredWithoutBudget = false
+        try rejects("no configuration or message may start inside cleanup reserve") {
+            _ = try boundedAXMessage(child, limit: clock, now: { 150 }, configure: { _, _ in
+                configuredWithoutBudget = true
+                return true
+            }, operation: { operated = true })
+        }
+        try require(!configuredWithoutBudget && !operated, "AX work started inside cleanup reserve")
+        now = 149
+        _ = try boundedAXMessage(child, limit: clock, now: { now }, configure: { _, _ in true },
+                                 operation: { now = 149.95 })
+        try rejects("budget rechecked between consecutive blocking messages") {
+            _ = try boundedAXMessage(child, limit: clock, now: { now }, configure: { _, _ in
+                configuredWithoutBudget = true
+                return true
+            }, operation: { operated = true })
+        }
+        try require(!configuredWithoutBudget && !operated, "Second message skipped budget admission")
+        now = 149
+        try rejects("message overrun is explicit failure, never success") {
+            _ = try boundedAXMessage(child, limit: clock, now: { now }, configure: { _, _ in true },
+                                     operation: { now = 150 })
+        }
+        try require(clock.remaining(at: now, cleanup: true) == 10, "Work deadline must leave cleanup allowance")
+    }
+
     static func check() throws {
+        let nearlySpent = Budget(start: 100, total: 60, cleanupReserve: 10)
+        try require(try nearlySpent.messagingTimeout(at: 149.5) <= 0.25,
+                    "AX timeout must fit remaining work budget without consuming cleanup reserve")
+        print("PASS AX timeout shrinks before cleanup reserve")
+        try messagingBudget()
+        try parentAcquisition()
+        let fourChildren: [Int32] = [41, 42, 43, 44] + Array(repeating: 0, count: 252)
+        try require(try childPIDs(fourChildren, count: 4, error: 0) == [41, 42, 43, 44],
+                    "proc_listchildpids returns four PIDs, not four bytes")
+        print("PASS all four returned child PIDs consumed")
+        let pidBuffer = Array(Int32(1)...Int32(256))
+        for count: Int32 in [0, 1, 2, 3, 4, 255] {
+            let decoded = try childPIDs(pidBuffer, count: count, error: 0)
+            try require(decoded.count == Int(count) && decoded == Array(pidBuffer.prefix(Int(count))),
+                        "Returned PID count \(count) was not consumed exactly")
+            print("PASS child PID count \(count)")
+        }
+        for (name, count, error): (String, Int32, Int32) in [
+            ("saturated 256-PID snapshot", 256, 0),
+            ("oversized PID count", 257, 0),
+            ("negative enumeration result", -1, 0),
+            ("enumeration error", -1, EIO),
+            ("zero result with errno", 0, ESRCH),
+            ("positive result with errno", 1, EIO)
+        ] {
+            try rejects(name) { _ = try childPIDs(pidBuffer, count: count, error: error) }
+        }
+        try rejects("invalid PID in reported range") { _ = try childPIDs([0, 42], count: 1, error: 0) }
+        try rejects("duplicate PID in reported range") { _ = try childPIDs([42, 42, 0], count: 2, error: 0) }
+
         let stale = Health(repository_id: "local", last_attempt: 120, last_success: 100,
                            next_run: 160, last_failure: nil, in_flight: false)
         try require(!completedAttempt(stale, after: 100),
