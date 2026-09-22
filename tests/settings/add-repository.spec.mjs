@@ -1,4 +1,9 @@
 import { expect, test } from "./fixtures.mjs";
+import {
+  addRepository,
+  saveChanges,
+  startupPreference,
+} from "./navigation.mjs";
 
 test("adding a repository in Settings persists its canonical name after restart", async ({
   page,
@@ -9,26 +14,20 @@ test("adding a repository in Settings persists its canonical name after restart"
   await test.step("existing Settings renders real persisted startup preference", async () => {
     await page.goto("/?view=settings");
     await expect(
-      page.getByRole("heading", { name: "Settings", exact: true }),
+      page.getByRole("heading", { name: "Repositories", exact: true }),
     ).toBeVisible();
-    await expect(page.getByLabel("Request launch at login")).toBeChecked();
+    await expect(await startupPreference(page)).toBeChecked();
     await expect(page.getByLabel("Request launch at login")).toBeDisabled();
     await expect(page.getByRole("alert")).toBeHidden();
   });
 
   await test.step("add one GitHub repository using Settings", async () => {
-    await expect(
-      page.getByRole("button", { name: "Add repository", exact: true }),
-    ).toBeVisible();
-    await page
-      .getByLabel("GitHub repository", { exact: true })
-      .fill("Octo/Hello-World");
-    await page
-      .getByRole("button", { name: "Add repository", exact: true })
-      .click();
+    await addRepository(page, "Octo/Hello-World");
     await expect(
       page.getByText("octo/hello-world", { exact: true }),
     ).toBeVisible();
+    expect((await store("snapshot")).settings.repositories ?? []).toEqual([]);
+    await saveChanges(page);
     await expect(page.getByRole("alert")).toBeHidden();
   });
 
@@ -49,7 +48,7 @@ test("adding a repository in Settings persists its canonical name after restart"
     await expect(
       page.getByText("octo/hello-world", { exact: true }),
     ).toBeVisible();
-    await expect(page.getByLabel("Request launch at login")).toBeChecked();
+    await expect(await startupPreference(page)).toBeChecked();
     await expect(page.getByRole("alert")).toBeHidden();
   });
 });

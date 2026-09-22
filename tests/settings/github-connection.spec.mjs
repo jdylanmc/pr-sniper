@@ -1,4 +1,16 @@
 import { expect, test } from "./fixtures.mjs";
+import {
+  closeDialog,
+  repositorySettings,
+  saveChanges,
+  section,
+} from "./navigation.mjs";
+
+async function connection(page, name = "jdylanmc/pr-sniper") {
+  const modal = await repositorySettings(page, name);
+  await modal.getByText("Repository and connection", { exact: true }).click();
+  return modal;
+}
 
 const verified = {
   identity: { id: "6954990", login: "jdylanmc" },
@@ -22,7 +34,7 @@ async function githubFixture(page, store, handler) {
     };
   });
   await page.goto("/?view=settings");
-  return page.getByRole("article", { name: "jdylanmc/pr-sniper", exact: true });
+  return connection(page);
 }
 
 test("verifying GitHub preserves drafts and does not enable automation", async ({
@@ -48,14 +60,10 @@ test("verifying GitHub preserves drafts and does not enable automation", async (
         : original(command, args);
   });
   await page.goto("/?view=settings");
-  const prompt = page
-    .getByRole("form", { name: "Global defaults", exact: true })
-    .getByLabel("Review prompt", { exact: true });
+  await section(page, "Review defaults");
+  const prompt = page.getByLabel("Review prompt", { exact: true });
   await prompt.fill("Keep this unsaved review prompt.");
-  const card = page.getByRole("article", {
-    name: "jdylanmc/pr-sniper",
-    exact: true,
-  });
+  const card = await connection(page);
   await card
     .getByRole("button", { name: "Verify GitHub connection", exact: true })
     .click();
@@ -63,6 +71,8 @@ test("verifying GitHub preserves drafts and does not enable automation", async (
   await expect(card.getByRole("status")).toContainText(
     "not publication authorization",
   );
+  await closeDialog(page);
+  await section(page, "Review defaults");
   await expect(prompt).toHaveValue("Keep this unsaved review prompt.");
   expect(calls).toEqual([
     {
@@ -164,7 +174,7 @@ test("metadata pins verified identities, renders all files safely and clears fai
   await expect(card.getByRole("status")).toContainText(
     "1 PRs, 2 changed files",
   );
-  await card.locator("summary").click();
+  await card.locator(".connection summary").click();
   await expect(card.locator("li")).toHaveText([
     "added: first.rs",
     "renamed: last.rs",
@@ -178,7 +188,7 @@ test("metadata pins verified identities, renders all files safely and clears fai
   await expect(card.getByRole("status")).toContainText(
     "changed during the read",
   );
-  await expect(card.locator("summary")).toHaveCount(0);
+  await expect(card.locator(".connection summary")).toHaveCount(0);
   await expect(
     card.getByRole("button", { name: "Read PR metadata", exact: true }),
   ).toBeDisabled();
@@ -193,17 +203,21 @@ test("retargeting a local repository invalidates the old connection", async ({
     .getByRole("button", { name: "Verify GitHub connection", exact: true })
     .click();
   await expect(card.getByRole("status")).toContainText("jdylanmc (6954990)");
-  await card.getByRole("button", { name: "Edit", exact: true }).click();
   await card
-    .getByLabel("Repository name", { exact: true })
-    .fill("other/target");
-  await card
-    .getByRole("button", { name: "Save repository", exact: true })
+    .getByRole("button", { name: "Edit repository", exact: true })
     .click();
-  const target = page.getByRole("article", {
-    name: "other/target",
+  const editor = page.getByRole("dialog", {
+    name: "Edit repository",
     exact: true,
   });
+  await editor
+    .getByLabel("GitHub repository", { exact: true })
+    .fill("other/target");
+  await editor
+    .getByRole("button", { name: "Use repository", exact: true })
+    .click();
+  await saveChanges(page);
+  const target = await connection(page, "other/target");
   await expect(target.getByRole("status")).toContainText("Not verified");
   await expect(
     target.getByRole("button", { name: "Read PR metadata", exact: true }),
