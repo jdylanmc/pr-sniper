@@ -1,3 +1,4 @@
+pub mod discovery;
 pub mod github;
 pub mod policy;
 pub mod startup;
@@ -32,6 +33,7 @@ struct Snapshot {
     isolated: bool,
     error: Option<String>,
     version: &'static str,
+    settings_persisted: bool,
 }
 
 #[derive(Serialize)]
@@ -92,7 +94,62 @@ fn snapshot(host: State<'_, Host>) -> Result<Snapshot, String> {
         isolated: host.isolated,
         error,
         version: env!("CARGO_PKG_VERSION"),
+        settings_persisted: host
+            .store
+            .lock()
+            .map_err(|_| "Storage is unavailable.")?
+            .has_saved_settings(),
     })
+}
+
+#[tauri::command]
+fn canonical_repository_name(repository: String) -> Result<String, String> {
+    storage::canonical_repository(&repository)
+}
+
+#[tauri::command]
+fn save_preferences(
+    host: State<'_, Host>,
+    settings: serde_json::Value,
+    expected: serde_json::Value,
+) -> Result<SavedSettings, String> {
+    let settings =
+        serde_json::from_value(settings).map_err(|_| "Unsupported settings configuration.")?;
+    let expected =
+        serde_json::from_value(expected).map_err(|_| "Unsupported settings snapshot.")?;
+    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+    let saved = store.save_preferences(settings, &expected)?;
+    Ok(store.finish_settings_save(saved))
+}
+
+#[tauri::command]
+async fn choose_repository_folder(
+    app: tauri::AppHandle,
+) -> Result<Option<discovery::Discovery>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(folder) = app.dialog().file().blocking_pick_folder() else {
+            return Ok(None);
+        };
+        let path = folder.into_path().map_err(|_| "Choose a local folder.")?;
+        discovery::discover(&path).map(Some)
+    })
+    .await
+    .map_err(|_| "Folder selection failed. Try again.".to_string())?
+}
+
+#[tauri::command]
+async fn discover_repositories(root: String) -> Result<discovery::Discovery, String> {
+    tauri::async_runtime::spawn_blocking(move || discovery::discover(std::path::Path::new(&root)))
+        .await
+        .map_err(|_| "Folder discovery failed. Choose the folder again.".to_string())?
+}
+
+#[tauri::command]
+async fn resolve_github_person(login: String) -> Result<github::Identity, ConnectionError> {
+    tauri::async_runtime::spawn_blocking(move || github::client()?.resolve_person(&login))
+        .await
+        .map_err(|_| ConnectionError::ProviderFailure)?
 }
 
 #[tauri::command]
@@ -260,8 +317,11 @@ fn open_window(app: &tauri::AppHandle, label: &str, title: &str) -> Result<(), S
             WebviewUrl::App(format!("index.html?view={label}").into()),
         )
         .title(format!("PR Sniper - {title}"))
-        .inner_size(640.0, 520.0)
-        .min_inner_size(400.0, 360.0)
+        .inner_size(
+            if label == "settings" { 1120.0 } else { 640.0 },
+            if label == "settings" { 760.0 } else { 520.0 },
+        )
+        .min_inner_size(390.0, 360.0)
         .visible(false)
         .build()
         .map_err(|_| "Cannot create application window.")?
@@ -281,9 +341,15 @@ fn open_window(app: &tauri::AppHandle, label: &str, title: &str) -> Result<(), S
 
 pub fn run() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|_, _, _| {}))
         .invoke_handler(tauri::generate_handler![
             snapshot,
+            save_preferences,
+            canonical_repository_name,
+            choose_repository_folder,
+            discover_repositories,
+            resolve_github_person,
             save_login,
             save_repository,
             update_repository,

@@ -1,6 +1,7 @@
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, test } from "./fixtures.mjs";
+import { advancedSchedule, section, startupPreference } from "./navigation.mjs";
 
 test("invalid time zone reports an error without replacing valid settings", async ({
   page,
@@ -11,20 +12,27 @@ test("invalid time zone reports an error without replacing valid settings", asyn
   const path = join(dataRoot, "config/settings.json");
   const before = await readFile(path);
   await page.goto("/?view=settings");
-  const form = page.getByRole("form", { name: "Global defaults", exact: true });
-  await form.getByLabel("Time zone", { exact: true }).fill("Mars/Olympus_Mons");
-  await form
-    .getByRole("button", { name: "Save defaults", exact: true })
-    .click();
+  await section(page, "Automation");
+  await advancedSchedule(page);
+  const timezone = page.getByLabel("Time zone", { exact: true });
   await expect(
-    form.getByRole("button", { name: "Save defaults", exact: true }),
+    timezone.locator('option[value="Mars/Olympus_Mons"]'),
+  ).toHaveCount(0);
+  // The ordinary dropdown prevents this input; exercise the persisted validation boundary too.
+  await timezone.evaluate((select) =>
+    select.add(new Option("Invalid test zone", "Mars/Olympus_Mons")),
+  );
+  await timezone.selectOption("Mars/Olympus_Mons");
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Save changes", exact: true }),
   ).toBeEnabled();
   await expect.soft(page.getByRole("alert")).toBeVisible();
   expect(await readFile(path)).toEqual(before);
   await page.reload();
-  await expect(form.getByLabel("Time zone", { exact: true })).toHaveValue(
-    "UTC",
-  );
+  await section(page, "Automation");
+  await advancedSchedule(page);
+  await expect(timezone).toHaveValue("UTC");
 });
 
 for (const failure of ["malformed", "unreadable"]) {
@@ -41,14 +49,26 @@ for (const failure of ["malformed", "unreadable"]) {
     try {
       await page.goto("/?view=settings");
       await expect(
-        page.getByRole("heading", { name: "Settings", exact: true }),
+        page.getByRole("navigation", {
+          name: "Settings sections",
+          exact: true,
+        }),
       ).toBeVisible();
       await expect(page.getByRole("alert")).toBeVisible();
       await expect(page.getByRole("alert")).not.toHaveText("");
       await expect(
-        page.getByRole("button", { name: "Add repository", exact: true }),
+        page.getByRole("button", { name: "Save changes", exact: true }),
       ).toBeDisabled();
-      await expect(page.getByLabel("Request launch at login")).toBeDisabled();
+      await expect(
+        page.getByRole("button", { name: "Reset changes", exact: true }),
+      ).toBeDisabled();
+      await expect(
+        page.getByRole("button", {
+          name: "Add repository manually...",
+          exact: true,
+        }),
+      ).toHaveCount(0);
+      await expect(page.getByLabel("Request launch at login")).toHaveCount(0);
     } finally {
       if (failure === "unreadable") await chmod(path, 0o600);
     }
@@ -64,17 +84,15 @@ test("a failed policy write is visible and preserves the previous config bytes",
   await store("seed_settings", { launch_at_login: true });
   const before = await readFile(join(dataRoot, "config/settings.json"));
   await page.goto("/?view=settings");
-  const form = page.getByRole("form", { name: "Global defaults", exact: true });
-  await form
+  await section(page, "Review defaults");
+  await page
     .getByLabel("Review prompt", { exact: true })
     .fill("New valid unsaved prompt.");
   await mkdir(join(dataRoot, "config/settings.json.tmp"));
-  await form
-    .getByRole("button", { name: "Save defaults", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
   await expect(page.getByRole("alert")).toBeVisible();
   await expect(
-    form.getByRole("button", { name: "Save defaults", exact: true }),
+    page.getByRole("button", { name: "Save changes", exact: true }),
   ).toBeEnabled();
   expect(await readFile(join(dataRoot, "config/settings.json"))).toEqual(
     before,
@@ -89,9 +107,8 @@ test("returning focus to Settings preserves an unsaved policy edit", async ({
   await store("seed_settings", { launch_at_login: true });
   const before = await readFile(join(dataRoot, "config/settings.json"));
   await page.goto("/?view=settings");
-  const prompt = page
-    .getByRole("form", { name: "Global defaults", exact: true })
-    .getByLabel("Review prompt", { exact: true });
+  await section(page, "Review defaults");
+  const prompt = page.getByLabel("Review prompt", { exact: true });
   await prompt.fill("Keep this unsaved review instruction.");
   await page.evaluate(async () => {
     window.dispatchEvent(new Event("focus"));
@@ -120,6 +137,6 @@ test("Settings displays forty independent persisted repositories after reload", 
   await expect(
     page.getByRole("article", { name: "octo/repository-39", exact: true }),
   ).toBeVisible();
-  await expect(page.getByLabel("Request launch at login")).toBeChecked();
+  await expect(await startupPreference(page)).toBeChecked();
   await expect(page.getByRole("alert")).toBeHidden();
 });
