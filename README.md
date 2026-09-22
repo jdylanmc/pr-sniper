@@ -102,8 +102,12 @@ choice in **Automation > Startup and diagnostics**. Closing a repository editor
 cancels its pending draft lookup; delayed replies cannot restore dismissed edits.
 Focus refreshes preserve open repository and preset forms. Dialogs retain focus,
 Escape/Close and background isolation when native dialog APIs are unavailable;
-viewport sizing also falls back for older WebKit versions. The macOS 12 minimum
-is unchanged; browser fallback coverage is not native acceptance evidence.
+viewport sizing also falls back for older WebKit versions. Production JavaScript
+syntax and CSS optimization target Safari 15, preserving viewport fallbacks
+through minification. Browser tests inspect the emitted stylesheet and exercise
+its layout with unsupported viewport units and dialog APIs. The macOS 12 minimum
+is unchanged; build targets do not polyfill runtime APIs, and these simulations
+are not native acceptance evidence.
 
 Repository **Settings** offers an independent **Override** checkbox for each
 visible policy field. Unchecked fields use current global defaults. Existing

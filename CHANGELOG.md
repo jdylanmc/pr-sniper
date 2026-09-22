@@ -14,7 +14,8 @@ No release/versioning policy has been established yet.
   per-field overrides remain supported. Discovery reads only metadata beneath an
   explicitly chosen folder, never repository code. Agent/model health remains
   explicitly unavailable; no automation or approval is enabled by this change.
-  Dialogs include an accessible older-WebKit fallback; delayed replies preserve
+  Dialogs include an accessible older-WebKit fallback with viewport sizing
+  preserved in production builds; delayed replies preserve
   open forms and cannot restore dismissed repository edits. Multiple local
   clones share one repository checkbox while retaining searchable clone paths.
   See the [approved Settings design](docs/agent/design/settings-default.md).
