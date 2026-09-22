@@ -3,6 +3,7 @@ import { renderConnection } from "./connections";
 import { effectivePolicy, type Policy, type Selector } from "./policy";
 import type { Repository } from "./repositories";
 import "./settings.css";
+import { createDialogs } from "./dialogs";
 
 interface Preset {
   id: string;
@@ -144,6 +145,7 @@ export async function mountSettings(app: HTMLElement) {
   let query = "";
   let busy = false;
   let revision = 0;
+  const dialogs = createDialogs(content, () => revision++);
   const dirty = () =>
     !!draft && JSON.stringify(draft) !== JSON.stringify(saved);
   const showError = (message: string) => {
@@ -179,19 +181,14 @@ export async function mountSettings(app: HTMLElement) {
     modal.className = "settings-dialog";
     modal.setAttribute("aria-label", title);
     modal.innerHTML = `<div class="dialog-head"><h2>${escape(title)}</h2><button type="button" aria-label="Close dialog">Close</button></div><div class="dialog-body">${body}</div>`;
-    content.append(modal);
-    const opener = document.activeElement;
     modal.querySelector("button")!.onclick = () => modal.close();
-    modal.addEventListener("close", () => {
-      modal.remove();
-      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
-    });
-    modal.showModal();
+    dialogs.show(modal);
     return modal;
   }
 
   function render() {
     if (!draft) return;
+    dialogs.closeAll();
     app.querySelector("h1")!.textContent = sections[section][0];
     app.querySelector(".settings-heading p")!.textContent =
       sections[section][1];
@@ -279,17 +276,31 @@ export async function mountSettings(app: HTMLElement) {
         for (const item of visible()) if (item.name) select(item.name, true);
         rows();
       };
-    function all(): Discovered[] {
-      const list = [...(discovery?.repositories ?? [])];
-      const names = new Set(list.map((item) => item.name));
+    function all() {
+      const list: (Discovered & { paths: string[] })[] = [];
+      const identities = new Map<string, Discovered & { paths: string[] }>();
+      for (const item of discovery?.repositories ?? []) {
+        const existing = item.name ? identities.get(item.name) : undefined;
+        if (existing) existing.paths.push(item.path);
+        else {
+          const row = { ...item, paths: [item.path] };
+          list.push(row);
+          if (item.name) identities.set(item.name, row);
+        }
+      }
       for (const repo of repositories())
-        if (!names.has(repo.name))
-          list.push({ name: repo.name, path: "", unavailable: null });
+        if (!identities.has(repo.name))
+          list.push({
+            name: repo.name,
+            path: "",
+            paths: [],
+            unavailable: null,
+          });
       return list;
     }
     function visible() {
       return all().filter((item) =>
-        `${item.name ?? ""} ${item.path}`
+        `${item.name ?? ""} ${item.paths.join(" ")}`
           .toLowerCase()
           .includes(query.toLowerCase()),
       );
@@ -323,7 +334,7 @@ export async function mountSettings(app: HTMLElement) {
           item.name ?? item.path.split("/").pop() ?? "Unavailable repository",
         );
         row.innerHTML = `<input type="checkbox" aria-label="Monitor ${escape(item.name ?? item.path.split("/").pop() ?? "repository")}" ${repository?.enabled ? "checked" : ""} ${!item.name ? "disabled" : ""} />
-          <span class="repo-symbol">${icon("repositories")}</span><div class="repository-info"><strong>${escape(item.name?.split("/")[1] ?? item.path.split("/").pop() ?? "")}</strong><p>${escape(item.name ?? item.unavailable ?? "Unavailable")}</p></div>
+          <span class="repo-symbol">${icon("repositories")}</span><div class="repository-info"><strong>${escape(item.name?.split("/")[1] ?? item.path.split("/").pop() ?? "")}</strong><p>${escape(item.name ?? item.unavailable ?? "Unavailable")}</p>${item.paths.length ? `<details class="clone-paths"><summary>${item.paths.length} local ${item.paths.length === 1 ? "clone" : "clones"}</summary><ul>${item.paths.map((path) => `<li>${escape(path)}</li>`).join("")}</ul></details>` : ""}</div>
           ${item.name ? `<span class="repository-note">${Object.keys(repository?.overrides ?? {}).length ? "Custom settings" : "Use defaults"}</span><button class="configure">Settings</button>` : ""}`;
         row.querySelector<HTMLInputElement>("input")!.onchange = (event) => {
           select(item.name!, (event.target as HTMLInputElement).checked);
@@ -357,8 +368,19 @@ export async function mountSettings(app: HTMLElement) {
       repository ? "Edit repository" : "Add repository",
       `<form><label>GitHub repository<input name="repository" required value="${escape(repository?.name ?? "")}" placeholder="owner/repository or https://github.com/owner/repository" /></label><p class="settings-hint">Adding is a draft until you save changes. It does not start reviews.</p><p role="alert" hidden></p><button class="primary">Use repository</button></form>`,
     );
+    let submitting = false;
+    const originDraft = draft;
     modal.querySelector("form")!.onsubmit = async (event) => {
       event.preventDefault();
+      if (submitting) return;
+      submitting = true;
+      const requestRevision = revision;
+      const active = () =>
+        modal.open && modal.isConnected && draft === originDraft;
+      const current = () =>
+        active() &&
+        revision === requestRevision &&
+        (!repository || repositories().includes(repository));
       const input = modal.querySelector<HTMLInputElement>("input")!;
       const button = modal.querySelector<HTMLButtonElement>("form button")!;
       button.disabled = true;
@@ -366,6 +388,7 @@ export async function mountSettings(app: HTMLElement) {
         const name = await invoke<string>("canonical_repository_name", {
           repository: input.value,
         });
+        if (!current()) return;
         if (
           repositories().some((r) => r.name === name && r.id !== repository?.id)
         )
@@ -381,11 +404,13 @@ export async function mountSettings(app: HTMLElement) {
         modal.close();
         render();
       } catch (cause) {
+        if (!current()) return;
         const alert = modal.querySelector<HTMLElement>("[role=alert]")!;
         alert.textContent = reason(cause);
         alert.hidden = false;
       } finally {
-        button.disabled = false;
+        submitting = false;
+        if (active()) button.disabled = false;
       }
     };
   }
@@ -891,6 +916,7 @@ export async function mountSettings(app: HTMLElement) {
 
   save.onclick = async () => {
     if (busy || !dirty()) return;
+    dialogs.closeAll();
     clearError();
     busy = true;
     changed();
@@ -936,7 +962,8 @@ export async function mountSettings(app: HTMLElement) {
     const requestRevision = revision;
     try {
       const state = await invoke<Snapshot>("snapshot");
-      if (requestRevision !== revision || dirty() || busy) return;
+      if (requestRevision !== revision || dirty() || busy || dialogs.hasOpen())
+        return;
       snapshot = state;
       if (!state.settings) {
         showError(
@@ -953,13 +980,15 @@ export async function mountSettings(app: HTMLElement) {
       if (state.error) showError(state.error);
       render();
     } catch {
+      if (requestRevision !== revision || dirty() || busy || dialogs.hasOpen())
+        return;
       showError(
         "Could not read Settings. Open the native application and check local storage access.",
       );
     }
   }
   window.addEventListener("focus", () => {
-    if (!dirty() && !busy && !content.querySelector("dialog")) void load();
+    if (!dirty() && !busy && !dialogs.hasOpen()) void load();
   });
   await load();
 }
