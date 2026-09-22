@@ -36,12 +36,20 @@ async function schedule(root, value) {
     .selectOption(value.timezone);
 }
 
-async function people(root, values) {
+async function people(page, root, values) {
   const removals = root.getByRole("button", { name: /^Remove / });
   while (await removals.count()) await removals.first().click();
   for (const { login } of values) {
-    await root.getByLabel("GitHub login", { exact: true }).fill(login);
-    await root.getByRole("button", { name: "Add person", exact: true }).click();
+    await root.getByRole("button", { name: "Add people", exact: true }).click();
+    const picker = page.getByRole("dialog", {
+      name: "Add people",
+      exact: true,
+    });
+    await picker.getByLabel("GitHub login", { exact: true }).fill(login);
+    await picker
+      .getByRole("button", { name: "Add person", exact: true })
+      .click();
+    await expect(picker).toHaveCount(0);
     await expect(root.getByText(`@${login}`, { exact: true })).toBeVisible();
   }
 }
@@ -206,7 +214,7 @@ test("repository policy overrides stay isolated until reset to current global de
     ).not.toBeChecked();
     await automation(page, defaults);
     await section(page, "People");
-    await people(page, defaults.watched_authors);
+    await people(page, page, defaults.watched_authors);
     await section(page, "Review defaults");
     await page
       .getByLabel("Review prompt", { exact: true })
@@ -234,7 +242,7 @@ test("repository policy overrides stay isolated until reset to current global de
     await modal
       .getByLabel("Review prompt", { exact: true })
       .fill(overrides.prompt);
-    await people(modal, overrides.watched_authors);
+    await people(page, modal, overrides.watched_authors);
     await automation(modal, overrides);
     await closeDialog(page);
     await saveChanges(page);
@@ -252,7 +260,7 @@ test("repository policy overrides stay isolated until reset to current global de
 
   await test.step("changed defaults propagate only to inheriting fields after reload", async () => {
     await section(page, "People");
-    await people(page, changedDefaults.watched_authors);
+    await people(page, page, changedDefaults.watched_authors);
     await section(page, "Review defaults");
     await page
       .getByLabel("Model", { exact: true })
