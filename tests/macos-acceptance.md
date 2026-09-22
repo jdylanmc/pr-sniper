@@ -116,11 +116,21 @@ developer's application or application data.
 ## Scheduled polling acceptance (P4)
 
 `tests/macos-polling-smoke.swift` is a separate Accessibility-only harness for
-P4. It does not require Screen Recording or prove icon appearance. Its preflight
-checks existing access without requesting or changing permissions:
+P4. It does not request Screen Recording or prove icon appearance. Window
+metadata must nevertheless be available: unavailable AX/CG observations fail,
+never count as zero windows. Compile its native entry point first; compilation
+does not launch an app, probe permissions or establish native acceptance:
 
 ```sh
-swift tests/macos-polling-smoke.swift --preflight
+xcrun swiftc -parse-as-library tests/macos-polling-smoke.swift \
+  -o /absolute/owned-evidence/macos-polling-smoke
+```
+
+Only after receiving the native-session slot, its preflight checks existing
+Accessibility access without requesting or changing permissions:
+
+```sh
+/absolute/owned-evidence/macos-polling-smoke --preflight
 ```
 
 The integration owner prepares a fresh owned data directory with exactly one
@@ -130,26 +140,84 @@ an existing open non-draft fork PR; never create or modify provider data just
 to make the test pass.
 
 ```sh
-swift tests/macos-polling-smoke.swift \
+/absolute/owned-evidence/macos-polling-smoke \
   "/absolute/PR Sniper.app" "/absolute/owned-data-fixture" \
   "/absolute/expected-queue.json"
 ```
 
 The optional expected-queue file contains public fixture facts:
 `repository_id`, `repository_name`, `pull_request_id`, `number`, `title` and
-`head_sha`. Recheck them live immediately before the run. IDs are decimal
-strings. The fixture file is private test evidence, not repository configuration.
+`head_sha`, `account_id` and `watched_author_id`. Recheck them live immediately
+before the run using only the approved bounded GETs. IDs are decimal strings.
+The fixture must select that one watched author and disable the reviewer
+trigger. The fixture file is private test evidence, not repository configuration.
 
-The harness launches only its supplied bundle, checks scheduled success while
-Settings/Queue windows are closed, invokes native Check Now without changing
-cadence, reopens the windows and checks actual Quit across the next due time.
-When an expected revision is supplied, it also checks native Queue text,
-watched-author eligibility, fork trust-confirmation waiting and repeated-poll
-deduplication through real persisted state. Without that input, eligible-live
-queue acceptance remains explicitly unverified.
+The harness launches only its supplied bundle. It matches genuine owned
+AXWindow geometry to healthy on-screen CG metadata and revalidates unique,
+enabled, supported same-PID semantic menu/close actions. Ambiguity, application
+aliases and unavailable observations fail rather than widening input authority.
+It samples absent normal windows throughout a distinct successful scheduled
+attempt, checking the host is still alive. This is bounded sampling, not a claim
+that every intervening frame was observed.
+
+Check Now must start and complete a new successful attempt before the **original**
+next due time, with unchanged cadence and fresh attempt-specific success.
+A scheduled crossover is an attribution failure, not a Check Now pass. Queue
+text must be actual static text fully inside the window and known scroll/web
+viewports; container accessible names and offscreen descendants do not count.
+Status must visibly match the persisted completed health values. The current
+timestamp matcher supports the frontend's en-US local-time rendering only;
+another locale fails explicitly rather than changing the user's locale.
+This evidence does not measure occlusion by unrelated applications.
+
+When an expected revision is supplied, cursor account/remote/policy identity,
+one exact revision tuple, watched-author eligibility and trust-confirmation
+waiting are checked. Two completed reads must retain its original detection
+time and trigger policy. An incremental cursor can exclude an unchanged PR on
+the second provider response; native retained-state evidence does **not** prove
+that response contained the same row again. Controlled Rust admission tests
+remain the deterministic exact-replay proof. Without the expected input,
+eligible-live queue acceptance remains explicitly unverified.
+
+Settings/Queue reopen from the tray. Natural Quit requires the guarded action,
+normal exact-process exit, a fresh `quit_requested` diagnostic and absence of
+the recorded descendant lifetimes. Child snapshots cover observed descendants,
+not every transient process or already-reparented child. Dead AX tray proxies
+are logged, not interpreted as physical tray-icon disappearance. Preserve a
+separate observation for that criterion. Polling, queue, cursor and configuration
+bytes must stay unchanged through the captured next due time plus two seconds.
+Snapshots, including diagnostics, are retained under the fresh profile's
+`polling-smoke-evidence/` directory.
+
+One 300-second monotonic budget covers the run, including a ten-second cleanup
+reserve; individual waits cannot reset it. On failure, only the recorded app
+and observed descendant lifetimes may be signaled, with PID-reuse checks.
+Forced cleanup never satisfies natural Quit. Cleanup failure exits nonzero and
+requires the owner to retain resource custody. No unbounded process wait,
+global input, activation workaround or permission change is permitted.
 
 Bind output to the exact commit, executable hash and isolated configuration.
 The harness preserves its data directory and terminates only its own process
 on failure. A timeout, forced cleanup, interruption, failed provider read or
 missing Accessibility observation is not a native pass. Coordinate the run
 with other agents; never launch a second instance to work around a failed test.
+
+### Offline polling-harness guards
+
+The separate entry point exercises the **same** pure guard predicates with
+synthetic observations. It neither calls native-access APIs nor launches the
+app or a provider. Run while another delivery owns the native slot:
+
+```sh
+xcrun swiftc -parse-as-library -D POLLING_GUARD_TESTS \
+  tests/macos-polling-smoke.swift tests/macos-polling-guards.swift \
+  -o /absolute/owned-evidence/macos-polling-guards
+/absolute/owned-evidence/macos-polling-guards
+```
+
+The selection covers stale success, scheduled crossover, duplicate/foreign/
+disabled/unsupported actions, unavailable window snapshots, clipped text,
+cursor identity, duplicate/replaced revision jobs, all four stable-state files,
+PID reuse versus reparenting and the monotonic cleanup reserve. These synthetic
+checks and native compilation do not satisfy either full native acceptance
+group. Retain complete output and real exit codes for each command.
