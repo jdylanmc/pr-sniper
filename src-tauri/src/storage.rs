@@ -39,6 +39,20 @@ pub struct Settings {
     pub defaults: Policy,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repositories: Vec<Repository>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_folder: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub presets: Vec<ReviewPreset>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_review_preset: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewPreset {
+    pub id: String,
+    pub name: String,
+    pub body: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -62,14 +76,46 @@ pub struct Repository {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "PolicyOverrides::is_empty")]
     pub overrides: PolicyOverrides,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_preset: Option<String>,
 }
 
 impl Settings {
     fn validate(&self) -> Result<(), String> {
         self.defaults.validate()?;
+        if self
+            .root_folder
+            .as_ref()
+            .is_some_and(|path| !std::path::Path::new(path).is_absolute())
+        {
+            return Err("Choose an absolute local root folder.".into());
+        }
+        let mut preset_ids = HashSet::new();
+        let mut preset_names = HashSet::new();
+        for preset in &self.presets {
+            if uuid::Uuid::parse_str(&preset.id).is_err()
+                || !preset_ids.insert(&preset.id)
+                || preset.name.trim().is_empty()
+                || preset.name.chars().count() > 80
+                || !preset_names.insert(preset.name.trim().to_lowercase())
+                || preset.body.chars().count() > 12000
+            {
+                return Err("Presets need unique identities and names (1-80 characters), and instructions up to 12,000 characters.".into());
+            }
+            crate::policy::validate_configuration_text(&preset.name)?;
+            crate::policy::validate_configuration_text(&preset.body)?;
+        }
+        let validate_preset = |id: &Option<String>| -> Result<(), String> {
+            if id.as_ref().is_some_and(|id| !preset_ids.contains(id)) {
+                return Err("The selected review preset no longer exists. Choose a local preset or custom instructions.".into());
+            }
+            Ok(())
+        };
+        validate_preset(&self.default_review_preset)?;
         let mut ids = HashSet::new();
         let mut names = HashSet::new();
         for repository in &self.repositories {
+            validate_preset(&repository.review_preset)?;
             if uuid::Uuid::parse_str(&repository.id).is_err() || !ids.insert(&repository.id) {
                 return Err("Repository identities must be valid and unique.".into());
             }
@@ -91,7 +137,7 @@ impl Settings {
     }
 }
 
-pub(crate) fn canonical_repository(input: &str) -> Result<String, String> {
+pub fn canonical_repository(input: &str) -> Result<String, String> {
     let lower = input.trim().to_ascii_lowercase();
     let path = lower.strip_prefix("https://github.com/").unwrap_or(&lower);
     let path = path.trim_end_matches('/');
@@ -125,6 +171,49 @@ pub struct Store {
 impl Store {
     pub fn new(root: PathBuf) -> Self {
         Self { root }
+    }
+
+    pub fn has_saved_settings(&self) -> bool {
+        self.root.join("config/settings.json").exists()
+    }
+
+    pub fn save_preferences(
+        &self,
+        mut settings: Settings,
+        expected: &Settings,
+    ) -> Result<Settings, String> {
+        let current = self.load_settings()?;
+        if &current != expected {
+            return Err("Settings changed in another window. Reload Settings before saving; your draft has not been written.".into());
+        }
+        if settings.launch_at_login != current.launch_at_login {
+            return Err("Change launch at login using the separate startup control.".into());
+        }
+        settings.validate()?;
+        if let Some(id) = &settings.default_review_preset {
+            settings.defaults.prompt = settings
+                .presets
+                .iter()
+                .find(|p| &p.id == id)
+                .unwrap()
+                .body
+                .clone();
+        }
+        for repository in &mut settings.repositories {
+            if let Some(id) = &repository.review_preset {
+                repository.overrides.prompt = Some(
+                    settings
+                        .presets
+                        .iter()
+                        .find(|p| &p.id == id)
+                        .unwrap()
+                        .body
+                        .clone(),
+                );
+            }
+        }
+        self.save_settings(&settings)?;
+        Ok(settings)
     }
 
     pub fn load_settings(&self) -> Result<Settings, String> {
@@ -182,6 +271,7 @@ impl Store {
             name,
             enabled: true,
             overrides: PolicyOverrides::default(),
+            review_preset: None,
         });
         self.save_settings(&settings)?;
         Ok(settings)
@@ -227,6 +317,9 @@ impl Store {
 
     pub fn save_defaults(&self, policy: Policy) -> Result<Settings, String> {
         let mut settings = self.load_settings()?;
+        if settings.defaults.prompt != policy.prompt {
+            settings.default_review_preset = None;
+        }
         settings.defaults = policy;
         self.save_settings(&settings)?;
         Ok(settings)
@@ -238,12 +331,15 @@ impl Store {
         overrides: PolicyOverrides,
     ) -> Result<Settings, String> {
         let mut settings = self.load_settings()?;
-        settings
+        let repository = settings
             .repositories
             .iter_mut()
             .find(|repository| repository.id == id)
-            .ok_or("Repository no longer exists. Reload Settings.")?
-            .overrides = overrides;
+            .ok_or("Repository no longer exists. Reload Settings.")?;
+        if repository.overrides.prompt != overrides.prompt {
+            repository.review_preset = None;
+        }
+        repository.overrides = overrides;
         self.save_settings(&settings)?;
         Ok(settings)
     }

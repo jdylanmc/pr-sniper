@@ -1,15 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-import { renderRepositories, type Repository } from "./repositories";
-import { renderPolicyForm, type Policy } from "./policy";
-import { captureDrafts, hasDrafts, restoreDrafts, trackDrafts } from "./drafts";
 import crosshair from "./crosshair.svg";
 import "./style.css";
+import { mountSettings } from "./settings";
 
 interface Snapshot {
   settings: {
     launch_at_login: boolean;
-    defaults: Policy;
-    repositories?: Repository[];
   } | null;
   login_registration: "absent" | "registered" | "invalid" | null;
   isolated: boolean;
@@ -42,7 +38,6 @@ app.innerHTML = `
 app.querySelector("h1")!.textContent = titles[view] ?? "Status";
 const content = app.querySelector<HTMLElement>("#content")!;
 const error = app.querySelector<HTMLElement>("#error")!;
-const editRevision = trackDrafts(content);
 let loadRevision = 0;
 
 function showError(message: string) {
@@ -50,87 +45,15 @@ function showError(message: string) {
   error.hidden = false;
 }
 
-async function load(warning: string | null = null, focusRefresh = false) {
+async function load() {
   const revision = ++loadRevision;
-  const edits = editRevision();
   error.hidden = true;
   try {
     const state = await invoke<Snapshot>("snapshot");
-    if (revision !== loadRevision || (focusRefresh && edits !== editRevision()))
-      return;
-    const drafts = captureDrafts(content);
-    const messages = [state.error, warning].filter(Boolean);
+    if (revision !== loadRevision) return;
+    const messages = [state.error].filter(Boolean);
     if (messages.length) showError(messages.join("\n"));
-    if (view === "settings") {
-      content.innerHTML = `
-        <h2>Startup</h2>
-        <label><input id="login" type="checkbox" /> Request launch at login</label>
-        <p>Off by default. Changed only by your explicit choice here, never on application startup.</p>
-        <p id="login-note"></p>
-        <button id="diagnostics">Open redacted diagnostics</button>
-        <h2>Global defaults</h2>
-        <p>These defaults apply unless a repository overrides a field. Agent start and comment publication are independent gates, both off by default. Future execution must recheck current settings; saved gates do not authorize action forever.</p>
-        <section id="global-policy"></section>
-        <section id="repository-settings"></section>
-        <h2>Connections</h2>
-        <p>Verify the current GitHub CLI account on each repository above. Credentials remain in memory only; PR Sniper never signs in, stores a token, or changes provider state. Agent authentication and Setup Doctor remain separate, unimplemented work.</p>`;
-      if (state.settings)
-        renderPolicyForm(
-          content.querySelector("#global-policy")!,
-          state.settings.defaults,
-          null,
-          load,
-          showError,
-        );
-      renderRepositories(
-        content.querySelector("#repository-settings")!,
-        state.settings === null ? null : (state.settings.repositories ?? []),
-        state.settings?.defaults ?? null,
-        load,
-        showError,
-      );
-      const login = content.querySelector<HTMLInputElement>("#login")!;
-      login.checked = state.settings?.launch_at_login === true;
-      login.disabled =
-        state.isolated ||
-        state.settings === null ||
-        state.login_registration === null;
-      content.querySelector("#login-note")!.textContent = state.isolated
-        ? "Isolated development run: changing macOS login items is disabled."
-        : state.login_registration === null
-          ? "Launch registration status is unavailable. No startup change was made. Check the error above; the checkbox shows only your saved request."
-          : state.login_registration === "registered"
-            ? "Registration targets this application. macOS may still prevent login launch; check Login Items. The checkbox shows your saved request, not effective macOS state."
-            : state.login_registration === "absent"
-              ? "No launch registration exists. The checkbox shows your saved request; startup never reapplies it."
-              : "The launch registration is invalid or targets a different application. No startup change was made. The checkbox shows only your saved request.";
-      login.addEventListener("change", async () => {
-        login.disabled = true;
-        try {
-          await invoke("save_login", { enabled: login.checked });
-          await load();
-        } catch (cause) {
-          // Refresh saved intent and registration after a partial or failed change.
-          await load();
-          showError(
-            cause ===
-              "Settings were not saved and the previous login registration could not be restored. Inspect macOS Login Items."
-              ? "Settings were not saved and the previous registration could not be restored. Check macOS Login Items before relying on startup."
-              : "Could not complete the startup preference change. Check the saved request, registration status, local permissions and macOS Login Items.",
-          );
-        }
-      });
-      content
-        .querySelector("#diagnostics")!
-        .addEventListener("click", async () => {
-          try {
-            await invoke("open_diagnostics");
-          } catch {
-            showError("Could not open diagnostics.");
-          }
-        });
-      restoreDrafts(content, drafts);
-    } else if (view === "diagnostics") {
+    if (view === "diagnostics") {
       content.innerHTML = `<p>Local host events only. Tokens, commands, paths and provider data are never recorded. Most recent log, up to 256 KiB.</p><button id="refresh">Refresh</button><pre id="log"></pre>`;
       content
         .querySelector("#refresh")!
@@ -158,7 +81,6 @@ async function load(warning: string | null = null, focusRefresh = false) {
     showError(
       [
         "Could not read application status or diagnostics. Check local storage permissions; no raw error details are exposed.",
-        warning,
       ]
         .filter(Boolean)
         .join("\n"),
@@ -166,7 +88,9 @@ async function load(warning: string | null = null, focusRefresh = false) {
   }
 }
 
-void load();
+if (view === "settings") void mountSettings(app);
+else void load();
 window.addEventListener("focus", () => {
-  if (!hasDrafts(content) && !content.dataset.saving) void load(null, true);
+  if (view === "settings") return;
+  void load();
 });

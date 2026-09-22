@@ -36,7 +36,31 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
                 "isolated": true,
                 "error": error,
                 "version": env!("CARGO_PKG_VERSION")
+                ,"settings_persisted": store.has_saved_settings()
             }))
+        }
+        "save_preferences" => {
+            let settings = serde_json::from_value(request.args["settings"].clone())
+                .map_err(|_| "Unsupported settings configuration.")?;
+            let expected = serde_json::from_value(request.args["expected"].clone())
+                .map_err(|_| "Unsupported settings snapshot.")?;
+            recorded_settings(store, store.save_preferences(settings, &expected)?)
+        }
+        "canonical_repository_name" => {
+            let repository = request.args["repository"]
+                .as_str()
+                .ok_or("Repository required.")?;
+            let scratch = pr_sniper_lib::storage::canonical_repository(repository)?;
+            Ok(json!(scratch))
+        }
+        "discover_repositories" => {
+            let root = request.args["root"]
+                .as_str()
+                .ok_or("Root folder required.")?;
+            serde_json::to_value(pr_sniper_lib::discovery::discover(std::path::Path::new(
+                root,
+            ))?)
+            .map_err(|_| "Cannot encode discovery.".into())
         }
         "save_repository" => {
             let repository = request.args["repository"]
