@@ -17,12 +17,11 @@ plist = "=1.10.1"
 uuid = { version = "=1.26.1", features = ["v4"] }
 chrono-tz = "=0.10.4"
 croner = "=4.0.0"
-tokio = { version = "1", features = ["rt", "time", "process", "io-util", "macros", "net", "sync"] }
+tokio = { version = "1", features = ["rt", "time", "process", "io-util", "macros", "sync"] }
 zeroize = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 tauri-plugin-dialog = "=2.7.3"
 oauth2 = { version = "=5.0.0", default-features = false, features = ["reqwest-blocking", "rustls-tls", "timing-resistant-secret-traits"] }
-axum = { version = "=0.8.9", default-features = false, features = ["http1", "query", "tokio"] }
 webbrowser = { version = "=1.2.4", features = ["hardened"] }
 url = "=2.5.8"
 

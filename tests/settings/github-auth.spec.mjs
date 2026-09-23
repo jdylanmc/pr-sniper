@@ -34,7 +34,16 @@ test("browser OAuth confirms two accounts without exposing credentials", async (
     }
     if (command === "github_auth_state" && state.flow.state === "connecting") {
       connectingReads += 1;
-      if (connectingReads > 1)
+      if (connectingReads === 1)
+        state = {
+          accounts: state.accounts,
+          flow: {
+            ...state.flow,
+            user_code: "ABCD-EFGH",
+            verification_uri: "https://github.com/login/device",
+          },
+        };
+      if (connectingReads > 4)
         state = {
           accounts: state.accounts,
           flow: {
@@ -61,6 +70,14 @@ test("browser OAuth confirms two accounts without exposing credentials", async (
   });
 
   await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: {
+        writeText(value) {
+          window.__copiedGithubCode = value;
+          return Promise.resolve();
+        },
+      },
+    });
     const original = window.__TAURI_INTERNALS__.invoke;
     window.__TAURI_INTERNALS__.invoke = (command, args) =>
       [
@@ -87,7 +104,13 @@ test("browser OAuth confirms two accounts without exposing credentials", async (
   );
   await card.getByRole("button", { name: "Add GitHub account" }).click();
   await expect(card.getByRole("status")).toContainText("default browser");
-  await expect(card).not.toContainText("device");
+  await expect(card).toContainText("one-time code");
+  await expect(card).toContainText("ABCD-EFGH");
+  await expect(card).toContainText("github.com/login/device");
+  await card.getByRole("button", { name: "Copy one-time code" }).click();
+  await expect
+    .poll(() => page.evaluate(() => window.__copiedGithubCode))
+    .toBe("ABCD-EFGH");
   await expect(card.getByRole("status")).toContainText(
     "Confirm jdylanmc (6954990)",
   );
@@ -157,6 +180,7 @@ test("Keychain confirmation failure stays visible and retryable", async ({
 
 for (const [reason, message] of [
   ["expired", "authorization expired"],
+  ["denied", "authorization was denied"],
   ["network", "network request failed"],
   ["provider", "GitHub rejected"],
   [

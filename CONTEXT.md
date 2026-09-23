@@ -28,13 +28,13 @@ _Avoid_: Installed repository
 A repository binding or provider account that cannot currently authorize reads and requires an explicit reconnect or rebind.
 _Avoid_: Disconnected repository
 
-**OAuth Login Attempt**:
-A single bounded browser authorization operation with fresh PKCE verifier and state, one localhost callback, cancellation, and timeout.
-_Avoid_: Login session
+**OAuth Device Authorization Attempt**:
+A single bounded GitHub device-flow operation containing a provider-issued one-time user code, a secret device code retained only in the native host, browser launch, polling, cancellation, and expiry.
+_Avoid_: Login session, callback flow
 
-**Loopback Callback**:
-The proof-stage localhost-only HTTP endpoint that receives one correlated GitHub authorization response and returns no provider secrets. It is not the final MVP callback; #36 replaces it with the registered application URI.
-_Avoid_: Local redirect server
+**One-Time User Code**:
+The short provider-issued code shown to the user for manual entry at GitHub's verified device authorization page. It is transient UI data, not the secret device code used for token polling.
+_Avoid_: Device token, access code
 
 **Pending Account Confirmation**:
 A validated stable GitHub account ID and login whose credentials remain only in memory until the user explicitly confirms.

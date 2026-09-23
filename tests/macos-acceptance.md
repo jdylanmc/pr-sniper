@@ -80,8 +80,8 @@ Use one preserved isolated profile for the full acceptance: a unique absolute
 app-data directory and unique test-owned Keychain service. Reuse both values
 across restart and refresh checks, then delete only those test-owned artifacts.
 Do not create another OAuth App, expose token contents, or perform provider
-mutations to probe capability. The localhost callback is proof-stage only;
-custom application callback #36 remains required before MVP completion.
+mutations to probe capability. Device authorization does not use a callback;
+issue #36 remains required product work outside this authentication path.
 
 1. Record the candidate commit and build/install the candidate bundle. Choose
    an absolute temporary data directory and a unique service such as
@@ -95,19 +95,22 @@ custom application callback #36 remains required before MVP completion.
    "/absolute/PR Sniper.app/Contents/MacOS/pr-sniper"
    ```
 2. Confirm OAuth App application ID `3878184` has public client ID
-   `Ov23lidoL3QovWyfxnA4`, expiring tokens enabled, device flow disabled, no
-   client secret, and the exact callback
-   `http://127.0.0.1:53682/oauth/github/callback`; do not mutate the registration
-   during acceptance. Open Settings,
-   choose **Add GitHub account**, confirm the default system browser opens,
-   verify the consent clearly requests GitHub's broad `repo` scope for public
-   and private repository access, complete authorization, return to PR Sniper,
+   `Ov23lidoL3QovWyfxnA4`, expiring tokens and device flow enabled, and no
+   client secret; do not mutate the registration during acceptance. Open
+   Settings, choose **Add GitHub account**, confirm PR Sniper shows a one-time
+   user code and opens `https://github.com/login/device` in the default system
+   browser. If GitHub does not return `verification_uri_complete`, confirm PR
+   Sniper does not invent a prefilled-code URL. Use the displayed code, verify
+   the consent clearly requests GitHub's broad `repo` scope for public and
+   private repository access, complete authorization, return to PR Sniper,
    verify only the stable account ID/login is shown, then choose **Confirm**.
+   Evidence may show the user code only when required to complete this
+   test-owned attempt; never capture the secret device code or any token.
    Add a second GitHub account
    through **Use a different account** and confirm both acting identities
-   remain visible concurrently. Confirm bind, browser-open, cancellation,
-   timeout, network and provider failures remain distinguishable if any occur;
-   never capture authorization codes, state, tokens or credentials in evidence.
+   remain visible concurrently. Confirm browser-open, cancellation, denial,
+   expiry, network and provider failures remain distinguishable if any occur;
+   never capture device codes, tokens or credentials in evidence.
 3. For each account, choose **Load repositories for _login_**. Confirm owned,
    collaborator and organization repositories available to that user appear,
    including authorized private repositories, without installing PR Sniper on
