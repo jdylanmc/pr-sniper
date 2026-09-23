@@ -33,10 +33,14 @@ No release/versioning policy has been established yet.
   independent serialized rotation boundaries. Restart restores and validates
   every account, retry-safely migrates the prior active-account layouts without
   orphaning secrets, recovers interrupted first-time account additions, and
-  removes only the selected account on disconnect. Each OAuth session requests
+  removes only the selected account on disconnect. OAuth App credentials use a
+  generation-specific Keychain namespace; superseded GitHub App credentials
+  require explicit reconnect and are cleaned only after the new pair is
+  durable. Each OAuth session requests
   the broad `repo` scope, explains its public/private repository consent, lists
-  paginated user-accessible repositories with stable identities, requires
-  explicit selection, and backs identity, people, repository verification and
+  paginated affiliated repositories and can directly validate any known
+  accessible repository with the selected account, requires explicit
+  selection, and backs identity, people, repository verification and
   pull-request metadata reads without requiring GitHub CLI credentials. Failed
   operations retain the last confirmed credential state and report specific
   reconnect causes. Settings never treats sign-in as permission to review,

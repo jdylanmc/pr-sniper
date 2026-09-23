@@ -450,9 +450,11 @@ export async function mountSettings(app: HTMLElement) {
   }
 
   function editRepository(repository?: ConfiguredRepository) {
+    const selectedAccount =
+      repository?.provider_account_id ?? githubAccounts[0]?.account_id ?? "";
     const modal = dialog(
       repository ? "Edit repository" : "Add repository",
-      `<form><label>GitHub repository<input name="repository" required value="${escape(repository?.name ?? "")}" placeholder="owner/repository or https://github.com/owner/repository" /></label><p class="settings-hint">Adding is a draft until you save changes. It does not start reviews.</p><p role="alert" hidden></p><button class="primary">Use repository</button></form>`,
+      `<form><label>GitHub repository<input name="repository" required value="${escape(repository?.name ?? "")}" placeholder="owner/repository or https://github.com/owner/repository" /></label>${githubAccounts.length ? `<label>Acting GitHub account<select name="account" required>${githubAccounts.map((account) => option(account.account_id, `${account.login} (${account.account_id})`, selectedAccount)).join("")}</select></label>` : ""}<p class="settings-hint">${githubAccounts.length ? "PR Sniper validates this repository with the selected account before binding its stable identity." : "Connect a GitHub account to validate and bind this repository. Until then it remains explicitly unbound."} Adding is a draft until you save changes. It does not start reviews.</p><p role="alert" hidden></p><button class="primary">Use repository</button></form>`,
     );
     let submitting = false;
     const originDraft = draft;
@@ -474,28 +476,43 @@ export async function mountSettings(app: HTMLElement) {
         const name = await invoke<string>("canonical_repository_name", {
           repository: input.value,
         });
+        const accountId =
+          modal.querySelector<HTMLSelectElement>("[name=account]")?.value;
+        const resolved = accountId
+          ? await invoke<{
+              identity: { id: string; login: string };
+              repository: { id: string; name: string };
+            }>("resolve_provider_repository", {
+              provider: "github",
+              accountId,
+              repository: name,
+            })
+          : undefined;
         if (!current()) return;
+        if (resolved?.identity.id !== accountId)
+          throw "GitHub returned an unexpected account identity.";
+        const canonical = resolved?.repository.name ?? name;
         if (
           repositories().some(
             (r) =>
-              r.name === name &&
+              r.name === canonical &&
               r.id !== repository?.id &&
-              !r.provider_account_id,
+              r.provider_account_id === accountId,
           )
         )
           throw "This GitHub repository is already configured.";
         if (repository) {
-          if (repository.name !== name) {
-            repository.provider_account_id = undefined;
-            repository.provider_repository_id = undefined;
-          }
-          repository.name = name;
+          repository.name = canonical;
+          repository.provider_account_id = resolved?.identity.id;
+          repository.provider_repository_id = resolved?.repository.id;
         } else
           (draft.repositories ??= []).push({
             id: newIdentity(),
-            name,
+            name: canonical,
             provider: "github",
             enabled: true,
+            provider_account_id: resolved?.identity.id,
+            provider_repository_id: resolved?.repository.id,
           });
         modal.close();
         render();

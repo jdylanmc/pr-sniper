@@ -1,4 +1,5 @@
 import { expect, test } from "./fixtures.mjs";
+import { closeDialog } from "./navigation.mjs";
 
 const idle = (accounts = []) => ({ accounts, flow: { state: "idle" } });
 const connected = (accountId, login) => ({
@@ -158,6 +159,10 @@ for (const [reason, message] of [
   ["expired", "authorization expired"],
   ["network", "network request failed"],
   ["provider", "GitHub rejected"],
+  [
+    "authentication_changed",
+    "Superseded GitHub App credentials are not reused",
+  ],
 ]) {
   test(`reconnect-required ${reason} state preserves its account and reason`, async ({
     page,
@@ -294,4 +299,127 @@ test("overlapping repository access requires an explicit acting account choice",
   await expect(
     page.getByRole("article", { name: "jdylanmc/pr-sniper as hubot" }),
   ).toBeVisible();
+});
+
+test("manual account binding resolves an unaffiliated public repository for two accounts", async ({
+  page,
+  store,
+}) => {
+  const accounts = [
+    {
+      provider: "github",
+      state: "connected",
+      account_id: "101",
+      login: "first",
+    },
+    {
+      provider: "github",
+      state: "connected",
+      account_id: "202",
+      login: "second",
+    },
+  ];
+  const resolutions = [];
+  await page.exposeFunction("__githubManualBinding", async (command, args) => {
+    if (command === "github_auth_state")
+      return { accounts, flow: { state: "idle" } };
+    if (command === "resolve_provider_repository") {
+      resolutions.push(args);
+      const account = accounts.find(
+        (candidate) => candidate.account_id === args.accountId,
+      );
+      return {
+        identity: { id: account.account_id, login: account.login },
+        repository: { id: "400", name: "third-party/public-repository" },
+      };
+    }
+    if (command === "verify_provider_connection") {
+      const snapshot = await store("snapshot");
+      const repository = snapshot.settings.repositories.find(
+        (candidate) => candidate.id === args.id,
+      );
+      const account = accounts.find(
+        (candidate) => candidate.account_id === repository.provider_account_id,
+      );
+      return {
+        identity: { id: account.account_id, login: account.login },
+        repository: { id: "400", name: "third-party/public-repository" },
+        capabilities: { read: true, comment: "unknown" },
+      };
+    }
+    throw new Error(`Unexpected GitHub command: ${command}`);
+  });
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = (command, args) =>
+      [
+        "github_auth_state",
+        "resolve_provider_repository",
+        "verify_provider_connection",
+      ].includes(command)
+        ? window.__githubManualBinding(command, args)
+        : original(command, args);
+  });
+  await page.goto("/?view=settings");
+
+  for (const account of accounts) {
+    await page
+      .getByRole("button", { name: "Add repository manually..." })
+      .click();
+    const modal = page.getByRole("dialog", { name: "Add repository" });
+    await modal
+      .getByLabel("GitHub repository")
+      .fill("third-party/public-repository");
+    await modal
+      .getByLabel("Acting GitHub account")
+      .selectOption(account.account_id);
+    await modal.getByRole("button", { name: "Use repository" }).click();
+  }
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await page.evaluate(() => window.__settingsIdle());
+
+  expect(resolutions).toEqual([
+    expect.objectContaining({
+      accountId: "101",
+      repository: "third-party/public-repository",
+    }),
+    expect.objectContaining({
+      accountId: "202",
+      repository: "third-party/public-repository",
+    }),
+  ]);
+  const saved = (await store("snapshot")).settings.repositories;
+  expect(saved).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        name: "third-party/public-repository",
+        provider_account_id: "101",
+        provider_repository_id: "400",
+      }),
+      expect.objectContaining({
+        name: "third-party/public-repository",
+        provider_account_id: "202",
+        provider_repository_id: "400",
+      }),
+    ]),
+  );
+
+  for (const account of accounts) {
+    const row = page.getByRole("article", {
+      name: `third-party/public-repository as ${account.login}`,
+    });
+    await row.getByRole("button", { name: "Settings" }).click();
+    const modal = page.getByRole("dialog", {
+      name: "Settings for third-party/public-repository",
+      exact: true,
+    });
+    await modal.getByText("Repository and connection").click();
+    await modal
+      .getByRole("button", { name: "Verify GitHub connection", exact: true })
+      .click();
+    await expect(modal.getByRole("status")).toContainText(
+      `Verified ${account.login} (${account.account_id})`,
+    );
+    await closeDialog(page);
+  }
 });

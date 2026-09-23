@@ -20,6 +20,8 @@ const LEGACY_ACTIVE_ACCOUNT: &str = "github:active-account";
 const ACCOUNT_REGISTRY: &str = "accounts:registry";
 const REGISTRY_RECORD_VERSION: &[u8; 8] = b"PRSNREG1";
 const ACTIVE_RECORD_VERSION: &[u8; 8] = b"PRSNAUTH";
+const OAUTH_APP_SERVICE: &str = "com.jdylanmc.pr-sniper.github.oauth-app.v1";
+const LEGACY_GITHUB_APP_SERVICE: &str = "com.jdylanmc.pr-sniper.github.credentials";
 
 #[link(name = "Security", kind = "framework")]
 unsafe extern "C" {
@@ -64,7 +66,11 @@ pub struct MacKeychainStore {
 
 impl MacKeychainStore {
     pub fn production() -> Self {
-        Self::with_service("com.jdylanmc.pr-sniper.github.credentials")
+        Self::with_service(OAUTH_APP_SERVICE)
+    }
+
+    pub fn legacy_production() -> Self {
+        Self::with_service(LEGACY_GITHUB_APP_SERVICE)
     }
 
     pub fn with_service(service: impl Into<String>) -> Self {

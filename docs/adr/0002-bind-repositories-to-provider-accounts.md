@@ -4,8 +4,10 @@ PR Sniper supports concurrent provider accounts and binds each configured reposi
 
 A connected account may explicitly select any repository that provider
 authorizes for that account, including repositories owned by another user or
-organization. Discovery never configures every accessible repository
-automatically. Azure DevOps must follow the same account-centric model when
+organization. Affiliation discovery is only a convenience; a user may enter a
+known repository and bind its stable identity after direct authenticated
+validation with the selected account. Discovery never configures every
+accessible repository automatically. Azure DevOps must follow the same account-centric model when
 implemented, while still surfacing organization, project, tenant and
 authorization restrictions; this decision does not select its authentication
 mechanism or activate Azure DevOps in the MVP.

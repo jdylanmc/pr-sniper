@@ -10,9 +10,11 @@ Automated storage tests do not establish native window or menu-bar behavior.
 - Coordinate one native app session at a time. Do not launch over another
   developer's instance. Record the candidate commit, macOS version, build
   command, installed bundle path and actual executable PID.
-- Use an isolated temporary app-data location supported by the host. If that
-  seam is unavailable, record the limitation before launch; do not overwrite
-  existing configuration, state, credentials or login items.
+- Use both supported isolation variables: an absolute temporary
+  `PR_SNIPER_DATA_DIR` and a unique test-owned
+  `PR_SNIPER_KEYCHAIN_SERVICE` beginning with
+  `com.jdylanmc.pr-sniper.tests.`. An isolated launch missing either value must
+  fail rather than falling back to production data or credentials.
 - Never turn on the developer's real login item to test persistence. Storage
   tests may save `launch_at_login: true` in their own temporary fixture because
   they do not call the operating-system login service.
@@ -74,13 +76,24 @@ The integration owner supplies the repository's build, lint and CI commands.
 ## Human-authorized GitHub OAuth App acceptance
 
 Run this only after the candidate's independent review and exact-head CI pass.
-Use a disposable macOS user account so the production Keychain service
-`com.jdylanmc.pr-sniper.github.credentials` and app data are isolated from the
-developer's normal profile. Do not create another OAuth App, expose
-token contents, or perform provider mutations to probe capability.
+Use one preserved isolated profile for the full acceptance: a unique absolute
+app-data directory and unique test-owned Keychain service. Reuse both values
+across restart and refresh checks, then delete only those test-owned artifacts.
+Do not create another OAuth App, expose token contents, or perform provider
+mutations to probe capability. The localhost callback is proof-stage only;
+custom application callback #36 remains required before MVP completion.
 
-1. Record the candidate commit and build/install the candidate bundle in the
-   disposable macOS account. Confirm `gh` is absent or signed out.
+1. Record the candidate commit and build/install the candidate bundle. Choose
+   an absolute temporary data directory and a unique service such as
+   `com.jdylanmc.pr-sniper.tests.oauth-<uuid>`, then launch the bundle
+   executable with both `PR_SNIPER_DATA_DIR` and
+   `PR_SNIPER_KEYCHAIN_SERVICE` set. Confirm `gh` is absent or signed out.
+
+   ```sh
+   PR_SNIPER_DATA_DIR="/absolute/test-profile" \
+   PR_SNIPER_KEYCHAIN_SERVICE="com.jdylanmc.pr-sniper.tests.oauth-<uuid>" \
+   "/absolute/PR Sniper.app/Contents/MacOS/pr-sniper"
+   ```
 2. Confirm OAuth App application ID `3878184` has public client ID
    `Ov23lidoL3QovWyfxnA4`, expiring tokens enabled, device flow disabled, no
    client secret, and the exact callback
@@ -105,6 +118,10 @@ token contents, or perform provider mutations to probe capability.
    Settings. Verify the repository and read its complete pull-request metadata
    with `gh` still unavailable; every repository/action surface must show the
    acting provider account.
+   Also manually enter a readable third-party public repository that does not
+   appear in either account's affiliation list. Choose each acting account in
+   turn, confirm direct authenticated resolution supplies the stable repository
+   ID, save both bindings, and verify each independently.
 4. Quit normally and relaunch. Confirm both accounts restore independently from
    Keychain, each `/user` identity is revalidated, the selected repository
    remains bound to the same account and stable IDs, and
@@ -120,7 +137,7 @@ token contents, or perform provider mutations to probe capability.
    Reconnect the removed account and explicitly rebind one repository. Then
    disconnect both accounts, quit and relaunch, and confirm their account
    registry entries and account-addressed Keychain secrets are absent before
-   deleting the disposable macOS user.
+   deleting the isolated data directory and exact test-owned Keychain services.
 
 Record each step as **met**, **unmet** or **unverified**. A fixture refresh,
 Keychain unit test, mocked provider response, sign-in without repository
@@ -146,6 +163,7 @@ swift tests/macos-native-smoke.swift "/absolute/installation/PR Sniper.app"
 
 The harness refuses a concurrent instance with the same bundle identifier,
 launches the bundle's actual executable with a fresh `PR_SNIPER_DATA_DIR`,
+and a unique `PR_SNIPER_KEYCHAIN_SERVICE`,
 checks native visible windows and menu actions, closes and reopens Settings
 and Review Queue, then selects Quit PR Sniper and waits for the exact PID to
 exit. The host's explicit data-root override disables operating-system
@@ -153,7 +171,8 @@ autostart mutation. Never run this harness against a version lacking that
 isolation behavior.
 
 Failed runs terminate only their own process and remove only their fresh data
-fixture. Forced cleanup is not a successful Quit assertion. This harness does
+fixture and exact test-owned Keychain services. Forced cleanup is not a
+successful Quit assertion. This harness does
 not prove visible icon quality, diagnostics content, login-item state or
 child-process cleanup; retain the manual checks above. Runtime automation must
 be exercised successfully before reporting its lifecycle checks as met.
