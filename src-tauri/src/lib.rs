@@ -11,6 +11,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex,
 };
+use std::time::Instant;
 use storage::{Diagnostic, DiagnosticEvent, SavedSettings, Settings, Store};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -24,6 +25,64 @@ struct Host {
     isolated: bool,
     quitting: AtomicBool,
     registration: LoginRegistration,
+    github_auth: Mutex<GithubAuth>,
+}
+
+struct GithubAuth {
+    started: Instant,
+    flow: Option<github::device_flow::DeviceFlow<github::device_http::GithubDeviceHttp>>,
+    state: GithubAuthState,
+}
+
+enum GithubAuthState {
+    Disconnected,
+    Connecting(github::device_flow::DevicePrompt),
+    Connected(github::Identity),
+    ReconnectRequired,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+enum GithubAuthView {
+    Disconnected,
+    Connecting {
+        user_code: String,
+        verification_uri: String,
+        expires_in_seconds: u64,
+        interval_seconds: u64,
+    },
+    Connected {
+        account_id: String,
+        login: String,
+    },
+    ReconnectRequired,
+}
+
+impl GithubAuth {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            flow: None,
+            state: GithubAuthState::Disconnected,
+        }
+    }
+
+    fn view(&self) -> GithubAuthView {
+        match &self.state {
+            GithubAuthState::Disconnected => GithubAuthView::Disconnected,
+            GithubAuthState::Connecting(prompt) => GithubAuthView::Connecting {
+                user_code: prompt.user_code.clone(),
+                verification_uri: prompt.verification_uri.clone(),
+                expires_in_seconds: prompt.expires_in.as_secs(),
+                interval_seconds: prompt.interval.as_secs(),
+            },
+            GithubAuthState::Connected(identity) => GithubAuthView::Connected {
+                account_id: identity.id.clone(),
+                login: identity.login.clone(),
+            },
+            GithubAuthState::ReconnectRequired => GithubAuthView::ReconnectRequired,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -221,6 +280,105 @@ fn diagnostics(host: State<'_, Host>) -> Result<Vec<Diagnostic>, String> {
         .diagnostics()
 }
 
+#[tauri::command]
+fn github_auth_state(host: State<'_, Host>) -> Result<GithubAuthView, String> {
+    Ok(host
+        .github_auth
+        .lock()
+        .map_err(|_| "GitHub connection state is unavailable.")?
+        .view())
+}
+
+#[tauri::command]
+async fn begin_github_auth(app: tauri::AppHandle) -> Result<GithubAuthView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<Host>();
+        let transport = github::device_http::GithubDeviceHttp::new()
+            .map_err(|_| "Could not start GitHub sign-in. Check the network and try again.")?;
+        let mut auth = host
+            .github_auth
+            .lock()
+            .map_err(|_| "GitHub connection state is unavailable.")?;
+        let flow = github::device_flow::DeviceFlow::begin(transport, auth.started.elapsed())
+            .map_err(|_| "Could not start GitHub sign-in. Check provider health and try again.")?;
+        auth.state = GithubAuthState::Connecting(flow.prompt().clone());
+        auth.flow = Some(flow);
+        Ok(auth.view())
+    })
+    .await
+    .map_err(|_| "Could not start GitHub sign-in.".to_string())?
+}
+
+#[tauri::command]
+async fn poll_github_auth(app: tauri::AppHandle) -> Result<GithubAuthView, String> {
+    use github::{
+        device_flow::DeviceFlowPoll,
+        token_store::{CredentialKey, CredentialStore},
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<Host>();
+        let mut auth = host
+            .github_auth
+            .lock()
+            .map_err(|_| "GitHub connection state is unavailable.")?;
+        let now = auth.started.elapsed();
+        let result = auth
+            .flow
+            .as_mut()
+            .ok_or("Start GitHub sign-in before checking authorization.")?
+            .poll(now);
+        match result {
+            DeviceFlowPoll::WaitUntil(_) | DeviceFlowPoll::Pending { .. } => {}
+            DeviceFlowPoll::Authorized(pair) => {
+                let client = github::provider::GithubClient::new(
+                    github::http::HttpTransport::from_token_pair(&pair)
+                        .map_err(|_| "GitHub credentials could not be verified.")?,
+                );
+                let identity = client.current_identity().map_err(|_| {
+                    auth.state = GithubAuthState::ReconnectRequired;
+                    auth.flow = None;
+                    "GitHub credentials could not be verified."
+                })?;
+                let store = github::macos_keychain::MacKeychainStore::production();
+                store
+                    .save(&CredentialKey::github(&identity.id), &pair)
+                    .map_err(|_| {
+                        auth.state = GithubAuthState::ReconnectRequired;
+                        auth.flow = None;
+                        "GitHub credentials could not be saved securely."
+                    })?;
+                auth.state = GithubAuthState::Connected(identity);
+                auth.flow = None;
+            }
+            DeviceFlowPoll::Cancelled => {
+                auth.state = GithubAuthState::Disconnected;
+                auth.flow = None;
+            }
+            DeviceFlowPoll::Denied | DeviceFlowPoll::Expired | DeviceFlowPoll::Failed(_) => {
+                auth.state = GithubAuthState::ReconnectRequired;
+                auth.flow = None;
+            }
+        }
+        Ok(auth.view())
+    })
+    .await
+    .map_err(|_| "Could not check GitHub authorization.".to_string())?
+}
+
+#[tauri::command]
+fn cancel_github_auth(host: State<'_, Host>) -> Result<GithubAuthView, String> {
+    let mut auth = host
+        .github_auth
+        .lock()
+        .map_err(|_| "GitHub connection state is unavailable.")?;
+    if let Some(flow) = &mut auth.flow {
+        flow.cancel();
+    }
+    auth.flow = None;
+    auth.state = GithubAuthState::Disconnected;
+    Ok(auth.view())
+}
+
 fn configured_repository(host: &Host, id: &str) -> Result<String, ConnectionError> {
     let settings = host
         .store
@@ -358,6 +516,10 @@ pub fn run() {
             save_repository_policy,
             verify_github_connection,
             read_github_metadata,
+            github_auth_state,
+            begin_github_auth,
+            poll_github_auth,
+            cancel_github_auth,
             diagnostics,
             open_diagnostics
         ])
@@ -382,6 +544,7 @@ pub fn run() {
                         .join("Library/LaunchAgents/PR Sniper.plist"),
                     std::env::current_exe()?.canonicalize()?,
                 ),
+                github_auth: Mutex::new(GithubAuth::new()),
             });
             record(app.handle(), DiagnosticEvent::SessionStarted);
             let status = MenuItem::with_id(app, "status", "Status", true, None::<&str>)?;

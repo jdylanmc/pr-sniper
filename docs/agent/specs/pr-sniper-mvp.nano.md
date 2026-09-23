@@ -20,7 +20,7 @@ PR Sniper is a macOS-first menu-bar utility that watches configured GitHub repos
 - AC-004: Scheduled monitoring runs while PR Sniper is active, supports fixed intervals and five-field cron schedules in an explicit time zone, prevents overlapping checks, and records last attempt, last success, next run, and failures.
 - AC-005: Monitoring filters pull requests by stable GitHub author identity and reviewer assignment before scheduling expensive review work.
 - AC-006: PR Sniper processes each eligible pull-request head revision at most once per trigger policy, survives restart without duplicate publication, and can re-review a new head revision.
-- AC-007: The initial GitHub connection can reuse an authenticated GitHub CLI account, while provider and credential interfaces remain independent of GitHub CLI presentation output.
+- AC-007: The user connects through the PR Sniper GitHub App with OAuth device flow and the public client ID; pending authorization, provider timing, denial, expiry, cancellation and provider/network failures remain explicit. GitHub CLI may remain only as an identified development or migration probe, not product sign-in.
 - AC-008: Settings includes a Setup Doctor that detects and health-checks prerequisites, previews exact install or sign-in commands, obtains confirmation, executes controlled terminal setup, verifies identity and capabilities, redacts secrets, and is safe to rerun.
 - AC-009: The MVP includes a GitHub Copilot CLI review-agent adapter and an adapter contract that supports later local agents without changing the monitoring or provider domain model.
 - AC-010: An agent review produces a validated normalized result containing a one-sentence synopsis, an ordered guide covering every changed file, structured findings, and either machine sign-off or human-input-required state.
@@ -31,9 +31,9 @@ PR Sniper is a macOS-first menu-bar utility that watches configured GitHub repos
 - AC-015: The application uses `` as its canonical crosshair icon and brand mark, including a legible platform-appropriate menu-bar icon.
 - AC-016: A machine-cleared or human-input-required pull request is sorted ahead of routine queue states and produces a native notification that opens that exact queue item or GitHub pull request.
 - AC-017: The human handoff explicitly states that automated review completed and requests final human review; machine sign-off is never represented as human approval.
-- AC-018: Settings, cursors, jobs, and idempotency state persist locally; credentials and tokens use operating-system secure storage and never appear in ordinary configuration or logs.
+- AC-018: Settings, cursors, jobs, and idempotency state persist locally; provider/account-scoped access and refresh credentials use operating-system secure storage, rotate as one serialized pair, and never appear in ordinary configuration, logs, prompts, child-process arguments or UI payloads. Unusable or unconfirmed credentials require an explicit reconnect rather than a success-shaped fallback.
 - AC-019: Authentication, permission, polling, rate-limit, checkout, agent, schema, and publication failures remain visible without duplicate comments; each retryable job operation gets at most three retries within 15 minutes from its initial attempt, preserves its count and deadline across restart, and then requires manual retry.
 
 ## Non-goals
 
-- Azure DevOps support, Windows release, embedded diff review, team leaderboard, hosted team service, native GitHub App OAuth, native Microsoft Entra sign-in, production update feeds, provider `APPROVE` submission, and replacement of the human's final review responsibility are outside the MVP.
+- Azure DevOps support, Windows release, embedded diff review, team leaderboard, hosted team service, hosted authentication brokerage, native Microsoft Entra sign-in, production update feeds, provider `APPROVE` submission, and replacement of the human's final review responsibility are outside the MVP.

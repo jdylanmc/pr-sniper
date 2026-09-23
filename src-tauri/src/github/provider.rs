@@ -60,7 +60,13 @@ impl<T: Transport> GithubClient<T> {
         {
             return Err(ConnectionError::InvalidResponse);
         }
+
         let (user, _) = self.read(&format!("/users/{login}"))?;
+        verify_identity(&user, None)
+    }
+
+    pub fn current_identity(&self) -> Result<Identity, ConnectionError> {
+        let (user, _) = self.read("/user")?;
         verify_identity(&user, None)
     }
 

@@ -1,5 +1,6 @@
 use super::{
     credentials::Credential,
+    device_flow::TokenPair,
     provider::{Response, Transport},
     ConnectionError,
 };
@@ -26,6 +27,10 @@ impl HttpTransport {
             .build()
             .map_err(|_| ConnectionError::Network)?;
         Ok(Self { client, credential })
+    }
+
+    pub fn from_token_pair(pair: &TokenPair) -> Result<Self, ConnectionError> {
+        Self::new(Credential::from_secret(pair.access_token()))
     }
 
     fn request(&self, path: &str) -> Result<Request, ConnectionError> {
