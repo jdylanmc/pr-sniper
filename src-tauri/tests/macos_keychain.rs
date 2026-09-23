@@ -1,8 +1,8 @@
 #![cfg(target_os = "macos")]
 
 use pr_sniper_lib::github::{
-    device_flow::TokenPair,
     macos_keychain::MacKeychainStore,
+    oauth::TokenPair,
     token_store::{ActiveAccount, CredentialKey, CredentialStore, RotationSafeStore},
 };
 use std::time::{Duration, UNIX_EPOCH};

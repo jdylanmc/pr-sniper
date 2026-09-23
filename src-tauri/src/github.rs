@@ -1,9 +1,8 @@
-pub mod device_flow;
-pub mod device_http;
 pub mod http;
 #[cfg(target_os = "macos")]
 pub mod macos_keychain;
 pub mod metadata;
+pub mod oauth;
 pub mod provider;
 pub mod token_store;
 

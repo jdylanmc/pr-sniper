@@ -1,6 +1,6 @@
 use super::{
     credentials::Credential,
-    device_flow::TokenPair,
+    oauth::TokenPair,
     provider::{Response, Transport},
     ConnectionError,
 };
