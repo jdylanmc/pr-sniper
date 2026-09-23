@@ -96,10 +96,12 @@ available in the row's local-clone details.
 
 Changes across sections remain one draft until **Save changes**; **Reset
 changes** returns to the saved state. A conflicting external update is rejected,
-not overwritten. Controls are disabled during saving and failed writes retain
-the draft. Startup registration is separate and changes immediately on explicit
-choice in **Automation > Startup and diagnostics**. Closing a repository editor
-cancels its pending draft lookup; delayed replies cannot restore dismissed edits.
+not overwritten. The draft remains intact until **Discard draft and reload**
+explicitly replaces it with the latest saved settings. Controls are disabled
+during saving and failed writes retain the draft. Startup registration is
+separate and changes immediately on explicit choice in **Automation > Startup
+and diagnostics**. Closing a repository editor cancels its pending draft lookup;
+delayed replies cannot restore dismissed edits.
 Focus refreshes preserve open repository and preset forms. Dialogs retain focus,
 Escape/Close and background isolation when native dialog APIs are unavailable;
 viewport sizing also falls back for older WebKit versions. Production JavaScript
@@ -118,7 +120,8 @@ off by default; changing configuration executes neither reviews nor publication.
 
 Scheduling starts in the system-local time zone for a new profile. Existing
 intervals, five-field cron expressions and saved time zones remain unchanged;
-**Advanced scheduling** exposes cron, custom interval and time-zone selection.
+**Advanced scheduling** exposes cron, custom interval and time-zone selection,
+with the ordinary frequency and time-zone summary kept in sync with the draft.
 **Model** lists Default first and preserves saved model/named-agent selections.
 Installed-model discovery and agent health are explicitly unavailable, not
 simulated.
