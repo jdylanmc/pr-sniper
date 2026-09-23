@@ -1,210 +1,153 @@
-use axum::{
-    extract::{Query, State},
-    http::StatusCode,
-    response::Html,
-    routing::get,
-    Router,
-};
 use oauth2::{
     basic::{BasicClient, BasicTokenType},
-    AuthType, AuthUrl, AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge, PkceCodeVerifier,
-    RedirectUrl, RefreshToken, RequestTokenError, Scope, SyncHttpClient, TokenResponse, TokenUrl,
+    AuthType, ClientId, DeviceAuthorizationResponse, DeviceAuthorizationUrl,
+    DeviceCodeErrorResponse, DeviceCodeErrorResponseType, EmptyExtraDeviceAuthorizationFields,
+    RefreshToken, RequestTokenError, Scope, SyncHttpClient, TokenResponse, TokenUrl,
 };
 use reqwest::{blocking::Client, redirect::Policy};
 use serde::Deserialize;
-use std::time::{Duration, SystemTime};
 use std::{
-    net::{SocketAddr, TcpListener},
-    sync::{Arc, Mutex},
-    time::Instant,
+    sync::atomic::{AtomicBool, Ordering},
+    time::{Duration, Instant, SystemTime},
 };
 use zeroize::Zeroizing;
 
 pub const GITHUB_OAUTH_CLIENT_ID: &str = "Ov23lidoL3QovWyfxnA4";
-pub const GITHUB_CALLBACK_URL: &str = "http://127.0.0.1:53682/oauth/github/callback";
-const GITHUB_AUTHORIZE_URL: &str = "https://github.com/login/oauth/authorize";
+pub const GITHUB_DEVICE_AUTHORIZATION_URL: &str = "https://github.com/login/device/code";
 const GITHUB_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 const GITHUB_REFRESH_LIFETIME: Duration = Duration::from_secs(15_897_600);
-pub const GITHUB_CALLBACK_ADDRESS: &str = "127.0.0.1:53682";
-pub const GITHUB_AUTH_TIMEOUT: Duration = Duration::from_secs(300);
 
-pub struct AuthorizationAttempt {
-    authorization_url: url::Url,
-    state: CsrfToken,
-    verifier: PkceCodeVerifier,
+pub struct PreparedDeviceAuthorization {
+    response: DeviceAuthorizationResponse<EmptyExtraDeviceAuthorizationFields>,
+    verification_uri: String,
 }
 
-impl AuthorizationAttempt {
-    pub fn new(select_account: bool) -> Result<Self, OAuthError> {
-        Self::new_with_redirect(select_account, GITHUB_CALLBACK_URL)
+impl PreparedDeviceAuthorization {
+    pub fn user_code(&self) -> &str {
+        self.response.user_code().secret()
     }
 
-    fn new_with_redirect(select_account: bool, redirect_url: &str) -> Result<Self, OAuthError> {
-        let client = BasicClient::new(ClientId::new(GITHUB_OAUTH_CLIENT_ID.into()))
-            .set_auth_type(AuthType::RequestBody)
-            .set_auth_uri(
-                AuthUrl::new(GITHUB_AUTHORIZE_URL.into())
-                    .map_err(|_| OAuthError::InvalidResponse)?,
-            )
-            .set_token_uri(
-                TokenUrl::new(GITHUB_TOKEN_URL.into()).map_err(|_| OAuthError::InvalidResponse)?,
-            )
-            .set_redirect_uri(
-                RedirectUrl::new(redirect_url.into()).map_err(|_| OAuthError::InvalidResponse)?,
-            );
-        let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
-        let request = client
-            .authorize_url(CsrfToken::new_random)
-            .add_scope(Scope::new("repo".into()))
-            .set_pkce_challenge(challenge);
-        let (authorization_url, state) = if select_account {
-            request.add_extra_param("prompt", "select_account").url()
-        } else {
-            request.url()
-        };
-        Ok(Self {
-            authorization_url,
-            state,
-            verifier,
-        })
+    pub fn verification_uri(&self) -> &str {
+        &self.verification_uri
     }
 
-    pub fn authorization_url(&self) -> &url::Url {
-        &self.authorization_url
-    }
-
-    pub fn state(&self) -> &CsrfToken {
-        &self.state
-    }
-
-    pub fn into_verifier(self) -> PkceCodeVerifier {
-        self.verifier
+    pub fn expires_in(&self) -> Duration {
+        self.response.expires_in()
     }
 }
 
-pub struct PreparedAuthorization {
-    pub attempt: AuthorizationAttempt,
-    pub listener: TcpListener,
-    pub deadline: Instant,
-}
-
-pub struct AuthorizationCompletion {
-    pub code: AuthorizationCode,
-    pub verifier: PkceCodeVerifier,
-}
-
-pub async fn receive_callback(
-    prepared: PreparedAuthorization,
-    mut cancel: tokio::sync::oneshot::Receiver<()>,
-) -> Result<AuthorizationCompletion, OAuthError> {
-    let PreparedAuthorization {
-        attempt,
-        listener,
-        deadline,
-    } = prepared;
-    let AuthorizationAttempt {
-        state, verifier, ..
-    } = attempt;
-    let listener = tokio::net::TcpListener::from_std(listener).map_err(|_| OAuthError::Bind)?;
-    let (result_tx, mut result_rx) = tokio::sync::oneshot::channel();
-    let callback_state = CallbackState {
-        guard: Mutex::new(CallbackGuard::new(state)),
-        result: Mutex::new(Some(result_tx)),
-    };
-    let app = Router::new()
-        .route("/oauth/github/callback", get(callback))
-        .with_state(Arc::new(callback_state));
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-    let server = tokio::spawn(async move {
-        let _ = axum::serve(listener, app)
-            .with_graceful_shutdown(async {
-                let _ = shutdown_rx.await;
-            })
-            .await;
-    });
-
-    let result = tokio::select! {
-        result = &mut result_rx => result.unwrap_or(Err(OAuthError::InvalidResponse)),
-        _ = &mut cancel => Err(OAuthError::Cancelled),
-        _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
-            Err(OAuthError::Timeout)
-        }
-    };
-    let _ = shutdown_tx.send(());
-    let _ = server.await;
-    result.map(|code| AuthorizationCompletion { code, verifier })
-}
-
-struct CallbackState {
-    guard: Mutex<CallbackGuard>,
-    result: Mutex<Option<tokio::sync::oneshot::Sender<Result<AuthorizationCode, OAuthError>>>>,
-}
-
-async fn callback(
-    State(state): State<Arc<CallbackState>>,
-    Query(parameters): Query<CallbackParameters>,
-) -> (StatusCode, Html<&'static str>) {
-    let result = state
-        .guard
-        .lock()
-        .map_err(|_| OAuthError::InvalidResponse)
-        .and_then(|mut guard| guard.accept(parameters));
-    if let Ok(mut result_sender) = state.result.lock() {
-        if let Some(result_sender) = result_sender.take() {
-            let _ = result_sender.send(result.clone());
-        }
-    }
-    match result {
-        Ok(_) => (
-            StatusCode::OK,
-            Html(
-                "<!doctype html><title>Authorization response received</title><p>Authorization response received. Return to PR Sniper to finish connecting this account. You may close this window.</p>",
-            ),
-        ),
-        Err(_) => (
-            StatusCode::BAD_REQUEST,
-            Html(
-                "<!doctype html><title>Connection failed</title><p>Could not connect. Return to PR Sniper and try again.</p>",
-            ),
-        ),
+impl std::fmt::Debug for PreparedDeviceAuthorization {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreparedDeviceAuthorization")
+            .field("verification_uri", &self.verification_uri)
+            .field("expires_in", &self.expires_in())
+            .finish_non_exhaustive()
     }
 }
 
-pub fn prepare_authorization_with<F>(
-    address: SocketAddr,
-    redirect_url: &str,
-    select_account: bool,
+pub fn request_device_authorization_with<C, F>(
+    http_client: &C,
     open_browser: F,
-) -> Result<PreparedAuthorization, OAuthError>
+) -> Result<PreparedDeviceAuthorization, OAuthError>
 where
-    F: FnOnce(&url::Url) -> Result<(), ()>,
+    C: SyncHttpClient,
+    F: FnOnce(&url::Url) -> Result<(), OAuthError>,
 {
-    if !address.ip().is_loopback() {
-        return Err(OAuthError::Bind);
+    let diagnostic_http =
+        |request| diagnostic_oauth_request(http_client, request, "device_authorization");
+    let response: DeviceAuthorizationResponse<EmptyExtraDeviceAuthorizationFields> =
+        device_oauth_client()?
+            .exchange_device_code()
+            .add_scope(Scope::new("repo".into()))
+            .add_scope(Scope::new("offline_access".into()))
+            .request(&diagnostic_http)
+            .map_err(|error| map_token_error::<C>(error))?;
+    if response.user_code().secret().is_empty() || response.expires_in().is_zero() {
+        return Err(OAuthError::InvalidResponse);
     }
-    let listener = TcpListener::bind(address).map_err(|_| OAuthError::Bind)?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|_| OAuthError::Bind)?;
-    let attempt = AuthorizationAttempt::new_with_redirect(select_account, redirect_url)?;
-    open_browser(attempt.authorization_url()).map_err(|_| OAuthError::BrowserOpen)?;
-    Ok(PreparedAuthorization {
-        attempt,
-        listener,
-        deadline: Instant::now() + GITHUB_AUTH_TIMEOUT,
+    let verification_uri =
+        validated_github_verification_uri(response.verification_uri().url().as_str())?;
+    let browser_uri = response
+        .verification_uri_complete()
+        .and_then(|uri| validated_github_verification_uri(uri.secret()).ok())
+        .unwrap_or_else(|| verification_uri.clone());
+    open_browser(&browser_uri)?;
+    eprintln!("[github-auth] stage=device_authorization outcome=browser_opened");
+    Ok(PreparedDeviceAuthorization {
+        response,
+        verification_uri: verification_uri.to_string(),
     })
 }
 
-pub fn prepare_authorization(select_account: bool) -> Result<PreparedAuthorization, OAuthError> {
-    let address = GITHUB_CALLBACK_ADDRESS
-        .parse()
-        .map_err(|_| OAuthError::Bind)?;
-    prepare_authorization_with(
-        address,
-        GITHUB_CALLBACK_URL,
-        select_account,
-        |authorization_url| webbrowser::open(authorization_url.as_str()).map_err(|_| ()),
-    )
+pub fn poll_device_authorization_with<C, S>(
+    authorization: PreparedDeviceAuthorization,
+    issued_at: SystemTime,
+    http_client: &C,
+    sleep: S,
+    cancelled: &AtomicBool,
+) -> Result<TokenPair, OAuthError>
+where
+    C: SyncHttpClient,
+    S: Fn(Duration),
+{
+    let network_failure = AtomicBool::new(false);
+    let adapted_http = |request| {
+        if cancelled.load(Ordering::SeqCst) {
+            eprintln!("[github-auth] stage=device_poll reason=cancelled");
+            return Ok(oauth2::http::Response::builder()
+                .status(oauth2::http::StatusCode::BAD_REQUEST)
+                .header("content-type", "application/json")
+                .body(br#"{"error":"access_denied"}"#.to_vec())
+                .expect("static cancellation response is valid"));
+        }
+        let response = diagnostic_oauth_request(http_client, request, "device_poll");
+        if response.is_err() {
+            network_failure.store(true, Ordering::SeqCst);
+        }
+        response
+    };
+    let timeout = authorization.response.expires_in();
+    let response = device_oauth_client()?
+        .exchange_device_access_token(&authorization.response)
+        .set_max_backoff_interval(timeout)
+        .request(&adapted_http, sleep, Some(timeout))
+        .map_err(|error| {
+            map_device_poll_error::<C>(
+                error,
+                cancelled.load(Ordering::SeqCst),
+                network_failure.load(Ordering::SeqCst),
+            )
+        })?;
+    token_pair(response, issued_at)
+}
+
+fn map_device_poll_error<C: SyncHttpClient>(
+    error: RequestTokenError<C::Error, DeviceCodeErrorResponse>,
+    cancelled: bool,
+    network_failure: bool,
+) -> OAuthError {
+    if cancelled {
+        return OAuthError::Cancelled;
+    }
+    match error {
+        RequestTokenError::Request(_) => OAuthError::Network,
+        RequestTokenError::ServerResponse(error) => match error.error() {
+            DeviceCodeErrorResponseType::AccessDenied => OAuthError::Denied,
+            DeviceCodeErrorResponseType::ExpiredToken if network_failure => OAuthError::Network,
+            DeviceCodeErrorResponseType::ExpiredToken => OAuthError::Expired,
+            _ => OAuthError::Provider,
+        },
+        RequestTokenError::Parse(_, _) | RequestTokenError::Other(_) => OAuthError::InvalidResponse,
+    }
+}
+
+fn validated_github_verification_uri(value: &str) -> Result<url::Url, OAuthError> {
+    let url = url::Url::parse(value).map_err(|_| OAuthError::InvalidResponse)?;
+    if url.scheme() != "https" || url.host_str() != Some("github.com") {
+        return Err(OAuthError::InvalidResponse);
+    }
+    Ok(url)
 }
 
 pub struct GithubOAuthHttp {
@@ -223,12 +166,24 @@ impl GithubOAuthHttp {
         Ok(Self { client })
     }
 
-    pub fn exchange(&self, completion: AuthorizationCompletion) -> Result<TokenPair, OAuthError> {
-        exchange_code_with(
-            completion.code,
-            completion.verifier,
+    pub fn request_device_authorization(
+        &self,
+        open_browser: impl FnOnce(&url::Url) -> Result<(), OAuthError>,
+    ) -> Result<PreparedDeviceAuthorization, OAuthError> {
+        request_device_authorization_with(&self.client, open_browser)
+    }
+
+    pub fn poll_device_authorization(
+        &self,
+        authorization: PreparedDeviceAuthorization,
+        cancelled: &AtomicBool,
+    ) -> Result<TokenPair, OAuthError> {
+        poll_device_authorization_with(
+            authorization,
             SystemTime::now(),
             &self.client,
+            |duration| Self::interruptible_sleep(duration, cancelled),
+            cancelled,
         )
     }
 
@@ -238,6 +193,17 @@ impl GithubOAuthHttp {
             SystemTime::now(),
             &self.client,
         )
+    }
+
+    fn interruptible_sleep(duration: Duration, cancelled: &AtomicBool) {
+        let deadline = Instant::now() + duration;
+        while !cancelled.load(Ordering::SeqCst) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(50)));
+        }
     }
 }
 
@@ -325,36 +291,108 @@ impl std::fmt::Debug for TokenPair {
     }
 }
 
-pub fn exchange_code_with<C: SyncHttpClient>(
-    code: AuthorizationCode,
-    verifier: PkceCodeVerifier,
-    issued_at: SystemTime,
-    http_client: &C,
-) -> Result<TokenPair, OAuthError> {
-    let response = oauth_client()?
-        .exchange_code(code)
-        .set_pkce_verifier(verifier)
-        .request(http_client)
-        .map_err(map_token_error::<C>)?;
-    token_pair(response, issued_at)
-}
-
 pub fn refresh_token_with<C: SyncHttpClient>(
     refresh_token: RefreshToken,
     issued_at: SystemTime,
     http_client: &C,
 ) -> Result<TokenPair, OAuthError> {
-    let response = oauth_client()?
+    let diagnostic_http = |request| diagnostic_oauth_request(http_client, request, "refresh");
+    let response = device_oauth_client()?
         .exchange_refresh_token(&refresh_token)
-        .request(http_client)
+        .request(&diagnostic_http)
         .map_err(map_token_error::<C>)?;
     token_pair(response, issued_at)
 }
 
-fn oauth_client() -> Result<
+// Diagnostics expose only response shape and allow-listed provider error categories.
+#[derive(Deserialize)]
+struct DiagnosticTokenFields {
+    access_token: Option<serde::de::IgnoredAny>,
+    refresh_token: Option<serde::de::IgnoredAny>,
+    expires_in: Option<serde::de::IgnoredAny>,
+    refresh_token_expires_in: Option<serde::de::IgnoredAny>,
+    token_type: Option<serde::de::IgnoredAny>,
+    error: Option<DiagnosticProviderError>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DiagnosticProviderError {
+    AuthorizationPending,
+    SlowDown,
+    ExpiredToken,
+    BadVerificationCode,
+    IncorrectClientCredentials,
+    RedirectUriMismatch,
+    DeviceFlowDisabled,
+    UnauthorizedClient,
+    UnsupportedGrantType,
+    InvalidGrant,
+    InvalidClient,
+    InvalidRequest,
+    AccessDenied,
+    #[serde(other)]
+    Other,
+}
+
+fn token_response_diagnostic(response: &oauth2::HttpResponse) -> String {
+    let content_type = match response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+    {
+        Some("application/json") => "json",
+        Some("application/x-www-form-urlencoded") => "form",
+        Some(_) => "other",
+        None => "missing",
+    };
+    match serde_json::from_slice::<DiagnosticTokenFields>(response.body()) {
+        Ok(fields) => format!(
+            "status={} content_type={content_type} json_shape=true access_token_present={} refresh_token_present={} expires_in_present={} refresh_expiry_present={} token_type_present={} provider_error={:?}",
+            response.status().as_u16(),
+            fields.access_token.is_some(),
+            fields.refresh_token.is_some(),
+            fields.expires_in.is_some(),
+            fields.refresh_token_expires_in.is_some(),
+            fields.token_type.is_some(),
+            fields.error
+        ),
+        Err(_) => format!(
+            "status={} content_type={content_type} json_shape=false",
+            response.status().as_u16()
+        ),
+    }
+}
+
+fn diagnostic_oauth_request<C: SyncHttpClient>(
+    client: &C,
+    request: oauth2::HttpRequest,
+    stage: &str,
+) -> Result<oauth2::HttpResponse, C::Error> {
+    let mut response = client.call(request);
+    match &mut response {
+        Ok(response) => eprintln!(
+            "[github-auth] stage={stage}_http_response {}",
+            token_response_diagnostic(response)
+        ),
+        Err(_) => eprintln!("[github-auth] stage={stage}_http_response reason=network"),
+    }
+    if let Ok(response) = &mut response {
+        let provider_error = serde_json::from_slice::<DiagnosticTokenFields>(response.body())
+            .ok()
+            .and_then(|fields| fields.error);
+        if response.status().is_success() && provider_error.is_some() {
+            *response.status_mut() = oauth2::http::StatusCode::BAD_REQUEST;
+        }
+    }
+    response
+}
+
+fn device_oauth_client() -> Result<
     BasicClient<
-        oauth2::EndpointSet,
         oauth2::EndpointNotSet,
+        oauth2::EndpointSet,
         oauth2::EndpointNotSet,
         oauth2::EndpointNotSet,
         oauth2::EndpointSet,
@@ -364,16 +402,12 @@ fn oauth_client() -> Result<
     Ok(
         BasicClient::new(ClientId::new(GITHUB_OAUTH_CLIENT_ID.into()))
             .set_auth_type(AuthType::RequestBody)
-            .set_auth_uri(
-                AuthUrl::new(GITHUB_AUTHORIZE_URL.into())
+            .set_device_authorization_url(
+                DeviceAuthorizationUrl::new(GITHUB_DEVICE_AUTHORIZATION_URL.into())
                     .map_err(|_| OAuthError::InvalidResponse)?,
             )
             .set_token_uri(
                 TokenUrl::new(GITHUB_TOKEN_URL.into()).map_err(|_| OAuthError::InvalidResponse)?,
-            )
-            .set_redirect_uri(
-                RedirectUrl::new(GITHUB_CALLBACK_URL.into())
-                    .map_err(|_| OAuthError::InvalidResponse)?,
             ),
     )
 }
@@ -384,7 +418,14 @@ fn map_token_error<C: SyncHttpClient>(
     match error {
         RequestTokenError::Request(_) => OAuthError::Network,
         RequestTokenError::ServerResponse(_) => OAuthError::Provider,
-        RequestTokenError::Parse(_, _) | RequestTokenError::Other(_) => OAuthError::InvalidResponse,
+        RequestTokenError::Parse(_, _) => {
+            eprintln!("[github-auth] stage=token_decode reason=parse_failure");
+            OAuthError::InvalidResponse
+        }
+        RequestTokenError::Other(_) => {
+            eprintln!("[github-auth] stage=token_decode reason=unexpected_response");
+            OAuthError::InvalidResponse
+        }
     }
 }
 
@@ -398,15 +439,23 @@ fn token_pair(
     let access_lifetime = response
         .expires_in()
         .filter(|duration| !duration.is_zero())
-        .ok_or(OAuthError::InvalidResponse)?;
+        .ok_or_else(|| {
+            eprintln!("[github-auth] stage=token_validation reason=missing_or_zero_access_expiry");
+            OAuthError::InvalidResponse
+        })?;
     let refresh_token = response
         .refresh_token()
         .map(|token| token.secret())
         .filter(|token| !token.is_empty())
-        .ok_or(OAuthError::InvalidResponse)?;
+        .ok_or_else(|| {
+            eprintln!("[github-auth] stage=token_validation reason=missing_or_empty_refresh_token");
+            OAuthError::InvalidResponse
+        })?;
     if response.access_token().secret().is_empty() {
+        eprintln!("[github-auth] stage=token_validation reason=empty_access_token");
         return Err(OAuthError::InvalidResponse);
     }
+    eprintln!("[github-auth] stage=token_validation outcome=success");
     Ok(TokenPair::new_at(
         response.access_token().secret(),
         refresh_token,
@@ -416,61 +465,69 @@ fn token_pair(
     ))
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-pub struct CallbackParameters {
-    pub code: Option<String>,
-    pub state: Option<String>,
-    pub error: Option<String>,
-}
-
-pub struct CallbackGuard {
-    expected_state: CsrfToken,
-    used: bool,
-}
-
-impl CallbackGuard {
-    pub fn new(expected_state: CsrfToken) -> Self {
-        Self {
-            expected_state,
-            used: false,
-        }
-    }
-
-    pub fn accept(
-        &mut self,
-        parameters: CallbackParameters,
-    ) -> Result<AuthorizationCode, OAuthError> {
-        if self.used {
-            return Err(OAuthError::Replayed);
-        }
-        self.used = true;
-        let state = parameters
-            .state
-            .filter(|state| !state.is_empty())
-            .ok_or(OAuthError::StateMismatch)?;
-        if CsrfToken::new(state) != self.expected_state {
-            return Err(OAuthError::StateMismatch);
-        }
-        if parameters.error.is_some() {
-            return Err(OAuthError::Provider);
-        }
-        let code = parameters
-            .code
-            .filter(|code| !code.is_empty())
-            .ok_or(OAuthError::InvalidResponse)?;
-        Ok(AuthorizationCode::new(code))
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OAuthError {
     InvalidResponse,
     Network,
-    Bind,
     BrowserOpen,
     Cancelled,
     Timeout,
+    Denied,
+    Expired,
     Provider,
-    StateMismatch,
-    Replayed,
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn response_diagnostics_report_shape_without_response_values() {
+        let response = oauth2::http::Response::builder()
+            .status(200)
+            .header("content-type", "application/json; charset=utf-8")
+            .body(
+                br#"{"access_token":"access-secret","refresh_token":"refresh-secret","expires_in":28800,"refresh_token_expires_in":15897600,"token_type":"bearer","state":"state-secret","code":"code-secret","error_description":"private-detail"}"#
+                    .to_vec(),
+            )
+            .unwrap();
+        let diagnostic = token_response_diagnostic(&response);
+        assert!(diagnostic.contains("status=200 content_type=json json_shape=true"));
+        assert!(diagnostic.contains("access_token_present=true refresh_token_present=true"));
+        assert!(diagnostic.contains("expires_in_present=true refresh_expiry_present=true"));
+        for secret in [
+            "access-secret",
+            "refresh-secret",
+            "state-secret",
+            "code-secret",
+            "private-detail",
+        ] {
+            assert!(!diagnostic.contains(secret));
+        }
+    }
+
+    #[test]
+    fn response_diagnostics_allowlist_provider_codes_and_discard_unknown_data() {
+        for (body, expected) in [
+            (
+                r#"{"error":"incorrect_client_credentials","error_description":"secret-detail"}"#,
+                "provider_error=Some(IncorrectClientCredentials)",
+            ),
+            (
+                r#"{"error":"secret-detail","error_description":"secret-detail"}"#,
+                "provider_error=Some(Other)",
+            ),
+            ("secret-detail", "json_shape=false"),
+        ] {
+            let response = oauth2::http::Response::builder()
+                .status(400)
+                .header("content-type", "secret-content-type")
+                .body(body.as_bytes().to_vec())
+                .unwrap();
+            let diagnostic = token_response_diagnostic(&response);
+            assert!(diagnostic.contains(expected));
+            assert!(!diagnostic.contains("secret-detail"));
+            assert!(!diagnostic.contains("secret-content-type"));
+        }
+    }
 }

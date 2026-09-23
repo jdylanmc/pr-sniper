@@ -2,10 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 
 type GithubAuthFailure =
   | "expired"
+  | "denied"
   | "network"
   | "provider"
   | "invalid_response"
-  | "bind"
   | "browser_open"
   | "cancelled"
   | "timeout"
@@ -29,6 +29,8 @@ type GithubAuthView = {
     | {
         state: "connecting";
         expected_account_id?: string;
+        user_code?: string;
+        verification_uri?: string;
       }
     | {
         state: "pending_account_confirmation";
@@ -227,8 +229,24 @@ export function renderGithubAuth(
     }
 
     if (view.flow.state === "connecting") {
-      status.textContent =
-        "GitHub opened in your default browser. Complete sign-in there, then return to PR Sniper.";
+      if (view.flow.user_code && view.flow.verification_uri) {
+        const userCode = view.flow.user_code;
+        status.textContent =
+          "GitHub opened in your default browser. Enter the one-time code there, then return to PR Sniper.";
+        const guidance = document.createElement("p");
+        guidance.textContent = `If the browser did not open, visit ${view.flow.verification_uri} and enter this one-time code:`;
+        const code = document.createElement("code");
+        code.textContent = userCode;
+        actions.append(guidance, code);
+        actionButton(actions, "Copy one-time code", async () => {
+          await navigator.clipboard.writeText(userCode);
+          status.textContent =
+            "One-time code copied. Complete authorization in GitHub, then return to PR Sniper.";
+        });
+      } else {
+        status.textContent =
+          "Requesting a one-time GitHub authorization code. The default browser will open when it is ready.";
+      }
       commandButton(actions, "Cancel", "cancel_github_auth");
       clearTimeout(refreshTimer);
       refreshTimer = setTimeout(refresh, 250);
@@ -280,10 +298,10 @@ function failureMessage(reason?: GithubAuthFailure) {
   return (
     {
       expired: "The authorization expired or can no longer be refreshed.",
+      denied: "GitHub authorization was denied.",
       network: "The GitHub network request failed.",
       provider: "GitHub rejected or could not validate the connection.",
       invalid_response: "GitHub returned an invalid authorization response.",
-      bind: "PR Sniper could not reserve its local GitHub callback port.",
       browser_open: "PR Sniper could not open the default browser.",
       cancelled: "GitHub sign-in was cancelled.",
       timeout: "GitHub sign-in timed out.",
