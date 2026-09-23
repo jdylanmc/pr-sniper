@@ -173,6 +173,14 @@ test("overlapping repository access requires an explicit acting account choice",
 
   const card = page.locator(".github-auth-card");
   await card
+    .getByRole("button", { name: "Load repositories for jdylanmc" })
+    .click();
+  await card
+    .getByRole("button", {
+      name: "Use jdylanmc/pr-sniper as jdylanmc",
+    })
+    .click();
+  await card
     .getByRole("button", { name: "Load repositories for hubot" })
     .click();
   await card
@@ -182,15 +190,41 @@ test("overlapping repository access requires an explicit acting account choice",
     .click();
 
   await expect(
-    page.getByRole("article", { name: "jdylanmc/pr-sniper" }),
+    page.getByRole("article", {
+      name: "jdylanmc/pr-sniper as jdylanmc",
+    }),
+  ).toContainText("GitHub as jdylanmc");
+  await expect(
+    page.getByRole("article", { name: "jdylanmc/pr-sniper as hubot" }),
   ).toContainText("GitHub as hubot");
   await page.getByRole("button", { name: "Save changes", exact: true }).click();
   await page.evaluate(() => window.__settingsIdle());
   const snapshot = await store("snapshot");
-  expect(snapshot.settings.repositories[0]).toMatchObject({
-    name: "jdylanmc/pr-sniper",
-    provider_account_id: "84",
-    installation_id: "9002",
-    provider_repository_id: "1376547672",
-  });
+  expect(snapshot.settings.repositories).toHaveLength(2);
+  expect(snapshot.settings.repositories).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        name: "jdylanmc/pr-sniper",
+        provider_account_id: "6954990",
+        installation_id: "9001",
+        provider_repository_id: "1376547672",
+      }),
+      expect.objectContaining({
+        name: "jdylanmc/pr-sniper",
+        provider_account_id: "84",
+        installation_id: "9002",
+        provider_repository_id: "1376547672",
+      }),
+    ]),
+  );
+
+  await page.reload();
+  await expect(
+    page.getByRole("article", {
+      name: "jdylanmc/pr-sniper as jdylanmc",
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("article", { name: "jdylanmc/pr-sniper as hubot" }),
+  ).toBeVisible();
 });

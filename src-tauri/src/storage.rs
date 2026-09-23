@@ -148,7 +148,7 @@ impl Settings {
         };
         validate_preset(&self.default_review_preset)?;
         let mut ids = HashSet::new();
-        let mut names = HashSet::new();
+        let mut bindings = HashSet::new();
         for repository in &self.repositories {
             validate_preset(&repository.review_preset)?;
             if uuid::Uuid::parse_str(&repository.id).is_err() || !ids.insert(&repository.id) {
@@ -156,9 +156,8 @@ impl Settings {
             }
             if canonical_provider_repository(&repository.provider, &repository.name)?
                 != repository.name
-                || !names.insert((repository.provider.clone(), repository.name.clone()))
             {
-                return Err("Repository names must be canonical and unique.".into());
+                return Err("Repository names must be canonical.".into());
             }
             if repository.provider_account_id.is_some()
                 && repository.provider_repository_id.is_none()
@@ -183,6 +182,28 @@ impl Settings {
                 return Err(
                     "Connected repositories require stable provider, account, installation and repository identities.".into(),
                 );
+            }
+            let binding = if repository.provider_account_id.is_some()
+                && repository.provider_repository_id.is_some()
+            {
+                (
+                    repository.provider.clone(),
+                    repository.provider_account_id.clone(),
+                    repository.installation_id.clone(),
+                    repository.provider_repository_id.clone(),
+                    None,
+                )
+            } else {
+                (
+                    repository.provider.clone(),
+                    None,
+                    None,
+                    None,
+                    Some(repository.name.clone()),
+                )
+            };
+            if !bindings.insert(binding) {
+                return Err("Repository bindings must be unique.".into());
             }
             repository.overrides.effective(&self.defaults).validate()?;
         }
@@ -396,7 +417,11 @@ impl Store {
     pub fn add_repository(&self, repository: &str) -> Result<Settings, String> {
         let name = canonical_repository(repository)?;
         let mut settings = self.load_settings()?;
-        if settings.repositories.iter().any(|repo| repo.name == name) {
+        if settings.repositories.iter().any(|repo| {
+            repo.provider == ProviderId::Github
+                && repo.name == name
+                && repo.provider_account_id.is_none()
+        }) {
             return Err("This GitHub repository is already configured.".into());
         }
         settings.repositories.push(Repository {
@@ -422,11 +447,12 @@ impl Store {
     ) -> Result<Settings, String> {
         let name = canonical_repository(repository)?;
         let mut settings = self.load_settings()?;
-        if settings
-            .repositories
-            .iter()
-            .any(|repo| repo.id != id && repo.name == name)
-        {
+        if settings.repositories.iter().any(|repo| {
+            repo.id != id
+                && repo.provider == ProviderId::Github
+                && repo.name == name
+                && repo.provider_account_id.is_none()
+        }) {
             return Err("This GitHub repository is already configured.".into());
         }
         let repo = settings

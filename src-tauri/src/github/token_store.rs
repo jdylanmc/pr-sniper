@@ -125,6 +125,7 @@ pub type CredentialKey = ProviderAccountId;
 pub struct AccountRegistry {
     pub accounts: Vec<ActiveAccount>,
     pub active: Option<ProviderAccountId>,
+    pub pending_account_additions: Vec<ActiveAccount>,
     pub pending_secret_deletions: Vec<ProviderAccountId>,
 }
 
@@ -146,6 +147,17 @@ impl AccountRegistry {
             ProviderAccountId::new(active.provider.clone(), active.account_id.clone())?;
         }
         let mut pending_ids = BTreeMap::new();
+        for account in &self.pending_account_additions {
+            ActiveAccount::for_provider(
+                account.provider.clone(),
+                account.account_id.clone(),
+                account.login.clone(),
+            )?;
+            let id = account.provider_account_id();
+            if ids.contains_key(&id) || pending_ids.insert(id, ()).is_some() {
+                return Err(StoreError::InvalidData);
+            }
+        }
         for pending in &self.pending_secret_deletions {
             ProviderAccountId::new(pending.provider.clone(), pending.account_id.clone())?;
             if pending_ids.insert(pending.clone(), ()).is_some() {
@@ -258,14 +270,23 @@ impl<S: AccountRegistryStore + CredentialStore> RotationSafeStore<S> {
     fn load_registry_cleaned(&self) -> Result<AccountRegistry, StoreError> {
         let mut registry = self.inner.load_registry()?;
         registry.validate()?;
-        if registry.pending_secret_deletions.is_empty() {
+        if registry.pending_account_additions.is_empty()
+            && registry.pending_secret_deletions.is_empty()
+        {
             return Ok(registry);
+        }
+        for account in &registry.pending_account_additions {
+            let id = account.provider_account_id();
+            let lock = self.account_lock(&id)?;
+            let _guard = lock.lock().map_err(|_| StoreError::Unavailable)?;
+            self.inner.delete(&id)?;
         }
         for id in &registry.pending_secret_deletions {
             let lock = self.account_lock(id)?;
             let _guard = lock.lock().map_err(|_| StoreError::Unavailable)?;
             self.inner.delete(id)?;
         }
+        registry.pending_account_additions.clear();
         registry.pending_secret_deletions.clear();
         self.inner.save_registry(&registry)?;
         Ok(registry)
@@ -306,14 +327,21 @@ impl<S: AccountRegistryStore + CredentialStore> RotationSafeStore<S> {
         let mut registry = self.load_registry_cleaned()?;
         let lock = self.account_lock(&id)?;
         let _account_guard = lock.lock().map_err(|_| StoreError::Unavailable)?;
-        self.inner.save(&id, pair)?;
         if let Some(stored) = registry
             .accounts
             .iter_mut()
             .find(|stored| stored.provider_account_id() == id)
         {
+            self.inner.save(&id, pair)?;
             *stored = account.clone();
         } else {
+            registry.pending_account_additions.push(account.clone());
+            registry.validate()?;
+            self.inner.save_registry(&registry)?;
+            self.inner.save(&id, pair)?;
+            registry
+                .pending_account_additions
+                .retain(|pending| pending.provider_account_id() != id);
             registry.accounts.push(account.clone());
         }
         if make_active {

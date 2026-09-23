@@ -12,11 +12,48 @@ async function connection(page, name = "jdylanmc/pr-sniper") {
   return modal;
 }
 
+async function boundConnection(page, name, actingAccount) {
+  await section(page, "Repositories");
+  await page
+    .getByRole("article", {
+      name: `${name} as ${actingAccount}`,
+      exact: true,
+    })
+    .getByRole("button", { name: "Settings", exact: true })
+    .click();
+  const modal = page.getByRole("dialog", {
+    name: `Settings for ${name}`,
+    exact: true,
+  });
+  await modal.getByText("Repository and connection", { exact: true }).click();
+  return modal;
+}
+
 const verified = {
   identity: { id: "6954990", login: "jdylanmc" },
   repository: { id: "1376547672", name: "jdylanmc/pr-sniper" },
   capabilities: { read: true, comment: "available" },
 };
+
+async function connectedGithubAccount(page) {
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = (command, args) =>
+      command === "github_auth_state"
+        ? Promise.resolve({
+            accounts: [
+              {
+                provider: "github",
+                state: "connected",
+                account_id: "6954990",
+                login: "jdylanmc",
+              },
+            ],
+            flow: { state: "idle" },
+          })
+        : original(command, args);
+  });
+}
 
 async function saveBoundRepository(
   store,
@@ -41,6 +78,7 @@ async function saveBoundRepository(
 
 async function githubFixture(page, store, handler) {
   await saveBoundRepository(store);
+  await connectedGithubAccount(page);
   await page.exposeFunction("__githubResponse", handler);
   await page.addInitScript(() => {
     const original = window.__TAURI_INTERNALS__.invoke;
@@ -65,6 +103,7 @@ test("verifying GitHub preserves drafts and does not enable automation", async (
   store,
 }) => {
   const before = await saveBoundRepository(store);
+  await connectedGithubAccount(page);
   const calls = [];
   await page.exposeFunction("__githubRead", (command, args) => {
     calls.push({ command, args });
@@ -288,17 +327,19 @@ test("disconnecting one account clears only its repository evidence", async ({
   store,
 }) => {
   await store("save_repository", { repository: "jdylanmc/pr-sniper" });
-  await store("save_repository", { repository: "octo/other" });
   const settings = (await store("snapshot")).settings;
   Object.assign(settings.repositories[0], {
     provider_account_id: "101",
     installation_id: "9001",
     provider_repository_id: "1376547672",
+    overrides: { automatic_agent_start: true },
   });
-  Object.assign(settings.repositories[1], {
+  settings.repositories.push({
+    ...structuredClone(settings.repositories[0]),
+    id: "22222222-2222-4222-8222-222222222222",
     provider_account_id: "202",
     installation_id: "9002",
-    provider_repository_id: "42",
+    overrides: { automatic_agent_start: false },
   });
   await store("seed_settings", settings);
   let accounts = [
@@ -330,9 +371,10 @@ test("disconnecting one account clears only its repository evidence", async ({
     const identity = first
       ? { id: "101", login: "account-a" }
       : { id: "202", login: "account-b" };
-    const repository = first
-      ? { id: "1376547672", name: "jdylanmc/pr-sniper" }
-      : { id: "42", name: "octo/other" };
+    const repository = {
+      id: "1376547672",
+      name: "jdylanmc/pr-sniper",
+    };
     if (command === "verify_provider_connection") {
       return {
         identity,
@@ -366,7 +408,7 @@ test("disconnecting one account clears only its repository evidence", async ({
   });
   await page.goto("/?view=settings");
 
-  let first = await connection(page);
+  let first = await boundConnection(page, "jdylanmc/pr-sniper", "account-a");
   await first
     .getByRole("button", { name: "Verify GitHub connection", exact: true })
     .click();
@@ -377,7 +419,7 @@ test("disconnecting one account clears only its repository evidence", async ({
   await expect(first.getByRole("status")).toContainText("Complete metadata");
   await closeDialog(page);
 
-  let second = await connection(page, "octo/other");
+  let second = await boundConnection(page, "jdylanmc/pr-sniper", "account-b");
   await second
     .getByRole("button", { name: "Verify GitHub connection", exact: true })
     .click();
@@ -393,21 +435,60 @@ test("disconnecting one account clears only its repository evidence", async ({
   await expect(auth).not.toContainText("account-a (101)");
   await expect(auth).toContainText("account-b (202)");
 
-  first = await connection(page);
-  await expect(first.getByRole("status")).toContainText("Not verified");
+  first = await boundConnection(page, "jdylanmc/pr-sniper", "101");
+  await expect(first.getByRole("status")).toContainText("Needs attention");
   await expect(first.locator(".connection summary")).toHaveCount(0);
+  await expect(
+    first.getByRole("button", {
+      name: "Verify GitHub connection",
+      exact: true,
+    }),
+  ).toBeDisabled();
   await expect(
     first.getByRole("button", { name: "Read PR metadata", exact: true }),
   ).toBeDisabled();
   await closeDialog(page);
 
-  second = await connection(page, "octo/other");
+  second = await boundConnection(page, "jdylanmc/pr-sniper", "account-b");
   await expect(second.getByRole("status")).toContainText("account-b (202)");
   await expect(second.getByRole("status")).toContainText("Complete metadata");
   await expect(page.locator("body")).not.toContainText("gh auth login");
   await expect(page.locator("body")).not.toContainText(
     "current GitHub CLI account",
   );
+  const persisted = (await store("snapshot")).settings.repositories;
+  expect(
+    persisted.find((repository) => repository.provider_account_id === "101")
+      .overrides.automatic_agent_start,
+  ).toBe(true);
+  expect(
+    persisted.find((repository) => repository.provider_account_id === "202")
+      .overrides.automatic_agent_start,
+  ).toBe(false);
+
+  await page.reload();
+  const unavailable = await boundConnection(page, "jdylanmc/pr-sniper", "101");
+  await expect(unavailable.getByRole("status")).toContainText(
+    "Needs attention",
+  );
+  await unavailable
+    .getByRole("button", { name: "Remove repository", exact: true })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Remove repository?", exact: true })
+    .getByRole("button", { name: "Remove from settings", exact: true })
+    .click();
+  await saveChanges(page);
+  expect((await store("snapshot")).settings.repositories).toEqual([
+    expect.objectContaining({ provider_account_id: "202" }),
+  ]);
+  const available = await connection(page);
+  await expect(
+    available.getByRole("button", {
+      name: "Verify GitHub connection",
+      exact: true,
+    }),
+  ).toBeEnabled();
 });
 
 for (const [commandError, stateReason] of [
@@ -515,8 +596,14 @@ for (const [commandError, stateReason] of [
     await closeDialog(page);
 
     card = await connection(page, "octo/two");
-    await expect(card.getByRole("status")).toContainText("Not verified");
+    await expect(card.getByRole("status")).toContainText("Needs attention");
     await expect(card.locator(".connection summary")).toHaveCount(0);
+    await expect(
+      card.getByRole("button", {
+        name: "Verify GitHub connection",
+        exact: true,
+      }),
+    ).toBeDisabled();
     await expect(
       card.getByRole("button", { name: "Read PR metadata", exact: true }),
     ).toBeDisabled();
