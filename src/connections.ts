@@ -80,6 +80,7 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
     observation = undefined;
   }
   root.innerHTML = `
+    <p class="settings-hint">Development-only GitHub CLI repository probe. Product sign-in uses the PR Sniper GitHub App connection above.</p>
     <form class="connection-form">
       <label>Expected GitHub account ID (optional)
         <input name="expectedAccountId" type="text" inputmode="numeric" pattern="[1-9][0-9]*" placeholder="Stable decimal account ID" />
@@ -98,7 +99,7 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
   const details = root.querySelector<HTMLElement>(".pull-metadata")!;
   status.textContent =
     observation?.message ??
-    "Not verified. Reads use the saved repository and current GitHub CLI account; no sign-in or provider changes are performed.";
+    "Not verified. This development probe uses the saved repository and current GitHub CLI account; no product sign-in or provider changes are performed.";
   read.disabled = !observation?.connection;
 
   function renderPulls(pulls: PullRequest[]) {

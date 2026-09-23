@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { renderConnection } from "./connections";
+import { renderGithubAuth } from "./github-auth";
 import { effectivePolicy, type Policy, type Selector } from "./policy";
 import type { Repository } from "./repositories";
 import "./settings.css";
@@ -252,12 +253,13 @@ export async function mountSettings(app: HTMLElement) {
   }
 
   function renderRepositories() {
-    content.innerHTML = `<div class="folder-card"><div class="folder-symbol">${icon("folder")}</div><div><strong>${escape(draft.root_folder ?? "Choose your repository folder")}</strong><p>${discovery ? `${discovery.repositories.length} local repositories discovered` : "Only a folder you choose is scanned."}</p></div><button id="choose-folder">Choose folder...</button></div>
+    content.innerHTML = `<div class="github-auth"></div><div class="folder-card"><div class="folder-symbol">${icon("folder")}</div><div><strong>${escape(draft.root_folder ?? "Choose your repository folder")}</strong><p>${discovery ? `${discovery.repositories.length} local repositories discovered` : "Only a folder you choose is scanned."}</p></div><button id="choose-folder">Choose folder...</button></div>
       <div class="repository-toolbar"><input id="repo-search" type="search" aria-label="Find a repository" placeholder="Find a repository..." value="${escape(query)}" /><button id="select-visible">Select visible</button></div>
       <div class="list-label"><span>Repository</span><span id="selected-count"></span></div><div class="repository-list"></div>
       <p class="settings-hint">Monitoring configuration only. Reviews and comments stay separate. No polling runs in this build.</p>
       <div class="settings-actions"><button id="add-repository">Add repository manually...</button>${draft.root_folder ? '<button id="rescan">Scan chosen folder</button>' : ""}</div>
       ${discovery?.warnings.map((warning) => `<p class="settings-notice">${escape(warning)}</p>`).join("") ?? ""}`;
+    renderGithubAuth(content.querySelector(".github-auth")!);
     content.querySelector<HTMLButtonElement>("#choose-folder")!.onclick =
       () => {
         if (!busy) void scan(true);
