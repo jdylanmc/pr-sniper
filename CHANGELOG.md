@@ -36,7 +36,8 @@ No release/versioning policy has been established yet.
   removes only the selected account on disconnect. OAuth App credentials use a
   generation-specific Keychain namespace; superseded GitHub App credentials
   require explicit reconnect and are cleaned only after the new pair is
-  durable. Each OAuth session requests
+  durable. A cleanup failure remains explicit retryable debt without
+  misreporting the already-confirmed account as pending. Each OAuth session requests
   the broad `repo` scope, explains its public/private repository consent, lists
   paginated affiliated repositories and can directly validate any known
   accessible repository with the selected account, requires explicit
