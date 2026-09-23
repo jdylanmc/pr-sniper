@@ -1,8 +1,8 @@
 use super::{
     device_flow::TokenPair,
     token_store::{
-        ActiveAccount, ActiveCredentialStore, CredentialKey, CredentialStore, Provider,
-        RestoredCredentials, StoreError,
+        AccountRegistry, AccountRegistryStore, ActiveAccount, ActiveCredentialStore, CredentialKey,
+        CredentialStore, ProviderAccountId, ProviderId, RestoredCredentials, StoreError,
     },
 };
 use std::{
@@ -16,7 +16,9 @@ type OsStatus = i32;
 type SecKeychainItemRef = *mut c_void;
 
 const ERR_SEC_ITEM_NOT_FOUND: OsStatus = -25300;
-const ACTIVE_ACCOUNT: &str = "github:active-account";
+const LEGACY_ACTIVE_ACCOUNT: &str = "github:active-account";
+const ACCOUNT_REGISTRY: &str = "accounts:registry";
+const REGISTRY_RECORD_VERSION: &[u8; 8] = b"PRSNREG1";
 const ACTIVE_RECORD_VERSION: &[u8; 8] = b"PRSNAUTH";
 
 #[link(name = "Security", kind = "framework")]
@@ -72,12 +74,12 @@ impl MacKeychainStore {
     }
 
     fn account(key: &CredentialKey) -> Result<String, StoreError> {
-        if key.account_id.is_empty() || key.account_id.len() > 128 {
-            return Err(StoreError::InvalidData);
-        }
-        match key.provider {
-            Provider::Github => Ok(format!("github:{}", key.account_id)),
-        }
+        ProviderAccountId::new(key.provider().clone(), key.account_id().to_string())?;
+        Ok(format!(
+            "account:{}:{}",
+            key.provider().as_str(),
+            key.account_id()
+        ))
     }
 
     fn item(
@@ -221,102 +223,147 @@ impl CredentialStore for MacKeychainStore {
 
 impl ActiveCredentialStore for MacKeychainStore {
     fn load_active_credentials(&self) -> Result<Option<RestoredCredentials>, StoreError> {
-        load_active_credentials(self)
+        let registry = self.load_registry()?;
+        let Some(active) = registry.active else {
+            return Ok(None);
+        };
+        let account = registry
+            .accounts
+            .into_iter()
+            .find(|account| account.provider_account_id() == active)
+            .ok_or(StoreError::InvalidData)?;
+        let pair = self.load(&active)?.ok_or(StoreError::InvalidData)?;
+        Ok(Some(RestoredCredentials { account, pair }))
     }
 
     fn save_active_credentials(&self, credentials: &RestoredCredentials) -> Result<(), StoreError> {
-        save_active_credentials(self, credentials)
+        let id = credentials.account.provider_account_id();
+        self.save(&id, &credentials.pair)?;
+        let mut registry = self.load_registry()?;
+        if let Some(account) = registry
+            .accounts
+            .iter_mut()
+            .find(|account| account.provider_account_id() == id)
+        {
+            *account = credentials.account.clone();
+        } else {
+            registry.accounts.push(credentials.account.clone());
+        }
+        registry.active = Some(id);
+        self.save_registry(&registry)
     }
 
     fn delete_active_credentials(&self) -> Result<(), StoreError> {
-        delete_active_credentials(self)
+        let mut registry = self.load_registry()?;
+        let Some(active) = registry.active.take() else {
+            return Ok(());
+        };
+        registry
+            .accounts
+            .retain(|account| account.provider_account_id() != active);
+        registry.pending_secret_deletions.push(active.clone());
+        self.save_registry(&registry)?;
+        self.delete(&active)?;
+        registry.pending_secret_deletions.clear();
+        self.save_registry(&registry)
     }
 }
 
 fn legacy_account_name(account_id: &str) -> Result<String, StoreError> {
-    MacKeychainStore::account(&CredentialKey::github(account_id))
+    let id = ProviderAccountId::github(account_id);
+    Ok(format!("{}:{}", id.provider().as_str(), id.account_id()))
 }
 
-fn load_active_credentials(
-    backend: &impl ActiveRecordBackend,
-) -> Result<Option<RestoredCredentials>, StoreError> {
-    let Some(bytes) = backend.load_record(ACTIVE_ACCOUNT)? else {
-        return Ok(None);
-    };
-    let mut stored = if let Ok(stored) = decode_stored_active_credentials(&bytes) {
-        stored
-    } else if let Ok(credentials) = decode_active_credentials(&bytes) {
-        let stored = StoredActiveCredentials {
-            legacy_cleanup_account_id: Some(credentials.account.account_id.clone()),
-            credentials,
-        };
-        backend.save_record(ACTIVE_ACCOUNT, &encode_stored_active_credentials(&stored)?)?;
-        stored
-    } else {
-        let account = decode_legacy_active_account(&bytes)?;
-        let legacy_name = legacy_account_name(&account.account_id)?;
-        let pair = backend
-            .load_record(&legacy_name)?
-            .map(|bytes| decode(&bytes))
-            .transpose()?
-            .ok_or(StoreError::InvalidData)?;
-        let stored = StoredActiveCredentials {
-            legacy_cleanup_account_id: Some(account.account_id.clone()),
-            credentials: RestoredCredentials { account, pair },
-        };
-        backend.save_record(ACTIVE_ACCOUNT, &encode_stored_active_credentials(&stored)?)?;
-        stored
-    };
-    finish_legacy_cleanup(backend, &mut stored)?;
-    Ok(Some(stored.credentials))
-}
-
-fn save_active_credentials(
-    backend: &impl ActiveRecordBackend,
-    credentials: &RestoredCredentials,
-) -> Result<(), StoreError> {
-    let pending = backend.load_record(ACTIVE_ACCOUNT)?.and_then(|bytes| {
-        decode_stored_active_credentials(&bytes)
-            .ok()
-            .and_then(|stored| stored.legacy_cleanup_account_id)
-            .or_else(|| {
-                decode_active_credentials(&bytes)
-                    .ok()
-                    .map(|credentials| credentials.account.account_id)
-            })
-            .or_else(|| {
-                decode_legacy_active_account(&bytes)
-                    .ok()
-                    .map(|account| account.account_id)
-            })
-    });
-    let mut stored = StoredActiveCredentials {
-        credentials: credentials.clone(),
-        legacy_cleanup_account_id: pending,
-    };
-    backend.save_record(ACTIVE_ACCOUNT, &encode_stored_active_credentials(&stored)?)?;
-    finish_legacy_cleanup(backend, &mut stored)
-}
-
-fn delete_active_credentials(backend: &impl ActiveRecordBackend) -> Result<(), StoreError> {
-    if let Err(error) = load_active_credentials(backend) {
-        if error != StoreError::InvalidData {
-            return Err(error);
-        }
+impl AccountRegistryStore for MacKeychainStore {
+    fn load_registry(&self) -> Result<AccountRegistry, StoreError> {
+        load_registry(self)
     }
-    backend.delete_record(ACTIVE_ACCOUNT)
+
+    fn save_registry(&self, registry: &AccountRegistry) -> Result<(), StoreError> {
+        registry.validate()?;
+        let legacy_cleanup = self
+            .load_record(ACCOUNT_REGISTRY)?
+            .map(|bytes| decode_stored_registry(&bytes))
+            .transpose()?
+            .map(|stored| stored.legacy_cleanup)
+            .unwrap_or_default();
+        self.save_record(
+            ACCOUNT_REGISTRY,
+            &encode_stored_registry(&StoredRegistry {
+                registry: registry.clone(),
+                legacy_cleanup,
+            })?,
+        )
+    }
+}
+
+fn load_registry(backend: &impl ActiveRecordBackend) -> Result<AccountRegistry, StoreError> {
+    if let Some(bytes) = backend.load_record(ACCOUNT_REGISTRY)? {
+        let mut stored = decode_stored_registry(&bytes)?;
+        finish_legacy_cleanup(backend, &mut stored)?;
+        return Ok(stored.registry);
+    }
+    let Some(bytes) = backend.load_record(LEGACY_ACTIVE_ACCOUNT)? else {
+        return Ok(AccountRegistry::default());
+    };
+    let (credentials, mut legacy_cleanup) =
+        if let Ok(stored) = decode_stored_active_credentials(&bytes) {
+            let mut cleanup = vec![LEGACY_ACTIVE_ACCOUNT.to_string()];
+            if let Some(account_id) = stored.legacy_cleanup_account_id {
+                cleanup.push(legacy_account_name(&account_id)?);
+            }
+            (stored.credentials, cleanup)
+        } else if let Ok(credentials) = decode_active_credentials(&bytes) {
+            let cleanup = vec![
+                LEGACY_ACTIVE_ACCOUNT.to_string(),
+                legacy_account_name(&credentials.account.account_id)?,
+            ];
+            (credentials, cleanup)
+        } else {
+            let account = decode_legacy_active_account(&bytes)?;
+            let legacy_name = legacy_account_name(&account.account_id)?;
+            let pair = backend
+                .load_record(&legacy_name)?
+                .map(|bytes| decode(&bytes))
+                .transpose()?
+                .ok_or(StoreError::InvalidData)?;
+            (
+                RestoredCredentials { account, pair },
+                vec![LEGACY_ACTIVE_ACCOUNT.to_string(), legacy_name],
+            )
+        };
+    legacy_cleanup.sort();
+    legacy_cleanup.dedup();
+    let id = credentials.account.provider_account_id();
+    backend.save_record(
+        &MacKeychainStore::account(&id)?,
+        &encode(&credentials.pair)?,
+    )?;
+    let mut stored = StoredRegistry {
+        registry: AccountRegistry {
+            accounts: vec![credentials.account],
+            active: Some(id),
+            pending_secret_deletions: Vec::new(),
+        },
+        legacy_cleanup,
+    };
+    backend.save_record(ACCOUNT_REGISTRY, &encode_stored_registry(&stored)?)?;
+    finish_legacy_cleanup(backend, &mut stored)?;
+    Ok(stored.registry)
 }
 
 fn finish_legacy_cleanup(
     backend: &impl ActiveRecordBackend,
-    stored: &mut StoredActiveCredentials,
+    stored: &mut StoredRegistry,
 ) -> Result<(), StoreError> {
-    let Some(account_id) = stored.legacy_cleanup_account_id.clone() else {
+    if stored.legacy_cleanup.is_empty() {
         return Ok(());
-    };
-    backend.delete_record(&legacy_account_name(&account_id)?)?;
-    stored.legacy_cleanup_account_id = None;
-    backend.save_record(ACTIVE_ACCOUNT, &encode_stored_active_credentials(stored)?)
+    }
+    for account in &stored.legacy_cleanup {
+        backend.delete_record(account)?;
+    }
+    stored.legacy_cleanup.clear();
+    backend.save_record(ACCOUNT_REGISTRY, &encode_stored_registry(stored)?)
 }
 
 struct KeychainItem {
@@ -393,6 +440,7 @@ fn decode(bytes: &[u8]) -> Result<TokenPair, StoreError> {
     Ok(pair)
 }
 
+#[cfg(test)]
 fn encode_active_credentials(
     credentials: &RestoredCredentials,
 ) -> Result<Zeroizing<Vec<u8>>, StoreError> {
@@ -429,11 +477,136 @@ fn decode_active_credentials(bytes: &[u8]) -> Result<RestoredCredentials, StoreE
 }
 
 #[derive(Clone)]
+struct StoredRegistry {
+    registry: AccountRegistry,
+    legacy_cleanup: Vec<String>,
+}
+
+fn encode_stored_registry(stored: &StoredRegistry) -> Result<Zeroizing<Vec<u8>>, StoreError> {
+    stored.registry.validate()?;
+    let registry = encode_registry(&stored.registry)?;
+    let mut bytes = Zeroizing::new(Vec::new());
+    bytes.extend_from_slice(REGISTRY_RECORD_VERSION);
+    bytes.extend_from_slice(&checked_count(stored.legacy_cleanup.len())?.to_be_bytes());
+    for account in &stored.legacy_cleanup {
+        append_string(&mut bytes, account)?;
+    }
+    bytes.extend_from_slice(&checked_length(&registry)?.to_be_bytes());
+    bytes.extend_from_slice(&registry);
+    Ok(bytes)
+}
+
+fn decode_stored_registry(bytes: &[u8]) -> Result<StoredRegistry, StoreError> {
+    if !bytes.starts_with(REGISTRY_RECORD_VERSION) {
+        return Err(StoreError::InvalidData);
+    }
+    let mut cursor = REGISTRY_RECORD_VERSION.len();
+    let cleanup_count = take_u32(bytes, &mut cursor)? as usize;
+    let mut legacy_cleanup = Vec::with_capacity(cleanup_count);
+    for _ in 0..cleanup_count {
+        legacy_cleanup.push(take_string(bytes, &mut cursor)?.to_string());
+    }
+    let registry_length = take_u32(bytes, &mut cursor)? as usize;
+    let end = cursor
+        .checked_add(registry_length)
+        .ok_or(StoreError::InvalidData)?;
+    let registry = decode_registry(bytes.get(cursor..end).ok_or(StoreError::InvalidData)?)?;
+    if end != bytes.len() {
+        return Err(StoreError::InvalidData);
+    }
+    Ok(StoredRegistry {
+        registry,
+        legacy_cleanup,
+    })
+}
+
+fn encode_registry(registry: &AccountRegistry) -> Result<Zeroizing<Vec<u8>>, StoreError> {
+    let mut bytes = Zeroizing::new(Vec::new());
+    bytes.extend_from_slice(&checked_count(registry.accounts.len())?.to_be_bytes());
+    for account in &registry.accounts {
+        append_string(&mut bytes, account.provider.as_str())?;
+        append_string(&mut bytes, &account.account_id)?;
+        append_string(&mut bytes, &account.login)?;
+    }
+    match &registry.active {
+        Some(active) => {
+            bytes.push(1);
+            append_string(&mut bytes, active.provider().as_str())?;
+            append_string(&mut bytes, active.account_id())?;
+        }
+        None => bytes.push(0),
+    }
+    bytes.extend_from_slice(&checked_count(registry.pending_secret_deletions.len())?.to_be_bytes());
+    for pending in &registry.pending_secret_deletions {
+        append_string(&mut bytes, pending.provider().as_str())?;
+        append_string(&mut bytes, pending.account_id())?;
+    }
+    Ok(bytes)
+}
+
+fn decode_registry(bytes: &[u8]) -> Result<AccountRegistry, StoreError> {
+    let mut cursor = 0;
+    let account_count = take_u32(bytes, &mut cursor)? as usize;
+    let mut accounts = Vec::with_capacity(account_count);
+    for _ in 0..account_count {
+        let provider = ProviderId::new(take_string(bytes, &mut cursor)?.to_string())?;
+        let account_id = take_string(bytes, &mut cursor)?;
+        let login = take_string(bytes, &mut cursor)?;
+        accounts.push(ActiveAccount::for_provider(
+            provider,
+            account_id.as_str(),
+            login.as_str(),
+        )?);
+    }
+    let active = match *bytes.get(cursor).ok_or(StoreError::InvalidData)? {
+        0 => {
+            cursor += 1;
+            None
+        }
+        1 => {
+            cursor += 1;
+            let provider = ProviderId::new(take_string(bytes, &mut cursor)?.to_string())?;
+            let account_id = take_string(bytes, &mut cursor)?;
+            Some(ProviderAccountId::new(provider, account_id.as_str())?)
+        }
+        _ => return Err(StoreError::InvalidData),
+    };
+    let pending_count = take_u32(bytes, &mut cursor)? as usize;
+    let mut pending_secret_deletions = Vec::with_capacity(pending_count);
+    for _ in 0..pending_count {
+        let provider = ProviderId::new(take_string(bytes, &mut cursor)?.to_string())?;
+        let account_id = take_string(bytes, &mut cursor)?;
+        pending_secret_deletions.push(ProviderAccountId::new(provider, account_id.as_str())?);
+    }
+    if cursor != bytes.len() {
+        return Err(StoreError::InvalidData);
+    }
+    let registry = AccountRegistry {
+        accounts,
+        active,
+        pending_secret_deletions,
+    };
+    registry.validate()?;
+    Ok(registry)
+}
+
+fn append_string(bytes: &mut Vec<u8>, value: &str) -> Result<(), StoreError> {
+    bytes.extend_from_slice(&checked_length(value.as_bytes())?.to_be_bytes());
+    bytes.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn checked_count(count: usize) -> Result<u32, StoreError> {
+    count.try_into().map_err(|_| StoreError::InvalidData)
+}
+
+#[derive(Clone)]
 struct StoredActiveCredentials {
     credentials: RestoredCredentials,
     legacy_cleanup_account_id: Option<String>,
 }
 
+#[cfg(test)]
 fn encode_stored_active_credentials(
     stored: &StoredActiveCredentials,
 ) -> Result<Zeroizing<Vec<u8>>, StoreError> {
@@ -598,10 +771,30 @@ mod tests {
         marker.extend_from_slice(id);
         marker.extend_from_slice(&checked_length(login).unwrap().to_be_bytes());
         marker.extend_from_slice(login);
-        backend.insert(ACTIVE_ACCOUNT, &marker);
+        backend.insert(LEGACY_ACTIVE_ACCOUNT, &marker);
         let legacy_name = legacy_account_name(&credentials.account.account_id).unwrap();
         backend.insert(&legacy_name, &encode(&credentials.pair).unwrap());
         legacy_name
+    }
+
+    fn migrated_credentials(
+        backend: &MemoryBackend,
+    ) -> Result<Option<RestoredCredentials>, StoreError> {
+        let registry = load_registry(backend)?;
+        let Some(id) = registry.active else {
+            return Ok(None);
+        };
+        let account = registry
+            .accounts
+            .into_iter()
+            .find(|account| account.provider_account_id() == id)
+            .ok_or(StoreError::InvalidData)?;
+        let pair = backend
+            .load_record(&MacKeychainStore::account(&id)?)?
+            .map(|bytes| decode(&bytes))
+            .transpose()?
+            .ok_or(StoreError::InvalidData)?;
+        Ok(Some(RestoredCredentials { account, pair }))
     }
 
     fn assert_credentials(actual: Option<RestoredCredentials>, expected: &RestoredCredentials) {
@@ -623,7 +816,12 @@ mod tests {
             Duration::from_secs(28_800),
             Duration::from_secs(15_552_000),
         );
-        store.save(&key, &pair).unwrap();
+        store
+            .save_bytes(
+                &legacy_account_name(&account.account_id).unwrap(),
+                &encode(&pair).unwrap(),
+            )
+            .unwrap();
         let id = account.account_id.as_bytes();
         let login = account.login.as_bytes();
         let mut marker = Zeroizing::new(Vec::new());
@@ -631,13 +829,20 @@ mod tests {
         marker.extend_from_slice(id);
         marker.extend_from_slice(&checked_length(login).unwrap().to_be_bytes());
         marker.extend_from_slice(login);
-        store.save_bytes(ACTIVE_ACCOUNT, &marker).unwrap();
+        store.save_bytes(LEGACY_ACTIVE_ACCOUNT, &marker).unwrap();
 
         let restored = store.load_active_credentials().unwrap().unwrap();
 
         assert_eq!(restored.account, account);
         assert_eq!(restored.pair.access_token(), "legacy-access");
-        assert!(store.load(&key).unwrap().is_none());
+        assert_eq!(
+            store.load(&key).unwrap().unwrap().refresh_token(),
+            "legacy-refresh"
+        );
+        assert!(store
+            .load_bytes(&legacy_account_name(&account.account_id).unwrap())
+            .unwrap()
+            .is_none());
         assert_eq!(
             store
                 .load_active_credentials()
@@ -649,44 +854,68 @@ mod tests {
         );
         store.delete_active_credentials().unwrap();
         assert!(store.load_active_credentials().unwrap().is_none());
+        store.delete_named(ACCOUNT_REGISTRY).unwrap();
     }
 
     #[test]
-    fn migration_write_failure_preserves_legacy_records_and_retries() {
+    fn legacy_migration_credential_write_failure_preserves_source_and_retries() {
         let backend = MemoryBackend::default();
         let expected = credentials("42", "octocat");
         let legacy_name = seed_legacy(&backend, &expected);
         backend.fail_save_at.set(Some(1));
 
         assert_eq!(
-            load_active_credentials(&backend).unwrap_err(),
+            load_registry(&backend).unwrap_err(),
             StoreError::Unavailable
         );
-        assert!(backend.contains(ACTIVE_ACCOUNT));
+        assert!(backend.contains(LEGACY_ACTIVE_ACCOUNT));
         assert!(backend.contains(&legacy_name));
+        assert!(!backend.contains(ACCOUNT_REGISTRY));
 
-        assert_credentials(load_active_credentials(&backend).unwrap(), &expected);
+        assert_credentials(migrated_credentials(&backend).unwrap(), &expected);
         assert!(!backend.contains(&legacy_name));
+        assert!(!backend.contains(LEGACY_ACTIVE_ACCOUNT));
     }
 
     #[test]
-    fn unversioned_combined_record_removes_the_matching_legacy_pair() {
+    fn combined_active_record_converges_to_registry_and_account_secret() {
         let backend = MemoryBackend::default();
         let expected = credentials("42", "octocat");
         backend.insert(
-            ACTIVE_ACCOUNT,
-            &encode_active_credentials(&expected).unwrap(),
+            LEGACY_ACTIVE_ACCOUNT,
+            &encode_stored_active_credentials(&StoredActiveCredentials {
+                credentials: expected.clone(),
+                legacy_cleanup_account_id: Some(expected.account.account_id.clone()),
+            })
+            .unwrap(),
         );
         let legacy_name = legacy_account_name(&expected.account.account_id).unwrap();
         backend.insert(&legacy_name, &encode(&expected.pair).unwrap());
 
-        assert_credentials(load_active_credentials(&backend).unwrap(), &expected);
+        assert_credentials(migrated_credentials(&backend).unwrap(), &expected);
         assert!(!backend.contains(&legacy_name));
-        let stored = decode_stored_active_credentials(
-            &backend.load_record(ACTIVE_ACCOUNT).unwrap().unwrap(),
-        )
-        .unwrap();
-        assert!(stored.legacy_cleanup_account_id.is_none());
+        assert!(!backend.contains(LEGACY_ACTIVE_ACCOUNT));
+        assert_credentials(migrated_credentials(&backend).unwrap(), &expected);
+    }
+
+    #[test]
+    fn migration_registry_write_failure_preserves_legacy_source_and_retries() {
+        let backend = MemoryBackend::default();
+        let expected = credentials("42", "octocat");
+        let legacy_name = seed_legacy(&backend, &expected);
+        backend.fail_save_at.set(Some(2));
+
+        assert_eq!(
+            load_registry(&backend).unwrap_err(),
+            StoreError::Unavailable
+        );
+        assert!(backend.contains(LEGACY_ACTIVE_ACCOUNT));
+        assert!(backend.contains(&legacy_name));
+        assert!(!backend.contains(ACCOUNT_REGISTRY));
+
+        assert_credentials(migrated_credentials(&backend).unwrap(), &expected);
+        assert!(!backend.contains(LEGACY_ACTIVE_ACCOUNT));
+        assert!(!backend.contains(&legacy_name));
     }
 
     #[test]
@@ -697,21 +926,18 @@ mod tests {
         backend.fail_delete_at.set(Some(1));
 
         assert_eq!(
-            load_active_credentials(&backend).unwrap_err(),
+            load_registry(&backend).unwrap_err(),
             StoreError::Unavailable
         );
-        let stored = decode_stored_active_credentials(
-            &backend.load_record(ACTIVE_ACCOUNT).unwrap().unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            stored.legacy_cleanup_account_id.as_deref(),
-            Some(expected.account.account_id.as_str())
-        );
+        let stored =
+            decode_stored_registry(&backend.load_record(ACCOUNT_REGISTRY).unwrap().unwrap())
+                .unwrap();
+        assert!(!stored.legacy_cleanup.is_empty());
         assert!(backend.contains(&legacy_name));
 
-        assert_credentials(load_active_credentials(&backend).unwrap(), &expected);
+        assert_credentials(migrated_credentials(&backend).unwrap(), &expected);
         assert!(!backend.contains(&legacy_name));
+        assert!(!backend.contains(LEGACY_ACTIVE_ACCOUNT));
     }
 
     #[test]
@@ -719,49 +945,34 @@ mod tests {
         let backend = MemoryBackend::default();
         let expected = credentials("42", "octocat");
         let legacy_name = seed_legacy(&backend, &expected);
-        backend.fail_save_at.set(Some(2));
+        backend.fail_save_at.set(Some(3));
 
         assert_eq!(
-            load_active_credentials(&backend).unwrap_err(),
+            load_registry(&backend).unwrap_err(),
             StoreError::Unavailable
         );
         assert!(!backend.contains(&legacy_name));
-        assert_credentials(load_active_credentials(&backend).unwrap(), &expected);
-        let stored = decode_stored_active_credentials(
-            &backend.load_record(ACTIVE_ACCOUNT).unwrap().unwrap(),
-        )
-        .unwrap();
-        assert!(stored.legacy_cleanup_account_id.is_none());
+        assert!(!backend.contains(LEGACY_ACTIVE_ACCOUNT));
+        assert_credentials(migrated_credentials(&backend).unwrap(), &expected);
+        let stored =
+            decode_stored_registry(&backend.load_record(ACCOUNT_REGISTRY).unwrap().unwrap())
+                .unwrap();
+        assert!(stored.legacy_cleanup.is_empty());
     }
 
     #[test]
-    fn account_switch_and_disconnect_finish_pending_legacy_cleanup() {
+    fn unversioned_combined_record_also_converges() {
         let backend = MemoryBackend::default();
-        let legacy = credentials("42", "octocat");
-        let replacement = credentials("84", "hubot");
-        let legacy_name = seed_legacy(&backend, &legacy);
-        backend.fail_delete_at.set(Some(1));
-        assert_eq!(
-            load_active_credentials(&backend).unwrap_err(),
-            StoreError::Unavailable
+        let expected = credentials("42", "octocat");
+        backend.insert(
+            LEGACY_ACTIVE_ACCOUNT,
+            &encode_active_credentials(&expected).unwrap(),
         );
+        let legacy_name = legacy_account_name(&expected.account.account_id).unwrap();
+        backend.insert(&legacy_name, &encode(&expected.pair).unwrap());
 
-        save_active_credentials(&backend, &replacement).unwrap();
+        assert_credentials(migrated_credentials(&backend).unwrap(), &expected);
         assert!(!backend.contains(&legacy_name));
-        assert_credentials(load_active_credentials(&backend).unwrap(), &replacement);
-
-        delete_active_credentials(&backend).unwrap();
-        assert!(!backend.contains(ACTIVE_ACCOUNT));
-        assert!(!backend.contains(&legacy_name));
-    }
-
-    #[test]
-    fn disconnect_removes_an_unreadable_active_record() {
-        let backend = MemoryBackend::default();
-        backend.insert(ACTIVE_ACCOUNT, b"corrupt");
-
-        delete_active_credentials(&backend).unwrap();
-
-        assert!(!backend.contains(ACTIVE_ACCOUNT));
+        assert!(!backend.contains(LEGACY_ACTIVE_ACCOUNT));
     }
 }

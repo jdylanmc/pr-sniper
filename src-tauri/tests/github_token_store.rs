@@ -1,13 +1,13 @@
 use pr_sniper_lib::github::{
     device_flow::TokenPair,
     token_store::{
-        ActiveAccount, ActiveCredentialStore, CredentialKey, CredentialStore, RestoredCredentials,
+        AccountRegistry, AccountRegistryStore, ActiveAccount, CredentialKey, CredentialStore,
         RotationError, RotationSafeStore, StoreError,
     },
 };
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Barrier, Mutex},
+    sync::{mpsc, Arc, Barrier, Mutex},
     thread,
     time::{Duration, UNIX_EPOCH},
 };
@@ -15,10 +15,10 @@ use std::{
 #[derive(Default)]
 struct MemoryStore {
     values: Mutex<BTreeMap<CredentialKey, TokenPair>>,
-    active: Mutex<Option<RestoredCredentials>>,
+    registry: Mutex<AccountRegistry>,
     fail_next_save: Mutex<bool>,
-    fail_active_save: Mutex<bool>,
-    fail_active_delete: Mutex<bool>,
+    fail_registry_save: Mutex<bool>,
+    fail_delete: Mutex<bool>,
 }
 
 impl CredentialStore for MemoryStore {
@@ -38,29 +38,24 @@ impl CredentialStore for MemoryStore {
     }
 
     fn delete(&self, key: &CredentialKey) -> Result<(), StoreError> {
+        if std::mem::take(&mut *self.fail_delete.lock().unwrap()) {
+            return Err(StoreError::Unavailable);
+        }
         self.values.lock().unwrap().remove(key);
         Ok(())
     }
 }
 
-impl ActiveCredentialStore for MemoryStore {
-    fn load_active_credentials(&self) -> Result<Option<RestoredCredentials>, StoreError> {
-        Ok(self.active.lock().unwrap().clone())
+impl AccountRegistryStore for MemoryStore {
+    fn load_registry(&self) -> Result<AccountRegistry, StoreError> {
+        Ok(self.registry.lock().unwrap().clone())
     }
 
-    fn save_active_credentials(&self, credentials: &RestoredCredentials) -> Result<(), StoreError> {
-        if std::mem::take(&mut *self.fail_active_save.lock().unwrap()) {
+    fn save_registry(&self, registry: &AccountRegistry) -> Result<(), StoreError> {
+        if std::mem::take(&mut *self.fail_registry_save.lock().unwrap()) {
             return Err(StoreError::Unavailable);
         }
-        *self.active.lock().unwrap() = Some(credentials.clone());
-        Ok(())
-    }
-
-    fn delete_active_credentials(&self) -> Result<(), StoreError> {
-        if std::mem::take(&mut *self.fail_active_delete.lock().unwrap()) {
-            return Err(StoreError::Unavailable);
-        }
-        *self.active.lock().unwrap() = None;
+        *self.registry.lock().unwrap() = registry.clone();
         Ok(())
     }
 }
@@ -128,6 +123,44 @@ fn refresh_rotation_is_serialized_and_uses_the_latest_pair() {
 }
 
 #[test]
+fn different_accounts_do_not_share_a_refresh_lock() {
+    let store = Arc::new(RotationSafeStore::new(MemoryStore::default()));
+    let first = CredentialKey::github("1");
+    let second = CredentialKey::github("2");
+    store.save(&first, &pair("a1", "r1")).unwrap();
+    store.save(&second, &pair("a2", "r2")).unwrap();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+
+    let first_store = Arc::clone(&store);
+    let first_handle = thread::spawn(move || {
+        first_store
+            .rotate(&first, |_| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(pair("a1-next", "r1-next"))
+            })
+            .unwrap();
+    });
+    entered_rx.recv().unwrap();
+
+    let second_store = Arc::clone(&store);
+    let (second_done_tx, second_done_rx) = mpsc::channel();
+    let second_handle = thread::spawn(move || {
+        second_store
+            .rotate(&second, |_| Ok(pair("a2-next", "r2-next")))
+            .unwrap();
+        second_done_tx.send(()).unwrap();
+    });
+    second_done_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("a different account must rotate independently");
+    release_tx.send(()).unwrap();
+    first_handle.join().unwrap();
+    second_handle.join().unwrap();
+}
+
+#[test]
 fn failed_persistence_never_reports_rotation_success_or_loses_the_old_pair() {
     let store = RotationSafeStore::new(MemoryStore::default());
     let key = CredentialKey::github("1");
@@ -181,7 +214,7 @@ fn restart_restores_active_account_and_absolute_expirations() {
 }
 
 #[test]
-fn account_switch_and_disconnect_replace_one_atomic_record() {
+fn adding_an_account_retains_existing_accounts_and_disconnect_does_not_transfer_active_identity() {
     let store = RotationSafeStore::new(MemoryStore::default());
     let first = ActiveAccount::new("1", "first").unwrap();
     let second = ActiveAccount::new("2", "second").unwrap();
@@ -204,6 +237,7 @@ fn account_switch_and_disconnect_replace_one_atomic_record() {
 
     store.disconnect(&second).unwrap();
     assert!(store.restore_active_account().unwrap().is_none());
+    assert_eq!(store.accounts().unwrap(), vec![first]);
 }
 
 #[test]
@@ -259,7 +293,7 @@ fn failed_account_replacement_preserves_the_previous_record_and_retry_converges(
     store
         .replace_active_account(&first, &pair("a1", "r1"))
         .unwrap();
-    *store.inner().fail_active_save.lock().unwrap() = true;
+    *store.inner().fail_registry_save.lock().unwrap() = true;
 
     assert_eq!(
         store.replace_active_account(&second, &pair("a2", "r2")),
@@ -285,11 +319,17 @@ fn failed_disconnect_preserves_the_record_and_retry_converges() {
     store
         .replace_active_account(&account, &pair("a1", "r1"))
         .unwrap();
-    *store.inner().fail_active_delete.lock().unwrap() = true;
+    *store.inner().fail_delete.lock().unwrap() = true;
 
     assert_eq!(store.disconnect(&account), Err(StoreError::Unavailable));
-    assert!(store.restore_active_account().unwrap().is_some());
-
-    store.disconnect(&account).unwrap();
+    assert!(store
+        .load(&account.provider_account_id())
+        .unwrap()
+        .is_some());
+    assert!(store.accounts().unwrap().is_empty());
     assert!(store.restore_active_account().unwrap().is_none());
+    assert!(store
+        .load(&account.provider_account_id())
+        .unwrap()
+        .is_none());
 }
