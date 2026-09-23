@@ -25,9 +25,10 @@ No release/versioning policy has been established yet.
 
 ### Added
 
-- Connect through the registered PR Sniper GitHub App's OAuth device flow,
-  with explicit pending, provider-timed retry, slow-down, denial, expiry,
-  cancellation and failure states. Multiple provider accounts retain
+- Connect through the registered PR Sniper GitHub App in the default browser
+  using Authorization Code + S256 PKCE, a fixed localhost-only callback,
+  single-use state correlation, bounded cancellation/timeout and explicit
+  stable-identity confirmation before persistence. Multiple provider accounts retain
   account-addressed credentials with absolute expirations in macOS Keychain and
   independent serialized rotation boundaries. Restart restores and validates
   every account, retry-safely migrates the prior active-account layouts without
@@ -39,7 +40,7 @@ No release/versioning policy has been established yet.
   operations retain the last confirmed credential state and report specific
   reconnect causes. Settings never treats sign-in as permission to review,
   publish, notify or merge. Deterministic provider fixtures and isolated native
-  Keychain restart coverage protect this foundation; live device sign-in
+  Keychain restart coverage protect this foundation; live browser sign-in
   remains separate acceptance. See
   [#5](https://github.com/jdylanmc/pr-sniper/issues/5).
 

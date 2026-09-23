@@ -1,11 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
 
 type GithubAuthFailure =
-  | "denied"
   | "expired"
   | "network"
   | "provider"
   | "invalid_response"
+  | "bind"
+  | "browser_open"
+  | "cancelled"
+  | "timeout"
+  | "wrong_identity"
   | "credentials_unavailable";
 
 export interface GithubAccount {
@@ -22,12 +26,14 @@ type GithubAuthView = {
     | { state: "idle" }
     | {
         state: "connecting";
-        user_code: string;
-        verification_uri: string;
-        expires_in_seconds: number;
-        interval_seconds: number;
         expected_account_id?: string;
-      };
+      }
+    | {
+        state: "pending_account_confirmation";
+        account_id: string;
+        login: string;
+      }
+    | { state: "failed"; reason: GithubAuthFailure };
 };
 
 export interface GithubInstalledRepository {
@@ -51,6 +57,7 @@ export function renderGithubAuth(
     ".github-auth-repositories",
   )!;
   let renderedAccountIds = new Set<string>();
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 
   function setBusy(busy: boolean) {
     root
@@ -198,7 +205,7 @@ export function renderGithubAuth(
         commandButton(
           accountActions,
           `Reconnect ${account.login}`,
-          "begin_github_auth",
+          "start_github_browser_auth",
           { expectedAccountId: account.account_id },
         );
       }
@@ -207,29 +214,36 @@ export function renderGithubAuth(
     }
 
     if (view.flow.state === "connecting") {
-      status.replaceChildren();
-      status.append("Connecting. Open ");
-      const link = document.createElement("a");
-      link.href =
-        view.flow.verification_uri === "https://github.com/login/device"
-          ? view.flow.verification_uri
-          : "https://github.com/login/device";
-      link.target = "_blank";
-      link.rel = "noreferrer";
-      link.textContent = "GitHub device activation";
-      status.append(
-        link,
-        ` and enter ${view.flow.user_code}. GitHub requires at least ${view.flow.interval_seconds} seconds between checks.`,
-      );
-      commandButton(actions, "Check authorization", "poll_github_auth");
+      status.textContent =
+        "GitHub opened in your default browser. Complete sign-in there, then return to PR Sniper.";
       commandButton(actions, "Cancel", "cancel_github_auth");
+      clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(refresh, 250);
+    } else if (view.flow.state === "pending_account_confirmation") {
+      status.textContent = `Confirm ${view.flow.login} (${view.flow.account_id}). Credentials are not saved until you confirm.`;
+      commandButton(actions, "Confirm", "confirm_github_account");
+      commandButton(
+        actions,
+        "Use a different account",
+        "start_github_browser_auth",
+        { selectAccount: true },
+      );
+      commandButton(actions, "Cancel", "cancel_github_auth");
+    } else if (view.flow.state === "failed") {
+      status.textContent = failureMessage(view.flow.reason);
+      commandButton(
+        actions,
+        "Try GitHub sign-in again",
+        "start_github_browser_auth",
+      );
     } else {
-      commandButton(actions, "Add GitHub account", "begin_github_auth");
+      commandButton(actions, "Add GitHub account", "start_github_browser_auth");
     }
   }
 
   const refresh = () => {
     if (!root.isConnected) {
+      clearTimeout(refreshTimer);
       window.removeEventListener(
         "pr-sniper:refresh-provider-accounts",
         refresh,
@@ -249,11 +263,16 @@ export function renderGithubAuth(
 function failureMessage(reason?: GithubAuthFailure) {
   return (
     {
-      denied: "The GitHub authorization was denied.",
       expired: "The authorization expired or can no longer be refreshed.",
       network: "The GitHub network request failed.",
       provider: "GitHub rejected or could not validate the connection.",
       invalid_response: "GitHub returned an invalid authorization response.",
+      bind: "PR Sniper could not reserve its local GitHub callback port.",
+      browser_open: "PR Sniper could not open the default browser.",
+      cancelled: "GitHub sign-in was cancelled.",
+      timeout: "GitHub sign-in timed out.",
+      wrong_identity:
+        "GitHub returned an already connected or unexpected account.",
       credentials_unavailable:
         "The credentials could not be restored or stored safely.",
     }[reason ?? "provider"] ?? "Reconnect this account."

@@ -1,5 +1,5 @@
 use super::{
-    device_flow::TokenPair,
+    oauth::TokenPair,
     token_store::{
         AccountRegistry, AccountRegistryStore, ActiveAccount, ActiveCredentialStore, CredentialKey,
         CredentialStore, ProviderAccountId, ProviderId, RestoredCredentials, StoreError,

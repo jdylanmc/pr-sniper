@@ -1,4 +1,4 @@
-use super::device_flow::TokenPair;
+use super::oauth::TokenPair;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},

@@ -8,31 +8,47 @@ const connected = (accountId, login) => ({
   login,
 });
 
-test("GitHub App accounts connect concurrently without exposing credentials", async ({
+test("browser OAuth confirms two accounts without exposing credentials", async ({
   page,
 }) => {
   let state = idle();
+  let pendingIdentity = null;
+  let connectingReads = 0;
+  const starts = [];
   await page.exposeFunction("__githubAuth", (command, args) => {
-    if (command === "begin_github_auth")
+    if (command === "start_github_browser_auth") {
+      starts.push(args ?? {});
+      connectingReads = 0;
+      pendingIdentity =
+        state.accounts.length === 0
+          ? { account_id: "6954990", login: "jdylanmc" }
+          : { account_id: "84", login: "hubot" };
       state = {
         accounts: state.accounts,
         flow: {
           state: "connecting",
-          user_code: "ABCD-EFGH",
-          verification_uri: "https://github.com/login/device",
-          expires_in_seconds: 900,
-          interval_seconds: 5,
           expected_account_id: args?.expectedAccountId,
         },
       };
-    if (command === "poll_github_auth")
+    }
+    if (command === "github_auth_state" && state.flow.state === "connecting") {
+      connectingReads += 1;
+      if (connectingReads > 1)
+        state = {
+          accounts: state.accounts,
+          flow: {
+            state: "pending_account_confirmation",
+            ...pendingIdentity,
+          },
+        };
+    }
+    if (command === "confirm_github_account") {
       state = idle([
         ...state.accounts,
-        connected(
-          state.accounts.length ? "84" : "6954990",
-          state.accounts.length ? "hubot" : "jdylanmc",
-        ),
+        connected(pendingIdentity.account_id, pendingIdentity.login),
       ]);
+      pendingIdentity = null;
+    }
     if (command === "cancel_github_auth") state = idle(state.accounts);
     if (command === "disconnect_github_auth")
       state = idle(
@@ -47,8 +63,8 @@ test("GitHub App accounts connect concurrently without exposing credentials", as
     window.__TAURI_INTERNALS__.invoke = (command, args) =>
       [
         "github_auth_state",
-        "begin_github_auth",
-        "poll_github_auth",
+        "start_github_browser_auth",
+        "confirm_github_account",
         "cancel_github_auth",
         "disconnect_github_auth",
       ].includes(command)
@@ -62,13 +78,21 @@ test("GitHub App accounts connect concurrently without exposing credentials", as
     "No GitHub accounts connected",
   );
   await card.getByRole("button", { name: "Add GitHub account" }).click();
-  await expect(card.getByRole("status")).toContainText("ABCD-EFGH");
-  await expect(card.getByRole("status")).toContainText("at least 5 seconds");
-  await card.getByRole("button", { name: "Check authorization" }).click();
+  await expect(card.getByRole("status")).toContainText("default browser");
+  await expect(card).not.toContainText("device");
+  await expect(card.getByRole("status")).toContainText(
+    "Confirm jdylanmc (6954990)",
+  );
+  await expect(card).toContainText("not saved until you confirm");
+  await card.getByRole("button", { name: "Confirm" }).click();
   await expect(card).toContainText("jdylanmc (6954990)");
 
   await card.getByRole("button", { name: "Add GitHub account" }).click();
-  await card.getByRole("button", { name: "Check authorization" }).click();
+  await expect(card.getByRole("status")).toContainText("Confirm hubot (84)");
+  await card.getByRole("button", { name: "Use a different account" }).click();
+  await expect.poll(() => starts.at(-1)?.selectAccount).toBe(true);
+  await expect(card.getByRole("status")).toContainText("Confirm hubot (84)");
+  await card.getByRole("button", { name: "Confirm" }).click();
   await expect(card).toContainText("hubot (84)");
   await expect(card.getByRole("status")).toContainText(
     "2 GitHub accounts configured",
@@ -82,7 +106,6 @@ test("GitHub App accounts connect concurrently without exposing credentials", as
 });
 
 for (const [reason, message] of [
-  ["denied", "authorization was denied"],
   ["expired", "authorization expired"],
   ["network", "network request failed"],
   ["provider", "GitHub rejected"],

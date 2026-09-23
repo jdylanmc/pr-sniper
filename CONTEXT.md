@@ -23,3 +23,15 @@ _Avoid_: Repository name
 **Needs Attention**:
 A repository binding or provider account that cannot currently authorize reads and requires an explicit reconnect or rebind.
 _Avoid_: Disconnected repository
+
+**OAuth Login Attempt**:
+A single bounded browser authorization operation with fresh PKCE verifier and state, one localhost callback, cancellation, and timeout.
+_Avoid_: Login session
+
+**Loopback Callback**:
+The fixed localhost-only HTTP endpoint that receives one correlated GitHub authorization response and returns no provider secrets.
+_Avoid_: Local redirect server
+
+**Pending Account Confirmation**:
+A validated stable GitHub account ID and login whose credentials remain only in memory until the user explicitly confirms.
+_Avoid_: Connected account

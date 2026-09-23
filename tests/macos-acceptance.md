@@ -24,17 +24,17 @@ Automated storage tests do not establish native window or menu-bar behavior.
 
 ## Behavior checks
 
-| Requirement | Action | Required observation |
-| --- | --- | --- |
-| AC-001 / PR-001 | Build the local macOS bundle, copy into an isolated installation directory and launch that copy. | Native crosshair appears in the menu bar; no persistent main window; actual installed process remains alive. |
-| AC-001 / PR-001 | Open the tray menu. | Queue, Settings, Status, Setup Doctor and Quit entry points are reachable. |
-| AC-001 / PR-001 | Open Queue, Status and Setup Doctor individually. | Surfaces render; unimplemented monitoring, provider and setup operations are explicitly unavailable, not falsely reported successful. |
-| AC-001 / PR-002 | Open Settings, close its native window, reopen it from the tray; repeat with Queue. | Window disappears, same process and tray remain alive, and each surface opens again. |
-| AC-001 / PR-001 | Observe login preference on a fresh isolated profile, then restart without changing it. | Preference remains off; launching, opening Settings and restarting do not enable a login item. |
-| AC-018 / PR-039 host slice | Open diagnostics from Settings. | Readable host diagnostics; no tokens, credentials or arbitrary raw error payloads. Configuration and diagnostics/state have distinct storage locations. |
-| AC-015 / PR-032 | Inspect the native tray crosshair in light and dark menu-bar appearance. | Legible canonical crosshair, not a missing-glyph box or font-dependent text; preserve cropped evidence for both appearances if available. |
-| AC-001 / PR-002 | Choose Quit from the tray. | Recorded process exits, tray disappears, app-owned child work terminates. Do not count force termination as a successful Quit. |
-| AC-018 | Relaunch the installed copy with the same isolated profile. | Saved settings remain; previous diagnostics remain readable. |
+| Requirement                | Action                                                                                           | Required observation                                                                                                                                    |
+| -------------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| AC-001 / PR-001            | Build the local macOS bundle, copy into an isolated installation directory and launch that copy. | Native crosshair appears in the menu bar; no persistent main window; actual installed process remains alive.                                            |
+| AC-001 / PR-001            | Open the tray menu.                                                                              | Queue, Settings, Status, Setup Doctor and Quit entry points are reachable.                                                                              |
+| AC-001 / PR-001            | Open Queue, Status and Setup Doctor individually.                                                | Surfaces render; unimplemented monitoring, provider and setup operations are explicitly unavailable, not falsely reported successful.                   |
+| AC-001 / PR-002            | Open Settings, close its native window, reopen it from the tray; repeat with Queue.              | Window disappears, same process and tray remain alive, and each surface opens again.                                                                    |
+| AC-001 / PR-001            | Observe login preference on a fresh isolated profile, then restart without changing it.          | Preference remains off; launching, opening Settings and restarting do not enable a login item.                                                          |
+| AC-018 / PR-039 host slice | Open diagnostics from Settings.                                                                  | Readable host diagnostics; no tokens, credentials or arbitrary raw error payloads. Configuration and diagnostics/state have distinct storage locations. |
+| AC-015 / PR-032            | Inspect the native tray crosshair in light and dark menu-bar appearance.                         | Legible canonical crosshair, not a missing-glyph box or font-dependent text; preserve cropped evidence for both appearances if available.               |
+| AC-001 / PR-002            | Choose Quit from the tray.                                                                       | Recorded process exits, tray disappears, app-owned child work terminates. Do not count force termination as a successful Quit.                          |
+| AC-018                     | Relaunch the installed copy with the same isolated profile.                                      | Saved settings remain; previous diagnostics remain readable.                                                                                            |
 
 ## Automated behavior evidence
 
@@ -81,12 +81,17 @@ token contents, or perform provider mutations to probe capability.
 
 1. Record the candidate commit and build/install the candidate bundle in the
    disposable macOS account. Confirm `gh` is absent or signed out.
-2. Open Settings, choose **Add GitHub account**, complete the device flow with
-   public client ID `Iv23li1HXvoQVkSzV2l5`, and record only the stable account
-   ID/login. Add a second GitHub account through the same registered App and
-   confirm both acting identities remain visible concurrently. Confirm denial,
-   expiry, network and provider failures remain distinguishable if any occur;
-   never capture the device code or credentials in evidence.
+2. Confirm the existing GitHub App registration includes the exact callback
+   `http://127.0.0.1:53682/oauth/github/callback`; do not enable wildcard
+   matching or mutate the registration during acceptance. Open Settings,
+   choose **Add GitHub account**, confirm the default system browser opens,
+   complete GitHub authorization with public client ID
+   `Iv23li1HXvoQVkSzV2l5`, return to PR Sniper, verify only the stable account
+   ID/login is shown, then choose **Confirm**. Add a second GitHub account
+   through **Use a different account** and confirm both acting identities
+   remain visible concurrently. Confirm bind, browser-open, cancellation,
+   timeout, network and provider failures remain distinguishable if any occur;
+   never capture authorization codes, state, tokens or credentials in evidence.
 3. For each account, choose **Load repositories for _login_**. Confirm only
    repositories accessible through that account's existing PR Sniper GitHub App
    installation appear. Use a repository visible to both accounts and confirm

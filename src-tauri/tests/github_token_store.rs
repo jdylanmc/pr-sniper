@@ -1,5 +1,5 @@
 use pr_sniper_lib::github::{
-    device_flow::TokenPair,
+    oauth::TokenPair,
     token_store::{
         AccountRegistry, AccountRegistryStore, ActiveAccount, CredentialKey, CredentialStore,
         RotationError, RotationSafeStore, StoreError,
