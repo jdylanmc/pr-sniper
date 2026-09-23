@@ -167,10 +167,23 @@ test("repository policy overrides stay isolated until reset to current global de
   });
   await page.addInitScript(() => {
     const original = window.__TAURI_INTERNALS__.invoke;
-    window.__TAURI_INTERNALS__.invoke = (command, args) =>
-      command === "resolve_github_person"
+    window.__TAURI_INTERNALS__.invoke = (command, args) => {
+      if (command === "github_auth_state")
+        return Promise.resolve({
+          accounts: [
+            {
+              provider: "github",
+              state: "connected",
+              account_id: "6954990",
+              login: "jdylanmc",
+            },
+          ],
+          flow: { state: "idle" },
+        });
+      return command === "resolve_provider_person"
         ? window.__personLookup(args)
         : original(command, args);
+    };
   });
   await store("seed_settings", { launch_at_login: true });
   for (const repository of ["octo/hello-world", "neighbor/keep-me"])
@@ -188,6 +201,12 @@ test("repository policy overrides stay isolated until reset to current global de
   const neighbor = initial.repositories.find(
     ({ name }) => name === "neighbor/keep-me",
   );
+  for (const [index, repository] of initial.repositories.entries())
+    Object.assign(repository, {
+      provider_account_id: "6954990",
+      installation_id: "9001",
+      provider_repository_id: String(index + 1),
+    });
   const legacy = {
     reviewer_assignment: true,
     adapter: "copilot",
@@ -323,9 +342,9 @@ test("repository policy overrides stay isolated until reset to current global de
     await expectPolicy(modal, changedDefaults);
     await closeDialog(page);
     expect(lookups).toEqual([
-      { login: "octo" },
-      { login: "hubot" },
-      { login: "monalisa" },
+      { provider: "github", accountId: "6954990", login: "octo" },
+      { provider: "github", accountId: "6954990", login: "hubot" },
+      { provider: "github", accountId: "6954990", login: "monalisa" },
     ]);
     await expect(page.getByRole("alert")).toBeHidden();
   });

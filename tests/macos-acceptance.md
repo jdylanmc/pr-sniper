@@ -81,28 +81,36 @@ token contents, or perform provider mutations to probe capability.
 
 1. Record the candidate commit and build/install the candidate bundle in the
    disposable macOS account. Confirm `gh` is absent or signed out.
-2. Open Settings, choose **Connect GitHub**, complete the device flow with public
-   client ID `Iv23li1HXvoQVkSzV2l5`, and record only the stable account ID/login.
-   Confirm denial, expiry, network and provider failures remain distinguishable
-   if any occur; never capture the device code or credentials in evidence.
-3. Choose **Load installed repositories**. Confirm only repositories accessible
-   through the existing PR Sniper GitHub App installation appear. Explicitly
-   choose `jdylanmc/pr-sniper`, save, verify the stable installation/repository
-   IDs persist after reopening Settings, then verify the repository and read its
-   complete pull-request metadata with `gh` still unavailable.
-4. Quit normally and relaunch. Confirm the account restores from Keychain,
-   `/user` identity is revalidated, the selected repository remains bound to the
-   same stable IDs, and repository/people/pull-request reads still use the App
-   session.
+2. Open Settings, choose **Add GitHub account**, complete the device flow with
+   public client ID `Iv23li1HXvoQVkSzV2l5`, and record only the stable account
+   ID/login. Add a second GitHub account through the same registered App and
+   confirm both acting identities remain visible concurrently. Confirm denial,
+   expiry, network and provider failures remain distinguishable if any occur;
+   never capture the device code or credentials in evidence.
+3. For each account, choose **Load repositories for _login_**. Confirm only
+   repositories accessible through that account's existing PR Sniper GitHub App
+   installation appear. Use a repository visible to both accounts and confirm
+   no account is auto-selected: explicitly choose one acting account, save, and
+   verify the stable account/installation/repository IDs persist after reopening
+   Settings. Verify the repository and read its complete pull-request metadata
+   with `gh` still unavailable; every repository/action surface must show the
+   acting provider account.
+4. Quit normally and relaunch. Confirm both accounts restore independently from
+   Keychain, each `/user` identity is revalidated, the selected repository
+   remains bound to the same account and stable IDs, and
+   repository/people/pull-request reads use only that bound App session.
 5. For real rotation, leave the isolated profile intact until the issued access
    token expires (GitHub currently documents an eight-hour lifetime). After
    expiry, trigger **Load installed repositories** once. Confirm the Keychain
    item's modification time advances, identity and repository access continue,
    and no reconnect prompt appears. Do not inspect or export the Keychain secret.
-6. Choose **Disconnect GitHub**, quit and relaunch. Confirm the app is
-   disconnected and the production Keychain item is absent. Reconnect once,
-   confirm repository selection is not silently reauthorized, then disconnect
-   again before deleting the disposable macOS user.
+6. Disconnect one account. Confirm the other account remains connected and its
+   bound repository evidence remains usable, while repositories bound to the
+   removed account show needs-attention and never transfer automatically.
+   Reconnect the removed account and explicitly rebind one repository. Then
+   disconnect both accounts, quit and relaunch, and confirm their account
+   registry entries and account-addressed Keychain secrets are absent before
+   deleting the disposable macOS user.
 
 Record each step as **met**, **unmet** or **unverified**. A fixture refresh,
 Keychain unit test, mocked provider response, sign-in without repository

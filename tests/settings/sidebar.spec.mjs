@@ -179,7 +179,19 @@ test("People resolves a login to stable identity and reports disconnected lookup
   await page.addInitScript(() => {
     const invoke = window.__TAURI_INTERNALS__.invoke;
     window.__TAURI_INTERNALS__.invoke = async (command, args) => {
-      if (command !== "resolve_github_person") return invoke(command, args);
+      if (command === "github_auth_state")
+        return {
+          accounts: [
+            {
+              provider: "github",
+              state: "connected",
+              account_id: "6954990",
+              login: "jdylanmc",
+            },
+          ],
+          flow: { state: "idle" },
+        };
+      if (command !== "resolve_provider_person") return invoke(command, args);
       const result = await window.__personLookup(args);
       if (result.error) throw result.error;
       return result.ok;
@@ -191,7 +203,9 @@ test("People resolves a login to stable identity and reports disconnected lookup
   await page.getByLabel("GitHub login", { exact: true }).fill("@octocat");
   await page.getByRole("button", { name: "Add person", exact: true }).click();
   await expect(page.getByText("@octocat", { exact: true })).toBeVisible();
-  expect(calls).toEqual([{ login: "octocat" }]);
+  expect(calls).toEqual([
+    { provider: "github", accountId: "6954990", login: "octocat" },
+  ]);
   await page.getByRole("button", { name: "Save changes", exact: true }).click();
   await expect(
     page.getByText("All changes saved", { exact: true }),

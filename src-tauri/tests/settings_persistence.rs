@@ -1,4 +1,7 @@
-use pr_sniper_lib::storage::{Settings, Store};
+use pr_sniper_lib::{
+    policy::PolicyOverrides,
+    storage::{ProviderId, Repository, RepositoryBindingCandidate, Settings, Store},
+};
 use std::fs;
 
 mod support;
@@ -193,5 +196,98 @@ fn ordinary_configuration_contains_only_nonsecret_settings() {
         fs::read(state_path).unwrap(),
         b"{\"cursor\":\"untouched\"}",
         "saving configuration must not overwrite independent state"
+    );
+}
+
+#[test]
+fn legacy_repository_identity_stays_unbound_until_an_account_is_selected() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let mut settings = store.add_repository("octo/example").unwrap();
+    let repository = &mut settings.repositories[0];
+    repository.installation_id = Some("9001".into());
+    repository.provider_repository_id = Some("42".into());
+
+    store.save_settings(&settings).unwrap();
+    let restored = store.load_settings().unwrap();
+
+    assert!(restored.repositories[0].account_binding().is_none());
+    assert_eq!(
+        restored.repositories[0].provider_repository_id.as_deref(),
+        Some("42")
+    );
+}
+
+#[test]
+fn repository_binding_preserves_provider_account_and_repository_identity() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let mut settings = store.add_repository("octo/example").unwrap();
+    let repository = &mut settings.repositories[0];
+    repository.provider_account_id = Some("6954990".into());
+    repository.installation_id = Some("9001".into());
+    repository.provider_repository_id = Some("42".into());
+
+    store.save_settings(&settings).unwrap();
+    let binding = store.load_settings().unwrap().repositories[0]
+        .account_binding()
+        .unwrap();
+
+    assert_eq!(binding.account.account_id, "6954990");
+    assert_eq!(binding.repository.repository_id, "42");
+    assert_eq!(binding.installation_id.as_deref(), Some("9001"));
+}
+
+#[test]
+fn legacy_repository_binding_migrates_only_for_one_exact_account_match() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let mut settings = store.add_repository("octo/example").unwrap();
+    settings.repositories[0].installation_id = Some("9001".into());
+    settings.repositories[0].provider_repository_id = Some("42".into());
+    let candidate = |account_id: &str| RepositoryBindingCandidate {
+        provider: ProviderId::Github,
+        account_id: account_id.into(),
+        installation_id: Some("9001".into()),
+        repository_id: "42".into(),
+        name: "octo/example".into(),
+    };
+
+    let mut unambiguous = settings.clone();
+    assert!(unambiguous.migrate_repository_bindings(&[candidate("101")]));
+    assert_eq!(
+        unambiguous.repositories[0].provider_account_id.as_deref(),
+        Some("101")
+    );
+
+    let mut ambiguous = settings;
+    assert!(!ambiguous.migrate_repository_bindings(&[candidate("101"), candidate("202")]));
+    assert!(ambiguous.repositories[0].provider_account_id.is_none());
+}
+
+#[test]
+fn azure_devops_contract_persists_without_a_live_provider_implementation() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let mut settings = Settings::default();
+    settings.repositories.push(Repository {
+        id: uuid::Uuid::new_v4().to_string(),
+        provider: ProviderId::AzureDevops,
+        name: "organization/project/repository".into(),
+        enabled: true,
+        provider_account_id: Some("entra-object-id".into()),
+        installation_id: None,
+        provider_repository_id: Some("repository-guid".into()),
+        overrides: PolicyOverrides::default(),
+        review_preset: None,
+    });
+
+    store.save_settings(&settings).unwrap();
+    let restored = store.load_settings().unwrap();
+
+    assert_eq!(restored.repositories[0].provider, ProviderId::AzureDevops);
+    assert_eq!(
+        restored.repositories[0].provider_account_id.as_deref(),
+        Some("entra-object-id")
     );
 }

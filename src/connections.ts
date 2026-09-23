@@ -23,6 +23,7 @@ interface PullRequest {
 }
 
 interface Observation {
+  provider: Repository["provider"];
   name: string;
   account_id: string;
   installation_id?: string;
@@ -33,12 +34,20 @@ interface Observation {
 }
 
 const observations = new Map<string, Observation>();
-let activeGithubAccountId: string | null = null;
-window.addEventListener("pr-sniper:github-auth-state", (event) => {
-  activeGithubAccountId = (event as CustomEvent<{ account_id: string | null }>)
-    .detail.account_id;
+window.addEventListener("pr-sniper:provider-account-state", (event) => {
+  const detail = (
+    event as CustomEvent<{
+      provider: Repository["provider"];
+      account_id: string;
+      available: boolean;
+    }>
+  ).detail;
+  if (detail.available) return;
   for (const [id, observation] of observations)
-    if (observation.account_id !== activeGithubAccountId)
+    if (
+      observation.provider === detail.provider &&
+      observation.account_id === detail.account_id
+    )
       observations.delete(id);
 });
 const failures: Record<string, string> = {
@@ -82,8 +91,9 @@ function describe(connection: Connection): string {
 export function renderConnection(root: HTMLElement, repository: Repository) {
   let observation = observations.get(repository.id);
   if (
+    observation?.provider !== repository.provider ||
     observation?.name !== repository.name ||
-    observation?.account_id !== activeGithubAccountId ||
+    observation?.account_id !== repository.provider_account_id ||
     observation?.installation_id !== repository.installation_id ||
     observation?.repository_id !== repository.provider_repository_id
   ) {
@@ -91,7 +101,7 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
     observation = undefined;
   }
   root.innerHTML = `
-    <p class="settings-hint">Uses the connected PR Sniper GitHub App account and the explicitly selected installation repository.</p>
+    <p class="settings-hint">${repository.provider === "github" ? `Uses GitHub account ${repository.provider_account_id ?? "not selected"} and the explicitly selected installation repository.` : "Azure DevOps authentication is not implemented in this build."}</p>
     <form class="connection-form">
       <button type="submit">Verify GitHub connection</button>
       <button type="button" class="read-metadata">Read PR metadata</button>
@@ -103,14 +113,38 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
   const status = root.querySelector<HTMLElement>("[role=status]")!;
   const read = root.querySelector<HTMLButtonElement>(".read-metadata")!;
   const details = root.querySelector<HTMLElement>(".pull-metadata")!;
-  const authChanged = () => {
-    window.removeEventListener("pr-sniper:github-auth-state", authChanged);
-    if (root.isConnected) renderConnection(root, repository);
+  const authChanged = (event: Event) => {
+    if (!root.isConnected) {
+      window.removeEventListener(
+        "pr-sniper:provider-account-state",
+        authChanged,
+      );
+      return;
+    }
+    const detail = (
+      event as CustomEvent<{
+        provider: Repository["provider"];
+        account_id: string;
+        available: boolean;
+      }>
+    ).detail;
+    if (
+      detail.available ||
+      detail.provider !== repository.provider ||
+      detail.account_id !== repository.provider_account_id
+    )
+      return;
+    window.removeEventListener("pr-sniper:provider-account-state", authChanged);
+    renderConnection(root, repository);
   };
-  window.addEventListener("pr-sniper:github-auth-state", authChanged);
+  window.addEventListener("pr-sniper:provider-account-state", authChanged);
   status.textContent =
     observation?.message ??
-    "Not verified. Connect GitHub and explicitly select this repository from an App installation; no provider changes are performed.";
+    (repository.provider_account_id
+      ? `Not verified. Acting account ${repository.provider_account_id}; no provider changes are performed.`
+      : "Needs attention. Explicitly select a provider account and repository before reading.");
+  form.querySelector<HTMLButtonElement>("button")!.disabled =
+    !repository.provider_account_id || repository.provider === "azure_devops";
   read.disabled = !observation?.connection;
 
   function renderPulls(pulls: PullRequest[]) {
@@ -146,7 +180,7 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
         const result = await invoke<{
           connection: Connection;
           pull_requests: PullRequest[];
-        }>("read_github_metadata", {
+        }>("read_provider_metadata", {
           id: repository.id,
           expectedAccountId: pinned.identity.id,
           expectedRepositoryId: pinned.repository.id,
@@ -154,6 +188,7 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
         if (!root.isConnected) return;
         const pulls = result.pull_requests;
         observation = {
+          provider: repository.provider,
           name: repository.name,
           account_id: result.connection.identity.id,
           installation_id: repository.installation_id!,
@@ -165,11 +200,12 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
         renderPulls(pulls);
       } else {
         const connection = await invoke<Connection>(
-          "verify_github_connection",
+          "verify_provider_connection",
           { id: repository.id },
         );
         if (!root.isConnected) return;
         observation = {
+          provider: repository.provider,
           name: repository.name,
           account_id: connection.identity.id,
           installation_id: repository.installation_id!,
@@ -186,6 +222,19 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
         typeof cause === "string" && Object.hasOwn(failures, cause)
           ? failures[cause]
           : "Connection read failed. No raw error details or partial metadata are exposed.";
+      if (
+        typeof cause === "string" &&
+        [
+          "signed_out",
+          "wrong_identity",
+          "network",
+          "timeout",
+          "provider_failure",
+          "invalid_response",
+          "configuration",
+        ].includes(cause)
+      )
+        window.dispatchEvent(new Event("pr-sniper:refresh-provider-accounts"));
     } finally {
       unlock();
       if (root.isConnected) {
