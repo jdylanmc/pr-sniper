@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_DIAGNOSTICS_BYTES: u64 = 256 * 1024;
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticEvent {
     SessionStarted,
@@ -61,19 +61,23 @@ pub struct SavedSettings {
     pub warning: Option<String>,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Provider {
     Github,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Repository {
     pub id: String,
     pub provider: Provider,
     pub name: String,
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_repository_id: Option<String>,
     #[serde(default, skip_serializing_if = "PolicyOverrides::is_empty")]
     pub overrides: PolicyOverrides,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -124,6 +128,21 @@ impl Settings {
             {
                 return Err("Repository names must be canonical and unique.".into());
             }
+            if repository.installation_id.is_some() != repository.provider_repository_id.is_some()
+                || repository
+                    .installation_id
+                    .as_ref()
+                    .is_some_and(|id| !is_decimal_id(id))
+                || repository
+                    .provider_repository_id
+                    .as_ref()
+                    .is_some_and(|id| !is_decimal_id(id))
+            {
+                return Err(
+                    "Connected repositories require stable installation and repository identities."
+                        .into(),
+                );
+            }
             repository.overrides.effective(&self.defaults).validate()?;
         }
         Ok(())
@@ -135,6 +154,10 @@ impl Settings {
             .find(|repository| repository.id == id)
             .map(|repository| repository.overrides.effective(&self.defaults))
     }
+}
+
+fn is_decimal_id(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) && value != "0"
 }
 
 pub fn canonical_repository(input: &str) -> Result<String, String> {
@@ -270,6 +293,8 @@ impl Store {
             provider: Provider::Github,
             name,
             enabled: true,
+            installation_id: None,
+            provider_repository_id: None,
             overrides: PolicyOverrides::default(),
             review_preset: None,
         });
@@ -298,6 +323,8 @@ impl Store {
             .find(|repo| repo.id == id)
             .ok_or("Repository no longer exists. Reload Settings.")?;
         repo.name = name;
+        repo.installation_id = None;
+        repo.provider_repository_id = None;
         repo.enabled = enabled;
         self.save_settings(&settings)?;
         Ok(settings)

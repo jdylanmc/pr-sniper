@@ -21,27 +21,46 @@ type GithubAuthState =
         | "credentials_unavailable";
     };
 
-export function renderGithubAuth(root: HTMLElement) {
-  root.innerHTML = `<div class="github-auth-card"><div><h2>GitHub account</h2><p role="status">Reading connection state...</p></div><div class="github-auth-actions"></div></div>`;
+export interface GithubInstalledRepository {
+  installation_id: string;
+  repository: { id: string; name: string };
+}
+
+export function renderGithubAuth(
+  root: HTMLElement,
+  selectRepository?: (repository: GithubInstalledRepository) => void,
+) {
+  root.innerHTML = `<div class="github-auth-card"><div><h2>GitHub account</h2><p role="status">Reading connection state...</p><div class="github-auth-repositories"></div></div><div class="github-auth-actions"></div></div>`;
   const status = root.querySelector<HTMLElement>("[role=status]")!;
   const actions = root.querySelector<HTMLElement>(".github-auth-actions")!;
+  const repositories = root.querySelector<HTMLElement>(
+    ".github-auth-repositories",
+  )!;
 
-  function button(label: string, command: string) {
+  function actionButton(label: string, action: () => Promise<void>) {
     const control = document.createElement("button");
     control.type = "button";
     control.textContent = label;
     control.addEventListener("click", async () => {
       setBusy(true);
       try {
-        render(await invoke<GithubAuthState>(command));
-      } catch {
-        status.textContent =
-          "GitHub connection could not be updated. No authorization or automation was assumed.";
+        await action();
+      } catch (cause) {
+        const failure = String(cause).toLowerCase();
+        status.textContent = failure.includes("network")
+          ? "The GitHub network request failed. No authorization or automation was assumed."
+          : failure.includes("provider")
+            ? "GitHub returned an error. No authorization or automation was assumed."
+            : "GitHub connection could not be updated. No authorization or automation was assumed.";
       } finally {
         setBusy(false);
       }
     });
     actions.append(control);
+  }
+
+  function button(label: string, command: string) {
+    actionButton(label, async () => render(await invoke(command)));
   }
 
   function setBusy(busy: boolean) {
@@ -52,6 +71,7 @@ export function renderGithubAuth(root: HTMLElement) {
 
   function render(state: GithubAuthState) {
     actions.replaceChildren();
+    repositories.replaceChildren();
     if (state.state === "disconnected") {
       status.textContent =
         "Disconnected. Connect through the PR Sniper GitHub App. This does not enable reviews, comments, notifications, or merging.";
@@ -76,6 +96,31 @@ export function renderGithubAuth(root: HTMLElement) {
     if (state.state === "connected") {
       status.textContent = `Connected as ${state.login} (${state.account_id}). Stable identity verified; repository access is not implied. No automation was enabled.`;
       button("Disconnect GitHub", "disconnect_github_auth");
+      actionButton("Load installed repositories", async () => {
+        const result = await invoke<{
+          identity: { id: string; login: string };
+          repositories: GithubInstalledRepository[];
+        }>("list_github_repositories");
+        if (result.identity.id !== state.account_id)
+          throw new Error("GitHub account changed");
+        repositories.replaceChildren();
+        if (!result.repositories.length) {
+          repositories.textContent =
+            "No repositories are available through this GitHub App installation.";
+          return;
+        }
+        const list = document.createElement("ul");
+        for (const installed of result.repositories) {
+          const item = document.createElement("li");
+          const use = document.createElement("button");
+          use.type = "button";
+          use.textContent = `Use ${installed.repository.name}`;
+          use.addEventListener("click", () => selectRepository?.(installed));
+          item.append(use);
+          list.append(item);
+        }
+        repositories.append(list);
+      });
       return;
     }
     status.replaceChildren();

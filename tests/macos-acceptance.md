@@ -71,6 +71,43 @@ Retain command output and distinguish a behavior assertion failure from a
 missing compiler, missing package, compilation failure or unexecuted test.
 The integration owner supplies the repository's build, lint and CI commands.
 
+## Human-authorized GitHub App acceptance
+
+Run this only after the candidate's independent review and exact-head CI pass.
+Use a disposable macOS user account so the production Keychain service
+`com.jdylanmc.pr-sniper.github.credentials` and app data are isolated from the
+developer's normal profile. Do not create or install another GitHub App, expose
+token contents, or perform provider mutations to probe capability.
+
+1. Record the candidate commit and build/install the candidate bundle in the
+   disposable macOS account. Confirm `gh` is absent or signed out.
+2. Open Settings, choose **Connect GitHub**, complete the device flow with public
+   client ID `Iv23li1HXvoQVkSzV2l5`, and record only the stable account ID/login.
+   Confirm denial, expiry, network and provider failures remain distinguishable
+   if any occur; never capture the device code or credentials in evidence.
+3. Choose **Load installed repositories**. Confirm only repositories accessible
+   through the existing PR Sniper GitHub App installation appear. Explicitly
+   choose `jdylanmc/pr-sniper`, save, verify the stable installation/repository
+   IDs persist after reopening Settings, then verify the repository and read its
+   complete pull-request metadata with `gh` still unavailable.
+4. Quit normally and relaunch. Confirm the account restores from Keychain,
+   `/user` identity is revalidated, the selected repository remains bound to the
+   same stable IDs, and repository/people/pull-request reads still use the App
+   session.
+5. For real rotation, leave the isolated profile intact until the issued access
+   token expires (GitHub currently documents an eight-hour lifetime). After
+   expiry, trigger **Load installed repositories** once. Confirm the Keychain
+   item's modification time advances, identity and repository access continue,
+   and no reconnect prompt appears. Do not inspect or export the Keychain secret.
+6. Choose **Disconnect GitHub**, quit and relaunch. Confirm the app is
+   disconnected and the production Keychain item is absent. Reconnect once,
+   confirm repository selection is not silently reauthorized, then disconnect
+   again before deleting the disposable macOS user.
+
+Record each step as **met**, **unmet** or **unverified**. A fixture refresh,
+Keychain unit test, mocked provider response, sign-in without repository
+discovery, or successful `gh` read does not satisfy this live acceptance.
+
 ### Native lifecycle harness
 
 First perform a non-launching permission check:
