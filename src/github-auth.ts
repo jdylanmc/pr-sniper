@@ -1,25 +1,34 @@
 import { invoke } from "@tauri-apps/api/core";
 
-type GithubAuthState =
-  | { state: "disconnected" }
-  | {
-      state: "connecting";
-      user_code: string;
-      verification_uri: string;
-      expires_in_seconds: number;
-      interval_seconds: number;
-    }
-  | { state: "connected"; account_id: string; login: string }
-  | {
-      state: "reconnect_required";
-      reason:
-        | "denied"
-        | "expired"
-        | "network"
-        | "provider"
-        | "invalid_response"
-        | "credentials_unavailable";
-    };
+type GithubAuthFailure =
+  | "denied"
+  | "expired"
+  | "network"
+  | "provider"
+  | "invalid_response"
+  | "credentials_unavailable";
+
+export interface GithubAccount {
+  provider: "github";
+  account_id: string;
+  login: string;
+  state: "connected" | "reconnect_required";
+  reason?: GithubAuthFailure;
+}
+
+type GithubAuthView = {
+  accounts: GithubAccount[];
+  flow:
+    | { state: "idle" }
+    | {
+        state: "connecting";
+        user_code: string;
+        verification_uri: string;
+        expires_in_seconds: number;
+        interval_seconds: number;
+        expected_account_id?: string;
+      };
+};
 
 export interface GithubInstalledRepository {
   installation_id: string;
@@ -28,16 +37,45 @@ export interface GithubInstalledRepository {
 
 export function renderGithubAuth(
   root: HTMLElement,
-  selectRepository?: (repository: GithubInstalledRepository) => void,
+  selectRepository?: (
+    account: GithubAccount,
+    repository: GithubInstalledRepository,
+  ) => void,
+  accountsChanged?: (accounts: GithubAccount[]) => void,
 ) {
-  root.innerHTML = `<div class="github-auth-card"><div><h2>GitHub account</h2><p role="status">Reading connection state...</p><div class="github-auth-repositories"></div></div><div class="github-auth-actions"></div></div>`;
+  root.innerHTML = `<div class="github-auth-card"><div><h2>GitHub accounts</h2><p role="status">Reading connection state...</p><div class="github-auth-accounts"></div><div class="github-auth-repositories"></div></div><div class="github-auth-actions"></div></div>`;
   const status = root.querySelector<HTMLElement>("[role=status]")!;
   const actions = root.querySelector<HTMLElement>(".github-auth-actions")!;
+  const accountList = root.querySelector<HTMLElement>(".github-auth-accounts")!;
   const repositories = root.querySelector<HTMLElement>(
     ".github-auth-repositories",
   )!;
+  let renderedAccountIds = new Set<string>();
 
-  function actionButton(label: string, action: () => Promise<void>) {
+  function setBusy(busy: boolean) {
+    root
+      .querySelectorAll<HTMLButtonElement>("button")
+      .forEach((control) => (control.disabled = busy));
+  }
+
+  async function refreshAfterFailure(cause: unknown) {
+    try {
+      render(await invoke<GithubAuthView>("github_auth_state"));
+    } catch {
+      const failure = String(cause).toLowerCase();
+      status.textContent = failure.includes("network")
+        ? "The GitHub network request failed. No authorization or automation was assumed."
+        : failure.includes("provider")
+          ? "GitHub returned an error. No authorization or automation was assumed."
+          : "GitHub connection could not be updated. No authorization or automation was assumed.";
+    }
+  }
+
+  function actionButton(
+    container: HTMLElement,
+    label: string,
+    action: () => Promise<void>,
+  ) {
     const control = document.createElement("button");
     control.type = "button";
     control.textContent = label;
@@ -46,111 +84,178 @@ export function renderGithubAuth(
       try {
         await action();
       } catch (cause) {
-        const failure = String(cause).toLowerCase();
-        status.textContent = failure.includes("network")
-          ? "The GitHub network request failed. No authorization or automation was assumed."
-          : failure.includes("provider")
-            ? "GitHub returned an error. No authorization or automation was assumed."
-            : "GitHub connection could not be updated. No authorization or automation was assumed.";
+        await refreshAfterFailure(cause);
       } finally {
         setBusy(false);
       }
     });
-    actions.append(control);
+    container.append(control);
   }
 
-  function button(label: string, command: string) {
-    actionButton(label, async () => render(await invoke(command)));
+  function commandButton(
+    container: HTMLElement,
+    label: string,
+    command: string,
+    args?: Record<string, unknown>,
+  ) {
+    actionButton(container, label, async () =>
+      render(await invoke<GithubAuthView>(command, args)),
+    );
   }
 
-  function setBusy(busy: boolean) {
-    actions
-      .querySelectorAll<HTMLButtonElement>("button")
-      .forEach((control) => (control.disabled = busy));
+  function publishAccountStates(accounts: GithubAccount[]) {
+    const current = new Set(accounts.map((account) => account.account_id));
+    for (const account of accounts)
+      window.dispatchEvent(
+        new CustomEvent("pr-sniper:provider-account-state", {
+          detail: {
+            provider: account.provider,
+            account_id: account.account_id,
+            available: account.state === "connected",
+          },
+        }),
+      );
+    for (const accountId of renderedAccountIds)
+      if (!current.has(accountId))
+        window.dispatchEvent(
+          new CustomEvent("pr-sniper:provider-account-state", {
+            detail: {
+              provider: "github",
+              account_id: accountId,
+              available: false,
+            },
+          }),
+        );
+    renderedAccountIds = current;
   }
 
-  function render(state: GithubAuthState) {
+  function render(view: GithubAuthView) {
     actions.replaceChildren();
+    accountList.replaceChildren();
     repositories.replaceChildren();
-    window.dispatchEvent(
-      new CustomEvent("pr-sniper:github-auth-state", {
-        detail: {
-          account_id: state.state === "connected" ? state.account_id : null,
-        },
-      }),
-    );
-    if (state.state === "disconnected") {
-      status.textContent =
-        "Disconnected. Connect through the PR Sniper GitHub App. This does not enable reviews, comments, notifications, or merging.";
-      button("Connect GitHub", "begin_github_auth");
-      return;
+    publishAccountStates(view.accounts);
+    accountsChanged?.(view.accounts);
+
+    status.textContent = view.accounts.length
+      ? `${view.accounts.length} GitHub ${view.accounts.length === 1 ? "account" : "accounts"} configured. Repository access and automation are not implied.`
+      : "No GitHub accounts connected. Adding an account does not enable reviews, comments, notifications, or merging.";
+
+    for (const account of view.accounts) {
+      const item = document.createElement("article");
+      item.className = "github-account";
+      const description = document.createElement("div");
+      const heading = document.createElement("strong");
+      heading.textContent = `${account.login} (${account.account_id})`;
+      const state = document.createElement("p");
+      state.textContent =
+        account.state === "connected"
+          ? "Connected through the PR Sniper GitHub App."
+          : `Needs attention. ${failureMessage(account.reason)}`;
+      description.append(heading, state);
+      const accountActions = document.createElement("div");
+      accountActions.className = "github-auth-actions";
+      if (account.state === "connected") {
+        commandButton(
+          accountActions,
+          `Disconnect ${account.login}`,
+          "disconnect_github_auth",
+          { accountId: account.account_id },
+        );
+        actionButton(
+          accountActions,
+          `Load repositories for ${account.login}`,
+          async () => {
+            const result = await invoke<{
+              identity: { id: string; login: string };
+              repositories: GithubInstalledRepository[];
+            }>("list_provider_repositories", {
+              provider: "github",
+              accountId: account.account_id,
+            });
+            if (result.identity.id !== account.account_id)
+              throw new Error("GitHub account changed");
+            repositories.replaceChildren();
+            if (!result.repositories.length) {
+              repositories.textContent = `No repositories are available to ${account.login} through this GitHub App installation.`;
+              return;
+            }
+            const list = document.createElement("ul");
+            for (const installed of result.repositories) {
+              const row = document.createElement("li");
+              const use = document.createElement("button");
+              use.type = "button";
+              use.textContent = `Use ${installed.repository.name} as ${account.login}`;
+              use.addEventListener("click", () =>
+                selectRepository?.(account, installed),
+              );
+              row.append(use);
+              list.append(row);
+            }
+            repositories.append(list);
+          },
+        );
+      } else {
+        commandButton(
+          accountActions,
+          `Reconnect ${account.login}`,
+          "begin_github_auth",
+          { expectedAccountId: account.account_id },
+        );
+      }
+      item.append(description, accountActions);
+      accountList.append(item);
     }
-    if (state.state === "reconnect_required") {
-      const reason = {
-        denied: "The GitHub authorization was denied.",
-        expired:
-          "The GitHub authorization expired or can no longer be refreshed.",
-        network: "The GitHub network request failed.",
-        provider: "GitHub returned an error while validating the connection.",
-        invalid_response: "GitHub returned an invalid authorization response.",
-        credentials_unavailable:
-          "The GitHub credentials could not be restored or stored safely.",
-      }[state.reason];
-      status.textContent = `Reconnect required. ${reason}`;
-      button("Reconnect GitHub", "begin_github_auth");
-      return;
+
+    if (view.flow.state === "connecting") {
+      status.replaceChildren();
+      status.append("Connecting. Open ");
+      const link = document.createElement("a");
+      link.href =
+        view.flow.verification_uri === "https://github.com/login/device"
+          ? view.flow.verification_uri
+          : "https://github.com/login/device";
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      link.textContent = "GitHub device activation";
+      status.append(
+        link,
+        ` and enter ${view.flow.user_code}. GitHub requires at least ${view.flow.interval_seconds} seconds between checks.`,
+      );
+      commandButton(actions, "Check authorization", "poll_github_auth");
+      commandButton(actions, "Cancel", "cancel_github_auth");
+    } else {
+      commandButton(actions, "Add GitHub account", "begin_github_auth");
     }
-    if (state.state === "connected") {
-      status.textContent = `Connected as ${state.login} (${state.account_id}). Stable identity verified; repository access is not implied. No automation was enabled.`;
-      button("Disconnect GitHub", "disconnect_github_auth");
-      actionButton("Load installed repositories", async () => {
-        const result = await invoke<{
-          identity: { id: string; login: string };
-          repositories: GithubInstalledRepository[];
-        }>("list_github_repositories");
-        if (result.identity.id !== state.account_id)
-          throw new Error("GitHub account changed");
-        repositories.replaceChildren();
-        if (!result.repositories.length) {
-          repositories.textContent =
-            "No repositories are available through this GitHub App installation.";
-          return;
-        }
-        const list = document.createElement("ul");
-        for (const installed of result.repositories) {
-          const item = document.createElement("li");
-          const use = document.createElement("button");
-          use.type = "button";
-          use.textContent = `Use ${installed.repository.name}`;
-          use.addEventListener("click", () => selectRepository?.(installed));
-          item.append(use);
-          list.append(item);
-        }
-        repositories.append(list);
-      });
-      return;
-    }
-    status.replaceChildren();
-    status.append("Connecting. Open ");
-    const link = document.createElement("a");
-    link.href =
-      state.verification_uri === "https://github.com/login/device"
-        ? state.verification_uri
-        : "https://github.com/login/device";
-    link.target = "_blank";
-    link.rel = "noreferrer";
-    link.textContent = "GitHub device activation";
-    status.append(
-      link,
-      ` and enter ${state.user_code}. GitHub requires at least ${state.interval_seconds} seconds between checks.`,
-    );
-    button("Check authorization", "poll_github_auth");
-    button("Cancel", "cancel_github_auth");
   }
 
-  void invoke<GithubAuthState>("github_auth_state").then(render, () => {
-    status.textContent =
-      "GitHub connection state is unavailable. No connection is assumed.";
-    actions.replaceChildren();
-  });
+  const refresh = () => {
+    if (!root.isConnected) {
+      window.removeEventListener(
+        "pr-sniper:refresh-provider-accounts",
+        refresh,
+      );
+      return;
+    }
+    void invoke<GithubAuthView>("github_auth_state").then(render, () => {
+      status.textContent =
+        "GitHub connection state is unavailable. No connection is assumed.";
+      actions.replaceChildren();
+    });
+  };
+  window.addEventListener("pr-sniper:refresh-provider-accounts", refresh);
+  refresh();
+}
+
+function failureMessage(reason?: GithubAuthFailure) {
+  return (
+    {
+      denied: "The GitHub authorization was denied.",
+      expired: "The authorization expired or can no longer be refreshed.",
+      network: "The GitHub network request failed.",
+      provider: "GitHub rejected or could not validate the connection.",
+      invalid_response: "GitHub returned an invalid authorization response.",
+      credentials_unavailable:
+        "The credentials could not be restored or stored safely.",
+    }[reason ?? "provider"] ?? "Reconnect this account."
+  );
 }

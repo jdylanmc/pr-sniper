@@ -31,7 +31,7 @@ pub struct Diagnostic {
     pub event: DiagnosticEvent,
 }
 
-#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub launch_at_login: bool,
@@ -61,19 +61,50 @@ pub struct SavedSettings {
     pub warning: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Provider {
+pub enum ProviderId {
     Github,
+    AzureDevops,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderAccountId {
+    pub provider: ProviderId,
+    pub account_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderRepositoryId {
+    pub provider: ProviderId,
+    pub repository_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepositoryAccountBinding {
+    pub account: ProviderAccountId,
+    pub repository: ProviderRepositoryId,
+    pub installation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepositoryBindingCandidate {
+    pub provider: ProviderId,
+    pub account_id: String,
+    pub installation_id: Option<String>,
+    pub repository_id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Repository {
     pub id: String,
-    pub provider: Provider,
+    pub provider: ProviderId,
     pub name: String,
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_account_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installation_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -123,24 +154,34 @@ impl Settings {
             if uuid::Uuid::parse_str(&repository.id).is_err() || !ids.insert(&repository.id) {
                 return Err("Repository identities must be valid and unique.".into());
             }
-            if canonical_repository(&repository.name)? != repository.name
-                || !names.insert(&repository.name)
+            if canonical_provider_repository(&repository.provider, &repository.name)?
+                != repository.name
+                || !names.insert((repository.provider.clone(), repository.name.clone()))
             {
                 return Err("Repository names must be canonical and unique.".into());
             }
-            if repository.installation_id.is_some() != repository.provider_repository_id.is_some()
+            if repository.provider_account_id.is_some()
+                && repository.provider_repository_id.is_none()
+                || repository.installation_id.is_some()
+                    && repository.provider_repository_id.is_none()
                 || repository
                     .installation_id
                     .as_ref()
-                    .is_some_and(|id| !is_decimal_id(id))
+                    .is_some_and(|id| !is_provider_id(&repository.provider, id))
+                || repository
+                    .provider_account_id
+                    .as_ref()
+                    .is_some_and(|id| !is_provider_id(&repository.provider, id))
                 || repository
                     .provider_repository_id
                     .as_ref()
-                    .is_some_and(|id| !is_decimal_id(id))
+                    .is_some_and(|id| !is_provider_id(&repository.provider, id))
+                || matches!(repository.provider, ProviderId::Github)
+                    && repository.provider_account_id.is_some()
+                    && repository.installation_id.is_none()
             {
                 return Err(
-                    "Connected repositories require stable installation and repository identities."
-                        .into(),
+                    "Connected repositories require stable provider, account, installation and repository identities.".into(),
                 );
             }
             repository.overrides.effective(&self.defaults).validate()?;
@@ -153,6 +194,58 @@ impl Settings {
             .iter()
             .find(|repository| repository.id == id)
             .map(|repository| repository.overrides.effective(&self.defaults))
+    }
+
+    pub fn migrate_repository_bindings(
+        &mut self,
+        candidates: &[RepositoryBindingCandidate],
+    ) -> bool {
+        let mut changed = false;
+        for repository in &mut self.repositories {
+            if repository.provider_account_id.is_some() {
+                continue;
+            }
+            let Some(repository_id) = repository.provider_repository_id.as_deref() else {
+                continue;
+            };
+            let matches: Vec<_> = candidates
+                .iter()
+                .filter(|candidate| {
+                    candidate.provider == repository.provider
+                        && candidate.repository_id == repository_id
+                        && candidate.name == repository.name
+                        && candidate.installation_id == repository.installation_id
+                })
+                .collect();
+            if matches.len() == 1 {
+                repository.provider_account_id = Some(matches[0].account_id.clone());
+                changed = true;
+            }
+        }
+        changed
+    }
+}
+
+impl Repository {
+    pub fn account_binding(&self) -> Option<RepositoryAccountBinding> {
+        Some(RepositoryAccountBinding {
+            account: ProviderAccountId {
+                provider: self.provider.clone(),
+                account_id: self.provider_account_id.clone()?,
+            },
+            repository: ProviderRepositoryId {
+                provider: self.provider.clone(),
+                repository_id: self.provider_repository_id.clone()?,
+            },
+            installation_id: self.installation_id.clone(),
+        })
+    }
+}
+
+fn is_provider_id(provider: &ProviderId, value: &str) -> bool {
+    match provider {
+        ProviderId::Github => is_decimal_id(value),
+        ProviderId::AzureDevops => !value.is_empty() && value.len() <= 256,
     }
 }
 
@@ -184,7 +277,25 @@ pub fn canonical_repository(input: &str) -> Result<String, String> {
     if !valid {
         return Err("Enter owner/repository or an HTTPS github.com repository URL (no credentials, query or fragment).".into());
     }
+
     Ok(path.to_string())
+}
+
+fn canonical_provider_repository(provider: &ProviderId, input: &str) -> Result<String, String> {
+    match provider {
+        ProviderId::Github => canonical_repository(input),
+        ProviderId::AzureDevops => {
+            let value = input.trim();
+            if value.is_empty()
+                || value.len() > 512
+                || value.chars().any(char::is_control)
+                || value.contains('@')
+            {
+                return Err("Enter a stable Azure DevOps repository identity.".into());
+            }
+            Ok(value.to_string())
+        }
+    }
 }
 
 pub struct Store {
@@ -290,9 +401,10 @@ impl Store {
         }
         settings.repositories.push(Repository {
             id: uuid::Uuid::new_v4().to_string(),
-            provider: Provider::Github,
+            provider: ProviderId::Github,
             name,
             enabled: true,
+            provider_account_id: None,
             installation_id: None,
             provider_repository_id: None,
             overrides: PolicyOverrides::default(),
@@ -323,6 +435,7 @@ impl Store {
             .find(|repo| repo.id == id)
             .ok_or("Repository no longer exists. Reload Settings.")?;
         repo.name = name;
+        repo.provider_account_id = None;
         repo.installation_id = None;
         repo.provider_repository_id = None;
         repo.enabled = enabled;

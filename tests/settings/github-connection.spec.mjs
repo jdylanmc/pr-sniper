@@ -18,14 +18,37 @@ const verified = {
   capabilities: { read: true, comment: "available" },
 };
 
+async function saveBoundRepository(
+  store,
+  name = "jdylanmc/pr-sniper",
+  accountId = "6954990",
+  installationId = "9001",
+  repositoryId = "1376547672",
+) {
+  await store("save_repository", { repository: name });
+  const settings = (await store("snapshot")).settings;
+  Object.assign(
+    settings.repositories.find((repository) => repository.name === name),
+    {
+      provider_account_id: accountId,
+      installation_id: installationId,
+      provider_repository_id: repositoryId,
+    },
+  );
+  await store("seed_settings", settings);
+  return settings;
+}
+
 async function githubFixture(page, store, handler) {
-  await store("save_repository", { repository: "jdylanmc/pr-sniper" });
+  await saveBoundRepository(store);
   await page.exposeFunction("__githubResponse", handler);
   await page.addInitScript(() => {
     const original = window.__TAURI_INTERNALS__.invoke;
     window.__TAURI_INTERNALS__.invoke = async (command, args) => {
       if (
-        !["verify_github_connection", "read_github_metadata"].includes(command)
+        !["verify_provider_connection", "read_provider_metadata"].includes(
+          command,
+        )
       )
         return original(command, args);
       const response = await window.__githubResponse(command, args);
@@ -41,8 +64,7 @@ test("verifying GitHub preserves drafts and does not enable automation", async (
   page,
   store,
 }) => {
-  await store("save_repository", { repository: "jdylanmc/pr-sniper" });
-  const before = (await store("snapshot")).settings;
+  const before = await saveBoundRepository(store);
   const calls = [];
   await page.exposeFunction("__githubRead", (command, args) => {
     calls.push({ command, args });
@@ -55,7 +77,7 @@ test("verifying GitHub preserves drafts and does not enable automation", async (
   await page.addInitScript(() => {
     const original = window.__TAURI_INTERNALS__.invoke;
     window.__TAURI_INTERNALS__.invoke = (command, args) =>
-      command === "verify_github_connection"
+      command === "verify_provider_connection"
         ? window.__githubRead(command, args)
         : original(command, args);
   });
@@ -76,7 +98,7 @@ test("verifying GitHub preserves drafts and does not enable automation", async (
   await expect(prompt).toHaveValue("Keep this unsaved review prompt.");
   expect(calls).toEqual([
     {
-      command: "verify_github_connection",
+      command: "verify_provider_connection",
       args: { id: before.repositories[0].id },
     },
   ]);
@@ -140,7 +162,7 @@ test("metadata pins verified identities, renders all files safely and clears fai
   const calls = [];
   const card = await githubFixture(page, store, (command, args) => {
     calls.push({ command, args });
-    if (command === "verify_github_connection") return { ok: verified };
+    if (command === "verify_provider_connection") return { ok: verified };
     if (++reads > 1) return { error: "revision_changed" };
     return {
       ok: {
@@ -216,7 +238,7 @@ test("retargeting a local repository invalidates the old connection", async ({
     .click();
   await saveChanges(page);
   const target = await connection(page, "other/target");
-  await expect(target.getByRole("status")).toContainText("Not verified");
+  await expect(target.getByRole("status")).toContainText("Needs attention");
   await expect(
     target.getByRole("button", { name: "Read PR metadata", exact: true }),
   ).toBeDisabled();
@@ -229,7 +251,7 @@ test("metadata replaces stale capability evidence for the same account and repos
   const capabilities = ["unavailable", "unknown", "available"];
   let reads = 0;
   const card = await githubFixture(page, store, (command) => {
-    if (command === "verify_github_connection") return { ok: verified };
+    if (command === "verify_provider_connection") return { ok: verified };
     return {
       ok: {
         connection: {
@@ -261,41 +283,68 @@ test("metadata replaces stale capability evidence for the same account and repos
   }
 });
 
-test("switching App accounts clears cached verification and PR metadata", async ({
+test("disconnecting one account clears only its repository evidence", async ({
   page,
   store,
 }) => {
   await store("save_repository", { repository: "jdylanmc/pr-sniper" });
-  let state = {
-    state: "connected",
-    account_id: "account-a",
-    login: "account-a-login",
-  };
-  await page.exposeFunction("__githubAccountSwitch", (command) => {
+  await store("save_repository", { repository: "octo/other" });
+  const settings = (await store("snapshot")).settings;
+  Object.assign(settings.repositories[0], {
+    provider_account_id: "101",
+    installation_id: "9001",
+    provider_repository_id: "1376547672",
+  });
+  Object.assign(settings.repositories[1], {
+    provider_account_id: "202",
+    installation_id: "9002",
+    provider_repository_id: "42",
+  });
+  await store("seed_settings", settings);
+  let accounts = [
+    {
+      provider: "github",
+      state: "connected",
+      account_id: "101",
+      login: "account-a",
+    },
+    {
+      provider: "github",
+      state: "connected",
+      account_id: "202",
+      login: "account-b",
+    },
+  ];
+  await page.exposeFunction("__githubAccountSwitch", (command, args) => {
     if (command === "disconnect_github_auth") {
-      state = { state: "disconnected" };
-      return state;
+      accounts = accounts.filter(
+        (account) => account.account_id !== args.accountId,
+      );
+      return { accounts, flow: { state: "idle" } };
     }
-    if (command === "begin_github_auth") {
-      state = {
-        state: "connected",
-        account_id: "account-b",
-        login: "account-b-login",
-      };
-      return state;
-    }
-    if (command === "verify_github_connection") {
+    if (command === "github_auth_state")
+      return { accounts, flow: { state: "idle" } };
+    const first =
+      args.id === settings.repositories[0].id ||
+      args.expectedAccountId === "101";
+    const identity = first
+      ? { id: "101", login: "account-a" }
+      : { id: "202", login: "account-b" };
+    const repository = first
+      ? { id: "1376547672", name: "jdylanmc/pr-sniper" }
+      : { id: "42", name: "octo/other" };
+    if (command === "verify_provider_connection") {
       return {
-        identity: { id: state.account_id, login: state.login },
-        repository: { id: "1376547672", name: "jdylanmc/pr-sniper" },
+        identity,
+        repository,
         capabilities: { read: true, comment: "available" },
       };
     }
-    if (command === "read_github_metadata") {
+    if (command === "read_provider_metadata") {
       return {
         connection: {
-          identity: { id: state.account_id, login: state.login },
-          repository: { id: "1376547672", name: "jdylanmc/pr-sniper" },
+          identity,
+          repository,
           capabilities: { read: true, comment: "available" },
         },
         pull_requests: [],
@@ -308,47 +357,171 @@ test("switching App accounts clears cached verification and PR metadata", async 
     window.__TAURI_INTERNALS__.invoke = (command, args) =>
       [
         "github_auth_state",
-        "begin_github_auth",
         "disconnect_github_auth",
-        "verify_github_connection",
-        "read_github_metadata",
+        "verify_provider_connection",
+        "read_provider_metadata",
       ].includes(command)
         ? window.__githubAccountSwitch(command, args)
         : original(command, args);
   });
   await page.goto("/?view=settings");
 
-  let card = await connection(page);
-  await card
+  let first = await connection(page);
+  await first
     .getByRole("button", { name: "Verify GitHub connection", exact: true })
     .click();
-  await card
+  await first
     .getByRole("button", { name: "Read PR metadata", exact: true })
     .click();
-  await expect(card.getByRole("status")).toContainText(
-    "account-a-login (account-a)",
-  );
-  await expect(card.getByRole("status")).toContainText(
-    "Complete metadata: 0 PRs",
-  );
+  await expect(first.getByRole("status")).toContainText("account-a (101)");
+  await expect(first.getByRole("status")).toContainText("Complete metadata");
+  await closeDialog(page);
+
+  let second = await connection(page, "octo/other");
+  await second
+    .getByRole("button", { name: "Verify GitHub connection", exact: true })
+    .click();
+  await second
+    .getByRole("button", { name: "Read PR metadata", exact: true })
+    .click();
+  await expect(second.getByRole("status")).toContainText("account-b (202)");
+  await expect(second.getByRole("status")).toContainText("Complete metadata");
   await closeDialog(page);
 
   const auth = page.locator(".github-auth-card");
-  await auth.getByRole("button", { name: "Disconnect GitHub" }).click();
-  await auth.getByRole("button", { name: "Connect GitHub" }).click();
-  await expect(auth.getByRole("status")).toContainText(
-    "Connected as account-b-login (account-b)",
-  );
+  await auth.getByRole("button", { name: "Disconnect account-a" }).click();
+  await expect(auth).not.toContainText("account-a (101)");
+  await expect(auth).toContainText("account-b (202)");
 
-  card = await connection(page);
-  await expect(card.getByRole("status")).toContainText("Not verified");
-  await expect(card.getByRole("status")).not.toContainText("account-a");
-  await expect(card.locator(".connection summary")).toHaveCount(0);
+  first = await connection(page);
+  await expect(first.getByRole("status")).toContainText("Not verified");
+  await expect(first.locator(".connection summary")).toHaveCount(0);
   await expect(
-    card.getByRole("button", { name: "Read PR metadata", exact: true }),
+    first.getByRole("button", { name: "Read PR metadata", exact: true }),
   ).toBeDisabled();
+  await closeDialog(page);
+
+  second = await connection(page, "octo/other");
+  await expect(second.getByRole("status")).toContainText("account-b (202)");
+  await expect(second.getByRole("status")).toContainText("Complete metadata");
   await expect(page.locator("body")).not.toContainText("gh auth login");
   await expect(page.locator("body")).not.toContainText(
     "current GitHub CLI account",
   );
 });
+
+for (const [commandError, stateReason] of [
+  ["signed_out", "expired"],
+  ["provider_failure", "provider"],
+  ["configuration", "credentials_unavailable"],
+  ["wrong_identity", "provider"],
+]) {
+  test(`mid-session ${commandError} clears every cache for that account`, async ({
+    page,
+    store,
+  }) => {
+    await store("save_repository", { repository: "octo/one" });
+    await store("save_repository", { repository: "octo/two" });
+    const settings = (await store("snapshot")).settings;
+    for (const [index, repository] of settings.repositories.entries())
+      Object.assign(repository, {
+        provider_account_id: "101",
+        installation_id: "9001",
+        provider_repository_id: String(index + 1),
+      });
+    await store("seed_settings", settings);
+    let invalid = false;
+    await page.exposeFunction("__githubLifecycle", (command, args) => {
+      if (command === "github_auth_state")
+        return {
+          ok: {
+            accounts: [
+              {
+                provider: "github",
+                state: invalid ? "reconnect_required" : "connected",
+                account_id: "101",
+                login: "account-a",
+                ...(invalid ? { reason: stateReason } : {}),
+              },
+              {
+                provider: "github",
+                state: "connected",
+                account_id: "202",
+                login: "account-b",
+              },
+            ],
+            flow: { state: "idle" },
+          },
+        };
+      const first =
+        args.id === settings.repositories[0].id ||
+        args.expectedRepositoryId === "1";
+      const connection = {
+        identity: { id: "101", login: "account-a" },
+        repository: {
+          id: first ? "1" : "2",
+          name: first ? "octo/one" : "octo/two",
+        },
+        capabilities: { read: true, comment: "available" },
+      };
+      if (command === "read_provider_metadata" && invalid)
+        return { error: commandError };
+      return command === "read_provider_metadata"
+        ? { ok: { connection, pull_requests: [] } }
+        : { ok: connection };
+    });
+    await page.addInitScript(() => {
+      const original = window.__TAURI_INTERNALS__.invoke;
+      window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+        if (
+          ![
+            "github_auth_state",
+            "verify_provider_connection",
+            "read_provider_metadata",
+          ].includes(command)
+        )
+          return original(command, args);
+        const response = await window.__githubLifecycle(command, args);
+        if ("error" in response) throw response.error;
+        return response.ok;
+      };
+    });
+    await page.goto("/?view=settings");
+
+    for (const name of ["octo/one", "octo/two"]) {
+      const card = await connection(page, name);
+      await card
+        .getByRole("button", { name: "Verify GitHub connection", exact: true })
+        .click();
+      await card
+        .getByRole("button", { name: "Read PR metadata", exact: true })
+        .click();
+      await expect(card.getByRole("status")).toContainText("Complete metadata");
+      await closeDialog(page);
+    }
+
+    let card = await connection(page, "octo/one");
+    invalid = true;
+    await card
+      .getByRole("button", { name: "Read PR metadata", exact: true })
+      .click();
+    await expect(page.locator(".github-auth-card")).toContainText(
+      stateReason === "expired"
+        ? "authorization expired"
+        : stateReason === "credentials_unavailable"
+          ? "could not be restored or stored safely"
+          : "GitHub rejected",
+    );
+    await closeDialog(page);
+
+    card = await connection(page, "octo/two");
+    await expect(card.getByRole("status")).toContainText("Not verified");
+    await expect(card.locator(".connection summary")).toHaveCount(0);
+    await expect(
+      card.getByRole("button", { name: "Read PR metadata", exact: true }),
+    ).toBeDisabled();
+    await expect(page.locator(".github-auth-card")).toContainText(
+      "account-b (202)",
+    );
+  });
+}
