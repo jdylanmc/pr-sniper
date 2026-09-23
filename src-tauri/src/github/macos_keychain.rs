@@ -343,6 +343,7 @@ fn load_registry(backend: &impl ActiveRecordBackend) -> Result<AccountRegistry, 
         registry: AccountRegistry {
             accounts: vec![credentials.account],
             active: Some(id),
+            pending_account_additions: Vec::new(),
             pending_secret_deletions: Vec::new(),
         },
         legacy_cleanup,
@@ -541,6 +542,13 @@ fn encode_registry(registry: &AccountRegistry) -> Result<Zeroizing<Vec<u8>>, Sto
         append_string(&mut bytes, pending.provider().as_str())?;
         append_string(&mut bytes, pending.account_id())?;
     }
+    bytes
+        .extend_from_slice(&checked_count(registry.pending_account_additions.len())?.to_be_bytes());
+    for account in &registry.pending_account_additions {
+        append_string(&mut bytes, account.provider.as_str())?;
+        append_string(&mut bytes, &account.account_id)?;
+        append_string(&mut bytes, &account.login)?;
+    }
     Ok(bytes)
 }
 
@@ -578,12 +586,28 @@ fn decode_registry(bytes: &[u8]) -> Result<AccountRegistry, StoreError> {
         let account_id = take_string(bytes, &mut cursor)?;
         pending_secret_deletions.push(ProviderAccountId::new(provider, account_id.as_str())?);
     }
+    let mut pending_account_additions = Vec::new();
+    if cursor < bytes.len() {
+        let pending_addition_count = take_u32(bytes, &mut cursor)? as usize;
+        pending_account_additions.reserve(pending_addition_count);
+        for _ in 0..pending_addition_count {
+            let provider = ProviderId::new(take_string(bytes, &mut cursor)?.to_string())?;
+            let account_id = take_string(bytes, &mut cursor)?;
+            let login = take_string(bytes, &mut cursor)?;
+            pending_account_additions.push(ActiveAccount::for_provider(
+                provider,
+                account_id.as_str(),
+                login.as_str(),
+            )?);
+        }
+    }
     if cursor != bytes.len() {
         return Err(StoreError::InvalidData);
     }
     let registry = AccountRegistry {
         accounts,
         active,
+        pending_account_additions,
         pending_secret_deletions,
     };
     registry.validate()?;

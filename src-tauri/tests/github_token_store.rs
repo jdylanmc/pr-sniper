@@ -18,6 +18,7 @@ struct MemoryStore {
     registry: Mutex<AccountRegistry>,
     fail_next_save: Mutex<bool>,
     fail_registry_save: Mutex<bool>,
+    fail_registry_save_after: Mutex<Option<usize>>,
     fail_delete: Mutex<bool>,
 }
 
@@ -54,6 +55,14 @@ impl AccountRegistryStore for MemoryStore {
     fn save_registry(&self, registry: &AccountRegistry) -> Result<(), StoreError> {
         if std::mem::take(&mut *self.fail_registry_save.lock().unwrap()) {
             return Err(StoreError::Unavailable);
+        }
+        let mut fail_after = self.fail_registry_save_after.lock().unwrap();
+        if matches!(*fail_after, Some(0)) {
+            *fail_after = None;
+            return Err(StoreError::Unavailable);
+        }
+        if let Some(remaining) = fail_after.as_mut() {
+            *remaining -= 1;
         }
         *self.registry.lock().unwrap() = registry.clone();
         Ok(())
@@ -302,6 +311,7 @@ fn failed_account_replacement_preserves_the_previous_record_and_retry_converges(
     let restored = store.restore_active_account().unwrap().unwrap();
     assert_eq!(restored.account, first);
     assert_eq!(restored.pair.access_token(), "a1");
+    assert!(store.load(&second.provider_account_id()).unwrap().is_none());
 
     store
         .replace_active_account(&second, &pair("a2", "r2"))
@@ -310,6 +320,84 @@ fn failed_account_replacement_preserves_the_previous_record_and_retry_converges(
         store.restore_active_account().unwrap().unwrap().account,
         second
     );
+}
+
+#[test]
+fn new_account_secret_write_failure_cleans_the_pending_addition_on_restart() {
+    let store = RotationSafeStore::new(MemoryStore::default());
+    let account = ActiveAccount::new("2", "second").unwrap();
+    *store.inner().fail_next_save.lock().unwrap() = true;
+
+    assert_eq!(
+        store.save_account(&account, &pair("a2", "r2"), false),
+        Err(StoreError::Unavailable)
+    );
+    assert_eq!(store.accounts().unwrap(), Vec::<ActiveAccount>::new());
+    assert!(store
+        .load(&account.provider_account_id())
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn new_account_registry_finalization_failure_removes_the_unregistered_secret_on_restart() {
+    let store = RotationSafeStore::new(MemoryStore::default());
+    let first = ActiveAccount::new("1", "first").unwrap();
+    let second = ActiveAccount::new("2", "second").unwrap();
+    store
+        .save_account(&first, &pair("a1", "r1"), false)
+        .unwrap();
+    *store.inner().fail_registry_save_after.lock().unwrap() = Some(1);
+
+    assert_eq!(
+        store.save_account(&second, &pair("a2", "r2"), false),
+        Err(StoreError::Unavailable)
+    );
+    assert!(store.load(&second.provider_account_id()).unwrap().is_some());
+    assert_eq!(store.accounts().unwrap(), vec![first]);
+    assert!(store.load(&second.provider_account_id()).unwrap().is_none());
+}
+
+#[test]
+fn pending_addition_delete_failure_retries_without_registering_the_secret() {
+    let store = RotationSafeStore::new(MemoryStore::default());
+    let account = ActiveAccount::new("2", "second").unwrap();
+    *store.inner().fail_registry_save_after.lock().unwrap() = Some(1);
+    assert_eq!(
+        store.save_account(&account, &pair("a2", "r2"), false),
+        Err(StoreError::Unavailable)
+    );
+    *store.inner().fail_delete.lock().unwrap() = true;
+
+    assert_eq!(store.accounts(), Err(StoreError::Unavailable));
+    assert!(store
+        .load(&account.provider_account_id())
+        .unwrap()
+        .is_some());
+    assert_eq!(store.accounts().unwrap(), Vec::<ActiveAccount>::new());
+    assert!(store
+        .load(&account.provider_account_id())
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn pending_addition_finalization_failure_retries_after_secret_cleanup() {
+    let store = RotationSafeStore::new(MemoryStore::default());
+    let account = ActiveAccount::new("2", "second").unwrap();
+    *store.inner().fail_registry_save_after.lock().unwrap() = Some(1);
+    assert_eq!(
+        store.save_account(&account, &pair("a2", "r2"), false),
+        Err(StoreError::Unavailable)
+    );
+    *store.inner().fail_registry_save.lock().unwrap() = true;
+
+    assert_eq!(store.accounts(), Err(StoreError::Unavailable));
+    assert!(store
+        .load(&account.provider_account_id())
+        .unwrap()
+        .is_none());
+    assert_eq!(store.accounts().unwrap(), Vec::<ActiveAccount>::new());
 }
 
 #[test]

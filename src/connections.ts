@@ -33,6 +33,11 @@ interface Observation {
   pulls?: PullRequest[];
 }
 
+interface AccountAvailability {
+  available: boolean;
+  label?: string;
+}
+
 const observations = new Map<string, Observation>();
 window.addEventListener("pr-sniper:provider-account-state", (event) => {
   const detail = (
@@ -88,7 +93,11 @@ function describe(connection: Connection): string {
   return `Verified ${identity.login} (${identity.id}). Repository and PR read access verified. ${comment}. This is not publication authorization. No automation was enabled.`;
 }
 
-export function renderConnection(root: HTMLElement, repository: Repository) {
+export function renderConnection(
+  root: HTMLElement,
+  repository: Repository,
+  account: AccountAvailability = { available: false },
+) {
   let observation = observations.get(repository.id);
   if (
     observation?.provider !== repository.provider ||
@@ -101,7 +110,7 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
     observation = undefined;
   }
   root.innerHTML = `
-    <p class="settings-hint">${repository.provider === "github" ? `Uses GitHub account ${repository.provider_account_id ?? "not selected"} and the explicitly selected installation repository.` : "Azure DevOps authentication is not implemented in this build."}</p>
+    <p class="settings-hint">${repository.provider === "github" ? `Uses GitHub account ${account.label ?? repository.provider_account_id ?? "not selected"} and the explicitly selected installation repository.` : "Azure DevOps authentication is not implemented in this build."}</p>
     <form class="connection-form">
       <button type="submit">Verify GitHub connection</button>
       <button type="button" class="read-metadata">Read PR metadata</button>
@@ -129,23 +138,30 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
       }>
     ).detail;
     if (
-      detail.available ||
       detail.provider !== repository.provider ||
-      detail.account_id !== repository.provider_account_id
+      detail.account_id !== repository.provider_account_id ||
+      detail.available === account.available
     )
       return;
     window.removeEventListener("pr-sniper:provider-account-state", authChanged);
-    renderConnection(root, repository);
+    renderConnection(root, repository, {
+      available: detail.available,
+      label: account.label ?? detail.account_id,
+    });
   };
   window.addEventListener("pr-sniper:provider-account-state", authChanged);
   status.textContent =
-    observation?.message ??
-    (repository.provider_account_id
-      ? `Not verified. Acting account ${repository.provider_account_id}; no provider changes are performed.`
-      : "Needs attention. Explicitly select a provider account and repository before reading.");
+    !account.available && repository.provider_account_id
+      ? `Needs attention. GitHub account ${account.label ?? repository.provider_account_id} must be reconnected or this repository must be explicitly rebound before provider actions are available.`
+      : (observation?.message ??
+        (repository.provider_account_id
+          ? `Not verified. Acting account ${repository.provider_account_id}; no provider changes are performed.`
+          : "Needs attention. Explicitly select a provider account and repository before reading."));
   form.querySelector<HTMLButtonElement>("button")!.disabled =
-    !repository.provider_account_id || repository.provider === "azure_devops";
-  read.disabled = !observation?.connection;
+    !account.available ||
+    !repository.provider_account_id ||
+    repository.provider === "azure_devops";
+  read.disabled = !account.available || !observation?.connection;
 
   function renderPulls(pulls: PullRequest[]) {
     details.replaceChildren();
@@ -242,7 +258,7 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
           observations.set(repository.id, observation);
           status.textContent = observation.message;
         }
-        read.disabled = !observation?.connection;
+        read.disabled = !account.available || !observation?.connection;
       }
     }
   }

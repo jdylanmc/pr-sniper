@@ -31,8 +31,8 @@ No release/versioning policy has been established yet.
   account-addressed credentials with absolute expirations in macOS Keychain and
   independent serialized rotation boundaries. Restart restores and validates
   every account, retry-safely migrates the prior active-account layouts without
-  orphaning secrets, and removes only the selected account on disconnect. Each
-  App-token session lists
+  orphaning secrets, recovers interrupted first-time account additions, and
+  removes only the selected account on disconnect. Each App-token session lists
   paginated installation repositories with stable identities, requires
   explicit selection, and backs identity, people, repository verification and
   pull-request metadata reads without requiring GitHub CLI credentials. Failed
@@ -48,10 +48,12 @@ No release/versioning policy has been established yet.
   complete paginated PR, reviewer and changed-file metadata in Settings.
   Every repository is explicitly bound to a provider account, installation and
   stable repository identity; overlapping access never auto-selects an acting
-  account. Account failure or removal clears only that account's cached
-  verification and metadata until a fresh read succeeds. Identity, permission,
-  rate-limit and incomplete-read failures remain visible; no provider mutation
-  or automation enablement occurs.
+  account and can retain separate bindings and policies for each account.
+  Account failure or removal marks only that account's bindings as needing
+  attention, disables their provider actions, and clears their cached
+  verification and metadata until reconnection or explicit rebinding. Identity,
+  permission, rate-limit and incomplete-read failures remain visible; no
+  provider mutation or automation enablement occurs.
   See [#5](https://github.com/jdylanmc/pr-sniper/issues/5).
 
 - Manage watched GitHub repositories from Settings, with canonical duplicate

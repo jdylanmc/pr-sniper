@@ -239,6 +239,53 @@ fn repository_binding_preserves_provider_account_and_repository_identity() {
 }
 
 #[test]
+fn the_same_provider_repository_persists_as_distinct_account_bindings() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let mut settings = store.add_repository("octo/example").unwrap();
+    let first = &mut settings.repositories[0];
+    first.provider_account_id = Some("101".into());
+    first.installation_id = Some("9001".into());
+    first.provider_repository_id = Some("42".into());
+    first.overrides.automatic_agent_start = Some(true);
+    settings.repositories.push(Repository {
+        id: uuid::Uuid::new_v4().to_string(),
+        provider: ProviderId::Github,
+        name: "octo/example".into(),
+        enabled: true,
+        provider_account_id: Some("202".into()),
+        installation_id: Some("9002".into()),
+        provider_repository_id: Some("42".into()),
+        overrides: PolicyOverrides {
+            automatic_agent_start: Some(false),
+            ..PolicyOverrides::default()
+        },
+        review_preset: None,
+    });
+
+    store.save_settings(&settings).unwrap();
+    let restored = store.load_settings().unwrap();
+
+    assert_eq!(restored.repositories.len(), 2);
+    assert_eq!(
+        restored.repositories[0].provider_account_id.as_deref(),
+        Some("101")
+    );
+    assert_eq!(
+        restored.repositories[1].provider_account_id.as_deref(),
+        Some("202")
+    );
+    assert_eq!(
+        restored.repositories[0].overrides.automatic_agent_start,
+        Some(true)
+    );
+    assert_eq!(
+        restored.repositories[1].overrides.automatic_agent_start,
+        Some(false)
+    );
+}
+
+#[test]
 fn legacy_repository_binding_migrates_only_for_one_exact_account_match() {
     let fixture = Fixture::new();
     let store = fixture.store();
