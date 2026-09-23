@@ -1,6 +1,6 @@
 use pr_sniper_lib::github::provider::{
-    Capabilities, CommentCapability, Connection, GithubClient, RemoteRepository, Response,
-    Transport,
+    Capabilities, CommentCapability, Connection, GithubClient, InstalledRepository,
+    RemoteRepository, Response, Transport,
 };
 use pr_sniper_lib::github::{verify_identity, ConnectionError, Identity};
 use serde_json::json;
@@ -43,6 +43,15 @@ impl Transport for ConnectionTransport {
                 "permissions": {"pull": true, "push": true}
             }),
             "/repos/jdylanmc/pr-sniper/pulls?state=open&per_page=1" => json!([]),
+            "/user/installations?per_page=100&page=1" => json!({
+                "installations": [{"id": 9001}]
+            }),
+            "/user/installations/9001/repositories?per_page=100&page=1" => json!({
+                "repositories": [{
+                    "id": 1376547672,
+                    "full_name": "jdylanmc/pr-sniper"
+                }]
+            }),
             _ => panic!("unexpected GET path: {path}"),
         };
         Ok(Response {
@@ -51,6 +60,62 @@ impl Transport for ConnectionTransport {
             body: serde_json::to_vec(&body).unwrap(),
         })
     }
+}
+
+#[test]
+fn app_user_token_lists_installed_repositories_with_stable_ids() {
+    let client = GithubClient::new(ConnectionTransport);
+
+    assert_eq!(
+        client.installed_repositories(),
+        Ok(vec![InstalledRepository {
+            installation_id: "9001".into(),
+            repository: RemoteRepository {
+                id: "1376547672".into(),
+                name: "jdylanmc/pr-sniper".into(),
+            },
+        }])
+    );
+}
+
+struct PaginatedInstallations;
+
+impl Transport for PaginatedInstallations {
+    fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+        let body = match path {
+            "/user/installations?per_page=100&page=1" => {
+                json!({"installations": [{"id": 9001}]})
+            }
+            "/user/installations/9001/repositories?per_page=100&page=1" => {
+                json!({"repositories": (1..=100).map(|id| json!({
+                    "id": id,
+                    "full_name": format!("octo/repository-{id}")
+                })).collect::<Vec<_>>()})
+            }
+            "/user/installations/9001/repositories?per_page=100&page=2" => {
+                json!({"repositories": [{
+                    "id": 101,
+                    "full_name": "octo/repository-101"
+                }]})
+            }
+            _ => panic!("unexpected GET path: {path}"),
+        };
+        Ok(Response {
+            status: 200,
+            headers: BTreeMap::new(),
+            body: serde_json::to_vec(&body).unwrap(),
+        })
+    }
+}
+
+#[test]
+fn installed_repository_discovery_exhausts_every_page() {
+    let repositories = GithubClient::new(PaginatedInstallations)
+        .installed_repositories()
+        .unwrap();
+
+    assert_eq!(repositories.len(), 101);
+    assert_eq!(repositories[100].repository.id, "101");
 }
 
 #[test]

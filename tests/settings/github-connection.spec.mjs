@@ -77,16 +77,16 @@ test("verifying GitHub preserves drafts and does not enable automation", async (
   expect(calls).toEqual([
     {
       command: "verify_github_connection",
-      args: { id: before.repositories[0].id, expectedAccountId: null },
+      args: { id: before.repositories[0].id },
     },
   ]);
   expect((await store("snapshot")).settings).toEqual(before);
 });
 
 for (const [error, expected] of [
-  ["missing_cli", "GitHub CLI is missing"],
-  ["broken_cli", "CLI or its shim is broken"],
-  ["signed_out", "credentials are missing or rejected"],
+  ["missing_cli", "development GitHub CLI probe is unavailable"],
+  ["broken_cli", "development GitHub CLI probe is broken"],
+  ["signed_out", "App authorization is missing, expired, or rejected"],
   ["wrong_identity", "does not match"],
   ["missing_read_permission", "denied repository or pull-request read"],
   ["rate_limited", "rate limited"],

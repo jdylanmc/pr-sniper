@@ -1,7 +1,8 @@
 use super::{
     device_flow::TokenPair,
     token_store::{
-        ActiveAccount, ActiveAccountStore, CredentialKey, CredentialStore, Provider, StoreError,
+        ActiveAccount, ActiveCredentialStore, CredentialKey, CredentialStore, Provider,
+        RestoredCredentials, StoreError,
     },
 };
 use std::{
@@ -197,18 +198,18 @@ impl CredentialStore for MacKeychainStore {
     }
 }
 
-impl ActiveAccountStore for MacKeychainStore {
-    fn load_active_account(&self) -> Result<Option<ActiveAccount>, StoreError> {
+impl ActiveCredentialStore for MacKeychainStore {
+    fn load_active_credentials(&self) -> Result<Option<RestoredCredentials>, StoreError> {
         self.load_bytes(ACTIVE_ACCOUNT)?
-            .map(|bytes| decode_active_account(&bytes))
+            .map(|bytes| decode_active_credentials(&bytes))
             .transpose()
     }
 
-    fn save_active_account(&self, account: &ActiveAccount) -> Result<(), StoreError> {
-        self.save_bytes(ACTIVE_ACCOUNT, &encode_active_account(account)?)
+    fn save_active_credentials(&self, credentials: &RestoredCredentials) -> Result<(), StoreError> {
+        self.save_bytes(ACTIVE_ACCOUNT, &encode_active_credentials(credentials)?)
     }
 
-    fn delete_active_account(&self) -> Result<(), StoreError> {
+    fn delete_active_credentials(&self) -> Result<(), StoreError> {
         self.delete_named(ACTIVE_ACCOUNT)
     }
 }
@@ -287,25 +288,39 @@ fn decode(bytes: &[u8]) -> Result<TokenPair, StoreError> {
     Ok(pair)
 }
 
-fn encode_active_account(account: &ActiveAccount) -> Result<Zeroizing<Vec<u8>>, StoreError> {
-    let id = account.account_id.as_bytes();
-    let login = account.login.as_bytes();
-    let mut bytes = Zeroizing::new(Vec::with_capacity(8 + id.len() + login.len()));
+fn encode_active_credentials(
+    credentials: &RestoredCredentials,
+) -> Result<Zeroizing<Vec<u8>>, StoreError> {
+    let id = credentials.account.account_id.as_bytes();
+    let login = credentials.account.login.as_bytes();
+    let pair = encode(&credentials.pair)?;
+    let mut bytes = Zeroizing::new(Vec::with_capacity(12 + id.len() + login.len() + pair.len()));
     bytes.extend_from_slice(&checked_length(id)?.to_be_bytes());
     bytes.extend_from_slice(id);
     bytes.extend_from_slice(&checked_length(login)?.to_be_bytes());
     bytes.extend_from_slice(login);
+    bytes.extend_from_slice(&checked_length(&pair)?.to_be_bytes());
+    bytes.extend_from_slice(&pair);
     Ok(bytes)
 }
 
-fn decode_active_account(bytes: &[u8]) -> Result<ActiveAccount, StoreError> {
+fn decode_active_credentials(bytes: &[u8]) -> Result<RestoredCredentials, StoreError> {
     let mut cursor = 0;
     let id = take_string(bytes, &mut cursor)?;
     let login = take_string(bytes, &mut cursor)?;
+    let pair_length = take_u32(bytes, &mut cursor)? as usize;
+    let pair_end = cursor
+        .checked_add(pair_length)
+        .ok_or(StoreError::InvalidData)?;
+    let pair = decode(bytes.get(cursor..pair_end).ok_or(StoreError::InvalidData)?)?;
+    cursor = pair_end;
     if cursor != bytes.len() {
         return Err(StoreError::InvalidData);
     }
-    ActiveAccount::new(id.as_str(), login.as_str())
+    Ok(RestoredCredentials {
+        account: ActiveAccount::new(id.as_str(), login.as_str())?,
+        pair,
+    })
 }
 
 fn take_string(bytes: &[u8], cursor: &mut usize) -> Result<Zeroizing<String>, StoreError> {

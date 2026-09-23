@@ -1,8 +1,8 @@
 use pr_sniper_lib::github::{
     device_flow::TokenPair,
     token_store::{
-        ActiveAccount, ActiveAccountStore, CredentialKey, CredentialStore, RotationError,
-        RotationSafeStore, StoreError,
+        ActiveAccount, ActiveCredentialStore, CredentialKey, CredentialStore, RestoredCredentials,
+        RotationError, RotationSafeStore, StoreError,
     },
 };
 use std::{
@@ -15,8 +15,10 @@ use std::{
 #[derive(Default)]
 struct MemoryStore {
     values: Mutex<BTreeMap<CredentialKey, TokenPair>>,
-    active: Mutex<Option<ActiveAccount>>,
+    active: Mutex<Option<RestoredCredentials>>,
     fail_next_save: Mutex<bool>,
+    fail_active_save: Mutex<bool>,
+    fail_active_delete: Mutex<bool>,
 }
 
 impl CredentialStore for MemoryStore {
@@ -41,17 +43,23 @@ impl CredentialStore for MemoryStore {
     }
 }
 
-impl ActiveAccountStore for MemoryStore {
-    fn load_active_account(&self) -> Result<Option<ActiveAccount>, StoreError> {
+impl ActiveCredentialStore for MemoryStore {
+    fn load_active_credentials(&self) -> Result<Option<RestoredCredentials>, StoreError> {
         Ok(self.active.lock().unwrap().clone())
     }
 
-    fn save_active_account(&self, account: &ActiveAccount) -> Result<(), StoreError> {
-        *self.active.lock().unwrap() = Some(account.clone());
+    fn save_active_credentials(&self, credentials: &RestoredCredentials) -> Result<(), StoreError> {
+        if std::mem::take(&mut *self.fail_active_save.lock().unwrap()) {
+            return Err(StoreError::Unavailable);
+        }
+        *self.active.lock().unwrap() = Some(credentials.clone());
         Ok(())
     }
 
-    fn delete_active_account(&self) -> Result<(), StoreError> {
+    fn delete_active_credentials(&self) -> Result<(), StoreError> {
+        if std::mem::take(&mut *self.fail_active_delete.lock().unwrap()) {
+            return Err(StoreError::Unavailable);
+        }
         *self.active.lock().unwrap() = None;
         Ok(())
     }
@@ -173,7 +181,7 @@ fn restart_restores_active_account_and_absolute_expirations() {
 }
 
 #[test]
-fn account_switch_and_disconnect_remove_account_bound_credentials() {
+fn account_switch_and_disconnect_replace_one_atomic_record() {
     let store = RotationSafeStore::new(MemoryStore::default());
     let first = ActiveAccount::new("1", "first").unwrap();
     let second = ActiveAccount::new("2", "second").unwrap();
@@ -184,16 +192,18 @@ fn account_switch_and_disconnect_remove_account_bound_credentials() {
         .replace_active_account(&second, &pair("a2", "r2"))
         .unwrap();
 
-    assert!(store.load(&CredentialKey::github("1")).unwrap().is_none());
-    assert!(store.load(&CredentialKey::github("2")).unwrap().is_some());
     assert_eq!(
-        store.load_active_account().unwrap().unwrap().account_id,
+        store
+            .restore_active_account()
+            .unwrap()
+            .unwrap()
+            .account
+            .account_id,
         "2"
     );
 
     store.disconnect(&second).unwrap();
-    assert!(store.load(&CredentialKey::github("2")).unwrap().is_none());
-    assert!(store.load_active_account().unwrap().is_none());
+    assert!(store.restore_active_account().unwrap().is_none());
 }
 
 #[test]
@@ -219,20 +229,16 @@ fn expired_access_refreshes_once_through_the_shared_rotation_store() {
             thread::spawn(move || {
                 barrier.wait();
                 store
-                    .refresh_if_needed(
-                        &CredentialKey::github("1"),
-                        UNIX_EPOCH + Duration::from_secs(2),
-                        |current| {
-                            *refreshes.lock().unwrap() += 1;
-                            Ok(TokenPair::new_at(
-                                "a1",
-                                current.refresh_token(),
-                                UNIX_EPOCH + Duration::from_secs(2),
-                                Duration::from_secs(100),
-                                Duration::from_secs(100),
-                            ))
-                        },
-                    )
+                    .refresh_active_if_needed(UNIX_EPOCH + Duration::from_secs(2), |current| {
+                        *refreshes.lock().unwrap() += 1;
+                        Ok(TokenPair::new_at(
+                            "a1",
+                            current.refresh_token(),
+                            UNIX_EPOCH + Duration::from_secs(2),
+                            Duration::from_secs(100),
+                            Duration::from_secs(100),
+                        ))
+                    })
                     .unwrap();
             })
         })
@@ -243,4 +249,47 @@ fn expired_access_refreshes_once_through_the_shared_rotation_store() {
     }
 
     assert_eq!(*refreshes.lock().unwrap(), 1);
+}
+
+#[test]
+fn failed_account_replacement_preserves_the_previous_record_and_retry_converges() {
+    let store = RotationSafeStore::new(MemoryStore::default());
+    let first = ActiveAccount::new("1", "first").unwrap();
+    let second = ActiveAccount::new("2", "second").unwrap();
+    store
+        .replace_active_account(&first, &pair("a1", "r1"))
+        .unwrap();
+    *store.inner().fail_active_save.lock().unwrap() = true;
+
+    assert_eq!(
+        store.replace_active_account(&second, &pair("a2", "r2")),
+        Err(StoreError::Unavailable)
+    );
+    let restored = store.restore_active_account().unwrap().unwrap();
+    assert_eq!(restored.account, first);
+    assert_eq!(restored.pair.access_token(), "a1");
+
+    store
+        .replace_active_account(&second, &pair("a2", "r2"))
+        .unwrap();
+    assert_eq!(
+        store.restore_active_account().unwrap().unwrap().account,
+        second
+    );
+}
+
+#[test]
+fn failed_disconnect_preserves_the_record_and_retry_converges() {
+    let store = RotationSafeStore::new(MemoryStore::default());
+    let account = ActiveAccount::new("1", "octocat").unwrap();
+    store
+        .replace_active_account(&account, &pair("a1", "r1"))
+        .unwrap();
+    *store.inner().fail_active_delete.lock().unwrap() = true;
+
+    assert_eq!(store.disconnect(&account), Err(StoreError::Unavailable));
+    assert!(store.restore_active_account().unwrap().is_some());
+
+    store.disconnect(&account).unwrap();
+    assert!(store.restore_active_account().unwrap().is_none());
 }

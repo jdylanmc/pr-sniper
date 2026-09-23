@@ -81,3 +81,54 @@ for (const [reason, message] of [
     await expect(card.getByRole("status")).not.toContainText("Connected as");
   });
 }
+
+test("connected App account explicitly selects an installed repository", async ({
+  page,
+  store,
+}) => {
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = (command, args) => {
+      if (command === "github_auth_state")
+        return Promise.resolve({
+          state: "connected",
+          account_id: "6954990",
+          login: "jdylanmc",
+        });
+      if (command === "list_github_repositories")
+        return Promise.resolve({
+          identity: { id: "6954990", login: "jdylanmc" },
+          repositories: [
+            {
+              installation_id: "9001",
+              repository: {
+                id: "1376547672",
+                name: "jdylanmc/pr-sniper",
+              },
+            },
+          ],
+        });
+      return original(command, args);
+    };
+  });
+  await page.goto("/?view=settings");
+
+  const card = page.locator(".github-auth-card");
+  await card
+    .getByRole("button", { name: "Load installed repositories" })
+    .click();
+  await card.getByRole("button", { name: "Use jdylanmc/pr-sniper" }).click();
+
+  await expect(
+    page.getByRole("article", { name: "jdylanmc/pr-sniper" }),
+  ).toBeVisible();
+  await expect(page.locator("#selected-count")).toHaveText("1 selected");
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await page.evaluate(() => window.__settingsIdle());
+  const snapshot = await store("snapshot");
+  expect(snapshot.settings.repositories[0]).toMatchObject({
+    name: "jdylanmc/pr-sniper",
+    installation_id: "9001",
+    provider_repository_id: "1376547672",
+  });
+});

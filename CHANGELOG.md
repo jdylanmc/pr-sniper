@@ -28,14 +28,17 @@ No release/versioning policy has been established yet.
 - Connect through the registered PR Sniper GitHub App's OAuth device flow,
   with explicit pending, provider-timed retry, slow-down, denial, expiry,
   cancellation and failure states. Rotating provider/account credentials use
-  absolute expirations in a single macOS Keychain record behind a serialized
-  rotation boundary, restore and validate the active account after restart,
-  and remove account-bound credentials on disconnect or account switch. Failed
-  replacement retains the last confirmed pair and reports the specific
-  reconnect reason. Settings never treats sign-in as repository access or
-  permission to review, publish, notify or merge. Deterministic provider
-  fixtures and isolated native Keychain restart coverage protect this
-  foundation; live device sign-in remains separate acceptance. See
+  absolute expirations in one atomically replaced macOS Keychain record behind
+  a serialized rotation boundary, restore and validate the active account after
+  restart, and remove credentials on disconnect. The App-token session lists
+  paginated installation repositories with stable identities, requires
+  explicit selection, and backs identity, people, repository verification and
+  pull-request metadata reads without requiring GitHub CLI credentials. Failed
+  operations retain the last confirmed credential state and report specific
+  reconnect causes. Settings never treats sign-in as permission to review,
+  publish, notify or merge. Deterministic provider fixtures and isolated native
+  Keychain restart coverage protect this foundation; live device sign-in
+  remains separate acceptance. See
   [#5](https://github.com/jdylanmc/pr-sniper/issues/5).
 
 - Verify configured GitHub repositories with the current CLI account and stable

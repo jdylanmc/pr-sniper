@@ -3,9 +3,7 @@
 use pr_sniper_lib::github::{
     device_flow::TokenPair,
     macos_keychain::MacKeychainStore,
-    token_store::{
-        ActiveAccount, ActiveAccountStore, CredentialKey, CredentialStore, RotationSafeStore,
-    },
+    token_store::{ActiveAccount, CredentialKey, CredentialStore, RotationSafeStore},
 };
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -86,5 +84,5 @@ fn native_keychain_restores_active_account_and_absolute_expirations_after_restar
     );
 
     restarted.disconnect(&account).unwrap();
-    assert!(restarted.load_active_account().unwrap().is_none());
+    assert!(restarted.restore_active_account().unwrap().is_none());
 }

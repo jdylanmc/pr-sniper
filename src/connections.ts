@@ -31,12 +31,10 @@ interface Observation {
 
 const observations = new Map<string, Observation>();
 const failures: Record<string, string> = {
-  missing_cli:
-    "GitHub CLI is missing. Install the official gh CLI, then verify again.",
-  broken_cli:
-    "GitHub CLI or its shim is broken. Check the official executable in your terminal.",
+  missing_cli: "The optional development GitHub CLI probe is unavailable.",
+  broken_cli: "The optional development GitHub CLI probe is broken.",
   signed_out:
-    "GitHub CLI credentials are missing or rejected. Sign in or repair them yourself in your terminal, then verify again.",
+    "The PR Sniper GitHub App authorization is missing, expired, or rejected. Reconnect GitHub.",
   wrong_identity:
     "The authenticated GitHub account does not match the expected account ID. No repository action was taken.",
   missing_read_permission:
@@ -44,12 +42,11 @@ const failures: Record<string, string> = {
   rate_limited:
     "GitHub rate limited this read. Wait for the provider limit to reset before retrying.",
   network: "Could not reach GitHub securely. Check your network and try again.",
-  timeout:
-    "GitHub CLI or the provider timed out. No complete result was accepted.",
+  timeout: "GitHub timed out. No complete result was accepted.",
   provider_failure:
     "GitHub could not complete this read. Try again after checking provider health.",
   invalid_response:
-    "GitHub or the CLI returned an invalid response. No complete result was accepted.",
+    "GitHub returned an invalid response. No complete result was accepted.",
   incomplete_read:
     "GitHub metadata is incomplete or exceeded a provider/resource limit. No partial result was accepted.",
   revision_changed:
@@ -80,11 +77,8 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
     observation = undefined;
   }
   root.innerHTML = `
-    <p class="settings-hint">Development-only GitHub CLI repository probe. Product sign-in uses the PR Sniper GitHub App connection above.</p>
+    <p class="settings-hint">Uses the connected PR Sniper GitHub App account and the explicitly selected installation repository.</p>
     <form class="connection-form">
-      <label>Expected GitHub account ID (optional)
-        <input name="expectedAccountId" type="text" inputmode="numeric" pattern="[1-9][0-9]*" placeholder="Stable decimal account ID" />
-      </label>
       <button type="submit">Verify GitHub connection</button>
       <button type="button" class="read-metadata">Read PR metadata</button>
     </form>
@@ -92,14 +86,12 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
     <div class="pull-metadata"></div>`;
   const form = root.querySelector<HTMLFormElement>("form")!;
   form.dataset.draftKey = `connection:${repository.id}`;
-  const expected = form.querySelector<HTMLInputElement>("input")!;
-  expected.value = observation?.connection?.identity.id ?? "";
   const status = root.querySelector<HTMLElement>("[role=status]")!;
   const read = root.querySelector<HTMLButtonElement>(".read-metadata")!;
   const details = root.querySelector<HTMLElement>(".pull-metadata")!;
   status.textContent =
     observation?.message ??
-    "Not verified. This development probe uses the saved repository and current GitHub CLI account; no product sign-in or provider changes are performed.";
+    "Not verified. Connect GitHub and explicitly select this repository from an App installation; no provider changes are performed.";
   read.disabled = !observation?.connection;
 
   function renderPulls(pulls: PullRequest[]) {
@@ -152,10 +144,7 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
       } else {
         const connection = await invoke<Connection>(
           "verify_github_connection",
-          {
-            id: repository.id,
-            expectedAccountId: expected.value.trim() || null,
-          },
+          { id: repository.id },
         );
         if (!root.isConnected) return;
         observation = {
@@ -163,7 +152,6 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
           connection,
           message: `${describe(connection)} Last verified ${new Date().toLocaleTimeString()}.`,
         };
-        expected.value = connection.identity.id;
       }
     } catch (cause) {
       if (!root.isConnected) return;

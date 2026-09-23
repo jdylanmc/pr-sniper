@@ -66,10 +66,10 @@ pub trait CredentialStore {
     fn delete(&self, key: &CredentialKey) -> Result<(), StoreError>;
 }
 
-pub trait ActiveAccountStore {
-    fn load_active_account(&self) -> Result<Option<ActiveAccount>, StoreError>;
-    fn save_active_account(&self, account: &ActiveAccount) -> Result<(), StoreError>;
-    fn delete_active_account(&self) -> Result<(), StoreError>;
+pub trait ActiveCredentialStore {
+    fn load_active_credentials(&self) -> Result<Option<RestoredCredentials>, StoreError>;
+    fn save_active_credentials(&self, credentials: &RestoredCredentials) -> Result<(), StoreError>;
+    fn delete_active_credentials(&self) -> Result<(), StoreError>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,33 +112,24 @@ impl<S: CredentialStore> CredentialStore for RotationSafeStore<S> {
     }
 }
 
-impl<S: ActiveAccountStore> ActiveAccountStore for RotationSafeStore<S> {
-    fn load_active_account(&self) -> Result<Option<ActiveAccount>, StoreError> {
-        self.inner.load_active_account()
+impl<S: ActiveCredentialStore> ActiveCredentialStore for RotationSafeStore<S> {
+    fn load_active_credentials(&self) -> Result<Option<RestoredCredentials>, StoreError> {
+        self.inner.load_active_credentials()
     }
 
-    fn save_active_account(&self, account: &ActiveAccount) -> Result<(), StoreError> {
-        self.inner.save_active_account(account)
+    fn save_active_credentials(&self, credentials: &RestoredCredentials) -> Result<(), StoreError> {
+        self.inner.save_active_credentials(credentials)
     }
 
-    fn delete_active_account(&self) -> Result<(), StoreError> {
-        self.inner.delete_active_account()
+    fn delete_active_credentials(&self) -> Result<(), StoreError> {
+        self.inner.delete_active_credentials()
     }
 }
 
-impl<S: CredentialStore + ActiveAccountStore> RotationSafeStore<S> {
+impl<S: ActiveCredentialStore + CredentialStore> RotationSafeStore<S> {
     pub fn restore_active_account(&self) -> Result<Option<RestoredCredentials>, StoreError> {
         let _guard = self.rotation.lock().map_err(|_| StoreError::Unavailable)?;
-        let Some(account) = self.inner.load_active_account()? else {
-            return Ok(None);
-        };
-        let Some(pair) = self
-            .inner
-            .load(&CredentialKey::github(&account.account_id))?
-        else {
-            return Err(StoreError::InvalidData);
-        };
-        Ok(Some(RestoredCredentials { account, pair }))
+        self.inner.load_active_credentials()
     }
 
     pub fn replace_active_account(
@@ -147,30 +138,53 @@ impl<S: CredentialStore + ActiveAccountStore> RotationSafeStore<S> {
         pair: &TokenPair,
     ) -> Result<(), StoreError> {
         let _guard = self.rotation.lock().map_err(|_| StoreError::Unavailable)?;
-        let previous = self.inner.load_active_account()?;
-        let key = CredentialKey::github(&account.account_id);
-        self.inner.save(&key, pair)?;
-        if let Some(previous) =
-            previous.filter(|previous| previous.account_id != account.account_id)
-        {
-            self.inner
-                .delete(&CredentialKey::github(previous.account_id))?;
-        }
-        self.inner.save_active_account(account)
+        self.inner.save_active_credentials(&RestoredCredentials {
+            account: account.clone(),
+            pair: pair.clone(),
+        })
     }
 
     pub fn disconnect(&self, account: &ActiveAccount) -> Result<(), StoreError> {
         let _guard = self.rotation.lock().map_err(|_| StoreError::Unavailable)?;
         let active = self
             .inner
-            .load_active_account()?
+            .load_active_credentials()?
             .ok_or(StoreError::InvalidData)?;
-        if active.account_id != account.account_id {
+        if active.account.account_id != account.account_id {
             return Err(StoreError::InvalidData);
         }
-        self.inner
-            .delete(&CredentialKey::github(&account.account_id))?;
-        self.inner.delete_active_account()
+        self.inner.delete_active_credentials()
+    }
+
+    pub fn refresh_active_if_needed<F>(
+        &self,
+        now: SystemTime,
+        refresh: F,
+    ) -> Result<Option<RestoredCredentials>, RotationError>
+    where
+        F: FnOnce(&TokenPair) -> Result<TokenPair, RotationError>,
+    {
+        let _guard = self
+            .rotation
+            .lock()
+            .map_err(|_| RotationError::Store(StoreError::Unavailable))?;
+        let Some(mut active) = self
+            .inner
+            .load_active_credentials()
+            .map_err(RotationError::Store)?
+        else {
+            return Ok(None);
+        };
+        if active.pair.refresh_is_expired(now) {
+            return Err(RotationError::ReconnectRequired);
+        }
+        if active.pair.access_is_expired(now) {
+            active.pair = refresh(&active.pair)?;
+            self.inner
+                .save_active_credentials(&active)
+                .map_err(RotationError::Store)?;
+        }
+        Ok(Some(active))
     }
 
     pub fn refresh_if_needed<F>(

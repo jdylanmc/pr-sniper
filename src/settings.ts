@@ -259,7 +259,34 @@ export async function mountSettings(app: HTMLElement) {
       <p class="settings-hint">Monitoring configuration only. Reviews and comments stay separate. No polling runs in this build.</p>
       <div class="settings-actions"><button id="add-repository">Add repository manually...</button>${draft.root_folder ? '<button id="rescan">Scan chosen folder</button>' : ""}</div>
       ${discovery?.warnings.map((warning) => `<p class="settings-notice">${escape(warning)}</p>`).join("") ?? ""}`;
-    renderGithubAuth(content.querySelector(".github-auth")!);
+    renderGithubAuth(
+      content.querySelector(".github-auth")!,
+      ({ installation_id, repository: installed }) => {
+        let repository = repositories().find(
+          (candidate) =>
+            candidate.provider_repository_id === installed.id ||
+            candidate.name === installed.name,
+        );
+        if (repository) {
+          repository.name = installed.name;
+          repository.enabled = true;
+          repository.installation_id = installation_id;
+          repository.provider_repository_id = installed.id;
+        } else {
+          repository = {
+            id: newIdentity(),
+            name: installed.name,
+            enabled: true,
+            provider: "github",
+            installation_id,
+            provider_repository_id: installed.id,
+          };
+          (draft.repositories ??= []).push(repository);
+        }
+        changed();
+        rows();
+      },
+    );
     content.querySelector<HTMLButtonElement>("#choose-folder")!.onclick =
       () => {
         if (!busy) void scan(true);
@@ -399,8 +426,13 @@ export async function mountSettings(app: HTMLElement) {
           repositories().some((r) => r.name === name && r.id !== repository?.id)
         )
           throw "This GitHub repository is already configured.";
-        if (repository) repository.name = name;
-        else
+        if (repository) {
+          if (repository.name !== name) {
+            repository.installation_id = undefined;
+            repository.provider_repository_id = undefined;
+          }
+          repository.name = name;
+        } else
           (draft.repositories ??= []).push({
             id: newIdentity(),
             name,
