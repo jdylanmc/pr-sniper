@@ -26,11 +26,11 @@ The MVP succeeds when every nano acceptance criterion is demonstrated in a repro
 
 ## Scope and Non-goals
 
-Scope includes a Tauri menu-bar application, local settings and state, first-party GitHub App device-flow sign-in, scheduled GitHub polling, watched-author and reviewer-assignment triggers, GitHub Copilot CLI review, comment publication, follow-up replies, queueing, notifications, and Setup Doctor. GitHub CLI remains only optional development or migration context. The nano non-goals exclude Azure DevOps, Windows release, embedded human diff review, leaderboards, hosted team state, hosted authentication brokerage, production updater feeds, and provider approval submission.
+Scope includes a Tauri menu-bar application, local settings and state, concurrent first-party GitHub App device-flow accounts, explicit repository-to-account binding, scheduled GitHub polling, watched-author and reviewer-assignment triggers, GitHub Copilot CLI review, comment publication, follow-up replies, queueing, notifications, and Setup Doctor. GitHub CLI remains only optional development or migration context. The domain and secure-storage contract uses provider-neutral stable identifiers so another provider can implement it later; only GitHub is implemented in the MVP. The nano non-goals exclude Azure DevOps implementation, automatic resolution of ambiguous repository-account migration, Windows release, embedded human diff review, leaderboards, hosted team state, hosted authentication brokerage, production updater feeds, and provider approval submission.
 
 ## Constraints and Dependencies
 
-The application runs monitoring only while its tray process is active, with opt-in launch at login. GitHub and the selected local agent remain external dependencies with independent authentication and limits. The registered GitHub App uses public client ID `Iv23li1HXvoQVkSzV2l5`, device flow, no client secret or private key, and rotating credentials in native secure storage. Pull-request content is untrusted. The configured agent runs with the current user's access, so PR Sniper does not claim sandbox isolation and must constrain the review workflow without implying a stronger operating-system boundary.
+The application runs monitoring only while its tray process is active, with opt-in launch at login. GitHub and the selected local agent remain external dependencies with independent authentication and limits. The registered GitHub App uses public client ID `Iv23li1HXvoQVkSzV2l5`, device flow, no client secret or private key, and rotating credentials in account-addressed native secure storage. Each repository configuration names one provider and stable provider-account identity. When multiple accounts can access the same repository, the user explicitly chooses the binding; account removal leaves affected repositories visibly unbound or disabled rather than transferring them. Pull-request content is untrusted. The configured agent runs with the current user's access, so PR Sniper does not claim sandbox isolation and must constrain the review workflow without implying a stronger operating-system boundary.
 
 ## Confirmed Facts
 
@@ -41,6 +41,7 @@ The application runs monitoring only while its tray process is active, with opt-
 - The PR Sniper GitHub App is registered as App ID `5048251`, with device flow enabled, webhooks disabled, and permissions for checks read, contents write, metadata read, pull requests write, and statuses read. Registration and installation are external prerequisites, not application-owned mutations.
 - GitHub App device flow supports a distributed desktop client without an embedded client secret. User access tokens rotate with refresh tokens, so persistence must replace the pair together and serialize competing refresh attempts.
 - GitHub pending reviews support batching inline comments before one visible review submission.
+- GitHub numeric user IDs provide the stable account component for the MVP; mutable login names are display metadata, not credential or repository-binding keys.
 
 ## Assumptions
 
@@ -95,7 +96,7 @@ Electron remains a fallback only if later Windows or process-control evidence ex
 - PR-035 [AC-017]: Machine-sign-off handoff shall state that automated review completed, request final human review, and never represent machine sign-off as human approval.
 - PR-036 [AC-017]: The MVP shall never submit a provider `APPROVE` event.
 - PR-037 [AC-018]: Local persistence shall contain repository configuration, schedules, poll cursors, jobs, state transitions, pending-review identities, publication receipts, retry budgets, and notification deduplication records.
-- PR-038 [AC-018]: Provider/account-scoped access and refresh credentials shall use operating-system secure storage; prompts, child-process arguments, ordinary configuration, logs and UI payloads shall not contain provider secrets.
+- PR-038 [AC-018]: Provider/account-scoped access and refresh credentials shall use separate account-addressed operating-system secure-storage records plus a non-secret account registry; prompts, child-process arguments, ordinary configuration, logs and UI payloads shall not contain provider secrets.
 - PR-039 [AC-018]: Structured redacted logs shall expose provider, repository, agent, scheduler, persistence, and publication health from Settings.
 - PR-040 [AC-019]: Automatic retry shall apply only to provider rate limits, transient network or transport failures, provider server failures, transient checkout fetch or input/output failures, and agent launch, timeout, or temporary-exit failures before any provider mutation.
 - PR-041 [AC-019]: Authentication, permission, configuration, cancellation, schema-validation, stale-revision, ineligibility, and explicit-provider-rejection failures shall require correction or human action and shall not consume automatic retries.
@@ -104,6 +105,14 @@ Electron remains a fallback only if later Windows or process-control evidence ex
 - PR-044 [AC-019]: Every externally visible operation shall retain repository, pull request, head revision, trigger policy, operation type, attempted mutation, pending-review identity, owned-thread ID, triggering external-comment ID when applicable, confirmed receipt, retry count, and retry deadline for reconciliation.
 - PR-045 [AC-018]: Competing refreshes for one provider/account credential shall serialize against the latest stored pair; successful rotation shall replace access and refresh credentials together, while persistence failure shall retain the previously confirmed pair and report failure.
 - PR-046 [AC-007, AC-018]: Settings shall distinguish disconnected, connecting, connected stable identity and reconnect-required states without implying repository access or enabling review execution, publication, notifications or merging.
+- PR-047 [AC-002, AC-018]: Each repository configuration shall bind to exactly one provider ID and stable provider-account ID. When multiple retained accounts can access the same provider repository, creation or rebind shall require an explicit account choice rather than inferred priority, last sign-in, or mutable login.
+- PR-048 [AC-002, AC-007]: The MVP shall retain multiple GitHub accounts concurrently in one provider-neutral account registry keyed by provider ID and stable provider-account ID; adding or refreshing one account shall not replace another account.
+- PR-049 [AC-002, AC-003, AC-018]: Persisted repository configuration and every repository-scoped job, confirmation, mutation attempt, and receipt shall carry its provider and stable provider-account binding. Settings and queue surfaces shall show the acting login and stable account context before provider work or publication.
+- PR-050 [AC-018]: Credential storage, refresh coordination, reconnect state, and removal shall be isolated by provider ID plus stable provider-account ID; work for different accounts shall not share an account refresh lock or overwrite another account's pair.
+- PR-051 [AC-002, AC-018]: Removing an account shall remove only that account's credentials and registry entry, clear its active selection if applicable, retain every other account, and leave repositories bound to the removed account visibly blocked until an explicit rebind. PR Sniper shall not silently select another account.
+- PR-052 [AC-018]: Migration from the combined active-account secure record and the earlier active-marker-plus-credential layout shall write and confirm the account-addressed credential and registry before deleting legacy records. Every interruption shall preserve at least one confirmed credential copy and converge safely on retry.
+- PR-053 [AC-002, AC-018]: Migration of repository records that predate explicit account binding shall assign an account only when the binding is unambiguous. Multiple plausible accounts require a visible user choice; implementing that repository-schema migration is separate from the secure-account foundation.
+- PR-054 [AC-007, AC-018]: `ProviderId` and `ProviderAccountId` shall be stable provider-neutral concepts. GitHub supplies the only MVP implementation; Azure DevOps may implement the same contract later but shall not appear connected, selectable, or functional before its provider and Microsoft Entra authentication exist.
 
 ## Product Decisions
 
@@ -118,18 +127,21 @@ Electron remains a fallback only if later Windows or process-control evidence ex
 - PD-009 [AC-015]: The canonical application mark is ``.
 - PD-010 [AC-017]: Final review remains human-owned; automated provider approval is deferred until a distinct automation identity exists, with future policy modeled as `off`, `manual`, or `automatic`.
 - PD-011 [AC-019]: Each persisted job-operation retry budget starts with the initial attempt, permits three retries within 15 minutes, persists across restart, and resets only after explicit manual retry.
+- PD-012 [AC-002, AC-007, AC-018]: Concurrent account retention and repository binding use provider ID plus stable provider-account ID. GitHub numeric user ID is the MVP account key; login is visible mutable metadata.
+- PD-013 [AC-002, AC-018]: Overlapping repository access never establishes precedence implicitly. The selected binding is explicit, and account removal or credential failure never transfers work to another account.
+- PD-014 [AC-007]: Provider-neutral account and storage identifiers are an extension contract, not evidence of Azure DevOps support in the MVP.
 
 ## Traceability
 
 | Nano authority | Supporting requirements | Discovery basis |
 | --- | --- | --- |
 | AC-001 | PR-001–PR-002, PD-001–PD-002 | Tray POCs and Tauri selection |
-| AC-002 | PR-003 | Repository and monorepository product context |
-| AC-003 | PR-004–PR-005, PR-022 | Monitoring, settings, and pre-invocation gate decisions |
+| AC-002 | PR-003, PR-047–PR-049, PR-051, PR-053, PD-012–PD-013 | Repository and concurrent-account product context |
+| AC-003 | PR-004–PR-005, PR-022, PR-049 | Monitoring, settings, acting-identity, and pre-invocation gate decisions |
 | AC-004 | PR-006 | Scheduled polling decision |
 | AC-005 | PR-007 | GitHub filtering POC |
 | AC-006 | PR-008–PR-009 | Head-SHA deduplication evidence |
-| AC-007 | PR-010–PR-011, PR-046, PD-003 | GitHub App registration and device-flow decision |
+| AC-007 | PR-010–PR-011, PR-046, PR-048, PR-054, PD-003, PD-012, PD-014 | GitHub App registration, device flow, and provider extension contract |
 | AC-008 | PR-012–PR-013 | Setup Doctor decision |
 | AC-009 | PR-014–PR-015, PD-004 | Local agent inventory and Copilot POC |
 | AC-010 | PR-016–PR-018 | Real agent-review POC and complete-file decision |
@@ -140,9 +152,9 @@ Electron remains a fallback only if later Windows or process-control evidence ex
 | AC-015 | PR-032, PD-009 | Icon decision |
 | AC-016 | PR-033–PR-034 | Queue and notification issues |
 | AC-017 | PR-035–PR-036, PD-010 | Human-handoff and approval-identity decisions |
-| AC-018 | PR-037–PR-039, PR-045–PR-046 | Secure-storage and rotating-token evidence |
+| AC-018 | PR-037–PR-039, PR-045–PR-054, PD-012–PD-014 | Account-addressed secure storage, migration, binding, and rotating-token evidence |
 | AC-019 | PR-040–PR-044, PD-011 | Provider and agent failure evidence |
 
 ## Open Questions
 
-None block the MVP product requirements. Database choice, GitHub API client and REST/GraphQL split, checkout strategy, internal concurrency, and future credential migration remain implementation design questions rather than product decisions.
+None block the MVP product requirements. Database choice, GitHub API client and REST/GraphQL split, checkout strategy, and internal concurrency remain implementation design questions rather than product decisions. Repository-schema migration must preserve an unambiguous existing binding or ask the user; this specification does not authorize guessing among multiple retained accounts.
