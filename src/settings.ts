@@ -130,12 +130,13 @@ export async function mountSettings(app: HTMLElement) {
       .join("")}</select></label></aside>
     <div class="settings-main"><header class="settings-heading"><h1 tabindex="-1">Repositories</h1><p>Choose where PR Sniper looks for pull requests.</p></header>
     <p id="error" role="alert" hidden></p><section id="content"></section>
-    <footer class="settings-savebar"><span role="status" id="save-status">Loading settings...</span><button id="reset-settings" disabled>Reset changes</button><button class="primary" id="save-settings" disabled>Save changes</button></footer></div>`;
+    <footer class="settings-savebar"><span role="status" id="save-status">Loading settings...</span><button id="reload-settings" hidden>Discard draft and reload</button><button id="reset-settings" disabled>Reset changes</button><button class="primary" id="save-settings" disabled>Save changes</button></footer></div>`;
   const content = app.querySelector<HTMLElement>("#content")!;
   const error = app.querySelector<HTMLElement>("#error")!;
   const status = app.querySelector<HTMLElement>("#save-status")!;
   const save = app.querySelector<HTMLButtonElement>("#save-settings")!;
   const reset = app.querySelector<HTMLButtonElement>("#reset-settings")!;
+  const reload = app.querySelector<HTMLButtonElement>("#reload-settings")!;
   let snapshot: Snapshot;
   let saved: Settings;
   let persisted: Settings;
@@ -144,6 +145,7 @@ export async function mountSettings(app: HTMLElement) {
   let discovery: Discovery | null = null;
   let query = "";
   let busy = false;
+  let conflict = false;
   let revision = 0;
   const dialogs = createDialogs(content, () => revision++);
   const dirty = () =>
@@ -163,6 +165,8 @@ export async function mountSettings(app: HTMLElement) {
     status.textContent = dirty() ? "Unsaved changes" : "All changes saved";
     save.disabled = !dirty() || busy;
     reset.disabled = !dirty() || busy;
+    reload.hidden = !conflict;
+    reload.disabled = busy;
   }
   function updatePolicy<K extends keyof Policy>(
     repository: ConfiguredRepository | undefined,
@@ -686,7 +690,7 @@ export async function mountSettings(app: HTMLElement) {
         ...(catalogAvailable ? Intl.supportedValuesOf("timeZone") : []),
       ]),
     ];
-    schedule.innerHTML = `<label class="setting-row"><span>Check for pull requests<small>Time zone: ${escape(existing.timezone)}${existing.timezone === local ? " (system local)" : " (saved)"}. Scheduling is not running in this build.</small></span><select aria-label="Check frequency">${[
+    schedule.innerHTML = `<label class="setting-row"><span>Check for pull requests<small data-schedule-summary>Time zone: ${escape(existing.timezone)}${existing.timezone === local ? " (system local)" : " (selected)"}. Scheduling is not running in this build.</small></span><select aria-label="Check frequency">${[
       5,
       15,
       30,
@@ -719,7 +723,35 @@ export async function mountSettings(app: HTMLElement) {
     const cron = schedule.querySelector<HTMLInputElement>("[name=cron]")!;
     const timezone =
       schedule.querySelector<HTMLSelectElement>("[name=timezone]")!;
+    const summary = schedule.querySelector<HTMLElement>(
+      "[data-schedule-summary]",
+    )!;
+    const standardIntervals = new Set(["5", "15", "30", "60"]);
+    let customInterval = [...frequency.options].find(
+      (item) => item.value !== "cron" && !standardIntervals.has(item.value),
+    );
+    const syncDisplay = () => {
+      if (frequency.value !== "cron") {
+        if (customInterval && customInterval.value !== minutes.value) {
+          customInterval.remove();
+          customInterval = undefined;
+        }
+        if (
+          minutes.value &&
+          ![...frequency.options].some((item) => item.value === minutes.value)
+        ) {
+          customInterval = new Option(
+            `Every ${minutes.value} minutes`,
+            minutes.value,
+          );
+          frequency.add(customInterval, frequency.options.length - 1);
+        }
+        frequency.value = minutes.value;
+      }
+      summary.textContent = `Time zone: ${timezone.value}${timezone.value === local ? " (system local)" : " (selected)"}. Scheduling is not running in this build.`;
+    };
     const update = () => {
+      syncDisplay();
       minutes.disabled = frequency.value === "cron";
       cron.disabled = frequency.value !== "cron";
       updatePolicy(
@@ -939,9 +971,65 @@ export async function mountSettings(app: HTMLElement) {
       persisted = clone(result.settings);
       saved = clone(result.settings);
       draft = clone(result.settings);
+      conflict = false;
       if (result.warning) showError(result.warning);
     } catch (cause) {
-      showError(reason(cause));
+      const message = reason(cause);
+      if (message.startsWith("Settings changed in another window")) {
+        conflict = true;
+        showError(
+          `${message} Your unsaved changes are still here. Discard the draft and reload only when you are ready to replace them with the latest saved settings.`,
+        );
+      } else {
+        showError(message);
+      }
+    } finally {
+      controls.forEach(({ control, disabled }) => {
+        control.disabled = disabled;
+      });
+      busy = false;
+      render();
+    }
+  };
+  reload.onclick = async () => {
+    if (busy || !conflict) return;
+    dialogs.closeAll();
+    clearError();
+    busy = true;
+    changed();
+    const controls = [
+      ...app.querySelectorAll<
+        | HTMLInputElement
+        | HTMLButtonElement
+        | HTMLSelectElement
+        | HTMLTextAreaElement
+      >("input,button,select,textarea"),
+    ].map((control) => ({ control, disabled: control.disabled }));
+    controls.forEach(({ control }) => {
+      control.disabled = true;
+    });
+    try {
+      const state = await invoke<Snapshot>("snapshot");
+      if (!state.settings) {
+        showError(
+          state.error ??
+            "Settings unavailable. Repair local configuration before reloading.",
+        );
+        return;
+      }
+      snapshot = state;
+      persisted = clone(state.settings);
+      saved = clone(state.settings);
+      if (!state.settings_persisted)
+        saved.defaults.schedule.timezone = localZone();
+      draft = clone(saved);
+      discovery = null;
+      conflict = false;
+      if (state.error) showError(state.error);
+    } catch {
+      showError(
+        "Could not reload Settings. Your draft is still available; check local storage access and try again.",
+      );
     } finally {
       controls.forEach(({ control, disabled }) => {
         control.disabled = disabled;
@@ -977,6 +1065,7 @@ export async function mountSettings(app: HTMLElement) {
       if (!state.settings_persisted)
         saved.defaults.schedule.timezone = localZone();
       draft = clone(saved);
+      conflict = false;
       if (state.error) showError(state.error);
       render();
     } catch {
