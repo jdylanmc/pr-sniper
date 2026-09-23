@@ -1,6 +1,6 @@
 use pr_sniper_lib::github::oauth::{
     exchange_code_with, prepare_authorization_with, receive_callback, AuthorizationAttempt,
-    CallbackGuard, CallbackParameters, OAuthError, GITHUB_APP_CLIENT_ID, GITHUB_CALLBACK_URL,
+    CallbackGuard, CallbackParameters, OAuthError, GITHUB_CALLBACK_URL,
 };
 use std::time::{Duration, UNIX_EPOCH};
 use std::{collections::BTreeMap, net::TcpListener};
@@ -85,8 +85,9 @@ fn authorization_url_uses_pkce_state_and_the_registered_loopback_callback() {
     );
     assert_eq!(
         first_query.get("client_id").map(String::as_str),
-        Some(GITHUB_APP_CLIENT_ID)
+        Some("Ov23lidoL3QovWyfxnA4")
     );
+    assert_eq!(first_query.get("scope").map(String::as_str), Some("repo"));
     assert_eq!(
         first_query.get("redirect_uri").map(String::as_str),
         Some(GITHUB_CALLBACK_URL)
@@ -133,7 +134,7 @@ fn code_exchange_sends_pkce_without_a_client_secret_and_returns_rotating_tokens(
             serde_urlencoded::from_bytes(request.body()).unwrap();
         assert_eq!(
             fields.get("client_id").map(String::as_str),
-            Some(GITHUB_APP_CLIENT_ID)
+            Some("Ov23lidoL3QovWyfxnA4")
         );
         assert_eq!(
             fields.get("redirect_uri").map(String::as_str),
@@ -264,7 +265,7 @@ fn refresh_exchange_rotates_the_complete_token_pair_without_a_client_secret() {
         );
         assert_eq!(
             fields.get("client_id").map(String::as_str),
-            Some(GITHUB_APP_CLIENT_ID)
+            Some("Ov23lidoL3QovWyfxnA4")
         );
         assert!(!fields.contains_key("client_secret"));
         Ok::<_, std::io::Error>(
@@ -369,7 +370,9 @@ async fn loopback_callback_returns_a_secret_free_success_page_once() {
     let result = completion.await.unwrap().unwrap();
 
     assert_eq!(result.code.secret(), "secret-code");
-    assert!(response.contains("Connected - return to PR Sniper"));
+    assert!(response.contains("Authorization response received"));
+    assert!(response.contains("Return to PR Sniper"));
+    assert!(!response.contains("Connected"));
     assert!(!response.contains("secret-code"));
     assert!(!response.contains(&state));
 }

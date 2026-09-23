@@ -59,7 +59,6 @@ async function saveBoundRepository(
   store,
   name = "jdylanmc/pr-sniper",
   accountId = "6954990",
-  installationId = "9001",
   repositoryId = "1376547672",
 ) {
   await store("save_repository", { repository: name });
@@ -68,7 +67,6 @@ async function saveBoundRepository(
     settings.repositories.find((repository) => repository.name === name),
     {
       provider_account_id: accountId,
-      installation_id: installationId,
       provider_repository_id: repositoryId,
     },
   );
@@ -145,9 +143,11 @@ test("verifying GitHub preserves drafts and does not enable automation", async (
 });
 
 for (const [error, expected] of [
-  ["signed_out", "App authorization is missing, expired, or rejected"],
+  ["signed_out", "OAuth authorization is missing, expired, or rejected"],
   ["wrong_identity", "does not match"],
   ["missing_read_permission", "denied repository or pull-request read"],
+  ["missing_scope", "no longer grants the required repo scope"],
+  ["organization_policy_denied", "organization policy or SAML single sign-on"],
   ["rate_limited", "rate limited"],
   ["network", "Could not reach GitHub securely"],
   ["provider_failure", "could not complete this read"],
@@ -330,7 +330,6 @@ test("disconnecting one account clears only its repository evidence", async ({
   const settings = (await store("snapshot")).settings;
   Object.assign(settings.repositories[0], {
     provider_account_id: "101",
-    installation_id: "9001",
     provider_repository_id: "1376547672",
     overrides: { automatic_agent_start: true },
   });
@@ -338,7 +337,6 @@ test("disconnecting one account clears only its repository evidence", async ({
     ...structuredClone(settings.repositories[0]),
     id: "22222222-2222-4222-8222-222222222222",
     provider_account_id: "202",
-    installation_id: "9002",
     overrides: { automatic_agent_start: false },
   });
   await store("seed_settings", settings);
@@ -507,7 +505,6 @@ for (const [commandError, stateReason] of [
     for (const [index, repository] of settings.repositories.entries())
       Object.assign(repository, {
         provider_account_id: "101",
-        installation_id: "9001",
         provider_repository_id: String(index + 1),
       });
     await store("seed_settings", settings);

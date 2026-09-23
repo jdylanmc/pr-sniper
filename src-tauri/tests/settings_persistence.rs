@@ -1,6 +1,6 @@
 use pr_sniper_lib::{
     policy::PolicyOverrides,
-    storage::{ProviderId, Repository, RepositoryBindingCandidate, Settings, Store},
+    storage::{ProviderId, Repository, Settings, Store},
 };
 use std::fs;
 
@@ -200,22 +200,35 @@ fn ordinary_configuration_contains_only_nonsecret_settings() {
 }
 
 #[test]
-fn legacy_repository_identity_stays_unbound_until_an_account_is_selected() {
+fn legacy_installation_binding_is_migrated_to_an_explicitly_unbound_repository() {
     let fixture = Fixture::new();
     let store = fixture.store();
-    let mut settings = store.add_repository("octo/example").unwrap();
-    let repository = &mut settings.repositories[0];
-    repository.installation_id = Some("9001".into());
-    repository.provider_repository_id = Some("42".into());
-
-    store.save_settings(&settings).unwrap();
+    let settings_path = fixture.path().join("config/settings.json");
+    fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+    fs::write(
+        &settings_path,
+        br#"{
+          "launch_at_login": false,
+          "repositories": [{
+            "id": "c53ae3be-2ad5-44aa-b257-9298186e1c6f",
+            "provider": "github",
+            "name": "octo/example",
+            "enabled": true,
+            "provider_account_id": "101",
+            "installation_id": "9001",
+            "provider_repository_id": "42"
+          }]
+        }"#,
+    )
+    .unwrap();
     let restored = store.load_settings().unwrap();
 
     assert!(restored.repositories[0].account_binding().is_none());
-    assert_eq!(
-        restored.repositories[0].provider_repository_id.as_deref(),
-        Some("42")
-    );
+    assert!(restored.repositories[0].provider_account_id.is_none());
+    assert!(restored.repositories[0].provider_repository_id.is_none());
+    assert!(!String::from_utf8(fs::read(settings_path).unwrap())
+        .unwrap()
+        .contains("installation_id"));
 }
 
 #[test]
@@ -225,7 +238,6 @@ fn repository_binding_preserves_provider_account_and_repository_identity() {
     let mut settings = store.add_repository("octo/example").unwrap();
     let repository = &mut settings.repositories[0];
     repository.provider_account_id = Some("6954990".into());
-    repository.installation_id = Some("9001".into());
     repository.provider_repository_id = Some("42".into());
 
     store.save_settings(&settings).unwrap();
@@ -235,7 +247,6 @@ fn repository_binding_preserves_provider_account_and_repository_identity() {
 
     assert_eq!(binding.account.account_id, "6954990");
     assert_eq!(binding.repository.repository_id, "42");
-    assert_eq!(binding.installation_id.as_deref(), Some("9001"));
 }
 
 #[test]
@@ -245,7 +256,6 @@ fn the_same_provider_repository_persists_as_distinct_account_bindings() {
     let mut settings = store.add_repository("octo/example").unwrap();
     let first = &mut settings.repositories[0];
     first.provider_account_id = Some("101".into());
-    first.installation_id = Some("9001".into());
     first.provider_repository_id = Some("42".into());
     first.overrides.automatic_agent_start = Some(true);
     settings.repositories.push(Repository {
@@ -254,7 +264,7 @@ fn the_same_provider_repository_persists_as_distinct_account_bindings() {
         name: "octo/example".into(),
         enabled: true,
         provider_account_id: Some("202".into()),
-        installation_id: Some("9002".into()),
+        legacy_installation_id: None,
         provider_repository_id: Some("42".into()),
         overrides: PolicyOverrides {
             automatic_agent_start: Some(false),
@@ -286,33 +296,6 @@ fn the_same_provider_repository_persists_as_distinct_account_bindings() {
 }
 
 #[test]
-fn legacy_repository_binding_migrates_only_for_one_exact_account_match() {
-    let fixture = Fixture::new();
-    let store = fixture.store();
-    let mut settings = store.add_repository("octo/example").unwrap();
-    settings.repositories[0].installation_id = Some("9001".into());
-    settings.repositories[0].provider_repository_id = Some("42".into());
-    let candidate = |account_id: &str| RepositoryBindingCandidate {
-        provider: ProviderId::Github,
-        account_id: account_id.into(),
-        installation_id: Some("9001".into()),
-        repository_id: "42".into(),
-        name: "octo/example".into(),
-    };
-
-    let mut unambiguous = settings.clone();
-    assert!(unambiguous.migrate_repository_bindings(&[candidate("101")]));
-    assert_eq!(
-        unambiguous.repositories[0].provider_account_id.as_deref(),
-        Some("101")
-    );
-
-    let mut ambiguous = settings;
-    assert!(!ambiguous.migrate_repository_bindings(&[candidate("101"), candidate("202")]));
-    assert!(ambiguous.repositories[0].provider_account_id.is_none());
-}
-
-#[test]
 fn azure_devops_contract_persists_without_a_live_provider_implementation() {
     let fixture = Fixture::new();
     let store = fixture.store();
@@ -323,7 +306,7 @@ fn azure_devops_contract_persists_without_a_live_provider_implementation() {
         name: "organization/project/repository".into(),
         enabled: true,
         provider_account_id: Some("entra-object-id".into()),
-        installation_id: None,
+        legacy_installation_id: None,
         provider_repository_id: Some("repository-guid".into()),
         overrides: PolicyOverrides::default(),
         review_preset: None,

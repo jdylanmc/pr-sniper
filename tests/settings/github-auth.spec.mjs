@@ -58,6 +58,7 @@ test("browser OAuth confirms two accounts without exposing credentials", async (
       );
     return state;
   });
+
   await page.addInitScript(() => {
     const original = window.__TAURI_INTERNALS__.invoke;
     window.__TAURI_INTERNALS__.invoke = (command, args) =>
@@ -76,6 +77,12 @@ test("browser OAuth confirms two accounts without exposing credentials", async (
   const card = page.locator(".github-auth-card");
   await expect(card.getByRole("status")).toContainText(
     "No GitHub accounts connected",
+  );
+  await expect(card).toContainText(
+    "repo scope grants access to public and private repositories",
+  );
+  await expect(card).toContainText(
+    "never starts monitoring every accessible repository automatically",
   );
   await card.getByRole("button", { name: "Add GitHub account" }).click();
   await expect(card.getByRole("status")).toContainText("default browser");
@@ -103,6 +110,48 @@ test("browser OAuth confirms two accounts without exposing credentials", async (
   await card.getByRole("button", { name: "Disconnect jdylanmc" }).click();
   await expect(card).not.toContainText("jdylanmc (6954990)");
   await expect(card).toContainText("hubot (84)");
+});
+
+test("Keychain confirmation failure stays visible and retryable", async ({
+  page,
+}) => {
+  let state = {
+    accounts: [],
+    flow: {
+      state: "pending_account_confirmation",
+      account_id: "6954990",
+      login: "jdylanmc",
+    },
+  };
+  let confirmations = 0;
+  await page.exposeFunction("__githubAuth", (command) => {
+    if (command === "confirm_github_account") {
+      confirmations += 1;
+      if (confirmations === 1)
+        throw new Error("GitHub credentials could not be saved securely.");
+      state = idle([connected("6954990", "jdylanmc")]);
+    }
+    return state;
+  });
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = (command, args) =>
+      ["github_auth_state", "confirm_github_account"].includes(command)
+        ? window.__githubAuth(command, args)
+        : original(command, args);
+  });
+  await page.goto("/?view=settings");
+
+  const card = page.locator(".github-auth-card");
+  await card.getByRole("button", { name: "Confirm" }).click();
+  await expect(card.getByRole("status")).toContainText(
+    "could not be saved securely",
+  );
+  await expect(card).toContainText("jdylanmc (6954990)");
+  await expect(card).not.toContainText("Connected through");
+  await card.getByRole("button", { name: "Confirm" }).click();
+  await expect(card).toContainText("Connected through");
+  expect(confirmations).toBe(2);
 });
 
 for (const [reason, message] of [
@@ -181,11 +230,8 @@ test("overlapping repository access requires an explicit acting account choice",
               : { id: "6954990", login: "jdylanmc" },
           repositories: [
             {
-              installation_id: args.accountId === "84" ? "9002" : "9001",
-              repository: {
-                id: "1376547672",
-                name: "jdylanmc/pr-sniper",
-              },
+              id: "1376547672",
+              name: "jdylanmc/pr-sniper",
             },
           ],
         });
@@ -229,13 +275,11 @@ test("overlapping repository access requires an explicit acting account choice",
       expect.objectContaining({
         name: "jdylanmc/pr-sniper",
         provider_account_id: "6954990",
-        installation_id: "9001",
         provider_repository_id: "1376547672",
       }),
       expect.objectContaining({
         name: "jdylanmc/pr-sniper",
         provider_account_id: "84",
-        installation_id: "9002",
         provider_repository_id: "1376547672",
       }),
     ]),

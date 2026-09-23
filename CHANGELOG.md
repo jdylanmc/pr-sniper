@@ -25,7 +25,7 @@ No release/versioning policy has been established yet.
 
 ### Added
 
-- Connect through the registered PR Sniper GitHub App in the default browser
+- Connect through the registered PR Sniper GitHub OAuth App in the default browser
   using Authorization Code + S256 PKCE, a fixed localhost-only callback,
   single-use state correlation, bounded cancellation/timeout and explicit
   stable-identity confirmation before persistence. Multiple provider accounts retain
@@ -33,8 +33,9 @@ No release/versioning policy has been established yet.
   independent serialized rotation boundaries. Restart restores and validates
   every account, retry-safely migrates the prior active-account layouts without
   orphaning secrets, recovers interrupted first-time account additions, and
-  removes only the selected account on disconnect. Each App-token session lists
-  paginated installation repositories with stable identities, requires
+  removes only the selected account on disconnect. Each OAuth session requests
+  the broad `repo` scope, explains its public/private repository consent, lists
+  paginated user-accessible repositories with stable identities, requires
   explicit selection, and backs identity, people, repository verification and
   pull-request metadata reads without requiring GitHub CLI credentials. Failed
   operations retain the last confirmed credential state and report specific
@@ -44,11 +45,12 @@ No release/versioning policy has been established yet.
   remains separate acceptance. See
   [#5](https://github.com/jdylanmc/pr-sniper/issues/5).
 
-- Verify configured GitHub repositories with the connected App account and
+- Verify configured GitHub repositories with the connected OAuth account and
   stable identities, distinguish read access from comment scope, and read
   complete paginated PR, reviewer and changed-file metadata in Settings.
-  Every repository is explicitly bound to a provider account, installation and
-  stable repository identity; overlapping access never auto-selects an acting
+  Every repository is explicitly bound to a provider account and stable
+  repository identity; obsolete installation bindings become unbound and
+  require explicit reselection. Overlapping access never auto-selects an acting
   account and can retain separate bindings and policies for each account.
   Account failure or removal marks only that account's bindings as needing
   attention, disables their provider actions, and clears their cached

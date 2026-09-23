@@ -196,7 +196,7 @@ fn transport_network_error_remains_explicit() {
 }
 
 #[test]
-fn readable_repository_without_comment_scope_cannot_publish_comments() {
+fn repository_verification_rejects_a_missing_or_revoked_repo_scope() {
     for scopes in ["", "read:user"] {
         let mut transport = ready_transport();
         let repository = transport
@@ -209,22 +209,15 @@ fn readable_repository_without_comment_scope_cannot_publish_comments() {
             .headers
             .insert("x-oauth-scopes".into(), scopes.into());
 
-        let connection = GithubClient::new(transport)
-            .connect("jdylanmc/pr-sniper", Some("6954990"))
-            .unwrap();
-
         assert_eq!(
-            connection.capabilities,
-            Capabilities {
-                read: true,
-                comment: CommentCapability::Unavailable,
-            }
+            GithubClient::new(transport).connect("jdylanmc/pr-sniper", Some("6954990")),
+            Err(ConnectionError::MissingScope)
         );
     }
 }
 
 #[test]
-fn absent_scope_introspection_leaves_comment_capability_unknown() {
+fn absent_scope_evidence_does_not_assume_the_required_repo_scope() {
     let mut transport = ready_transport();
     let repository = transport
         .responses
@@ -234,16 +227,9 @@ fn absent_scope_introspection_leaves_comment_capability_unknown() {
         .unwrap();
     repository.headers.remove("x-oauth-scopes");
 
-    let connection = GithubClient::new(transport)
-        .connect("jdylanmc/pr-sniper", Some("6954990"))
-        .unwrap();
-
     assert_eq!(
-        connection.capabilities,
-        Capabilities {
-            read: true,
-            comment: CommentCapability::Unknown,
-        }
+        GithubClient::new(transport).connect("jdylanmc/pr-sniper", Some("6954990")),
+        Err(ConnectionError::MissingScope)
     );
 }
 

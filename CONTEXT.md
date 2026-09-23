@@ -17,8 +17,12 @@ The provider account visibly named at the point where PR Sniper performs or prop
 _Avoid_: Logged-in user
 
 **Provider Repository Identity**:
-The provider-issued stable repository ID, optionally qualified by a provider-specific installation identity.
+The provider-issued stable repository ID bound to one explicit Provider Account.
 _Avoid_: Repository name
+
+**Accessible Repository**:
+A repository returned for a connected Provider Account through its granted authorization, including repositories owned by another user or organization. Accessibility does not configure or monitor the repository; organization, project, tenant and provider policy can further restrict it.
+_Avoid_: Installed repository
 
 **Needs Attention**:
 A repository binding or provider account that cannot currently authorize reads and requires an explicit reconnect or rebind.

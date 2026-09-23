@@ -27,12 +27,6 @@ pub struct RemoteRepository {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct InstalledRepository {
-    pub installation_id: String,
-    pub repository: RemoteRepository,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Capabilities {
     pub read: bool,
     pub comment: CommentCapability,
@@ -76,51 +70,35 @@ impl<T: Transport> GithubClient<T> {
         verify_identity(&user, None)
     }
 
-    pub fn installed_repositories(&self) -> Result<Vec<InstalledRepository>, ConnectionError> {
+    pub fn accessible_repositories(&self) -> Result<Vec<RemoteRepository>, ConnectionError> {
         let mut result = Vec::new();
         let mut repository_ids = std::collections::HashSet::new();
         for page in 1..=10_000 {
-            let (value, _) = self.read(&format!("/user/installations?per_page=100&page={page}"))?;
-            let installations = value["installations"]
-                .as_array()
-                .ok_or(ConnectionError::InvalidResponse)?;
-            if installations.len() > 100 {
+            let (value, response) = self.read(&format!(
+                "/user/repos?affiliation=owner,collaborator,organization_member&visibility=all&per_page=100&page={page}"
+            ))?;
+            if !has_scope(&response, "repo") {
+                return Err(ConnectionError::MissingScope);
+            }
+            let repositories = value.as_array().ok_or(ConnectionError::InvalidResponse)?;
+            if repositories.len() > 100 {
                 return Err(ConnectionError::InvalidResponse);
             }
-            for installation in installations {
-                let installation_id = decimal_id(&installation["id"])?;
-                for repository_page in 1..=10_000 {
-                    let (value, _) = self.read(&format!(
-                        "/user/installations/{installation_id}/repositories?per_page=100&page={repository_page}"
-                    ))?;
-                    let repositories = value["repositories"]
-                        .as_array()
-                        .ok_or(ConnectionError::InvalidResponse)?;
-                    if repositories.len() > 100 {
-                        return Err(ConnectionError::InvalidResponse);
-                    }
-                    for repository in repositories {
-                        let id = decimal_id(&repository["id"])?;
-                        let name = crate::storage::canonical_repository(
-                            repository["full_name"]
-                                .as_str()
-                                .ok_or(ConnectionError::InvalidResponse)?,
-                        )
-                        .map_err(|_| ConnectionError::InvalidResponse)?;
-                        if !repository_ids.insert(id.clone()) {
-                            return Err(ConnectionError::IncompleteRead);
-                        }
-                        result.push(InstalledRepository {
-                            installation_id: installation_id.clone(),
-                            repository: RemoteRepository { id, name },
-                        });
-                    }
-                    if repositories.len() < 100 {
-                        break;
-                    }
+            for repository in repositories {
+                let id = decimal_id(&repository["id"])?;
+                let name = crate::storage::canonical_repository(
+                    repository["full_name"]
+                        .as_str()
+                        .ok_or(ConnectionError::InvalidResponse)?,
+                )
+                .map_err(|_| ConnectionError::InvalidResponse)?;
+                boolean(repository, "private")?;
+                if !repository_ids.insert(id.clone()) {
+                    return Err(ConnectionError::IncompleteRead);
                 }
+                result.push(RemoteRepository { id, name });
             }
-            if installations.len() < 100 {
+            if repositories.len() < 100 {
                 return Ok(result);
             }
         }
@@ -145,6 +123,9 @@ impl<T: Transport> GithubClient<T> {
             return Err(ConnectionError::RepositoryChanged);
         }
         let private = boolean(&repo, "private")?;
+        if !has_scope(&response, "repo") {
+            return Err(ConnectionError::MissingScope);
+        }
         let archived = boolean(&repo, "archived")?;
         let disabled = boolean(&repo, "disabled")?;
         if repo["permissions"]["pull"].as_bool() == Some(false) || disabled {
@@ -193,6 +174,9 @@ impl<T: Transport> GithubClient<T> {
             200 => (),
             401 => return Err(ConnectionError::SignedOut),
             429 => return Err(ConnectionError::RateLimited),
+            403 if response.headers.contains_key("x-github-sso") => {
+                return Err(ConnectionError::OrganizationPolicyDenied)
+            }
             403 if response
                 .headers
                 .get("x-ratelimit-remaining")
@@ -202,6 +186,7 @@ impl<T: Transport> GithubClient<T> {
             {
                 return Err(ConnectionError::RateLimited)
             }
+
             403 | 404 => return Err(ConnectionError::MissingReadPermission),
             _ => return Err(ConnectionError::ProviderFailure),
         }
@@ -209,6 +194,18 @@ impl<T: Transport> GithubClient<T> {
             serde_json::from_slice(&response.body).map_err(|_| ConnectionError::InvalidResponse)?;
         Ok((value, response))
     }
+}
+
+fn has_scope(response: &Response, expected: &str) -> bool {
+    response
+        .headers
+        .get("x-oauth-scopes")
+        .is_some_and(|scopes| {
+            scopes
+                .split(',')
+                .map(str::trim)
+                .any(|scope| scope == expected)
+        })
 }
 
 pub(super) fn decimal_id(value: &Value) -> Result<String, ConnectionError> {

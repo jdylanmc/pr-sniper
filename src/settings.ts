@@ -94,7 +94,7 @@ const option = (value: string, label: string, selected: string) =>
 const reason = (error: unknown) => {
   const errors: Record<string, string> = {
     signed_out:
-      "GitHub is disconnected. Connect the PR Sniper GitHub App, then try again.",
+      "GitHub is disconnected. Connect the PR Sniper GitHub OAuth App, then try again.",
     missing_read_permission:
       "This person is unavailable. Check the GitHub login and your account access.",
     rate_limited: "GitHub rate limited this lookup. Wait before trying again.",
@@ -258,36 +258,33 @@ export async function mountSettings(app: HTMLElement) {
       ${discovery?.warnings.map((warning) => `<p class="settings-notice">${escape(warning)}</p>`).join("") ?? ""}`;
     renderGithubAuth(
       content.querySelector(".github-auth")!,
-      (account, { installation_id, repository: installed }) => {
+      (account, accessible) => {
         let repository = repositories().find(
           (candidate) =>
             candidate.provider === "github" &&
             candidate.provider_account_id === account.account_id &&
-            candidate.installation_id === installation_id &&
-            candidate.provider_repository_id === installed.id,
+            candidate.provider_repository_id === accessible.id,
         );
         repository ??= repositories().find(
           (candidate) =>
             candidate.provider === "github" &&
-            candidate.name === installed.name &&
+            candidate.name === accessible.name &&
             !candidate.provider_account_id &&
             !candidate.provider_repository_id,
         );
         if (repository) {
-          repository.name = installed.name;
+          repository.name = accessible.name;
           repository.enabled = true;
           repository.provider_account_id = account.account_id;
-          repository.installation_id = installation_id;
-          repository.provider_repository_id = installed.id;
+          repository.provider_repository_id = accessible.id;
         } else {
           repository = {
             id: newIdentity(),
-            name: installed.name,
+            name: accessible.name,
             enabled: true,
             provider: "github",
             provider_account_id: account.account_id,
-            installation_id,
-            provider_repository_id: installed.id,
+            provider_repository_id: accessible.id,
           };
           (draft.repositories ??= []).push(repository);
         }
@@ -490,7 +487,6 @@ export async function mountSettings(app: HTMLElement) {
         if (repository) {
           if (repository.name !== name) {
             repository.provider_account_id = undefined;
-            repository.installation_id = undefined;
             repository.provider_repository_id = undefined;
           }
           repository.name = name;
@@ -652,7 +648,7 @@ export async function mountSettings(app: HTMLElement) {
         );
         const picker = dialog(
           "Add people",
-          `<form class="person-lookup"><label>Acting GitHub account<select name="account" required>${availableAccounts.map((account) => option(account.account_id, `${account.login} (${account.account_id})`, repository?.provider_account_id ?? availableAccounts[0]?.account_id ?? "")).join("")}</select></label><label>GitHub login<input name="login" placeholder="octocat" autocomplete="off" required /></label><p class="settings-hint">${availableAccounts.length ? "Looks up the exact login through the explicitly selected PR Sniper GitHub App account and stores its stable identity." : "No connected GitHub account is available. Connect or rebind an account in Repositories."}</p><p role="alert" hidden></p><button type="submit" class="primary" ${availableAccounts.length ? "" : "disabled"}>Add person</button></form>`,
+          `<form class="person-lookup"><label>Acting GitHub account<select name="account" required>${availableAccounts.map((account) => option(account.account_id, `${account.login} (${account.account_id})`, repository?.provider_account_id ?? availableAccounts[0]?.account_id ?? "")).join("")}</select></label><label>GitHub login<input name="login" placeholder="octocat" autocomplete="off" required /></label><p class="settings-hint">${availableAccounts.length ? "Looks up the exact login through the explicitly selected PR Sniper GitHub OAuth account and stores its stable identity." : "No connected GitHub account is available. Connect or rebind an account in Repositories."}</p><p role="alert" hidden></p><button type="submit" class="primary" ${availableAccounts.length ? "" : "disabled"}>Add person</button></form>`,
         );
         picker.querySelector<HTMLInputElement>("[name=login]")!.focus();
         picker.querySelector("form")!.onsubmit = async (event) => {
