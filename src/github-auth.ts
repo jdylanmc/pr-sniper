@@ -11,6 +11,7 @@ type GithubAuthFailure =
   | "timeout"
   | "wrong_identity"
   | "missing_scope"
+  | "authentication_changed"
   | "credentials_unavailable";
 
 export interface GithubAccount {
@@ -290,6 +291,8 @@ function failureMessage(reason?: GithubAuthFailure) {
         "GitHub returned an already connected or unexpected account.",
       missing_scope:
         "The GitHub OAuth authorization no longer grants the required repo scope.",
+      authentication_changed:
+        "Reconnect through the PR Sniper GitHub OAuth App. Superseded GitHub App credentials are not reused.",
       credentials_unavailable:
         "The credentials could not be restored or stored safely.",
     }[reason ?? "provider"] ?? "Reconnect this account."

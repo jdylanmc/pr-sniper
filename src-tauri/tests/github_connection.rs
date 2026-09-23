@@ -42,7 +42,16 @@ impl Transport for ConnectionTransport {
                 "disabled": false,
                 "permissions": {"pull": true, "push": true}
             }),
+            "/repos/third-party/public-repository" => json!({
+                "id": 400,
+                "full_name": "third-party/public-repository",
+                "private": false,
+                "archived": false,
+                "disabled": false,
+                "permissions": {"pull": true, "push": false}
+            }),
             "/repos/jdylanmc/pr-sniper/pulls?state=open&per_page=1" => json!([]),
+            "/repos/third-party/public-repository/pulls?state=open&per_page=1" => json!([]),
             "/user/repos?affiliation=owner,collaborator,organization_member&visibility=all&per_page=100&page=1" => json!([
                 {
                     "id": 1376547672,
@@ -91,6 +100,23 @@ fn oauth_user_token_lists_owned_collaborator_and_organization_repositories() {
             },
         ])
     );
+}
+
+#[test]
+fn unaffiliated_public_repository_resolves_directly_when_discovery_omits_it() {
+    let client = GithubClient::new(ConnectionTransport);
+    let discovered = client.accessible_repositories().unwrap();
+    assert!(!discovered
+        .iter()
+        .any(|repository| repository.name == "third-party/public-repository"));
+
+    let connection = client
+        .connect("third-party/public-repository", Some("6954990"))
+        .unwrap();
+
+    assert_eq!(connection.repository.id, "400");
+    assert_eq!(connection.repository.name, "third-party/public-repository");
+    assert!(connection.capabilities.read);
 }
 
 struct PaginatedRepositories;

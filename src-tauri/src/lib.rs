@@ -29,6 +29,8 @@ struct Host {
     github_auth: Mutex<GithubAuth>,
     github_credentials:
         github::token_store::RotationSafeStore<github::macos_keychain::MacKeychainStore>,
+    github_legacy_credentials:
+        github::token_store::RotationSafeStore<github::macos_keychain::MacKeychainStore>,
 }
 
 struct GithubAuth {
@@ -72,6 +74,7 @@ enum GithubAuthFailure {
     Timeout,
     WrongIdentity,
     MissingScope,
+    AuthenticationChanged,
     CredentialsUnavailable,
 }
 
@@ -173,6 +176,16 @@ impl GithubAuth {
                 | GithubAccountState::ReconnectRequired { identity, .. } => identity.clone(),
             };
             *state = GithubAccountState::ReconnectRequired { identity, reason };
+        }
+    }
+
+    fn apply_connection_result<T>(
+        &mut self,
+        account_id: &str,
+        result: &Result<T, ConnectionError>,
+    ) {
+        if matches!(result, Err(ConnectionError::MissingScope)) {
+            self.set_failure(account_id, GithubAuthFailure::MissingScope);
         }
     }
 
@@ -278,6 +291,9 @@ impl GithubAuth {
 
     fn restore(
         store: &github::token_store::RotationSafeStore<github::macos_keychain::MacKeychainStore>,
+        legacy_store: &github::token_store::RotationSafeStore<
+            github::macos_keychain::MacKeychainStore,
+        >,
     ) -> Self {
         use github::token_store::{ProviderAccountId, RotationError};
         let mut auth = Self::new();
@@ -362,6 +378,29 @@ impl GithubAuth {
                 }
             }
         }
+        if let Ok(legacy_accounts) = legacy_store.accounts() {
+            for account in legacy_accounts {
+                if account.provider.as_str() != "github" {
+                    continue;
+                }
+                if auth.accounts.contains_key(&account.account_id) {
+                    let _ = legacy_store
+                        .remove_account(&ProviderAccountId::github(&account.account_id));
+                    continue;
+                }
+                let identity = github::Identity {
+                    id: account.account_id.clone(),
+                    login: account.login,
+                };
+                auth.accounts.insert(
+                    identity.id.clone(),
+                    GithubAccountState::ReconnectRequired {
+                        identity,
+                        reason: GithubAuthFailure::AuthenticationChanged,
+                    },
+                );
+            }
+        }
         auth
     }
 }
@@ -389,6 +428,28 @@ fn failure_from_connection_error(error: ConnectionError) -> GithubAuthFailure {
         ConnectionError::Configuration => GithubAuthFailure::CredentialsUnavailable,
         _ => GithubAuthFailure::Provider,
     }
+}
+
+fn apply_account_connection_failure<T>(
+    host: &Host,
+    account_id: &str,
+    result: &Result<T, ConnectionError>,
+) {
+    if !matches!(result, Err(ConnectionError::MissingScope)) {
+        return;
+    }
+    if let Ok(mut auth) = host.github_auth.lock() {
+        auth.apply_connection_result(account_id, result);
+    }
+}
+
+fn persist_oauth_account_with_cleanup<S, C>(save: S, cleanup_legacy: C) -> Result<(), ()>
+where
+    S: FnOnce() -> Result<(), ()>,
+    C: FnOnce() -> Result<(), ()>,
+{
+    save()?;
+    cleanup_legacy()
 }
 
 fn rotation_connection_error(error: github::token_store::RotationError) -> ConnectionError {
@@ -468,6 +529,12 @@ struct GithubMetadata {
 struct GithubRepositories {
     identity: github::Identity,
     repositories: Vec<github::provider::RemoteRepository>,
+}
+
+#[derive(Serialize)]
+struct GithubRepositoryResolution {
+    identity: github::Identity,
+    repository: github::provider::RemoteRepository,
 }
 
 fn record(app: &tauri::AppHandle, event: DiagnosticEvent) {
@@ -600,8 +667,10 @@ async fn list_provider_repositories(
     if !matches!(provider, storage::ProviderId::Github) {
         return Err(ConnectionError::Configuration);
     }
-    tauri::async_runtime::spawn_blocking(move || {
-        let host = app.state::<Host>();
+    let account_for_failure = account_id.clone();
+    let app_for_read = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let host = app_for_read.state::<Host>();
         let (identity, client) = github_session(&host, &account_id)?;
         Ok(GithubRepositories {
             identity,
@@ -609,7 +678,36 @@ async fn list_provider_repositories(
         })
     })
     .await
-    .map_err(|_| ConnectionError::ProviderFailure)?
+    .map_err(|_| ConnectionError::ProviderFailure)?;
+    apply_account_connection_failure(&app.state::<Host>(), &account_for_failure, &result);
+    result
+}
+
+#[tauri::command]
+async fn resolve_provider_repository(
+    app: tauri::AppHandle,
+    provider: storage::ProviderId,
+    account_id: String,
+    repository: String,
+) -> Result<GithubRepositoryResolution, ConnectionError> {
+    if !matches!(provider, storage::ProviderId::Github) {
+        return Err(ConnectionError::Configuration);
+    }
+    let account_for_failure = account_id.clone();
+    let app_for_read = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let host = app_for_read.state::<Host>();
+        let (identity, client) = github_session(&host, &account_id)?;
+        let connection = client.connect(&repository, Some(&identity.id))?;
+        Ok(GithubRepositoryResolution {
+            identity,
+            repository: connection.repository,
+        })
+    })
+    .await
+    .map_err(|_| ConnectionError::ProviderFailure)?;
+    apply_account_connection_failure(&app.state::<Host>(), &account_for_failure, &result);
+    result
 }
 
 #[tauri::command]
@@ -814,10 +912,20 @@ fn confirm_github_account(host: State<'_, Host>) -> Result<GithubAuthView, Strin
         .lock()
         .map_err(|_| "GitHub connection state is unavailable.")?;
     auth.confirm_with(|identity, pair| {
+        use github::token_store::ProviderAccountId;
         let account = ActiveAccount::new(&identity.id, &identity.login).map_err(|_| ())?;
-        host.github_credentials
-            .save_account(&account, pair, false)
-            .map_err(|_| ())
+        persist_oauth_account_with_cleanup(
+            || {
+                host.github_credentials
+                    .save_account(&account, pair, false)
+                    .map_err(|_| ())
+            },
+            || {
+                host.github_legacy_credentials
+                    .remove_account(&ProviderAccountId::github(&identity.id))
+                    .map_err(|_| ())
+            },
+        )
     })?;
     Ok(auth.view())
 }
@@ -848,6 +956,9 @@ fn disconnect_github_auth(
     host.github_credentials
         .remove_account(&ProviderAccountId::github(&account_id))
         .map_err(|_| "GitHub credentials could not be deleted securely.")?;
+    host.github_legacy_credentials
+        .remove_account(&ProviderAccountId::github(&account_id))
+        .map_err(|_| "Superseded GitHub credentials could not be deleted securely.")?;
     auth.accounts.remove(&account_id);
     Ok(auth.view())
 }
@@ -881,6 +992,7 @@ async fn verify_provider_connection(
     }
     let expected = repository.clone();
     let account_id = binding.account.account_id;
+    let account_for_failure = account_id.clone();
     let app_for_read = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let host = app_for_read.state::<Host>();
@@ -898,6 +1010,7 @@ async fn verify_provider_connection(
     })
     .await
     .map_err(|_| ConnectionError::ProviderFailure)?;
+    apply_account_connection_failure(&host, &account_for_failure, &result);
     if configured_repository(&host, &id)? != repository {
         return Err(ConnectionError::RepositoryChanged);
     }
@@ -931,6 +1044,7 @@ async fn read_provider_metadata(
     }
     let expected = repository.clone();
     let account_id = binding.account.account_id;
+    let account_for_failure = account_id.clone();
     let app_for_read = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let host = app_for_read.state::<Host>();
@@ -950,6 +1064,7 @@ async fn read_provider_metadata(
     })
     .await
     .map_err(|_| ConnectionError::ProviderFailure)?;
+    apply_account_connection_failure(&host, &account_for_failure, &result);
     if configured_repository(&host, &id)? != repository {
         return Err(ConnectionError::RepositoryChanged);
     }
@@ -1001,6 +1116,55 @@ fn open_window(app: &tauri::AppHandle, label: &str, title: &str) -> Result<(), S
     Ok(())
 }
 
+fn github_keychain_stores(
+    isolated: bool,
+    override_service: Option<std::ffi::OsString>,
+) -> Result<
+    (
+        github::macos_keychain::MacKeychainStore,
+        github::macos_keychain::MacKeychainStore,
+    ),
+    std::io::Error,
+> {
+    match (isolated, override_service) {
+        (false, None) => Ok((
+            github::macos_keychain::MacKeychainStore::production(),
+            github::macos_keychain::MacKeychainStore::legacy_production(),
+        )),
+        (true, Some(service)) => {
+            let service = service.to_str().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "PR_SNIPER_KEYCHAIN_SERVICE must be valid UTF-8.",
+                )
+            })?;
+            if !service.starts_with("com.jdylanmc.pr-sniper.tests.")
+                || service.len() > 200
+                || service.bytes().any(|byte| {
+                    !(byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-' || byte == b'_')
+                })
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "PR_SNIPER_KEYCHAIN_SERVICE must be a test-owned service beginning with com.jdylanmc.pr-sniper.tests.",
+                ));
+            }
+            Ok((
+                github::macos_keychain::MacKeychainStore::with_service(service),
+                github::macos_keychain::MacKeychainStore::with_service(format!("{service}.legacy")),
+            ))
+        }
+        (true, None) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "PR_SNIPER_KEYCHAIN_SERVICE is required with PR_SNIPER_DATA_DIR.",
+        )),
+        (false, Some(_)) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "PR_SNIPER_KEYCHAIN_SERVICE requires PR_SNIPER_DATA_DIR.",
+        )),
+    }
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -1013,6 +1177,7 @@ pub fn run() {
             discover_repositories,
             resolve_provider_person,
             list_provider_repositories,
+            resolve_provider_repository,
             save_login,
             save_repository,
             update_repository,
@@ -1039,10 +1204,12 @@ pub fn run() {
                 Some(_) => return Err("PR_SNIPER_DATA_DIR must be an absolute path.".into()),
                 None => app.path().app_data_dir()?,
             };
-            let github_credentials = github::token_store::RotationSafeStore::new(
-                github::macos_keychain::MacKeychainStore::production(),
-            );
-            let github_auth = GithubAuth::restore(&github_credentials);
+            let (github_keychain, legacy_github_keychain) =
+                github_keychain_stores(isolated, std::env::var_os("PR_SNIPER_KEYCHAIN_SERVICE"))?;
+            let github_credentials = github::token_store::RotationSafeStore::new(github_keychain);
+            let github_legacy_credentials =
+                github::token_store::RotationSafeStore::new(legacy_github_keychain);
+            let github_auth = GithubAuth::restore(&github_credentials, &github_legacy_credentials);
             let store = Store::new(root);
             app.manage(Host {
                 store: Mutex::new(store),
@@ -1057,6 +1224,7 @@ pub fn run() {
                 ),
                 github_auth: Mutex::new(github_auth),
                 github_credentials,
+                github_legacy_credentials,
             });
             record(app.handle(), DiagnosticEvent::SessionStarted);
             let status = MenuItem::with_id(app, "status", "Status", true, None::<&str>)?;
@@ -1142,13 +1310,13 @@ pub fn run() {
 mod github_auth_tests {
     use super::{
         exchange_and_identify_with, failure_from_connection_error, failure_from_oauth_error,
-        retry_replacement_bind_with, rotation_connection_error, GithubAccountState, GithubAuth,
-        GithubAuthFailure,
+        github_keychain_stores, persist_oauth_account_with_cleanup, retry_replacement_bind_with,
+        rotation_connection_error, GithubAccountState, GithubAuth, GithubAuthFailure,
     };
     use crate::github::oauth::OAuthError;
     use crate::github::token_store::RotationError;
     use crate::github::ConnectionError;
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime};
 
     fn identity(id: &str, login: &str) -> crate::github::Identity {
         crate::github::Identity {
@@ -1475,5 +1643,166 @@ mod github_auth_tests {
         .unwrap();
         assert_eq!(resolved.id, "202");
         assert_eq!(tokens.access_token(), "access-success");
+    }
+
+    #[test]
+    fn missing_scope_invalidates_only_the_affected_account() {
+        let mut auth = GithubAuth::new();
+        auth.accounts.insert(
+            "101".into(),
+            GithubAccountState::Connected(identity("101", "first")),
+        );
+        auth.accounts.insert(
+            "202".into(),
+            GithubAccountState::Connected(identity("202", "second")),
+        );
+
+        auth.apply_connection_result::<()>("101", &Err(ConnectionError::MissingScope));
+
+        assert!(matches!(
+            auth.accounts.get("101"),
+            Some(GithubAccountState::ReconnectRequired {
+                reason: GithubAuthFailure::MissingScope,
+                ..
+            })
+        ));
+        assert!(matches!(
+            auth.accounts.get("202"),
+            Some(GithubAccountState::Connected(identity)) if identity.login == "second"
+        ));
+
+        auth.apply_connection_result::<()>("202", &Err(ConnectionError::OrganizationPolicyDenied));
+        assert!(matches!(
+            auth.accounts.get("202"),
+            Some(GithubAccountState::Connected(_))
+        ));
+    }
+
+    #[test]
+    fn confirmed_oauth_copy_precedes_retryable_legacy_cleanup() {
+        let mut saved = false;
+        let mut cleanup_attempts = 0;
+        assert!(persist_oauth_account_with_cleanup(
+            || {
+                saved = true;
+                Ok(())
+            },
+            || {
+                cleanup_attempts += 1;
+                Err(())
+            },
+        )
+        .is_err());
+        assert!(saved);
+        assert_eq!(cleanup_attempts, 1);
+
+        assert!(persist_oauth_account_with_cleanup(
+            || Ok(()),
+            || {
+                cleanup_attempts += 1;
+                Ok(())
+            },
+        )
+        .is_ok());
+        assert_eq!(cleanup_attempts, 2);
+    }
+
+    #[test]
+    fn legacy_github_app_credentials_require_reconnect_without_provider_use() {
+        use crate::github::token_store::{ActiveAccount, ProviderAccountId, RotationSafeStore};
+        let nonce = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let current = RotationSafeStore::new(
+            crate::github::macos_keychain::MacKeychainStore::with_service(format!(
+                "com.jdylanmc.pr-sniper.tests.oauth-current-{nonce}"
+            )),
+        );
+        let legacy = RotationSafeStore::new(
+            crate::github::macos_keychain::MacKeychainStore::with_service(format!(
+                "com.jdylanmc.pr-sniper.tests.oauth-legacy-{nonce}"
+            )),
+        );
+        let account = ActiveAccount::new("101", "legacy").unwrap();
+        legacy
+            .save_account(&account, &pair("legacy"), false)
+            .unwrap();
+
+        let auth = GithubAuth::restore(&current, &legacy);
+
+        assert!(matches!(
+            auth.accounts.get("101"),
+            Some(GithubAccountState::ReconnectRequired {
+                reason: GithubAuthFailure::AuthenticationChanged,
+                ..
+            })
+        ));
+        assert!(current
+            .restore_account(&ProviderAccountId::github("101"))
+            .unwrap()
+            .is_none());
+        assert!(legacy
+            .restore_account(&ProviderAccountId::github("101"))
+            .unwrap()
+            .is_some());
+        legacy
+            .remove_account(&ProviderAccountId::github("101"))
+            .unwrap();
+    }
+
+    #[test]
+    fn isolated_keychain_configuration_is_explicit_and_test_owned() {
+        use crate::github::token_store::{ActiveAccount, ProviderAccountId, RotationSafeStore};
+        assert!(github_keychain_stores(true, None).is_err());
+        assert!(
+            github_keychain_stores(false, Some("com.jdylanmc.pr-sniper.tests.invalid".into()))
+                .is_err()
+        );
+        assert!(github_keychain_stores(true, Some("personal.service".into())).is_err());
+        assert!(github_keychain_stores(
+            true,
+            Some("com.jdylanmc.pr-sniper.tests.native-123".into())
+        )
+        .is_ok());
+
+        let nonce = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let service = format!("com.jdylanmc.pr-sniper.tests.restart-{nonce}");
+        let (first_store, _) = github_keychain_stores(true, Some(service.clone().into())).unwrap();
+        let first = RotationSafeStore::new(first_store);
+        let account = ActiveAccount::new("101", "isolated").unwrap();
+        first
+            .save_account(&account, &pair("isolated"), false)
+            .unwrap();
+        drop(first);
+
+        let (restarted_store, _) =
+            github_keychain_stores(true, Some(service.clone().into())).unwrap();
+        let restarted = RotationSafeStore::new(restarted_store);
+        assert_eq!(
+            restarted
+                .restore_account(&ProviderAccountId::github("101"))
+                .unwrap()
+                .unwrap()
+                .pair
+                .access_token(),
+            "access-isolated"
+        );
+
+        let (other_store, _) = github_keychain_stores(
+            true,
+            Some(format!("com.jdylanmc.pr-sniper.tests.other-{nonce}").into()),
+        )
+        .unwrap();
+        assert!(RotationSafeStore::new(other_store)
+            .restore_account(&ProviderAccountId::github("101"))
+            .unwrap()
+            .is_none());
+        restarted
+            .remove_account(&ProviderAccountId::github("101"))
+            .unwrap();
     }
 }

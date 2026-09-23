@@ -253,10 +253,20 @@ test("metadata pins verified identities, renders all files safely and clears fai
   ).toBeDisabled();
 });
 
-test("retargeting a local repository invalidates the old connection", async ({
+test("retargeting a repository revalidates its stable binding", async ({
   page,
   store,
 }) => {
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = (command, args) =>
+      command === "resolve_provider_repository"
+        ? Promise.resolve({
+            identity: { id: args.accountId, login: "jdylanmc" },
+            repository: { id: "900", name: "other/target" },
+          })
+        : original(command, args);
+  });
   const card = await githubFixture(page, store, () => ({ ok: verified }));
   await card
     .getByRole("button", { name: "Verify GitHub connection", exact: true })
@@ -276,8 +286,17 @@ test("retargeting a local repository invalidates the old connection", async ({
     .getByRole("button", { name: "Use repository", exact: true })
     .click();
   await saveChanges(page);
+  expect((await store("snapshot")).settings.repositories).toEqual([
+    expect.objectContaining({
+      name: "other/target",
+      provider_account_id: "6954990",
+      provider_repository_id: "900",
+    }),
+  ]);
   const target = await connection(page, "other/target");
-  await expect(target.getByRole("status")).toContainText("Needs attention");
+  await expect(target.getByRole("status")).toContainText(
+    "Not verified. Acting account 6954990",
+  );
   await expect(
     target.getByRole("button", { name: "Read PR metadata", exact: true }),
   ).toBeDisabled();
@@ -483,6 +502,119 @@ test("disconnecting one account clears only its repository evidence", async ({
   const available = await connection(page);
   await expect(
     available.getByRole("button", {
+      name: "Verify GitHub connection",
+      exact: true,
+    }),
+  ).toBeEnabled();
+});
+
+test("missing repo scope disables every binding for one account only", async ({
+  page,
+  store,
+}) => {
+  for (const repository of ["octo/one", "octo/two", "octo/three"])
+    await store("save_repository", { repository });
+  const settings = (await store("snapshot")).settings;
+  for (const [index, repository] of settings.repositories.entries()) {
+    repository.provider_account_id = index < 2 ? "101" : "202";
+    repository.provider_repository_id = String(index + 1);
+  }
+  await store("seed_settings", settings);
+  const firstRepositoryId = settings.repositories[0].id;
+  let accounts = [
+    {
+      provider: "github",
+      state: "connected",
+      account_id: "101",
+      login: "first",
+    },
+    {
+      provider: "github",
+      state: "connected",
+      account_id: "202",
+      login: "second",
+    },
+  ];
+  await page.exposeFunction("__scopeState", (command, args) => {
+    if (command === "github_auth_state")
+      return { accounts, flow: { state: "idle" } };
+    if (
+      command === "verify_provider_connection" &&
+      args.id === firstRepositoryId
+    ) {
+      accounts = [
+        {
+          provider: "github",
+          state: "reconnect_required",
+          account_id: "101",
+          login: "first",
+          reason: "missing_scope",
+        },
+        accounts[1],
+      ];
+      return { error: "missing_scope" };
+    }
+    if (command === "verify_provider_connection")
+      return {
+        identity: { id: "202", login: "second" },
+        repository: { id: "3", name: "octo/three" },
+        capabilities: { read: true, comment: "unknown" },
+      };
+    throw new Error(`Unexpected scope command: ${command}`);
+  });
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = (command, args) => {
+      if (
+        !["github_auth_state", "verify_provider_connection"].includes(command)
+      )
+        return original(command, args);
+      return window
+        .__scopeState(command, args)
+        .then((result) =>
+          result?.error ? Promise.reject(result.error) : result,
+        );
+    };
+  });
+  await page.goto("/?view=settings");
+
+  const first = await connection(page, "octo/one");
+  await first
+    .getByRole("button", { name: "Verify GitHub connection", exact: true })
+    .click();
+  await expect(first.getByRole("status")).toContainText("Needs attention");
+  await expect(page.locator(".github-auth-card")).toContainText(
+    "no longer grants the required repo scope",
+  );
+  await closeDialog(page);
+
+  await expect(page.getByRole("article", { name: "octo/one" })).toContainText(
+    "Needs attention",
+  );
+  await expect(page.getByRole("article", { name: "octo/two" })).toContainText(
+    "Needs attention",
+  );
+  await expect(page.getByRole("article", { name: "octo/three" })).toContainText(
+    "GitHub as second",
+  );
+  await expect(
+    page
+      .locator(".github-auth-card")
+      .getByRole("button", { name: "Reconnect first" }),
+  ).toBeVisible();
+
+  const secondBinding = await connection(page, "octo/two");
+  await expect(
+    secondBinding.getByRole("button", {
+      name: "Verify GitHub connection",
+      exact: true,
+    }),
+  ).toBeDisabled();
+  await closeDialog(page);
+
+  const unaffected = await connection(page, "octo/three");
+  await expect(
+    unaffected.getByRole("button", {
       name: "Verify GitHub connection",
       exact: true,
     }),

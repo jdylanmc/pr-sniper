@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted for the #35 localhost proof; #36 must replace the loopback callback
+with a registered PR Sniper application URI before MVP completion.
 
 ## Decision
 
@@ -31,14 +32,18 @@ for the platform default browser; and `url` for structured URL handling.
 Authorization requests the standard broad `repo` scope. GitHub does not offer a
 read-only OAuth scope for arbitrary private repositories, so the consent UI
 must state that this scope grants broad access to public and private
-repositories. PR Sniper uses paginated `/user/repos` discovery with owner,
-collaborator and organization-member affiliations and all visibility, but
-configures nothing until the user explicitly selects a repository.
+repositories. PR Sniper uses paginated `/user/repos` affiliation discovery as a convenience,
+not as an exhaustive list. A user can choose an account and resolve a known
+canonical repository through `/repos/{owner}/{repository}`. PR Sniper stores
+the stable repository ID only after that authenticated read succeeds and
+configures nothing until the user explicitly selects the repository.
 
 After token exchange, PR Sniper validates `/user` and shows only the stable
 account ID and login as a pending confirmation. Access and refresh credentials
 remain in memory and are not added to the account registry or macOS Keychain
-until **Confirm**. **Use a different account**, cancellation, retry, and
+until **Confirm**. OAuth App credentials use a generation-specific Keychain
+namespace; provenance-free GitHub App credentials remain quarantined and show
+reconnect-required until a newly confirmed OAuth pair is durable. **Use a different account**, cancellation, retry, and
 shutdown invalidate the prior pending attempt. Repository bindings contain
 provider, account and stable repository identity only; the superseded GitHub
 App installation identity is migrated to an unbound repository requiring
@@ -54,4 +59,5 @@ flow disabled and no client secret. Port conflict, browser-open, cancellation,
 timeout, missing/revoked scope, organization policy, network, provider,
 identity and secure-storage failures remain distinct. Automated tests use
 deterministic browser, callback, HTTP and persistence seams and never contact
-live GitHub.
+live GitHub. The production MVP must remove the localhost listener and
+port-conflict path when #36 delivers the application callback.

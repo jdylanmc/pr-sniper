@@ -33,7 +33,7 @@ A single bounded browser authorization operation with fresh PKCE verifier and st
 _Avoid_: Login session
 
 **Loopback Callback**:
-The fixed localhost-only HTTP endpoint that receives one correlated GitHub authorization response and returns no provider secrets.
+The proof-stage localhost-only HTTP endpoint that receives one correlated GitHub authorization response and returns no provider secrets. It is not the final MVP callback; #36 replaces it with the registered application URI.
 _Avoid_: Local redirect server
 
 **Pending Account Confirmation**:
