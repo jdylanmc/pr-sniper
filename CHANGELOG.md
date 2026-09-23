@@ -18,6 +18,9 @@ No release/versioning policy has been established yet.
   preserved in production builds; delayed replies preserve
   open forms and cannot restore dismissed repository edits. Multiple local
   clones share one repository checkbox while retaining searchable clone paths.
+  Conflicting drafts now offer explicit discard-and-reload recovery, custom
+  schedule controls stay synchronized, and repeated remote URLs preserve Git's
+  fetch identity while ambiguous remotes remain unavailable.
   See the [approved Settings design](docs/agent/design/settings-default.md).
 
 ### Added

@@ -118,19 +118,20 @@ fn read_remote(config: &PathBuf) -> Result<String, String> {
                         .strip_prefix("git@github.com:")
                         .or_else(|| value.strip_prefix("ssh://git@github.com/"))
                         .or_else(|| value.strip_prefix("https://github.com/"));
-                    if let Some(path) = github {
-                        if let Ok(canonical) = canonical_repository(path) {
-                            remotes.insert(name.clone(), canonical);
-                        }
-                    }
+                    remotes
+                        .entry(name.clone())
+                        .or_insert_with(|| github.and_then(|path| canonical_repository(path).ok()));
                 }
             }
         }
     }
     if let Some(origin) = remotes.remove("origin") {
-        return Ok(origin);
+        return origin.ok_or_else(|| {
+            "No supported GitHub remote. Add an HTTPS or SSH github.com remote, then scan again."
+                .into()
+        });
     }
-    let names: std::collections::BTreeSet<_> = remotes.into_values().collect();
+    let names: std::collections::BTreeSet<_> = remotes.into_values().flatten().collect();
     if names.len() == 1 {
         return Ok(names.into_iter().next().unwrap());
     }
