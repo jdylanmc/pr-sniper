@@ -11,7 +11,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex,
 };
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 use storage::{Diagnostic, DiagnosticEvent, SavedSettings, Settings, Store};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -26,6 +26,8 @@ struct Host {
     quitting: AtomicBool,
     registration: LoginRegistration,
     github_auth: Mutex<GithubAuth>,
+    github_credentials:
+        github::token_store::RotationSafeStore<github::macos_keychain::MacKeychainStore>,
 }
 
 struct GithubAuth {
@@ -38,7 +40,18 @@ enum GithubAuthState {
     Disconnected,
     Connecting(github::device_flow::DevicePrompt),
     Connected(github::Identity),
-    ReconnectRequired,
+    ReconnectRequired(GithubAuthFailure),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum GithubAuthFailure {
+    Denied,
+    Expired,
+    Network,
+    Provider,
+    InvalidResponse,
+    CredentialsUnavailable,
 }
 
 #[derive(Clone, Serialize)]
@@ -55,7 +68,9 @@ enum GithubAuthView {
         account_id: String,
         login: String,
     },
-    ReconnectRequired,
+    ReconnectRequired {
+        reason: GithubAuthFailure,
+    },
 }
 
 impl GithubAuth {
@@ -80,8 +95,84 @@ impl GithubAuth {
                 account_id: identity.id.clone(),
                 login: identity.login.clone(),
             },
-            GithubAuthState::ReconnectRequired => GithubAuthView::ReconnectRequired,
+            GithubAuthState::ReconnectRequired(reason) => {
+                GithubAuthView::ReconnectRequired { reason: *reason }
+            }
         }
+    }
+
+    fn restore(
+        store: &github::token_store::RotationSafeStore<github::macos_keychain::MacKeychainStore>,
+    ) -> Self {
+        use github::token_store::{CredentialKey, RotationError};
+        let mut auth = Self::new();
+        let Some(restored) = store.restore_active_account().unwrap_or_else(|_| {
+            auth.state =
+                GithubAuthState::ReconnectRequired(GithubAuthFailure::CredentialsUnavailable);
+            None
+        }) else {
+            return auth;
+        };
+        let transport = match github::device_http::GithubDeviceHttp::new() {
+            Ok(transport) => transport,
+            Err(error) => {
+                auth.state = GithubAuthState::ReconnectRequired(failure_from_device_error(error));
+                return auth;
+            }
+        };
+        let key = CredentialKey::github(&restored.account.account_id);
+        let pair = match store.refresh_if_needed(&key, SystemTime::now(), |current| {
+            transport
+                .refresh(current.refresh_token())
+                .map_err(|error| match error {
+                    github::device_flow::DeviceFlowError::Network => RotationError::Network,
+                    _ => RotationError::Provider,
+                })
+        }) {
+            Ok(pair) => pair,
+            Err(error) => {
+                auth.state = GithubAuthState::ReconnectRequired(match error {
+                    RotationError::Network => GithubAuthFailure::Network,
+                    RotationError::Provider => GithubAuthFailure::Provider,
+                    RotationError::ReconnectRequired => GithubAuthFailure::Expired,
+                    RotationError::Store(_) => GithubAuthFailure::CredentialsUnavailable,
+                });
+                return auth;
+            }
+        };
+        let identity = github::http::HttpTransport::from_token_pair(&pair)
+            .map(github::provider::GithubClient::new)
+            .and_then(|client| client.current_identity());
+        match identity {
+            Ok(identity) if identity.id == restored.account.account_id => {
+                auth.state = GithubAuthState::Connected(identity);
+            }
+            Ok(_) | Err(_) => {
+                auth.state = GithubAuthState::ReconnectRequired(GithubAuthFailure::Provider);
+            }
+        }
+        auth
+    }
+}
+
+fn failure_from_device_error(error: github::device_flow::DeviceFlowError) -> GithubAuthFailure {
+    match error {
+        github::device_flow::DeviceFlowError::InvalidResponse => GithubAuthFailure::InvalidResponse,
+        github::device_flow::DeviceFlowError::Network => GithubAuthFailure::Network,
+        github::device_flow::DeviceFlowError::Provider => GithubAuthFailure::Provider,
+    }
+}
+
+fn failure_from_terminal_poll(
+    result: &github::device_flow::DeviceFlowPoll,
+) -> Option<GithubAuthFailure> {
+    match result {
+        github::device_flow::DeviceFlowPoll::Denied => Some(GithubAuthFailure::Denied),
+        github::device_flow::DeviceFlowPoll::Expired => Some(GithubAuthFailure::Expired),
+        github::device_flow::DeviceFlowPoll::Failed(error) => {
+            Some(failure_from_device_error(*error))
+        }
+        _ => None,
     }
 }
 
@@ -311,10 +402,7 @@ async fn begin_github_auth(app: tauri::AppHandle) -> Result<GithubAuthView, Stri
 
 #[tauri::command]
 async fn poll_github_auth(app: tauri::AppHandle) -> Result<GithubAuthView, String> {
-    use github::{
-        device_flow::DeviceFlowPoll,
-        token_store::{CredentialKey, CredentialStore},
-    };
+    use github::{device_flow::DeviceFlowPoll, token_store::ActiveAccount};
     tauri::async_runtime::spawn_blocking(move || {
         let host = app.state::<Host>();
         let mut auth = host
@@ -335,15 +423,22 @@ async fn poll_github_auth(app: tauri::AppHandle) -> Result<GithubAuthView, Strin
                         .map_err(|_| "GitHub credentials could not be verified.")?,
                 );
                 let identity = client.current_identity().map_err(|_| {
-                    auth.state = GithubAuthState::ReconnectRequired;
+                    auth.state = GithubAuthState::ReconnectRequired(GithubAuthFailure::Provider);
                     auth.flow = None;
                     "GitHub credentials could not be verified."
                 })?;
-                let store = github::macos_keychain::MacKeychainStore::production();
-                store
-                    .save(&CredentialKey::github(&identity.id), &pair)
+                let account = ActiveAccount::new(&identity.id, &identity.login).map_err(|_| {
+                    auth.state =
+                        GithubAuthState::ReconnectRequired(GithubAuthFailure::InvalidResponse);
+                    auth.flow = None;
+                    "GitHub identity could not be stored safely."
+                })?;
+                host.github_credentials
+                    .replace_active_account(&account, &pair)
                     .map_err(|_| {
-                        auth.state = GithubAuthState::ReconnectRequired;
+                        auth.state = GithubAuthState::ReconnectRequired(
+                            GithubAuthFailure::CredentialsUnavailable,
+                        );
                         auth.flow = None;
                         "GitHub credentials could not be saved securely."
                     })?;
@@ -354,8 +449,13 @@ async fn poll_github_auth(app: tauri::AppHandle) -> Result<GithubAuthView, Strin
                 auth.state = GithubAuthState::Disconnected;
                 auth.flow = None;
             }
-            DeviceFlowPoll::Denied | DeviceFlowPoll::Expired | DeviceFlowPoll::Failed(_) => {
-                auth.state = GithubAuthState::ReconnectRequired;
+            terminal @ (DeviceFlowPoll::Denied
+            | DeviceFlowPoll::Expired
+            | DeviceFlowPoll::Failed(_)) => {
+                auth.state = GithubAuthState::ReconnectRequired(
+                    failure_from_terminal_poll(&terminal)
+                        .expect("terminal device result must preserve a failure reason"),
+                );
                 auth.flow = None;
             }
         }
@@ -376,6 +476,26 @@ fn cancel_github_auth(host: State<'_, Host>) -> Result<GithubAuthView, String> {
     }
     auth.flow = None;
     auth.state = GithubAuthState::Disconnected;
+    Ok(auth.view())
+}
+
+#[tauri::command]
+fn disconnect_github_auth(host: State<'_, Host>) -> Result<GithubAuthView, String> {
+    use github::token_store::ActiveAccount;
+    let mut auth = host
+        .github_auth
+        .lock()
+        .map_err(|_| "GitHub connection state is unavailable.")?;
+    let GithubAuthState::Connected(identity) = &auth.state else {
+        return Err("No connected GitHub account is available to disconnect.".into());
+    };
+    let account = ActiveAccount::new(&identity.id, &identity.login)
+        .map_err(|_| "GitHub identity is invalid.")?;
+    host.github_credentials
+        .disconnect(&account)
+        .map_err(|_| "GitHub credentials could not be deleted securely.")?;
+    auth.state = GithubAuthState::Disconnected;
+    auth.flow = None;
     Ok(auth.view())
 }
 
@@ -520,6 +640,7 @@ pub fn run() {
             begin_github_auth,
             poll_github_auth,
             cancel_github_auth,
+            disconnect_github_auth,
             diagnostics,
             open_diagnostics
         ])
@@ -533,6 +654,10 @@ pub fn run() {
                 Some(_) => return Err("PR_SNIPER_DATA_DIR must be an absolute path.".into()),
                 None => app.path().app_data_dir()?,
             };
+            let github_credentials = github::token_store::RotationSafeStore::new(
+                github::macos_keychain::MacKeychainStore::production(),
+            );
+            let github_auth = GithubAuth::restore(&github_credentials);
             app.manage(Host {
                 store: Mutex::new(Store::new(root)),
                 error: Mutex::new(None),
@@ -544,7 +669,8 @@ pub fn run() {
                         .join("Library/LaunchAgents/PR Sniper.plist"),
                     std::env::current_exe()?.canonicalize()?,
                 ),
-                github_auth: Mutex::new(GithubAuth::new()),
+                github_auth: Mutex::new(github_auth),
+                github_credentials,
             });
             record(app.handle(), DiagnosticEvent::SessionStarted);
             let status = MenuItem::with_id(app, "status", "Status", true, None::<&str>)?;
@@ -581,6 +707,7 @@ pub fn run() {
                         app.exit(0);
                         return;
                     }
+
                     let target = match event.id.as_ref() {
                         "status" => ("status", "Status"),
                         "queue" => ("queue", "Review Queue"),
@@ -619,4 +746,32 @@ pub fn run() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod github_auth_tests {
+    use super::{failure_from_terminal_poll, GithubAuthFailure};
+    use crate::github::device_flow::{DeviceFlowError, DeviceFlowPoll};
+
+    #[test]
+    fn terminal_device_failures_preserve_their_host_reason() {
+        for (poll, expected) in [
+            (DeviceFlowPoll::Denied, GithubAuthFailure::Denied),
+            (DeviceFlowPoll::Expired, GithubAuthFailure::Expired),
+            (
+                DeviceFlowPoll::Failed(DeviceFlowError::Network),
+                GithubAuthFailure::Network,
+            ),
+            (
+                DeviceFlowPoll::Failed(DeviceFlowError::Provider),
+                GithubAuthFailure::Provider,
+            ),
+            (
+                DeviceFlowPoll::Failed(DeviceFlowError::InvalidResponse),
+                GithubAuthFailure::InvalidResponse,
+            ),
+        ] {
+            assert_eq!(failure_from_terminal_poll(&poll), Some(expected));
+        }
+    }
 }
