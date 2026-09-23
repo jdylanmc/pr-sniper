@@ -48,6 +48,21 @@ impl GithubDeviceHttp {
         }
         Ok(bytes.to_vec())
     }
+
+    pub fn refresh(&self, refresh_token: &str) -> Result<TokenPair, DeviceFlowError> {
+        let body = self.post(
+            ACCESS_TOKEN_URL,
+            BTreeMap::from([
+                ("client_id", super::device_flow::GITHUB_APP_CLIENT_ID),
+                ("grant_type", "refresh_token"),
+                ("refresh_token", refresh_token),
+            ]),
+        )?;
+        match parse_poll(&body)? {
+            ProviderPoll::Authorized(pair) => Ok(pair),
+            _ => Err(DeviceFlowError::Provider),
+        }
+    }
 }
 
 impl DeviceFlowTransport for GithubDeviceHttp {

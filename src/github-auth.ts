@@ -10,7 +10,16 @@ type GithubAuthState =
       interval_seconds: number;
     }
   | { state: "connected"; account_id: string; login: string }
-  | { state: "reconnect_required" };
+  | {
+      state: "reconnect_required";
+      reason:
+        | "denied"
+        | "expired"
+        | "network"
+        | "provider"
+        | "invalid_response"
+        | "credentials_unavailable";
+    };
 
 export function renderGithubAuth(root: HTMLElement) {
   root.innerHTML = `<div class="github-auth-card"><div><h2>GitHub account</h2><p role="status">Reading connection state...</p></div><div class="github-auth-actions"></div></div>`;
@@ -50,13 +59,23 @@ export function renderGithubAuth(root: HTMLElement) {
       return;
     }
     if (state.state === "reconnect_required") {
-      status.textContent =
-        "Reconnect required. The previous authorization was denied, expired, revoked, unusable, or could not be stored safely.";
+      const reason = {
+        denied: "The GitHub authorization was denied.",
+        expired:
+          "The GitHub authorization expired or can no longer be refreshed.",
+        network: "The GitHub network request failed.",
+        provider: "GitHub returned an error while validating the connection.",
+        invalid_response: "GitHub returned an invalid authorization response.",
+        credentials_unavailable:
+          "The GitHub credentials could not be restored or stored safely.",
+      }[state.reason];
+      status.textContent = `Reconnect required. ${reason}`;
       button("Reconnect GitHub", "begin_github_auth");
       return;
     }
     if (state.state === "connected") {
       status.textContent = `Connected as ${state.login} (${state.account_id}). Stable identity verified; repository access is not implied. No automation was enabled.`;
+      button("Disconnect GitHub", "disconnect_github_auth");
       return;
     }
     status.replaceChildren();

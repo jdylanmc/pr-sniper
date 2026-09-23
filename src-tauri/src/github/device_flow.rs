@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use zeroize::Zeroizing;
 
 pub const GITHUB_APP_CLIENT_ID: &str = "Iv23li1HXvoQVkSzV2l5";
@@ -8,8 +8,8 @@ pub const GITHUB_APP_CLIENT_ID: &str = "Iv23li1HXvoQVkSzV2l5";
 pub struct TokenPair {
     access_token: Zeroizing<String>,
     refresh_token: Zeroizing<String>,
-    access_lifetime: Duration,
-    refresh_lifetime: Duration,
+    access_expires_at: SystemTime,
+    refresh_expires_at: SystemTime,
 }
 
 impl TokenPair {
@@ -19,11 +19,41 @@ impl TokenPair {
         access_lifetime: Duration,
         refresh_lifetime: Duration,
     ) -> Self {
+        Self::new_at(
+            access_token,
+            refresh_token,
+            SystemTime::now(),
+            access_lifetime,
+            refresh_lifetime,
+        )
+    }
+
+    pub fn new_at(
+        access_token: impl Into<String>,
+        refresh_token: impl Into<String>,
+        issued_at: SystemTime,
+        access_lifetime: Duration,
+        refresh_lifetime: Duration,
+    ) -> Self {
         Self {
             access_token: Zeroizing::new(access_token.into()),
             refresh_token: Zeroizing::new(refresh_token.into()),
-            access_lifetime,
-            refresh_lifetime,
+            access_expires_at: issued_at.checked_add(access_lifetime).unwrap_or(issued_at),
+            refresh_expires_at: issued_at.checked_add(refresh_lifetime).unwrap_or(issued_at),
+        }
+    }
+
+    pub fn from_expirations(
+        access_token: impl Into<String>,
+        refresh_token: impl Into<String>,
+        access_expires_at: SystemTime,
+        refresh_expires_at: SystemTime,
+    ) -> Self {
+        Self {
+            access_token: Zeroizing::new(access_token.into()),
+            refresh_token: Zeroizing::new(refresh_token.into()),
+            access_expires_at,
+            refresh_expires_at,
         }
     }
 
@@ -35,12 +65,20 @@ impl TokenPair {
         self.refresh_token.as_str()
     }
 
-    pub fn access_lifetime(&self) -> Duration {
-        self.access_lifetime
+    pub fn access_expires_at(&self) -> SystemTime {
+        self.access_expires_at
     }
 
-    pub fn refresh_lifetime(&self) -> Duration {
-        self.refresh_lifetime
+    pub fn refresh_expires_at(&self) -> SystemTime {
+        self.refresh_expires_at
+    }
+
+    pub fn access_is_expired(&self, now: SystemTime) -> bool {
+        now >= self.access_expires_at
+    }
+
+    pub fn refresh_is_expired(&self, now: SystemTime) -> bool {
+        now >= self.refresh_expires_at
     }
 }
 

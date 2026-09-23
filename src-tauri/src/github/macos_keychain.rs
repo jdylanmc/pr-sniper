@@ -1,11 +1,13 @@
 use super::{
     device_flow::TokenPair,
-    token_store::{CredentialKey, CredentialStore, Provider, StoreError},
+    token_store::{
+        ActiveAccount, ActiveAccountStore, CredentialKey, CredentialStore, Provider, StoreError,
+    },
 };
 use std::{
     ffi::{c_char, c_void},
     ptr,
-    time::Duration,
+    time::{Duration, UNIX_EPOCH},
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -13,6 +15,7 @@ type OsStatus = i32;
 type SecKeychainItemRef = *mut c_void;
 
 const ERR_SEC_ITEM_NOT_FOUND: OsStatus = -25300;
+const ACTIVE_ACCOUNT: &str = "github:active-account";
 
 #[link(name = "Security", kind = "framework")]
 unsafe extern "C" {
@@ -132,54 +135,81 @@ impl MacKeychainStore {
             password,
         }))
     }
-}
 
-impl CredentialStore for MacKeychainStore {
-    fn load(&self, key: &CredentialKey) -> Result<Option<TokenPair>, StoreError> {
-        let account = Self::account(key)?;
-        let Some(item) = self.item(&account, true)? else {
-            return Ok(None);
-        };
-        decode(item.password.as_deref().ok_or(StoreError::InvalidData)?).map(Some)
+    fn load_bytes(&self, account: &str) -> Result<Option<Zeroizing<Vec<u8>>>, StoreError> {
+        self.item(account, true)?
+            .map(|mut item| item.password.take().ok_or(StoreError::InvalidData))
+            .transpose()
     }
 
-    fn save(&self, key: &CredentialKey, pair: &TokenPair) -> Result<(), StoreError> {
-        let account = Self::account(key)?;
-        let secret = encode(pair)?;
-        if let Some(item) = self.item(&account, false)? {
-            let status = unsafe {
+    fn save_bytes(&self, account: &str, secret: &[u8]) -> Result<(), StoreError> {
+        if let Some(item) = self.item(account, false)? {
+            return status_result(unsafe {
                 SecKeychainItemModifyAttributesAndData(
                     item.reference,
                     ptr::null(),
-                    checked_length(&secret)?,
+                    checked_length(secret)?,
                     secret.as_ptr().cast(),
                 )
-            };
-            return status_result(status);
+            });
         }
         let service = self.service.as_bytes();
         let account = account.as_bytes();
-        let status = unsafe {
+        status_result(unsafe {
             SecKeychainAddGenericPassword(
                 ptr::null(),
                 checked_length(service)?,
                 service.as_ptr().cast(),
                 checked_length(account)?,
                 account.as_ptr().cast(),
-                checked_length(&secret)?,
+                checked_length(secret)?,
                 secret.as_ptr().cast(),
                 ptr::null_mut(),
             )
+        })
+    }
+
+    fn delete_named(&self, account: &str) -> Result<(), StoreError> {
+        let Some(item) = self.item(account, false)? else {
+            return Ok(());
         };
-        status_result(status)
+        status_result(unsafe { SecKeychainItemDelete(item.reference) })
+    }
+}
+
+impl CredentialStore for MacKeychainStore {
+    fn load(&self, key: &CredentialKey) -> Result<Option<TokenPair>, StoreError> {
+        let account = Self::account(key)?;
+        self.load_bytes(&account)?
+            .map(|bytes| decode(&bytes))
+            .transpose()
+    }
+
+    fn save(&self, key: &CredentialKey, pair: &TokenPair) -> Result<(), StoreError> {
+        let account = Self::account(key)?;
+        let secret = encode(pair)?;
+        self.save_bytes(&account, &secret)
     }
 
     fn delete(&self, key: &CredentialKey) -> Result<(), StoreError> {
         let account = Self::account(key)?;
-        let Some(item) = self.item(&account, false)? else {
-            return Ok(());
-        };
-        status_result(unsafe { SecKeychainItemDelete(item.reference) })
+        self.delete_named(&account)
+    }
+}
+
+impl ActiveAccountStore for MacKeychainStore {
+    fn load_active_account(&self) -> Result<Option<ActiveAccount>, StoreError> {
+        self.load_bytes(ACTIVE_ACCOUNT)?
+            .map(|bytes| decode_active_account(&bytes))
+            .transpose()
+    }
+
+    fn save_active_account(&self, account: &ActiveAccount) -> Result<(), StoreError> {
+        self.save_bytes(ACTIVE_ACCOUNT, &encode_active_account(account)?)
+    }
+
+    fn delete_active_account(&self) -> Result<(), StoreError> {
+        self.delete_named(ACTIVE_ACCOUNT)
     }
 }
 
@@ -220,8 +250,22 @@ fn encode(pair: &TokenPair) -> Result<Zeroizing<Vec<u8>>, StoreError> {
     bytes.extend_from_slice(access);
     bytes.extend_from_slice(&checked_length(refresh)?.to_be_bytes());
     bytes.extend_from_slice(refresh);
-    bytes.extend_from_slice(&pair.access_lifetime().as_secs().to_be_bytes());
-    bytes.extend_from_slice(&pair.refresh_lifetime().as_secs().to_be_bytes());
+    bytes.extend_from_slice(
+        &pair
+            .access_expires_at()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| StoreError::InvalidData)?
+            .as_secs()
+            .to_be_bytes(),
+    );
+    bytes.extend_from_slice(
+        &pair
+            .refresh_expires_at()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| StoreError::InvalidData)?
+            .as_secs()
+            .to_be_bytes(),
+    );
     Ok(bytes)
 }
 
@@ -229,18 +273,39 @@ fn decode(bytes: &[u8]) -> Result<TokenPair, StoreError> {
     let mut cursor = 0;
     let access = take_string(bytes, &mut cursor)?;
     let refresh = take_string(bytes, &mut cursor)?;
-    let access_lifetime = take_u64(bytes, &mut cursor)?;
-    let refresh_lifetime = take_u64(bytes, &mut cursor)?;
+    let access_expires_at = take_u64(bytes, &mut cursor)?;
+    let refresh_expires_at = take_u64(bytes, &mut cursor)?;
     if cursor != bytes.len() || access.is_empty() || refresh.is_empty() {
         return Err(StoreError::InvalidData);
     }
-    let pair = TokenPair::new(
+    let pair = TokenPair::from_expirations(
         access.as_str(),
         refresh.as_str(),
-        Duration::from_secs(access_lifetime),
-        Duration::from_secs(refresh_lifetime),
+        UNIX_EPOCH + Duration::from_secs(access_expires_at),
+        UNIX_EPOCH + Duration::from_secs(refresh_expires_at),
     );
     Ok(pair)
+}
+
+fn encode_active_account(account: &ActiveAccount) -> Result<Zeroizing<Vec<u8>>, StoreError> {
+    let id = account.account_id.as_bytes();
+    let login = account.login.as_bytes();
+    let mut bytes = Zeroizing::new(Vec::with_capacity(8 + id.len() + login.len()));
+    bytes.extend_from_slice(&checked_length(id)?.to_be_bytes());
+    bytes.extend_from_slice(id);
+    bytes.extend_from_slice(&checked_length(login)?.to_be_bytes());
+    bytes.extend_from_slice(login);
+    Ok(bytes)
+}
+
+fn decode_active_account(bytes: &[u8]) -> Result<ActiveAccount, StoreError> {
+    let mut cursor = 0;
+    let id = take_string(bytes, &mut cursor)?;
+    let login = take_string(bytes, &mut cursor)?;
+    if cursor != bytes.len() {
+        return Err(StoreError::InvalidData);
+    }
+    ActiveAccount::new(id.as_str(), login.as_str())
 }
 
 fn take_string(bytes: &[u8], cursor: &mut usize) -> Result<Zeroizing<String>, StoreError> {

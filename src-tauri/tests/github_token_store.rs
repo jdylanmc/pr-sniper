@@ -1,17 +1,21 @@
 use pr_sniper_lib::github::{
     device_flow::TokenPair,
-    token_store::{CredentialKey, CredentialStore, RotationError, RotationSafeStore, StoreError},
+    token_store::{
+        ActiveAccount, ActiveAccountStore, CredentialKey, CredentialStore, RotationError,
+        RotationSafeStore, StoreError,
+    },
 };
 use std::{
     collections::BTreeMap,
     sync::{Arc, Barrier, Mutex},
     thread,
-    time::Duration,
+    time::{Duration, UNIX_EPOCH},
 };
 
 #[derive(Default)]
 struct MemoryStore {
     values: Mutex<BTreeMap<CredentialKey, TokenPair>>,
+    active: Mutex<Option<ActiveAccount>>,
     fail_next_save: Mutex<bool>,
 }
 
@@ -37,10 +41,27 @@ impl CredentialStore for MemoryStore {
     }
 }
 
+impl ActiveAccountStore for MemoryStore {
+    fn load_active_account(&self) -> Result<Option<ActiveAccount>, StoreError> {
+        Ok(self.active.lock().unwrap().clone())
+    }
+
+    fn save_active_account(&self, account: &ActiveAccount) -> Result<(), StoreError> {
+        *self.active.lock().unwrap() = Some(account.clone());
+        Ok(())
+    }
+
+    fn delete_active_account(&self) -> Result<(), StoreError> {
+        *self.active.lock().unwrap() = None;
+        Ok(())
+    }
+}
+
 fn pair(access: &str, refresh: &str) -> TokenPair {
-    TokenPair::new(
+    TokenPair::new_at(
         access,
         refresh,
+        UNIX_EPOCH + Duration::from_secs(1_000),
         Duration::from_secs(28_800),
         Duration::from_secs(15_552_000),
     )
@@ -129,4 +150,97 @@ fn missing_or_rejected_refresh_requires_reconnection() {
         store.rotate(&key, |_| Err(RotationError::ReconnectRequired)),
         Err(RotationError::ReconnectRequired)
     );
+}
+
+#[test]
+fn restart_restores_active_account_and_absolute_expirations() {
+    let store = RotationSafeStore::new(MemoryStore::default());
+    let account = ActiveAccount::new("1", "octocat").unwrap();
+    store
+        .replace_active_account(&account, &pair("access", "refresh"))
+        .unwrap();
+
+    let restored = store.restore_active_account().unwrap().unwrap();
+    assert_eq!(restored.account, account);
+    assert_eq!(
+        restored.pair.access_expires_at(),
+        UNIX_EPOCH + Duration::from_secs(29_800)
+    );
+    assert_eq!(
+        restored.pair.refresh_expires_at(),
+        UNIX_EPOCH + Duration::from_secs(15_553_000)
+    );
+}
+
+#[test]
+fn account_switch_and_disconnect_remove_account_bound_credentials() {
+    let store = RotationSafeStore::new(MemoryStore::default());
+    let first = ActiveAccount::new("1", "first").unwrap();
+    let second = ActiveAccount::new("2", "second").unwrap();
+    store
+        .replace_active_account(&first, &pair("a1", "r1"))
+        .unwrap();
+    store
+        .replace_active_account(&second, &pair("a2", "r2"))
+        .unwrap();
+
+    assert!(store.load(&CredentialKey::github("1")).unwrap().is_none());
+    assert!(store.load(&CredentialKey::github("2")).unwrap().is_some());
+    assert_eq!(
+        store.load_active_account().unwrap().unwrap().account_id,
+        "2"
+    );
+
+    store.disconnect(&second).unwrap();
+    assert!(store.load(&CredentialKey::github("2")).unwrap().is_none());
+    assert!(store.load_active_account().unwrap().is_none());
+}
+
+#[test]
+fn expired_access_refreshes_once_through_the_shared_rotation_store() {
+    let store = Arc::new(RotationSafeStore::new(MemoryStore::default()));
+    let account = ActiveAccount::new("1", "octocat").unwrap();
+    let expired = TokenPair::new_at(
+        "a0",
+        "r0",
+        UNIX_EPOCH,
+        Duration::from_secs(1),
+        Duration::from_secs(100),
+    );
+    store.replace_active_account(&account, &expired).unwrap();
+    let refreshes = Arc::new(Mutex::new(0_u8));
+    let barrier = Arc::new(Barrier::new(3));
+
+    let handles: Vec<_> = (0..2)
+        .map(|_| {
+            let store = Arc::clone(&store);
+            let refreshes = Arc::clone(&refreshes);
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                store
+                    .refresh_if_needed(
+                        &CredentialKey::github("1"),
+                        UNIX_EPOCH + Duration::from_secs(2),
+                        |current| {
+                            *refreshes.lock().unwrap() += 1;
+                            Ok(TokenPair::new_at(
+                                "a1",
+                                current.refresh_token(),
+                                UNIX_EPOCH + Duration::from_secs(2),
+                                Duration::from_secs(100),
+                                Duration::from_secs(100),
+                            ))
+                        },
+                    )
+                    .unwrap();
+            })
+        })
+        .collect();
+    barrier.wait();
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    assert_eq!(*refreshes.lock().unwrap(), 1);
 }
