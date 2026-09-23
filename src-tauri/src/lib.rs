@@ -267,26 +267,29 @@ impl GithubAuth {
         cancelled_active
     }
 
-    fn confirm_with<F>(&mut self, persist: F) -> Result<(), String>
+    fn confirm_with<F, T>(&mut self, persist: F) -> Result<T, String>
     where
-        F: FnOnce(&github::Identity, &github::oauth::TokenPair) -> Result<(), ()>,
+        F: FnOnce(&github::Identity, &github::oauth::TokenPair) -> Result<T, ()>,
     {
         let pending = self
             .pending
             .take()
             .ok_or("No GitHub account is awaiting confirmation.")?;
-        if persist(&pending.identity, &pending.pair).is_err() {
-            self.pending = Some(pending);
-            self.pending_failure = Some(GithubAuthFailure::CredentialsUnavailable);
-            return Err("GitHub credentials could not be saved securely.".into());
-        }
+        let persisted = match persist(&pending.identity, &pending.pair) {
+            Ok(persisted) => persisted,
+            Err(()) => {
+                self.pending = Some(pending);
+                self.pending_failure = Some(GithubAuthFailure::CredentialsUnavailable);
+                return Err("GitHub credentials could not be saved securely.".into());
+            }
+        };
         self.accounts.insert(
             pending.identity.id.clone(),
             GithubAccountState::Connected(pending.identity),
         );
         self.pending_failure = None;
         self.failure = None;
-        Ok(())
+        Ok(persisted)
     }
 
     fn restore(
@@ -378,27 +381,37 @@ impl GithubAuth {
                 }
             }
         }
-        if let Ok(legacy_accounts) = legacy_store.accounts() {
-            for account in legacy_accounts {
-                if account.provider.as_str() != "github" {
-                    continue;
+        match legacy_store.accounts() {
+            Ok(legacy_accounts) => {
+                for account in legacy_accounts {
+                    if account.provider.as_str() != "github" {
+                        continue;
+                    }
+                    if auth.accounts.contains_key(&account.account_id) {
+                        if let Err(error) = legacy_store
+                            .remove_account(&ProviderAccountId::github(&account.account_id))
+                        {
+                            eprintln!(
+                                "GitHub OAuth credential migration remains pending: {error:?}"
+                            );
+                        }
+                        continue;
+                    }
+                    let identity = github::Identity {
+                        id: account.account_id.clone(),
+                        login: account.login,
+                    };
+                    auth.accounts.insert(
+                        identity.id.clone(),
+                        GithubAccountState::ReconnectRequired {
+                            identity,
+                            reason: GithubAuthFailure::AuthenticationChanged,
+                        },
+                    );
                 }
-                if auth.accounts.contains_key(&account.account_id) {
-                    let _ = legacy_store
-                        .remove_account(&ProviderAccountId::github(&account.account_id));
-                    continue;
-                }
-                let identity = github::Identity {
-                    id: account.account_id.clone(),
-                    login: account.login,
-                };
-                auth.accounts.insert(
-                    identity.id.clone(),
-                    GithubAccountState::ReconnectRequired {
-                        identity,
-                        reason: GithubAuthFailure::AuthenticationChanged,
-                    },
-                );
+            }
+            Err(error) => {
+                eprintln!("GitHub legacy credential cleanup remains pending: {error:?}");
             }
         }
         auth
@@ -443,13 +456,26 @@ fn apply_account_connection_failure<T>(
     }
 }
 
-fn persist_oauth_account_with_cleanup<S, C>(save: S, cleanup_legacy: C) -> Result<(), ()>
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OAuthAccountPersistence {
+    Saved,
+    SavedWithLegacyCleanupPending,
+}
+
+fn persist_oauth_account_with_cleanup<S, C>(
+    save: S,
+    cleanup_legacy: C,
+) -> Result<OAuthAccountPersistence, ()>
 where
     S: FnOnce() -> Result<(), ()>,
     C: FnOnce() -> Result<(), ()>,
 {
     save()?;
-    cleanup_legacy()
+    Ok(if cleanup_legacy().is_ok() {
+        OAuthAccountPersistence::Saved
+    } else {
+        OAuthAccountPersistence::SavedWithLegacyCleanupPending
+    })
 }
 
 fn rotation_connection_error(error: github::token_store::RotationError) -> ConnectionError {
@@ -911,7 +937,7 @@ fn confirm_github_account(host: State<'_, Host>) -> Result<GithubAuthView, Strin
         .github_auth
         .lock()
         .map_err(|_| "GitHub connection state is unavailable.")?;
-    auth.confirm_with(|identity, pair| {
+    let persistence = auth.confirm_with(|identity, pair| {
         use github::token_store::ProviderAccountId;
         let account = ActiveAccount::new(&identity.id, &identity.login).map_err(|_| ())?;
         persist_oauth_account_with_cleanup(
@@ -927,6 +953,9 @@ fn confirm_github_account(host: State<'_, Host>) -> Result<GithubAuthView, Strin
             },
         )
     })?;
+    if persistence == OAuthAccountPersistence::SavedWithLegacyCleanupPending {
+        eprintln!("GitHub OAuth account connected; legacy credential cleanup remains pending.");
+    }
     Ok(auth.view())
 }
 
@@ -1312,11 +1341,78 @@ mod github_auth_tests {
         exchange_and_identify_with, failure_from_connection_error, failure_from_oauth_error,
         github_keychain_stores, persist_oauth_account_with_cleanup, retry_replacement_bind_with,
         rotation_connection_error, GithubAccountState, GithubAuth, GithubAuthFailure,
+        OAuthAccountPersistence,
     };
     use crate::github::oauth::OAuthError;
-    use crate::github::token_store::RotationError;
+    use crate::github::token_store::{
+        AccountRegistry, AccountRegistryStore, CredentialKey, CredentialStore, RotationError,
+        StoreError,
+    };
     use crate::github::ConnectionError;
-    use std::time::{Duration, SystemTime};
+    use std::{
+        collections::BTreeMap,
+        sync::{
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+            Arc, Mutex,
+        },
+        time::{Duration, SystemTime},
+    };
+
+    #[derive(Clone, Default)]
+    struct FaultStore {
+        registry: Arc<Mutex<AccountRegistry>>,
+        credentials: Arc<
+            Mutex<
+                BTreeMap<
+                    crate::github::token_store::ProviderAccountId,
+                    crate::github::oauth::TokenPair,
+                >,
+            >,
+        >,
+        fail_delete: Arc<AtomicBool>,
+        credential_loads: Arc<AtomicUsize>,
+    }
+
+    impl CredentialStore for FaultStore {
+        fn load(
+            &self,
+            key: &CredentialKey,
+        ) -> Result<Option<crate::github::oauth::TokenPair>, StoreError> {
+            self.credential_loads.fetch_add(1, Ordering::SeqCst);
+            Ok(self.credentials.lock().unwrap().get(key).cloned())
+        }
+
+        fn save(
+            &self,
+            key: &CredentialKey,
+            pair: &crate::github::oauth::TokenPair,
+        ) -> Result<(), StoreError> {
+            self.credentials
+                .lock()
+                .unwrap()
+                .insert(key.clone(), pair.clone());
+            Ok(())
+        }
+
+        fn delete(&self, key: &CredentialKey) -> Result<(), StoreError> {
+            if self.fail_delete.load(Ordering::SeqCst) {
+                return Err(StoreError::Unavailable);
+            }
+            self.credentials.lock().unwrap().remove(key);
+            Ok(())
+        }
+    }
+
+    impl AccountRegistryStore for FaultStore {
+        fn load_registry(&self) -> Result<AccountRegistry, StoreError> {
+            Ok(self.registry.lock().unwrap().clone())
+        }
+
+        fn save_registry(&self, registry: &AccountRegistry) -> Result<(), StoreError> {
+            *self.registry.lock().unwrap() = registry.clone();
+            Ok(())
+        }
+    }
 
     fn identity(id: &str, login: &str) -> crate::github::Identity {
         crate::github::Identity {
@@ -1564,7 +1660,7 @@ mod github_auth_tests {
         assert!(auth
             .confirm_with(|_, _| {
                 persistence_attempts += 1;
-                Err(())
+                Err::<(), ()>(())
             })
             .is_err());
         assert_eq!(persistence_attempts, 1);
@@ -1679,32 +1775,72 @@ mod github_auth_tests {
     }
 
     #[test]
-    fn confirmed_oauth_copy_precedes_retryable_legacy_cleanup() {
-        let mut saved = false;
-        let mut cleanup_attempts = 0;
-        assert!(persist_oauth_account_with_cleanup(
-            || {
-                saved = true;
-                Ok(())
-            },
-            || {
-                cleanup_attempts += 1;
-                Err(())
-            },
-        )
-        .is_err());
-        assert!(saved);
-        assert_eq!(cleanup_attempts, 1);
+    fn confirmed_oauth_account_stays_connected_while_legacy_cleanup_retries() {
+        use crate::github::token_store::{ActiveAccount, ProviderAccountId, RotationSafeStore};
 
-        assert!(persist_oauth_account_with_cleanup(
-            || Ok(()),
-            || {
-                cleanup_attempts += 1;
-                Ok(())
-            },
-        )
-        .is_ok());
-        assert_eq!(cleanup_attempts, 2);
+        let current_storage = FaultStore::default();
+        let legacy_storage = FaultStore::default();
+        let current = RotationSafeStore::new(current_storage.clone());
+        let legacy = RotationSafeStore::new(legacy_storage.clone());
+        let account = ActiveAccount::new("101", "octocat").unwrap();
+        let account_id = ProviderAccountId::github("101");
+        legacy
+            .save_account(&account, &pair("legacy"), false)
+            .unwrap();
+        legacy_storage.fail_delete.store(true, Ordering::SeqCst);
+
+        let mut auth = GithubAuth::new();
+        let (cancel, _) = tokio::sync::oneshot::channel();
+        let attempt = auth.start_attempt(None, cancel);
+        auth.finish_attempt(attempt, Ok((identity("101", "octocat"), pair("oauth"))));
+        let persistence = auth
+            .confirm_with(|identity, token_pair| {
+                let confirmed =
+                    ActiveAccount::new(&identity.id, &identity.login).map_err(|_| ())?;
+                persist_oauth_account_with_cleanup(
+                    || {
+                        current
+                            .save_account(&confirmed, token_pair, false)
+                            .map_err(|_| ())
+                    },
+                    || legacy.remove_account(&account_id).map_err(|_| ()),
+                )
+            })
+            .unwrap();
+
+        assert_eq!(
+            persistence,
+            OAuthAccountPersistence::SavedWithLegacyCleanupPending
+        );
+        assert!(auth.pending.is_none());
+        assert!(matches!(
+            auth.accounts.get("101"),
+            Some(GithubAccountState::Connected(identity)) if identity.login == "octocat"
+        ));
+        auth.cancel_attempt();
+        assert!(matches!(
+            auth.accounts.get("101"),
+            Some(GithubAccountState::Connected(_))
+        ));
+
+        legacy_storage.fail_delete.store(false, Ordering::SeqCst);
+        let restarted_current = RotationSafeStore::new(current_storage);
+        let restarted_legacy = RotationSafeStore::new(legacy_storage.clone());
+        assert_eq!(
+            restarted_current
+                .restore_account(&account_id)
+                .unwrap()
+                .unwrap()
+                .pair
+                .access_token(),
+            "access-oauth"
+        );
+        assert!(restarted_legacy.accounts().unwrap().is_empty());
+        assert!(restarted_legacy
+            .restore_account(&account_id)
+            .unwrap()
+            .is_none());
+        assert_eq!(legacy_storage.credential_loads.load(Ordering::SeqCst), 0);
     }
 
     #[test]
