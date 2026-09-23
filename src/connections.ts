@@ -24,15 +24,24 @@ interface PullRequest {
 
 interface Observation {
   name: string;
+  account_id: string;
+  installation_id?: string;
+  repository_id?: string;
   connection?: Connection;
   message: string;
   pulls?: PullRequest[];
 }
 
 const observations = new Map<string, Observation>();
+let activeGithubAccountId: string | null = null;
+window.addEventListener("pr-sniper:github-auth-state", (event) => {
+  activeGithubAccountId = (event as CustomEvent<{ account_id: string | null }>)
+    .detail.account_id;
+  for (const [id, observation] of observations)
+    if (observation.account_id !== activeGithubAccountId)
+      observations.delete(id);
+});
 const failures: Record<string, string> = {
-  missing_cli: "The optional development GitHub CLI probe is unavailable.",
-  broken_cli: "The optional development GitHub CLI probe is broken.",
   signed_out:
     "The PR Sniper GitHub App authorization is missing, expired, or rejected. Reconnect GitHub.",
   wrong_identity:
@@ -72,7 +81,12 @@ function describe(connection: Connection): string {
 
 export function renderConnection(root: HTMLElement, repository: Repository) {
   let observation = observations.get(repository.id);
-  if (observation?.name !== repository.name) {
+  if (
+    observation?.name !== repository.name ||
+    observation?.account_id !== activeGithubAccountId ||
+    observation?.installation_id !== repository.installation_id ||
+    observation?.repository_id !== repository.provider_repository_id
+  ) {
     observations.delete(repository.id);
     observation = undefined;
   }
@@ -89,6 +103,11 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
   const status = root.querySelector<HTMLElement>("[role=status]")!;
   const read = root.querySelector<HTMLButtonElement>(".read-metadata")!;
   const details = root.querySelector<HTMLElement>(".pull-metadata")!;
+  const authChanged = () => {
+    window.removeEventListener("pr-sniper:github-auth-state", authChanged);
+    if (root.isConnected) renderConnection(root, repository);
+  };
+  window.addEventListener("pr-sniper:github-auth-state", authChanged);
   status.textContent =
     observation?.message ??
     "Not verified. Connect GitHub and explicitly select this repository from an App installation; no provider changes are performed.";
@@ -120,7 +139,7 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
     const unlock = lockSettings(root);
     status.textContent = metadata
       ? "Reading every PR and changed-file page..."
-      : "Verifying GitHub CLI identity and access...";
+      : "Verifying PR Sniper GitHub App identity and installation access...";
     details.replaceChildren();
     try {
       if (metadata && pinned) {
@@ -136,6 +155,9 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
         const pulls = result.pull_requests;
         observation = {
           name: repository.name,
+          account_id: result.connection.identity.id,
+          installation_id: repository.installation_id!,
+          repository_id: repository.provider_repository_id!,
           connection: result.connection,
           pulls,
           message: `${describe(result.connection)} Complete metadata: ${pulls.length} PRs, ${pulls.reduce((sum, pull) => sum + pull.files.length, 0)} changed files. Last read ${new Date().toLocaleTimeString()}.`,
@@ -149,19 +171,21 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
         if (!root.isConnected) return;
         observation = {
           name: repository.name,
+          account_id: connection.identity.id,
+          installation_id: repository.installation_id!,
+          repository_id: repository.provider_repository_id!,
           connection,
           message: `${describe(connection)} Last verified ${new Date().toLocaleTimeString()}.`,
         };
       }
     } catch (cause) {
       if (!root.isConnected) return;
-      observation = {
-        name: repository.name,
-        message:
-          typeof cause === "string" && Object.hasOwn(failures, cause)
-            ? failures[cause]
-            : "Connection read failed. No raw error details or partial metadata are exposed.",
-      };
+      observations.delete(repository.id);
+      observation = undefined;
+      status.textContent =
+        typeof cause === "string" && Object.hasOwn(failures, cause)
+          ? failures[cause]
+          : "Connection read failed. No raw error details or partial metadata are exposed.";
     } finally {
       unlock();
       if (root.isConnected) {

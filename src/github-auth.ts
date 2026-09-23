@@ -72,6 +72,13 @@ export function renderGithubAuth(
   function render(state: GithubAuthState) {
     actions.replaceChildren();
     repositories.replaceChildren();
+    window.dispatchEvent(
+      new CustomEvent("pr-sniper:github-auth-state", {
+        detail: {
+          account_id: state.state === "connected" ? state.account_id : null,
+        },
+      }),
+    );
     if (state.state === "disconnected") {
       status.textContent =
         "Disconnected. Connect through the PR Sniper GitHub App. This does not enable reviews, comments, notifications, or merging.";

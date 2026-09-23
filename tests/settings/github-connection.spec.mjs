@@ -84,8 +84,6 @@ test("verifying GitHub preserves drafts and does not enable automation", async (
 });
 
 for (const [error, expected] of [
-  ["missing_cli", "development GitHub CLI probe is unavailable"],
-  ["broken_cli", "development GitHub CLI probe is broken"],
   ["signed_out", "App authorization is missing, expired, or rejected"],
   ["wrong_identity", "does not match"],
   ["missing_read_permission", "denied repository or pull-request read"],
@@ -261,4 +259,96 @@ test("metadata replaces stale capability evidence for the same account and repos
       "Complete metadata: 0 PRs",
     );
   }
+});
+
+test("switching App accounts clears cached verification and PR metadata", async ({
+  page,
+  store,
+}) => {
+  await store("save_repository", { repository: "jdylanmc/pr-sniper" });
+  let state = {
+    state: "connected",
+    account_id: "account-a",
+    login: "account-a-login",
+  };
+  await page.exposeFunction("__githubAccountSwitch", (command) => {
+    if (command === "disconnect_github_auth") {
+      state = { state: "disconnected" };
+      return state;
+    }
+    if (command === "begin_github_auth") {
+      state = {
+        state: "connected",
+        account_id: "account-b",
+        login: "account-b-login",
+      };
+      return state;
+    }
+    if (command === "verify_github_connection") {
+      return {
+        identity: { id: state.account_id, login: state.login },
+        repository: { id: "1376547672", name: "jdylanmc/pr-sniper" },
+        capabilities: { read: true, comment: "available" },
+      };
+    }
+    if (command === "read_github_metadata") {
+      return {
+        connection: {
+          identity: { id: state.account_id, login: state.login },
+          repository: { id: "1376547672", name: "jdylanmc/pr-sniper" },
+          capabilities: { read: true, comment: "available" },
+        },
+        pull_requests: [],
+      };
+    }
+    return state;
+  });
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = (command, args) =>
+      [
+        "github_auth_state",
+        "begin_github_auth",
+        "disconnect_github_auth",
+        "verify_github_connection",
+        "read_github_metadata",
+      ].includes(command)
+        ? window.__githubAccountSwitch(command, args)
+        : original(command, args);
+  });
+  await page.goto("/?view=settings");
+
+  let card = await connection(page);
+  await card
+    .getByRole("button", { name: "Verify GitHub connection", exact: true })
+    .click();
+  await card
+    .getByRole("button", { name: "Read PR metadata", exact: true })
+    .click();
+  await expect(card.getByRole("status")).toContainText(
+    "account-a-login (account-a)",
+  );
+  await expect(card.getByRole("status")).toContainText(
+    "Complete metadata: 0 PRs",
+  );
+  await closeDialog(page);
+
+  const auth = page.locator(".github-auth-card");
+  await auth.getByRole("button", { name: "Disconnect GitHub" }).click();
+  await auth.getByRole("button", { name: "Connect GitHub" }).click();
+  await expect(auth.getByRole("status")).toContainText(
+    "Connected as account-b-login (account-b)",
+  );
+
+  card = await connection(page);
+  await expect(card.getByRole("status")).toContainText("Not verified");
+  await expect(card.getByRole("status")).not.toContainText("account-a");
+  await expect(card.locator(".connection summary")).toHaveCount(0);
+  await expect(
+    card.getByRole("button", { name: "Read PR metadata", exact: true }),
+  ).toBeDisabled();
+  await expect(page.locator("body")).not.toContainText("gh auth login");
+  await expect(page.locator("body")).not.toContainText(
+    "current GitHub CLI account",
+  );
 });

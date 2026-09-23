@@ -30,7 +30,8 @@ No release/versioning policy has been established yet.
   cancellation and failure states. Rotating provider/account credentials use
   absolute expirations in one atomically replaced macOS Keychain record behind
   a serialized rotation boundary, restore and validate the active account after
-  restart, and remove credentials on disconnect. The App-token session lists
+  restart, migrate the prior two-item Keychain layout without orphaning its
+  secret, and remove credentials on disconnect. The App-token session lists
   paginated installation repositories with stable identities, requires
   explicit selection, and backs identity, people, repository verification and
   pull-request metadata reads without requiring GitHub CLI credentials. Failed
@@ -41,11 +42,12 @@ No release/versioning policy has been established yet.
   remains separate acceptance. See
   [#5](https://github.com/jdylanmc/pr-sniper/issues/5).
 
-- Verify configured GitHub repositories with the current CLI account and stable
-  account ID, distinguish read access from comment scope, and read complete
-  paginated PR, reviewer and changed-file metadata in Settings. CLI, identity,
-  permission, rate-limit and incomplete-read failures remain visible. Credentials
-  stay in memory; no sign-in, provider mutation or automation enablement occurs.
+- Verify configured GitHub repositories with the connected App account and
+  stable identities, distinguish read access from comment scope, and read
+  complete paginated PR, reviewer and changed-file metadata in Settings.
+  Account changes and disconnects clear cached verification and metadata until
+  a fresh read succeeds. Identity, permission, rate-limit and incomplete-read
+  failures remain visible; no provider mutation or automation enablement occurs.
   See [#5](https://github.com/jdylanmc/pr-sniper/issues/5).
 
 - Manage watched GitHub repositories from Settings, with canonical duplicate
