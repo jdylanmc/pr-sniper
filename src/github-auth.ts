@@ -10,6 +10,7 @@ type GithubAuthFailure =
   | "cancelled"
   | "timeout"
   | "wrong_identity"
+  | "missing_scope"
   | "credentials_unavailable";
 
 export interface GithubAccount {
@@ -32,24 +33,25 @@ type GithubAuthView = {
         state: "pending_account_confirmation";
         account_id: string;
         login: string;
+        confirmation_error?: GithubAuthFailure;
       }
     | { state: "failed"; reason: GithubAuthFailure };
 };
 
-export interface GithubInstalledRepository {
-  installation_id: string;
-  repository: { id: string; name: string };
+export interface GithubAccessibleRepository {
+  id: string;
+  name: string;
 }
 
 export function renderGithubAuth(
   root: HTMLElement,
   selectRepository?: (
     account: GithubAccount,
-    repository: GithubInstalledRepository,
+    repository: GithubAccessibleRepository,
   ) => void,
   accountsChanged?: (accounts: GithubAccount[]) => void,
 ) {
-  root.innerHTML = `<div class="github-auth-card"><div><h2>GitHub accounts</h2><p role="status">Reading connection state...</p><div class="github-auth-accounts"></div><div class="github-auth-repositories"></div></div><div class="github-auth-actions"></div></div>`;
+  root.innerHTML = `<div class="github-auth-card"><div><h2>GitHub accounts</h2><p class="settings-hint">GitHub's broad <code>repo</code> scope grants access to public and private repositories available to the account. PR Sniper lists them for explicit selection and never starts monitoring every accessible repository automatically.</p><p role="status">Reading connection state...</p><div class="github-auth-accounts"></div><div class="github-auth-repositories"></div></div><div class="github-auth-actions"></div></div>`;
   const status = root.querySelector<HTMLElement>("[role=status]")!;
   const actions = root.querySelector<HTMLElement>(".github-auth-actions")!;
   const accountList = root.querySelector<HTMLElement>(".github-auth-accounts")!;
@@ -66,16 +68,26 @@ export function renderGithubAuth(
   }
 
   async function refreshAfterFailure(cause: unknown) {
+    const failure = String(cause).toLowerCase();
     try {
       render(await invoke<GithubAuthView>("github_auth_state"));
     } catch {
-      const failure = String(cause).toLowerCase();
-      status.textContent = failure.includes("network")
-        ? "The GitHub network request failed. No authorization or automation was assumed."
-        : failure.includes("provider")
-          ? "GitHub returned an error. No authorization or automation was assumed."
-          : "GitHub connection could not be updated. No authorization or automation was assumed.";
+      status.textContent =
+        "GitHub connection state is unavailable after the failed operation. No connection is assumed.";
+      return;
     }
+    const currentState = status.textContent ?? "";
+    status.textContent = failure.includes("saved securely")
+      ? `GitHub credentials could not be saved securely. The account is still pending; retry Confirm or cancel without connecting it. ${currentState}`
+      : failure.includes("missing_scope")
+        ? "GitHub no longer grants the required repo scope. Reconnect and review the broad public/private repository access request."
+        : failure.includes("organization_policy_denied")
+          ? "GitHub organization policy or SAML single sign-on blocked repository access. Authorize the OAuth App for that organization or contact its administrator."
+          : failure.includes("network")
+            ? "The GitHub network request failed. No authorization or automation was assumed."
+            : failure.includes("provider")
+              ? "GitHub returned an error. No authorization or automation was assumed."
+              : "GitHub connection could not be updated. No authorization or automation was assumed.";
   }
 
   function actionButton(
@@ -156,7 +168,7 @@ export function renderGithubAuth(
       const state = document.createElement("p");
       state.textContent =
         account.state === "connected"
-          ? "Connected through the PR Sniper GitHub App."
+          ? "Connected through the PR Sniper GitHub OAuth App."
           : `Needs attention. ${failureMessage(account.reason)}`;
       description.append(heading, state);
       const accountActions = document.createElement("div");
@@ -174,7 +186,7 @@ export function renderGithubAuth(
           async () => {
             const result = await invoke<{
               identity: { id: string; login: string };
-              repositories: GithubInstalledRepository[];
+              repositories: GithubAccessibleRepository[];
             }>("list_provider_repositories", {
               provider: "github",
               accountId: account.account_id,
@@ -183,17 +195,17 @@ export function renderGithubAuth(
               throw new Error("GitHub account changed");
             repositories.replaceChildren();
             if (!result.repositories.length) {
-              repositories.textContent = `No repositories are available to ${account.login} through this GitHub App installation.`;
+              repositories.textContent = `No repositories are available to ${account.login} with the granted GitHub OAuth scope.`;
               return;
             }
             const list = document.createElement("ul");
-            for (const installed of result.repositories) {
+            for (const repository of result.repositories) {
               const row = document.createElement("li");
               const use = document.createElement("button");
               use.type = "button";
-              use.textContent = `Use ${installed.repository.name} as ${account.login}`;
+              use.textContent = `Use ${repository.name} as ${account.login}`;
               use.addEventListener("click", () =>
-                selectRepository?.(account, installed),
+                selectRepository?.(account, repository),
               );
               row.append(use);
               list.append(row);
@@ -220,7 +232,10 @@ export function renderGithubAuth(
       clearTimeout(refreshTimer);
       refreshTimer = setTimeout(refresh, 250);
     } else if (view.flow.state === "pending_account_confirmation") {
-      status.textContent = `Confirm ${view.flow.login} (${view.flow.account_id}). Credentials are not saved until you confirm.`;
+      status.textContent =
+        view.flow.confirmation_error === "credentials_unavailable"
+          ? `GitHub credentials could not be saved securely. Confirm ${view.flow.login} (${view.flow.account_id}) again or cancel without connecting it.`
+          : `Confirm ${view.flow.login} (${view.flow.account_id}). Credentials are not saved until you confirm.`;
       commandButton(actions, "Confirm", "confirm_github_account");
       commandButton(
         actions,
@@ -273,6 +288,8 @@ function failureMessage(reason?: GithubAuthFailure) {
       timeout: "GitHub sign-in timed out.",
       wrong_identity:
         "GitHub returned an already connected or unexpected account.",
+      missing_scope:
+        "The GitHub OAuth authorization no longer grants the required repo scope.",
       credentials_unavailable:
         "The credentials could not be restored or stored safely.",
     }[reason ?? "provider"] ?? "Reconnect this account."

@@ -26,6 +26,8 @@ pub enum ConnectionError {
     SignedOut,
     Timeout,
     MissingReadPermission,
+    MissingScope,
+    OrganizationPolicyDenied,
     RateLimited,
     Network,
     ProviderFailure,

@@ -84,16 +84,6 @@ pub struct ProviderRepositoryId {
 pub struct RepositoryAccountBinding {
     pub account: ProviderAccountId,
     pub repository: ProviderRepositoryId,
-    pub installation_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RepositoryBindingCandidate {
-    pub provider: ProviderId,
-    pub account_id: String,
-    pub installation_id: Option<String>,
-    pub repository_id: String,
-    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,8 +95,8 @@ pub struct Repository {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_account_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub installation_id: Option<String>,
+    #[serde(default, rename = "installation_id", skip_serializing)]
+    pub legacy_installation_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_repository_id: Option<String>,
     #[serde(default, skip_serializing_if = "PolicyOverrides::is_empty")]
@@ -161,12 +151,6 @@ impl Settings {
             }
             if repository.provider_account_id.is_some()
                 && repository.provider_repository_id.is_none()
-                || repository.installation_id.is_some()
-                    && repository.provider_repository_id.is_none()
-                || repository
-                    .installation_id
-                    .as_ref()
-                    .is_some_and(|id| !is_provider_id(&repository.provider, id))
                 || repository
                     .provider_account_id
                     .as_ref()
@@ -175,12 +159,9 @@ impl Settings {
                     .provider_repository_id
                     .as_ref()
                     .is_some_and(|id| !is_provider_id(&repository.provider, id))
-                || matches!(repository.provider, ProviderId::Github)
-                    && repository.provider_account_id.is_some()
-                    && repository.installation_id.is_none()
             {
                 return Err(
-                    "Connected repositories require stable provider, account, installation and repository identities.".into(),
+                    "Connected repositories require stable provider, account and repository identities.".into(),
                 );
             }
             let binding = if repository.provider_account_id.is_some()
@@ -189,14 +170,12 @@ impl Settings {
                 (
                     repository.provider.clone(),
                     repository.provider_account_id.clone(),
-                    repository.installation_id.clone(),
                     repository.provider_repository_id.clone(),
                     None,
                 )
             } else {
                 (
                     repository.provider.clone(),
-                    None,
                     None,
                     None,
                     Some(repository.name.clone()),
@@ -216,35 +195,6 @@ impl Settings {
             .find(|repository| repository.id == id)
             .map(|repository| repository.overrides.effective(&self.defaults))
     }
-
-    pub fn migrate_repository_bindings(
-        &mut self,
-        candidates: &[RepositoryBindingCandidate],
-    ) -> bool {
-        let mut changed = false;
-        for repository in &mut self.repositories {
-            if repository.provider_account_id.is_some() {
-                continue;
-            }
-            let Some(repository_id) = repository.provider_repository_id.as_deref() else {
-                continue;
-            };
-            let matches: Vec<_> = candidates
-                .iter()
-                .filter(|candidate| {
-                    candidate.provider == repository.provider
-                        && candidate.repository_id == repository_id
-                        && candidate.name == repository.name
-                        && candidate.installation_id == repository.installation_id
-                })
-                .collect();
-            if matches.len() == 1 {
-                repository.provider_account_id = Some(matches[0].account_id.clone());
-                changed = true;
-            }
-        }
-        changed
-    }
 }
 
 impl Repository {
@@ -258,7 +208,6 @@ impl Repository {
                 provider: self.provider.clone(),
                 repository_id: self.provider_repository_id.clone()?,
             },
-            installation_id: self.installation_id.clone(),
         })
     }
 }
@@ -378,11 +327,28 @@ impl Store {
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Settings::default()),
             Err(_) => return Err("Cannot read settings. Check local file permissions.".into()),
         };
-        let settings: Settings = serde_json::from_slice(&bytes)
+        let mut settings: Settings = serde_json::from_slice(&bytes)
             .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.")?;
+        let migrated = settings
+            .repositories
+            .iter_mut()
+            .fold(false, |changed, repository| {
+                if matches!(repository.provider, ProviderId::Github)
+                    && repository.legacy_installation_id.take().is_some()
+                {
+                    repository.provider_account_id = None;
+                    repository.provider_repository_id = None;
+                    true
+                } else {
+                    changed
+                }
+            });
         settings
             .validate()
             .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.")?;
+        if migrated {
+            self.write_settings(&settings)?;
+        }
         Ok(settings)
     }
 
@@ -390,6 +356,10 @@ impl Store {
         settings.validate()?;
         // Never silently replace unreadable or corrupt existing configuration.
         self.load_settings()?;
+        self.write_settings(settings)
+    }
+
+    fn write_settings(&self, settings: &Settings) -> Result<(), String> {
         let directory = self.root.join("config");
         fs::DirBuilder::new()
             .recursive(true)
@@ -430,7 +400,7 @@ impl Store {
             name,
             enabled: true,
             provider_account_id: None,
-            installation_id: None,
+            legacy_installation_id: None,
             provider_repository_id: None,
             overrides: PolicyOverrides::default(),
             review_preset: None,
@@ -462,7 +432,7 @@ impl Store {
             .ok_or("Repository no longer exists. Reload Settings.")?;
         repo.name = name;
         repo.provider_account_id = None;
-        repo.installation_id = None;
+        repo.legacy_installation_id = None;
         repo.provider_repository_id = None;
         repo.enabled = enabled;
         self.save_settings(&settings)?;

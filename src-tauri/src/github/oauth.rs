@@ -8,7 +8,7 @@ use axum::{
 use oauth2::{
     basic::{BasicClient, BasicTokenType},
     AuthType, AuthUrl, AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge, PkceCodeVerifier,
-    RedirectUrl, RefreshToken, RequestTokenError, SyncHttpClient, TokenResponse, TokenUrl,
+    RedirectUrl, RefreshToken, RequestTokenError, Scope, SyncHttpClient, TokenResponse, TokenUrl,
 };
 use reqwest::{blocking::Client, redirect::Policy};
 use serde::Deserialize;
@@ -20,7 +20,7 @@ use std::{
 };
 use zeroize::Zeroizing;
 
-pub const GITHUB_APP_CLIENT_ID: &str = "Iv23li1HXvoQVkSzV2l5";
+pub const GITHUB_OAUTH_CLIENT_ID: &str = "Ov23lidoL3QovWyfxnA4";
 pub const GITHUB_CALLBACK_URL: &str = "http://127.0.0.1:53682/oauth/github/callback";
 const GITHUB_AUTHORIZE_URL: &str = "https://github.com/login/oauth/authorize";
 const GITHUB_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
@@ -40,7 +40,7 @@ impl AuthorizationAttempt {
     }
 
     fn new_with_redirect(select_account: bool, redirect_url: &str) -> Result<Self, OAuthError> {
-        let client = BasicClient::new(ClientId::new(GITHUB_APP_CLIENT_ID.into()))
+        let client = BasicClient::new(ClientId::new(GITHUB_OAUTH_CLIENT_ID.into()))
             .set_auth_type(AuthType::RequestBody)
             .set_auth_uri(
                 AuthUrl::new(GITHUB_AUTHORIZE_URL.into())
@@ -55,6 +55,7 @@ impl AuthorizationAttempt {
         let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
         let request = client
             .authorize_url(CsrfToken::new_random)
+            .add_scope(Scope::new("repo".into()))
             .set_pkce_challenge(challenge);
         let (authorization_url, state) = if select_account {
             request.add_extra_param("prompt", "select_account").url()
@@ -157,7 +158,7 @@ async fn callback(
         Ok(_) => (
             StatusCode::OK,
             Html(
-                "<!doctype html><title>Connected</title><p>Connected - return to PR Sniper. You may close this window.</p>",
+                "<!doctype html><title>Authorization response received</title><p>Authorization response received. Return to PR Sniper to finish connecting this account. You may close this window.</p>",
             ),
         ),
         Err(_) => (
@@ -360,18 +361,21 @@ fn oauth_client() -> Result<
     >,
     OAuthError,
 > {
-    Ok(BasicClient::new(ClientId::new(GITHUB_APP_CLIENT_ID.into()))
-        .set_auth_type(AuthType::RequestBody)
-        .set_auth_uri(
-            AuthUrl::new(GITHUB_AUTHORIZE_URL.into()).map_err(|_| OAuthError::InvalidResponse)?,
-        )
-        .set_token_uri(
-            TokenUrl::new(GITHUB_TOKEN_URL.into()).map_err(|_| OAuthError::InvalidResponse)?,
-        )
-        .set_redirect_uri(
-            RedirectUrl::new(GITHUB_CALLBACK_URL.into())
-                .map_err(|_| OAuthError::InvalidResponse)?,
-        ))
+    Ok(
+        BasicClient::new(ClientId::new(GITHUB_OAUTH_CLIENT_ID.into()))
+            .set_auth_type(AuthType::RequestBody)
+            .set_auth_uri(
+                AuthUrl::new(GITHUB_AUTHORIZE_URL.into())
+                    .map_err(|_| OAuthError::InvalidResponse)?,
+            )
+            .set_token_uri(
+                TokenUrl::new(GITHUB_TOKEN_URL.into()).map_err(|_| OAuthError::InvalidResponse)?,
+            )
+            .set_redirect_uri(
+                RedirectUrl::new(GITHUB_CALLBACK_URL.into())
+                    .map_err(|_| OAuthError::InvalidResponse)?,
+            ),
+    )
 }
 
 fn map_token_error<C: SyncHttpClient>(

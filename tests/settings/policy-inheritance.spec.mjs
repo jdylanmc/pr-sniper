@@ -204,7 +204,6 @@ test("repository policy overrides stay isolated until reset to current global de
   for (const [index, repository] of initial.repositories.entries())
     Object.assign(repository, {
       provider_account_id: "6954990",
-      installation_id: "9001",
       provider_repository_id: String(index + 1),
     });
   const legacy = {

@@ -26,7 +26,6 @@ interface Observation {
   provider: Repository["provider"];
   name: string;
   account_id: string;
-  installation_id?: string;
   repository_id?: string;
   connection?: Connection;
   message: string;
@@ -57,7 +56,11 @@ window.addEventListener("pr-sniper:provider-account-state", (event) => {
 });
 const failures: Record<string, string> = {
   signed_out:
-    "The PR Sniper GitHub App authorization is missing, expired, or rejected. Reconnect GitHub.",
+    "The PR Sniper GitHub OAuth authorization is missing, expired, or rejected. Reconnect GitHub.",
+  missing_scope:
+    "The GitHub OAuth authorization no longer grants the required repo scope. Reconnect and review the requested public/private repository access.",
+  organization_policy_denied:
+    "GitHub organization policy or SAML single sign-on blocks this repository. Authorize the OAuth App for the organization or contact its administrator.",
   wrong_identity:
     "The authenticated GitHub account does not match the expected account ID. No repository action was taken.",
   missing_read_permission:
@@ -103,14 +106,13 @@ export function renderConnection(
     observation?.provider !== repository.provider ||
     observation?.name !== repository.name ||
     observation?.account_id !== repository.provider_account_id ||
-    observation?.installation_id !== repository.installation_id ||
     observation?.repository_id !== repository.provider_repository_id
   ) {
     observations.delete(repository.id);
     observation = undefined;
   }
   root.innerHTML = `
-    <p class="settings-hint">${repository.provider === "github" ? `Uses GitHub account ${account.label ?? repository.provider_account_id ?? "not selected"} and the explicitly selected installation repository.` : "Azure DevOps authentication is not implemented in this build."}</p>
+    <p class="settings-hint">${repository.provider === "github" ? `Uses GitHub account ${account.label ?? repository.provider_account_id ?? "not selected"} and the explicitly selected repository.` : "Azure DevOps authentication is not implemented in this build."}</p>
     <form class="connection-form">
       <button type="submit">Verify GitHub connection</button>
       <button type="button" class="read-metadata">Read PR metadata</button>
@@ -189,7 +191,7 @@ export function renderConnection(
     const unlock = lockSettings(root);
     status.textContent = metadata
       ? "Reading every PR and changed-file page..."
-      : "Verifying PR Sniper GitHub App identity and installation access...";
+      : "Verifying GitHub OAuth identity and repository access...";
     details.replaceChildren();
     try {
       if (metadata && pinned) {
@@ -207,7 +209,6 @@ export function renderConnection(
           provider: repository.provider,
           name: repository.name,
           account_id: result.connection.identity.id,
-          installation_id: repository.installation_id!,
           repository_id: repository.provider_repository_id!,
           connection: result.connection,
           pulls,
@@ -224,7 +225,6 @@ export function renderConnection(
           provider: repository.provider,
           name: repository.name,
           account_id: connection.identity.id,
-          installation_id: repository.installation_id!,
           repository_id: repository.provider_repository_id!,
           connection,
           message: `${describe(connection)} Last verified ${new Date().toLocaleTimeString()}.`,
@@ -247,6 +247,7 @@ export function renderConnection(
           "timeout",
           "provider_failure",
           "invalid_response",
+          "missing_scope",
           "configuration",
         ].includes(cause)
       )

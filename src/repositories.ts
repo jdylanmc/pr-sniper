@@ -6,7 +6,6 @@ export interface Repository {
   name: string;
   enabled: boolean;
   provider_account_id?: string;
-  installation_id?: string;
   provider_repository_id?: string;
   overrides?: PolicyOverrides;
 }

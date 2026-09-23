@@ -71,42 +71,47 @@ Retain command output and distinguish a behavior assertion failure from a
 missing compiler, missing package, compilation failure or unexecuted test.
 The integration owner supplies the repository's build, lint and CI commands.
 
-## Human-authorized GitHub App acceptance
+## Human-authorized GitHub OAuth App acceptance
 
 Run this only after the candidate's independent review and exact-head CI pass.
 Use a disposable macOS user account so the production Keychain service
 `com.jdylanmc.pr-sniper.github.credentials` and app data are isolated from the
-developer's normal profile. Do not create or install another GitHub App, expose
+developer's normal profile. Do not create another OAuth App, expose
 token contents, or perform provider mutations to probe capability.
 
 1. Record the candidate commit and build/install the candidate bundle in the
    disposable macOS account. Confirm `gh` is absent or signed out.
-2. Confirm the existing GitHub App registration includes the exact callback
-   `http://127.0.0.1:53682/oauth/github/callback`; do not enable wildcard
-   matching or mutate the registration during acceptance. Open Settings,
+2. Confirm OAuth App application ID `3878184` has public client ID
+   `Ov23lidoL3QovWyfxnA4`, expiring tokens enabled, device flow disabled, no
+   client secret, and the exact callback
+   `http://127.0.0.1:53682/oauth/github/callback`; do not mutate the registration
+   during acceptance. Open Settings,
    choose **Add GitHub account**, confirm the default system browser opens,
-   complete GitHub authorization with public client ID
-   `Iv23li1HXvoQVkSzV2l5`, return to PR Sniper, verify only the stable account
-   ID/login is shown, then choose **Confirm**. Add a second GitHub account
+   verify the consent clearly requests GitHub's broad `repo` scope for public
+   and private repository access, complete authorization, return to PR Sniper,
+   verify only the stable account ID/login is shown, then choose **Confirm**.
+   Add a second GitHub account
    through **Use a different account** and confirm both acting identities
    remain visible concurrently. Confirm bind, browser-open, cancellation,
    timeout, network and provider failures remain distinguishable if any occur;
    never capture authorization codes, state, tokens or credentials in evidence.
-3. For each account, choose **Load repositories for _login_**. Confirm only
-   repositories accessible through that account's existing PR Sniper GitHub App
-   installation appear. Use a repository visible to both accounts and confirm
+3. For each account, choose **Load repositories for _login_**. Confirm owned,
+   collaborator and organization repositories available to that user appear,
+   including authorized private repositories, without installing PR Sniper on
+   each repository. Confirm no repository is monitored merely because it was
+   listed. Use a repository visible to both accounts and confirm
    no account is auto-selected: explicitly choose one acting account, save, and
-   verify the stable account/installation/repository IDs persist after reopening
+   verify the stable account/repository IDs persist after reopening
    Settings. Verify the repository and read its complete pull-request metadata
    with `gh` still unavailable; every repository/action surface must show the
    acting provider account.
 4. Quit normally and relaunch. Confirm both accounts restore independently from
    Keychain, each `/user` identity is revalidated, the selected repository
    remains bound to the same account and stable IDs, and
-   repository/people/pull-request reads use only that bound App session.
+   repository/people/pull-request reads use only that bound OAuth session.
 5. For real rotation, leave the isolated profile intact until the issued access
    token expires (GitHub currently documents an eight-hour lifetime). After
-   expiry, trigger **Load installed repositories** once. Confirm the Keychain
+   expiry, trigger **Load repositories** once. Confirm the Keychain
    item's modification time advances, identity and repository access continue,
    and no reconnect prompt appears. Do not inspect or export the Keychain secret.
 6. Disconnect one account. Confirm the other account remains connected and its
