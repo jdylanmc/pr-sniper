@@ -204,7 +204,7 @@ test("People resolves a login to stable identity and reports disconnected lookup
   await page.getByLabel("GitHub login", { exact: true }).fill("someone");
   await page.getByRole("button", { name: "Add person", exact: true }).click();
   await expect(page.locator(".person-lookup [role=alert]")).toContainText(
-    "gh auth login",
+    "Connect the PR Sniper GitHub App",
   );
   expect(
     (await store("snapshot")).settings.defaults.watched_authors,

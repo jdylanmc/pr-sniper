@@ -93,12 +93,8 @@ const option = (value: string, label: string, selected: string) =>
   `<option value="${escape(value)}" ${value === selected ? "selected" : ""}>${escape(label)}</option>`;
 const reason = (error: unknown) => {
   const errors: Record<string, string> = {
-    missing_cli:
-      "GitHub CLI is missing. Install the official gh CLI, sign in, then try again.",
     signed_out:
-      "GitHub is disconnected. Run gh auth login in your terminal, then try again.",
-    broken_cli:
-      "GitHub CLI could not run. Repair your gh installation, then try again.",
+      "GitHub is disconnected. Connect the PR Sniper GitHub App, then try again.",
     missing_read_permission:
       "This person is unavailable. Check the GitHub login and your account access.",
     rate_limited: "GitHub rate limited this lookup. Wait before trying again.",
@@ -575,7 +571,7 @@ export async function mountSettings(app: HTMLElement) {
       () => {
         const picker = dialog(
           "Add people",
-          `<form class="person-lookup"><label>GitHub login<input name="login" placeholder="octocat" autocomplete="off" required /></label><p class="settings-hint">Looks up the exact login through your current GitHub CLI account and stores its stable identity. Sign in with gh auth login in your terminal if disconnected.</p><p role="alert" hidden></p><button type="submit" class="primary">Add person</button></form>`,
+          `<form class="person-lookup"><label>GitHub login<input name="login" placeholder="octocat" autocomplete="off" required /></label><p class="settings-hint">Looks up the exact login through the connected PR Sniper GitHub App account and stores its stable identity. Reconnect GitHub in Settings if disconnected.</p><p role="alert" hidden></p><button type="submit" class="primary">Add person</button></form>`,
         );
         picker.querySelector<HTMLInputElement>("[name=login]")!.focus();
         picker.querySelector("form")!.onsubmit = async (event) => {
