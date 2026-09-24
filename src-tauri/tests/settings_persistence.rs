@@ -271,6 +271,8 @@ fn the_same_provider_repository_persists_as_distinct_account_bindings() {
             ..PolicyOverrides::default()
         },
         review_preset: None,
+        watched_authors: Vec::new(),
+        assignments: Vec::new(),
     });
 
     store.save_settings(&settings).unwrap();
@@ -310,6 +312,8 @@ fn azure_devops_contract_persists_without_a_live_provider_implementation() {
         provider_repository_id: Some("repository-guid".into()),
         overrides: PolicyOverrides::default(),
         review_preset: None,
+        watched_authors: Vec::new(),
+        assignments: Vec::new(),
     });
 
     store.save_settings(&settings).unwrap();

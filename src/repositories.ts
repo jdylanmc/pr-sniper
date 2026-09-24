@@ -1,4 +1,4 @@
-import type { PolicyOverrides } from "./policy";
+import type { Assignment, PolicyOverrides, WatchedIdentity } from "./policy";
 
 export interface Repository {
   id: string;
@@ -8,4 +8,10 @@ export interface Repository {
   provider_account_id?: string;
   provider_repository_id?: string;
   overrides?: PolicyOverrides;
+  /** Optional per-repository watchlist, shared across this repository's
+   * assignments. Exact login + stable id, no wildcards. */
+  watched_authors?: WatchedIdentity[];
+  /** N agents, each with its own timer and permissions, running on this
+   * repository. */
+  assignments?: Assignment[];
 }

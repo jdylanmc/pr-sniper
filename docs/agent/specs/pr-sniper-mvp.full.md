@@ -26,7 +26,7 @@ The MVP succeeds when every nano acceptance criterion is demonstrated in a repro
 
 ## Scope and Non-goals
 
-Scope includes a Tauri menu-bar application, local settings and state, concurrent first-party GitHub OAuth App accounts, explicit repository-to-account binding, scheduled GitHub polling, watched-author and reviewer-assignment triggers, GitHub Copilot CLI review, comment publication, follow-up replies, queueing, notifications, and Setup Doctor. A connected account can explicitly select any repository available to that user, including repositories owned by organizations or other users; account access never configures or monitors every accessible repository automatically. GitHub CLI remains only optional development or migration context. The provider-neutral contract applies the same account-centric model to future Azure DevOps support, subject to its organization, project, tenant and authorization restrictions; only GitHub is implemented in the MVP and no Azure authentication mechanism is selected here.
+Scope includes a Tauri menu-bar application, local settings and state, concurrent first-party GitHub OAuth App accounts, explicit repository-to-account binding, scheduled GitHub polling, watched-author and reviewer-assignment triggers, GitHub Copilot CLI review, comment publication, follow-up replies, queueing, and notifications. A connected account can explicitly select any repository available to that user, including repositories owned by organizations or other users; account access never configures or monitors every accessible repository automatically. GitHub CLI remains only optional development or migration context. The provider-neutral contract applies the same account-centric model to future Azure DevOps support, subject to its organization, project, tenant and authorization restrictions; only GitHub is implemented in the MVP and no Azure authentication mechanism is selected here.
 
 ## Constraints and Dependencies
 
@@ -60,7 +60,7 @@ Electron remains a fallback only if later Windows or process-control evidence ex
 
 ## Product Requirements
 
-- PR-001 [AC-001]: The application shall use Tauri, present as a macOS menu-bar utility without a persistent main window, expose status, queue, settings, Setup Doctor, and quit actions, and support opt-in launch at login.
+- PR-001 [AC-001]: The application shall use Tauri, present as a macOS menu-bar utility without a persistent main window, expose status, queue, settings, and quit actions, and support opt-in launch at login.
 - PR-002 [AC-001]: Closing settings or queue windows shall not stop monitoring; quitting the tray process shall stop monitoring.
 - PR-003 [AC-002]: Repository settings shall support add, edit, disable, re-enable, and remove without a hard-coded product maximum, while surfacing provider and local-resource limits.
 - PR-004 [AC-003]: Global defaults and per-repository overrides shall cover fixed interval or five-field cron schedule with explicit time zone, watched GitHub identities, reviewer-assignment trigger, agent adapter, model or named-agent selector, prompt, automatic agent start, and automatic comment publication.
@@ -71,8 +71,6 @@ Electron remains a fallback only if later Windows or process-control evidence ex
 - PR-009 [AC-006]: Persisted jobs shall recover after restart into an honest queued, interrupted, waiting, completed, stale-after-publication, or failed state.
 - PR-010 [AC-007]: The MVP shall connect through the registered PR Sniper GitHub OAuth App using GitHub's device authorization flow with `scope=repo` and `offline_access` in the default system browser without requiring GitHub CLI or a client secret. It shall display only the provider-issued one-time user code and verified GitHub verification URI, retain the secret device code only in transient native memory, follow provider interval, slow-down and expiry rules, bound cancellation and replacement, validate `/user`, and require explicit stable-identity confirmation before persistence.
 - PR-011 [AC-007]: Credential providers shall remain separate from pull-request domain operations; any GitHub CLI path shall be labeled development or migration context and shall not be represented as product sign-in.
-- PR-012 [AC-008]: Setup Doctor shall distinguish missing executable, broken executable or shim, signed-out state, wrong identity, missing permission, and ready state.
-- PR-013 [AC-008]: Setup Doctor shall show each declared command, purpose, source, expected effects, and possible administrator prompt before explicit confirmation, execute only structured declared commands, stream redacted output, rerun health checks, and make repeated successful setup a no-op.
 - PR-014 [AC-009]: The MVP shall provide a GitHub Copilot CLI adapter and a registry that probes candidate path, identity, version, health, and capabilities before presenting an adapter as available.
 - PR-015 [AC-009]: Agent authentication shall remain owned by the agent tool, and the adapter contract shall not change provider or monitoring domain models when another local agent is added.
 - PR-016 [AC-010]: The normalized result shall contain a one-sentence synopsis, every changed file in a validated order, findings with path, location, severity, title, explanation, and confidence, a machine decision, session and usage metadata, or explicit failure.
@@ -143,7 +141,6 @@ Electron remains a fallback only if later Windows or process-control evidence ex
 | AC-005         | PR-007                                                        | GitHub filtering POC                                                              |
 | AC-006         | PR-008–PR-009                                                 | Head-SHA deduplication evidence                                                   |
 | AC-007         | PR-010–PR-011, PR-046, PR-048, PR-054, PD-003, PD-012, PD-014 | GitHub OAuth App registration, device authorization, browser launch, provider polling and identity confirmation |
-| AC-008         | PR-012–PR-013                                                 | Setup Doctor decision                                                             |
 | AC-009         | PR-014–PR-015, PD-004                                         | Local agent inventory and Copilot POC                                             |
 | AC-010         | PR-016–PR-018                                                 | Real agent-review POC and complete-file decision                                  |
 | AC-011         | PR-019–PR-021, PD-005                                         | Cancellation evidence and trust decision                                          |

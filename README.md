@@ -2,7 +2,7 @@
 
 A macOS menu-bar application for human-owned pull request review. Built with
 Tauri 2, Rust and vanilla TypeScript. The tray exposes **Status**, **Review
-Queue**, **Settings**, **Setup Doctor** and **Quit PR Sniper**.
+Queue**, **Settings** and **Quit PR Sniper**.
 
 Settings can explicitly verify a configured GitHub connection and read complete
 pull-request metadata. This increment does **not** poll repositories, run agents,

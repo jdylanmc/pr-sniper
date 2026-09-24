@@ -14,6 +14,35 @@ export interface Policy {
   automatic_comment_publication: boolean;
 }
 export type PolicyOverrides = Partial<Policy>;
+export interface WatchedIdentity {
+  id: string;
+  login: string;
+}
+/** A named review principle. Its title is also its slug -- there is no
+ * separate id. Plain text, ~500 words recommended, never enforced. */
+export interface Doctrine {
+  title: string;
+  body: string;
+}
+/** A reusable review profile: model + optional doctrine + prompt +
+ * signature. Agents are referenced by id from repository assignments. */
+export interface Agent {
+  id: string;
+  name: string;
+  model: string;
+  doctrine?: string;
+  prompt: string;
+  signature: string;
+}
+/** One agent running on one repository, with its own timer and
+ * permissions. `approve` is stored but never executed. */
+export interface Assignment {
+  id: string;
+  agent_id: string;
+  schedule: Schedule;
+  comment: boolean;
+  approve: boolean;
+}
 
 export function effectivePolicy(
   defaults: Policy,
