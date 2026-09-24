@@ -254,8 +254,11 @@ export function renderGithubAuth(
         copy.type = "button";
         copy.className = "primary";
         copy.textContent = "Copy code";
+        let copying = false;
         copy.addEventListener("click", async () => {
-          copy.disabled = true;
+          if (copying) return;
+          copying = true;
+          copy.setAttribute("aria-disabled", "true");
           try {
             await navigator.clipboard.writeText(userCode);
             feedback.removeAttribute("role");
@@ -265,7 +268,8 @@ export function renderGithubAuth(
             feedback.textContent =
               "Could not copy. Select the code and copy it manually.";
           } finally {
-            copy.disabled = false;
+            copying = false;
+            copy.removeAttribute("aria-disabled");
           }
         });
         codeRow.append(code, copy);

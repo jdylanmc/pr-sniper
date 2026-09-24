@@ -20,16 +20,25 @@ const connecting = {
   verification_uri: "https://github.com/login/device",
 };
 
-async function mockAuth(page, flow, clipboardFailure = false) {
+async function mockAuth(
+  page,
+  flow,
+  clipboardFailure = false,
+  holdClipboard = false,
+) {
   await page.addInitScript(
-    ({ accounts, flow, clipboardFailure }) => {
+    ({ accounts, flow, clipboardFailure, holdClipboard }) => {
       window.__authView = { accounts, flow };
       window.__authReads = 0;
       window.__copiedCodes = [];
+      window.__copyRequests = 0;
+      window.__clipboardGate = holdClipboard ? Promise.withResolvers() : null;
       window.__clipboardFailure = clipboardFailure;
       Object.defineProperty(navigator, "clipboard", {
         value: {
           async writeText(value) {
+            window.__copyRequests += 1;
+            if (window.__clipboardGate) await window.__clipboardGate.promise;
             if (window.__clipboardFailure)
               throw new DOMException("Clipboard denied", "NotAllowedError");
             window.__copiedCodes.push(value);
@@ -59,7 +68,7 @@ async function mockAuth(page, flow, clipboardFailure = false) {
         return original(command, args);
       };
     },
-    { accounts, flow, clipboardFailure },
+    { accounts, flow, clipboardFailure, holdClipboard },
   );
 }
 
@@ -187,4 +196,52 @@ test("clipboard denial leaves the code selectable and explains manual copying", 
   await copy.click();
   await expect(card.getByRole("alert")).toHaveCount(0);
   await expect(card).toContainText("Code copied");
+});
+
+for (const clipboardFailure of [false, true]) {
+  test(`asynchronous clipboard ${clipboardFailure ? "denial" : "success"} preserves focus and prevents duplicate copying`, async ({
+    page,
+  }) => {
+    await mockAuth(page, connecting, clipboardFailure, true);
+    await page.goto("/?view=settings");
+    const card = page.locator(".github-auth-card");
+    const copy = card.getByRole("button", { name: "Copy code" });
+    await copy.focus();
+    await page.keyboard.press("Enter");
+    await expect.poll(() => page.evaluate(() => window.__copyRequests)).toBe(1);
+    const reads = await page.evaluate(() => window.__authReads);
+    await expect
+      .poll(() => page.evaluate(() => window.__authReads))
+      .toBeGreaterThan(reads + 3);
+    await expect(copy).toBeFocused();
+    await page.keyboard.press("Enter");
+    expect(await page.evaluate(() => window.__copyRequests)).toBe(1);
+
+    await page.evaluate(() => window.__clipboardGate.resolve());
+    await expect(card).toContainText(
+      clipboardFailure ? "Could not copy" : "Code copied",
+    );
+    await expect(copy).toBeFocused();
+    await expect(copy).not.toHaveAttribute("aria-disabled", "true");
+  });
+}
+
+test("a late clipboard reply cannot restore cancelled code or steal focus", async ({
+  page,
+}) => {
+  await mockAuth(page, connecting, false, true);
+  await page.goto("/?view=settings");
+  const card = page.locator(".github-auth-card");
+  await card.getByRole("button", { name: "Copy code" }).click();
+  await expect.poll(() => page.evaluate(() => window.__copyRequests)).toBe(1);
+  await card.getByRole("button", { name: "Cancel", exact: true }).click();
+  const add = card.getByRole("button", { name: "Add GitHub account" });
+  await add.focus();
+  await page.evaluate(() => window.__clipboardGate.resolve());
+  await expect
+    .poll(() => page.evaluate(() => window.__copiedCodes))
+    .toEqual(["ABCD-EFGH"]);
+  await expect(add).toBeFocused();
+  await expect(card).not.toContainText("Code copied");
+  await expect(card).not.toContainText("ABCD-EFGH");
 });

@@ -68,13 +68,13 @@
   border-color: #225cc5;
   color: white;
 }
-.settings-window button:disabled {
+.settings-window button:is(:disabled, [aria-disabled="true"]) {
   background: #f3f5f7;
   color: #747e89;
   opacity: 1;
   cursor: not-allowed;
 }
-.settings-window button.primary:disabled {
+.settings-window button.primary:is(:disabled, [aria-disabled="true"]) {
   background: #eef1f5;
   border-color: #d8dfe7;
   color: #738091;
