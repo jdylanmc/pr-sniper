@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { renderConnection } from "./connections";
+import { renderGithubAuth, type GithubAccount } from "./github-auth";
 import { effectivePolicy, type Policy, type Selector } from "./policy";
 import type { Repository } from "./repositories";
 import "./settings.css";
@@ -92,12 +93,8 @@ const option = (value: string, label: string, selected: string) =>
   `<option value="${escape(value)}" ${value === selected ? "selected" : ""}>${escape(label)}</option>`;
 const reason = (error: unknown) => {
   const errors: Record<string, string> = {
-    missing_cli:
-      "GitHub CLI is missing. Install the official gh CLI, sign in, then try again.",
     signed_out:
-      "GitHub is disconnected. Run gh auth login in your terminal, then try again.",
-    broken_cli:
-      "GitHub CLI could not run. Repair your gh installation, then try again.",
+      "GitHub is disconnected. Connect the PR Sniper GitHub OAuth App, then try again.",
     missing_read_permission:
       "This person is unavailable. Check the GitHub login and your account access.",
     rate_limited: "GitHub rate limited this lookup. Wait before trying again.",
@@ -147,6 +144,7 @@ export async function mountSettings(app: HTMLElement) {
   let busy = false;
   let conflict = false;
   let revision = 0;
+  let githubAccounts: GithubAccount[] = [];
   const dialogs = createDialogs(content, () => revision++);
   const dirty = () =>
     !!draft && JSON.stringify(draft) !== JSON.stringify(saved);
@@ -252,12 +250,52 @@ export async function mountSettings(app: HTMLElement) {
   }
 
   function renderRepositories() {
-    content.innerHTML = `<div class="folder-card"><div class="folder-symbol">${icon("folder")}</div><div><strong>${escape(draft.root_folder ?? "Choose your repository folder")}</strong><p>${discovery ? `${discovery.repositories.length} local repositories discovered` : "Only a folder you choose is scanned."}</p></div><button id="choose-folder">Choose folder...</button></div>
+    content.innerHTML = `<div class="github-auth"></div><div class="folder-card"><div class="folder-symbol">${icon("folder")}</div><div><strong>${escape(draft.root_folder ?? "Choose your repository folder")}</strong><p>${discovery ? `${discovery.repositories.length} local repositories discovered` : "Only a folder you choose is scanned."}</p></div><button id="choose-folder">Choose folder...</button></div>
       <div class="repository-toolbar"><input id="repo-search" type="search" aria-label="Find a repository" placeholder="Find a repository..." value="${escape(query)}" /><button id="select-visible">Select visible</button></div>
       <div class="list-label"><span>Repository</span><span id="selected-count"></span></div><div class="repository-list"></div>
       <p class="settings-hint">Monitoring configuration only. Reviews and comments stay separate. No polling runs in this build.</p>
       <div class="settings-actions"><button id="add-repository">Add repository manually...</button>${draft.root_folder ? '<button id="rescan">Scan chosen folder</button>' : ""}</div>
       ${discovery?.warnings.map((warning) => `<p class="settings-notice">${escape(warning)}</p>`).join("") ?? ""}`;
+    renderGithubAuth(
+      content.querySelector(".github-auth")!,
+      (account, accessible) => {
+        let repository = repositories().find(
+          (candidate) =>
+            candidate.provider === "github" &&
+            candidate.provider_account_id === account.account_id &&
+            candidate.provider_repository_id === accessible.id,
+        );
+        repository ??= repositories().find(
+          (candidate) =>
+            candidate.provider === "github" &&
+            candidate.name === accessible.name &&
+            !candidate.provider_account_id &&
+            !candidate.provider_repository_id,
+        );
+        if (repository) {
+          repository.name = accessible.name;
+          repository.enabled = true;
+          repository.provider_account_id = account.account_id;
+          repository.provider_repository_id = accessible.id;
+        } else {
+          repository = {
+            id: newIdentity(),
+            name: accessible.name,
+            enabled: true,
+            provider: "github",
+            provider_account_id: account.account_id,
+            provider_repository_id: accessible.id,
+          };
+          (draft.repositories ??= []).push(repository);
+        }
+        changed();
+        rows();
+      },
+      (accounts) => {
+        githubAccounts = accounts;
+        if (content.querySelector(".repository-list")) rows();
+      },
+    );
     content.querySelector<HTMLButtonElement>("#choose-folder")!.onclick =
       () => {
         if (!busy) void scan(true);
@@ -277,11 +315,15 @@ export async function mountSettings(app: HTMLElement) {
       editRepository();
     content.querySelector<HTMLButtonElement>("#select-visible")!.onclick =
       () => {
-        for (const item of visible()) if (item.name) select(item.name, true);
+        for (const item of visible()) if (item.name) select(item, true);
         rows();
       };
     function all() {
-      const list: (Discovered & { paths: string[] })[] = [];
+      type RepositoryRow = Discovered & {
+        paths: string[];
+        repositoryId?: string;
+      };
+      const list: RepositoryRow[] = [];
       const identities = new Map<string, Discovered & { paths: string[] }>();
       for (const item of discovery?.repositories ?? []) {
         const existing = item.name ? identities.get(item.name) : undefined;
@@ -292,15 +334,21 @@ export async function mountSettings(app: HTMLElement) {
           if (item.name) identities.set(item.name, row);
         }
       }
-      for (const repo of repositories())
-        if (!identities.has(repo.name))
-          list.push({
-            name: repo.name,
-            path: "",
-            paths: [],
-            unavailable: null,
-          });
-      return list;
+      const configuredNames = new Set(repositories().map((repo) => repo.name));
+      const unconfigured = list.filter(
+        (item) => !item.name || !configuredNames.has(item.name),
+      );
+      for (const repo of repositories()) {
+        const discovered = identities.get(repo.name);
+        unconfigured.push({
+          name: repo.name,
+          path: discovered?.path ?? "",
+          paths: discovered?.paths ?? [],
+          unavailable: discovered?.unavailable ?? null,
+          repositoryId: repo.id,
+        });
+      }
+      return unconfigured;
     }
     function visible() {
       return all().filter((item) =>
@@ -309,13 +357,20 @@ export async function mountSettings(app: HTMLElement) {
           .includes(query.toLowerCase()),
       );
     }
-    function select(name: string, enabled: boolean) {
-      const existing = repositories().find((r) => r.name === name);
+    function select(
+      item: Discovered & { repositoryId?: string },
+      enabled: boolean,
+    ) {
+      const existing = item.repositoryId
+        ? repositories().find((r) => r.id === item.repositoryId)
+        : repositories().find(
+            (r) => r.name === item.name && !r.provider_account_id,
+          );
       if (existing) existing.enabled = enabled;
-      else if (enabled)
+      else if (enabled && item.name)
         (draft.repositories ??= []).push({
           id: newIdentity(),
-          name,
+          name: item.name,
           enabled,
           provider: "github",
         });
@@ -330,25 +385,52 @@ export async function mountSettings(app: HTMLElement) {
         list.innerHTML = `<div class="settings-empty"><strong>${query ? "No matching repositories" : "No repositories yet"}</strong><p>${query ? "Try a repository or organization name." : "Choose a local folder or add a GitHub repository manually."}</p></div>`;
       }
       for (const item of visible()) {
-        const repository = repositories().find((r) => r.name === item.name);
+        const repository = item.repositoryId
+          ? repositories().find((r) => r.id === item.repositoryId)
+          : repositories().find(
+              (r) => r.name === item.name && !r.provider_account_id,
+            );
+        const actingAccount = githubAccounts.find(
+          (account) => account.account_id === repository?.provider_account_id,
+        );
+        const providerLabel =
+          repository?.provider === "azure_devops"
+            ? "Azure DevOps"
+            : repository?.provider_account_id
+              ? actingAccount?.state === "connected"
+                ? `GitHub as ${actingAccount.login}`
+                : `GitHub as ${actingAccount?.login ?? repository.provider_account_id} - Needs attention`
+              : "GitHub - account required";
         const row = document.createElement("article");
         row.className = "repository-row";
+        const duplicateBinding =
+          !!repository &&
+          repositories().filter((candidate) => candidate.name === item.name)
+            .length > 1;
         row.setAttribute(
           "aria-label",
-          item.name ?? item.path.split("/").pop() ?? "Unavailable repository",
+          duplicateBinding
+            ? `${item.name} as ${actingAccount?.login ?? repository.provider_account_id ?? repository.id}`
+            : (item.name ??
+                item.path.split("/").pop() ??
+                "Unavailable repository"),
         );
         row.innerHTML = `<input type="checkbox" aria-label="Monitor ${escape(item.name ?? item.path.split("/").pop() ?? "repository")}" ${repository?.enabled ? "checked" : ""} ${!item.name ? "disabled" : ""} />
-          <span class="repo-symbol">${icon("repositories")}</span><div class="repository-info"><strong>${escape(item.name?.split("/")[1] ?? item.path.split("/").pop() ?? "")}</strong><p>${escape(item.name ?? item.unavailable ?? "Unavailable")}</p>${item.paths.length ? `<details class="clone-paths"><summary>${item.paths.length} local ${item.paths.length === 1 ? "clone" : "clones"}</summary><ul>${item.paths.map((path) => `<li>${escape(path)}</li>`).join("")}</ul></details>` : ""}</div>
+          <span class="repo-symbol">${icon("repositories")}</span><div class="repository-info"><strong>${escape(item.name?.split("/")[1] ?? item.path.split("/").pop() ?? "")}</strong><p>${escape(item.name ?? item.unavailable ?? "Unavailable")}</p><p>${escape(providerLabel)}</p>${item.paths.length ? `<details class="clone-paths"><summary>${item.paths.length} local ${item.paths.length === 1 ? "clone" : "clones"}</summary><ul>${item.paths.map((path) => `<li>${escape(path)}</li>`).join("")}</ul></details>` : ""}</div>
           ${item.name ? `<span class="repository-note">${Object.keys(repository?.overrides ?? {}).length ? "Custom settings" : "Use defaults"}</span><button class="configure">Settings</button>` : ""}`;
         row.querySelector<HTMLInputElement>("input")!.onchange = (event) => {
-          select(item.name!, (event.target as HTMLInputElement).checked);
+          select(item, (event.target as HTMLInputElement).checked);
           content.querySelector("#selected-count")!.textContent =
             `${repositories().filter((r) => r.enabled).length} selected`;
         };
         row
           .querySelector<HTMLButtonElement>(".configure")
           ?.addEventListener("click", () => {
-            let repo = repositories().find((r) => r.name === item.name);
+            let repo = item.repositoryId
+              ? repositories().find((r) => r.id === item.repositoryId)
+              : repositories().find(
+                  (r) => r.name === item.name && !r.provider_account_id,
+                );
             if (!repo) {
               repo = {
                 id: newIdentity(),
@@ -368,9 +450,11 @@ export async function mountSettings(app: HTMLElement) {
   }
 
   function editRepository(repository?: ConfiguredRepository) {
+    const selectedAccount =
+      repository?.provider_account_id ?? githubAccounts[0]?.account_id ?? "";
     const modal = dialog(
       repository ? "Edit repository" : "Add repository",
-      `<form><label>GitHub repository<input name="repository" required value="${escape(repository?.name ?? "")}" placeholder="owner/repository or https://github.com/owner/repository" /></label><p class="settings-hint">Adding is a draft until you save changes. It does not start reviews.</p><p role="alert" hidden></p><button class="primary">Use repository</button></form>`,
+      `<form><label>GitHub repository<input name="repository" required value="${escape(repository?.name ?? "")}" placeholder="owner/repository or https://github.com/owner/repository" /></label>${githubAccounts.length ? `<label>Acting GitHub account<select name="account" required>${githubAccounts.map((account) => option(account.account_id, `${account.login} (${account.account_id})`, selectedAccount)).join("")}</select></label>` : ""}<p class="settings-hint">${githubAccounts.length ? "PR Sniper validates this repository with the selected account before binding its stable identity." : "Connect a GitHub account to validate and bind this repository. Until then it remains explicitly unbound."} Adding is a draft until you save changes. It does not start reviews.</p><p role="alert" hidden></p><button class="primary">Use repository</button></form>`,
     );
     let submitting = false;
     const originDraft = draft;
@@ -392,18 +476,43 @@ export async function mountSettings(app: HTMLElement) {
         const name = await invoke<string>("canonical_repository_name", {
           repository: input.value,
         });
+        const accountId =
+          modal.querySelector<HTMLSelectElement>("[name=account]")?.value;
+        const resolved = accountId
+          ? await invoke<{
+              identity: { id: string; login: string };
+              repository: { id: string; name: string };
+            }>("resolve_provider_repository", {
+              provider: "github",
+              accountId,
+              repository: name,
+            })
+          : undefined;
         if (!current()) return;
+        if (resolved?.identity.id !== accountId)
+          throw "GitHub returned an unexpected account identity.";
+        const canonical = resolved?.repository.name ?? name;
         if (
-          repositories().some((r) => r.name === name && r.id !== repository?.id)
+          repositories().some(
+            (r) =>
+              r.name === canonical &&
+              r.id !== repository?.id &&
+              r.provider_account_id === accountId,
+          )
         )
           throw "This GitHub repository is already configured.";
-        if (repository) repository.name = name;
-        else
+        if (repository) {
+          repository.name = canonical;
+          repository.provider_account_id = resolved?.identity.id;
+          repository.provider_repository_id = resolved?.repository.id;
+        } else
           (draft.repositories ??= []).push({
             id: newIdentity(),
-            name,
+            name: canonical,
             provider: "github",
             enabled: true,
+            provider_account_id: resolved?.identity.id,
+            provider_repository_id: resolved?.repository.id,
           });
         modal.close();
         render();
@@ -422,7 +531,7 @@ export async function mountSettings(app: HTMLElement) {
   function repositoryDialog(repository: ConfiguredRepository) {
     const modal = dialog(
       `Settings for ${repository.name}`,
-      `<p class="settings-hint">Each field inherits independently. Unchecking an override restores the current global default for that field only.</p><div class="repo-policy"></div><details><summary>Repository and connection</summary><div class="settings-actions"><button id="rename-repository">Edit repository</button><button id="remove-repository">Remove repository</button></div><div class="connection"></div></details>`,
+      `<p class="settings-hint">${escape(repository.provider === "github" ? `GitHub acting account: ${githubAccounts.find((account) => account.account_id === repository.provider_account_id)?.login ?? repository.provider_account_id ?? "not selected"}.` : "Azure DevOps account binding is not available in this build.")} Each field inherits independently. Unchecking an override restores the current global default for that field only.</p><div class="repo-policy"></div><details><summary>Repository and connection</summary><div class="settings-actions"><button id="rename-repository">Edit repository</button><button id="remove-repository">Remove repository</button></div><div class="connection"></div></details>`,
     );
     const body = modal.querySelector<HTMLElement>(".repo-policy")!;
     renderReview(body, repository);
@@ -433,7 +542,16 @@ export async function mountSettings(app: HTMLElement) {
         (r) => r.id === repository.id && r.name === repository.name,
       )
     )
-      renderConnection(modal.querySelector(".connection")!, repository);
+      renderConnection(modal.querySelector(".connection")!, repository, {
+        available:
+          githubAccounts.find(
+            (account) => account.account_id === repository.provider_account_id,
+          )?.state === "connected",
+        label:
+          githubAccounts.find(
+            (account) => account.account_id === repository.provider_account_id,
+          )?.login ?? repository.provider_account_id,
+      });
     else
       modal.querySelector(".connection")!.textContent =
         "Save this repository before verifying its GitHub connection.";
@@ -539,9 +657,15 @@ export async function mountSettings(app: HTMLElement) {
       });
     target.querySelector<HTMLButtonElement>("[data-add-people]")!.onclick =
       () => {
+        const availableAccounts = githubAccounts.filter(
+          (account) =>
+            account.state === "connected" &&
+            (!repository ||
+              account.account_id === repository.provider_account_id),
+        );
         const picker = dialog(
           "Add people",
-          `<form class="person-lookup"><label>GitHub login<input name="login" placeholder="octocat" autocomplete="off" required /></label><p class="settings-hint">Looks up the exact login through your current GitHub CLI account and stores its stable identity. Sign in with gh auth login in your terminal if disconnected.</p><p role="alert" hidden></p><button type="submit" class="primary">Add person</button></form>`,
+          `<form class="person-lookup"><label>Acting GitHub account<select name="account" required>${availableAccounts.map((account) => option(account.account_id, `${account.login} (${account.account_id})`, repository?.provider_account_id ?? availableAccounts[0]?.account_id ?? "")).join("")}</select></label><label>GitHub login<input name="login" placeholder="octocat" autocomplete="off" required /></label><p class="settings-hint">${availableAccounts.length ? "Looks up the exact login through the explicitly selected PR Sniper GitHub OAuth account and stores its stable identity." : "No connected GitHub account is available. Connect or rebind an account in Repositories."}</p><p role="alert" hidden></p><button type="submit" class="primary" ${availableAccounts.length ? "" : "disabled"}>Add person</button></form>`,
         );
         picker.querySelector<HTMLInputElement>("[name=login]")!.focus();
         picker.querySelector("form")!.onsubmit = async (event) => {
@@ -555,8 +679,14 @@ export async function mountSettings(app: HTMLElement) {
           const lookupRevision = revision;
           try {
             const identity = await invoke<Policy["watched_authors"][number]>(
-              "resolve_github_person",
-              { login: input.value.trim().replace(/^@/, "") },
+              "resolve_provider_person",
+              {
+                provider: "github",
+                accountId:
+                  picker.querySelector<HTMLSelectElement>("[name=account]")!
+                    .value,
+                login: input.value.trim().replace(/^@/, ""),
+              },
             );
             if (
               !target.isConnected ||
@@ -579,6 +709,21 @@ export async function mountSettings(app: HTMLElement) {
           } catch (cause) {
             alert.textContent = reason(cause);
             alert.hidden = false;
+            if (
+              typeof cause === "string" &&
+              [
+                "signed_out",
+                "wrong_identity",
+                "network",
+                "timeout",
+                "provider_failure",
+                "invalid_response",
+                "configuration",
+              ].includes(cause)
+            )
+              window.dispatchEvent(
+                new Event("pr-sniper:refresh-provider-accounts"),
+              );
           } finally {
             button.disabled = false;
           }

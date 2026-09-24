@@ -42,7 +42,33 @@ impl Transport for ConnectionTransport {
                 "disabled": false,
                 "permissions": {"pull": true, "push": true}
             }),
+            "/repos/third-party/public-repository" => json!({
+                "id": 400,
+                "full_name": "third-party/public-repository",
+                "private": false,
+                "archived": false,
+                "disabled": false,
+                "permissions": {"pull": true, "push": false}
+            }),
             "/repos/jdylanmc/pr-sniper/pulls?state=open&per_page=1" => json!([]),
+            "/repos/third-party/public-repository/pulls?state=open&per_page=1" => json!([]),
+            "/user/repos?affiliation=owner,collaborator,organization_member&visibility=all&per_page=100&page=1" => json!([
+                {
+                    "id": 1376547672,
+                    "full_name": "jdylanmc/pr-sniper",
+                    "private": true
+                },
+                {
+                    "id": 200,
+                    "full_name": "octo/public-repository",
+                    "private": false
+                },
+                {
+                    "id": 300,
+                    "full_name": "example-org/private-repository",
+                    "private": true
+                }
+            ]),
             _ => panic!("unexpected GET path: {path}"),
         };
         Ok(Response {
@@ -51,6 +77,131 @@ impl Transport for ConnectionTransport {
             body: serde_json::to_vec(&body).unwrap(),
         })
     }
+}
+
+#[test]
+fn oauth_user_token_lists_owned_collaborator_and_organization_repositories() {
+    let client = GithubClient::new(ConnectionTransport);
+
+    assert_eq!(
+        client.accessible_repositories(),
+        Ok(vec![
+            RemoteRepository {
+                id: "1376547672".into(),
+                name: "jdylanmc/pr-sniper".into(),
+            },
+            RemoteRepository {
+                id: "200".into(),
+                name: "octo/public-repository".into(),
+            },
+            RemoteRepository {
+                id: "300".into(),
+                name: "example-org/private-repository".into(),
+            },
+        ])
+    );
+}
+
+#[test]
+fn unaffiliated_public_repository_resolves_directly_when_discovery_omits_it() {
+    let client = GithubClient::new(ConnectionTransport);
+    let discovered = client.accessible_repositories().unwrap();
+    assert!(!discovered
+        .iter()
+        .any(|repository| repository.name == "third-party/public-repository"));
+
+    let connection = client
+        .connect("third-party/public-repository", Some("6954990"))
+        .unwrap();
+
+    assert_eq!(connection.repository.id, "400");
+    assert_eq!(connection.repository.name, "third-party/public-repository");
+    assert!(connection.capabilities.read);
+}
+
+struct PaginatedRepositories;
+
+impl Transport for PaginatedRepositories {
+    fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+        let body = match path {
+            "/user/repos?affiliation=owner,collaborator,organization_member&visibility=all&per_page=100&page=1" => {
+                json!((1..=100).map(|id| json!({
+                    "id": id,
+                    "full_name": format!("octo/repository-{id}"),
+                    "private": id % 2 == 0
+                })).collect::<Vec<_>>())
+            }
+            "/user/repos?affiliation=owner,collaborator,organization_member&visibility=all&per_page=100&page=2" => {
+                json!([{
+                    "id": 101,
+                    "full_name": "octo/repository-101",
+                    "private": true
+                }])
+            }
+            _ => panic!("unexpected GET path: {path}"),
+        };
+        Ok(Response {
+            status: 200,
+            headers: BTreeMap::from([("x-oauth-scopes".into(), "repo".into())]),
+            body: serde_json::to_vec(&body).unwrap(),
+        })
+    }
+}
+
+#[test]
+fn user_repository_discovery_exhausts_every_page() {
+    let repositories = GithubClient::new(PaginatedRepositories)
+        .accessible_repositories()
+        .unwrap();
+
+    assert_eq!(repositories.len(), 101);
+    assert_eq!(repositories[100].id, "101");
+}
+
+struct MissingScope;
+
+impl Transport for MissingScope {
+    fn get(&self, _path: &str) -> Result<Response, ConnectionError> {
+        Ok(Response {
+            status: 200,
+            headers: BTreeMap::from([("x-oauth-scopes".into(), "read:user".into())]),
+            body: serde_json::to_vec(&json!([])).unwrap(),
+        })
+    }
+}
+
+#[test]
+fn user_repository_discovery_rejects_a_missing_repo_scope() {
+    assert_eq!(
+        GithubClient::new(MissingScope).accessible_repositories(),
+        Err(ConnectionError::MissingScope)
+    );
+}
+
+struct OrganizationPolicyDenied;
+
+impl Transport for OrganizationPolicyDenied {
+    fn get(&self, _path: &str) -> Result<Response, ConnectionError> {
+        Ok(Response {
+            status: 403,
+            headers: BTreeMap::from([(
+                "x-github-sso".into(),
+                "required; url=https://github.com/orgs/example/sso".into(),
+            )]),
+            body: serde_json::to_vec(&json!({
+                "message": "Resource protected by organization SAML enforcement."
+            }))
+            .unwrap(),
+        })
+    }
+}
+
+#[test]
+fn organization_sso_or_policy_denial_is_distinct() {
+    assert_eq!(
+        GithubClient::new(OrganizationPolicyDenied).accessible_repositories(),
+        Err(ConnectionError::OrganizationPolicyDenied)
+    );
 }
 
 #[test]

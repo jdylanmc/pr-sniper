@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import Security
 
 enum SmokeFailure: Error, CustomStringConvertible {
     case failed(String)
@@ -14,6 +15,26 @@ enum SmokeFailure: Error, CustomStringConvertible {
 
 func require(_ condition: Bool, _ message: String) throws {
     if !condition { throw SmokeFailure.failed(message) }
+}
+
+func deleteKeychainService(_ service: String) {
+    let status = SecItemDelete([
+        kSecClass: kSecClassGenericPassword,
+        kSecAttrService: service
+    ] as CFDictionary)
+    if status != errSecSuccess && status != errSecItemNotFound {
+        fputs("CLEANUP failed for Keychain service \(service): \(status)\n", stderr)
+    }
+}
+
+func closeWindow(_ window: AXUIElement, title: String) throws {
+    if let closeValue = attribute(window, kAXCloseButtonAttribute),
+       CFGetTypeID(closeValue) == AXUIElementGetTypeID() {
+        try press(unsafeBitCast(closeValue, to: AXUIElement.self), "close \(title)")
+        return
+    }
+    let status = AXUIElementPerformAction(window, "AXClose" as CFString)
+    try require(status == .success, "\(title) native close action unavailable: \(status.rawValue)")
 }
 
 func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
@@ -127,11 +148,13 @@ func run() throws {
 
     let fixture = FileManager.default.temporaryDirectory
         .appendingPathComponent("pr-sniper-native-\(UUID().uuidString)", isDirectory: true)
+    let keychainService = "com.jdylanmc.pr-sniper.tests.native-\(UUID().uuidString)"
     try FileManager.default.createDirectory(at: fixture, withIntermediateDirectories: false)
     let process = Process()
     process.executableURL = executable
     process.environment = ProcessInfo.processInfo.environment.merging([
-        "PR_SNIPER_DATA_DIR": fixture.path
+        "PR_SNIPER_DATA_DIR": fixture.path,
+        "PR_SNIPER_KEYCHAIN_SERVICE": keychainService
     ]) { _, new in new }
     defer {
         if process.isRunning {
@@ -149,10 +172,12 @@ func run() throws {
         } catch {
             fputs("CLEANUP failed for \(fixture.path): \(error)\n", stderr)
         }
+        deleteKeychainService(keychainService)
+        deleteKeychainService("\(keychainService).legacy")
     }
     try process.run()
     let pid = process.processIdentifier
-    print("OBSERVE bundle=\(bundleURL.path) pid=\(pid) isolatedData=\(fixture.path)")
+    print("OBSERVE bundle=\(bundleURL.path) pid=\(pid) isolatedData=\(fixture.path) isolatedKeychain=\(keychainService)")
     let application = AXUIElementCreateApplication(pid)
     try waitFor("native application startup") {
         process.isRunning && descendants(application).count > 1
@@ -177,14 +202,15 @@ func run() throws {
                     ($0[kCGWindowName as String] as? String) == windowTitle
                 }
             }
-            guard let window = elements(application, kAXWindowsAttribute).first(where: {
-                text($0, kAXTitleAttribute) == windowTitle
-            }),
-                  let closeValue = attribute(window, kAXCloseButtonAttribute),
-                  CFGetTypeID(closeValue) == AXUIElementGetTypeID() else {
-                throw SmokeFailure.failed("\(title) native close button unavailable")
+            var window: AXUIElement?
+            try waitFor("\(title) accessible") {
+                window = elements(application, kAXWindowsAttribute).first(where: {
+                    text($0, kAXTitleAttribute) == windowTitle
+                })
+                return window != nil
             }
-            try press(unsafeBitCast(closeValue, to: AXUIElement.self), "close \(title)")
+            guard let window else { throw SmokeFailure.failed("\(title) native window unavailable") }
+            try closeWindow(window, title: title)
             try waitFor("\(title) closed") { visibleWindows(pid).isEmpty }
             try require(process.isRunning, "Closing \(title) terminated the tray process")
         }

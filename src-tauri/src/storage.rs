@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_DIAGNOSTICS_BYTES: u64 = 256 * 1024;
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticEvent {
     SessionStarted,
@@ -31,7 +31,7 @@ pub struct Diagnostic {
     pub event: DiagnosticEvent,
 }
 
-#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub launch_at_login: bool,
@@ -61,19 +61,44 @@ pub struct SavedSettings {
     pub warning: Option<String>,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Provider {
+pub enum ProviderId {
     Github,
+    AzureDevops,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderAccountId {
+    pub provider: ProviderId,
+    pub account_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderRepositoryId {
+    pub provider: ProviderId,
+    pub repository_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepositoryAccountBinding {
+    pub account: ProviderAccountId,
+    pub repository: ProviderRepositoryId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Repository {
     pub id: String,
-    pub provider: Provider,
+    pub provider: ProviderId,
     pub name: String,
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_account_id: Option<String>,
+    #[serde(default, rename = "installation_id", skip_serializing)]
+    pub legacy_installation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_repository_id: Option<String>,
     #[serde(default, skip_serializing_if = "PolicyOverrides::is_empty")]
     pub overrides: PolicyOverrides,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -113,16 +138,51 @@ impl Settings {
         };
         validate_preset(&self.default_review_preset)?;
         let mut ids = HashSet::new();
-        let mut names = HashSet::new();
+        let mut bindings = HashSet::new();
         for repository in &self.repositories {
             validate_preset(&repository.review_preset)?;
             if uuid::Uuid::parse_str(&repository.id).is_err() || !ids.insert(&repository.id) {
                 return Err("Repository identities must be valid and unique.".into());
             }
-            if canonical_repository(&repository.name)? != repository.name
-                || !names.insert(&repository.name)
+            if canonical_provider_repository(&repository.provider, &repository.name)?
+                != repository.name
             {
-                return Err("Repository names must be canonical and unique.".into());
+                return Err("Repository names must be canonical.".into());
+            }
+            if repository.provider_account_id.is_some()
+                && repository.provider_repository_id.is_none()
+                || repository
+                    .provider_account_id
+                    .as_ref()
+                    .is_some_and(|id| !is_provider_id(&repository.provider, id))
+                || repository
+                    .provider_repository_id
+                    .as_ref()
+                    .is_some_and(|id| !is_provider_id(&repository.provider, id))
+            {
+                return Err(
+                    "Connected repositories require stable provider, account and repository identities.".into(),
+                );
+            }
+            let binding = if repository.provider_account_id.is_some()
+                && repository.provider_repository_id.is_some()
+            {
+                (
+                    repository.provider.clone(),
+                    repository.provider_account_id.clone(),
+                    repository.provider_repository_id.clone(),
+                    None,
+                )
+            } else {
+                (
+                    repository.provider.clone(),
+                    None,
+                    None,
+                    Some(repository.name.clone()),
+                )
+            };
+            if !bindings.insert(binding) {
+                return Err("Repository bindings must be unique.".into());
             }
             repository.overrides.effective(&self.defaults).validate()?;
         }
@@ -135,6 +195,32 @@ impl Settings {
             .find(|repository| repository.id == id)
             .map(|repository| repository.overrides.effective(&self.defaults))
     }
+}
+
+impl Repository {
+    pub fn account_binding(&self) -> Option<RepositoryAccountBinding> {
+        Some(RepositoryAccountBinding {
+            account: ProviderAccountId {
+                provider: self.provider.clone(),
+                account_id: self.provider_account_id.clone()?,
+            },
+            repository: ProviderRepositoryId {
+                provider: self.provider.clone(),
+                repository_id: self.provider_repository_id.clone()?,
+            },
+        })
+    }
+}
+
+fn is_provider_id(provider: &ProviderId, value: &str) -> bool {
+    match provider {
+        ProviderId::Github => is_decimal_id(value),
+        ProviderId::AzureDevops => !value.is_empty() && value.len() <= 256,
+    }
+}
+
+fn is_decimal_id(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) && value != "0"
 }
 
 pub fn canonical_repository(input: &str) -> Result<String, String> {
@@ -161,7 +247,25 @@ pub fn canonical_repository(input: &str) -> Result<String, String> {
     if !valid {
         return Err("Enter owner/repository or an HTTPS github.com repository URL (no credentials, query or fragment).".into());
     }
+
     Ok(path.to_string())
+}
+
+fn canonical_provider_repository(provider: &ProviderId, input: &str) -> Result<String, String> {
+    match provider {
+        ProviderId::Github => canonical_repository(input),
+        ProviderId::AzureDevops => {
+            let value = input.trim();
+            if value.is_empty()
+                || value.len() > 512
+                || value.chars().any(char::is_control)
+                || value.contains('@')
+            {
+                return Err("Enter a stable Azure DevOps repository identity.".into());
+            }
+            Ok(value.to_string())
+        }
+    }
 }
 
 pub struct Store {
@@ -223,11 +327,28 @@ impl Store {
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Settings::default()),
             Err(_) => return Err("Cannot read settings. Check local file permissions.".into()),
         };
-        let settings: Settings = serde_json::from_slice(&bytes)
+        let mut settings: Settings = serde_json::from_slice(&bytes)
             .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.")?;
+        let migrated = settings
+            .repositories
+            .iter_mut()
+            .fold(false, |changed, repository| {
+                if matches!(repository.provider, ProviderId::Github)
+                    && repository.legacy_installation_id.take().is_some()
+                {
+                    repository.provider_account_id = None;
+                    repository.provider_repository_id = None;
+                    true
+                } else {
+                    changed
+                }
+            });
         settings
             .validate()
             .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.")?;
+        if migrated {
+            self.write_settings(&settings)?;
+        }
         Ok(settings)
     }
 
@@ -235,6 +356,10 @@ impl Store {
         settings.validate()?;
         // Never silently replace unreadable or corrupt existing configuration.
         self.load_settings()?;
+        self.write_settings(settings)
+    }
+
+    fn write_settings(&self, settings: &Settings) -> Result<(), String> {
         let directory = self.root.join("config");
         fs::DirBuilder::new()
             .recursive(true)
@@ -262,14 +387,21 @@ impl Store {
     pub fn add_repository(&self, repository: &str) -> Result<Settings, String> {
         let name = canonical_repository(repository)?;
         let mut settings = self.load_settings()?;
-        if settings.repositories.iter().any(|repo| repo.name == name) {
+        if settings.repositories.iter().any(|repo| {
+            repo.provider == ProviderId::Github
+                && repo.name == name
+                && repo.provider_account_id.is_none()
+        }) {
             return Err("This GitHub repository is already configured.".into());
         }
         settings.repositories.push(Repository {
             id: uuid::Uuid::new_v4().to_string(),
-            provider: Provider::Github,
+            provider: ProviderId::Github,
             name,
             enabled: true,
+            provider_account_id: None,
+            legacy_installation_id: None,
+            provider_repository_id: None,
             overrides: PolicyOverrides::default(),
             review_preset: None,
         });
@@ -285,11 +417,12 @@ impl Store {
     ) -> Result<Settings, String> {
         let name = canonical_repository(repository)?;
         let mut settings = self.load_settings()?;
-        if settings
-            .repositories
-            .iter()
-            .any(|repo| repo.id != id && repo.name == name)
-        {
+        if settings.repositories.iter().any(|repo| {
+            repo.id != id
+                && repo.provider == ProviderId::Github
+                && repo.name == name
+                && repo.provider_account_id.is_none()
+        }) {
             return Err("This GitHub repository is already configured.".into());
         }
         let repo = settings
@@ -298,6 +431,9 @@ impl Store {
             .find(|repo| repo.id == id)
             .ok_or("Repository no longer exists. Reload Settings.")?;
         repo.name = name;
+        repo.provider_account_id = None;
+        repo.legacy_installation_id = None;
+        repo.provider_repository_id = None;
         repo.enabled = enabled;
         self.save_settings(&settings)?;
         Ok(settings)

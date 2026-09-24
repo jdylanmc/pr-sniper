@@ -6,6 +6,12 @@ use zeroize::{Zeroize, Zeroizing};
 
 pub struct Credential(pub(super) Zeroizing<String>);
 
+impl Credential {
+    pub(super) fn from_secret(secret: impl Into<String>) -> Self {
+        Self(Zeroizing::new(secret.into()))
+    }
+}
+
 impl std::fmt::Debug for Credential {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Credential([REDACTED])")

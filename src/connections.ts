@@ -23,20 +23,44 @@ interface PullRequest {
 }
 
 interface Observation {
+  provider: Repository["provider"];
   name: string;
+  account_id: string;
+  repository_id?: string;
   connection?: Connection;
   message: string;
   pulls?: PullRequest[];
 }
 
+interface AccountAvailability {
+  available: boolean;
+  label?: string;
+}
+
 const observations = new Map<string, Observation>();
+window.addEventListener("pr-sniper:provider-account-state", (event) => {
+  const detail = (
+    event as CustomEvent<{
+      provider: Repository["provider"];
+      account_id: string;
+      available: boolean;
+    }>
+  ).detail;
+  if (detail.available) return;
+  for (const [id, observation] of observations)
+    if (
+      observation.provider === detail.provider &&
+      observation.account_id === detail.account_id
+    )
+      observations.delete(id);
+});
 const failures: Record<string, string> = {
-  missing_cli:
-    "GitHub CLI is missing. Install the official gh CLI, then verify again.",
-  broken_cli:
-    "GitHub CLI or its shim is broken. Check the official executable in your terminal.",
   signed_out:
-    "GitHub CLI credentials are missing or rejected. Sign in or repair them yourself in your terminal, then verify again.",
+    "The PR Sniper GitHub OAuth authorization is missing, expired, or rejected. Reconnect GitHub.",
+  missing_scope:
+    "The GitHub OAuth authorization no longer grants the required repo scope. Reconnect and review the requested public/private repository access.",
+  organization_policy_denied:
+    "GitHub organization policy or SAML single sign-on blocks this repository. Authorize the OAuth App for the organization or contact its administrator.",
   wrong_identity:
     "The authenticated GitHub account does not match the expected account ID. No repository action was taken.",
   missing_read_permission:
@@ -44,12 +68,11 @@ const failures: Record<string, string> = {
   rate_limited:
     "GitHub rate limited this read. Wait for the provider limit to reset before retrying.",
   network: "Could not reach GitHub securely. Check your network and try again.",
-  timeout:
-    "GitHub CLI or the provider timed out. No complete result was accepted.",
+  timeout: "GitHub timed out. No complete result was accepted.",
   provider_failure:
     "GitHub could not complete this read. Try again after checking provider health.",
   invalid_response:
-    "GitHub or the CLI returned an invalid response. No complete result was accepted.",
+    "GitHub returned an invalid response. No complete result was accepted.",
   incomplete_read:
     "GitHub metadata is incomplete or exceeded a provider/resource limit. No partial result was accepted.",
   revision_changed:
@@ -73,17 +96,24 @@ function describe(connection: Connection): string {
   return `Verified ${identity.login} (${identity.id}). Repository and PR read access verified. ${comment}. This is not publication authorization. No automation was enabled.`;
 }
 
-export function renderConnection(root: HTMLElement, repository: Repository) {
+export function renderConnection(
+  root: HTMLElement,
+  repository: Repository,
+  account: AccountAvailability = { available: false },
+) {
   let observation = observations.get(repository.id);
-  if (observation?.name !== repository.name) {
+  if (
+    observation?.provider !== repository.provider ||
+    observation?.name !== repository.name ||
+    observation?.account_id !== repository.provider_account_id ||
+    observation?.repository_id !== repository.provider_repository_id
+  ) {
     observations.delete(repository.id);
     observation = undefined;
   }
   root.innerHTML = `
+    <p class="settings-hint">${repository.provider === "github" ? `Uses GitHub account ${account.label ?? repository.provider_account_id ?? "not selected"} and the explicitly selected repository.` : "Azure DevOps authentication is not implemented in this build."}</p>
     <form class="connection-form">
-      <label>Expected GitHub account ID (optional)
-        <input name="expectedAccountId" type="text" inputmode="numeric" pattern="[1-9][0-9]*" placeholder="Stable decimal account ID" />
-      </label>
       <button type="submit">Verify GitHub connection</button>
       <button type="button" class="read-metadata">Read PR metadata</button>
     </form>
@@ -91,15 +121,49 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
     <div class="pull-metadata"></div>`;
   const form = root.querySelector<HTMLFormElement>("form")!;
   form.dataset.draftKey = `connection:${repository.id}`;
-  const expected = form.querySelector<HTMLInputElement>("input")!;
-  expected.value = observation?.connection?.identity.id ?? "";
   const status = root.querySelector<HTMLElement>("[role=status]")!;
   const read = root.querySelector<HTMLButtonElement>(".read-metadata")!;
   const details = root.querySelector<HTMLElement>(".pull-metadata")!;
+  const authChanged = (event: Event) => {
+    if (!root.isConnected) {
+      window.removeEventListener(
+        "pr-sniper:provider-account-state",
+        authChanged,
+      );
+      return;
+    }
+    const detail = (
+      event as CustomEvent<{
+        provider: Repository["provider"];
+        account_id: string;
+        available: boolean;
+      }>
+    ).detail;
+    if (
+      detail.provider !== repository.provider ||
+      detail.account_id !== repository.provider_account_id ||
+      detail.available === account.available
+    )
+      return;
+    window.removeEventListener("pr-sniper:provider-account-state", authChanged);
+    renderConnection(root, repository, {
+      available: detail.available,
+      label: account.label ?? detail.account_id,
+    });
+  };
+  window.addEventListener("pr-sniper:provider-account-state", authChanged);
   status.textContent =
-    observation?.message ??
-    "Not verified. Reads use the saved repository and current GitHub CLI account; no sign-in or provider changes are performed.";
-  read.disabled = !observation?.connection;
+    !account.available && repository.provider_account_id
+      ? `Needs attention. GitHub account ${account.label ?? repository.provider_account_id} must be reconnected or this repository must be explicitly rebound before provider actions are available.`
+      : (observation?.message ??
+        (repository.provider_account_id
+          ? `Not verified. Acting account ${repository.provider_account_id}; no provider changes are performed.`
+          : "Needs attention. Explicitly select a provider account and repository before reading."));
+  form.querySelector<HTMLButtonElement>("button")!.disabled =
+    !account.available ||
+    !repository.provider_account_id ||
+    repository.provider === "azure_devops";
+  read.disabled = !account.available || !observation?.connection;
 
   function renderPulls(pulls: PullRequest[]) {
     details.replaceChildren();
@@ -127,14 +191,14 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
     const unlock = lockSettings(root);
     status.textContent = metadata
       ? "Reading every PR and changed-file page..."
-      : "Verifying GitHub CLI identity and access...";
+      : "Verifying GitHub OAuth identity and repository access...";
     details.replaceChildren();
     try {
       if (metadata && pinned) {
         const result = await invoke<{
           connection: Connection;
           pull_requests: PullRequest[];
-        }>("read_github_metadata", {
+        }>("read_provider_metadata", {
           id: repository.id,
           expectedAccountId: pinned.identity.id,
           expectedRepositoryId: pinned.repository.id,
@@ -142,7 +206,10 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
         if (!root.isConnected) return;
         const pulls = result.pull_requests;
         observation = {
+          provider: repository.provider,
           name: repository.name,
+          account_id: result.connection.identity.id,
+          repository_id: repository.provider_repository_id!,
           connection: result.connection,
           pulls,
           message: `${describe(result.connection)} Complete metadata: ${pulls.length} PRs, ${pulls.reduce((sum, pull) => sum + pull.files.length, 0)} changed files. Last read ${new Date().toLocaleTimeString()}.`,
@@ -150,29 +217,41 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
         renderPulls(pulls);
       } else {
         const connection = await invoke<Connection>(
-          "verify_github_connection",
-          {
-            id: repository.id,
-            expectedAccountId: expected.value.trim() || null,
-          },
+          "verify_provider_connection",
+          { id: repository.id },
         );
         if (!root.isConnected) return;
         observation = {
+          provider: repository.provider,
           name: repository.name,
+          account_id: connection.identity.id,
+          repository_id: repository.provider_repository_id!,
           connection,
           message: `${describe(connection)} Last verified ${new Date().toLocaleTimeString()}.`,
         };
-        expected.value = connection.identity.id;
       }
     } catch (cause) {
       if (!root.isConnected) return;
-      observation = {
-        name: repository.name,
-        message:
-          typeof cause === "string" && Object.hasOwn(failures, cause)
-            ? failures[cause]
-            : "Connection read failed. No raw error details or partial metadata are exposed.",
-      };
+      observations.delete(repository.id);
+      observation = undefined;
+      status.textContent =
+        typeof cause === "string" && Object.hasOwn(failures, cause)
+          ? failures[cause]
+          : "Connection read failed. No raw error details or partial metadata are exposed.";
+      if (
+        typeof cause === "string" &&
+        [
+          "signed_out",
+          "wrong_identity",
+          "network",
+          "timeout",
+          "provider_failure",
+          "invalid_response",
+          "missing_scope",
+          "configuration",
+        ].includes(cause)
+      )
+        window.dispatchEvent(new Event("pr-sniper:refresh-provider-accounts"));
     } finally {
       unlock();
       if (root.isConnected) {
@@ -180,7 +259,7 @@ export function renderConnection(root: HTMLElement, repository: Repository) {
           observations.set(repository.id, observation);
           status.textContent = observation.message;
         }
-        read.disabled = !observation?.connection;
+        read.disabled = !account.available || !observation?.connection;
       }
     }
   }
