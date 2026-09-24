@@ -5,6 +5,14 @@ No release/versioning policy has been established yet.
 
 ## Unreleased
 
+### Fixed
+
+- Keep GitHub accounts and sign-in controls within the Settings window, with
+  readable account details and wrapping actions. Show a prominent selectable
+  one-time code beside **Copy code**, preserve clipboard feedback and keyboard
+  focus during authorization polling, and explain manual copying if clipboard
+  access fails.
+
 ### Changed
 
 - Anchor Settings to the approved compact sidebar, with repository selection,
