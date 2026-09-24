@@ -217,6 +217,39 @@
   padding: 10px 16px;
   background: #fafbfd;
 }
+.github-auth-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border: 1px solid #cbd8e8;
+  border-radius: 9px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  background: #f7faff;
+}
+.github-auth-card p {
+  margin-top: 5px;
+  color: #596775;
+}
+.github-auth-actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+.github-auth-accounts {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+.github-account {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-top: 1px solid #dce5ef;
+  padding-top: 8px;
+}
 .folder-card > div:nth-child(2) {
   min-width: 0;
   flex: 1;

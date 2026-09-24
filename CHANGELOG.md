@@ -25,11 +25,44 @@ No release/versioning policy has been established yet.
 
 ### Added
 
-- Verify configured GitHub repositories with the current CLI account and stable
-  account ID, distinguish read access from comment scope, and read complete
-  paginated PR, reviewer and changed-file metadata in Settings. CLI, identity,
-  permission, rate-limit and incomplete-read failures remain visible. Credentials
-  stay in memory; no sign-in, provider mutation or automation enablement occurs.
+- Connect through the registered PR Sniper GitHub OAuth App in the default browser
+  using GitHub's secretless device authorization flow, a provider-issued one-time
+  user code, bounded polling/cancellation/expiry, actionable
+  disabled-registration failures and explicit stable-identity confirmation
+  before persistence. Multiple provider accounts retain
+  account-addressed credentials with absolute expirations in macOS Keychain and
+  independent serialized rotation boundaries. Restart restores and validates
+  every account, retry-safely migrates the prior active-account layouts without
+  orphaning secrets, recovers interrupted first-time account additions, and
+  removes only the selected account on disconnect. OAuth App credentials use a
+  generation-specific Keychain namespace; superseded GitHub App credentials
+  require explicit reconnect and are cleaned only after the new pair is
+  durable. A cleanup failure remains explicit retryable debt without
+  misreporting the already-confirmed account as pending. Each OAuth session requests
+  the broad `repo` scope, explains its public/private repository consent, lists
+  paginated affiliated repositories and can directly validate any known
+  accessible repository with the selected account, requires explicit
+  selection, and backs identity, people, repository verification and
+  pull-request metadata reads without requiring GitHub CLI credentials. Failed
+  operations retain the last confirmed credential state and report specific
+  reconnect causes. Settings never treats sign-in as permission to review,
+  publish, notify or merge. Deterministic provider fixtures and isolated native
+  Keychain restart coverage protect this foundation; live browser sign-in
+  remains separate acceptance. See
+  [#5](https://github.com/jdylanmc/pr-sniper/issues/5).
+
+- Verify configured GitHub repositories with the connected OAuth account and
+  stable identities, distinguish read access from comment scope, and read
+  complete paginated PR, reviewer and changed-file metadata in Settings.
+  Every repository is explicitly bound to a provider account and stable
+  repository identity; obsolete installation bindings become unbound and
+  require explicit reselection. Overlapping access never auto-selects an acting
+  account and can retain separate bindings and policies for each account.
+  Account failure or removal marks only that account's bindings as needing
+  attention, disables their provider actions, and clears their cached
+  verification and metadata until reconnection or explicit rebinding. Identity,
+  permission, rate-limit and incomplete-read failures remain visible; no
+  provider mutation or automation enablement occurs.
   See [#5](https://github.com/jdylanmc/pr-sniper/issues/5).
 
 - Manage watched GitHub repositories from Settings, with canonical duplicate

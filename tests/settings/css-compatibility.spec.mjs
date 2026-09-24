@@ -165,7 +165,7 @@ for (const viewport of [
       .fill("Legacy viewport review instructions.");
     await modal.getByText("Repository and connection", { exact: true }).click();
     const last = modal.getByRole("button", {
-      name: "Verify GitHub connection",
+      name: "Remove repository",
       exact: true,
     });
     await last.scrollIntoViewIfNeeded();

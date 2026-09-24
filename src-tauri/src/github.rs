@@ -1,6 +1,10 @@
 pub mod http;
+#[cfg(target_os = "macos")]
+pub mod macos_keychain;
 pub mod metadata;
+pub mod oauth;
 pub mod provider;
+pub mod token_store;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -22,6 +26,8 @@ pub enum ConnectionError {
     SignedOut,
     Timeout,
     MissingReadPermission,
+    MissingScope,
+    OrganizationPolicyDenied,
     RateLimited,
     Network,
     ProviderFailure,
