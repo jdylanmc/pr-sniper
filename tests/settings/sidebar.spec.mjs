@@ -198,6 +198,9 @@ test("People resolves a login to stable identity and reports disconnected lookup
     };
   });
   await page.goto("/?view=settings");
+  await expect(page.locator(".github-auth-card")).toContainText(
+    "Connected through the PR Sniper GitHub OAuth App.",
+  );
   await page.getByRole("button", { name: "People", exact: true }).click();
   await page.getByRole("button", { name: "Add people", exact: true }).click();
   await page.getByLabel("GitHub login", { exact: true }).fill("@octocat");
