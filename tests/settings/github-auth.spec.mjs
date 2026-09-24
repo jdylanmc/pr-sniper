@@ -181,6 +181,7 @@ test("Keychain confirmation failure stays visible and retryable", async ({
 for (const [reason, message] of [
   ["expired", "authorization expired"],
   ["denied", "authorization was denied"],
+  ["device_flow_disabled", "maintainer must enable Device Flow"],
   ["network", "network request failed"],
   ["provider", "GitHub rejected"],
   [

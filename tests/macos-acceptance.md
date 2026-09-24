@@ -109,7 +109,8 @@ issue #36 remains required product work outside this authentication path.
    Add a second GitHub account
    through **Use a different account** and confirm both acting identities
    remain visible concurrently. Confirm browser-open, cancellation, denial,
-   expiry, network and provider failures remain distinguishable if any occur;
+   expiry, disabled-registration, network and provider failures remain
+   distinguishable if any occur;
    never capture device codes, tokens or credentials in evidence.
 3. For each account, choose **Load repositories for _login_**. Confirm owned,
    collaborator and organization repositories available to that user appear,

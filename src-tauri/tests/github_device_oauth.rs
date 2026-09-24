@@ -10,6 +10,13 @@ use std::{
 };
 
 fn prepared(interval: u64) -> pr_sniper_lib::github::oauth::PreparedDeviceAuthorization {
+    prepared_for(interval, 900)
+}
+
+fn prepared_for(
+    interval: u64,
+    expires_in: u64,
+) -> pr_sniper_lib::github::oauth::PreparedDeviceAuthorization {
     let http = move |_request: oauth2::HttpRequest| {
         Ok::<_, std::io::Error>(
             oauth2::http::Response::builder()
@@ -21,7 +28,7 @@ fn prepared(interval: u64) -> pr_sniper_lib::github::oauth::PreparedDeviceAuthor
                           "device_code":"secret-device-code",
                           "user_code":"ABCD-EFGH",
                           "verification_uri":"https://github.com/login/device",
-                          "expires_in":900,
+                          "expires_in":{expires_in},
                           "interval":{interval}
                         }}"#
                     )
@@ -88,24 +95,26 @@ fn device_authorization_requests_secretless_repo_access_and_opens_verified_githu
 }
 
 #[test]
-fn device_authorization_rejects_provider_errors_from_http_200_envelopes() {
-    let http = |_request: oauth2::HttpRequest| {
-        Ok::<_, std::io::Error>(
-            oauth2::http::Response::builder()
-                .status(200)
-                .header("content-type", "application/json")
-                .body(
-                    br#"{"error":"device_flow_disabled","error_description":"private detail"}"#
-                        .to_vec(),
-                )
-                .unwrap(),
-        )
-    };
+fn device_authorization_preserves_disabled_registration_errors_without_opening_the_browser() {
+    for status in [200, 400] {
+        let http = |_request: oauth2::HttpRequest| {
+            Ok::<_, std::io::Error>(
+                oauth2::http::Response::builder()
+                    .status(status)
+                    .header("content-type", "application/json")
+                    .body(
+                        br#"{"error":"device_flow_disabled","error_description":"private detail"}"#
+                            .to_vec(),
+                    )
+                    .unwrap(),
+            )
+        };
 
-    assert!(matches!(
-        request_device_authorization_with(&http, |_| panic!("must not open browser")),
-        Err(OAuthError::Provider)
-    ));
+        assert!(matches!(
+            request_device_authorization_with(&http, |_| panic!("must not open browser")),
+            Err(OAuthError::DeviceFlowDisabled)
+        ));
+    }
 }
 
 #[test]
@@ -363,6 +372,57 @@ fn device_poll_network_backoff_never_shortens_the_provider_interval() {
     .unwrap();
 
     assert_eq!(sleeps.into_inner(), vec![Duration::from_secs(24)]);
+}
+
+#[test]
+fn device_poll_provider_expiry_overrides_an_earlier_network_failure() {
+    let attempts = AtomicUsize::new(0);
+    let http = |_request: oauth2::HttpRequest| {
+        let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+        if attempt == 0 {
+            return Err(std::io::Error::other("offline"));
+        }
+        let body = if attempt == 1 {
+            br#"{"error":"authorization_pending"}"#.to_vec()
+        } else {
+            br#"{"error":"expired_token"}"#.to_vec()
+        };
+        Ok(oauth2::http::Response::builder()
+            .status(200)
+            .header("content-type", "application/json")
+            .body(body)
+            .unwrap())
+    };
+
+    assert_eq!(
+        poll_device_authorization_with(
+            prepared(5),
+            UNIX_EPOCH,
+            &http,
+            |_| {},
+            &AtomicBool::new(false),
+        ),
+        Err(OAuthError::Expired)
+    );
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn device_poll_last_network_failure_before_local_deadline_remains_network() {
+    let http = |_request: oauth2::HttpRequest| {
+        Err::<oauth2::HttpResponse, _>(std::io::Error::other("offline"))
+    };
+
+    assert_eq!(
+        poll_device_authorization_with(
+            prepared_for(1, 1),
+            UNIX_EPOCH,
+            &http,
+            |duration| std::thread::sleep(duration + Duration::from_millis(50)),
+            &AtomicBool::new(false),
+        ),
+        Err(OAuthError::Network)
+    );
 }
 
 #[test]

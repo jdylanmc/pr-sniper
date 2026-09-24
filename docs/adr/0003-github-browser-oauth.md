@@ -71,7 +71,8 @@ unauthorized poll returns an HTTP-200 `authorization_pending` envelope.
 
 The OAuth App is owned by `jdylanmc`, application ID `3878184`, public client
 ID `Ov23lidoL3QovWyfxnA4`, expiring tokens and device flow enabled, and no
-client secret. Browser-open, cancellation, denial, expiry, network, provider,
+client secret. Browser-open, cancellation, denial, expiry,
+disabled-registration, network, provider,
 identity and secure-storage failures remain distinct. Automated tests use
 deterministic HTTP, browser, time/sleep and persistence seams and never contact
 live GitHub.

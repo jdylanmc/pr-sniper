@@ -1,5 +1,5 @@
 use oauth2::{
-    basic::{BasicClient, BasicTokenType},
+    basic::{BasicClient, BasicErrorResponseType, BasicTokenType},
     AuthType, ClientId, DeviceAuthorizationResponse, DeviceAuthorizationUrl,
     DeviceCodeErrorResponse, DeviceCodeErrorResponseType, EmptyExtraDeviceAuthorizationFields,
     RefreshToken, RequestTokenError, Scope, SyncHttpClient, TokenResponse, TokenUrl,
@@ -102,9 +102,7 @@ where
                 .expect("static cancellation response is valid"));
         }
         let response = diagnostic_oauth_request(http_client, request, "device_poll");
-        if response.is_err() {
-            network_failure.store(true, Ordering::SeqCst);
-        }
+        network_failure.store(response.is_err(), Ordering::SeqCst);
         response
     };
     let timeout = authorization.response.expires_in();
@@ -417,6 +415,14 @@ fn map_token_error<C: SyncHttpClient>(
 ) -> OAuthError {
     match error {
         RequestTokenError::Request(_) => OAuthError::Network,
+        RequestTokenError::ServerResponse(error)
+            if matches!(
+                error.error(),
+                BasicErrorResponseType::Extension(code) if code == "device_flow_disabled"
+            ) =>
+        {
+            OAuthError::DeviceFlowDisabled
+        }
         RequestTokenError::ServerResponse(_) => OAuthError::Provider,
         RequestTokenError::Parse(_, _) => {
             eprintln!("[github-auth] stage=token_decode reason=parse_failure");
@@ -473,6 +479,7 @@ pub enum OAuthError {
     Cancelled,
     Timeout,
     Denied,
+    DeviceFlowDisabled,
     Expired,
     Provider,
 }
@@ -512,6 +519,10 @@ mod diagnostic_tests {
             (
                 r#"{"error":"incorrect_client_credentials","error_description":"secret-detail"}"#,
                 "provider_error=Some(IncorrectClientCredentials)",
+            ),
+            (
+                r#"{"error":"device_flow_disabled","error_description":"secret-detail"}"#,
+                "provider_error=Some(DeviceFlowDisabled)",
             ),
             (
                 r#"{"error":"secret-detail","error_description":"secret-detail"}"#,
