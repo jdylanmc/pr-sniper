@@ -1289,13 +1289,12 @@ pub fn run() {
                 None::<&str>,
             )?;
             let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
-            let doctor = MenuItem::with_id(app, "doctor", "Setup Doctor", true, None::<&str>)?;
             let separator = PredefinedMenuItem::separator(app)?;
             let quit = MenuItem::with_id(app, "quit", "Quit PR Sniper", true, Some("CmdOrCtrl+Q"))?;
             let menu = Menu::with_items(
                 app,
                 &[
-                    &status, &queue, &check, &settings, &doctor, &separator, &quit,
+                    &status, &queue, &check, &settings, &separator, &quit,
                 ],
             )?;
             TrayIconBuilder::with_id("pr-sniper")
@@ -1322,7 +1321,6 @@ pub fn run() {
                         "status" => ("status", "Status"),
                         "queue" => ("queue", "Review Queue"),
                         "settings" => ("settings", "Settings"),
-                        "doctor" => ("doctor", "Setup Doctor"),
                         _ => return,
                     };
                     if let Err(error) = open_window(app, target.0, target.1) {

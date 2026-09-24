@@ -1,4 +1,4 @@
-use crate::policy::{Policy, PolicyOverrides};
+use crate::policy::{Policy, PolicyOverrides, Schedule, WatchedIdentity};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
@@ -45,6 +45,48 @@ pub struct Settings {
     pub presets: Vec<ReviewPreset>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_review_preset: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub doctrines: Vec<Doctrine>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<Agent>,
+}
+
+/// A named review principle. `title` is both the display label and the
+/// identity (its slug) -- there is no separate id field. Plain text body,
+/// ~500 words recommended but never enforced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Doctrine {
+    pub title: String,
+    pub body: String,
+}
+
+/// A reusable review profile: model + optional doctrine + prompt +
+/// signature. Referenced by id from repository assignments.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Agent {
+    pub id: String,
+    pub name: String,
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doctrine: Option<String>,
+    pub prompt: String,
+    pub signature: String,
+}
+
+/// One agent running on one repository: its own timer and permissions.
+/// `approve` is stored but never executed -- provider approval submission
+/// remains an explicit MVP non-goal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Assignment {
+    pub id: String,
+    pub agent_id: String,
+    pub schedule: Schedule,
+    pub comment: bool,
+    #[serde(default)]
+    pub approve: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,6 +145,14 @@ pub struct Repository {
     pub overrides: PolicyOverrides,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_preset: Option<String>,
+    /// Optional per-repository watchlist; exact GitHub login + stable
+    /// numeric id, no wildcards. Shared across this repository's assignments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub watched_authors: Vec<WatchedIdentity>,
+    /// N agents, each with its own timer and permissions, running on this
+    /// repository.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assignments: Vec<Assignment>,
 }
 
 impl Settings {
@@ -137,6 +187,46 @@ impl Settings {
             Ok(())
         };
         validate_preset(&self.default_review_preset)?;
+        let mut doctrine_titles = HashSet::new();
+        for doctrine in &self.doctrines {
+            if doctrine.title.trim().is_empty()
+                || !doctrine_titles.insert(doctrine.title.trim().to_lowercase())
+            {
+                return Err("Doctrines need a unique, nonempty title.".into());
+            }
+            crate::policy::validate_configuration_text(&doctrine.title)?;
+            crate::policy::validate_configuration_text(&doctrine.body)?;
+        }
+        let mut agent_ids = HashSet::new();
+        let mut agent_names = HashSet::new();
+        for agent in &self.agents {
+            if uuid::Uuid::parse_str(&agent.id).is_err()
+                || !agent_ids.insert(&agent.id)
+                || agent.name.trim().is_empty()
+                || !agent_names.insert(agent.name.trim().to_lowercase())
+                || agent.model.trim().is_empty()
+                || agent.signature.trim().is_empty()
+            {
+                return Err(
+                    "Agents need a unique identity, a unique name, a model, and a signature."
+                        .into(),
+                );
+            }
+            if agent
+                .doctrine
+                .as_ref()
+                .is_some_and(|title| !doctrine_titles.contains(&title.trim().to_lowercase()))
+            {
+                return Err(
+                    "The selected doctrine no longer exists. Choose a local doctrine or none."
+                        .into(),
+                );
+            }
+            crate::policy::validate_configuration_text(&agent.name)?;
+            crate::policy::validate_configuration_text(&agent.model)?;
+            crate::policy::validate_configuration_text(&agent.prompt)?;
+            crate::policy::validate_configuration_text(&agent.signature)?;
+        }
         let mut ids = HashSet::new();
         let mut bindings = HashSet::new();
         for repository in &self.repositories {
@@ -185,6 +275,39 @@ impl Settings {
                 return Err("Repository bindings must be unique.".into());
             }
             repository.overrides.effective(&self.defaults).validate()?;
+            let mut watched_ids = HashSet::new();
+            for identity in &repository.watched_authors {
+                let valid_id = identity
+                    .id
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|id| *id > 0 && id.to_string() == identity.id);
+                if valid_id.is_none() || !watched_ids.insert(&identity.id) {
+                    return Err(
+                        "Watched GitHub account IDs must be unique positive decimal numbers."
+                            .into(),
+                    );
+                }
+                if identity.login.trim().is_empty()
+                    || identity.login.chars().any(char::is_whitespace)
+                {
+                    return Err("Each watched GitHub identity needs a nonempty login display label without whitespace.".into());
+                }
+            }
+            let mut assignment_ids = HashSet::new();
+            for assignment in &repository.assignments {
+                if uuid::Uuid::parse_str(&assignment.id).is_err()
+                    || !assignment_ids.insert(&assignment.id)
+                {
+                    return Err("Assignments need a unique identity.".into());
+                }
+                if !agent_ids.contains(&assignment.agent_id) {
+                    return Err(
+                        "The selected agent no longer exists. Choose a local agent.".into(),
+                    );
+                }
+                assignment.schedule.validate()?;
+            }
         }
         Ok(())
     }
@@ -404,6 +527,8 @@ impl Store {
             provider_repository_id: None,
             overrides: PolicyOverrides::default(),
             review_preset: None,
+            watched_authors: Vec::new(),
+            assignments: Vec::new(),
         });
         self.save_settings(&settings)?;
         Ok(settings)

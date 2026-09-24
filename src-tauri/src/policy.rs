@@ -85,6 +85,39 @@ impl Default for Policy {
     }
 }
 
+impl Schedule {
+    pub fn validate(&self) -> Result<(), String> {
+        let timezone = match self {
+            Schedule::Interval { minutes, timezone } => {
+                if *minutes == 0 {
+                    return Err("Interval must be a positive whole number of minutes.".into());
+                }
+                timezone
+            }
+            Schedule::Cron {
+                expression,
+                timezone,
+            } => {
+                if expression.split_whitespace().count() != 5
+                    || expression.parse::<croner::Cron>().is_err()
+                {
+                    return Err(
+                        "Enter a valid five-field cron expression (minute hour day month weekday)."
+                            .into(),
+                    );
+                }
+                timezone
+            }
+        };
+        if timezone.parse::<chrono_tz::Tz>().is_err() {
+            return Err(
+                "Enter an explicit IANA time zone, such as UTC or America/New_York.".into(),
+            );
+        }
+        Ok(())
+    }
+}
+
 fn contains_credential(value: &str) -> bool {
     [
         "ghp_",
@@ -112,33 +145,7 @@ pub fn validate_configuration_text(value: &str) -> Result<(), String> {
 
 impl Policy {
     pub fn validate(&self) -> Result<(), String> {
-        let timezone = match &self.schedule {
-            Schedule::Interval { minutes, timezone } => {
-                if *minutes == 0 {
-                    return Err("Interval must be a positive whole number of minutes.".into());
-                }
-                timezone
-            }
-            Schedule::Cron {
-                expression,
-                timezone,
-            } => {
-                if expression.split_whitespace().count() != 5
-                    || expression.parse::<croner::Cron>().is_err()
-                {
-                    return Err(
-                        "Enter a valid five-field cron expression (minute hour day month weekday)."
-                            .into(),
-                    );
-                }
-                timezone
-            }
-        };
-        if timezone.parse::<chrono_tz::Tz>().is_err() {
-            return Err(
-                "Enter an explicit IANA time zone, such as UTC or America/New_York.".into(),
-            );
-        }
+        self.schedule.validate()?;
         let mut identities = HashSet::new();
         for identity in &self.watched_authors {
             let valid_id = identity
