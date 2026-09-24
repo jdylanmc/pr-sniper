@@ -107,7 +107,7 @@ test("browser OAuth confirms two accounts without exposing credentials", async (
   await expect(card).toContainText("one-time code");
   await expect(card).toContainText("ABCD-EFGH");
   await expect(card).toContainText("github.com/login/device");
-  await card.getByRole("button", { name: "Copy one-time code" }).click();
+  await card.getByRole("button", { name: "Copy code" }).click();
   await expect
     .poll(() => page.evaluate(() => window.__copiedGithubCode))
     .toBe("ABCD-EFGH");

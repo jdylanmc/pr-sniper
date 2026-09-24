@@ -55,15 +55,16 @@ export function renderGithubAuth(
   ) => void,
   accountsChanged?: (accounts: GithubAccount[]) => void,
 ) {
-  root.innerHTML = `<div class="github-auth-card"><div><h2>GitHub accounts</h2><p class="settings-hint">GitHub's broad <code>repo</code> scope grants access to public and private repositories available to the account. PR Sniper lists them for explicit selection and never starts monitoring every accessible repository automatically.</p><p role="status">Reading connection state...</p><div class="github-auth-accounts"></div><div class="github-auth-repositories"></div></div><div class="github-auth-actions"></div></div>`;
+  root.innerHTML = `<div class="github-auth-card"><h2>GitHub accounts</h2><p role="status">Reading connection state...</p><div class="github-auth-flow"></div><p class="settings-hint">GitHub's broad <code>repo</code> scope grants access to public and private repositories available to the account. PR Sniper lists them for explicit selection and never starts monitoring every accessible repository automatically.</p><div class="github-auth-accounts"></div><div class="github-auth-repositories"></div></div>`;
   const status = root.querySelector<HTMLElement>("[role=status]")!;
-  const actions = root.querySelector<HTMLElement>(".github-auth-actions")!;
+  const actions = root.querySelector<HTMLElement>(".github-auth-flow")!;
   const accountList = root.querySelector<HTMLElement>(".github-auth-accounts")!;
   const repositories = root.querySelector<HTMLElement>(
     ".github-auth-repositories",
   )!;
   let renderedAccountIds = new Set<string>();
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  let renderedView: string | undefined;
 
   function setBusy(busy: boolean) {
     root
@@ -113,6 +114,7 @@ export function renderGithubAuth(
       }
     });
     container.append(control);
+    return control;
   }
 
   function commandButton(
@@ -121,7 +123,7 @@ export function renderGithubAuth(
     command: string,
     args?: Record<string, unknown>,
   ) {
-    actionButton(container, label, async () =>
+    return actionButton(container, label, async () =>
       render(await invoke<GithubAuthView>(command, args)),
     );
   }
@@ -153,6 +155,14 @@ export function renderGithubAuth(
   }
 
   function render(view: GithubAuthView) {
+    clearTimeout(refreshTimer);
+    const snapshot = JSON.stringify(view);
+    if (view.flow.state === "connecting") {
+      refreshTimer = setTimeout(refresh, 250);
+      // Keep keyboard focus and clipboard feedback while the provider is pending.
+      if (snapshot === renderedView) return;
+    }
+    renderedView = snapshot;
     actions.replaceChildren();
     accountList.replaceChildren();
     repositories.replaceChildren();
@@ -166,6 +176,7 @@ export function renderGithubAuth(
     for (const account of view.accounts) {
       const item = document.createElement("article");
       item.className = "github-account";
+      item.setAttribute("aria-label", `GitHub account ${account.login}`);
       const description = document.createElement("div");
       const heading = document.createElement("strong");
       heading.textContent = `${account.login} (${account.account_id})`;
@@ -178,52 +189,45 @@ export function renderGithubAuth(
       const accountActions = document.createElement("div");
       accountActions.className = "github-auth-actions";
       if (account.state === "connected") {
-        commandButton(
-          accountActions,
-          `Disconnect ${account.login}`,
-          "disconnect_github_auth",
-          { accountId: account.account_id },
-        );
-        actionButton(
-          accountActions,
-          `Load repositories for ${account.login}`,
-          async () => {
-            const result = await invoke<{
-              identity: { id: string; login: string };
-              repositories: GithubAccessibleRepository[];
-            }>("list_provider_repositories", {
-              provider: "github",
-              accountId: account.account_id,
-            });
-            if (result.identity.id !== account.account_id)
-              throw new Error("GitHub account changed");
-            repositories.replaceChildren();
-            if (!result.repositories.length) {
-              repositories.textContent = `No repositories are available to ${account.login} with the granted GitHub OAuth scope.`;
-              return;
-            }
-            const list = document.createElement("ul");
-            for (const repository of result.repositories) {
-              const row = document.createElement("li");
-              const use = document.createElement("button");
-              use.type = "button";
-              use.textContent = `Use ${repository.name} as ${account.login}`;
-              use.addEventListener("click", () =>
-                selectRepository?.(account, repository),
-              );
-              row.append(use);
-              list.append(row);
-            }
-            repositories.append(list);
-          },
-        );
+        commandButton(accountActions, "Disconnect", "disconnect_github_auth", {
+          accountId: account.account_id,
+        }).setAttribute("aria-label", `Disconnect ${account.login}`);
+        actionButton(accountActions, "Load repositories", async () => {
+          const result = await invoke<{
+            identity: { id: string; login: string };
+            repositories: GithubAccessibleRepository[];
+          }>("list_provider_repositories", {
+            provider: "github",
+            accountId: account.account_id,
+          });
+          if (result.identity.id !== account.account_id)
+            throw new Error("GitHub account changed");
+          repositories.replaceChildren();
+          if (!result.repositories.length) {
+            repositories.textContent = `No repositories are available to ${account.login} with the granted GitHub OAuth scope.`;
+            return;
+          }
+          const list = document.createElement("ul");
+          for (const repository of result.repositories) {
+            const row = document.createElement("li");
+            const use = document.createElement("button");
+            use.type = "button";
+            use.textContent = `Use ${repository.name} as ${account.login}`;
+            use.addEventListener("click", () =>
+              selectRepository?.(account, repository),
+            );
+            row.append(use);
+            list.append(row);
+          }
+          repositories.append(list);
+        }).setAttribute("aria-label", `Load repositories for ${account.login}`);
       } else {
         commandButton(
           accountActions,
-          `Reconnect ${account.login}`,
+          "Reconnect",
           "start_github_browser_auth",
           { expectedAccountId: account.account_id },
-        );
+        ).setAttribute("aria-label", `Reconnect ${account.login}`);
       }
       item.append(description, accountActions);
       accountList.append(item);
@@ -233,24 +237,49 @@ export function renderGithubAuth(
       if (view.flow.user_code && view.flow.verification_uri) {
         const userCode = view.flow.user_code;
         status.textContent =
-          "GitHub opened in your default browser. Enter the one-time code there, then return to PR Sniper.";
+          "GitHub opened in your default browser. Copy the one-time code, paste it on GitHub, then return here.";
+        const device = document.createElement("div");
+        device.className = "github-device";
         const guidance = document.createElement("p");
-        guidance.textContent = `If the browser did not open, visit ${view.flow.verification_uri} and enter this one-time code:`;
+        guidance.textContent = `Paste this code at ${view.flow.verification_uri}`;
+        const codeRow = document.createElement("div");
+        codeRow.className = "github-device-code-row";
         const code = document.createElement("code");
+        code.className = "github-device-code";
         code.textContent = userCode;
-        actions.append(guidance, code);
-        actionButton(actions, "Copy one-time code", async () => {
-          await navigator.clipboard.writeText(userCode);
-          status.textContent =
-            "One-time code copied. Complete authorization in GitHub, then return to PR Sniper.";
+        const feedback = document.createElement("p");
+        feedback.className = "github-copy-feedback";
+        feedback.setAttribute("aria-live", "polite");
+        const copy = document.createElement("button");
+        copy.type = "button";
+        copy.className = "primary";
+        copy.textContent = "Copy code";
+        let copying = false;
+        copy.addEventListener("click", async () => {
+          if (copying) return;
+          copying = true;
+          copy.setAttribute("aria-disabled", "true");
+          try {
+            await navigator.clipboard.writeText(userCode);
+            feedback.removeAttribute("role");
+            feedback.textContent = "Code copied. Paste it on GitHub.";
+          } catch {
+            feedback.setAttribute("role", "alert");
+            feedback.textContent =
+              "Could not copy. Select the code and copy it manually.";
+          } finally {
+            copying = false;
+            copy.removeAttribute("aria-disabled");
+          }
         });
+        codeRow.append(code, copy);
+        device.append(guidance, codeRow, feedback);
+        actions.append(device);
       } else {
         status.textContent =
           "Requesting a one-time GitHub authorization code. The default browser will open when it is ready.";
       }
       commandButton(actions, "Cancel", "cancel_github_auth");
-      clearTimeout(refreshTimer);
-      refreshTimer = setTimeout(refresh, 250);
     } else if (view.flow.state === "pending_account_confirmation") {
       status.textContent =
         view.flow.confirmation_error === "credentials_unavailable"
@@ -286,6 +315,7 @@ export function renderGithubAuth(
       return;
     }
     void invoke<GithubAuthView>("github_auth_state").then(render, () => {
+      renderedView = undefined;
       status.textContent =
         "GitHub connection state is unavailable. No connection is assumed.";
       actions.replaceChildren();

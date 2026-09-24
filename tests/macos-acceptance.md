@@ -99,7 +99,13 @@ issue #36 remains required product work outside this authentication path.
    client secret; do not mutate the registration during acceptance. Open
    Settings, choose **Add GitHub account**, confirm PR Sniper shows a one-time
    user code and opens `https://github.com/login/device` in the default system
-   browser. If GitHub does not return `verification_uri_complete`, confirm PR
+   browser. Confirm the code and **Copy code** are fully reachable without
+   horizontal scrolling at the normal Settings size and after narrowing the
+   window. Choose **Copy code**, verify the copied confirmation remains visible
+   while waiting, and paste into GitHub. Keyboard activation must retain focus;
+   unavailable clipboard access must leave a selectable code and manual-copy
+   guidance, not report a failed GitHub connection.
+   If GitHub does not return `verification_uri_complete`, confirm PR
    Sniper does not invent a prefilled-code URL. Use the displayed code, verify
    the consent clearly requests GitHub's broad `repo` scope for public and
    private repository access, complete authorization, return to PR Sniper,
