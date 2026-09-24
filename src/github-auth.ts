@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 type GithubAuthFailure =
   | "expired"
   | "denied"
+  | "device_flow_disabled"
   | "network"
   | "provider"
   | "invalid_response"
@@ -299,6 +300,8 @@ function failureMessage(reason?: GithubAuthFailure) {
     {
       expired: "The authorization expired or can no longer be refreshed.",
       denied: "GitHub authorization was denied.",
+      device_flow_disabled:
+        "The PR Sniper GitHub OAuth App Device Flow registration is unavailable. A maintainer must enable Device Flow before sign-in can work.",
       network: "The GitHub network request failed.",
       provider: "GitHub rejected or could not validate the connection.",
       invalid_response: "GitHub returned an invalid authorization response.",

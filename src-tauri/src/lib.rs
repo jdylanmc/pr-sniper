@@ -68,6 +68,7 @@ enum GithubAccountState {
 enum GithubAuthFailure {
     Expired,
     Denied,
+    DeviceFlowDisabled,
     Network,
     Provider,
     InvalidResponse,
@@ -461,6 +462,7 @@ fn failure_from_oauth_error(error: github::oauth::OAuthError) -> GithubAuthFailu
         github::oauth::OAuthError::Cancelled => GithubAuthFailure::Cancelled,
         github::oauth::OAuthError::Timeout => GithubAuthFailure::Timeout,
         github::oauth::OAuthError::Denied => GithubAuthFailure::Denied,
+        github::oauth::OAuthError::DeviceFlowDisabled => GithubAuthFailure::DeviceFlowDisabled,
         github::oauth::OAuthError::Expired => GithubAuthFailure::Expired,
     }
 }
@@ -1463,6 +1465,10 @@ mod github_auth_tests {
             (OAuthError::Cancelled, GithubAuthFailure::Cancelled),
             (OAuthError::Timeout, GithubAuthFailure::Timeout),
             (OAuthError::Denied, GithubAuthFailure::Denied),
+            (
+                OAuthError::DeviceFlowDisabled,
+                GithubAuthFailure::DeviceFlowDisabled,
+            ),
             (OAuthError::Expired, GithubAuthFailure::Expired),
         ] {
             assert_eq!(failure_from_oauth_error(error), expected);

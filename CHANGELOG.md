@@ -27,8 +27,9 @@ No release/versioning policy has been established yet.
 
 - Connect through the registered PR Sniper GitHub OAuth App in the default browser
   using GitHub's secretless device authorization flow, a provider-issued one-time
-  user code, bounded polling/cancellation/expiry and explicit stable-identity
-  confirmation before persistence. Multiple provider accounts retain
+  user code, bounded polling/cancellation/expiry, actionable
+  disabled-registration failures and explicit stable-identity confirmation
+  before persistence. Multiple provider accounts retain
   account-addressed credentials with absolute expirations in macOS Keychain and
   independent serialized rotation boundaries. Restart restores and validates
   every account, retry-safely migrates the prior active-account layouts without
