@@ -22,6 +22,48 @@ struct MemoryStore {
     fail_delete: Mutex<bool>,
 }
 
+#[test]
+fn disconnecting_ai_secret_retains_identity_and_other_role_credentials() {
+    use pr_sniper_lib::github::token_store::ProviderId;
+    let store = RotationSafeStore::new(MemoryStore::default());
+    let repo = ActiveAccount::new("101", "mutable-login").unwrap();
+    let ai = ActiveAccount::for_provider(ProviderId::copilot(), "101", "mutable-login").unwrap();
+    let repo_pair = TokenPair::new(
+        "repo-access",
+        "repo-refresh",
+        Duration::from_secs(60),
+        Duration::from_secs(120),
+    );
+    let ai_pair = TokenPair::new(
+        "ai-access",
+        "ai-refresh",
+        Duration::from_secs(60),
+        Duration::from_secs(120),
+    );
+    store.save_account(&repo, &repo_pair, false).unwrap();
+    store.save_account(&ai, &ai_pair, false).unwrap();
+    *store.inner().fail_delete.lock().unwrap() = true;
+    assert!(store
+        .clear_account_credentials(&ai.provider_account_id())
+        .is_err());
+    assert!(store.load(&ai.provider_account_id()).unwrap().is_some());
+    store
+        .clear_account_credentials(&ai.provider_account_id())
+        .unwrap();
+    assert!(store.load(&ai.provider_account_id()).unwrap().is_none());
+    assert_eq!(store.accounts().unwrap(), vec![repo.clone(), ai.clone()]);
+    assert_eq!(
+        store
+            .restore_account(&repo.provider_account_id())
+            .unwrap()
+            .unwrap()
+            .pair,
+        repo_pair
+    );
+    assert!(store.inner().registry.lock().unwrap().active.is_none());
+    store.save_account(&ai, &ai_pair, false).unwrap();
+    assert_eq!(store.accounts().unwrap().len(), 2);
+}
 impl CredentialStore for MemoryStore {
     fn load(&self, key: &CredentialKey) -> Result<Option<TokenPair>, StoreError> {
         Ok(self.values.lock().unwrap().get(key).cloned())

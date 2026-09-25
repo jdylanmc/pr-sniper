@@ -24,6 +24,9 @@ tauri-plugin-dialog = "=2.7.3"
 oauth2 = { version = "=5.0.0", default-features = false, features = ["reqwest-blocking", "rustls-tls", "timing-resistant-secret-traits"] }
 webbrowser = { version = "=1.2.4", features = ["hardened"] }
 url = "=2.5.8"
+github-copilot-sdk = "=1.0.14"
+tempfile = "3"
+tracing = "0.1"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

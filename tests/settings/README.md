@@ -12,6 +12,15 @@ are seeded through `Store::save_settings`; assertions read through a separate
 Store process and reload the UI. Persistence is not a JavaScript imitation.
 The fixture removes its own temporary data even when an assertion fails.
 
+`copilot.spec.mjs` covers the four-tab Settings Copilot surface: multiple
+confirmed identities, cancel/reconnect/disconnect, repository-role separation,
+explicit dynamic model selection (including Claude through Copilot), policy and
+network failures, empty catalogs, stale replies, and retained legacy/disconnected
+Agents. Auth and catalog responses are synthetic; Agent/account references and
+repository assignments are saved and reloaded through real Rust storage.
+These tests do not prove live OAuth-to-Copilot token acceptance. See the
+[native live-check procedure](../../docs/copilot-settings.md).
+
 The add-repository test checks canonical GitHub names, persistence across fresh
 Store processes and UI reload, and preservation of the startup preference.
 The bridge and native command call the same production Store operation.

@@ -1,6 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { renderConnection } from "./connections";
 import { renderGithubAuth, type GithubAccount } from "./github-auth";
+import {
+  renderCopilotAuth,
+  modelSelectable,
+  type CopilotAccount,
+  type CopilotAuth,
+  type CopilotModel,
+} from "./copilot";
 import type {
   Agent,
   Doctrine,
@@ -45,8 +52,7 @@ interface Discovery {
 }
 type Section = "doctrines" | "agents" | "integrations" | "preferences";
 
-// AI subscriptions a user can sign into. Only Copilot works today; the rest
-// are real providers listed honestly as not-yet-available, not hidden.
+// Direct integrations, distinct from the models available through Copilot.
 const modelProviders: { id: string; label: string; available: boolean }[] = [
   { id: "copilot", label: "GitHub Copilot", available: true },
   { id: "claude", label: "Claude", available: false },
@@ -81,8 +87,7 @@ const iconPaths = {
     '<path d="M12 5c-2-1.3-5-1.6-7-1v14c2-.6 5-.3 7 1 2-1.3 5-1.6 7-1V4c-2-.6-5-.3-7 1Z"/><path d="M12 5v14"/>',
   agents:
     '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/>',
-  preferences:
-    '<circle cx="12" cy="12" r="7.5"/><path d="M12 8v4l2.6 2.6"/>',
+  preferences: '<circle cx="12" cy="12" r="7.5"/><path d="M12 8v4l2.6 2.6"/>',
   folder: '<path d="M3 6h7l2 2h9v12H3zM3 6V4h7l2 2"/>',
 };
 const icon = (key: keyof typeof iconPaths) =>
@@ -173,6 +178,8 @@ export async function mountSettings(app: HTMLElement) {
   let conflict = false;
   let revision = 0;
   let githubAccounts: GithubAccount[] = [];
+  let copilotAccounts: CopilotAccount[] = [];
+  let disposeCopilot: (() => void) | undefined;
   const dialogs = createDialogs(content, () => revision++);
   const dirty = () =>
     !!draft && JSON.stringify(draft) !== JSON.stringify(saved);
@@ -226,6 +233,8 @@ export async function mountSettings(app: HTMLElement) {
   function render() {
     if (!draft) return;
     dialogs.closeAll();
+    disposeCopilot?.();
+    disposeCopilot = undefined;
     app.querySelector("h1")!.textContent = sections[section][0];
     app.querySelector(".settings-heading p")!.textContent =
       sections[section][1];
@@ -264,7 +273,11 @@ export async function mountSettings(app: HTMLElement) {
   // ---------------------------------------------------------------- Doctrines
 
   function seedDoctrinesIfNeeded() {
-    if (!snapshot.settings_persisted && !doctrines().length && !saved.doctrines?.length) {
+    if (
+      !snapshot.settings_persisted &&
+      !doctrines().length &&
+      !saved.doctrines?.length
+    ) {
       draft.doctrines = clone(doctrineSeeds);
       saved.doctrines = clone(doctrineSeeds);
       persisted.doctrines = clone(doctrineSeeds);
@@ -327,7 +340,8 @@ export async function mountSettings(app: HTMLElement) {
           throw "Give this doctrine a title and some principles.";
         if (
           doctrines().some(
-            (d) => d !== existing && d.title.toLowerCase() === title.toLowerCase(),
+            (d) =>
+              d !== existing && d.title.toLowerCase() === title.toLowerCase(),
           )
         )
           throw "Choose a unique doctrine title.";
@@ -349,16 +363,19 @@ export async function mountSettings(app: HTMLElement) {
   // -------------------------------------------------------------------- Agents
 
   function renderAgents() {
-    content.innerHTML = `<div class="section-actions"><h2>Your agents</h2><button class="primary" id="new-agent" ${modelProviders.some((m) => m.available) ? "" : "disabled"}>New agent</button></div><p class="settings-hint">An agent is a model, an optional doctrine, a prompt, and a signature -- assign the same agent to as many repositories as you like, each on its own timer.</p><div class="agent-list"></div>`;
+    content.innerHTML = `<div class="section-actions"><h2>Your agents</h2><button class="primary" id="new-agent" disabled>New agent</button></div><p class="settings-hint">Each Agent chooses an AI account and a model returned by that account. Doctrine, prompt and signature stay reusable across repository assignments. Repository credentials, not the AI account, determine the acting identity for repository access and future comments.</p><p class="settings-notice" data-copilot-status>Reading Copilot accounts...</p><button id="manage-copilot">Manage Copilot accounts</button><div class="agent-list"></div>`;
     const list = content.querySelector(".agent-list")!;
     if (!agents().length)
       list.innerHTML =
         '<div class="settings-empty"><strong>No agents yet</strong><p>Create one to start assigning it to repositories in Integrations.</p></div>';
     for (const agent of agents()) {
-      const model = modelProviders.find((m) => m.id === agent.model);
+      const account = copilotAccounts.find(
+        (a) => a.account_id === agent.ai_account?.account_id,
+      );
       const row = document.createElement("article");
       row.className = "agent-card";
-      row.innerHTML = `<div><h3>${escape(agent.name)}</h3><p>${escape(agent.prompt)}</p><div class="chip-row"><span class="chip">${escape(model?.label ?? agent.model)}</span>${agent.doctrine ? `<span class="chip">${escape(agent.doctrine)}</span>` : ""}<span class="chip">${escape(agent.signature)}</span></div></div><div class="card-actions"><button data-edit>Edit</button><button data-remove>Delete</button></div>`;
+      row.innerHTML = `<div><h3>${escape(agent.name)}</h3><p>${escape(agent.prompt)}</p><p data-account-state>${escape(agent.ai_account ? `Copilot: ${account?.login ?? agent.ai_account.account_id}. ${account?.state === "connected" ? "Sign-in verified; model access checked in Edit." : "Reconnect required; Agent blocked."}` : "Unconfigured. Choose an AI account and an actual model; the legacy selection is retained.")}</p><div class="chip-row"><span class="chip">${escape(agent.model)}</span>${agent.doctrine ? `<span class="chip">${escape(agent.doctrine)}</span>` : ""}<span class="chip">${escape(agent.signature)}</span></div></div><div class="card-actions"><button data-edit>Edit</button><button data-remove>Delete</button></div>`;
+      row.dataset.agentId = agent.id;
       row.querySelector<HTMLButtonElement>("[data-edit]")!.onclick = () =>
         editAgent(agent);
       row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick =
@@ -385,32 +402,179 @@ export async function mountSettings(app: HTMLElement) {
     }
     content.querySelector<HTMLButtonElement>("#new-agent")!.onclick = () =>
       editAgent();
+    content.querySelector<HTMLButtonElement>("#manage-copilot")!.onclick = () =>
+      navigate("integrations");
+    const notice = content.querySelector<HTMLElement>("[data-copilot-status]")!;
+    void invoke<CopilotAuth>("copilot_auth_state").then(
+      (view) => {
+        if (!notice.isConnected) return;
+        copilotAccounts = view.accounts;
+        const connected = copilotAccounts.some((a) => a.state === "connected");
+        notice.textContent = connected
+          ? "Copilot sign-in is separate from model access. Edit an Agent to load this account's current models."
+          : "No verified Copilot connection. Connect an account in Integrations; existing Agents and assignments are retained.";
+        content.querySelector<HTMLButtonElement>("#new-agent")!.disabled =
+          !connected;
+        for (const agent of agents()) {
+          const state = content.querySelector<HTMLElement>(
+            `[data-agent-id="${agent.id}"] [data-account-state]`,
+          );
+          const account = copilotAccounts.find(
+            (a) => a.account_id === agent.ai_account?.account_id,
+          );
+          if (state && agent.ai_account)
+            state.textContent = `Copilot: ${account?.login ?? agent.ai_account.account_id}. ${account?.state === "connected" ? "Sign-in verified; model access checked in Edit." : "Reconnect required; Agent blocked."}`;
+        }
+      },
+      () => {
+        if (notice.isConnected)
+          notice.textContent =
+            "Copilot account state is unavailable. Retry from Manage Copilot accounts. Existing Agents are retained.";
+      },
+    );
   }
 
   function editAgent(existing?: Agent) {
     const modal = dialog(
       existing ? "Edit agent" : "New agent",
       `<form><label>Name<input name="name" required maxlength="80" value="${escape(existing?.name ?? "")}" placeholder="e.g. The Nitpicker" /></label>
-        <label>Model<select name="model" required>${modelProviders.map((m) => `<option value="${m.id}" ${m.id === (existing?.model ?? "copilot") ? "selected" : ""} ${m.available ? "" : "disabled"}>${escape(m.label)}${m.available ? "" : " (coming soon)"}</option>`).join("")}</select></label>
-        <label>Doctrine<select name="doctrine">${option("", "None", existing?.doctrine ?? "")}${doctrines().map((d) => option(d.title, d.title, existing?.doctrine ?? "")).join("")}</select></label>
+        <p class="settings-hint">Provider: GitHub Copilot. Claude models offered through Copilot are allowed; the direct Claude integration remains unavailable.</p>
+        <label>AI account<select name="ai-account" aria-label="AI account"><option value="">Choose a Copilot account</option>${copilotAccounts.map((a) => `<option value="${escape(a.account_id)}" ${a.account_id === existing?.ai_account?.account_id ? "selected" : ""} ${a.state === "connected" ? "" : "disabled"}>${escape(a.login)} (${escape(a.account_id)})${a.state === "connected" ? "" : " - reconnect required"}</option>`).join("")}${existing?.ai_account && !copilotAccounts.some((a) => a.account_id === existing.ai_account?.account_id) ? `<option selected disabled value="${escape(existing.ai_account.account_id)}">Copilot ${escape(existing.ai_account.account_id)} - reconnect required</option>` : ""}</select></label>
+        <label>Model<select name="model" aria-label="Model" disabled><option value="${escape(existing?.model ?? "")}">${escape(existing?.model ?? "Choose an account first")}</option></select></label>
+        <p class="settings-hint" data-model-status role="status"></p><button type="button" data-retry-models>Retry model list</button><button type="button" data-cancel-models hidden>Cancel model lookup</button>
+        <label>Doctrine<select name="doctrine">${option("", "None", existing?.doctrine ?? "")}${doctrines()
+          .map((d) => option(d.title, d.title, existing?.doctrine ?? ""))
+          .join("")}</select></label>
         <label>Prompt<textarea name="prompt" rows="4" required>${escape(existing?.prompt ?? "Review this pull request for correctness, risk, and readability.")}</textarea></label>
         <label>Signature<input name="signature" required maxlength="80" value="${escape(existing?.signature ?? "PR Sniper \u{1F3AF}")}" /></label>
-        <p class="settings-hint">Every model here is a real AI subscription; disabled ones just aren't wired up yet. Sign in under Integrations first.</p><p role="alert" hidden></p><button class="primary">Save agent</button></form>`,
+        <p class="settings-hint">No review or test prompt runs here. Saving an existing unconfigured Agent preserves its selection until you explicitly replace it.</p><p role="alert" hidden></p><button class="primary">Save agent</button></form>`,
     );
+    const accountSelect =
+      modal.querySelector<HTMLSelectElement>("[name=ai-account]")!;
+    const modelSelect = modal.querySelector<HTMLSelectElement>("[name=model]")!;
+    const modelStatus = modal.querySelector<HTMLElement>(
+      "[data-model-status]",
+    )!;
+    const retryModels = modal.querySelector<HTMLButtonElement>(
+      "[data-retry-models]",
+    )!;
+    const cancelModels = modal.querySelector<HTMLButtonElement>(
+      "[data-cancel-models]",
+    )!;
+    let catalog: CopilotModel[] = [];
+    let request = 0;
+    let pendingLookup: { accountId: string; requestId: string } | undefined;
+    const cancelLookup = () => {
+      request++;
+      if (pendingLookup) {
+        const lookup = pendingLookup;
+        pendingLookup = undefined;
+        void invoke("cancel_copilot_models", lookup).catch(() => {
+          if (modal.isConnected)
+            modelStatus.textContent =
+              "Cancellation could not be confirmed. The native lookup remains time-bounded.";
+        });
+      }
+      cancelModels.hidden = true;
+    };
+    const observer = new MutationObserver(() => {
+      if (!modal.isConnected) {
+        cancelLookup();
+        observer.disconnect();
+      }
+    });
+    observer.observe(content, { childList: true, subtree: true });
+    async function loadModels() {
+      cancelLookup();
+      catalog = [];
+      const accountId = accountSelect.value;
+      const selected = modelSelect.value;
+      const current = ++request;
+      modelSelect.disabled = true;
+      if (
+        !copilotAccounts.some(
+          (a) => a.account_id === accountId && a.state === "connected",
+        )
+      ) {
+        modelStatus.textContent =
+          "Connect or reconnect this account in Integrations. The saved model is retained, but this Agent is unconfigured.";
+        return;
+      }
+      const lookup = { accountId, requestId: newIdentity() };
+      pendingLookup = lookup;
+      cancelModels.hidden = false;
+      modelStatus.textContent = "Loading models from this Copilot account...";
+      try {
+        const models = await invoke<CopilotModel[]>(
+          "list_copilot_models",
+          lookup,
+        );
+        if (
+          !modal.isConnected ||
+          current !== request ||
+          accountSelect.value !== accountId
+        )
+          return;
+        catalog = models;
+        modelSelect.innerHTML =
+          option("", "Choose a model", selected) +
+          (selected && !models.some((m) => m.id === selected)
+            ? `<option selected disabled value="${escape(selected)}">${escape(selected)} - unavailable; retained</option>`
+            : "") +
+          models
+            .map(
+              (m) =>
+                `<option value="${escape(m.id)}" ${m.id === selected ? "selected" : ""} ${modelSelectable(m) ? "" : "disabled"}>${escape(m.name)} (${escape(m.id)})${modelSelectable(m) ? "" : " - unavailable by policy"}</option>`,
+            )
+            .join("");
+        modelSelect.disabled = !models.some(modelSelectable);
+        describeModel();
+      } catch (cause) {
+        if (modal.isConnected && current === request)
+          modelStatus.textContent = `${reason(cause)} No replacement model selected. Retry when ready.`;
+      } finally {
+        if (current === request) {
+          pendingLookup = undefined;
+          cancelModels.hidden = true;
+        }
+      }
+    }
+    function describeModel() {
+      const model = catalog.find((m) => m.id === modelSelect.value);
+      const notices = [
+        model?.policy?.terms,
+        model?.warningText?.dataRetention,
+        ...(model?.infoMessages?.map((m) => m.message) ?? []),
+      ].filter(Boolean);
+      modelStatus.textContent = !catalog.length
+        ? "Copilot returned no models for this account. Sign-in remains verified; check access or policy and retry."
+        : modelSelect.value && (!model || !modelSelectable(model))
+          ? "The saved model is unavailable. It is retained, not replaced. Choose an available model or retry."
+          : `${catalog.length} models returned by Copilot. This is not an inference test. ${notices.join(" ")}`;
+    }
+    accountSelect.onchange = () => {
+      modelSelect.innerHTML = '<option value="">Choose a model</option>';
+      void loadModels();
+    };
+    modelSelect.onchange = describeModel;
+    retryModels.onclick = () => void loadModels();
+    cancelModels.onclick = () => {
+      cancelLookup();
+      modelStatus.textContent = "Model lookup cancelled. Retry when ready.";
+    };
+    void loadModels();
     modal.querySelector("form")!.onsubmit = (event) => {
       event.preventDefault();
       const alert = modal.querySelector<HTMLElement>("[role=alert]")!;
       const name = modal
         .querySelector<HTMLInputElement>("[name=name]")!
         .value.trim();
-      const model = modal.querySelector<HTMLSelectElement>("[name=model]")!
-        .value;
-      const doctrine = modal.querySelector<HTMLSelectElement>(
-        "[name=doctrine]",
-      )!.value;
-      const prompt = modal.querySelector<HTMLTextAreaElement>(
-        "[name=prompt]",
-      )!.value;
+      const model =
+        modal.querySelector<HTMLSelectElement>("[name=model]")!.value;
+      const doctrine =
+        modal.querySelector<HTMLSelectElement>("[name=doctrine]")!.value;
+      const prompt =
+        modal.querySelector<HTMLTextAreaElement>("[name=prompt]")!.value;
       const signature = modal
         .querySelector<HTMLInputElement>("[name=signature]")!
         .value.trim();
@@ -419,20 +583,42 @@ export async function mountSettings(app: HTMLElement) {
           throw "Give this agent a name, a prompt, and a signature.";
         if (
           agents().some(
-            (a) => a !== existing && a.name.toLowerCase() === name.toLowerCase(),
+            (a) =>
+              a !== existing && a.name.toLowerCase() === name.toLowerCase(),
           )
         )
           throw "Choose a unique agent name.";
+        const accountId = accountSelect.value;
+        const unchanged =
+          !!existing &&
+          accountId === (existing.ai_account?.account_id ?? "") &&
+          model === existing.model;
+        if (
+          !unchanged &&
+          (!accountId ||
+            !catalog.some((m) => m.id === model && modelSelectable(m)))
+        )
+          throw "Choose a verified AI account and a model returned for that account. Retry the model list if unavailable.";
         const values: Agent = {
           id: existing?.id ?? newIdentity(),
           name,
           model,
+          ...(accountId
+            ? {
+                ai_account: {
+                  provider: "copilot" as const,
+                  account_id: accountId,
+                },
+              }
+            : {}),
           prompt,
           signature,
           ...(doctrine ? { doctrine } : {}),
         };
-        if (existing) Object.assign(existing, values);
-        else (draft.agents ??= []).push(values);
+        if (existing) {
+          Object.assign(existing, values);
+          if (!doctrine) delete existing.doctrine;
+        } else (draft.agents ??= []).push(values);
         modal.close();
         render();
       } catch (cause) {
@@ -467,20 +653,25 @@ export async function mountSettings(app: HTMLElement) {
   }
 
   function renderIntegrations() {
-    content.innerHTML = `<div class="integration-group"><h2>AI subscriptions</h2><p class="settings-hint">Sign in with a provider, then pick it as an agent's model.</p><div class="integration-grid">${modelProviders
+    content.innerHTML = `<div class="integration-group"><h2>AI integration</h2><div class="copilot-auth"></div><div class="integration-grid">${modelProviders
+      .filter((m) => !m.available)
       .map(
         (m) =>
-          `<div class="integration-card" data-disabled="${!m.available}"><strong>${escape(m.label)}</strong><p>${m.available ? "Install and sign in to GitHub Copilot CLI in your terminal. No successful check is implied here." : "Coming soon."}</p></div>`,
+          `<div class="integration-card" data-disabled="true"><strong>Direct ${escape(m.label)}</strong><p>Coming soon.</p></div>`,
       )
-      .join(
-        "",
-      )}</div></div>
+      .join("")}</div></div>
       <div class="integration-group"><h2>Git repositories</h2><div class="github-auth"></div><div class="folder-card"><div class="folder-symbol">${icon("folder")}</div><div><strong>${escape(draft.root_folder ?? "Choose your repository folder")}</strong><p>${discovery ? `${discovery.repositories.length} local repositories discovered` : "Only a folder you choose is scanned."}</p></div><button id="choose-folder">Choose folder...</button></div>
       <div class="repository-toolbar"><input id="repo-search" type="search" aria-label="Find a repository" placeholder="Find a repository..." value="${escape(query)}" /><button id="select-visible">Select visible</button></div>
       <div class="list-label"><span>Repository</span><span id="selected-count"></span></div><div class="repository-list"></div>
       <p class="settings-hint">Monitoring configuration only. Reviews and comments stay separate. No polling runs in this build.</p>
       <div class="settings-actions"><button id="add-repository">Add repository manually...</button>${draft.root_folder ? '<button id="rescan">Scan chosen folder</button>' : ""}</div>
       ${discovery?.warnings.map((warning) => `<p class="settings-notice">${escape(warning)}</p>`).join("") ?? ""}</div>`;
+    disposeCopilot = renderCopilotAuth(
+      content.querySelector(".copilot-auth")!,
+      (accounts) => {
+        copilotAccounts = accounts;
+      },
+    );
     renderGithubAuth(
       content.querySelector(".github-auth")!,
       (account, accessible) => {
@@ -787,11 +978,12 @@ export async function mountSettings(app: HTMLElement) {
       modal.querySelector(".connection")!.textContent =
         "Save this repository before verifying its GitHub connection.";
     modal.querySelector<HTMLButtonElement>("[data-assign-agent]")!.onclick =
-      () => assignAgentDialog(repository, () => {
-        renderAssignments();
-      });
-    modal.querySelector<HTMLButtonElement>("[data-add-people]")!.onclick =
-      () => addPersonDialog(repository, () => renderWatchlist());
+      () =>
+        assignAgentDialog(repository, () => {
+          renderAssignments();
+        });
+    modal.querySelector<HTMLButtonElement>("[data-add-people]")!.onclick = () =>
+      addPersonDialog(repository, () => renderWatchlist());
     modal.querySelector<HTMLButtonElement>("#rename-repository")!.onclick =
       () => {
         modal.close();
@@ -830,14 +1022,11 @@ export async function mountSettings(app: HTMLElement) {
         row.innerHTML = `<div><strong>${escape(agent?.name ?? "Deleted agent")}</strong><p>${escape(scheduleSummary(assignment.schedule))} \u00b7 ${assignment.comment ? "Comments" : "Silent"}${assignment.approve ? " \u00b7 Approve (coming soon)" : ""}</p></div><button data-edit>Edit</button><button data-remove>Remove</button>`;
         row.querySelector<HTMLButtonElement>("[data-edit]")!.onclick = () =>
           assignAgentDialog(repository, () => renderAssignments(), assignment);
-        row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick =
-          () => {
-            repository.assignments = assignments.filter(
-              (a) => a !== assignment,
-            );
-            changed();
-            renderAssignments();
-          };
+        row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick = () => {
+          repository.assignments = assignments.filter((a) => a !== assignment);
+          changed();
+          renderAssignments();
+        };
         list.append(row);
       }
     }
@@ -854,12 +1043,11 @@ export async function mountSettings(app: HTMLElement) {
         const row = document.createElement("div");
         row.className = "watchlist-row";
         row.innerHTML = `<span>@${escape(person.login)}</span><button data-remove aria-label="Remove ${escape(person.login)}">Remove</button>`;
-        row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick =
-          () => {
-            repository.watched_authors = people.filter((p) => p !== person);
-            changed();
-            renderWatchlist();
-          };
+        row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick = () => {
+          repository.watched_authors = people.filter((p) => p !== person);
+          changed();
+          renderWatchlist();
+        };
         list.append(row);
       }
     }
@@ -877,15 +1065,35 @@ export async function mountSettings(app: HTMLElement) {
     };
     const modal = dialog(
       existing ? "Edit assignment" : "Assign agent",
-      `<form><label>Agent<select name="agent" required>${agents().map((a) => option(a.id, a.name, existing?.agent_id ?? agents()[0]?.id ?? "")).join("")}</select></label>
-        <label>Check for pull requests<select name="frequency">${[5, 15, 30, 60, ...(schedule.kind === "interval" ? [schedule.minutes] : [])].filter((n, i, a) => a.indexOf(n) === i).map((n) => option(String(n), `Every ${n} minutes`, schedule.kind === "interval" ? String(schedule.minutes) : "cron")).join("")}${option("cron", "Custom schedule (cron)", schedule.kind === "cron" ? "cron" : "")}</select></label>
+      `<form><label>Agent<select name="agent" required>${agents()
+        .map((a) =>
+          option(a.id, a.name, existing?.agent_id ?? agents()[0]?.id ?? ""),
+        )
+        .join("")}</select></label>
+        <label>Check for pull requests<select name="frequency">${[
+          5,
+          15,
+          30,
+          60,
+          ...(schedule.kind === "interval" ? [schedule.minutes] : []),
+        ]
+          .filter((n, i, a) => a.indexOf(n) === i)
+          .map((n) =>
+            option(
+              String(n),
+              `Every ${n} minutes`,
+              schedule.kind === "interval" ? String(schedule.minutes) : "cron",
+            ),
+          )
+          .join(
+            "",
+          )}${option("cron", "Custom schedule (cron)", schedule.kind === "cron" ? "cron" : "")}</select></label>
         <details ${schedule.kind === "cron" ? "open" : ""}><summary>Advanced scheduling</summary><label>Interval minutes<input name="minutes" type="number" min="1" step="1" value="${schedule.kind === "interval" ? schedule.minutes : 15}" /></label><label>Cron expression<input name="cron" value="${escape(schedule.kind === "cron" ? schedule.expression : "0 9 * * MON-FRI")}" /></label><label>Time zone<input name="timezone" value="${escape(schedule.timezone)}" /></label></details>
-        <div class="permission-row"><label><input type="checkbox" name="comment" ${existing?.comment ?? true ? "checked" : ""} />Comment<small>Post findings on the pull request.</small></label><label><input type="checkbox" name="approve" disabled ${existing?.approve ? "checked" : ""} />Approve<small>Coming soon -- once we trust the aim.</small></label></div>
+        <div class="permission-row"><label><input type="checkbox" name="comment" ${(existing?.comment ?? true) ? "checked" : ""} />Comment<small>Post findings on the pull request.</small></label><label><input type="checkbox" name="approve" disabled ${existing?.approve ? "checked" : ""} />Approve<small>Coming soon -- once we trust the aim.</small></label></div>
         <p class="settings-hint">Each assignment runs on its own timer, independent of any other agent on this repository.</p><p role="alert" hidden></p><button class="primary">${existing ? "Save assignment" : "Assign agent"}</button></form>`,
     );
-    const frequency = modal.querySelector<HTMLSelectElement>(
-      "[name=frequency]",
-    )!;
+    const frequency =
+      modal.querySelector<HTMLSelectElement>("[name=frequency]")!;
     const minutes = modal.querySelector<HTMLInputElement>("[name=minutes]")!;
     const cron = modal.querySelector<HTMLInputElement>("[name=cron]")!;
     minutes.disabled = schedule.kind === "cron";
@@ -900,9 +1108,8 @@ export async function mountSettings(app: HTMLElement) {
       event.preventDefault();
       const alert = modal.querySelector<HTMLElement>("[role=alert]")!;
       try {
-        const agentId = modal.querySelector<HTMLSelectElement>(
-          "[name=agent]",
-        )!.value;
+        const agentId =
+          modal.querySelector<HTMLSelectElement>("[name=agent]")!.value;
         if (!agentId) throw "Choose an agent.";
         const value: Assignment = {
           id: existing?.id ?? newIdentity(),
@@ -912,19 +1119,19 @@ export async function mountSettings(app: HTMLElement) {
               ? {
                   kind: "cron",
                   expression: cron.value,
-                  timezone: modal.querySelector<HTMLInputElement>(
-                    "[name=timezone]",
-                  )!.value,
+                  timezone:
+                    modal.querySelector<HTMLInputElement>("[name=timezone]")!
+                      .value,
                 }
               : {
                   kind: "interval",
                   minutes: Number(minutes.value),
-                  timezone: modal.querySelector<HTMLInputElement>(
-                    "[name=timezone]",
-                  )!.value,
+                  timezone:
+                    modal.querySelector<HTMLInputElement>("[name=timezone]")!
+                      .value,
                 },
-          comment: modal.querySelector<HTMLInputElement>("[name=comment]")!
-            .checked,
+          comment:
+            modal.querySelector<HTMLInputElement>("[name=comment]")!.checked,
           approve: false,
         };
         if (existing) Object.assign(existing, value);
@@ -969,8 +1176,7 @@ export async function mountSettings(app: HTMLElement) {
           {
             provider: "github",
             accountId:
-              picker.querySelector<HTMLSelectElement>("[name=account]")!
-                .value,
+              picker.querySelector<HTMLSelectElement>("[name=account]")!.value,
             login: input.value.trim().replace(/^@/, ""),
           },
         );

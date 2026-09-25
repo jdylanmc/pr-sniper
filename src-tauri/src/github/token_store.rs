@@ -28,6 +28,10 @@ impl ProviderId {
         Self("github".into())
     }
 
+    pub fn copilot() -> Self {
+        Self("copilot".into())
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -398,6 +402,21 @@ impl<S: AccountRegistryStore + CredentialStore> RotationSafeStore<S> {
         self.inner.save_registry(&registry)
     }
 
+    /// Retain confirmed identity and references while deleting only this role's secret.
+    pub fn clear_account_credentials(&self, id: &ProviderAccountId) -> Result<(), StoreError> {
+        let _registry_guard = self.registry.lock().map_err(|_| StoreError::Unavailable)?;
+        if !self
+            .load_registry_cleaned()?
+            .accounts
+            .iter()
+            .any(|account| account.provider_account_id() == *id)
+        {
+            return Err(StoreError::InvalidData);
+        }
+        let lock = self.account_lock(id)?;
+        let _guard = lock.lock().map_err(|_| StoreError::Unavailable)?;
+        self.inner.delete(id)
+    }
     pub fn restore_active_account(&self) -> Result<Option<RestoredCredentials>, StoreError> {
         let active = {
             let _guard = self.registry.lock().map_err(|_| StoreError::Unavailable)?;
