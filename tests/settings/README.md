@@ -31,6 +31,13 @@ repository assignments are saved and reloaded through real Rust storage.
 These tests do not prove live OAuth-to-Copilot token acceptance. See the
 [native live-check procedure](../../docs/copilot-settings.md).
 
+Deferred Copilot responses also cover cancellation before/after an unrelated
+account failure, deletion retry, and stale focus reads across disconnect,
+confirmation and verification, including the cached state sent to Agents.
+Native fake-backend tests inject credential deletion and rotated-pair save
+failures, assert no identity/SDK calls after failed persistence, and check
+account-local recovery and generation fences across cancellation/deadlines.
+
 The add-repository test checks canonical GitHub names, persistence across fresh
 Store processes and UI reload, and preservation of the startup preference.
 The bridge and native command call the same production Store operation.

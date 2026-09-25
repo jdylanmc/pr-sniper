@@ -86,8 +86,19 @@ struct FakeBackend {
     identities: Mutex<Vec<String>>,
     refreshes: Mutex<Vec<String>>,
     saves: Mutex<Vec<String>>,
+    fail_save: AtomicBool,
+    fail_clear: AtomicBool,
+    hold_save: AtomicBool,
+    hold_clear: AtomicBool,
     hold_identity: AtomicBool,
     hold_refresh: AtomicBool,
+    entered_save: tokio::sync::Notify,
+    entered_clear: tokio::sync::Notify,
+    release_save: tokio::sync::Notify,
+    release_clear: tokio::sync::Notify,
+    identity_failure: Mutex<Option<GithubAuthFailure>>,
+    model_calls: Mutex<Vec<String>>,
+    fail_models: AtomicBool,
     entered_identity: tokio::sync::Notify,
     entered_refresh: tokio::sync::Notify,
     release_identity: tokio::sync::Notify,
@@ -120,8 +131,19 @@ impl Backend for FakeBackend {
         self.loads.lock().unwrap().push(key.account_id().into());
         Ok(self.pairs.lock().unwrap().get(key.account_id()).cloned())
     }
-    async fn save_pair(&self, key: ProviderAccountId, pair: TokenPair) -> Result<(), String> {
+    async fn save_pair(
+        &self,
+        key: ProviderAccountId,
+        pair: TokenPair,
+    ) -> Result<(), GithubAuthFailure> {
         self.saves.lock().unwrap().push(key.account_id().into());
+        if key.account_id() == "101" && self.hold_save.load(Ordering::SeqCst) {
+            self.entered_save.notify_one();
+            self.release_save.notified().await;
+        }
+        if key.account_id() == "101" && self.fail_save.load(Ordering::SeqCst) {
+            return Err(GithubAuthFailure::CredentialsUnavailable);
+        }
         self.pairs
             .lock()
             .unwrap()
@@ -129,6 +151,13 @@ impl Backend for FakeBackend {
         Ok(())
     }
     async fn clear(&self, key: ProviderAccountId) -> Result<(), String> {
+        if key.account_id() == "101" && self.hold_clear.load(Ordering::SeqCst) {
+            self.entered_clear.notify_one();
+            self.release_clear.notified().await;
+        }
+        if key.account_id() == "101" && self.fail_clear.load(Ordering::SeqCst) {
+            return Err("Fixture credential deletion failed.".into());
+        }
         self.pairs.lock().unwrap().remove(key.account_id());
         Ok(())
     }
@@ -145,6 +174,9 @@ impl Backend for FakeBackend {
     async fn identity(&self, pair: &TokenPair) -> Result<github::Identity, GithubAuthFailure> {
         let id = pair.access_token();
         self.identities.lock().unwrap().push(id.into());
+        if let Some(failure) = *self.identity_failure.lock().unwrap() {
+            return Err(failure);
+        }
         if id == "101" && self.hold_identity.load(Ordering::SeqCst) {
             let _pending = PendingIdentity(self.dropped_identity.clone());
             self.entered_identity.notify_one();
@@ -155,6 +187,283 @@ impl Backend for FakeBackend {
             login: format!("fixture-{id}"),
         })
     }
+
+    async fn models(
+        &self,
+        identity: github::Identity,
+        _pair: TokenPair,
+        _operation: Operation,
+    ) -> Result<Vec<github_copilot_sdk::Model>, String> {
+        self.model_calls.lock().unwrap().push(identity.id);
+        if self.fail_models.load(Ordering::SeqCst) {
+            Err("Fixture catalog lookup failed.".into())
+        } else {
+            Ok(Vec::new())
+        }
+    }
+}
+
+fn account_view(integration: &Integration<FakeBackend>, id: &str) -> serde_json::Value {
+    serde_json::to_value(integration.view().unwrap()).unwrap()["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|account| account["account_id"] == id)
+        .unwrap()
+        .clone()
+}
+
+#[tokio::test]
+async fn failed_disconnect_retains_secret_and_reports_pending_then_failed_until_retry() {
+    let integration = fake_integration();
+    let other = account_view(&integration, "202");
+    integration.backend.fail_clear.store(true, Ordering::SeqCst);
+    integration.backend.hold_clear.store(true, Ordering::SeqCst);
+    let disconnect = {
+        let integration = integration.clone();
+        tokio::spawn(async move { integration.disconnect("101").await })
+    };
+    integration.backend.entered_clear.notified().await;
+    assert_eq!(
+        account_view(&integration, "101")["reason"],
+        "disconnect_pending"
+    );
+    integration.backend.release_clear.notify_one();
+    assert_eq!(
+        disconnect.await.unwrap().err().unwrap(),
+        "Copilot credentials could not be deleted securely. Retry disconnect."
+    );
+    let failed = account_view(&integration, "101");
+    assert_eq!(failed["state"], "reconnect_required");
+    assert_eq!(failed["reason"], "disconnect_failed");
+    assert!(integration
+        .backend
+        .pairs
+        .lock()
+        .unwrap()
+        .contains_key("101"));
+    let operation = integration
+        .operation("101", Instant::now() + OPERATION_LIMIT)
+        .unwrap();
+    assert!(integration.credential("101", &operation).await.is_err());
+    assert!(integration.backend.loads.lock().unwrap().is_empty());
+    assert!(integration.backend.identities.lock().unwrap().is_empty());
+    assert_eq!(account_view(&integration, "202"), other);
+    integration
+        .backend
+        .hold_clear
+        .store(false, Ordering::SeqCst);
+    integration
+        .backend
+        .fail_clear
+        .store(false, Ordering::SeqCst);
+    integration.disconnect("101").await.unwrap();
+    assert_eq!(account_view(&integration, "101")["reason"], "disconnected");
+    assert!(!integration
+        .backend
+        .pairs
+        .lock()
+        .unwrap()
+        .contains_key("101"));
+    assert_eq!(account_view(&integration, "202"), other);
+}
+
+#[tokio::test]
+async fn rotated_pair_save_failure_blocks_only_affected_account_and_explicit_retry_recovers() {
+    for model_lookup in [false, true] {
+        let integration = fake_integration();
+        let other = account_view(&integration, "202");
+        let expired = pair_for("101", true);
+        integration
+            .backend
+            .pairs
+            .lock()
+            .unwrap()
+            .insert("101".into(), expired.clone());
+        integration.backend.fail_save.store(true, Ordering::SeqCst);
+        let operation = integration
+            .operation("101", Instant::now() + OPERATION_LIMIT)
+            .unwrap();
+        let error = if model_lookup {
+            integration.models("101", &operation).await.unwrap_err()
+        } else {
+            integration.credential("101", &operation).await.unwrap_err()
+        };
+        assert_eq!(
+            error,
+            verification_error(GithubAuthFailure::CredentialsUnavailable)
+        );
+        assert_eq!(
+            account_view(&integration, "101")["state"],
+            "reconnect_required"
+        );
+        assert_eq!(
+            account_view(&integration, "101")["reason"],
+            "credentials_unavailable"
+        );
+        assert_eq!(account_view(&integration, "202"), other);
+        assert_eq!(
+            integration.backend.refreshes.lock().unwrap().as_slice(),
+            ["101"]
+        );
+        assert_eq!(
+            integration.backend.saves.lock().unwrap().as_slice(),
+            ["101"]
+        );
+        assert_eq!(integration.backend.pairs.lock().unwrap()["101"], expired);
+        assert!(integration.backend.identities.lock().unwrap().is_empty());
+        assert!(integration.backend.model_calls.lock().unwrap().is_empty());
+
+        integration.backend.fail_save.store(false, Ordering::SeqCst);
+        let retry = integration
+            .operation("101", Instant::now() + OPERATION_LIMIT)
+            .unwrap();
+        integration.credential("101", &retry).await.unwrap();
+        assert_eq!(account_view(&integration, "101")["state"], "connected");
+        assert_eq!(account_view(&integration, "202"), other);
+        assert!(
+            !integration.backend.pairs.lock().unwrap()["101"].access_is_expired(SystemTime::now())
+        );
+        assert_eq!(
+            integration.backend.identities.lock().unwrap().as_slice(),
+            ["101"]
+        );
+    }
+}
+
+#[tokio::test]
+async fn cancelled_rotation_still_reports_failed_persistence_but_stale_generation_cannot() {
+    for cancelled in [false, true] {
+        for replacement in [false, true] {
+            let integration = fake_integration();
+            let other = account_view(&integration, "202");
+            integration
+                .backend
+                .pairs
+                .lock()
+                .unwrap()
+                .insert("101".into(), pair_for("101", true));
+            integration.backend.fail_save.store(true, Ordering::SeqCst);
+            integration.backend.hold_save.store(true, Ordering::SeqCst);
+            let operation = integration
+                .operation("101", Instant::now() + OPERATION_LIMIT)
+                .unwrap();
+            let active = {
+                let integration = integration.clone();
+                let operation = operation.clone();
+                tokio::spawn(async move { integration.credential("101", &operation).await })
+            };
+            integration.backend.entered_save.notified().await;
+            operation.cancelled.store(cancelled, Ordering::SeqCst);
+            if replacement {
+                integration
+                    .account("101")
+                    .unwrap()
+                    .invalidate(|| {
+                        integration.auth.lock().unwrap().accounts.insert(
+                            "101".into(),
+                            GithubAccountState::Connected(github::Identity {
+                                id: "101".into(),
+                                login: "replacement-generation".into(),
+                            }),
+                        );
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+            integration.backend.release_save.notify_one();
+            assert!(active.await.unwrap().is_err());
+            assert!(integration.backend.identities.lock().unwrap().is_empty());
+            let view = account_view(&integration, "101");
+            if replacement {
+                assert_eq!(view["state"], "connected");
+                assert_eq!(view["login"], "replacement-generation");
+            } else {
+                assert_eq!(view["state"], "reconnect_required");
+                assert_eq!(view["reason"], "credentials_unavailable");
+            }
+            assert_eq!(account_view(&integration, "202"), other);
+        }
+    }
+}
+
+#[tokio::test]
+async fn transient_identity_failures_do_not_erase_verified_sign_in() {
+    for failure in [GithubAuthFailure::Network, GithubAuthFailure::Provider] {
+        let integration = fake_integration();
+        let original = account_view(&integration, "101");
+        *integration.backend.identity_failure.lock().unwrap() = Some(failure);
+        let operation = integration
+            .operation("101", Instant::now() + OPERATION_LIMIT)
+            .unwrap();
+        assert!(integration.credential("101", &operation).await.is_err());
+        assert_eq!(account_view(&integration, "101"), original);
+    }
+    let integration = fake_integration();
+    let original = account_view(&integration, "101");
+    integration
+        .backend
+        .fail_models
+        .store(true, Ordering::SeqCst);
+    let operation = integration
+        .operation("101", Instant::now() + OPERATION_LIMIT)
+        .unwrap();
+    assert_eq!(
+        integration.models("101", &operation).await.unwrap_err(),
+        "Fixture catalog lookup failed."
+    );
+    assert_eq!(
+        integration.backend.model_calls.lock().unwrap().as_slice(),
+        ["101"]
+    );
+    assert_eq!(account_view(&integration, "101"), original);
+}
+
+#[tokio::test]
+async fn persistence_failure_after_deadline_is_still_published_and_stale_delete_failure_is_not() {
+    let integration = fake_integration();
+    integration
+        .backend
+        .pairs
+        .lock()
+        .unwrap()
+        .insert("101".into(), pair_for("101", true));
+    integration.backend.hold_save.store(true, Ordering::SeqCst);
+    integration.backend.fail_save.store(true, Ordering::SeqCst);
+    let operation = integration
+        .operation("101", Instant::now() + Duration::from_millis(100))
+        .unwrap();
+    let deadline = operation.deadline;
+    let active = {
+        let integration = integration.clone();
+        tokio::spawn(async move { integration.credential("101", &operation).await })
+    };
+    integration.backend.entered_save.notified().await;
+    tokio::time::sleep_until(deadline.into()).await;
+    integration.backend.release_save.notify_one();
+    assert_eq!(
+        active.await.unwrap().unwrap_err(),
+        verification_error(GithubAuthFailure::CredentialsUnavailable)
+    );
+    assert_eq!(
+        account_view(&integration, "101")["reason"],
+        "credentials_unavailable"
+    );
+    assert!(integration.backend.identities.lock().unwrap().is_empty());
+    assert!(integration.backend.model_calls.lock().unwrap().is_empty());
+
+    integration.backend.hold_clear.store(true, Ordering::SeqCst);
+    integration.backend.fail_clear.store(true, Ordering::SeqCst);
+    let deleting = {
+        let integration = integration.clone();
+        tokio::spawn(async move { integration.disconnect("101").await })
+    };
+    integration.backend.entered_clear.notified().await;
+    integration.invalidate("101").unwrap();
+    let replacement = account_view(&integration, "101");
+    integration.backend.release_clear.notify_one();
+    assert!(deleting.await.unwrap().is_err());
+    assert_eq!(account_view(&integration, "101"), replacement);
 }
 
 fn pair_for(id: &str, expired: bool) -> TokenPair {
@@ -474,7 +783,7 @@ async fn newly_requested_work_cannot_revive_an_account_while_disconnect_waits_fo
             if matches!(
                 integration.auth.lock().unwrap().accounts.get("101"),
                 Some(GithubAccountState::ReconnectRequired {
-                    reason: GithubAuthFailure::Disconnected,
+                    reason: GithubAuthFailure::DisconnectPending,
                     ..
                 })
             ) {
