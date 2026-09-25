@@ -12,6 +12,16 @@ are seeded through `Store::save_settings`; assertions read through a separate
 Store process and reload the UI. Persistence is not a JavaScript imitation.
 The fixture removes its own temporary data even when an assertion fails.
 
+`doctrine-seeding.spec.mjs` covers the complete 23-document canonical catalog
+(exact titles and bodies, with only frontmatter/H1 removed), durable first load,
+Agent choices before visiting Doctrines, and saving Integrations first. It
+checks edited/custom/deleted and delete-all libraries across fresh Store
+processes and UI reload, conservative handling of legacy missing fields,
+visible initialization write errors, and conflicting drafts with explicit
+discard/reload. `src-tauri/tests/doctrine_seeding.rs` independently checks the
+same storage and canonical-content contracts. Fresh settings now persist the
+starter library immediately; startup and automation remain opted out.
+
 `copilot.spec.mjs` covers the four-tab Settings Copilot surface: multiple
 confirmed identities, cancel/reconnect/disconnect, repository-role separation,
 explicit dynamic model selection (including Claude through Copilot), policy and

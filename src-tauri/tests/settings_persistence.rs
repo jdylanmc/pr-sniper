@@ -54,7 +54,7 @@ fn explicit_login_preference_survives_a_fresh_store() {
 }
 
 #[test]
-fn fresh_profile_is_opted_out_without_creating_settings() {
+fn fresh_profile_persists_starters_without_opting_in_to_startup() {
     let fixture = Fixture::new();
 
     let settings = fixture.store().load_settings().expect("load new profile");
@@ -64,9 +64,10 @@ fn fresh_profile_is_opted_out_without_creating_settings() {
         "login must require explicit opt-in"
     );
     assert!(
-        !fixture.path().join("config/settings.json").exists(),
-        "reading defaults must not create a persisted opt-in"
+        fixture.path().join("config/settings.json").exists(),
+        "starter doctrines must be persisted without enabling startup"
     );
+    assert!(!fixture.store().load_settings().unwrap().launch_at_login);
 }
 
 #[test]
@@ -203,6 +204,7 @@ fn ordinary_configuration_contains_only_nonsecret_settings() {
         persisted,
         serde_json::json!({
             "launch_at_login": true,
+            "doctrines": [],
             "defaults": {
                 "schedule": {"kind":"interval","minutes":15,"timezone":"UTC"},
                 "watched_authors": [],

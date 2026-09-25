@@ -17,7 +17,6 @@ import type {
   WatchedIdentity,
 } from "./policy";
 import type { Repository } from "./repositories";
-import { doctrineSeeds } from "./doctrine-seeds";
 import "./settings.css";
 import { createDialogs } from "./dialogs";
 
@@ -276,25 +275,12 @@ export async function mountSettings(app: HTMLElement) {
 
   // ---------------------------------------------------------------- Doctrines
 
-  function seedDoctrinesIfNeeded() {
-    if (
-      !snapshot.settings_persisted &&
-      !doctrines().length &&
-      !saved.doctrines?.length
-    ) {
-      draft.doctrines = clone(doctrineSeeds);
-      saved.doctrines = clone(doctrineSeeds);
-      persisted.doctrines = clone(doctrineSeeds);
-    }
-  }
-
   function renderDoctrines() {
-    seedDoctrinesIfNeeded();
     content.innerHTML = `<div class="section-actions"><h2>Your doctrines</h2><button class="primary" id="new-doctrine">New doctrine</button></div><p class="settings-hint">Doctrines are plain-text principles -- not commands. Attach one to an agent and it colors every review that agent does. Around 500 words is a friendly length, never a limit.</p><div class="doctrine-list"></div>`;
     const list = content.querySelector(".doctrine-list")!;
     if (!doctrines().length)
       list.innerHTML =
-        '<div class="settings-empty"><strong>No doctrines yet</strong><p>Write one, or reopen this window on a fresh install to see the starter set.</p></div>';
+        '<div class="settings-empty"><strong>No doctrines yet</strong><p>Create a doctrine to add your own review principles.</p></div>';
     for (const doctrine of doctrines()) {
       const row = document.createElement("article");
       row.className = "doctrine-card";
