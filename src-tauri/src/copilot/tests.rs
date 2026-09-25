@@ -105,7 +105,16 @@ impl Drop for PendingIdentity {
 
 impl Backend for FakeBackend {
     async fn accounts(&self) -> Result<Vec<ActiveAccount>, String> {
-        Ok(vec![])
+        Ok(self
+            .pairs
+            .lock()
+            .unwrap()
+            .keys()
+            .map(|id| {
+                ActiveAccount::for_provider(ProviderId::copilot(), id, format!("fixture-{id}"))
+                    .unwrap()
+            })
+            .collect())
     }
     async fn load(&self, key: ProviderAccountId) -> Result<Option<TokenPair>, String> {
         self.loads.lock().unwrap().push(key.account_id().into());
@@ -514,4 +523,49 @@ async fn newly_requested_work_cannot_revive_an_account_while_disconnect_waits_fo
             ..
         })
     ));
+}
+
+#[tokio::test]
+async fn registry_restoration_publishes_accounts_without_waiting_for_a_slow_identity() {
+    let integration = Arc::new(Integration::with_backend(FakeBackend::default()));
+    for id in ["101", "202"] {
+        integration
+            .backend
+            .pairs
+            .lock()
+            .unwrap()
+            .insert(id.into(), pair_for(id, false));
+    }
+    integration
+        .backend
+        .hold_identity
+        .store(true, Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(1), integration.restore())
+        .await
+        .unwrap()
+        .unwrap();
+    integration.backend.entered_identity.notified().await;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if matches!(
+                integration.auth.lock().unwrap().accounts.get("202"),
+                Some(GithubAccountState::Connected(_))
+            ) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(integration.view().unwrap().accounts.len(), 2);
+        integration.disconnect("202").await.unwrap();
+    })
+    .await
+    .expect("initial restoration cannot hold other accounts behind account A's provider request");
+    integration.shutdown();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while integration.backend.dropped_identity.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("quit cancels an in-flight restored identity");
 }
