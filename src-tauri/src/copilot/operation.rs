@@ -102,6 +102,23 @@ impl Operation {
         change()
     }
 
+    pub fn finish_transaction<T>(
+        &self,
+        change: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let generation = self
+            .account
+            .generation
+            .lock()
+            .map_err(|_| "Copilot account state is unavailable.")?;
+        // Cancellation/deadline cannot hide a completed credential transaction's
+        // failure, but it must never change a replacement connection.
+        if *generation != self.generation {
+            return Err("Copilot account connection changed.".into());
+        }
+        change()
+    }
+
     async fn stopped(&self) -> String {
         loop {
             if let Err(error) = self.check() {

@@ -1,3 +1,4 @@
+use super::{operation::Operation, runtime};
 use crate::{
     failure_from_connection_error, failure_from_oauth_error,
     github::{
@@ -20,7 +21,7 @@ pub(crate) trait Backend: Send + Sync + 'static {
         &self,
         key: ProviderAccountId,
         pair: TokenPair,
-    ) -> impl Future<Output = Result<(), String>> + Send;
+    ) -> impl Future<Output = Result<(), GithubAuthFailure>> + Send;
     fn clear(&self, key: ProviderAccountId) -> impl Future<Output = Result<(), String>> + Send;
     fn refresh(
         &self,
@@ -30,6 +31,12 @@ pub(crate) trait Backend: Send + Sync + 'static {
         &self,
         pair: &TokenPair,
     ) -> impl Future<Output = Result<github::Identity, GithubAuthFailure>> + Send;
+    fn models(
+        &self,
+        identity: github::Identity,
+        pair: TokenPair,
+        operation: Operation,
+    ) -> impl Future<Output = Result<Vec<github_copilot_sdk::Model>, String>> + Send;
 }
 
 pub(crate) struct NativeBackend {
@@ -77,8 +84,14 @@ impl Backend for NativeBackend {
         self.storage(move |store| store.load(&key)).await
     }
 
-    async fn save_pair(&self, key: ProviderAccountId, pair: TokenPair) -> Result<(), String> {
-        self.storage(move |store| store.save(&key, &pair)).await
+    async fn save_pair(
+        &self,
+        key: ProviderAccountId,
+        pair: TokenPair,
+    ) -> Result<(), GithubAuthFailure> {
+        self.storage(move |store| store.save(&key, &pair))
+            .await
+            .map_err(|_| GithubAuthFailure::CredentialsUnavailable)
     }
 
     async fn clear(&self, key: ProviderAccountId) -> Result<(), String> {
@@ -96,5 +109,18 @@ impl Backend for NativeBackend {
         github::http::current_identity_async(pair)
             .await
             .map_err(failure_from_connection_error)
+    }
+
+    async fn models(
+        &self,
+        identity: github::Identity,
+        pair: TokenPair,
+        operation: Operation,
+    ) -> Result<Vec<github_copilot_sdk::Model>, String> {
+        tauri::async_runtime::spawn_blocking(move || {
+            runtime::models(&identity, &pair, &operation.cancelled, operation.deadline)
+        })
+        .await
+        .map_err(|_| "Copilot model lookup could not finish. Retry.")?
     }
 }

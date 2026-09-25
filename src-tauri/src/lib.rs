@@ -87,6 +87,8 @@ enum GithubAuthFailure {
     VerificationPending,
     VerificationRequired,
     Disconnected,
+    DisconnectPending,
+    DisconnectFailed,
     Expired,
     Denied,
     DeviceFlowDisabled,

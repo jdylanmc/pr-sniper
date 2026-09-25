@@ -18,9 +18,17 @@ async function bridge(page, handler) {
   await page.exposeFunction("__copilotFixture", handler);
   await page.addInitScript(() => {
     const original = window.__TAURI_INTERNALS__.invoke;
+    const pending = new Set();
+    window.__copilotIdle = async () => {
+      while (pending.size) await Promise.allSettled([...pending]);
+    };
     window.__TAURI_INTERNALS__.invoke = (command, args) => {
-      if (command.includes("copilot"))
-        return window.__copilotFixture(command, args ?? {});
+      if (command.includes("copilot")) {
+        const request = window.__copilotFixture(command, args ?? {});
+        const settled = request.finally(() => pending.delete(settled));
+        pending.add(settled);
+        return settled;
+      }
       if (command === "github_auth_state")
         return Promise.resolve({
           accounts: [
@@ -38,6 +46,230 @@ async function bridge(page, handler) {
   });
 }
 
+for (const pendingAction of [
+  "verify_copilot_account",
+  "disconnect_copilot_account",
+]) {
+  for (const cancelReplyFirst of [true, false]) {
+    test(`cancelling sign-in preserves a rejected ${pendingAction} with cancel reply ${cancelReplyFirst ? "first" : "last"} and successful retry clears it`, async ({
+      page,
+    }) => {
+      const pending = Promise.withResolvers();
+      const started = Promise.withResolvers();
+      const cancelReply = Promise.withResolvers();
+      let attempts = 0;
+      let cancelled = false;
+      let state = {
+        accounts: [first],
+        flow: {
+          state: "connecting",
+          user_code: "TEST-CODE",
+          verification_uri: "https://github.com/login/device",
+        },
+      };
+      const failure =
+        pendingAction === "disconnect_copilot_account"
+          ? "Copilot credentials could not be deleted securely. Retry disconnect."
+          : "Copilot credentials are unavailable in secure storage. Retry or reconnect.";
+      await bridge(page, (command) => {
+        if (command === pendingAction) {
+          attempts++;
+          if (attempts === 1) {
+            started.resolve();
+            return pending.promise;
+          }
+          state = idle(
+            pendingAction === "disconnect_copilot_account"
+              ? [account("101", first.login, "reconnect_required")]
+              : [first],
+          );
+        }
+        if (command === "cancel_copilot_auth") {
+          cancelled = true;
+          state = idle(state.accounts);
+          return cancelReplyFirst ? state : cancelReply.promise;
+        }
+        return state;
+      });
+      await page.goto("/?view=settings");
+      const card = page.locator(".copilot-auth-card");
+      await expect(card).toContainText("TEST-CODE");
+      const actionName =
+        pendingAction === "disconnect_copilot_account"
+          ? "Disconnect Copilot fixture-ai-one"
+          : "Verify Copilot sign-in for fixture-ai-one";
+      await card.getByRole("button", { name: actionName, exact: true }).click();
+      await started.promise;
+      await card
+        .getByRole("button", { name: "Cancel Copilot sign-in", exact: true })
+        .click();
+      await expect.poll(() => cancelled).toBe(true);
+      if (cancelReplyFirst) await expect(card).not.toContainText("TEST-CODE");
+      const staleCancel = structuredClone(state);
+      state = idle([
+        {
+          ...account("101", first.login, "reconnect_required"),
+          reason:
+            pendingAction === "disconnect_copilot_account"
+              ? "disconnect_failed"
+              : "credentials_unavailable",
+        },
+      ]);
+      pending.reject(failure);
+      await expect(card.getByRole("alert")).toHaveText(failure);
+      await expect(card.getByRole("alert")).toBeVisible();
+      cancelReply.resolve(staleCancel);
+      await expect(
+        card.getByRole("button", { name: actionName, exact: true }),
+      ).toBeEnabled();
+      await page.evaluate(() => window.__copilotIdle());
+      await expect(card).not.toContainText("TEST-CODE");
+      await expect(card.locator(".copilot-check")).toHaveCount(0);
+      if (pendingAction === "disconnect_copilot_account")
+        await expect(card.locator(".copilot-accounts")).toContainText(
+          "Retry disconnect",
+        );
+      await card.getByRole("button", { name: actionName, exact: true }).click();
+      await expect.poll(() => attempts).toBe(2);
+      await expect(card.getByRole("alert")).toBeHidden();
+      await expect(card).not.toContainText("TEST-CODE");
+      await expect(card).toContainText(
+        pendingAction === "disconnect_copilot_account"
+          ? "Disconnected. Reconnect"
+          : "Signed in as fixture-ai-one",
+      );
+    });
+  }
+}
+
+for (const action of ["disconnect", "confirm", "verify"]) {
+  test(`late focus snapshot cannot overwrite ${action} or republish stale Agent account choices`, async ({
+    page,
+    store,
+  }) => {
+    const settings = (await store("snapshot")).settings;
+    settings.agents = [
+      {
+        id: agentId,
+        name: "Pinned",
+        model: "chosen",
+        ai_account: { provider: "copilot", account_id: "101" },
+        prompt: "Keep prompt.",
+        signature: "Fixture",
+      },
+    ];
+    await store("seed_settings", settings);
+    const mutation = Promise.withResolvers();
+    const mutationStarted = Promise.withResolvers();
+    const oldRead = Promise.withResolvers();
+    const readStarted = Promise.withResolvers();
+    const agentRead = Promise.withResolvers();
+    let holdRead = false;
+    let holdAgentRead = false;
+    let state =
+      action === "confirm"
+        ? {
+            accounts: [account("101", first.login, "reconnect_required")],
+            flow: {
+              state: "pending_account_confirmation",
+              account_id: "101",
+              login: first.login,
+            },
+          }
+        : idle([
+            action === "verify"
+              ? {
+                  ...account("101", first.login, "reconnect_required"),
+                  reason: "verification_required",
+                }
+              : first,
+          ]);
+    const stale = structuredClone(state);
+    const updated =
+      action !== "disconnect"
+        ? idle([first])
+        : idle([
+            {
+              ...account("101", first.login, "reconnect_required"),
+              reason: "disconnected",
+            },
+          ]);
+    await bridge(page, (command) => {
+      if (command === `${action}_copilot_account`) {
+        mutationStarted.resolve();
+        return mutation.promise;
+      }
+      if (command === "copilot_auth_state" && holdRead) {
+        holdRead = false;
+        readStarted.resolve();
+        return oldRead.promise;
+      }
+      if (command === "copilot_auth_state" && holdAgentRead)
+        return agentRead.promise;
+      return state;
+    });
+    await page.goto("/?view=settings");
+    // Keep a real Settings draft so its independent focus refresh cannot remount the card.
+    await section(page, "Doctrines");
+    await page
+      .getByRole("button", { name: "New doctrine", exact: true })
+      .click();
+    const modal = page.getByRole("dialog", {
+      name: "New doctrine",
+      exact: true,
+    });
+    await modal.getByLabel("Title", { exact: true }).fill("fixture-draft");
+    await modal
+      .getByRole("textbox", { name: "Principles", exact: true })
+      .fill("Keep this unsaved draft.");
+    await modal
+      .getByRole("button", { name: "Save doctrine", exact: true })
+      .click();
+    await section(page, "Integrations");
+    const card = page.locator(".copilot-auth-card");
+    const name =
+      action === "confirm"
+        ? "Confirm Copilot account"
+        : action === "verify"
+          ? "Verify Copilot sign-in for fixture-ai-one"
+          : "Disconnect Copilot fixture-ai-one";
+    await card.getByRole("button", { name, exact: true }).click();
+    await mutationStarted.promise;
+    holdRead = true;
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await readStarted.promise;
+    state = updated;
+    mutation.resolve(updated);
+    const expectedChecks = action === "disconnect" ? 0 : 1;
+    await expect(card.locator(".copilot-check")).toHaveCount(expectedChecks);
+    await expect(
+      card.getByRole("button", {
+        name: "Connect Copilot account",
+        exact: true,
+      }),
+    ).toBeEnabled();
+    oldRead.resolve(stale);
+    await page.evaluate(() => window.__copilotIdle());
+    await expect(card.locator(".copilot-check")).toHaveCount(expectedChecks);
+    await expect(
+      card.getByRole("button", {
+        name: "Confirm Copilot account",
+        exact: true,
+      }),
+    ).toHaveCount(0);
+    holdAgentRead = true;
+    await section(page, "Agents");
+    await expect(
+      page.locator(".agent-card [data-account-state]"),
+    ).toContainText(
+      action !== "disconnect"
+        ? "Sign-in verified"
+        : "Reconnect required; Agent blocked",
+    );
+    agentRead.resolve(updated);
+    await page.evaluate(() => window.__copilotIdle());
+  });
+}
 test("Copilot connect, cancel, confirm, reconnect and disconnect stay separate from repository accounts", async ({
   page,
 }) => {

@@ -46,7 +46,10 @@ No release/versioning policy has been established yet.
   own connected account and a model returned by Copilot. Disconnect retains
   dependent Agents and assignments needing reconnect, without switching
   accounts. The green check verifies sign-in only; it does not test a
-  subscription or run a prompt.
+  subscription or run a prompt. Failed credential deletion stays visible and
+  retryable, including when cancelling another sign-in. Late state reads cannot
+  undo account actions, and failed refreshed-credential saves mark only the
+  affected account unavailable.
   See [Copilot Settings](docs/copilot-settings.md).
 
 - Connect through the registered PR Sniper GitHub OAuth App in the default browser

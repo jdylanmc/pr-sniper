@@ -139,7 +139,7 @@ impl<B: Backend> Integration<B> {
         operation: &Operation,
         result: &Result<(github::Identity, TokenPair), GithubAuthFailure>,
     ) -> Result<(), String> {
-        operation.publish(|| {
+        let publish = || {
             let mut auth = self
                 .auth
                 .lock()
@@ -149,7 +149,9 @@ impl<B: Backend> Integration<B> {
                     if matches!(
                         auth.accounts.get(id),
                         Some(GithubAccountState::ReconnectRequired {
-                            reason: GithubAuthFailure::Disconnected,
+                            reason: GithubAuthFailure::Disconnected
+                                | GithubAuthFailure::DisconnectPending
+                                | GithubAuthFailure::DisconnectFailed,
                             ..
                         })
                     ) {
@@ -177,7 +179,12 @@ impl<B: Backend> Integration<B> {
                 }
             }
             Ok(())
-        })
+        };
+        if matches!(result, Err(GithubAuthFailure::CredentialsUnavailable)) {
+            operation.finish_transaction(publish)
+        } else {
+            operation.publish(publish)
+        }
     }
 
     async fn credential(
@@ -221,7 +228,9 @@ impl<B: Backend> Integration<B> {
                     Ok(pair) => pair,
                     Err(reason) => return Ok(Err(reason)),
                 };
-                self.backend.save_pair(key, pair.clone()).await?;
+                if let Err(reason) = self.backend.save_pair(key, pair.clone()).await {
+                    return Ok(Err(reason));
+                }
                 operation.check()?;
             }
             let identity = match operation.wait(self.backend.identity(&pair)).await? {
@@ -254,7 +263,10 @@ impl<B: Backend> Integration<B> {
         match auth.accounts.get(id) {
             None => Err("Connect and confirm this Copilot account first.".into()),
             Some(GithubAccountState::ReconnectRequired {
-                reason: GithubAuthFailure::Disconnected,
+                reason:
+                    GithubAuthFailure::Disconnected
+                    | GithubAuthFailure::DisconnectPending
+                    | GithubAuthFailure::DisconnectFailed,
                 ..
             }) => Err("Reconnect this Copilot account before verifying or loading models.".into()),
             Some(_) => Ok(()),
@@ -339,17 +351,46 @@ impl<B: Backend> Integration<B> {
             {
                 auth.cancel_attempt();
             }
-            auth.set_failure(id, GithubAuthFailure::Disconnected);
+            auth.set_failure(id, GithubAuthFailure::DisconnectPending);
             Ok(())
         })?;
         let operation = self.operation(id, Instant::now() + OPERATION_LIMIT)?;
-        let _guard = operation.wait(account.gate.lock()).await?;
-        self.backend
-            .clear(account_key(id)?)
-            .await
-            .map_err(|_| "Copilot credentials could not be deleted securely. Retry disconnect.")?;
-        operation.check()?;
+        let result = async {
+            let _guard = operation.wait(account.gate.lock()).await?;
+            self.backend.clear(account_key(id)?).await.map_err(|_| {
+                "Copilot credentials could not be deleted securely. Retry disconnect."
+            })?;
+            operation.check()
+        }
+        .await;
+        operation.finish_transaction(|| {
+            self.auth
+                .lock()
+                .map_err(|_| "Copilot state is unavailable.")?
+                .set_failure(
+                    id,
+                    if result.is_ok() {
+                        GithubAuthFailure::Disconnected
+                    } else {
+                        GithubAuthFailure::DisconnectFailed
+                    },
+                );
+            Ok(())
+        })?;
+        result?;
         self.view()
+    }
+
+    async fn models(
+        self: &Arc<Self>,
+        id: &str,
+        operation: &Operation,
+    ) -> Result<Vec<github_copilot_sdk::Model>, String> {
+        operation.wait(self.restore()).await??;
+        let (identity, pair) = self.credential(id, operation).await?;
+        operation.check()?;
+        let outcome = self.backend.models(identity, pair, operation.clone()).await;
+        operation.publish(|| outcome)
     }
 
     pub fn request_shutdown(&self) {
@@ -577,24 +618,7 @@ pub(super) async fn list_copilot_models(
         }
         lookups.insert(key.clone(), operation.clone());
     }
-    let result = async {
-        operation.wait(integration.restore()).await??;
-        let (identity, pair) = integration.credential(&account_id, &operation).await?;
-        operation.check()?;
-        let runtime_operation = operation.clone();
-        let outcome = tauri::async_runtime::spawn_blocking(move || {
-            runtime::models(
-                &identity,
-                &pair,
-                &runtime_operation.cancelled,
-                runtime_operation.deadline,
-            )
-        })
-        .await
-        .map_err(|_| "Copilot model lookup could not finish. Retry.")?;
-        operation.publish(|| outcome)
-    }
-    .await;
+    let result = integration.models(&account_id, &operation).await;
     integration
         .lookups
         .lock()

@@ -38,6 +38,10 @@ export const modelSelectable = (model: CopilotModel) =>
 export const copilotFailure = (reason?: string) =>
   ({
     disconnected: "Disconnected. Reconnect to use this account again.",
+    disconnect_pending:
+      "Disconnecting. Secure credential deletion is not yet confirmed.",
+    disconnect_failed:
+      "Credential deletion could not be confirmed. Retry disconnect.",
     expired: "The credential is missing or expired. Reconnect this account.",
     denied: "GitHub authorization was denied. Try again when ready.",
     network: "Cannot reach GitHub to verify sign-in. Retry verification.",
@@ -71,7 +75,7 @@ export function renderCopilotAuth(
   let busy = false;
   let cancelling = false;
   let lastView = "";
-  let generation = 0;
+  let actionGeneration = 0;
   let stateRead = 0;
   const alive = () => !disposed && root.isConnected;
   const updateButtons = () =>
@@ -98,36 +102,40 @@ export function renderCopilotAuth(
     button.type = "button";
     button.textContent = label;
     const isCancel = command === "cancel_copilot_auth";
+    const isAccountAction =
+      command === "verify_copilot_account" ||
+      command === "disconnect_copilot_account";
     button.dataset.cancelSignIn = String(isCancel);
     button.disabled = isCancel ? cancelling : busy || cancelling;
     button.onclick = async () => {
       if (cancelling || (!isCancel && busy)) return;
       if (isCancel) cancelling = true;
       else busy = true;
-      const request = ++generation;
+      const request = ++actionGeneration;
+      let needsRefresh = false;
       if (isCancel) clearTimeout(timer);
       updateButtons();
-      error.hidden = true;
+      if (!isCancel) error.hidden = true;
       try {
         const view = await invoke<CopilotAuth>(command, args);
-        if (alive() && request === generation) render(view);
+        if (alive()) {
+          // Reads started during this action predate its committed result.
+          stateRead++;
+          if (request === actionGeneration) render(view);
+          else needsRefresh = true;
+        }
       } catch (cause) {
-        if (alive() && request === generation) {
-          showError(cause);
-          try {
-            const view = await invoke<CopilotAuth>("copilot_auth_state");
-            if (request === generation) render(view);
-          } catch {
-            if (alive() && request === generation)
-              status.textContent =
-                "Copilot account state is unavailable. Retry reading accounts.";
-          }
+        if (alive()) {
+          stateRead++;
+          // Cancel invalidates flow snapshots, not another account's failure.
+          if (request === actionGeneration || isAccountAction) showError(cause);
+          needsRefresh = true;
         }
       } finally {
         if (isCancel) cancelling = false;
         else busy = false;
         if (alive()) updateButtons();
-        if (alive() && request !== generation) void refresh();
+        if (alive() && (needsRefresh || isCancel)) void refresh();
       }
     };
     parent.append(button);
@@ -237,15 +245,17 @@ export function renderCopilotAuth(
   }
   async function refresh() {
     if (!alive() || cancelling) return;
-    const request = generation;
+    const request = actionGeneration;
     const read = ++stateRead;
     try {
       const view = await invoke<CopilotAuth>("copilot_auth_state");
-      if (request === generation && read === stateRead && alive()) render(view);
+      if (request === actionGeneration && read === stateRead && alive())
+        render(view);
     } catch (cause) {
-      if (!alive() || request !== generation || read !== stateRead) return;
+      if (!alive() || request !== actionGeneration || read !== stateRead)
+        return;
       lastView = "";
-      showError(cause);
+      if (error.hidden) showError(cause);
       status.textContent =
         "Copilot account state is unavailable. No connection is assumed.";
       flow.replaceChildren();
@@ -256,7 +266,7 @@ export function renderCopilotAuth(
   void refresh();
   return () => {
     disposed = true;
-    generation++;
+    actionGeneration++;
     clearTimeout(timer);
     window.removeEventListener("focus", refresh);
   };

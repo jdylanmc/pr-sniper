@@ -34,6 +34,9 @@ account or explicitly retrying its model list. Network, provider, access and
 policy failures are shown separately from verified sign-in. An empty returned
 catalog is described as empty, not replaced by built-in model choices.
 Unavailable/disabled saved models remain visible until explicitly changed.
+If refreshing a credential succeeds but saving its replacement fails, that
+account becomes unavailable and requires retry or reconnect. No identity or
+model request follows that failed save; other accounts remain unchanged.
 
 **Disconnect** deletes only the selected AI role's local token pair. Its
 identity and dependent Agent references remain for reconnect; no Agent,
@@ -41,6 +44,10 @@ assignment or repository connection is removed or rebound. **Reconnect**
 requires the same stable GitHub ID, even if its display login has changed.
 Revoking the PR Sniper OAuth App on GitHub itself can affect both roles:
 local disconnect deliberately does not revoke that upstream authorization.
+Disconnect stays pending until secure deletion completes. If it fails, the
+account remains blocked and explicitly asks to **Retry disconnect**; credentials
+may still be stored. Cancelling a separate sign-in does not hide this failure
+or a verification error. Delayed state reads cannot undo a newer action result.
 
 Old Agents with a provider name such as `copilot` in their model field load
 unchanged and are marked unconfigured. They need an explicit account and actual
