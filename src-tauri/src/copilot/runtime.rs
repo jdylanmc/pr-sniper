@@ -55,6 +55,10 @@ pub(super) fn models(
     if cancelled.load(Ordering::SeqCst) {
         return Err("Copilot model lookup cancelled.".into());
     }
+    let os = objc2_foundation::NSProcessInfo::processInfo().operatingSystemVersion();
+    if !supports_runtime(os.majorVersion, os.minorVersion) {
+        return Err("The bundled Copilot runtime requires macOS 13.5 or later. Your sign-in and saved Agent selections are unchanged.".into());
+    }
     let program = github_copilot_sdk::install_bundled_cli()
         .ok_or("The bundled Copilot runtime is unavailable. Reinstall PR Sniper and retry.")?;
     let directory = tempfile::Builder::new()
@@ -84,6 +88,11 @@ pub(super) fn models(
         .close()
         .map_err(|_| "Copilot stopped, but private runtime state could not be cleaned up.")?;
     result
+}
+
+fn supports_runtime(major: isize, minor: isize) -> bool {
+    // Verified LC_BUILD_VERSION of the pinned 1.0.85 native runtime.
+    major > 13 || (major == 13 && minor >= 5)
 }
 
 async fn cancellation(cancelled: &AtomicBool) {
@@ -139,6 +148,14 @@ async fn query(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_minimum_is_explicit_without_changing_app_minimum() {
+        assert!(!supports_runtime(12, 7));
+        assert!(!supports_runtime(13, 4));
+        assert!(supports_runtime(13, 5));
+        assert!(supports_runtime(14, 0));
+    }
 
     #[test]
     fn only_explicit_environment_can_reach_account_runtime() {

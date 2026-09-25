@@ -20,6 +20,10 @@ Requirements: macOS 12+, Xcode Command Line Tools (or full Xcode), Node
 Install prerequisites yourself using their official installers; these commands
 do not install global tools.
 
+Copilot model lookup additionally requires macOS 13.5+ because of the bundled
+official runtime's deployment target. Older systems retain Settings/sign-in
+management but receive an explicit model-lookup compatibility error.
+
 ```sh
 npm ci
 npm run tauri -- dev

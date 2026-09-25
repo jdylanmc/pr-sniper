@@ -69,6 +69,13 @@ does not need the user's Node installation or global Copilot CLI. Runtime
 extraction uses the SDK-managed versioned cache; the app explicitly selects
 the bundled executable, not `COPILOT_CLI_PATH`.
 
+**Compatibility limit:** the bundled CLI **1.0.85** declares **macOS 13.5** as
+its minimum (`LC_BUILD_VERSION`). PR Sniper's existing macOS 12 application
+minimum is unchanged, but model listing is explicitly unavailable on macOS
+12 through 13.4. Identity/Settings management remains separate. Supporting
+Copilot model lookup on those older systems needs a compatible official runtime;
+this candidate does not claim that support.
+
 Each lookup starts a fresh account-specific SDK client in a private temporary
 HOME, working directory and Copilot state directory. It uses explicit token
 authentication, `use_logged_in_user=false`, stdio transport, SDK empty mode
