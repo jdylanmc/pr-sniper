@@ -1,39 +1,40 @@
+mod backend;
+mod operation;
 mod runtime;
 
 use crate::{
-    complete_github_device_auth, failure_from_connection_error, failure_from_oauth_error,
+    complete_github_device_auth,
     github::{
         self,
-        macos_keychain::MacKeychainStore,
         oauth::TokenPair,
-        token_store::{
-            ActiveAccount, ProviderAccountId, ProviderId, RotationError, RotationSafeStore,
-        },
+        token_store::{ActiveAccount, ProviderAccountId, ProviderId},
     },
     ConnectionRole, GithubAccountState, GithubAuth, GithubAuthFailure, GithubAuthView, Host,
 };
+use backend::{Backend, NativeBackend};
+use operation::{AccountWork, Operation, OPERATION_LIMIT};
 use std::{
     collections::BTreeMap,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
-    time::SystemTime,
+    time::{Instant, SystemTime},
 };
 use tauri::{Manager, State};
 
-pub(super) struct Integration {
+pub(super) struct Integration<B: Backend = NativeBackend> {
     pub auth: Mutex<GithubAuth>,
-    credentials: RotationSafeStore<MacKeychainStore>,
-    operations: tokio::sync::Mutex<()>,
-    restored: AtomicBool,
-    lookups: Mutex<BTreeMap<(String, String), Arc<AtomicBool>>>,
+    backend: B,
+    restored: tokio::sync::OnceCell<()>,
+    accounts: Mutex<BTreeMap<String, Arc<AccountWork>>>,
+    quitting: Arc<AtomicBool>,
+    lookups: Mutex<BTreeMap<(String, String), Operation>>,
 }
 
 impl Integration {
-    pub fn new(isolated: bool) -> Result<Self, String> {
+    pub fn new(isolated: bool) -> Result<Arc<Self>, String> {
         let service = if isolated {
-            // The host validates this test-owned namespace before constructing us.
             format!(
                 "{}.copilot",
                 std::env::var("PR_SNIPER_KEYCHAIN_SERVICE")
@@ -42,25 +43,85 @@ impl Integration {
         } else {
             "com.jdylanmc.pr-sniper.copilot.oauth-app.v1".into()
         };
-        Ok(Self {
+        Ok(Arc::new(Self::with_backend(NativeBackend::new(service))))
+    }
+}
+
+impl<B: Backend> Integration<B> {
+    fn with_backend(backend: B) -> Self {
+        Self {
             auth: Mutex::new(GithubAuth::new()),
-            credentials: RotationSafeStore::new(MacKeychainStore::with_service(service)),
-            operations: tokio::sync::Mutex::new(()),
-            restored: AtomicBool::new(false),
+            backend,
+            restored: tokio::sync::OnceCell::new(),
+            accounts: Mutex::new(BTreeMap::new()),
+            quitting: Arc::new(AtomicBool::new(false)),
             lookups: Mutex::new(BTreeMap::new()),
-        })
+        }
     }
 
-    fn restore(&self) -> Result<(), String> {
-        if !self.restored.load(Ordering::SeqCst) {
-            let auth = GithubAuth::restore_accounts(&self.credentials, ProviderId::copilot())
-                .map_err(|_| "Copilot identities could not be read from secure storage. Retry.")?;
-            *self
-                .auth
-                .lock()
-                .map_err(|_| "Copilot state is unavailable.")? = auth;
-            self.restored.store(true, Ordering::SeqCst);
-        }
+    fn account(&self, id: &str) -> Result<Arc<AccountWork>, String> {
+        account_key(id)?;
+        Ok(self
+            .accounts
+            .lock()
+            .map_err(|_| "Copilot account state is unavailable.")?
+            .entry(id.into())
+            .or_default()
+            .clone())
+    }
+
+    fn operation(&self, id: &str, deadline: Instant) -> Result<Operation, String> {
+        Operation::new(self.account(id)?, self.quitting.clone(), deadline)
+    }
+
+    async fn restore(self: &Arc<Self>) -> Result<(), String> {
+        // Only registry metadata is shared initialization. No network request
+        // holds this barrier; each saved identity verifies independently.
+        self.restored
+            .get_or_try_init(|| async {
+                let accounts = self.backend.accounts().await?;
+                if self.quitting.load(Ordering::SeqCst) {
+                    return Err("PR Sniper is quitting.".into());
+                }
+                let mut restored = Vec::new();
+                {
+                    let mut auth = self
+                        .auth
+                        .lock()
+                        .map_err(|_| "Copilot state is unavailable.")?;
+                    for account in accounts
+                        .into_iter()
+                        .filter(|a| a.provider == ProviderId::copilot())
+                    {
+                        account_key(&account.account_id)?;
+                        auth.accounts.insert(
+                            account.account_id.clone(),
+                            GithubAccountState::ReconnectRequired {
+                                identity: github::Identity {
+                                    id: account.account_id.clone(),
+                                    login: account.login,
+                                },
+                                reason: GithubAuthFailure::VerificationPending,
+                            },
+                        );
+                        restored.push(account.account_id);
+                    }
+                }
+                for id in restored {
+                    let integration = self.clone();
+                    let operation = self.operation(&id, Instant::now() + OPERATION_LIMIT)?;
+                    tokio::spawn(async move {
+                        if let Err(error) = integration.credential(&id, &operation).await {
+                            eprintln!("[copilot] stage=restore outcome=verification_incomplete");
+                            // Errors are also represented in account state; never
+                            // emit provider/credential data in diagnostics.
+                            let _ = error;
+                        }
+                    });
+                }
+                Ok::<_, String>(())
+            })
+            .await?;
         Ok(())
     }
 
@@ -72,105 +133,261 @@ impl Integration {
             .copilot_view())
     }
 
-    fn credential(&self, account_id: &str) -> Result<(github::Identity, TokenPair), String> {
-        let key = account_key(account_id)?;
-        if !self
-            .auth
-            .lock()
-            .map_err(|_| "Copilot state is unavailable.")?
-            .accounts
-            .contains_key(account_id)
-        {
-            return Err("Connect and confirm this Copilot account first.".into());
-        }
-        let result = (|| {
-            let http = github::oauth::GithubOAuthHttp::new().map_err(failure_from_oauth_error)?;
-            let pair = self
-                .credentials
-                .refresh_if_needed(&key, SystemTime::now(), |current| {
-                    http.refresh(current.refresh_token())
-                        .map_err(|error| match error {
-                            github::oauth::OAuthError::Network => RotationError::Network,
-                            _ => RotationError::Provider,
+    fn publish_verification(
+        &self,
+        id: &str,
+        operation: &Operation,
+        result: &Result<(github::Identity, TokenPair), GithubAuthFailure>,
+    ) -> Result<(), String> {
+        operation.publish(|| {
+            let mut auth = self
+                .auth
+                .lock()
+                .map_err(|_| "Copilot state is unavailable.")?;
+            match result {
+                Ok((identity, _)) => {
+                    if matches!(
+                        auth.accounts.get(id),
+                        Some(GithubAccountState::ReconnectRequired {
+                            reason: GithubAuthFailure::Disconnected,
+                            ..
                         })
-                })
-                .map_err(|error| match error {
-                    RotationError::Network => GithubAuthFailure::Network,
-                    RotationError::Provider => GithubAuthFailure::Provider,
-                    RotationError::ReconnectRequired => GithubAuthFailure::Expired,
-                    RotationError::Store(_) => GithubAuthFailure::CredentialsUnavailable,
-                })?;
-            let identity = github::provider::GithubClient::new(
-                github::http::HttpTransport::from_token_pair(&pair)
-                    .map_err(failure_from_connection_error)?,
-            )
-            .current_identity()
-            .map_err(failure_from_connection_error)?;
-            if identity.id != account_id {
-                return Err(GithubAuthFailure::WrongIdentity);
-            }
-            Ok((identity, pair))
-        })();
-        let mut auth = self
-            .auth
-            .lock()
-            .map_err(|_| "Copilot state is unavailable.")?;
-        match result {
-            Ok((identity, pair)) => {
-                auth.accounts.insert(
-                    account_id.into(),
-                    GithubAccountState::Connected(identity.clone()),
-                );
-                Ok((identity, pair))
-            }
-            Err(reason) => {
-                // A transport failure cannot establish that a previously verified identity signed out.
-                if !matches!(
-                    reason,
-                    GithubAuthFailure::Network | GithubAuthFailure::Provider
-                ) {
-                    auth.set_failure(account_id, reason);
+                    ) {
+                        return Err(
+                            "Reconnect this Copilot account before verifying or loading models."
+                                .into(),
+                        );
+                    }
+                    auth.accounts
+                        .insert(id.into(), GithubAccountState::Connected(identity.clone()));
                 }
-                Err(match reason {
-                    GithubAuthFailure::Network => "Cannot reach GitHub to verify this Copilot identity. Retry.",
-                    GithubAuthFailure::Provider => "GitHub could not verify this Copilot identity. Retry or reconnect.",
-                    GithubAuthFailure::CredentialsUnavailable => "Copilot credentials are unavailable in secure storage. Retry or reconnect.",
-                    GithubAuthFailure::WrongIdentity => "The credential belongs to a different GitHub identity. Reconnect the selected account.",
-                    _ => "This Copilot account needs to be reconnected.",
-                }.into())
+                Err(reason) => {
+                    let was_verified = matches!(
+                        auth.accounts.get(id),
+                        Some(GithubAccountState::Connected(_))
+                    );
+                    if !was_verified
+                        || !matches!(
+                            reason,
+                            GithubAuthFailure::Network | GithubAuthFailure::Provider
+                        )
+                    {
+                        auth.set_failure(id, *reason);
+                    }
+                }
+            }
+            Ok(())
+        })
+    }
+
+    async fn credential(
+        &self,
+        id: &str,
+        operation: &Operation,
+    ) -> Result<(github::Identity, TokenPair), String> {
+        self.require_credential_connection(id)?;
+        let _guard = match operation.wait(operation.account.gate.lock()).await {
+            Ok(guard) => guard,
+            Err(error) => {
+                self.finish_incomplete_verification(id, operation, &error);
+                return Err(error);
+            }
+        };
+        self.require_credential_connection(id)?;
+        let key = account_key(id)?;
+        let result = async {
+            let mut pair = match operation.wait(self.backend.load(key.clone())).await? {
+                Ok(Some(pair)) => pair,
+                Ok(None) => return Ok(Err(GithubAuthFailure::Expired)),
+                Err(_) => return Ok(Err(GithubAuthFailure::CredentialsUnavailable)),
+            };
+            if pair.refresh_is_expired(SystemTime::now()) {
+                return Ok(Err(GithubAuthFailure::Expired));
+            }
+            if pair.access_is_expired(SystemTime::now()) {
+                operation.check()?;
+                // Once sent, finish rotation and persist the returned pair even
+                // if cancelled. Keep the account lease until that transaction
+                // ends; cancellation must not strand a rotated refresh token.
+                let refreshed = tokio::time::timeout_at(
+                    operation.deadline.into(),
+                    self.backend.refresh(&pair),
+                )
+                .await
+                .map_err(|_| {
+                    "Copilot operation timed out during credential refresh. Retry or reconnect."
+                })?;
+                pair = match refreshed {
+                    Ok(pair) => pair,
+                    Err(reason) => return Ok(Err(reason)),
+                };
+                self.backend.save_pair(key, pair.clone()).await?;
+                operation.check()?;
+            }
+            let identity = match operation.wait(self.backend.identity(&pair)).await? {
+                Ok(identity) => identity,
+                Err(reason) => return Ok(Err(reason)),
+            };
+            if identity.id != id {
+                return Ok(Err(GithubAuthFailure::WrongIdentity));
+            }
+            Ok::<_, String>(Ok((identity, pair)))
+        }
+        .await;
+        match result {
+            Ok(result) => {
+                self.publish_verification(id, operation, &result)?;
+                result.map_err(verification_error)
+            }
+            Err(error) => {
+                self.finish_incomplete_verification(id, operation, &error);
+                Err(error)
             }
         }
     }
 
-    fn cancel_lookup(&self, account_id: &str) -> Result<(), String> {
-        for ((id, _), cancel) in self
+    fn require_credential_connection(&self, id: &str) -> Result<(), String> {
+        let auth = self
+            .auth
+            .lock()
+            .map_err(|_| "Copilot state is unavailable.")?;
+        match auth.accounts.get(id) {
+            None => Err("Connect and confirm this Copilot account first.".into()),
+            Some(GithubAccountState::ReconnectRequired {
+                reason: GithubAuthFailure::Disconnected,
+                ..
+            }) => Err("Reconnect this Copilot account before verifying or loading models.".into()),
+            Some(_) => Ok(()),
+        }
+    }
+
+    fn finish_incomplete_verification(&self, id: &str, operation: &Operation, error: &str) {
+        // Stale/cancelled generations cannot change state. A current restore
+        // that exhausts its deadline must not remain "checking" indefinitely.
+        let _ = operation.complete(|| {
+            let mut auth = self
+                .auth
+                .lock()
+                .map_err(|_| "Copilot state is unavailable.")?;
+            if matches!(
+                auth.accounts.get(id),
+                Some(GithubAccountState::ReconnectRequired {
+                    reason: GithubAuthFailure::VerificationPending,
+                    ..
+                })
+            ) {
+                auth.set_failure(
+                    id,
+                    if error.contains("timed out") {
+                        GithubAuthFailure::Timeout
+                    } else {
+                        GithubAuthFailure::CredentialsUnavailable
+                    },
+                );
+            }
+            Ok(())
+        });
+    }
+
+    fn cancel_lookup(&self, id: &str) -> Result<(), String> {
+        for ((account, _), operation) in self
             .lookups
             .lock()
             .map_err(|_| "Copilot state is unavailable.")?
             .iter()
         {
-            if id == account_id {
-                cancel.store(true, Ordering::SeqCst);
+            if account == id {
+                operation.cancelled.store(true, Ordering::SeqCst);
             }
         }
         Ok(())
     }
 
+    fn invalidate(&self, id: &str) -> Result<(), String> {
+        self.account(id)?.invalidate(|| {
+            self.cancel_lookup(id)?;
+            let mut auth = self
+                .auth
+                .lock()
+                .map_err(|_| "Copilot state is unavailable.")?;
+            if matches!(
+                auth.accounts.get(id),
+                Some(GithubAccountState::ReconnectRequired {
+                    reason: GithubAuthFailure::VerificationPending,
+                    ..
+                })
+            ) {
+                auth.set_failure(id, GithubAuthFailure::VerificationRequired);
+            }
+            Ok(())
+        })
+    }
+
+    async fn disconnect(&self, id: &str) -> Result<GithubAuthView, String> {
+        let account = self.account(id)?;
+        account.invalidate(|| {
+            self.cancel_lookup(id)?;
+            let mut auth = self
+                .auth
+                .lock()
+                .map_err(|_| "Copilot state is unavailable.")?;
+            if auth.pending.as_ref().is_some_and(|p| p.identity.id == id)
+                || auth
+                    .active
+                    .as_ref()
+                    .is_some_and(|a| a.expected_account_id.as_deref() == Some(id))
+            {
+                auth.cancel_attempt();
+            }
+            auth.set_failure(id, GithubAuthFailure::Disconnected);
+            Ok(())
+        })?;
+        let operation = self.operation(id, Instant::now() + OPERATION_LIMIT)?;
+        let _guard = operation.wait(account.gate.lock()).await?;
+        self.backend
+            .clear(account_key(id)?)
+            .await
+            .map_err(|_| "Copilot credentials could not be deleted securely. Retry disconnect.")?;
+        operation.check()?;
+        self.view()
+    }
+
+    pub fn request_shutdown(&self) {
+        self.quitting.store(true, Ordering::SeqCst);
+        if let Ok(lookups) = self.lookups.lock() {
+            for operation in lookups.values() {
+                operation.cancelled.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
     pub fn shutdown(&self) {
+        self.request_shutdown();
         if let Ok(mut auth) = self.auth.lock() {
             auth.cancel_attempt();
-        }
-
-        if let Ok(lookups) = self.lookups.lock() {
-            for cancel in lookups.values() {
-                cancel.store(true, Ordering::SeqCst);
-            }
         }
     }
 
     pub fn lookups_finished(&self) -> bool {
         self.lookups.lock().is_ok_and(|lookups| lookups.is_empty())
     }
+}
+
+fn verification_error(reason: GithubAuthFailure) -> String {
+    match reason {
+        GithubAuthFailure::Network => "Cannot reach GitHub to verify this Copilot identity. Retry.",
+        GithubAuthFailure::Provider => {
+            "GitHub could not verify this Copilot identity. Retry or reconnect."
+        }
+        GithubAuthFailure::WrongIdentity => {
+            "The credential belongs to a different GitHub identity. Reconnect the selected account."
+        }
+        GithubAuthFailure::CredentialsUnavailable => {
+            "Copilot credentials are unavailable in secure storage. Retry or reconnect."
+        }
+        _ => "This Copilot account needs to be reconnected.",
+    }
+    .into()
 }
 
 fn account_key(id: &str) -> Result<ProviderAccountId, String> {
@@ -185,28 +402,11 @@ fn account_key(id: &str) -> Result<ProviderAccountId, String> {
         .map_err(|_| "Choose a valid stable Copilot account identity.".into())
 }
 
-async fn with_accounts<T: Send + 'static>(
-    app: tauri::AppHandle,
-    work: impl FnOnce(&Integration) -> Result<T, String> + Send + 'static,
-) -> Result<T, String> {
-    let host = app.state::<Host>();
-    if host.quitting.load(Ordering::SeqCst) {
-        return Err("PR Sniper is quitting.".into());
-    }
-    let _guard = host.copilot.operations.lock().await;
-    let work_app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let host = work_app.state::<Host>();
-        host.copilot.restore()?;
-        work(&host.copilot)
-    })
-    .await
-    .map_err(|_| "Copilot operation could not finish. Retry.")?
-}
-
 #[tauri::command]
 pub(super) async fn copilot_auth_state(app: tauri::AppHandle) -> Result<GithubAuthView, String> {
-    with_accounts(app, Integration::view).await
+    let integration = app.state::<Host>().copilot.clone();
+    integration.restore().await?;
+    integration.view()
 }
 
 #[tauri::command]
@@ -214,20 +414,23 @@ pub(super) async fn start_copilot_auth(
     app: tauri::AppHandle,
     expected_account_id: Option<String>,
 ) -> Result<GithubAuthView, String> {
+    let integration = app.state::<Host>().copilot.clone();
+    integration.restore().await?;
     if let Some(id) = &expected_account_id {
-        account_key(id)?;
-        app.state::<Host>().copilot.cancel_lookup(id)?;
+        integration.invalidate(id)?;
+    }
+    if integration.quitting.load(Ordering::SeqCst) {
+        return Err("PR Sniper is quitting.".into());
     }
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
-    let (attempt, view) = with_accounts(app.clone(), move |integration| {
+    let (attempt, view) = {
         let mut auth = integration
             .auth
             .lock()
             .map_err(|_| "Copilot state is unavailable.")?;
         let attempt = auth.start_attempt(expected_account_id, cancel_tx);
-        Ok((attempt, auth.copilot_view()))
-    })
-    .await?;
+        (attempt, auth.copilot_view())
+    };
     tauri::async_runtime::spawn(complete_github_device_auth(
         app,
         attempt,
@@ -241,44 +444,69 @@ pub(super) async fn start_copilot_auth(
 pub(super) async fn confirm_copilot_account(
     app: tauri::AppHandle,
 ) -> Result<GithubAuthView, String> {
-    with_accounts(app, |integration| {
-        let mut auth = integration
+    let integration = app.state::<Host>().copilot.clone();
+    integration.restore().await?;
+    let (identity, pair) = {
+        let auth = integration
             .auth
             .lock()
             .map_err(|_| "Copilot state is unavailable.")?;
-        if auth
+        let pending = auth
             .pending
             .as_ref()
-            .is_some_and(|pending| pending.pair.access_is_expired(SystemTime::now()))
-        {
-            auth.pending_failure = Some(GithubAuthFailure::Expired);
-            return Err(
-                "Copilot sign-in expired before confirmation. Cancel and reconnect.".into(),
-            );
-        }
-        auth.confirm_with(|identity, pair| {
-            let account =
-                ActiveAccount::for_provider(ProviderId::copilot(), &identity.id, &identity.login)
-                    .map_err(|_| ())?;
-            integration
-                .credentials
-                .save_account(&account, pair, false)
-                .map_err(|_| ())
+            .ok_or("No Copilot account is awaiting confirmation.")?;
+        (pending.identity.clone(), pending.pair.clone())
+    };
+    integration.invalidate(&identity.id)?;
+    let operation = integration.operation(&identity.id, Instant::now() + OPERATION_LIMIT)?;
+    let guard = operation
+        .wait(operation.account.gate.clone().lock_owned())
+        .await?;
+    if pair.access_is_expired(SystemTime::now()) {
+        return Err("Copilot sign-in expired before confirmation. Cancel and reconnect.".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = guard;
+        operation.publish(|| {
+            let mut auth = integration
+                .auth
+                .lock()
+                .map_err(|_| "Copilot state is unavailable.")?;
+            if !auth
+                .pending
+                .as_ref()
+                .is_some_and(|p| p.identity == identity && p.pair == pair)
+            {
+                return Err(
+                    "Copilot confirmation changed. Confirm the current identity instead.".into(),
+                );
+            }
+            // Confirmation is one atomic local persistence boundary, as in
+            // repository OAuth. No remote call holds this auth-state lock.
+            auth.confirm_with(|identity, pair| {
+                let account = ActiveAccount::for_provider(
+                    ProviderId::copilot(),
+                    &identity.id,
+                    &identity.login,
+                )
+                .map_err(|_| ())?;
+                integration.backend.save_account(&account, pair)
+            })
+            .map_err(|_| {
+                "Copilot credentials could not be saved securely. Retry confirmation or cancel."
+            })?;
+            Ok(auth.copilot_view())
         })
-        .map_err(|_| {
-            "Copilot credentials could not be saved securely. Retry confirmation or cancel."
-        })?;
-        Ok(auth.copilot_view())
     })
     .await
+    .map_err(|_| "Copilot confirmation could not finish. Retry.")?
 }
 
 #[tauri::command]
 pub(super) async fn cancel_copilot_auth(app: tauri::AppHandle) -> Result<GithubAuthView, String> {
+    let integration = app.state::<Host>().copilot.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let host = app.state::<Host>();
-        let mut auth = host
-            .copilot
+        let mut auth = integration
             .auth
             .lock()
             .map_err(|_| "Copilot state is unavailable.")?;
@@ -294,33 +522,9 @@ pub(super) async fn disconnect_copilot_account(
     app: tauri::AppHandle,
     account_id: String,
 ) -> Result<GithubAuthView, String> {
-    let key = account_key(&account_id)?;
-    app.state::<Host>().copilot.cancel_lookup(&account_id)?;
-    with_accounts(app, move |integration| {
-        let mut auth = integration
-            .auth
-            .lock()
-            .map_err(|_| "Copilot state is unavailable.")?;
-        // A pending replacement must not revive a just-disconnected connection.
-        if auth
-            .pending
-            .as_ref()
-            .is_some_and(|p| p.identity.id == account_id)
-            || auth
-                .active
-                .as_ref()
-                .is_some_and(|a| a.expected_account_id.as_deref() == Some(&account_id))
-        {
-            auth.cancel_attempt();
-        }
-        integration
-            .credentials
-            .clear_account_credentials(&key)
-            .map_err(|_| "Copilot credentials could not be deleted securely. Retry disconnect.")?;
-        auth.set_failure(&account_id, GithubAuthFailure::Disconnected);
-        Ok(auth.copilot_view())
-    })
-    .await
+    let integration = app.state::<Host>().copilot.clone();
+    integration.restore().await?;
+    integration.disconnect(&account_id).await
 }
 
 #[tauri::command]
@@ -328,11 +532,11 @@ pub(super) async fn verify_copilot_account(
     app: tauri::AppHandle,
     account_id: String,
 ) -> Result<GithubAuthView, String> {
-    with_accounts(app, move |integration| {
-        integration.credential(&account_id)?;
-        integration.view()
-    })
-    .await
+    let integration = app.state::<Host>().copilot.clone();
+    let operation = integration.operation(&account_id, Instant::now() + OPERATION_LIMIT)?;
+    operation.wait(integration.restore()).await??;
+    integration.credential(&account_id, &operation).await?;
+    integration.view()
 }
 
 #[tauri::command]
@@ -341,14 +545,14 @@ pub(super) fn cancel_copilot_models(
     account_id: String,
     request_id: String,
 ) -> Result<(), String> {
-    if let Some(cancel) = host
+    if let Some(operation) = host
         .copilot
         .lookups
         .lock()
         .map_err(|_| "Copilot state is unavailable.")?
         .get(&(account_id, request_id))
     {
-        cancel.store(true, Ordering::SeqCst);
+        operation.cancelled.store(true, Ordering::SeqCst);
     }
     Ok(())
 }
@@ -359,126 +563,45 @@ pub(super) async fn list_copilot_models(
     account_id: String,
     request_id: String,
 ) -> Result<Vec<github_copilot_sdk::Model>, String> {
-    account_key(&account_id)?;
     uuid::Uuid::parse_str(&request_id).map_err(|_| "Invalid Copilot lookup identity.")?;
-    let lookup_key = (account_id.clone(), request_id);
-    let cancel = Arc::new(AtomicBool::new(false));
+    let integration = app.state::<Host>().copilot.clone();
+    let operation = integration.operation(&account_id, Instant::now() + OPERATION_LIMIT)?;
+    let key = (account_id.clone(), request_id);
     {
-        let host = app.state::<Host>();
-        let mut lookups = host
-            .copilot
+        let mut lookups = integration
             .lookups
             .lock()
             .map_err(|_| "Copilot state is unavailable.")?;
-        if lookups.contains_key(&lookup_key) {
+        if lookups.contains_key(&key) {
             return Err("Copilot lookup already running.".into());
         }
-        lookups.insert(lookup_key.clone(), cancel.clone());
+        lookups.insert(key.clone(), operation.clone());
     }
-    let id = account_id.clone();
-    let outcome = async {
-        let (identity, pair) =
-            with_accounts(app.clone(), move |integration| integration.credential(&id)).await?;
-        let work_cancel = cancel.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            runtime::models(&identity, &pair, &work_cancel)
+    let result = async {
+        operation.wait(integration.restore()).await??;
+        let (identity, pair) = integration.credential(&account_id, &operation).await?;
+        operation.check()?;
+        let runtime_operation = operation.clone();
+        let outcome = tauri::async_runtime::spawn_blocking(move || {
+            runtime::models(
+                &identity,
+                &pair,
+                &runtime_operation.cancelled,
+                runtime_operation.deadline,
+            )
         })
         .await
-        .map_err(|_| "Copilot model lookup could not finish. Retry.".to_string())?
+        .map_err(|_| "Copilot model lookup could not finish. Retry.")?;
+        operation.publish(|| outcome)
     }
     .await;
-    let host = app.state::<Host>();
-    let mut lookups = host
-        .copilot
+    integration
         .lookups
         .lock()
-        .map_err(|_| "Copilot state is unavailable.")?;
-    lookups.remove(&lookup_key);
-    if cancel.load(Ordering::SeqCst) {
-        return Err("Copilot model lookup cancelled.".into());
-    }
-    outcome
+        .map_err(|_| "Copilot state is unavailable.")?
+        .remove(&key);
+    result
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use github::token_store::CredentialStore;
-    use std::time::Duration;
-
-    #[test]
-    fn disconnected_identity_survives_native_keychain_restart_without_touching_repository_role() {
-        let namespace = format!(
-            "com.jdylanmc.pr-sniper.tests.copilot-{}",
-            uuid::Uuid::new_v4()
-        );
-        let repo =
-            RotationSafeStore::new(MacKeychainStore::with_service(format!("{namespace}.repo")));
-        let ai = RotationSafeStore::new(MacKeychainStore::with_service(format!("{namespace}.ai")));
-        let repo_account = ActiveAccount::new("101", "fixture-login").unwrap();
-        let ai_account =
-            ActiveAccount::for_provider(ProviderId::copilot(), "101", "fixture-login").unwrap();
-        let pair = TokenPair::new(
-            "fixture-access",
-            "fixture-refresh",
-            Duration::from_secs(60),
-            Duration::from_secs(120),
-        );
-        repo.save_account(&repo_account, &pair, false).unwrap();
-        ai.save_account(&ai_account, &pair, false).unwrap();
-        ai.clear_account_credentials(&ai_account.provider_account_id())
-            .unwrap();
-        let restarted =
-            RotationSafeStore::new(MacKeychainStore::with_service(format!("{namespace}.ai")));
-        let state = GithubAuth::restore_accounts(&restarted, ProviderId::copilot()).unwrap();
-        let view = serde_json::to_value(state.copilot_view()).unwrap();
-        let repository_pair = repo
-            .load(&repo_account.provider_account_id())
-            .unwrap()
-            .unwrap();
-        repo.remove_account(&repo_account.provider_account_id())
-            .unwrap();
-        ai.remove_account(&ai_account.provider_account_id())
-            .unwrap();
-        assert!(matches!(
-            state.accounts.get("101"),
-            Some(GithubAccountState::ReconnectRequired { .. })
-        ));
-        assert_eq!(view["accounts"][0]["provider"], "copilot");
-        assert_eq!(view["accounts"][0]["login"], "fixture-login");
-        assert!(!view.to_string().contains("fixture-access"));
-        assert_eq!(repository_pair.access_token(), pair.access_token());
-        assert_eq!(repository_pair.refresh_token(), pair.refresh_token());
-    }
-
-    #[test]
-    fn independent_flows_keep_reconnect_identity_and_cancel_pending_secrets() {
-        let mut repo = GithubAuth::new();
-        let mut ai = GithubAuth::new();
-        let (repo_cancel, _) = tokio::sync::oneshot::channel();
-        let repo_attempt = repo.start_attempt(None, repo_cancel);
-        let (ai_cancel, _) = tokio::sync::oneshot::channel();
-        let ai_attempt = ai.start_attempt(Some("101".into()), ai_cancel);
-        let pair = TokenPair::new(
-            "fixture",
-            "refresh-fixture",
-            Duration::from_secs(60),
-            Duration::from_secs(120),
-        );
-        ai.finish_attempt(
-            ai_attempt,
-            Ok((
-                github::Identity {
-                    id: "202".into(),
-                    login: "wrong".into(),
-                },
-                pair,
-            )),
-        );
-        assert!(ai.pending.is_none());
-        assert_eq!(ai.failure, Some(GithubAuthFailure::WrongIdentity));
-        ai.cancel_attempt();
-        assert!(repo.is_active_attempt(repo_attempt));
-        assert!(repo.failure.is_none());
-    }
-}
+mod tests;

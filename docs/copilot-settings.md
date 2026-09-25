@@ -89,9 +89,23 @@ The credential travels in the SDK's child environment, never command arguments,
 Settings, prompts or frontend payloads. Runtime logging and SDK tracing are
 disabled; application errors use fixed stage-specific text. Model metadata is
 provider data, displayed as text rather than HTML. Startup and catalog requests
-are bounded (30 and 45 seconds), with cancellation and bounded shutdown
-(5 seconds, then forced termination). Temporary runtime state is removed.
+are bounded (30 and 45 seconds) inside a single 90-second lookup deadline that
+starts before registry restoration, account-lock waiting and credential
+preflight. Queued cancellation skips credential/provider work; in-flight
+identity requests are dropped on cancellation. Account A's verification or
+rotation does not serialize account B's operations. A refresh already sent
+finishes its bounded exchange and atomic pair persistence before cancellation
+is honored, so cancellation cannot discard a returned rotating credential.
+No subsequent provider/runtime stage starts after cancellation or deadline.
+Generation fences prevent late verification/catalog results from restoring a
+disconnected or reconnected account. Secure-store transaction finalization is
+not detached; SDK shutdown is separately bounded (5 seconds, then forced
+termination). Temporary runtime state is removed.
 All slow native identity, Keychain and SDK work runs off the Tauri UI thread.
+Saved identities appear while their independent sign-in verification proceeds.
+Sign-in cancellation remains callable during unrelated account actions, and
+late account-state replies update open Agent selectors without clearing typed
+fields or implicitly selecting an account/model.
 
 ## Isolated native live check
 

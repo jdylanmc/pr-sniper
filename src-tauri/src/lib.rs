@@ -32,7 +32,7 @@ struct Host {
         github::token_store::RotationSafeStore<github::macos_keychain::MacKeychainStore>,
     github_legacy_credentials:
         github::token_store::RotationSafeStore<github::macos_keychain::MacKeychainStore>,
-    copilot: copilot::Integration,
+    copilot: Arc<copilot::Integration>,
 }
 
 #[derive(Clone, Copy)]
@@ -83,6 +83,8 @@ enum GithubAccountState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum GithubAuthFailure {
+    VerificationPending,
+    VerificationRequired,
     Disconnected,
     Expired,
     Denied,
@@ -1364,6 +1366,7 @@ pub fn run() {
                         record(app, DiagnosticEvent::QuitRequested);
                         let host = app.state::<Host>();
                         host.quitting.store(true, Ordering::SeqCst);
+                        host.copilot.request_shutdown();
                         let shutdown_app = app.clone();
                         tauri::async_runtime::spawn(async move {
                             let cancel_app = shutdown_app.clone();
