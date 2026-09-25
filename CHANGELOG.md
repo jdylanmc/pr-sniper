@@ -20,8 +20,8 @@ No release/versioning policy has been established yet.
   presets and separate review/publication switches. Settings drafts save together
   and detect conflicting updates; existing custom prompts, cron schedules and
   per-field overrides remain supported. Discovery reads only metadata beneath an
-  explicitly chosen folder, never repository code. Agent/model health remains
-  explicitly unavailable; no automation or approval is enabled by this change.
+  explicitly chosen folder, never repository code. Review execution health
+  remains unavailable; no automation or approval is enabled by this change.
   Dialogs include an accessible older-WebKit fallback with viewport sizing
   preserved in production builds; delayed replies preserve
   open forms and cannot restore dismissed repository edits. Multiple local
@@ -32,6 +32,14 @@ No release/versioning policy has been established yet.
   See the [approved Settings design](docs/agent/design/settings-default.md).
 
 ### Added
+
+- Manage independent Copilot connections in Settings with browser sign-in,
+  explicit account confirmation and Keychain storage. Each Agent selects its
+  own connected account and a model returned by Copilot. Disconnect retains
+  dependent Agents and assignments needing reconnect, without switching
+  accounts. The green check verifies sign-in only; it does not test a
+  subscription or run a prompt. Model lookup requires macOS 13.5 or later.
+  See [Copilot Settings](docs/copilot-settings.md).
 
 - Connect through the registered PR Sniper GitHub OAuth App in the default browser
   using GitHub's secretless device authorization flow, a provider-issued one-time
