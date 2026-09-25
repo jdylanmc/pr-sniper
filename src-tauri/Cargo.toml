@@ -27,6 +27,7 @@ url = "=2.5.8"
 github-copilot-sdk = "=1.0.14"
 tempfile = "3"
 tracing = "0.1"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSProcessInfo"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

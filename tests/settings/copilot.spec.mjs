@@ -367,11 +367,9 @@ test("unavailable saved models and legacy unconfigured Agents survive unrelated 
   );
   await page.goto("/?view=settings");
   await section(page, "Agents");
-  const pinned = page
-    .locator(".agent-card")
-    .filter({
-      has: page.getByRole("heading", { name: "Pinned", exact: true }),
-    });
+  const pinned = page.locator(".agent-card").filter({
+    has: page.getByRole("heading", { name: "Pinned", exact: true }),
+  });
   await pinned.getByRole("button", { name: "Edit", exact: true }).click();
   let dialog = page.getByRole("dialog", { name: "Edit agent", exact: true });
   await expect(dialog.getByRole("status")).toContainText(
@@ -382,11 +380,9 @@ test("unavailable saved models and legacy unconfigured Agents survive unrelated 
   );
   await dialog.getByLabel("Name", { exact: true }).fill("Renamed pinned");
   await dialog.getByRole("button", { name: "Save agent", exact: true }).click();
-  const legacy = page
-    .locator(".agent-card")
-    .filter({
-      has: page.getByRole("heading", { name: "Legacy", exact: true }),
-    });
+  const legacy = page.locator(".agent-card").filter({
+    has: page.getByRole("heading", { name: "Legacy", exact: true }),
+  });
   await legacy.getByRole("button", { name: "Edit", exact: true }).click();
   dialog = page.getByRole("dialog", { name: "Edit agent", exact: true });
   await dialog.getByLabel("Signature", { exact: true }).fill("New signature");
