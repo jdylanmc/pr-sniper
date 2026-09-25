@@ -70,9 +70,19 @@ pub struct Agent {
     pub name: String,
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_account: Option<AiAccount>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doctrine: Option<String>,
     pub prompt: String,
     pub signature: String,
+}
+
+/// Stable connection reference, never a credential or mutable login.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AiAccount {
+    pub provider: String,
+    pub account_id: String,
 }
 
 /// One agent running on one repository: its own timer and permissions.
@@ -226,6 +236,15 @@ impl Settings {
             crate::policy::validate_configuration_text(&agent.model)?;
             crate::policy::validate_configuration_text(&agent.prompt)?;
             crate::policy::validate_configuration_text(&agent.signature)?;
+            if let Some(account) = &agent.ai_account {
+                if account.provider != "copilot"
+                    || !is_provider_id(&ProviderId::Github, &account.account_id)
+                {
+                    return Err(
+                        "Choose a supported AI provider and stable account identity.".into(),
+                    );
+                }
+            }
         }
         let mut ids = HashSet::new();
         let mut bindings = HashSet::new();
@@ -302,9 +321,7 @@ impl Settings {
                     return Err("Assignments need a unique identity.".into());
                 }
                 if !agent_ids.contains(&assignment.agent_id) {
-                    return Err(
-                        "The selected agent no longer exists. Choose a local agent.".into(),
-                    );
+                    return Err("The selected agent no longer exists. Choose a local agent.".into());
                 }
                 assignment.schedule.validate()?;
             }
