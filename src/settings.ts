@@ -180,6 +180,8 @@ export async function mountSettings(app: HTMLElement) {
   let githubAccounts: GithubAccount[] = [];
   let copilotAccounts: CopilotAccount[] = [];
   let disposeCopilot: (() => void) | undefined;
+  let updateAgentAccounts: (() => void) | undefined;
+  let refreshAgentAccounts: (() => void) | undefined;
   const dialogs = createDialogs(content, () => revision++);
   const dirty = () =>
     !!draft && JSON.stringify(draft) !== JSON.stringify(saved);
@@ -233,6 +235,8 @@ export async function mountSettings(app: HTMLElement) {
   function render() {
     if (!draft) return;
     dialogs.closeAll();
+    updateAgentAccounts = undefined;
+    refreshAgentAccounts = undefined;
     disposeCopilot?.();
     disposeCopilot = undefined;
     app.querySelector("h1")!.textContent = sections[section][0];
@@ -405,33 +409,45 @@ export async function mountSettings(app: HTMLElement) {
     content.querySelector<HTMLButtonElement>("#manage-copilot")!.onclick = () =>
       navigate("integrations");
     const notice = content.querySelector<HTMLElement>("[data-copilot-status]")!;
-    void invoke<CopilotAuth>("copilot_auth_state").then(
-      (view) => {
-        if (!notice.isConnected) return;
-        copilotAccounts = view.accounts;
-        const connected = copilotAccounts.some((a) => a.state === "connected");
-        notice.textContent = connected
-          ? "Copilot sign-in is separate from model access. Edit an Agent to load this account's current models."
-          : "No verified Copilot connection. Connect an account in Integrations; existing Agents and assignments are retained.";
-        content.querySelector<HTMLButtonElement>("#new-agent")!.disabled =
-          !connected;
-        for (const agent of agents()) {
-          const state = content.querySelector<HTMLElement>(
-            `[data-agent-id="${agent.id}"] [data-account-state]`,
+    let accountRequest = 0;
+    const refreshAccounts = () => {
+      if (!notice.isConnected) return;
+      const request = ++accountRequest;
+      void invoke<CopilotAuth>("copilot_auth_state").then(
+        (view) => {
+          if (!notice.isConnected || request !== accountRequest) return;
+          copilotAccounts = view.accounts;
+          updateAgentAccounts?.();
+          const connected = copilotAccounts.some(
+            (a) => a.state === "connected",
           );
-          const account = copilotAccounts.find(
-            (a) => a.account_id === agent.ai_account?.account_id,
-          );
-          if (state && agent.ai_account)
-            state.textContent = `Copilot: ${account?.login ?? agent.ai_account.account_id}. ${account?.state === "connected" ? "Sign-in verified; model access checked in Edit." : "Reconnect required; Agent blocked."}`;
-        }
-      },
-      () => {
-        if (notice.isConnected)
-          notice.textContent =
-            "Copilot account state is unavailable. Retry from Manage Copilot accounts. Existing Agents are retained.";
-      },
-    );
+          notice.textContent = connected
+            ? "Copilot sign-in is separate from model access. Edit an Agent to load this account's current models."
+            : "No verified Copilot connection. Connect an account in Integrations; existing Agents and assignments are retained.";
+          content.querySelector<HTMLButtonElement>("#new-agent")!.disabled =
+            !connected;
+          for (const agent of agents()) {
+            const state = content.querySelector<HTMLElement>(
+              `[data-agent-id="${agent.id}"] [data-account-state]`,
+            );
+            const account = copilotAccounts.find(
+              (a) => a.account_id === agent.ai_account?.account_id,
+            );
+            if (state && agent.ai_account)
+              state.textContent = `Copilot: ${account?.login ?? agent.ai_account.account_id}. ${account?.state === "connected" ? "Sign-in verified; model access checked in Edit." : "Reconnect required; Agent blocked."}`;
+          }
+          if (view.accounts.some((a) => a.reason === "verification_pending"))
+            setTimeout(refreshAccounts, 350);
+        },
+        () => {
+          if (notice.isConnected && request === accountRequest)
+            notice.textContent =
+              "Copilot account state is unavailable. Retry from Manage Copilot accounts. Existing Agents are retained.";
+        },
+      );
+    };
+    refreshAgentAccounts = refreshAccounts;
+    refreshAccounts();
   }
 
   function editAgent(existing?: Agent) {
@@ -553,6 +569,9 @@ export async function mountSettings(app: HTMLElement) {
           : `${catalog.length} models returned by Copilot. This is not an inference test. ${notices.join(" ")}`;
     }
     accountSelect.onchange = () => {
+      selectedWasConnected = copilotAccounts.some(
+        (a) => a.account_id === accountSelect.value && a.state === "connected",
+      );
       modelSelect.innerHTML = '<option value="">Choose a model</option>';
       void loadModels();
     };
@@ -561,6 +580,38 @@ export async function mountSettings(app: HTMLElement) {
     cancelModels.onclick = () => {
       cancelLookup();
       modelStatus.textContent = "Model lookup cancelled. Retry when ready.";
+    };
+    let selectedWasConnected = copilotAccounts.some(
+      (a) => a.account_id === accountSelect.value && a.state === "connected",
+    );
+    updateAgentAccounts = () => {
+      if (!modal.isConnected) return;
+      const selected = accountSelect.value;
+      accountSelect.innerHTML =
+        option("", "Choose a Copilot account", selected) +
+        copilotAccounts
+          .map(
+            (a) =>
+              `<option value="${escape(a.account_id)}" ${a.account_id === selected ? "selected" : ""} ${a.state === "connected" ? "" : "disabled"}>${escape(a.login)} (${escape(a.account_id)})${a.state === "connected" ? "" : " - reconnect required"}</option>`,
+          )
+          .join("") +
+        (selected && !copilotAccounts.some((a) => a.account_id === selected)
+          ? `<option selected disabled value="${escape(selected)}">Copilot ${escape(selected)} - reconnect required</option>`
+          : "");
+      const connected = copilotAccounts.some(
+        (a) => a.account_id === selected && a.state === "connected",
+      );
+      if (!connected) {
+        cancelLookup();
+        catalog = [];
+        modelSelect.disabled = true;
+        modelStatus.textContent = selected
+          ? "Reconnect this account in Integrations. Your model and draft are retained."
+          : "Choose a verified Copilot account, then load its models.";
+      } else if (!selectedWasConnected) {
+        void loadModels();
+      }
+      selectedWasConnected = connected;
     };
     void loadModels();
     modal.querySelector("form")!.onsubmit = (event) => {
@@ -1383,6 +1434,7 @@ export async function mountSettings(app: HTMLElement) {
     }
   }
   window.addEventListener("focus", () => {
+    refreshAgentAccounts?.();
     if (!dirty() && !busy && !dialogs.hasOpen()) void load();
   });
   await load();

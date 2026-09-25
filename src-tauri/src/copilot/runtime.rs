@@ -4,7 +4,7 @@ use std::{
     ffi::OsString,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 // No session is ever created: these are client-scoped identity/catalog calls only.
@@ -51,9 +51,13 @@ pub(super) fn models(
     identity: &Identity,
     pair: &TokenPair,
     cancelled: &AtomicBool,
+    deadline: Instant,
 ) -> Result<Vec<Model>, String> {
     if cancelled.load(Ordering::SeqCst) {
         return Err("Copilot model lookup cancelled.".into());
+    }
+    if Instant::now() >= deadline {
+        return Err("Copilot operation timed out. Retry.".into());
     }
     let os = objc2_foundation::NSProcessInfo::processInfo().operatingSystemVersion();
     if !supports_runtime(os.majorVersion, os.minorVersion) {
@@ -73,7 +77,7 @@ pub(super) fn models(
     // stage-specific errors instead, with all SDK tracing disabled here.
     let dispatch = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
     let result = tracing::dispatcher::with_default(&dispatch, || {
-        runtime.block_on(query(
+        runtime.block_on(query_with_deadline(
             options(
                 program,
                 directory.path(),
@@ -82,6 +86,7 @@ pub(super) fn models(
             ),
             &identity.login,
             cancelled,
+            deadline,
         ))
     });
     directory
@@ -101,21 +106,40 @@ async fn cancellation(cancelled: &AtomicBool) {
     }
 }
 
+#[cfg(test)]
 async fn query(
     options: ClientOptions,
     login: &str,
     cancelled: &AtomicBool,
 ) -> Result<Vec<Model>, String> {
+    query_with_deadline(
+        options,
+        login,
+        cancelled,
+        Instant::now() + super::operation::OPERATION_LIMIT,
+    )
+    .await
+}
+
+async fn query_with_deadline(
+    options: ClientOptions,
+    login: &str,
+    cancelled: &AtomicBool,
+    deadline: Instant,
+) -> Result<Vec<Model>, String> {
+    if Instant::now() >= deadline {
+        return Err("Copilot operation timed out. Retry.".into());
+    }
     let client = tokio::select! {
         _ = cancellation(cancelled) => return Err("Copilot model lookup cancelled.".into()),
-        result = tokio::time::timeout(Duration::from_secs(30), Client::start(options)) => {
+        result = tokio::time::timeout_at((Instant::now() + Duration::from_secs(30)).min(deadline).into(), Client::start(options)) => {
             result.map_err(|_| "Copilot runtime startup timed out. Retry.")?
                 .map_err(|_| "The Copilot runtime could not start. Retry or reinstall PR Sniper.")?
         }
     };
     let outcome = tokio::select! {
         _ = cancellation(cancelled) => Err("Copilot model lookup cancelled.".into()),
-        result = tokio::time::timeout(Duration::from_secs(45), async {
+        result = tokio::time::timeout_at((Instant::now() + Duration::from_secs(45)).min(deadline).into(), async {
             let auth = client.get_auth_status().await
                 .map_err(|_| "Copilot runtime authentication status is unavailable. Retry.")?;
             if !auth.is_authenticated {
@@ -211,6 +235,7 @@ mod tests {
             },
             &pair,
             &AtomicBool::new(true),
+            Instant::now() + super::super::operation::OPERATION_LIMIT,
         );
         assert!(result.unwrap_err().contains("cancelled"));
     }
@@ -354,6 +379,25 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
             assert_stopped_and_catalog_only(root.path());
         }
+    }
+
+    #[tokio::test]
+    async fn inherited_whole_lookup_deadline_limits_the_sdk_stage() {
+        let root = tempfile::tempdir().unwrap();
+        let started = Instant::now();
+        let result = query_with_deadline(
+            fixture_options(root.path(), "waiting"),
+            "waiting",
+            &AtomicBool::new(false),
+            started + Duration::from_millis(500),
+        )
+        .await;
+        assert!(result.unwrap_err().contains("timed out"));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_stopped_and_catalog_only(root.path());
+        assert!(receipt(root.path())
+            .iter()
+            .any(|event| event["method"] == "models.list"));
     }
 
     #[tokio::test]

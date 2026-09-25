@@ -51,6 +51,8 @@ export const copilotFailure = (reason?: string) =>
       "GitHub returned an unexpected or already configured account. Reconnect the matching account or choose another identity.",
     credentials_unavailable:
       "Secure storage is unavailable. Retry or reconnect.",
+    verification_pending: "Verifying saved sign-in...",
+    verification_required: "Verify saved sign-in or reconnect this account.",
     device_flow_disabled:
       "Device sign-in is disabled for the PR Sniper OAuth App. A maintainer must enable it.",
   })[reason ?? "provider"] ?? "Verify or reconnect this account.";
@@ -67,9 +69,18 @@ export function renderCopilotAuth(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let disposed = false;
   let busy = false;
+  let cancelling = false;
   let lastView = "";
   let generation = 0;
+  let stateRead = 0;
   const alive = () => !disposed && root.isConnected;
+  const updateButtons = () =>
+    root.querySelectorAll<HTMLButtonElement>("button").forEach((control) => {
+      control.disabled =
+        control.dataset.cancelSignIn === "true"
+          ? cancelling
+          : busy || cancelling;
+    });
   const showError = (cause: unknown) => {
     error.textContent =
       typeof cause === "string"
@@ -86,34 +97,37 @@ export function renderCopilotAuth(
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = label;
+    const isCancel = command === "cancel_copilot_auth";
+    button.dataset.cancelSignIn = String(isCancel);
+    button.disabled = isCancel ? cancelling : busy || cancelling;
     button.onclick = async () => {
-      if (busy) return;
-      busy = true;
-      generation++;
-      clearTimeout(timer);
-      root
-        .querySelectorAll<HTMLButtonElement>("button")
-        .forEach((b) => (b.disabled = true));
+      if (cancelling || (!isCancel && busy)) return;
+      if (isCancel) cancelling = true;
+      else busy = true;
+      const request = ++generation;
+      if (isCancel) clearTimeout(timer);
+      updateButtons();
       error.hidden = true;
       try {
         const view = await invoke<CopilotAuth>(command, args);
-        if (alive()) render(view);
+        if (alive() && request === generation) render(view);
       } catch (cause) {
-        if (alive()) {
+        if (alive() && request === generation) {
           showError(cause);
           try {
-            render(await invoke<CopilotAuth>("copilot_auth_state"));
+            const view = await invoke<CopilotAuth>("copilot_auth_state");
+            if (request === generation) render(view);
           } catch {
-            status.textContent =
-              "Copilot account state is unavailable. Retry reading accounts.";
+            if (alive() && request === generation)
+              status.textContent =
+                "Copilot account state is unavailable. Retry reading accounts.";
           }
         }
       } finally {
-        busy = false;
-        if (alive())
-          root
-            .querySelectorAll<HTMLButtonElement>("button")
-            .forEach((b) => (b.disabled = false));
+        if (isCancel) cancelling = false;
+        else busy = false;
+        if (alive()) updateButtons();
+        if (alive() && request !== generation) void refresh();
       }
     };
     parent.append(button);
@@ -123,7 +137,10 @@ export function renderCopilotAuth(
     if (!alive()) return;
     clearTimeout(timer);
     const serialized = JSON.stringify(view);
-    if (view.flow.state === "connecting")
+    if (
+      view.flow.state === "connecting" ||
+      view.accounts.some((a) => a.reason === "verification_pending")
+    )
       timer = setTimeout(() => void refresh(), 350);
     if (serialized === lastView) return;
     lastView = serialized;
@@ -219,13 +236,14 @@ export function renderCopilotAuth(
     }
   }
   async function refresh() {
-    if (!alive() || busy) return;
-    const request = ++generation;
+    if (!alive() || cancelling) return;
+    const request = generation;
+    const read = ++stateRead;
     try {
       const view = await invoke<CopilotAuth>("copilot_auth_state");
-      if (request === generation && alive()) render(view);
+      if (request === generation && read === stateRead && alive()) render(view);
     } catch (cause) {
-      if (!alive() || request !== generation) return;
+      if (!alive() || request !== generation || read !== stateRead) return;
       lastView = "";
       showError(cause);
       status.textContent =

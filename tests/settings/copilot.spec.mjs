@@ -395,3 +395,145 @@ test("unavailable saved models and legacy unconfigured Agents survive unrelated 
     signature: "New signature",
   });
 });
+
+for (const pendingAction of [
+  "verify_copilot_account",
+  "disconnect_copilot_account",
+]) {
+  test(`sign-in cancellation remains independent of pending ${pendingAction} and ignores its stale flow`, async ({
+    page,
+  }) => {
+    const pending = Promise.withResolvers();
+    const started = Promise.withResolvers();
+    let cancellations = 0;
+    let state = {
+      accounts: [first],
+      flow: {
+        state: "connecting",
+        user_code: "TEST-CODE",
+        verification_uri: "https://github.com/login/device",
+      },
+    };
+    const stale = structuredClone(state);
+    await bridge(page, (command) => {
+      if (command === pendingAction) {
+        started.resolve();
+        return pending.promise;
+      }
+      if (command === "cancel_copilot_auth") {
+        cancellations++;
+        state = idle([first]);
+      }
+      return state;
+    });
+    await page.goto("/?view=settings");
+    const card = page.locator(".copilot-auth-card");
+    await expect(card).toContainText("TEST-CODE");
+    await card
+      .getByRole("button", {
+        name:
+          pendingAction === "verify_copilot_account"
+            ? "Verify Copilot sign-in for fixture-ai-one"
+            : "Disconnect Copilot fixture-ai-one",
+        exact: true,
+      })
+      .click();
+    await started.promise;
+    await expect(
+      card.getByRole("button", { name: "Cancel Copilot sign-in", exact: true }),
+    ).toBeEnabled();
+    await card
+      .getByRole("button", { name: "Cancel Copilot sign-in", exact: true })
+      .click();
+    await expect.poll(() => cancellations).toBe(1);
+    await expect(card).not.toContainText("TEST-CODE");
+    pending.resolve(stale);
+    await expect(
+      card.getByRole("button", {
+        name: "Connect Copilot account",
+        exact: true,
+      }),
+    ).toBeEnabled();
+    await expect(
+      card.getByRole("button", { name: "Cancel Copilot sign-in", exact: true }),
+    ).toHaveCount(0);
+    await expect(card).not.toContainText("TEST-CODE");
+  });
+}
+
+test("late restored accounts update an open legacy Agent editor without selecting or wiping its draft", async ({
+  page,
+  store,
+}) => {
+  const settings = (await store("snapshot")).settings;
+  settings.agents = [
+    {
+      id: agentId,
+      name: "Legacy",
+      model: "copilot",
+      prompt: "Saved prompt.",
+      signature: "Saved signature",
+    },
+  ];
+  await store("seed_settings", settings);
+  const restoration = Promise.withResolvers();
+  let restored = false;
+  let accounts = [first, account("202", second.login, "reconnect_required")];
+  await bridge(page, (command) => {
+    if (command === "list_copilot_models") return [model("chosen-model")];
+    return restored ? idle(accounts) : restoration.promise;
+  });
+  await page.goto("/?view=settings");
+  await section(page, "Agents");
+  await page
+    .locator(".agent-card")
+    .getByRole("button", { name: "Edit", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", { name: "Edit agent", exact: true });
+  await dialog.getByLabel("Name", { exact: true }).fill("Typed name");
+  await dialog
+    .getByRole("textbox", { name: "Prompt", exact: true })
+    .fill("Typed prompt");
+  await dialog.getByLabel("Signature", { exact: true }).fill("Typed signature");
+  restored = true;
+  restoration.resolve(idle(accounts));
+  await expect(
+    dialog.locator('select[name="ai-account"] option[value="101"]'),
+  ).toHaveJSProperty("disabled", false);
+  await expect(
+    dialog.locator('select[name="ai-account"] option[value="202"]'),
+  ).toHaveJSProperty("disabled", true);
+  await expect(dialog.getByLabel("AI account", { exact: true })).toHaveValue(
+    "",
+  );
+  await expect(dialog.getByLabel("Model", { exact: true })).toHaveValue(
+    "copilot",
+  );
+  await dialog.getByLabel("AI account", { exact: true }).selectOption("101");
+  await expect(dialog.getByLabel("Model", { exact: true })).toBeEnabled();
+  await expect(dialog.getByLabel("Model", { exact: true })).toHaveValue("");
+  await dialog
+    .getByLabel("Model", { exact: true })
+    .selectOption("chosen-model");
+  accounts = [account("202", second.login, "reconnect_required")];
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(
+    dialog.locator('select[name="ai-account"] option[value="101"]'),
+  ).toHaveJSProperty("disabled", true);
+  await expect(dialog.getByLabel("AI account", { exact: true })).toHaveValue(
+    "101",
+  );
+  await expect(dialog.getByLabel("Model", { exact: true })).toHaveValue(
+    "chosen-model",
+  );
+  await expect(dialog.getByLabel("Model", { exact: true })).toBeDisabled();
+  await expect(dialog.getByLabel("Name", { exact: true })).toHaveValue(
+    "Typed name",
+  );
+  await expect(
+    dialog.getByRole("textbox", { name: "Prompt", exact: true }),
+  ).toHaveValue("Typed prompt");
+  await expect(dialog.getByLabel("Signature", { exact: true })).toHaveValue(
+    "Typed signature",
+  );
+});
