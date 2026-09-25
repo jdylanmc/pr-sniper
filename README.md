@@ -14,15 +14,14 @@ implementation summary.
 
 ## Develop on macOS
 
-Requirements: macOS 12+, Xcode Command Line Tools (or full Xcode), Node
+Requirements: macOS 13.5+, Xcode Command Line Tools (or full Xcode), Node
 24.20.0 and Rust 1.98.1 via rustup. `.node-version`, `rust-toolchain.toml`,
 `package-lock.json` and `src-tauri/Cargo.lock` pin the baseline.
 Install prerequisites yourself using their official installers; these commands
 do not install global tools.
 
-Copilot model lookup additionally requires macOS 13.5+ because of the bundled
-official runtime's deployment target. Older systems retain Settings/sign-in
-management but receive an explicit model-lookup compatibility error.
+The application's macOS 13.5 minimum matches the bundled official Copilot
+runtime's deployment target.
 
 ```sh
 npm ci
@@ -115,8 +114,8 @@ Escape/Close and background isolation when native dialog APIs are unavailable;
 viewport sizing also falls back for older WebKit versions. Production JavaScript
 syntax and CSS optimization target Safari 15, preserving viewport fallbacks
 through minification. Browser tests inspect the emitted stylesheet and exercise
-its layout with unsupported viewport units and dialog APIs. The macOS 12 minimum
-is unchanged; build targets do not polyfill runtime APIs, and these simulations
+its layout with unsupported viewport units and dialog APIs. The app requires
+macOS 13.5 or later; build targets do not polyfill runtime APIs, and these simulations
 are not native acceptance evidence.
 
 Repository **Settings** assigns reusable Agents with their own schedules and
@@ -125,7 +124,16 @@ explicit GitHub account. Existing global defaults and overrides remain
 preserved in storage. Configuring an assignment executes neither reviews nor
 publication; approval submission remains unavailable.
 
-**Doctrines** manages plain-text review principles. **Agents** selects a Copilot
+**Doctrines** manages plain-text review principles. A fresh configuration
+persists all 23 bundled doctrines on first load, before any Settings tab is
+visited. The canonical local doctrine documents are embedded in the app; no
+download or local source checkout is needed at runtime. Edits, additions and
+deletions (including deleting the whole library) survive restart. Existing
+libraries are never topped up or replaced. Legacy settings without a doctrine
+field remain empty, since the older format also omitted deliberately empty
+libraries; subsequent saves record an explicit empty list.
+
+**Agents** selects a Copilot
 account and a real model returned by that account, alongside an optional
 doctrine, prompt and signature. Provider and model are distinct. Old Agents
 without AI account bindings remain unconfigured until explicitly updated.

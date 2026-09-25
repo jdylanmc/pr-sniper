@@ -1,5 +1,6 @@
 mod copilot;
 pub mod discovery;
+mod doctrine_seeds;
 pub mod github;
 pub mod policy;
 pub mod startup;

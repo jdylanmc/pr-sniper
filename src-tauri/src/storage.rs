@@ -45,7 +45,8 @@ pub struct Settings {
     pub presets: Vec<ReviewPreset>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_review_preset: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    // An explicitly empty library is saved, never confused with uninitialized data.
+    #[serde(default)]
     pub doctrines: Vec<Doctrine>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agents: Vec<Agent>,
@@ -464,7 +465,15 @@ impl Store {
         let path = self.root.join("config/settings.json");
         let bytes = match fs::read(path) {
             Ok(bytes) => bytes,
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Settings::default()),
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                let settings = Settings {
+                    doctrines: crate::doctrine_seeds::doctrines(),
+                    ..Settings::default()
+                };
+                settings.validate()?;
+                self.write_settings(&settings)?;
+                return Ok(settings);
+            }
             Err(_) => return Err("Cannot read settings. Check local file permissions.".into()),
         };
         let mut settings: Settings = serde_json::from_slice(&bytes)

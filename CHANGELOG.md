@@ -7,6 +7,11 @@ No release/versioning policy has been established yet.
 
 ### Fixed
 
+- Persist the complete 23-doctrine starter library on first settings load,
+  independent of tab order or which section is saved first. Preserve edited,
+  custom and deliberately empty libraries across restarts; existing legacy
+  settings without a doctrine field remain unchanged.
+
 - Keep GitHub accounts and sign-in controls within the Settings window, with
   readable account details and wrapping actions. Show a prominent selectable
   one-time code beside **Copy code**, preserve clipboard feedback and keyboard
@@ -14,6 +19,9 @@ No release/versioning policy has been established yet.
   access fails.
 
 ### Changed
+
+- Require macOS 13.5 or later for the application, matching the bundled Copilot
+  runtime's minimum.
 
 - Anchor Settings to the approved compact sidebar, with repository selection,
   readable GitHub people lookup, preserved model selections, local review
@@ -38,7 +46,7 @@ No release/versioning policy has been established yet.
   own connected account and a model returned by Copilot. Disconnect retains
   dependent Agents and assignments needing reconnect, without switching
   accounts. The green check verifies sign-in only; it does not test a
-  subscription or run a prompt. Model lookup requires macOS 13.5 or later.
+  subscription or run a prompt.
   See [Copilot Settings](docs/copilot-settings.md).
 
 - Connect through the registered PR Sniper GitHub OAuth App in the default browser

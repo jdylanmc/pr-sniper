@@ -19,14 +19,14 @@ fn sidebar_save_preserves_hidden_policy_and_rejects_stale_drafts() {
         saved.defaults.reviewer_assignment,
         original.defaults.reviewer_assignment
     );
-    assert!(fixture.store().save_preferences(original, &saved).is_ok());
     assert!(fixture
         .store()
-        .save_preferences(saved, &Settings::default())
+        .save_preferences(original.clone(), &saved)
         .is_ok());
+    assert!(fixture.store().save_preferences(saved, &original).is_ok());
     let stale = fixture
         .store()
-        .save_preferences(Settings::default(), &Settings::default());
+        .save_preferences(original.clone(), &original);
     assert!(stale.unwrap_err().contains("changed"));
 }
 
@@ -57,14 +57,17 @@ fn preset_import_rejects_unknown_fields_credentials_and_duplicate_names() {
         ]),
     ] {
         let fixture = Fixture::new();
-        let mut value = serde_json::to_value(Settings::default()).unwrap();
+        let baseline = fixture.store().load_settings().unwrap();
+        let path = fixture.path().join("config/settings.json");
+        let before = std::fs::read(&path).unwrap();
+        let mut value = serde_json::to_value(&baseline).unwrap();
         value["presets"] = presets;
         if let Ok(settings) = serde_json::from_value::<Settings>(value) {
             assert!(fixture
                 .store()
-                .save_preferences(settings, &Settings::default())
+                .save_preferences(settings, &baseline)
                 .is_err());
         }
-        assert!(!fixture.path().join("config/settings.json").exists());
+        assert_eq!(std::fs::read(path).unwrap(), before);
     }
 }
