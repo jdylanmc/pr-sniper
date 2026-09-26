@@ -112,6 +112,7 @@ export function renderCopilotAuth(
       if (isCancel) cancelling = true;
       else busy = true;
       const request = ++actionGeneration;
+      const initialRead = stateRead;
       let needsRefresh = false;
       if (isCancel) clearTimeout(timer);
       updateButtons();
@@ -119,9 +120,12 @@ export function renderCopilotAuth(
       try {
         const view = await invoke<CopilotAuth>(command, args);
         if (alive()) {
+          const current =
+            request === actionGeneration &&
+            (!isCancel || initialRead === stateRead);
           // Reads started during this action predate its committed result.
           stateRead++;
-          if (request === actionGeneration) render(view);
+          if (current) render(view);
           else needsRefresh = true;
         }
       } catch (cause) {

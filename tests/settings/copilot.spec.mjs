@@ -118,11 +118,34 @@ for (const pendingAction of [
       pending.reject(failure);
       await expect(card.getByRole("alert")).toHaveText(failure);
       await expect(card.getByRole("alert")).toBeVisible();
+      if (!cancelReplyFirst) {
+        await page.evaluate(() => {
+          const accounts = document.querySelector(".copilot-accounts");
+          window.__accountRenders = [];
+          window.__accountObserver = new MutationObserver(() => {
+            window.__accountRenders.push(
+              accounts.querySelectorAll(".copilot-check").length,
+            );
+          });
+          window.__accountObserver.observe(accounts, {
+            childList: true,
+            subtree: true,
+          });
+        });
+      }
       cancelReply.resolve(staleCancel);
       await expect(
         card.getByRole("button", { name: actionName, exact: true }),
       ).toBeEnabled();
       await page.evaluate(() => window.__copilotIdle());
+      if (!cancelReplyFirst) {
+        expect(
+          await page.evaluate(() => {
+            window.__accountObserver.disconnect();
+            return window.__accountRenders;
+          }),
+        ).not.toContain(1);
+      }
       await expect(card).not.toContainText("TEST-CODE");
       await expect(card.locator(".copilot-check")).toHaveCount(0);
       if (pendingAction === "disconnect_copilot_account")
