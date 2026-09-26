@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { test, expect } from "./fixtures.mjs";
-import { saveChanges } from "./navigation.mjs";
+import { saveChanges, seedAgent } from "./navigation.mjs";
 
 test("FR1 normal production CSS retains all five legacy viewport fallbacks", async () => {
   const html = await readFile(
@@ -82,6 +82,18 @@ for (const viewport of [
       await route.fulfill({ response, body });
     });
     await store("save_repository", { repository: "octo/legacy-viewport" });
+    const settings = await seedAgent(store);
+    settings.repositories[0].assignments = Array.from(
+      { length: 12 },
+      (_, index) => ({
+        id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+        agent_id: settings.agents[0].id,
+        schedule: { kind: "interval", minutes: index + 1, timezone: "UTC" },
+        comment: false,
+        approve: false,
+      }),
+    );
+    await store("seed_settings", settings);
     await page.goto("/?view=settings");
     const opener = page
       .getByRole("article", { name: "octo/legacy-viewport", exact: true })
@@ -155,14 +167,10 @@ for (const viewport of [
     );
 
     await modal
-      .getByRole("checkbox", {
-        name: "Override review instructions",
-        exact: true,
-      })
-      .check();
-    await modal
-      .getByRole("textbox", { name: "Review prompt", exact: true })
-      .fill("Legacy viewport review instructions.");
+      .locator(".assignment-row")
+      .first()
+      .getByRole("button", { name: "Remove", exact: true })
+      .click();
     await modal.getByText("Repository and connection", { exact: true }).click();
     const last = modal.getByRole("button", {
       name: "Remove repository",
@@ -193,7 +201,7 @@ for (const viewport of [
       .locator(
         viewport.width < 600
           ? '[aria-label="Settings section"]'
-          : '[data-section="reviews"]',
+          : '[data-section="agents"]',
       )
       .evaluate((element) => element.focus());
     await expect(close).toBeFocused();
@@ -224,8 +232,8 @@ for (const viewport of [
     });
     await saveChanges(page);
     expect(
-      (await store("snapshot")).settings.repositories[0].overrides.prompt,
-    ).toBe("Legacy viewport review instructions.");
+      (await store("snapshot")).settings.repositories[0].assignments,
+    ).toHaveLength(11);
     await opener.click();
     await page.keyboard.press("Escape");
     await expect(modal).toHaveCount(0);

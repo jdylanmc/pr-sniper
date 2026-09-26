@@ -136,7 +136,7 @@ test("editing, disabling and removing a repository preserves its identity and it
     await expect(card("octo/renamed")).toHaveCount(0);
     await expect(card("neighbor/keep-me")).toBeVisible();
     await expect(await startupPreference(page)).toBeChecked();
-    await section(page, "Repositories");
+    await section(page, "Integrations");
     await expect(page.getByRole("alert")).toBeHidden();
   });
 });

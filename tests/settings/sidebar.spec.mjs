@@ -1,97 +1,113 @@
 import { expect, test } from "./fixtures.mjs";
 import { mkdir, writeFile, readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
+import {
+  section,
+  seedAgent,
+  fixtureAgent,
+  newDoctrine,
+  editAgent,
+  assignment,
+  saveAssignment,
+  saveChanges,
+  repositorySettings,
+  closeDialog,
+} from "./navigation.mjs";
 
-test("Settings opens the approved sidebar without prototype or reviewer controls", async ({
+test.use({ timezoneId: "America/New_York" });
+
+test("Settings exposes exactly four approved tabs and no prototype or retired controls", async ({
   page,
 }) => {
   await page.goto("/?view=settings");
   const nav = page.getByRole("navigation", { name: "Settings sections" });
-  await expect(nav).toBeVisible();
+  await expect(nav.getByRole("button")).toHaveText([
+    "Integrations",
+    "Doctrines",
+    "Agents",
+    "Preferences",
+  ]);
+  await expect(page.getByText("Interactive design preview")).toHaveCount(0);
   for (const name of [
-    "Repositories",
     "People",
     "Review defaults",
     "Automation",
     "Review presets",
-  ]) {
-    await expect(nav.getByRole("button", { name, exact: true })).toBeVisible();
-  }
-  await expect(page.getByText("Interactive design preview")).toHaveCount(0);
-  await nav
-    .getByRole("button", { name: "Review defaults", exact: true })
-    .click();
-  await expect(page.getByLabel("Model", { exact: true })).toBeVisible();
+    "Setup Doctor",
+  ])
+    await expect(nav.getByRole("button", { name, exact: true })).toHaveCount(0);
+  await section(page, "Agents");
   await expect(
-    page.getByLabel("Model", { exact: true }).locator("option").first(),
-  ).toHaveText("Default");
+    page.getByRole("button", { name: "New agent", exact: true }),
+  ).toBeDisabled();
   await expect(
     page.getByLabel("Reviewer assignment", { exact: true }),
   ).toHaveCount(0);
+  await section(page, "Preferences");
+  await expect(
+    page.getByRole("switch", { name: /Open PR Sniper at login/ }),
+  ).toBeDisabled();
+  await expect(page.getByRole("switch", { name: /Notify me/ })).toBeDisabled();
+  await expect(
+    page.getByRole("button", {
+      name: "Open redacted diagnostics",
+      exact: true,
+    }),
+  ).toBeVisible();
 });
 
-test("a new profile uses local time without writing or enabling anything until explicit save", async ({
-  browser,
+test("new assignments use local time while seeded settings never opt into startup or automation", async ({
+  page,
   store,
   dataRoot,
-  baseURL,
 }) => {
-  const context = await browser.newContext({
-    baseURL,
-    timezoneId: "America/New_York",
+  await seedAgent(store);
+  await store("save_repository", { repository: "fixture/local-time" });
+  await page.goto("/?view=settings");
+  const initial = (await store("snapshot")).settings;
+  expect(initial.doctrines).toHaveLength(23);
+  expect(initial.launch_at_login).toBe(false);
+  expect(initial.defaults.automatic_agent_start).toBe(false);
+  expect(initial.defaults.automatic_comment_publication).toBe(false);
+  const zone = await page.evaluate(
+    () => Intl.DateTimeFormat().resolvedOptions().timeZone,
+  );
+  expect(zone).toBe("America/New_York");
+  let modal = await assignment(page, "fixture/local-time");
+  await expect(modal.getByLabel("Time zone", { exact: true })).toHaveValue(
+    zone,
+  );
+  await modal
+    .getByRole("combobox", { name: "Check for pull requests", exact: true })
+    .selectOption("30");
+  await saveAssignment(page, modal);
+  expect((await store("snapshot")).settings).toEqual(initial);
+  await page.locator("#reset-settings").click();
+  modal = await assignment(page, "fixture/local-time");
+  await expect(
+    modal.getByRole("combobox", {
+      name: "Check for pull requests",
+      exact: true,
+    }),
+  ).toHaveValue("15");
+  await expect(modal.getByLabel("Time zone", { exact: true })).toHaveValue(
+    zone,
+  );
+  await modal
+    .getByRole("combobox", { name: "Check for pull requests", exact: true })
+    .selectOption("30");
+  await saveAssignment(page, modal);
+  await saveChanges(page);
+  const saved = JSON.parse(
+    await readFile(join(dataRoot, "config/settings.json"), "utf8"),
+  );
+  expect(saved.repositories[0].assignments[0].schedule).toEqual({
+    kind: "interval",
+    minutes: 30,
+    timezone: zone,
   });
-  const page = await context.newPage();
-  await page.exposeFunction("__settingsInvoke", store);
-  await page.addInitScript(() => {
-    window.__TAURI_INTERNALS__ = { invoke: window.__settingsInvoke };
-  });
-  try {
-    await page.goto("/?view=settings");
-    await page.getByRole("button", { name: "Automation", exact: true }).click();
-    await expect(
-      page.getByText(/America\/New_York \(system local\)/),
-    ).toBeVisible();
-    await expect(
-      page.getByRole("button", { name: "Save changes", exact: true }),
-    ).toBeDisabled();
-    expect((await store("snapshot")).settings_persisted).toBe(false);
-    await page
-      .getByRole("switch", { name: "Run reviews automatically", exact: true })
-      .check();
-    await page
-      .getByRole("button", { name: "Reset changes", exact: true })
-      .click();
-    await expect(
-      page.getByText(/America\/New_York \(system local\)/),
-    ).toBeVisible();
-    await expect(
-      page.getByRole("switch", {
-        name: "Run reviews automatically",
-        exact: true,
-      }),
-    ).not.toBeChecked();
-    await page
-      .getByLabel("Check frequency", { exact: true })
-      .selectOption("30");
-    await page
-      .getByRole("button", { name: "Save changes", exact: true })
-      .click();
-    await expect(
-      page.getByText("All changes saved", { exact: true }),
-    ).toBeVisible();
-    const saved = JSON.parse(
-      await readFile(join(dataRoot, "config/settings.json"), "utf8"),
-    );
-    expect(saved.defaults.schedule).toEqual({
-      kind: "interval",
-      minutes: 30,
-      timezone: "America/New_York",
-    });
-    expect(saved.defaults.automatic_agent_start).toBe(false);
-    expect(saved.defaults.automatic_comment_publication).toBe(false);
-  } finally {
-    await context.close();
-  }
+  expect(saved.defaults).toEqual(initial.defaults);
+  expect(saved.launch_at_login).toBe(false);
 });
 
 test("chosen-root discovery uses real metadata, searchable selection and stable saved identities", async ({
@@ -111,7 +127,7 @@ test("chosen-root discovery uses real metadata, searchable selection and stable 
     "[core]\nrepositoryformatversion = 0\n",
   );
   const calls = [];
-  await page.exposeFunction("__chooseFolder", async () => {
+  await page.exposeFunction("__chooseFolder", () => {
     calls.push(root);
     return store("discover_repositories", { root });
   });
@@ -136,10 +152,7 @@ test("chosen-root discovery uses real metadata, searchable selection and stable 
     exact: true,
   });
   await monitored.check();
-  await page.getByRole("button", { name: "Save changes", exact: true }).click();
-  await expect(
-    page.getByText("All changes saved", { exact: true }),
-  ).toBeVisible();
+  await saveChanges(page);
   const persisted = (await store("snapshot")).settings;
   expect(persisted.root_folder).toBe(await realpath(root));
   expect(persisted.repositories[0]).toMatchObject({
@@ -149,10 +162,7 @@ test("chosen-root discovery uses real metadata, searchable selection and stable 
   await page.reload();
   expect(calls).toHaveLength(1);
   await monitored.uncheck();
-  await page.getByRole("button", { name: "Save changes", exact: true }).click();
-  await expect(
-    page.getByText("All changes saved", { exact: true }),
-  ).toBeVisible();
+  await saveChanges(page);
   expect((await store("snapshot")).settings.repositories[0]).toEqual({
     ...persisted.repositories[0],
     enabled: false,
@@ -164,10 +174,16 @@ test("chosen-root discovery uses real metadata, searchable selection and stable 
   );
 });
 
-test("People resolves a login to stable identity and reports disconnected lookup", async ({
+test("repository People resolves stable identity, isolates neighbors and reports failed lookup", async ({
   page,
   store,
 }) => {
+  for (const repository of ["fixture/one", "fixture/two"])
+    await store("save_repository", { repository });
+  const initial = (await store("snapshot")).settings;
+  initial.repositories[0].provider_account_id = "101";
+  initial.repositories[0].provider_repository_id = "1";
+  await store("seed_settings", initial);
   let disconnected = false;
   const calls = [];
   await page.exposeFunction("__personLookup", (args) => {
@@ -185,8 +201,8 @@ test("People resolves a login to stable identity and reports disconnected lookup
             {
               provider: "github",
               state: "connected",
-              account_id: "6954990",
-              login: "jdylanmc",
+              account_id: "101",
+              login: "fixture-owner",
             },
           ],
           flow: { state: "idle" },
@@ -198,150 +214,115 @@ test("People resolves a login to stable identity and reports disconnected lookup
     };
   });
   await page.goto("/?view=settings");
-  await expect(page.locator(".github-auth-card")).toContainText(
-    "Connected through the PR Sniper GitHub OAuth App.",
-  );
-  await page.getByRole("button", { name: "People", exact: true }).click();
-  await page.getByRole("button", { name: "Add people", exact: true }).click();
-  await page.getByLabel("GitHub login", { exact: true }).fill("@octocat");
-  await page.getByRole("button", { name: "Add person", exact: true }).click();
-  await expect(page.getByText("@octocat", { exact: true })).toBeVisible();
+  let parent = await repositorySettings(page, "fixture/one");
+  await parent.getByRole("button", { name: "Add people", exact: true }).click();
+  let picker = page.getByRole("dialog", { name: "Add people", exact: true });
+  await picker.getByLabel("GitHub login", { exact: true }).fill("@octocat");
+  await picker.getByRole("button", { name: "Add person", exact: true }).click();
+  await expect(parent.getByText("@octocat", { exact: true })).toBeVisible();
   expect(calls).toEqual([
-    { provider: "github", accountId: "6954990", login: "octocat" },
+    { provider: "github", accountId: "101", login: "octocat" },
   ]);
-  await page.getByRole("button", { name: "Save changes", exact: true }).click();
-  await expect(
-    page.getByText("All changes saved", { exact: true }),
-  ).toBeVisible();
-  expect((await store("snapshot")).settings.defaults.watched_authors).toEqual([
-    { id: "42", login: "octocat" },
-  ]);
+  await closeDialog(page);
+  await saveChanges(page);
+  expect(
+    (await store("snapshot")).settings.repositories[0].watched_authors,
+  ).toEqual([{ id: "42", login: "octocat" }]);
+  expect((await store("snapshot")).settings.repositories[1]).toEqual(
+    initial.repositories[1],
+  );
   disconnected = true;
-  await page.getByRole("button", { name: "Add people", exact: true }).click();
-  await page.getByLabel("GitHub login", { exact: true }).fill("someone");
-  await page.getByRole("button", { name: "Add person", exact: true }).click();
-  await expect(page.locator(".person-lookup [role=alert]")).toContainText(
+  parent = await repositorySettings(page, "fixture/one");
+  await parent.getByRole("button", { name: "Add people", exact: true }).click();
+  picker = page.getByRole("dialog", { name: "Add people", exact: true });
+  await picker.getByLabel("GitHub login", { exact: true }).fill("someone");
+  await picker.getByRole("button", { name: "Add person", exact: true }).click();
+  await expect(picker.getByRole("alert")).toContainText(
     "Connect the PR Sniper GitHub OAuth App",
   );
   expect(
-    (await store("snapshot")).settings.defaults.watched_authors,
+    (await store("snapshot")).settings.repositories[0].watched_authors,
   ).toHaveLength(1);
+  await closeDialog(page);
+  await parent
+    .getByRole("button", { name: "Remove octocat", exact: true })
+    .click();
+  await expect(
+    parent.getByText("No one added. Every pull request is eligible."),
+  ).toBeVisible();
+  await closeDialog(page);
+  await saveChanges(page);
+  await page.reload();
+  const saved = (await store("snapshot")).settings;
+  expect(saved.repositories[0].watched_authors ?? []).toEqual([]);
+  expect(saved.repositories[1]).toEqual(initial.repositories[1]);
+  expect(saved.defaults).toEqual(initial.defaults);
 });
 
-test("local presets create, edit, import inertly and retain independent repository inheritance", async ({
+test("doctrine authoring stays inert and rejects unknown schema and credentials without replacing legacy presets", async ({
   page,
   store,
+  dataRoot,
 }) => {
-  await store("save_repository", { repository: "octo/project" });
+  const settings = await seedAgent(store);
+  settings.presets = [
+    {
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      name: "Old preset",
+      body: "Preserve old preset.",
+    },
+  ];
+  await store("seed_settings", settings);
   await page.goto("/?view=settings");
-  await page
-    .getByRole("button", { name: "Review presets", exact: true })
-    .click();
-  await page.getByRole("button", { name: "New preset", exact: true }).click();
-  let modal = page.getByRole("dialog");
-  await modal.getByLabel("Preset name", { exact: true }).fill("API review");
+  const body =
+    "<script>window.doctrineExecuted=true</script>\nFind compatibility defects.";
+  await newDoctrine(page, "api-review", body);
+  let modal = await editAgent(page);
   await modal
-    .getByLabel("Review instructions", { exact: true })
-    .fill("Find breaking API changes.");
-  await modal.getByRole("button", { name: "Save preset", exact: true }).click();
-  await page
-    .getByRole("button", { name: "Review defaults", exact: true })
-    .click();
-  await page
-    .getByLabel("Review preset", { exact: true })
-    .selectOption({ label: "API review" });
-  await page.getByRole("button", { name: "Repositories", exact: true }).click();
-  await page
-    .getByRole("article", { name: "octo/project", exact: true })
-    .getByRole("button", { name: "Settings", exact: true })
-    .click();
-  modal = page.getByRole("dialog");
-  await modal
-    .getByRole("checkbox", {
-      name: "Override review instructions",
-      exact: true,
-    })
-    .check();
-  await modal
-    .getByLabel("Review preset", { exact: true })
-    .selectOption({ label: "API review" });
-  await modal
-    .getByRole("checkbox", {
-      name: "Override run reviews automatically",
-      exact: true,
-    })
-    .check();
-  await expect(
-    modal.getByRole("switch", {
-      name: "Run reviews automatically",
-      exact: true,
-    }),
-  ).not.toBeChecked();
-  await modal
-    .getByRole("button", { name: "Close dialog", exact: true })
-    .click();
-  await page.getByRole("button", { name: "Save changes", exact: true }).click();
-  await expect(
-    page.getByText("All changes saved", { exact: true }),
-  ).toBeVisible();
-  let saved = (await store("snapshot")).settings;
-  expect(saved.repositories[0].overrides).toEqual({
-    prompt: "Find breaking API changes.",
-    automatic_agent_start: false,
+    .getByRole("combobox", { name: "Doctrine", exact: true })
+    .selectOption("api-review");
+  await modal.getByRole("button", { name: "Save agent", exact: true }).click();
+  await saveChanges(page);
+  await section(page, "Doctrines");
+  const card = page.locator(".doctrine-card").filter({
+    has: page.getByRole("heading", { name: "api-review", exact: true }),
   });
-  expect(saved.default_review_preset).toBe(saved.repositories[0].review_preset);
-  await page
-    .getByRole("button", { name: "Review presets", exact: true })
+  await card.getByRole("button", { name: "Edit", exact: true }).click();
+  modal = page.getByRole("dialog", { name: "Edit doctrine", exact: true });
+  await modal.getByLabel("Title", { exact: true }).fill("api-renamed");
+  await modal
+    .getByRole("button", { name: "Save doctrine", exact: true })
     .click();
-  await page.getByRole("button", { name: "Edit", exact: true }).click();
-  await page
-    .getByRole("dialog")
-    .getByRole("textbox", { name: "Review instructions", exact: true })
-    .fill("Check compatibility and tests.");
-  await page.getByRole("button", { name: "Save preset", exact: true }).click();
-  await page.getByRole("button", { name: "Import...", exact: true }).click();
-  await page.getByLabel("Preset JSON", { exact: true }).fill(
-    JSON.stringify({
-      name: "Unsafe shape",
-      body: "Review",
-      command: "touch sentinel",
-    }),
-  );
-  await page
-    .getByRole("button", { name: "Import preset", exact: true })
-    .click();
-  await expect(page.getByRole("dialog").getByRole("alert")).toContainText(
-    "only name and body",
-  );
-  await page.getByLabel("Preset JSON", { exact: true }).fill(
-    JSON.stringify({
-      name: "Inert HTML",
-      body: "<script>window.presetExecuted=true</script>",
-    }),
-  );
-  await page
-    .getByRole("button", { name: "Import preset", exact: true })
-    .click();
-  expect(await page.evaluate(() => window.presetExecuted)).toBeUndefined();
-  await expect(page.locator(".preset-list script")).toHaveCount(0);
-  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await saveChanges(page);
+  const saved = (await store("snapshot")).settings;
+  expect(saved.agents[0]).toEqual({ ...fixtureAgent, doctrine: "api-renamed" });
+  expect(saved.presets).toEqual(settings.presets);
+  expect(await page.evaluate(() => window.doctrineExecuted)).toBeUndefined();
+  await expect(page.locator(".doctrine-list script")).toHaveCount(0);
+  const path = join(dataRoot, "config/settings.json");
+  const bytes = await readFile(path);
   await expect(
-    page.getByText("All changes saved", { exact: true }),
-  ).toBeVisible();
+    store("seed_settings", {
+      ...saved,
+      doctrines: [
+        { title: "unknown-shape", body: "Review", command: "touch sentinel" },
+      ],
+    }),
+  ).rejects.toBeTruthy();
+  expect(await readFile(path)).toEqual(bytes);
+  await newDoctrine(page, "unsafe-input", "ghp_synthetic-secret");
+  await page.locator("#save-settings").click();
+  await expect(page.locator("#error")).toBeVisible();
+  expect(await readFile(path)).toEqual(bytes);
   await page.reload();
-  saved = (await store("snapshot")).settings;
-  expect(saved.presets).toHaveLength(2);
-  expect(saved.defaults.prompt).toBe("Check compatibility and tests.");
-  expect(saved.repositories[0].overrides.prompt).toBe(
-    "Check compatibility and tests.",
-  );
+  expect((await store("snapshot")).settings).toEqual(saved);
 });
 
 for (const viewport of [
   { width: 1180, height: 800 },
   { width: 390, height: 844 },
 ]) {
-  test(`approved A layout at ${viewport.width}x${viewport.height} keeps focus, content and save footer reachable`, async ({
+  test(`four-tab layout at ${viewport.width}x${viewport.height} keeps focus, content and save footer reachable`, async ({
     page,
     store,
   }, testInfo) => {
@@ -355,15 +336,7 @@ for (const viewport of [
     ])
       await store("save_repository", { repository: `orbit-labs/${name}` });
     await page.goto("/?view=settings");
-    await expect(page.getByRole("article")).toHaveCount(5);
-    await expect(
-      page.getByRole("button", { name: "Save changes", exact: true }),
-    ).toBeVisible();
-    expect(
-      await page.evaluate(
-        () => document.documentElement.scrollWidth <= innerWidth,
-      ),
-    ).toBe(true);
+    await expect(page.locator(".repository-row")).toHaveCount(5);
     await page
       .getByRole("button", { name: "Choose folder...", exact: true })
       .focus();
@@ -376,24 +349,13 @@ for (const viewport of [
     await expect(
       page.getByLabel("Find a repository", { exact: true }),
     ).toBeFocused();
-    await page.screenshot({
-      path: testInfo.outputPath(`settings-${viewport.width}-repositories.png`),
-    });
-    for (const [section, title] of [
-      ["people", "People"],
-      ["reviews", "Review defaults"],
-      ["automation", "Automation"],
-      ["presets", "Review presets"],
+    for (const title of [
+      "Integrations",
+      "Doctrines",
+      "Agents",
+      "Preferences",
     ]) {
-      if (viewport.width < 600)
-        await page
-          .getByLabel("Settings section", { exact: true })
-          .selectOption(section);
-      else
-        await page
-          .getByRole("navigation", { name: "Settings sections" })
-          .getByRole("button", { name: title, exact: true })
-          .click();
+      await section(page, title);
       await expect(
         page.getByRole("heading", { name: title, exact: true }).first(),
       ).toBeVisible();
@@ -402,21 +364,22 @@ for (const viewport of [
           () => document.documentElement.scrollWidth <= innerWidth,
         ),
       ).toBe(true);
-      const footer = await page
-        .getByRole("button", { name: "Save changes", exact: true })
-        .boundingBox();
+      const footer = await page.locator("#save-settings").boundingBox();
+      expect(footer.y).toBeGreaterThanOrEqual(0);
       expect(footer.y + footer.height).toBeLessThanOrEqual(viewport.height);
       await page.screenshot({
-        path: testInfo.outputPath(`settings-${viewport.width}-${section}.png`),
+        path: testInfo.outputPath(`settings-${viewport.width}-${title}.png`),
       });
     }
   });
 }
 
-test("separate automation choices preserve legacy policy and survive reload", async ({
+test("assignment comment choice stays independent of disabled Approve and preserves legacy automation", async ({
   page,
   store,
 }) => {
+  await seedAgent(store);
+  await store("save_repository", { repository: "fixture/project" });
   const initial = (await store("snapshot")).settings;
   initial.defaults.reviewer_assignment = false;
   initial.defaults.selector = { kind: "agent", value: "my-reviewer" };
@@ -428,45 +391,33 @@ test("separate automation choices preserve legacy policy and survive reload", as
   initial.defaults.prompt = "Keep this exact custom prompt.\nAnd its newline.";
   await store("seed_settings", initial);
   await page.goto("/?view=settings");
-  await page.getByRole("button", { name: "Automation", exact: true }).click();
-  await page
-    .getByRole("switch", { name: "Run reviews automatically", exact: true })
-    .check();
+  let modal = await assignment(page, "fixture/project");
+  await modal.getByRole("checkbox", { name: /^Comment/ }).uncheck();
   await expect(
-    page.getByRole("switch", {
-      name: "Post review comments automatically",
-      exact: true,
-    }),
+    modal.getByRole("checkbox", { name: /^Approve/ }),
+  ).toBeDisabled();
+  await expect(
+    modal.getByRole("checkbox", { name: /^Approve/ }),
   ).not.toBeChecked();
-  await page.getByRole("button", { name: "Save changes", exact: true }).click();
-  await expect(
-    page.getByText("All changes saved", { exact: true }),
-  ).toBeVisible();
-  expect((await store("snapshot")).settings.defaults).toEqual({
-    ...initial.defaults,
-    automatic_agent_start: true,
+  await saveAssignment(page, modal);
+  await saveChanges(page);
+  const saved = (await store("snapshot")).settings;
+  expect(saved.defaults).toEqual(initial.defaults);
+  expect(saved.repositories[0].assignments[0]).toMatchObject({
+    comment: false,
+    approve: false,
   });
   await page.reload();
-  await page.getByRole("button", { name: "Automation", exact: true }).click();
+  modal = await assignment(page, "fixture/project", 0);
   await expect(
-    page.getByRole("switch", {
-      name: "Run reviews automatically",
-      exact: true,
-    }),
-  ).toBeChecked();
-  await page
-    .getByRole("switch", {
-      name: "Post review comments automatically",
-      exact: true,
-    })
-    .check();
-  await page
-    .getByRole("button", { name: "Reset changes", exact: true })
-    .click();
-  await expect(
-    page.getByRole("switch", {
-      name: "Post review comments automatically",
-      exact: true,
-    }),
+    modal.getByRole("checkbox", { name: /^Comment/ }),
   ).not.toBeChecked();
+  await modal.getByRole("checkbox", { name: /^Comment/ }).check();
+  await saveAssignment(page, modal);
+  await page.locator("#reset-settings").click();
+  modal = await assignment(page, "fixture/project", 0);
+  await expect(
+    modal.getByRole("checkbox", { name: /^Comment/ }),
+  ).not.toBeChecked();
+  expect((await store("snapshot")).settings).toEqual(saved);
 });

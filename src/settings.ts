@@ -1141,6 +1141,19 @@ export async function mountSettings(app: HTMLElement) {
       minutes.disabled = frequency.value === "cron";
       cron.disabled = frequency.value !== "cron";
     };
+    minutes.oninput = () => {
+      if (
+        frequency.value === "cron" ||
+        !minutes.validity.valid ||
+        !minutes.value
+      )
+        return;
+      if (![...frequency.options].some((item) => item.value === minutes.value))
+        frequency.add(
+          new Option(`Every ${minutes.value} minutes`, minutes.value),
+        );
+      frequency.value = minutes.value;
+    };
     modal.querySelector("form")!.onsubmit = (event) => {
       event.preventDefault();
       const alert = modal.querySelector<HTMLElement>("[role=alert]")!;

@@ -4,6 +4,9 @@ import {
   repositorySettings,
   saveChanges,
   section,
+  seedAgent,
+  setAgentPrompt,
+  editAgent,
 } from "./navigation.mjs";
 
 async function connection(page, name = "jdylanmc/pr-sniper") {
@@ -13,7 +16,7 @@ async function connection(page, name = "jdylanmc/pr-sniper") {
 }
 
 async function boundConnection(page, name, actingAccount) {
-  await section(page, "Repositories");
+  await section(page, "Integrations");
   await page
     .getByRole("article", {
       name: `${name} as ${actingAccount}`,
@@ -100,7 +103,8 @@ test("verifying GitHub preserves drafts and does not enable automation", async (
   page,
   store,
 }) => {
-  const before = await saveBoundRepository(store);
+  await saveBoundRepository(store);
+  const before = await seedAgent(store);
   await connectedGithubAccount(page);
   const calls = [];
   await page.exposeFunction("__githubRead", (command, args) => {
@@ -119,9 +123,7 @@ test("verifying GitHub preserves drafts and does not enable automation", async (
         : original(command, args);
   });
   await page.goto("/?view=settings");
-  await section(page, "Review defaults");
-  const prompt = page.getByLabel("Review prompt", { exact: true });
-  await prompt.fill("Keep this unsaved review prompt.");
+  await setAgentPrompt(page, "Keep this unsaved review prompt.");
   const card = await connection(page);
   await card
     .getByRole("button", { name: "Verify GitHub connection", exact: true })
@@ -131,7 +133,8 @@ test("verifying GitHub preserves drafts and does not enable automation", async (
     "not publication authorization",
   );
   await closeDialog(page);
-  await section(page, "Review defaults");
+  const modal = await editAgent(page);
+  const prompt = modal.getByRole("textbox", { name: "Prompt", exact: true });
   await expect(prompt).toHaveValue("Keep this unsaved review prompt.");
   expect(calls).toEqual([
     {
