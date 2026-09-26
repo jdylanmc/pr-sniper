@@ -1072,7 +1072,7 @@ export async function mountSettings(app: HTMLElement) {
       const people = repository.watched_authors ?? [];
       if (!people.length) {
         list.innerHTML =
-          '<p class="settings-empty">No one added. Every pull request is eligible.</p>';
+          '<p class="settings-empty">No trusted authors yet. Only pull requests requesting this signed-in account are eligible.</p>';
         return;
       }
       list.innerHTML = "";

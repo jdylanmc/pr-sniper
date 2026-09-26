@@ -3045,6 +3045,7 @@ dependencies = [
 name = "pr-sniper"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "chrono-tz",
  "croner",
  "github-copilot-sdk",
