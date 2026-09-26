@@ -10,7 +10,7 @@ use pr_sniper_lib::{
     },
     monitoring::{next_run, Monitor, PollResult},
     policy::{PolicyOverrides, Schedule, WatchedIdentity},
-    storage::{ProviderId, Repository, Settings, Store},
+    storage::{Agent, Assignment, ProviderId, Repository, Settings, Store},
 };
 use serde_json::{json, Value};
 use std::{
@@ -238,6 +238,98 @@ fn manual_and_scheduled_checks_share_one_non_overlapping_path() {
             .len(),
         1
     );
+}
+
+#[test]
+fn manual_check_preserves_the_upcoming_scheduled_occurrence() {
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let mut first = monitor
+        .prepare_checks(&store, 1_800_000_000, true)
+        .unwrap();
+    assert_eq!(first.len(), 1);
+    let scheduled = monitor.snapshot()[0].next_run;
+    monitor
+        .finish(
+            &store,
+            first.remove(0),
+            Ok(poll_result(Vec::new(), "current-login")),
+            1_800_000_001,
+        )
+        .unwrap();
+    let mut manual = monitor
+        .prepare_checks(&store, 1_800_000_100, true)
+        .unwrap();
+    assert_eq!(manual.len(), 1);
+    monitor
+        .finish(
+            &store,
+            manual.remove(0),
+            Ok(poll_result(Vec::new(), "current-login")),
+            1_800_000_101,
+        )
+        .unwrap();
+    assert_eq!(monitor.snapshot()[0].next_run, scheduled);
+}
+
+#[test]
+fn each_assignment_schedule_has_its_own_health_and_due_ticket() {
+    let (_root, store) = store();
+    let mut settings = store.load_settings().unwrap();
+    settings.agents.push(Agent {
+        id: "00000000-0000-4000-8000-000000000020".into(),
+        name: "Agent A".into(),
+        model: "gpt-4o".into(),
+        ai_account: None,
+        doctrine: None,
+        prompt: "review".into(),
+        signature: "sig-a".into(),
+    });
+    settings.agents.push(Agent {
+        id: "00000000-0000-4000-8000-000000000021".into(),
+        name: "Agent B".into(),
+        model: "gpt-4o".into(),
+        ai_account: None,
+        doctrine: None,
+        prompt: "review".into(),
+        signature: "sig-b".into(),
+    });
+    settings.repositories[0].assignments = vec![
+        Assignment {
+            id: "00000000-0000-4000-8000-000000000010".into(),
+            agent_id: "00000000-0000-4000-8000-000000000020".into(),
+            schedule: Schedule::Interval {
+                minutes: 5,
+                timezone: "America/New_York".into(),
+            },
+            comment: false,
+            approve: false,
+        },
+        Assignment {
+            id: "00000000-0000-4000-8000-000000000011".into(),
+            agent_id: "00000000-0000-4000-8000-000000000021".into(),
+            schedule: Schedule::Interval {
+                minutes: 15,
+                timezone: "America/New_York".into(),
+            },
+            comment: false,
+            approve: false,
+        },
+    ];
+    set_settings(&store, &settings);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let tickets = monitor
+        .prepare_checks(&store, 1_800_000_000, true)
+        .unwrap();
+    assert_eq!(tickets.len(), 1);
+    assert!(monitor
+        .snapshot()
+        .iter()
+        .any(|health| health.schedule_key.starts_with("interval:5:")));
+    assert!(monitor
+        .snapshot()
+        .iter()
+        .any(|health| health.schedule_key.starts_with("interval:15:")));
 }
 
 #[test]

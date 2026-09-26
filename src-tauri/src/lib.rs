@@ -31,6 +31,7 @@ struct Host {
     quitting: AtomicBool,
     registration: LoginRegistration,
     github_auth: Mutex<GithubAuth>,
+    github_generations: Mutex<BTreeMap<String, u64>>,
     github_credentials:
         github::token_store::RotationSafeStore<github::macos_keychain::MacKeychainStore>,
     github_legacy_credentials:
@@ -681,6 +682,13 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
             let account_id = ticket.provider_account_id.clone();
             let result = (|| {
                 let host = app.state::<Host>();
+                let generation = host
+                    .github_generations
+                    .lock()
+                    .map_err(|_| ConnectionError::Configuration)?
+                    .get(&account_id)
+                    .copied()
+                    .unwrap_or(0);
                 let (identity, client) = github_session(&host, &account_id)?;
                 if identity.id != ticket_for_poll.provider_account_id {
                     return Err(ConnectionError::WrongIdentity);
@@ -693,6 +701,16 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                     return Err(ConnectionError::RepositoryChanged);
                 }
                 let pull_requests = client.poll_pull_requests(&connection.repository)?;
+                let current_generation = host
+                    .github_generations
+                    .lock()
+                    .map_err(|_| ConnectionError::Configuration)?
+                    .get(&account_id)
+                    .copied()
+                    .unwrap_or(0);
+                if current_generation != generation {
+                    return Err(ConnectionError::SignedOut);
+                }
                 Ok(monitoring::PollResult {
                     connection,
                     pull_requests,
@@ -1150,6 +1168,23 @@ fn disconnect_github_auth(
     host.github_legacy_credentials
         .remove_account(&ProviderAccountId::github(&account_id))
         .map_err(|_| "Superseded GitHub credentials could not be deleted securely.")?;
+    if let Ok(mut generations) = host.github_generations.lock() {
+        *generations.entry(account_id.clone()).or_default() += 1;
+    }
+    if let Ok(store) = host.store.lock() {
+        if let Ok(mut queue) = store.load_queue() {
+            let mut changed = false;
+            for job in &mut queue {
+                if job.account_id == account_id && job.waiting != "account_disconnected" {
+                    job.waiting = "account_disconnected".into();
+                    changed = true;
+                }
+            }
+            if changed {
+                let _ = store.save_queue(&queue);
+            }
+        }
+    }
     auth.accounts.remove(&account_id);
     Ok(auth.view())
 }
@@ -1427,6 +1462,7 @@ pub fn run() {
                     std::env::current_exe()?.canonicalize()?,
                 ),
                 github_auth: Mutex::new(github_auth),
+                github_generations: Mutex::new(BTreeMap::new()),
                 github_credentials,
                 github_legacy_credentials,
                 copilot,

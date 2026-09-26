@@ -156,8 +156,10 @@ Invalid settings are reported rather than silently reset or overwritten.
 
 ## Scheduled monitoring
 
-While the menu-bar process is active, enabled repositories use their effective
-interval or five-field cron schedule and explicit IANA time zone. Cron times
+While the menu-bar process is active, each saved repository assignment uses its
+own interval or five-field cron schedule and explicit IANA time zone. When a
+repository has no assignments, its effective global/per-repository policy
+schedule is used for backward compatibility. Cron times
 skipped by a spring daylight-saving jump run at the first valid local time;
 repeated fall-back times run once at their first occurrence. Sleep or missed
 ticks cause one check, not a catch-up burst. Check Now uses the same per-repo
