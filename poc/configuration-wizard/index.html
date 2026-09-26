@@ -1,0 +1,2211 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'"
+    />
+    <title>PR Sniper - Configuration Wizard prototype</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #202b37;
+        --muted: #596775;
+        --line: #dce2e8;
+        --accent: #225cc5;
+        --wash: #edf3ff;
+        --canvas: #e9edf1;
+        --surface: #f3f5f7;
+        --danger: #a12e35;
+        --success: #276445;
+        font:
+          14px/1.5 -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        color: var(--ink);
+        background: var(--canvas);
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        height: 100dvh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
+        color: inherit;
+      }
+      button,
+      select,
+      summary,
+      input[type="radio"],
+      input[type="checkbox"] {
+        cursor: pointer;
+      }
+      button {
+        min-height: 36px;
+        padding: 7px 13px;
+        border: 1px solid #bdc8d3;
+        border-radius: 7px;
+        background: white;
+        font-weight: 550;
+      }
+      button:hover:not(:disabled) {
+        background: var(--surface);
+        border-color: #96a6b6;
+      }
+      button.primary {
+        color: white;
+        background: var(--accent);
+        border-color: var(--accent);
+      }
+      button.primary:hover:not(:disabled) {
+        background: #194ca9;
+      }
+      button:disabled {
+        color: #6b7682;
+        background: #f0f2f5;
+        border-color: var(--line);
+        cursor: not-allowed;
+      }
+      button.quiet {
+        border-color: transparent;
+        background: transparent;
+        color: var(--muted);
+      }
+      button.text {
+        border: 0;
+        background: transparent;
+        color: var(--accent);
+        padding-inline: 0;
+        text-align: left;
+      }
+      :focus-visible {
+        outline: 3px solid var(--accent);
+        outline-offset: 3px;
+      }
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+      h1 {
+        font-size: 22px;
+        font-weight: 650;
+        letter-spacing: -0.55px;
+      }
+      h2 {
+        font-size: 20px;
+        font-weight: 650;
+        line-height: 1.3;
+        letter-spacing: -0.35px;
+      }
+      h3 {
+        font-size: 14px;
+      }
+      p {
+        max-width: 70ch;
+      }
+      small,
+      .small {
+        font-size: 12px;
+      }
+      .muted,
+      small {
+        color: var(--muted);
+      }
+      .stack {
+        display: grid;
+        gap: 16px;
+      }
+      .tight {
+        display: grid;
+        gap: 6px;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .spread {
+        justify-content: space-between;
+      }
+      .badge {
+        padding: 3px 8px;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        font-size: 11px;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .demo-bar {
+        max-width: 860px;
+        width: 100%;
+        flex: none;
+        position: relative;
+        margin: 20px auto 14px;
+        padding: 0 20px;
+      }
+      .demo-bar > .row {
+        min-height: 30px;
+      }
+      .demo-bar strong {
+        font-size: 12px;
+      }
+      .demo-bar summary {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .demo-tools {
+        position: absolute;
+        top: 100%;
+        right: 20px;
+        z-index: 2;
+        width: min(360px, calc(100% - 40px));
+        padding: 16px;
+        background: white;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        box-shadow: 0 8px 28px #24364b24;
+        display: flex;
+        align-items: end;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .demo-tools label {
+        flex: 1;
+        min-width: 180px;
+      }
+      .demo-tools p {
+        flex-basis: 100%;
+      }
+      .window {
+        width: min(620px, calc(100% - 32px));
+        max-height: 748px;
+        min-height: 0;
+        flex: 1;
+        margin: 0 auto 22px;
+        display: flex;
+        flex-direction: column;
+        background: white;
+        border: 1px solid #c5cfd9;
+        border-radius: 12px;
+        box-shadow:
+          0 18px 50px #24364b1a,
+          0 2px 6px #24364b0c;
+        overflow: hidden;
+      }
+      .titlebar {
+        min-height: 45px;
+        padding: 7px 15px;
+        background: #f6f7f9;
+        border-bottom: 1px solid var(--line);
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 12px;
+        font-weight: 650;
+      }
+      .reticle {
+        width: 21px;
+        height: 21px;
+        color: var(--accent);
+        flex: none;
+      }
+      .close {
+        width: 28px;
+        min-height: 28px;
+        padding: 0;
+        font-size: 19px;
+        font-weight: 400;
+      }
+      .wizard-heading {
+        padding: 22px 26px 17px;
+      }
+      .wizard-heading > p {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .steps {
+        display: flex;
+        list-style: none;
+        margin: 16px 0 0;
+        padding: 0;
+        gap: 4px;
+      }
+      .steps li {
+        flex: 1;
+        min-width: 0;
+      }
+      .steps button {
+        width: 100%;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        display: grid;
+        justify-items: center;
+        gap: 6px;
+        padding: 0 0 9px;
+        font-size: 11px;
+        color: var(--muted);
+        border-bottom: 2px solid var(--line);
+      }
+      .steps button:disabled {
+        background: transparent;
+      }
+      .steps .number {
+        display: grid;
+        place-items: center;
+        width: 21px;
+        height: 21px;
+        background: var(--surface);
+        border-radius: 50%;
+        font-size: 11px;
+      }
+      .steps [aria-current="step"] {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      .steps [aria-current="step"] .number {
+        background: var(--accent);
+        color: white;
+      }
+      .steps .visited .number {
+        background: var(--wash);
+        color: var(--accent);
+      }
+      .identities {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        border-block: 1px solid var(--line);
+        background: #fafbfd;
+        flex: none;
+      }
+      .identity {
+        padding: 9px 26px;
+        min-width: 0;
+      }
+      .identity + .identity {
+        border-left: 1px solid var(--line);
+      }
+      .identity span {
+        display: block;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .identity strong {
+        font-size: 12px;
+        font-weight: 550;
+        overflow-wrap: anywhere;
+      }
+      #content {
+        overflow-y: auto;
+        min-height: 0;
+        flex: 1;
+        padding: 23px 26px;
+        scrollbar-gutter: stable;
+      }
+      .step-intro {
+        margin-bottom: 20px;
+      }
+      .step-intro p {
+        margin-top: 7px;
+        color: var(--muted);
+      }
+      .choices {
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        overflow: hidden;
+      }
+      .choice {
+        display: flex;
+        gap: 11px;
+        align-items: center;
+        min-height: 72px;
+        padding: 13px 14px;
+        cursor: pointer;
+      }
+      .choice + .choice {
+        border-top: 1px solid var(--line);
+      }
+      .resource-row {
+        padding: 12px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .resource-row > div:first-child {
+        flex: 1;
+        min-width: 0;
+      }
+      .resource-row strong {
+        overflow-wrap: anywhere;
+      }
+      .agent-row + .agent-row {
+        border-top: 1px solid var(--line);
+      }
+      .agent-actions {
+        padding: 0 14px 10px;
+      }
+      .choice:has(input:checked) {
+        background: var(--wash);
+      }
+      .choice:has(input:disabled) {
+        cursor: not-allowed;
+        color: var(--muted);
+        background: #fafbfd;
+      }
+      .choice-body {
+        flex: 1;
+        min-width: 0;
+      }
+      .choice-body strong,
+      .choice-body small {
+        display: block;
+        overflow-wrap: anywhere;
+      }
+      input[type="radio"],
+      input[type="checkbox"] {
+        width: 17px;
+        height: 17px;
+        accent-color: var(--accent);
+        flex: none;
+        margin: 0;
+      }
+      .avatar {
+        width: 33px;
+        height: 33px;
+        display: grid;
+        place-items: center;
+        border-radius: 8px;
+        background: #e9edf3;
+        color: #46576a;
+        font-size: 12px;
+        font-weight: 650;
+        flex: none;
+      }
+      .avatar.secondary {
+        background: #eeeaf3;
+        color: #665779;
+      }
+      .note {
+        padding: 12px 14px;
+        border-left: 3px solid #b3c4dd;
+        background: #f5f8fd;
+        border-radius: 0 6px 6px 0;
+        font-size: 12px;
+        color: #485d76;
+      }
+      .note.warning {
+        background: #fff8ee;
+        border-color: #bc8734;
+        color: #7d561e;
+      }
+      .notice {
+        padding: 16px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        display: grid;
+        gap: 8px;
+      }
+      .notice button {
+        justify-self: start;
+      }
+      .notice.error {
+        color: var(--danger);
+        background: #fff7f7;
+        border-color: #edc9cb;
+      }
+      .field {
+        display: grid;
+        gap: 6px;
+        font-weight: 550;
+      }
+      .field small {
+        font-weight: 400;
+      }
+      input:not([type="radio"]):not([type="checkbox"]),
+      select,
+      textarea {
+        width: 100%;
+        border: 1px solid #bdc8d3;
+        border-radius: 7px;
+        padding: 9px 11px;
+        min-height: 39px;
+        background: white;
+        font-weight: 400;
+      }
+      textarea {
+        resize: vertical;
+        min-height: 86px;
+      }
+      select:disabled {
+        background: var(--surface);
+        color: var(--muted);
+      }
+      .field-error {
+        color: var(--danger);
+        font-size: 12px;
+      }
+      .presets {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 8px;
+      }
+      .preset {
+        padding: 14px 4px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        text-align: center;
+        cursor: pointer;
+      }
+      .preset:has(input:checked) {
+        border-color: var(--accent);
+        background: var(--wash);
+      }
+      .preset input {
+        display: block;
+        margin: 0 auto 8px;
+      }
+      .preset strong {
+        display: block;
+        font-size: 17px;
+      }
+      .disclosure {
+        border-top: 1px solid var(--line);
+        padding-top: 15px;
+      }
+      .disclosure > summary {
+        font-weight: 550;
+      }
+      .disclosure > div {
+        margin-top: 14px;
+      }
+      .doctrine-picker {
+        border: 0;
+        padding: 0;
+        margin: 0;
+        min-width: 0;
+      }
+      .doctrine-picker legend {
+        font-weight: 550;
+        margin-bottom: 8px;
+      }
+      .doctrine-options {
+        display: grid;
+        gap: 4px;
+        max-height: 190px;
+        min-height: 0;
+        overflow-y: scroll;
+        overscroll-behavior: contain;
+        scrollbar-gutter: stable;
+        padding: 8px 12px;
+        margin-top: 10px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+      }
+      .doctrine-options label {
+        min-height: 34px;
+      }
+      .switch-row {
+        display: flex;
+        align-items: start;
+        gap: 20px;
+        justify-content: space-between;
+        padding: 19px 0;
+      }
+      .switch-row + .switch-row {
+        border-top: 1px solid var(--line);
+      }
+      .switch-row small {
+        display: block;
+        margin-top: 6px;
+        max-width: 42ch;
+      }
+      .switch-row input {
+        width: 36px;
+        height: 22px;
+        appearance: none;
+        background: #cad2dc;
+        border: 1px solid #a6b1bf;
+        border-radius: 20px;
+        position: relative;
+        margin-top: 2px;
+      }
+      .switch-row input::before {
+        content: "";
+        position: absolute;
+        left: 2px;
+        top: 2px;
+        width: 16px;
+        height: 16px;
+        background: white;
+        border-radius: 50%;
+        box-shadow: 0 1px 2px #0002;
+      }
+      .switch-row input:checked {
+        background: var(--accent);
+        border-color: var(--accent);
+      }
+      .switch-row input:checked::before {
+        left: 16px;
+      }
+      .summary {
+        margin: 0;
+      }
+      .summary-row {
+        display: grid;
+        grid-template-columns: 112px 1fr auto;
+        gap: 12px;
+        align-items: start;
+        padding: 12px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .summary dt {
+        color: var(--muted);
+        font-size: 12px;
+        padding-top: 2px;
+      }
+      .summary dd {
+        margin: 0;
+        min-width: 0;
+        overflow-wrap: anywhere;
+        font-size: 13px;
+      }
+      .summary dd small {
+        display: block;
+      }
+      .summary-row button {
+        min-height: 26px;
+        padding: 1px 3px;
+        font-size: 12px;
+      }
+      .footer {
+        border-top: 1px solid var(--line);
+        background: #fafbfd;
+        padding: 13px 20px;
+        display: grid;
+        gap: 9px;
+        flex: none;
+      }
+      .footer .actions {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .footer .spacer {
+        flex: 1;
+      }
+      #footer-status {
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .standby {
+        display: grid;
+        align-content: center;
+        gap: 20px;
+        padding: 38px;
+        height: 100%;
+      }
+      .standby .reticle {
+        width: 42px;
+        height: 42px;
+      }
+      .standby h2 {
+        font-size: 24px;
+      }
+      .completion-mark {
+        display: grid;
+        place-items: center;
+        width: 42px;
+        height: 42px;
+        background: #eef7f2;
+        color: var(--success);
+        border-radius: 50%;
+        font-size: 21px;
+      }
+      dialog {
+        width: min(500px, calc(100vw - 28px));
+        max-height: calc(100dvh - 36px);
+        border: 1px solid #c5cfd9;
+        border-radius: 12px;
+        padding: 0;
+        color: var(--ink);
+        box-shadow: 0 24px 80px #1a2a4540;
+      }
+      dialog::backdrop {
+        background: #24364b55;
+      }
+      dialog[open] {
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .dialog-head {
+        display: flex;
+        flex: none;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 16px 20px;
+        border-bottom: 1px solid var(--line);
+        background: white;
+      }
+      .dialog-head h2 {
+        font-size: 17px;
+      }
+      .dialog-body {
+        padding: 20px;
+        min-height: 0;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        scrollbar-gutter: stable;
+      }
+      .device-code {
+        padding: 14px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        text-align: center;
+        font-size: 24px;
+        letter-spacing: 3px;
+      }
+      #storage-warning {
+        max-width: 620px;
+        margin: 10px auto;
+        padding: 10px 16px;
+        color: var(--danger);
+        background: #fff7f7;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+      }
+      @media (max-width: 560px) {
+        .demo-bar {
+          margin-top: 10px;
+          padding-inline: 12px;
+        }
+        .window {
+          width: calc(100% - 16px);
+          margin-bottom: 8px;
+        }
+        .wizard-heading {
+          padding: 17px 17px 13px;
+        }
+        .identity {
+          padding: 9px 16px;
+        }
+        #content {
+          padding: 20px 17px;
+        }
+        .steps button {
+          font-size: 10px;
+        }
+        .choice {
+          padding: 12px 10px;
+          gap: 8px;
+        }
+        .choice .badge {
+          display: none;
+        }
+        .footer {
+          padding: 12px;
+        }
+        .footer button {
+          min-height: 42px;
+          padding-inline: 10px;
+        }
+        .summary-row {
+          grid-template-columns: 90px 1fr auto;
+          gap: 8px;
+        }
+        .standby {
+          padding: 26px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation: none !important;
+          transition: none !important;
+          scroll-behavior: auto !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="demo-bar">
+      <div class="row spread">
+        <strong
+          >Interactive prototype
+          <span class="muted">/ no live connections</span></strong
+        >
+        <details id="prototype-tools">
+          <summary>Prototype controls</summary>
+        </details>
+      </div>
+      <div class="demo-tools" id="tools-panel" hidden>
+        <label class="field small"
+          >Current step scenario
+          <select id="scenario">
+            <option value="normal">Available mock data</option>
+            <option value="empty">Empty results</option>
+            <option value="loading">Loading (held for inspection)</option>
+            <option value="error">Error / failed save</option>
+            <option value="reconnect">Reconnect required</option>
+          </select>
+        </label>
+        <button id="reset-demo">Reset demo</button>
+        <p class="small muted" id="scenario-help">
+          All identities and model catalogs are fixtures. Resource changes save
+          immediately in this browser.
+        </p>
+      </div>
+    </header>
+    <p id="storage-warning" role="alert" hidden></p>
+    <main class="window" aria-label="Configuration Wizard prototype">
+      <div class="titlebar row spread">
+        <div class="brand">
+          <svg
+            class="reticle"
+            viewBox="0 0 24 24"
+            fill="none"
+            aria-hidden="true"
+          >
+            <circle
+              cx="12"
+              cy="12"
+              r="7"
+              stroke="currentColor"
+              stroke-width="1.5"
+            />
+            <path
+              d="M12 1v7m0 8v7M1 12h7m8 0h7"
+              stroke="currentColor"
+              stroke-width="1.5"
+            />
+            <circle cx="12" cy="12" r="1.6" fill="currentColor" />
+          </svg>
+          PR Sniper
+        </div>
+        <button class="quiet" data-action="library">Shared library</button>
+        <button class="close quiet" id="close-window" aria-label="Close wizard">
+          &times;
+        </button>
+      </div>
+      <div id="wizard-header">
+        <div class="wizard-heading">
+          <h1>Configuration Wizard</h1>
+          <p>A review configuration, one decision at a time.</p>
+          <nav aria-label="Configuration steps">
+            <ol class="steps" id="steps"></ol>
+          </nav>
+        </div>
+        <div class="identities" id="identities"></div>
+      </div>
+      <section id="content" aria-label="Current configuration step"></section>
+      <footer class="footer" id="footer">
+        <p id="footer-status" role="status">
+          Accounts, Agents, and doctrines save when you change them.
+        </p>
+        <div class="actions">
+          <button id="back">Back</button>
+          <span class="spacer"></span>
+          <button class="quiet" id="close-wizard">Close</button>
+          <button class="primary" id="next">Continue</button>
+        </div>
+      </footer>
+    </main>
+    <dialog id="modal" aria-labelledby="modal-title"></dialog>
+    <p id="announcement" class="sr-only" role="status" aria-live="polite"></p>
+    <script>
+      const KEY = "pr-sniper.poc.configuration-wizard.v1";
+      const $ = (selector, root = document) => root.querySelector(selector);
+      const escape = (value) =>
+        String(value).replace(
+          /[&<>"']/g,
+          (c) =>
+            ({
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              '"': "&quot;",
+              "'": "&#39;",
+            })[c],
+        );
+      const clone = (value) => JSON.parse(JSON.stringify(value));
+      const accounts = [
+        { id: "demo-1001", login: "alex-demo", initials: "AL" },
+        { id: "demo-1002", login: "riley-demo", initials: "RI" },
+        { id: "demo-1003", login: "sam-demo", initials: "SA" },
+      ];
+      const repositoryFixtures = {
+        "demo-1001": [
+          {
+            id: "demo-repo-1",
+            name: "northstar-demo/desktop",
+            visibility: "Private",
+          },
+          {
+            id: "demo-repo-2",
+            name: "northstar-demo/components",
+            visibility: "Public",
+          },
+          {
+            id: "demo-repo-3",
+            name: "alex-demo/toolbox",
+            visibility: "Public",
+          },
+        ],
+        "demo-1002": [
+          {
+            id: "demo-repo-1",
+            name: "northstar-demo/desktop",
+            visibility: "Private",
+          },
+          {
+            id: "demo-repo-4",
+            name: "riley-demo/experiments",
+            visibility: "Private",
+          },
+        ],
+        "demo-1003": [
+          {
+            id: "demo-repo-1",
+            name: "northstar-demo/desktop",
+            visibility: "Private",
+          },
+          { id: "demo-repo-5", name: "sam-demo/tools", visibility: "Public" },
+        ],
+      };
+      const catalogs = {
+        "demo-1001": [
+          {
+            id: "mock-claude-sonnet",
+            name: "Claude Sonnet (sample)",
+            enabled: true,
+          },
+          { id: "mock-gpt", name: "GPT (sample)", enabled: true },
+          {
+            id: "mock-restricted",
+            name: "Restricted model (sample)",
+            enabled: false,
+          },
+        ],
+        "demo-1002": [
+          { id: "mock-gpt", name: "GPT (sample)", enabled: true },
+          {
+            id: "mock-restricted",
+            name: "Restricted model (sample)",
+            enabled: false,
+          },
+        ],
+        "demo-1003": [{ id: "mock-gpt", name: "GPT (sample)", enabled: true }],
+      };
+      const doctrineFixtures = [
+        "Boundaries",
+        "Correctness",
+        "Error handling",
+        "Testability",
+        "Maintainability",
+        "Code",
+        "Context",
+        "Cyclomatic complexity",
+        "Data",
+        "Data processing",
+        "Debugging",
+        "Distributed data",
+        "Documentation",
+        "Domain",
+        "Idempotency",
+        "Integration testing",
+        "Laziness",
+        "Machine",
+        "Nimble",
+        "Pragmatic",
+        "Scout",
+        "Sequencing",
+        "SOLID",
+        "Tactical / strategic",
+        "Test seams",
+        "Testing",
+        "Worktrees",
+      ];
+      const starterAgents = [
+        {
+          id: "demo-agent-1",
+          name: "Code reviewer",
+          ai: "demo-1001",
+          model: "mock-claude-sonnet",
+          doctrines: [],
+          prompt:
+            "Review this pull request for correctness, risk, and readability.",
+        },
+        {
+          id: "demo-agent-2",
+          name: "Careful reviewer",
+          ai: "demo-1002",
+          model: "mock-gpt",
+          doctrines: ["Boundaries"],
+          prompt: "Look for unintended changes at system boundaries.",
+        },
+        {
+          id: "demo-agent-3",
+          name: "Legacy reviewer",
+          ai: "demo-1001",
+          model: "mock-retired-model",
+          doctrines: [],
+          prompt: "Review for correctness.",
+        },
+      ];
+      const stepNames = [
+        "AI account",
+        "GitHub",
+        "Agent",
+        "Schedule",
+        "Automation",
+        "Confirm",
+      ];
+      const fresh = () => ({
+        step: 0,
+        mode: "editing",
+        configurationId: "",
+        ai: "",
+        github: "",
+        repository: null,
+        agent: "",
+        frequency: "",
+        minutes: "",
+        cron: "",
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        autoRun: false,
+        autoPost: false,
+        saved: false,
+      });
+      const freshLibrary = () => ({
+        version: 3,
+        agents: clone(starterAgents),
+        doctrines: doctrineFixtures.map((title) => ({
+          title,
+          body: `Sample review principles for ${title}.`,
+        })),
+        connections: {
+          ai: ["demo-1001", "demo-1002"],
+          github: ["demo-1001", "demo-1002"],
+        },
+        configurations: [],
+      });
+      let library = freshLibrary();
+      let state = fresh();
+      let scenario = "normal";
+      let storageAvailable = true;
+      let modalOrigin;
+      let modalCleanup = () => {};
+      let query = "";
+      let saveError = "";
+      let libraryReadable = true;
+      const content = $("#content");
+      const modal = $("#modal");
+      const account = (id) => accounts.find((a) => a.id === id);
+      const agent = () => library.agents.find((a) => a.id === state.agent);
+      const connected = (role, id) => library.connections[role].includes(id);
+      const hasModel = (a) =>
+        connected("ai", a.ai) &&
+        catalogs[a.ai]?.some((m) => m.id === a.model && m.enabled);
+
+      function storageWarning(message) {
+        storageAvailable = false;
+        $("#storage-warning").hidden = false;
+        $("#storage-warning").textContent = message;
+      }
+      function isLibrary(s) {
+        return (
+          s?.version === 3 &&
+          ["ai", "github"].every(
+            (role) =>
+              Array.isArray(s.connections?.[role]) &&
+              s.connections[role].every((id) => account(id)),
+          ) &&
+          Array.isArray(s.doctrines) &&
+          s.doctrines.every(
+            (d) => typeof d?.title === "string" && typeof d?.body === "string",
+          ) &&
+          Array.isArray(s.configurations) &&
+          s.configurations.every(
+            (c) =>
+              [
+                "id",
+                "ai",
+                "github",
+                "agent",
+                "frequency",
+                "minutes",
+                "cron",
+                "timezone",
+              ].every((k) => typeof c?.[k] === "string") &&
+              typeof c.repository?.id === "string" &&
+              typeof c.repository?.name === "string" &&
+              typeof c.autoRun === "boolean" &&
+              typeof c.autoPost === "boolean",
+          ) &&
+          Array.isArray(s.agents) &&
+          s.agents.every(
+            (a) =>
+              a &&
+              ["id", "name", "ai", "model", "prompt"].every(
+                (k) => typeof a[k] === "string",
+              ) &&
+              Array.isArray(a.doctrines) &&
+              a.doctrines.every((doctrine) => typeof doctrine === "string"),
+          )
+        );
+      }
+      function migrateLibrary(previous) {
+        if (![1, 2].includes(previous?.version)) return previous;
+        if (!Array.isArray(previous.agents))
+          throw new Error("Invalid legacy resources");
+        const result = freshLibrary();
+        result.agents = previous.agents.map((a) => {
+          if (previous.version === 2) return a;
+          if (typeof a?.doctrine !== "string")
+            throw new Error("Invalid legacy doctrine");
+          const { doctrine, ...agent } = a;
+          return { ...agent, doctrines: doctrine ? [doctrine] : [] };
+        });
+        for (const a of result.agents)
+          for (const title of a.doctrines ?? [])
+            if (!result.doctrines.some((d) => d.title === title))
+              result.doctrines.push({
+                title,
+                body: "Retained from an earlier mock.",
+              });
+        if (previous.saved && previous.repository)
+          result.configurations.push({
+            id: "mock-configuration-imported",
+            ...configuration(previous),
+          });
+        return result;
+      }
+      function configuration(source = state) {
+        const {
+          ai,
+          github,
+          repository,
+          agent,
+          frequency,
+          minutes,
+          cron,
+          timezone,
+          autoRun,
+          autoPost,
+        } = source;
+        return {
+          ai,
+          github,
+          repository: clone(repository),
+          agent,
+          frequency,
+          minutes,
+          cron,
+          timezone,
+          autoRun,
+          autoPost,
+        };
+      }
+      try {
+        const raw = localStorage.getItem(KEY);
+        if (raw) {
+          const restored = migrateLibrary(JSON.parse(raw));
+          if (!isLibrary(restored)) throw new Error("Invalid mock library");
+          library = restored;
+        }
+        localStorage.setItem(KEY, JSON.stringify(library));
+      } catch {
+        libraryReadable = false;
+        storageWarning(
+          "The mock library could not be opened safely. Reset demo to initialize mock data; no existing data has been replaced.",
+        );
+      }
+      function commitLibrary(next) {
+        if (!libraryReadable) {
+          storageWarning(
+            "The mock library is unavailable. Reset demo before making changes.",
+          );
+          return false;
+        }
+        try {
+          localStorage.setItem(KEY, JSON.stringify(next));
+          library = next;
+          storageAvailable = true;
+          $("#storage-warning").hidden = true;
+          return true;
+        } catch {
+          storageWarning(
+            "Browser storage rejected this change. Nothing was saved; retry when storage is available.",
+          );
+          return false;
+        }
+      }
+      function announce(message) {
+        $("#announcement").textContent = message;
+      }
+      function updateIdentity() {
+        $("#identities").innerHTML = [
+          ["AI identity", state.ai, "Choose a Copilot account"],
+          ["GitHub acting identity", state.github, "Choose a GitHub account"],
+        ]
+          .map(
+            ([label, id, empty]) =>
+              `<div class="identity"><span>${label}</span><strong>${id ? `@${escape(account(id)?.login ?? id)}` : empty}</strong></div>`,
+          )
+          .join("");
+      }
+      function intro(title, description) {
+        return `<div class="step-intro"><h2 tabindex="-1" id="step-title">${title}</h2><p>${description}</p></div>`;
+      }
+      function scenarioNotice(subject, emptyCopy) {
+        if (scenario === "normal") return "";
+        const states = {
+          empty: ["Nothing here yet", emptyCopy, "Show mock data"],
+          loading: [
+            `Loading ${subject}...`,
+            "A held loading state for inspection. No network request is running.",
+            "Finish simulated loading",
+          ],
+          error: [
+            `Could not load ${subject}`,
+            "Simulated connection failure. Your choices are retained; no connection is assumed.",
+            "Retry mock request",
+          ],
+          reconnect: [
+            "Reconnect required",
+            "This mock account needs identity confirmation again. Your configuration is retained.",
+            "Reconnect mock account",
+          ],
+        };
+        const [title, copy, action] = states[scenario];
+        return `<div class="notice ${scenario === "error" ? "error" : ""}" role="${scenario === "error" ? "alert" : "status"}"><strong>${title}</strong><p class="small">${copy}</p><button data-action="recover">${action}</button></div>`;
+      }
+      function normalScenario() {
+        scenario = "normal";
+        $("#scenario").value = scenario;
+        saveError = "";
+        render();
+      }
+      function setAi(id) {
+        if (id !== state.ai) {
+          state.ai = id;
+          state.agent = "";
+          state.saved = false;
+        }
+      }
+      function setGithub(id) {
+        if (id !== state.github) {
+          state.github = id;
+          state.repository = null;
+          state.saved = false;
+          query = "";
+        }
+      }
+      function accountChoices(role) {
+        const available = accounts.filter((a) => connected(role, a.id));
+        return available.length
+          ? `<div class="choices">${available.map((a, i) => `<label class="choice"><input type="radio" name="${role}" value="${a.id}" ${state[role] === a.id ? "checked" : ""} /><span class="avatar ${i ? "secondary" : ""}" aria-hidden="true">${a.initials}</span><span class="choice-body"><strong>@${a.login}</strong><small>Stable ID ${a.id}</small></span><span class="badge">Mock connected</span></label>`).join("")}</div>`
+          : '<p class="notice">No connected accounts. Connect one to continue.</p>';
+      }
+      function aiStep() {
+        return `${intro("Choose your AI account", "This account supplies the AI. It does not decide who reads repositories or posts comments.")}
+          <div class="stack">
+            <div class="row spread"><h3>GitHub Copilot</h3><span class="badge">AI provider</span></div>
+            ${scenarioNotice("AI accounts", "No mock AI accounts are connected. Connect one to configure an Agent.") || accountChoices("ai")}
+            <button class="text" data-action="connect-ai">Connect another mock AI account</button>
+            <p class="note">Connected means identity verified, not subscription or model access. You will choose a model with your Agent.</p>
+            <p class="small muted">Connections are shared and take effect immediately. Closing this wizard does not disconnect them. All identities here are fictional.</p>
+          </div>`;
+      }
+      function githubStep() {
+        return `${intro("Choose a GitHub repository", "Select the acting account first. Repository reads and future comments use this identity, not your AI account.")}
+          <div class="stack">
+            <label class="field">GitHub acting account<select id="github-account"><option value="">Choose a GitHub account</option>${accounts.map((a) => `<option value="${a.id}" ${state.github === a.id ? "selected" : ""} ${connected("github", a.id) ? "" : "disabled"}>@${a.login} (${a.id})${connected("github", a.id) ? "" : " - not connected"}</option>`).join("")}</select></label>
+            <button class="text" data-action="connect-github">Connect another mock GitHub account</button>
+            ${
+              state.github
+                ? `${scenarioNotice("repositories", "No repositories were returned for this account. Try the direct repository field or restore the fixture list.") || `<label class="field">Repository<input type="search" id="repo-search" placeholder="Find a repository..." value="${escape(query)}" /></label><div id="repo-results"></div>`}
+              <details class="disclosure"><summary>Use an owner/repository directly</summary><div class="stack"><label class="field">GitHub repository<input id="manual-repo" placeholder="owner/repository" autocomplete="off" /></label><p class="small muted">Accepts a fixture repository accessible to this mock account. No GitHub lookup is performed.</p><p id="repo-error" class="field-error" role="alert" hidden></p><button data-action="resolve-repo">Resolve mock repository</button></div></details>`
+                : `<p class="note">Choose an account to see its repositories. Shared repository access never picks an account for you.</p>`
+            }
+            <p class="small muted">Real GitHub connection requests broad <strong>repo</strong> access, including private repositories. Only the explicitly chosen repository belongs to this configuration.</p>
+          </div>`;
+      }
+      function renderRepositories() {
+        const root = $("#repo-results");
+        if (!root) return;
+        const repos = (repositoryFixtures[state.github] ?? []).filter((r) =>
+          r.name.toLowerCase().includes(query.toLowerCase()),
+        );
+        root.innerHTML = repos.length
+          ? `<div class="choices">${repos.map((r) => `<label class="choice"><input name="repository" type="radio" value="${r.id}" ${state.repository?.id === r.id ? "checked" : ""} /><span class="choice-body"><strong>${r.name}</strong><small>As @${account(state.github).login} / ${r.id}</small></span><span class="badge">${r.visibility}</span></label>`).join("")}</div>`
+          : `<p class="muted small">No matching repositories. Try another name or clear the search.</p>`;
+      }
+      function agentStep() {
+        const available = library.agents.filter((a) => a.ai === state.ai);
+        return `${intro("Choose a reusable Agent", "An Agent bundles an AI account, a model, and review instructions. Its schedule belongs to this repository assignment.")}
+          <div class="stack">
+            <div class="row spread"><h3>Using @${escape(account(state.ai)?.login ?? "unselected")}</h3><button data-action="new-agent">Create Agent</button></div>
+            ${scenarioNotice("Agents", "No Agents are configured for this AI account. Create one without leaving the wizard.") || (available.length ? `<div class="choices">${available.map((a) => `<article class="agent-row"><label class="choice"><input type="radio" name="agent" value="${escape(a.id)}" ${state.agent === a.id ? "checked" : ""} ${hasModel(a) ? "" : "disabled"} /><span class="choice-body"><strong>${escape(a.name)}</strong><small>Copilot / ${escape(a.model)}</small><small>${hasModel(a) ? `@${escape(account(a.ai)?.login ?? a.ai)}` : "Account or model unavailable. Retained, not replaced."}</small><small>Doctrines: ${a.doctrines.length ? escape(a.doctrines.join(", ")) : "None"}</small></span></label><div class="row agent-actions"><button data-edit-agent="${escape(a.id)}" aria-label="Edit ${escape(a.name)}">Edit</button><button data-delete-agent="${escape(a.id)}" aria-label="Delete ${escape(a.name)}">Delete</button></div></article>`).join("")}</div>` : `<p class="notice">No Agents yet. Create one to continue.</p>`)}
+            <p class="small muted">Creating, editing, or deleting an Agent changes the shared library immediately, including everywhere that Agent is used.</p>
+            <p class="note">The catalog is simulated. New Agents require an explicit model selection from their own mock account. Nothing tests inference or runs a review.</p>
+            <button class="text" data-step="0">Use a different AI account</button>
+          </div>`;
+      }
+      function scheduleProblem() {
+        if (!state.frequency)
+          return "Choose a monitoring interval or an advanced schedule.";
+        if (state.frequency === "cron") {
+          if (!state.timezone.trim())
+            return "Enter a time zone for this cron schedule.";
+          try {
+            new Intl.DateTimeFormat("en", {
+              timeZone: state.timezone,
+            }).format();
+          } catch {
+            return "Enter a valid IANA time zone, such as America/New_York.";
+          }
+          return validCron(state.cron)
+            ? ""
+            : "Enter a valid five-field cron expression: minute hour day month weekday.";
+        }
+        const minutes =
+          state.frequency === "custom"
+            ? Number(state.minutes)
+            : Number(state.frequency);
+        return Number.isSafeInteger(minutes) && minutes >= 1
+          ? ""
+          : "Enter a whole interval of at least 1 minute.";
+      }
+      function validCron(expression) {
+        const fields = expression.trim().toUpperCase().split(/\s+/);
+        const aliases = [
+          {},
+          {},
+          {},
+          {
+            JAN: 1,
+            FEB: 2,
+            MAR: 3,
+            APR: 4,
+            MAY: 5,
+            JUN: 6,
+            JUL: 7,
+            AUG: 8,
+            SEP: 9,
+            OCT: 10,
+            NOV: 11,
+            DEC: 12,
+          },
+          { SUN: 0, MON: 1, TUE: 2, WED: 3, THU: 4, FRI: 5, SAT: 6 },
+        ];
+        const bounds = [
+          [0, 59],
+          [0, 23],
+          [1, 31],
+          [1, 12],
+          [0, 7],
+        ];
+        return (
+          fields.length === 5 &&
+          fields.every((field, i) =>
+            field.split(",").every((part) => {
+              const bits = part.split("/");
+              if (
+                bits.length > 2 ||
+                (bits.length === 2 &&
+                  (!/^\d+$/.test(bits[1]) || Number(bits[1]) < 1))
+              )
+                return false;
+              if (bits[0] === "*") return true;
+              const range = bits[0].split("-");
+              if (range.length > 2) return false;
+              const values = range.map(
+                (v) => aliases[i][v] ?? (/^\d+$/.test(v) ? Number(v) : NaN),
+              );
+              return (
+                values.every(
+                  (v) =>
+                    Number.isSafeInteger(v) &&
+                    v >= bounds[i][0] &&
+                    v <= bounds[i][1],
+                ) &&
+                (values.length === 1 || values[0] <= values[1])
+              );
+            }),
+          )
+        );
+      }
+      function scheduleText() {
+        if (!state.frequency) return "Not selected";
+        return state.frequency === "cron"
+          ? `Cron: ${state.cron}`
+          : `Every ${state.frequency === "custom" ? state.minutes : state.frequency} minutes`;
+      }
+      function scheduleStep() {
+        return `${intro("Set the monitoring schedule", "Choose how often this repository assignment should check for eligible pull requests. Monitoring is separate from running reviews.")}
+          <div class="stack">
+            <div class="presets">${[5, 15, 30, 60].map((m) => `<label class="preset"><input type="radio" name="frequency" value="${m}" ${state.frequency === String(m) ? "checked" : ""} /><strong>${m}</strong><span class="small">minutes</span></label>`).join("")}</div>
+            <details class="disclosure" ${["custom", "cron"].includes(state.frequency) ? "open" : ""}><summary>Advanced scheduling</summary><div class="stack">
+              <label class="row"><input type="radio" name="frequency" value="custom" ${state.frequency === "custom" ? "checked" : ""} />Custom interval</label>
+              <label class="field">Interval in minutes<input id="minutes" type="number" min="1" step="1" value="${escape(state.minutes)}" ${state.frequency === "custom" ? "" : "disabled"} /></label>
+              <label class="row"><input type="radio" name="frequency" value="cron" ${state.frequency === "cron" ? "checked" : ""} />Five-field cron</label>
+              <label class="field">Cron expression<input id="cron" placeholder="0 9 * * MON-FRI" value="${escape(state.cron)}" ${state.frequency === "cron" ? "" : "disabled"} /><small>Minute, hour, day of month, month, weekday. Example: weekdays at 9 am.</small></label>
+              <label class="field" id="cron-zone" ${state.frequency === "cron" ? "" : "hidden"}>Time zone<input id="timezone" value="${escape(state.timezone)}" /><small>Clock-based schedules need a zone. Starts with this browser's local IANA zone.</small></label>
+            </div></details>
+            <p id="schedule-error" class="field-error" role="alert" hidden></p>
+            <p class="note" id="schedule-preview"></p>
+            <p class="small muted">Real monitoring runs only while PR Sniper is active. This mock validates basic syntax; it does not calculate or execute a next run.</p>
+          </div>`;
+      }
+      function gateExplanation() {
+        if (state.autoRun && state.autoPost)
+          return "Reviews may start and results may be posted automatically, subject to trust and eligibility checks.";
+        if (state.autoRun)
+          return "Reviews may start automatically. You still confirm comment publication.";
+        if (state.autoPost)
+          return "Reviews need a manual start. Their results may be posted automatically.";
+        return "You start each review and confirm each comment publication.";
+      }
+      function automationStep() {
+        return `${intro("Keep the decisions separate", "Starting an AI review and posting its comments are independent permissions. Both start off.")}
+          <div class="stack">
+            <div>
+              <label class="switch-row"><span><strong>Run reviews automatically</strong><small>Allow eligible reviews to start without pressing Start review. Trust restrictions still apply.</small></span><input id="auto-run" type="checkbox" role="switch" ${state.autoRun ? "checked" : ""} /></label>
+              <label class="switch-row"><span><strong>Post review comments automatically</strong><small>Allow eligible review results to be posted as @${escape(account(state.github)?.login ?? "unselected")}. This does not start a review or approve a pull request.</small></span><input id="auto-post" type="checkbox" role="switch" ${state.autoPost ? "checked" : ""} /></label>
+            </div>
+            <p class="note" id="gate-explanation">${gateExplanation()}</p>
+            <p class="small muted">Every publication still depends on current identity, revision, eligibility, and trust checks. Final review belongs to a human.</p>
+            <p class="small muted">Prototype only: these switches save booleans in the mock. They cannot enable automation.</p>
+          </div>`;
+      }
+      function summaryRows(editable = true) {
+        const a = agent();
+        const rows = [
+          [
+            "AI account",
+            `@${account(state.ai)?.login ?? "Not selected"}`,
+            `GitHub Copilot / ${state.ai}`,
+            0,
+          ],
+          [
+            "GitHub account",
+            `@${account(state.github)?.login ?? "Not selected"}`,
+            `Repository reads and comments / ${state.github}`,
+            1,
+          ],
+          [
+            "Repository",
+            state.repository?.name ?? "Not selected",
+            state.repository?.id ?? "",
+            1,
+          ],
+          [
+            "Review Agent",
+            a?.name ?? "Not selected",
+            a
+              ? `Copilot / ${a.model}. Doctrines: ${a.doctrines.length ? a.doctrines.join(", ") : "None"}`
+              : "",
+            2,
+          ],
+          [
+            "Schedule",
+            scheduleText(),
+            state.frequency === "cron"
+              ? state.timezone
+              : "Elapsed interval; no time zone needed",
+            3,
+          ],
+          [
+            "Automation",
+            `Auto-start: ${state.autoRun ? "On" : "Off"} / Auto-post: ${state.autoPost ? "On" : "Off"}`,
+            gateExplanation(),
+            4,
+          ],
+        ];
+        return `<dl class="summary">${rows.map(([label, value, detail, step]) => `<div class="summary-row"><dt>${label}</dt><dd><strong>${escape(value)}</strong><small>${escape(detail)}</small></dd>${editable ? `<button class="text" data-step="${step}" aria-label="Edit ${label.toLowerCase()}">Edit</button>` : ""}</div>`).join("")}</dl>`;
+      }
+      function confirmStep() {
+        return `${intro("Review your configuration", "Check both identities and the permissions before saving. You can change any part.")}
+          <div class="stack">${summaryRows()}
+          <p class="note">Accounts, Agents, and doctrines are already saved. Save configuration applies this repository assignment, schedule, and permissions. It does not poll GitHub, run a review, publish a comment, notify anyone, or merge anything.</p>
+          <p class="small muted">Watchlists, reviewer triggers, login items, and execution are outside this prototype. Saving is not a claim that monitoring is ready.</p>
+          <p id="save-error" class="field-error" role="alert" tabindex="-1" ${saveError ? "" : "hidden"}>${escape(saveError)}</p></div>`;
+      }
+      function renderLibrary() {
+        content.innerHTML = `${intro("Shared library", "The wizard uses these same accounts, Agents, and doctrines. Each resource operation saves immediately.")}
+          <div class="stack">
+            <div class="row"><button class="primary" data-action="wizard">Back to wizard</button><button data-action="start">Configure another repository</button></div>
+            <section class="stack"><h3>Accounts</h3>${accounts.map((a) => `<article class="resource-row tight"><strong>@${a.login}</strong><small>${a.id}</small><div class="row">${["ai", "github"].map((role) => `<button data-account-role="${role}" data-account-id="${a.id}" data-connected="${connected(role, a.id)}">${connected(role, a.id) ? "Disconnect" : "Connect"} ${role === "ai" ? "AI" : "GitHub"}</button>`).join("")}</div></article>`).join("")}</section>
+            <section class="stack"><div class="row spread"><h3>Agents</h3><button data-action="new-agent">Create Agent</button></div>
+            ${library.agents.map((a) => `<article class="resource-row row"><div><strong>${escape(a.name)}</strong><p class="small muted">Copilot / @${escape(account(a.ai)?.login ?? a.ai)} / ${escape(a.model)}</p><p class="small muted">Doctrines: ${escape(a.doctrines.join(", ") || "None")}</p></div><button data-edit-agent="${escape(a.id)}" aria-label="Edit ${escape(a.name)}">Edit</button><button data-delete-agent="${escape(a.id)}" aria-label="Delete ${escape(a.name)}">Delete</button></article>`).join("") || '<p class="muted">No Agents. Create one to use in any configuration.</p>'}
+            <p class="small muted">Deleting an Agent leaves configurations referencing it blocked until you choose another Agent.</p></section>
+            <section class="stack"><div class="row spread"><h3>Doctrines</h3><button data-action="new-doctrine">New doctrine</button></div><div id="library-doctrine-editor"></div>
+            ${library.doctrines.map((d) => `<article class="resource-row row"><div><strong>${escape(d.title)}</strong><p class="small muted">${escape(d.body)}</p></div><button data-edit-doctrine="${escape(d.title)}" aria-label="Edit ${escape(d.title)}">Edit</button><button data-delete-doctrine="${escape(d.title)}" aria-label="Delete ${escape(d.title)}">Delete</button></article>`).join("") || '<p class="muted">No doctrines yet.</p>'}</section>
+            <section class="stack"><h3>Repository configurations</h3>${library.configurations.map((c) => `<article class="resource-row row"><div><strong>${escape(c.repository.name)}</strong><p class="small muted">${escape(library.agents.find((a) => a.id === c.agent)?.name ?? "Agent unavailable")} / GitHub as @${escape(account(c.github)?.login ?? c.github)}</p></div><button data-edit-configuration="${escape(c.id)}">Configure</button></article>`).join("") || '<p class="muted small">No repository configurations saved.</p>'}</section>
+          </div>`;
+      }
+      function deleteAgent(id) {
+        const next = clone(library);
+        next.agents = next.agents.filter((a) => a.id !== id);
+        if (!commitLibrary(next)) return;
+        if (state.agent === id) state.agent = "";
+        render();
+        announce("Agent deleted from the shared library.");
+      }
+      function deleteDoctrine(title, afterSave) {
+        const next = clone(library);
+        next.doctrines = next.doctrines.filter((d) => d.title !== title);
+        for (const a of next.agents)
+          a.doctrines = a.doctrines.filter((value) => value !== title);
+        if (!commitLibrary(next)) return false;
+        afterSave?.(title, "");
+        announce("Doctrine deleted from the shared library and all Agents.");
+        return true;
+      }
+      function editDoctrine(root, title, afterSave) {
+        const existing = library.doctrines.find((d) => d.title === title);
+        root.innerHTML = `<div class="notice"><strong>${existing ? "Edit doctrine" : "New doctrine"}</strong>
+          <label class="field">Doctrine title<input name="doctrine-title" maxlength="100" value="${escape(existing?.title ?? "")}" /></label>
+          <label class="field">Principles<textarea name="doctrine-body">${escape(existing?.body ?? "")}</textarea></label>
+          <p class="small muted">Save updates the shared library immediately, including every Agent using this doctrine.</p>
+          <p class="field-error" role="alert" hidden></p><div class="row"><button type="button" class="primary" data-save-doctrine>Save doctrine</button><button type="button" data-close-doctrine>Close</button>${existing ? '<button type="button" data-remove-doctrine>Delete doctrine</button>' : ""}</div></div>`;
+        root.querySelector("[data-close-doctrine]").onclick = () =>
+          root.replaceChildren();
+        root.querySelector("[data-save-doctrine]").onclick = () => {
+          const name = root
+            .querySelector('[name="doctrine-title"]')
+            .value.trim();
+          const body = root
+            .querySelector('[name="doctrine-body"]')
+            .value.trim();
+          const error = root.querySelector("[role=alert]");
+          const problem =
+            !name || !body
+              ? "Enter a title and review principles."
+              : library.doctrines.some(
+                    (d) =>
+                      d.title !== title &&
+                      d.title.toLowerCase() === name.toLowerCase(),
+                  )
+                ? "Choose a unique doctrine title."
+                : "";
+          error.textContent = problem;
+          error.hidden = !problem;
+          if (problem) return;
+          const next = clone(library);
+          const index = next.doctrines.findIndex((d) => d.title === title);
+          if (index < 0) next.doctrines.push({ title: name, body });
+          else next.doctrines[index] = { title: name, body };
+          for (const a of next.agents)
+            a.doctrines = a.doctrines.map((value) =>
+              value === title ? name : value,
+            );
+          if (!commitLibrary(next)) {
+            error.textContent =
+              "The doctrine was not saved. Retry when browser storage is available.";
+            error.hidden = false;
+            return;
+          }
+          root.replaceChildren();
+          afterSave?.(title, name);
+          announce("Doctrine saved to the shared library.");
+        };
+        const remove = root.querySelector("[data-remove-doctrine]");
+        if (remove)
+          remove.onclick = () => {
+            if (deleteDoctrine(title, afterSave)) root.replaceChildren();
+          };
+        root.querySelector("input").focus();
+      }
+      function stepProblem(step) {
+        if (step === 0 && !connected("ai", state.ai))
+          return "Choose an AI account to continue.";
+        if (
+          step === 1 &&
+          (!connected("github", state.github) || !state.repository)
+        )
+          return "Choose a GitHub account and repository to continue.";
+        if (
+          step === 2 &&
+          (!agent() || agent().ai !== state.ai || !hasModel(agent()))
+        )
+          return "Choose an Agent with an available mock model.";
+        if (step === 3) return scheduleProblem();
+        return "";
+      }
+      function canVisit(step) {
+        return (
+          step <= state.step ||
+          Array.from({ length: step }, (_, i) => stepProblem(i)).every(
+            (p) => !p,
+          )
+        );
+      }
+      function updateFooter() {
+        const blocked = state.step < 3 && scenario !== "normal";
+        const problem =
+          stepProblem(state.step) ||
+          (state.step === 5 ? [0, 1, 2, 3].map(stepProblem).find(Boolean) : "");
+        $("#next").disabled = Boolean(problem || blocked);
+        $("#next").textContent =
+          state.step === 5 ? "Save configuration" : "Continue";
+        $("#back").disabled = state.step === 0;
+        $("#footer-status").textContent = blocked
+          ? "Resolve the simulated connection state to continue."
+          : problem ||
+            (storageAvailable
+              ? "Shared resource changes take effect immediately. Nothing runs."
+              : "Storage unavailable. No resource change was saved.");
+        if (state.step === 3) {
+          $("#schedule-preview").textContent = scheduleProblem()
+            ? "Choose a valid schedule to preview this assignment."
+            : `${scheduleText()}${state.frequency === "cron" ? ` / ${state.timezone}` : ""}. No scheduler is running.`;
+          $("#schedule-error").textContent = scheduleProblem();
+          $("#schedule-error").hidden = !state.frequency || !scheduleProblem();
+        }
+      }
+      function render(focusHeading = false) {
+        $("#wizard-header").hidden = state.mode !== "editing";
+        $("#footer").hidden = state.mode !== "editing";
+        $("#close-window").hidden = state.mode === "closed";
+        $("#scenario").disabled =
+          state.mode !== "editing" || [3, 4].includes(state.step);
+        for (const option of $("#scenario").options)
+          option.disabled =
+            state.step === 5 && !["normal", "error"].includes(option.value);
+        $("#scenario-help").textContent =
+          [3, 4].includes(state.step) && state.mode === "editing"
+            ? "These steps are local choices. Scenario overrides apply to accounts, repositories, Agents, and final save."
+            : "Accounts, Agents, and doctrines share browser-local mock storage. Resource operations save immediately.";
+        content.classList.toggle("standby", state.mode === "closed");
+        if (state.mode === "closed") {
+          content.innerHTML = `${intro("Configuration Wizard closed", "Account connections and library changes remain in place.")}<div class="row"><button class="primary" data-action="start">Configure a repository</button><button data-action="library">Open shared library</button></div><p class="small muted">No saved wizard progress, no rollback. This is a mock menu-bar landing state; no review or publication has run.</p>`;
+        } else if (state.mode === "library") {
+          renderLibrary();
+        } else if (state.mode === "complete") {
+          content.innerHTML = `<div class="stack"><div class="completion-mark" aria-hidden="true">&#10003;</div>${intro("Configuration saved", "In this browser only. No review has run and nothing has been posted.")}${summaryRows(false)}<div class="row"><button class="primary" data-action="done">Done</button><button data-action="edit">Edit configuration</button></div><button class="text" data-action="another">Configure another repository</button></div>`;
+        } else {
+          $("#steps").innerHTML = stepNames
+            .map(
+              (name, i) =>
+                `<li><button data-step="${i}" class="${i < state.step ? "visited" : ""}" ${i === state.step ? 'aria-current="step"' : ""} ${canVisit(i) ? "" : "disabled"} aria-label="Step ${i + 1}: ${name}"><span class="number">${i + 1}</span><span>${name}</span></button></li>`,
+            )
+            .join("");
+          updateIdentity();
+          content.innerHTML = [
+            aiStep,
+            githubStep,
+            agentStep,
+            scheduleStep,
+            automationStep,
+            confirmStep,
+          ][state.step]();
+          renderRepositories();
+          updateFooter();
+        }
+        if (focusHeading) {
+          $("#step-title")?.focus();
+          content.scrollTop = 0;
+        }
+      }
+      function navigate(step) {
+        if (!canVisit(step)) return;
+        state.step = step;
+        scenario = "normal";
+        $("#scenario").value = scenario;
+        saveError = "";
+        render(true);
+        announce(`Step ${step + 1} of 6. ${stepNames[step]}.`);
+      }
+      function closeWizard() {
+        state = { ...fresh(), mode: "closed" };
+        scenario = "normal";
+        $("#scenario").value = scenario;
+        query = "";
+        saveError = "";
+        render(true);
+      }
+      function closeModal() {
+        modal.close();
+      }
+      function showModal(title, body) {
+        modalOrigin = document.activeElement;
+        modal.innerHTML = `<div class="dialog-head"><h2 id="modal-title">${title}</h2><button class="quiet close" id="close-modal" aria-label="Cancel and close dialog">&times;</button></div><div class="dialog-body">${body}</div>`;
+        $("#close-modal").onclick = closeModal;
+        modal.showModal();
+      }
+      modal.addEventListener("close", () => {
+        modalCleanup();
+        modalCleanup = () => {};
+        if (modalOrigin?.isConnected) modalOrigin.focus();
+        else $("#step-title")?.focus();
+      });
+      modal.addEventListener("keydown", (event) => {
+        if (event.key !== "Tab") return;
+        const controls = [
+          ...modal.querySelectorAll(
+            'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex="0"]',
+          ),
+        ].filter((element) => element.getClientRects().length > 0);
+        const first = controls[0];
+        const last = controls.at(-1);
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last?.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first?.focus();
+        }
+      });
+      function authDialog(role, reconnect = false, chosenId = "") {
+        const name = role === "ai" ? "Copilot AI" : "GitHub acting";
+        const expected = reconnect ? state[role] : "";
+        let selected = expected || chosenId;
+        showModal(
+          `${reconnect ? "Reconnect" : "Connect"} ${name} account`,
+          `<div class="stack" id="auth-body"></div>`,
+        );
+        const body = $("#auth-body");
+        function identityPicker() {
+          body.innerHTML = `<p class="note">Simulated sign-in only. No browser, network, or Keychain access.</p>
+            <label class="field">Demo identity<select id="auth-identity" ${expected ? "disabled" : ""}><option value="">Choose a demo identity</option>${accounts.map((a) => `<option value="${a.id}" ${a.id === selected ? "selected" : ""}>@${a.login} (${a.id})</option>`).join("")}</select></label>
+            <p class="small muted">${role === "ai" ? "AI credentials only. Profile sign-in is not proof of subscription or model access. Logical roles do not guarantee separate upstream OAuth grants." : "Real sign-in would request broad repo access for public and private repositories. Connecting an account never selects all its repositories."}</p>
+            <button class="primary" id="begin-auth" ${selected ? "" : "disabled"}>Simulate browser sign-in</button>`;
+          $("#auth-identity").onchange = (event) => {
+            selected = event.target.value;
+            $("#begin-auth").disabled = !selected;
+          };
+          $("#begin-auth").onclick = device;
+          (expected ? $("#begin-auth") : $("#auth-identity")).focus();
+        }
+        function device() {
+          body.innerHTML = `<p>In the real app, you would enter a one-time code in your browser.</p><div class="device-code">DEMO-CODE</div><p class="small muted">Not a valid GitHub code. No browser was opened.</p><button class="primary" id="auth-return">Simulate successful return</button><button id="auth-deny">Simulate denied sign-in</button>`;
+          $("#auth-return").onclick = confirmIdentity;
+          $("#auth-deny").onclick = () => {
+            body.innerHTML = `<div class="notice error" role="alert"><strong>Sign-in was denied</strong><p>No account was connected. Existing connections are unchanged.</p></div><button id="auth-retry">Try mock sign-in again</button>`;
+            $("#auth-retry").onclick = identityPicker;
+            $("#auth-retry").focus();
+          };
+          $("#auth-return").focus();
+        }
+        function confirmIdentity() {
+          const a = account(selected);
+          body.innerHTML = `<p>Confirm this identity for the <strong>${name}</strong> role.</p><div class="notice"><strong>@${a.login}</strong><p class="small">Stable ID ${a.id}</p></div><p class="small muted">Confirmation connects this mock account everywhere immediately. Closing the wizard does not undo it.</p><p id="auth-error" class="field-error" role="alert" hidden></p><button class="primary" id="confirm-auth">Confirm mock account</button><button id="different-auth">${expected ? "Cancel reconnect" : "Use a different identity"}</button>`;
+          $("#confirm-auth").onclick = () => {
+            const next = clone(library);
+            if (!next.connections[role].includes(selected))
+              next.connections[role].push(selected);
+            if (!commitLibrary(next)) {
+              $("#auth-error").textContent =
+                "The connection was not saved. Retry when browser storage is available.";
+              $("#auth-error").hidden = false;
+              return;
+            }
+            if (state.mode === "editing")
+              role === "ai" ? setAi(selected) : setGithub(selected);
+            closeModal();
+            normalScenario();
+            announce(`Mock ${name} account confirmed. ${a.login}.`);
+          };
+          $("#different-auth").onclick = expected ? closeModal : identityPicker;
+          $("#confirm-auth").focus();
+        }
+        identityPicker();
+      }
+      function newAgentDialog(existing) {
+        let modelsLoaded = false;
+        let nextModelResponse = scenario;
+        let timer;
+        const selectedAccount = existing?.ai ?? state.ai;
+        const selectedTitles = new Set(existing?.doctrines ?? []);
+        showModal(
+          existing ? "Edit reusable Agent" : "Create a reusable Agent",
+          `<form id="agent-form" class="stack" novalidate>
+          <label class="field">Name<input name="name" required maxlength="80" value="${escape(existing?.name ?? "")}" placeholder="e.g. Change reviewer" /></label>
+          <label class="field">Copilot AI account<select name="ai"><option value="">Choose a Copilot account</option>${accounts.map((a) => `<option value="${a.id}" ${a.id === selectedAccount ? "selected" : ""} ${connected("ai", a.id) ? "" : "disabled"}>@${a.login} (${a.id})${connected("ai", a.id) ? "" : " - reconnect required"}</option>`).join("")}</select><small>Your explicit account choice is carried forward. Changing it clears the model choice.</small></label>
+          <div class="row spread"><strong class="small">Account model catalog</strong><button type="button" id="load-models">Load mock models</button></div>
+          <label class="field">Model<select name="model" required disabled><option value="${escape(existing?.model ?? "")}">${escape(existing?.model ?? "Load this account's models first")}</option></select></label>
+          <p class="small muted" id="model-status" role="status">Model names and IDs are illustrative, not live availability claims.</p>
+          <details class="disclosure"><summary>Review instructions</summary><div class="stack">
+          <fieldset class="doctrine-picker" aria-describedby="doctrine-help"><legend>Doctrines (optional)</legend><p class="small muted" id="doctrine-help">Select any number. New and edited doctrines save to the shared library immediately.</p><label class="field"><span class="sr-only">Find doctrines</span><input id="doctrine-search" type="search" placeholder="Find doctrines..." /></label><div class="doctrine-options" role="region" aria-label="Available doctrines" tabindex="0"></div><div class="row spread"><span class="small muted" id="doctrine-count" role="status">0 selected</span><button class="text" type="button" id="new-doctrine">New doctrine</button><button class="text" type="button" id="clear-doctrines">Clear selections</button></div></fieldset><div id="agent-doctrine-editor"></div>
+          <label class="field">Prompt<textarea name="prompt" required>${escape(existing?.prompt ?? "Review this pull request for correctness, risk, and readability.")}</textarea></label><p class="small muted">Reusable text only. No test prompt runs. Machine-authored output retains the PR Sniper signature.</p></div></details>
+          <p class="small muted">Saving this Agent changes the shared library immediately. Closing the wizard will not undo it.</p>
+          <p id="agent-error" class="field-error" role="alert" hidden></p>
+          <div class="row"><button class="primary" type="submit">${existing ? "Save Agent" : "Create Agent"}</button><button type="button" id="cancel-agent">Close</button></div>
+        </form>`,
+        );
+        const form = $("#agent-form");
+        const selectedDoctrines = () => [...selectedTitles];
+        function renderDoctrines() {
+          const query = $("#doctrine-search").value.trim().toLowerCase();
+          $(".doctrine-options", form).innerHTML =
+            library.doctrines
+              .map(
+                (d) =>
+                  `<div class="row spread" ${d.title.toLowerCase().includes(query) ? "" : "hidden"}><label class="row"><input type="checkbox" name="doctrines" value="${escape(d.title)}" ${selectedTitles.has(d.title) ? "checked" : ""} /><span>${escape(d.title)}</span></label><button class="text" type="button" data-edit-agent-doctrine="${escape(d.title)}" aria-label="Edit ${escape(d.title)}">Edit</button></div>`,
+              )
+              .join("") +
+            (library.doctrines.some((d) =>
+              d.title.toLowerCase().includes(query),
+            )
+              ? ""
+              : '<p class="small muted">No matching doctrines. Clear the search or create one.</p>');
+          $("#doctrine-count").textContent = `${selectedTitles.size} selected`;
+        }
+        const afterDoctrineSave = (oldTitle, newTitle) => {
+          if (oldTitle && selectedTitles.has(oldTitle)) {
+            selectedTitles.delete(oldTitle);
+            if (newTitle) selectedTitles.add(newTitle);
+          }
+          renderDoctrines();
+        };
+        $("#doctrine-search").oninput = renderDoctrines;
+        $("#new-doctrine").onclick = () =>
+          editDoctrine($("#agent-doctrine-editor"), "", afterDoctrineSave);
+        form.addEventListener("click", (event) => {
+          const button = event.target.closest("[data-edit-agent-doctrine]");
+          if (button)
+            editDoctrine(
+              $("#agent-doctrine-editor"),
+              button.dataset.editAgentDoctrine,
+              afterDoctrineSave,
+            );
+        });
+        form.addEventListener("change", (event) => {
+          if (event.target.name === "doctrines") {
+            if (event.target.checked) selectedTitles.add(event.target.value);
+            else selectedTitles.delete(event.target.value);
+            $("#doctrine-count").textContent =
+              `${selectedTitles.size} selected`;
+          }
+        });
+        $("#clear-doctrines").onclick = () => {
+          selectedTitles.clear();
+          renderDoctrines();
+        };
+        renderDoctrines();
+        const model = form.elements.model;
+        const ai = form.elements.ai;
+        const load = $("#load-models");
+        const status = $("#model-status");
+        function resetModels(retainSelection = false) {
+          clearTimeout(timer);
+          modelsLoaded = false;
+          const retained = retainSelection ? model.value : "";
+          model.disabled = true;
+          model.innerHTML = `<option value="${escape(retained)}">${escape(retained || "Load this account's models first")}</option>`;
+          load.disabled = false;
+          load.textContent = "Load mock models";
+          status.textContent = "No replacement model is selected.";
+        }
+        modalCleanup = () => clearTimeout(timer);
+        load.onclick = () => {
+          const previousModel = model.value;
+          resetModels(true);
+          const response = nextModelResponse;
+          nextModelResponse = "normal";
+          const pinnedAccount = ai.value;
+          if (!connected("ai", pinnedAccount)) {
+            status.textContent =
+              "Choose a mock AI account before loading models.";
+            return;
+          }
+          status.textContent = "Loading this mock account's model catalog...";
+          load.disabled = true;
+          if (response === "loading") {
+            load.disabled = false;
+            load.textContent = "Cancel mock loading";
+            load.onclick = () => {
+              resetModels(true);
+              status.textContent = "Mock lookup cancelled. Retry when ready.";
+              bindLoader();
+            };
+            return;
+          }
+          timer = setTimeout(() => {
+            if (!modal.open || !form.isConnected || pinnedAccount !== ai.value)
+              return;
+            load.disabled = false;
+            load.textContent = "Retry mock model list";
+            if (response !== "normal") {
+              status.textContent = {
+                empty:
+                  "No models returned. Identity remains verified. Retry the mock model list.",
+                error:
+                  "Model lookup failed. No replacement selected. Retry when ready.",
+                reconnect:
+                  "AI account needs reconnect. Close this dialog and reconnect the mock AI account. Your GitHub acting identity is unchanged.",
+              }[response];
+              if (response === "reconnect") load.disabled = true;
+              return;
+            }
+            modelsLoaded = true;
+            const retainedUnavailable =
+              previousModel &&
+              !catalogs[pinnedAccount].some(
+                (m) => m.id === previousModel && m.enabled,
+              );
+            model.innerHTML =
+              '<option value="">Choose a returned mock model</option>' +
+              (previousModel &&
+              !catalogs[pinnedAccount].some((m) => m.id === previousModel)
+                ? `<option value="${escape(previousModel)}" selected disabled>${escape(previousModel)} - unavailable; retained</option>`
+                : "") +
+              catalogs[pinnedAccount]
+                .map(
+                  (m) =>
+                    `<option value="${m.id}" ${m.enabled ? "" : "disabled"} ${m.id === previousModel ? "selected" : ""}>${m.name} / ${m.id}${m.enabled ? "" : " - blocked by policy"}</option>`,
+                )
+                .join("");
+            model.disabled = false;
+            status.textContent = retainedUnavailable
+              ? "The saved model is unavailable. It is retained until you explicitly replace it; this Agent remains blocked."
+              : "Simulated account-returned models. Choose one explicitly; this is not an inference test.";
+          }, 450);
+        };
+        const originalLoader = load.onclick;
+        function bindLoader() {
+          load.onclick = originalLoader;
+        }
+        ai.onchange = () => {
+          nextModelResponse = "normal";
+          resetModels();
+          bindLoader();
+        };
+        $("#cancel-agent").onclick = closeModal;
+        form.onsubmit = (event) => {
+          event.preventDefault();
+          const name = form.elements.name.value.trim();
+          const prompt = form.elements.prompt.value.trim();
+          const problem =
+            !name || !prompt
+              ? "Give the Agent a name and review prompt."
+              : library.agents.some(
+                    (a) =>
+                      a.id !== existing?.id &&
+                      a.name.toLowerCase() === name.toLowerCase(),
+                  )
+                ? "Choose a unique Agent name."
+                : !(
+                      existing &&
+                      existing.ai === ai.value &&
+                      existing.model === model.value
+                    ) &&
+                    (!modelsLoaded ||
+                      !connected("ai", ai.value) ||
+                      !catalogs[ai.value]?.some(
+                        (m) => m.id === model.value && m.enabled,
+                      ))
+                  ? "Load this account's models and explicitly choose an available model."
+                  : "";
+          $("#agent-error").textContent = problem;
+          $("#agent-error").hidden = !problem;
+          if (problem) return;
+          const created = {
+            id: existing?.id ?? `mock-agent-${crypto.randomUUID()}`,
+            name,
+            ai: ai.value,
+            model: model.value,
+            doctrines: selectedDoctrines(),
+            prompt,
+          };
+          const next = clone(library);
+          const index = next.agents.findIndex((a) => a.id === created.id);
+          if (index < 0) next.agents.push(created);
+          else next.agents[index] = created;
+          for (const configured of next.configurations)
+            if (configured.agent === created.id) configured.ai = created.ai;
+          if (!commitLibrary(next)) {
+            $("#agent-error").textContent =
+              "The Agent was not saved. Retry when browser storage is available.";
+            $("#agent-error").hidden = false;
+            return;
+          }
+          if (state.mode === "editing" || state.agent === created.id) {
+            setAi(created.ai);
+            state.agent = created.id;
+            state.saved = false;
+          }
+          closeModal();
+          normalScenario();
+          announce(`${name} saved to the shared library.`);
+        };
+        form.elements.name.focus();
+      }
+      function resetDemo() {
+        try {
+          const clean = freshLibrary();
+          localStorage.setItem(KEY, JSON.stringify(clean));
+          library = clean;
+          libraryReadable = true;
+          storageAvailable = true;
+          $("#storage-warning").hidden = true;
+          state = fresh();
+          query = "";
+          normalScenario();
+          $("#step-title").focus();
+        } catch {
+          storageWarning(
+            "Could not reset the mock library. Existing data is unchanged.",
+          );
+        }
+      }
+      document.addEventListener("change", (event) => {
+        const target = event.target;
+        if (!content.contains(target)) return;
+        if (target.name === "ai") {
+          setAi(target.value);
+          updateIdentity();
+        }
+        if (target.id === "github-account") {
+          setGithub(target.value);
+          render();
+          $("#github-account").focus();
+          return;
+        }
+        if (target.name === "repository")
+          state.repository = clone(
+            repositoryFixtures[state.github].find((r) => r.id === target.value),
+          );
+        if (target.name === "agent") state.agent = target.value;
+        if (target.name === "frequency") {
+          state.frequency = target.value;
+          $("#minutes").disabled = state.frequency !== "custom";
+          $("#cron").disabled = state.frequency !== "cron";
+          $("#cron-zone").hidden = state.frequency !== "cron";
+        }
+        if (target.id === "auto-run") state.autoRun = target.checked;
+        if (target.id === "auto-post") state.autoPost = target.checked;
+        if (["auto-run", "auto-post"].includes(target.id)) {
+          $("#gate-explanation").textContent = gateExplanation();
+          announce(gateExplanation());
+        }
+        state.saved = false;
+        updateFooter();
+      });
+      content.addEventListener("input", (event) => {
+        const target = event.target;
+        if (target.id === "repo-search") {
+          query = target.value;
+          renderRepositories();
+        }
+        if (["minutes", "cron", "timezone"].includes(target.id)) {
+          state[target.id] = target.value;
+          state.saved = false;
+          updateFooter();
+        }
+      });
+      document.addEventListener("click", (event) => {
+        const button = event.target.closest("button");
+        if (!button || button.disabled) return;
+        if (button.dataset.editAgent) {
+          newAgentDialog(
+            library.agents.find((a) => a.id === button.dataset.editAgent),
+          );
+          return;
+        }
+        if (button.dataset.deleteAgent) {
+          deleteAgent(button.dataset.deleteAgent);
+          return;
+        }
+        if (button.dataset.editDoctrine) {
+          editDoctrine(
+            $("#library-doctrine-editor"),
+            button.dataset.editDoctrine,
+            () => render(),
+          );
+          return;
+        }
+        if (button.dataset.deleteDoctrine) {
+          deleteDoctrine(button.dataset.deleteDoctrine, () => render());
+          return;
+        }
+        if (button.dataset.accountRole) {
+          const role = button.dataset.accountRole;
+          const id = button.dataset.accountId;
+          if (button.dataset.connected === "true") {
+            const next = clone(library);
+            next.connections[role] = next.connections[role].filter(
+              (value) => value !== id,
+            );
+            if (commitLibrary(next)) render();
+          } else authDialog(role, false, id);
+          return;
+        }
+        if (button.dataset.editConfiguration) {
+          const saved = library.configurations.find(
+            (c) => c.id === button.dataset.editConfiguration,
+          );
+          if (saved) {
+            state = { ...fresh(), ...clone(saved), configurationId: saved.id };
+            render(true);
+          }
+          return;
+        }
+        if (button.dataset.step !== undefined) {
+          navigate(Number(button.dataset.step));
+          return;
+        }
+        const action = button.dataset.action;
+        if (action === "connect-ai") authDialog("ai");
+        if (action === "connect-github") authDialog("github");
+        if (action === "new-agent") newAgentDialog();
+        if (action === "new-doctrine")
+          editDoctrine($("#library-doctrine-editor"), "", () => render());
+        if (action === "library") {
+          state.mode = "library";
+          render(true);
+        }
+        if (action === "wizard") {
+          state.mode = "editing";
+          render(true);
+        }
+        if (action === "start") {
+          state = fresh();
+          query = "";
+          normalScenario();
+          $("#step-title").focus();
+        }
+        if (action === "recover") {
+          if (scenario === "reconnect")
+            authDialog(state.step === 1 ? "github" : "ai", true);
+          else normalScenario();
+        }
+        if (action === "resolve-repo") {
+          const name = $("#manual-repo")
+            .value.trim()
+            .replace(/^https:\/\/github\.com\//i, "")
+            .replace(/\.git$/, "")
+            .replace(/\/$/, "");
+          const resolved = (repositoryFixtures[state.github] ?? []).find(
+            (r) => r.name.toLowerCase() === name.toLowerCase(),
+          );
+          if (!resolved) {
+            $("#repo-error").hidden = false;
+            $("#repo-error").textContent =
+              "Not found in this account's mock fixtures. Try northstar-demo/desktop.";
+          } else {
+            state.repository = clone(resolved);
+            state.saved = false;
+            normalScenario();
+            announce(`Mock repository ${resolved.name} explicitly selected.`);
+          }
+        }
+        if (action === "edit") {
+          state.mode = "editing";
+          state.step = 0;
+          render(true);
+        }
+        if (action === "done") closeWizard();
+        if (action === "another") {
+          const previous = state;
+          state = {
+            ...fresh(),
+            ai: previous.ai,
+            github: previous.github,
+            step: 1,
+          };
+          render(true);
+          announce(
+            "Choose another repository. Your previous explicit account choices are retained; automation gates are off.",
+          );
+        }
+      });
+      $("#next").onclick = () => {
+        if ($("#next").disabled) return;
+        if (state.step < 5) navigate(state.step + 1);
+        else if (scenario === "error") {
+          saveError =
+            "Mock configuration save failed. Resource changes are already saved and unaffected. Choose Available mock data in Prototype controls, then retry.";
+          render();
+          $("#save-error").focus();
+        } else {
+          const next = clone(library);
+          const id =
+            state.configurationId ||
+            `mock-configuration-${crypto.randomUUID()}`;
+          const value = { id, ...configuration() };
+          const index = next.configurations.findIndex((c) => c.id === id);
+          if (index < 0) next.configurations.push(value);
+          else next.configurations[index] = value;
+          if (!commitLibrary(next)) {
+            saveError =
+              "Could not save this repository configuration. Existing connections and library resources are unchanged.";
+            render();
+            $("#save-error").focus();
+            return;
+          }
+          state.configurationId = id;
+          state.saved = true;
+          state.mode = "complete";
+          render(true);
+          if (state.saved)
+            announce(
+              "Mock configuration saved. No review or publication occurred.",
+            );
+        }
+      };
+      $("#back").onclick = () => navigate(state.step - 1);
+      $("#close-wizard").onclick = closeWizard;
+      $("#close-window").onclick = closeWizard;
+      $("#scenario").onchange = (event) => {
+        scenario = event.target.value;
+        saveError = "";
+        render();
+        announce(
+          `Mock scenario: ${event.target.selectedOptions[0].textContent}.`,
+        );
+      };
+      $("#reset-demo").onclick = resetDemo;
+      $("#prototype-tools").ontoggle = (event) => {
+        $("#tools-panel").hidden = !event.target.open;
+      };
+      document.addEventListener("keydown", (event) => {
+        if (modal.open || state.mode !== "editing") return;
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeWizard();
+        }
+        if (
+          (event.metaKey || event.ctrlKey) &&
+          event.key === "Enter" &&
+          state.step === 5
+        ) {
+          event.preventDefault();
+          $("#next").click();
+        }
+      });
+      render();
+    </script>
+  </body>
+</html>
