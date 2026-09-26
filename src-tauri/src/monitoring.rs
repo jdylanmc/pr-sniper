@@ -68,6 +68,7 @@ pub struct MonitoringState {
 
 #[derive(Debug, Clone)]
 pub struct PollTicket {
+    pub health_key: String,
     pub repository_id: String,
     pub name: String,
     pub provider_account_id: String,
@@ -76,6 +77,8 @@ pub struct PollTicket {
     pub watched_authors: Vec<WatchedIdentity>,
     pub trigger_policy: String,
     pub updated_after: Option<String>,
+    pub manual: bool,
+    pub scheduled_next_run: i64,
 }
 
 pub struct PollResult {
@@ -86,6 +89,7 @@ pub struct PollResult {
 #[derive(Default)]
 pub struct Monitor {
     state: MonitoringState,
+    leases: BTreeMap<String, String>,
 }
 
 impl Monitor {
@@ -98,7 +102,10 @@ impl Monitor {
                 health.next_run = 0;
             }
         }
-        Ok(Self { state })
+        Ok(Self {
+            state,
+            leases: BTreeMap::new(),
+        })
     }
 
     pub fn snapshot(&self) -> Vec<ScheduleHealth> {
@@ -117,10 +124,11 @@ impl Monitor {
         if self.state != previous {
             if let Err(error) = store.save_monitoring_state(&self.state) {
                 for ticket in &tickets {
-                    if let Some(health) = self.state.health.get_mut(&ticket.repository_id) {
+                    if let Some(health) = self.state.health.get_mut(&ticket.health_key) {
                         health.in_flight = false;
                         health.last_failure = Some("storage".into());
                     }
+                    self.leases.remove(&ticket.provider_repository_id);
                 }
                 return Err(error);
             }
@@ -134,131 +142,156 @@ impl Monitor {
             .iter()
             .map(|repository| repository.id.as_str())
             .collect();
-        self.state
-            .health
-            .retain(|repository_id, _| configured.contains(repository_id.as_str()));
-        self.state
-            .cursors
-            .retain(|repository_id, _| configured.contains(repository_id.as_str()));
-        let mut checking_repositories: HashSet<_> = self
-            .state
-            .health
-            .values()
-            .filter(|health| health.in_flight)
-            .filter_map(|health| health.provider_repository_id.clone())
-            .collect();
+        self.state.health.retain(|key, health| {
+            configured.contains(health.repository_id.as_str())
+                && (key == &health.repository_id || key.contains(":assignment:"))
+        });
+        self.state.cursors.retain(|key, _| {
+            key.split_once(":assignment:")
+                .map_or(configured.contains(key.as_str()), |(repository_id, _)| {
+                    configured.contains(repository_id)
+                })
+        });
+        let mut checking_repositories: HashSet<_> = self.leases.keys().cloned().collect();
 
         let mut tickets = Vec::new();
         for repository in &settings.repositories {
             let policy = repository.overrides.effective(&settings.defaults);
-            let schedule_key = schedule_key(&policy.schedule);
-            let health = self
-                .state
-                .health
-                .entry(repository.id.clone())
-                .or_insert_with(|| ScheduleHealth {
-                    repository_id: repository.id.clone(),
-                    name: repository.name.clone(),
-                    schedule_key: String::new(),
-                    provider_repository_id: None,
-                    enabled: repository.enabled,
-                    last_attempt: None,
-                    last_success: None,
-                    next_run: 0,
-                    schedule_available: false,
-                    last_failure: None,
-                    in_flight: false,
-                });
-
-            let name_changed = health.name != repository.name;
-            health.name = repository.name.clone();
-            health.enabled = repository.enabled;
-            if name_changed {
-                health.last_success = None;
-                health.next_run = 0;
-                self.state.cursors.remove(&repository.id);
-            }
-            if !repository.enabled {
-                continue;
-            }
-
-            let Some(binding) = repository.account_binding() else {
-                health.schedule_available = false;
-                health.last_failure = Some("account_binding_required".into());
-                continue;
+            let assignments: Vec<(Option<String>, Schedule)> = if repository.assignments.is_empty()
+            {
+                vec![(None, policy.schedule.clone())]
+            } else {
+                repository
+                    .assignments
+                    .iter()
+                    .map(|assignment| (Some(assignment.id.clone()), assignment.schedule.clone()))
+                    .collect()
             };
-            if binding.account.provider != ProviderId::Github
-                || binding.repository.provider != ProviderId::Github
-            {
-                health.schedule_available = false;
-                health.last_failure = Some("provider_unavailable".into());
-                continue;
-            }
-            if !health.in_flight {
-                health.provider_repository_id = Some(binding.repository.repository_id.clone());
-            }
-            if health.in_flight || checking_repositories.contains(&binding.repository.repository_id)
-            {
-                continue;
-            }
+            for (assignment_id, schedule) in assignments {
+                let health_key = assignment_id.as_deref().map_or_else(
+                    || repository.id.clone(),
+                    |id| format!("{}:assignment:{id}", repository.id),
+                );
+                let schedule_key = schedule_key(&schedule);
+                let health = self
+                    .state
+                    .health
+                    .entry(health_key.clone())
+                    .or_insert_with(|| ScheduleHealth {
+                        repository_id: repository.id.clone(),
+                        name: repository.name.clone(),
+                        schedule_key: String::new(),
+                        provider_repository_id: None,
+                        enabled: repository.enabled,
+                        last_attempt: None,
+                        last_success: None,
+                        next_run: 0,
+                        schedule_available: false,
+                        last_failure: None,
+                        in_flight: false,
+                    });
 
-            let mut watched_authors = policy.watched_authors.clone();
-            watched_authors.extend(repository.watched_authors.iter().cloned());
-            watched_authors.sort_by(|left, right| left.id.cmp(&right.id));
-            watched_authors.dedup_by(|left, right| left.id == right.id);
-            let policy_key = match trigger_policy(&watched_authors, policy.reviewer_assignment) {
-                Ok(key) => key,
-                Err(_) => {
-                    health.schedule_available = false;
-                    health.last_failure = Some("configuration".into());
+                let name_changed = health.name != repository.name;
+                health.name = repository.name.clone();
+                health.enabled = repository.enabled;
+                if name_changed {
+                    health.last_success = None;
+                    health.next_run = 0;
+                    self.state.cursors.remove(&health_key);
+                }
+                if !repository.enabled {
                     continue;
                 }
-            };
-            let cursor = self
-                .state
-                .cursors
-                .get(&repository.id)
-                .filter(|cursor| {
-                    cursor.name == repository.name
-                        && cursor.account_id == binding.account.account_id
-                        && cursor.repository_id == binding.repository.repository_id
-                        && cursor.trigger_policy == policy_key
-                })
-                .cloned();
-            if self.state.cursors.contains_key(&repository.id) && cursor.is_none() {
-                self.state.cursors.remove(&repository.id);
-            }
 
-            let schedule_changed = health.schedule_key != schedule_key;
-            let interrupted = health.last_failure.as_deref() == Some("interrupted");
-            if schedule_changed || health.next_run == 0 {
-                health.next_run = next_run(&policy.schedule, now).unwrap_or(0);
-                health.schedule_key = schedule_key;
-            }
-            health.schedule_available = health.next_run > 0;
-            if !health.schedule_available {
-                health.last_failure = Some("invalid_schedule".into());
-                continue;
-            }
-            if !check_now && now < health.next_run && !interrupted {
-                continue;
-            }
+                let Some(binding) = repository.account_binding() else {
+                    health.schedule_available = false;
+                    health.last_failure = Some("account_binding_required".into());
+                    continue;
+                };
+                if binding.account.provider != ProviderId::Github
+                    || binding.repository.provider != ProviderId::Github
+                {
+                    health.schedule_available = false;
+                    health.last_failure = Some("provider_unavailable".into());
+                    continue;
+                }
+                if !health.in_flight {
+                    health.provider_repository_id = Some(binding.repository.repository_id.clone());
+                }
+                if health.in_flight {
+                    continue;
+                }
 
-            health.last_attempt = Some(now);
-            health.last_failure = None;
-            health.in_flight = true;
-            health.next_run = next_run(&policy.schedule, now).unwrap_or(0);
-            checking_repositories.insert(binding.repository.repository_id.clone());
-            tickets.push(PollTicket {
-                repository_id: repository.id.clone(),
-                name: repository.name.clone(),
-                provider_account_id: binding.account.account_id,
-                provider_repository_id: binding.repository.repository_id,
-                policy,
-                watched_authors,
-                trigger_policy: policy_key,
-                updated_after: cursor.and_then(|cursor| cursor.updated_after.clone()),
-            });
+                let mut watched_authors = policy.watched_authors.clone();
+                watched_authors.extend(repository.watched_authors.iter().cloned());
+                watched_authors.sort_by(|left, right| left.id.cmp(&right.id));
+                watched_authors.dedup_by(|left, right| left.id == right.id);
+                let policy_key = match trigger_policy(&watched_authors, policy.reviewer_assignment)
+                {
+                    Ok(key) => key,
+                    Err(_) => {
+                        health.schedule_available = false;
+                        health.last_failure = Some("configuration".into());
+                        continue;
+                    }
+                };
+                let cursor = self
+                    .state
+                    .cursors
+                    .get(&health_key)
+                    .filter(|cursor| {
+                        cursor.name == repository.name
+                            && cursor.account_id == binding.account.account_id
+                            && cursor.repository_id == binding.repository.repository_id
+                            && cursor.trigger_policy == policy_key
+                    })
+                    .cloned();
+                if self.state.cursors.contains_key(&health_key) && cursor.is_none() {
+                    self.state.cursors.remove(&health_key);
+                }
+
+                let schedule_changed = health.schedule_key != schedule_key;
+                let interrupted = health.last_failure.as_deref() == Some("interrupted");
+                if schedule_changed || health.next_run == 0 {
+                    health.next_run = next_run(&schedule, now).unwrap_or(0);
+                    health.schedule_key = schedule_key;
+                }
+                health.schedule_available = health.next_run > 0;
+                if !health.schedule_available {
+                    health.last_failure = Some("invalid_schedule".into());
+                    continue;
+                }
+                if !check_now && now < health.next_run && !interrupted {
+                    continue;
+                }
+                if checking_repositories.contains(&binding.repository.repository_id) {
+                    continue;
+                }
+
+                let scheduled_next_run = health.next_run;
+                health.last_attempt = Some(now);
+                health.last_failure = None;
+                health.in_flight = true;
+                if !check_now {
+                    health.next_run = next_run(&schedule, now).unwrap_or(0);
+                }
+                checking_repositories.insert(binding.repository.repository_id.clone());
+                self.leases
+                    .insert(binding.repository.repository_id.clone(), health_key.clone());
+                tickets.push(PollTicket {
+                    health_key,
+                    repository_id: repository.id.clone(),
+                    name: repository.name.clone(),
+                    provider_account_id: binding.account.account_id,
+                    provider_repository_id: binding.repository.repository_id,
+                    policy: policy.clone(),
+                    watched_authors,
+                    trigger_policy: policy_key,
+                    updated_after: cursor.and_then(|cursor| cursor.updated_after.clone()),
+                    manual: check_now,
+                    scheduled_next_run,
+                });
+            }
         }
         tickets
     }
@@ -270,12 +303,9 @@ impl Monitor {
         result: Result<PollResult, ConnectionError>,
         now: i64,
     ) -> Result<(), String> {
-        let health = self
-            .state
-            .health
-            .get_mut(&ticket.repository_id)
-            .ok_or("Monitoring attempt no longer exists.")?;
-        health.in_flight = false;
+        if let Some(health) = self.state.health.get_mut(&ticket.health_key) {
+            health.in_flight = false;
+        }
 
         let outcome = result.and_then(|result| {
             let settings = store
@@ -330,14 +360,7 @@ impl Monitor {
                 if pull.base_repository_id != ticket.provider_repository_id {
                     return Err(ConnectionError::RepositoryChanged);
                 }
-                if ticket
-                    .updated_after
-                    .as_deref()
-                    .and_then(|cursor| chrono::DateTime::parse_from_rfc3339(cursor).ok())
-                    .is_some_and(|cursor| updated < cursor)
-                    || pull.state != Lifecycle::Open
-                    || pull.draft
-                {
+                if pull.state != Lifecycle::Open || pull.draft {
                     continue;
                 }
                 let watched_author = pull.author.as_ref().is_some_and(|author| {
@@ -386,6 +409,11 @@ impl Monitor {
                     existing.repository_name = job.repository_name;
                     existing.title = job.title;
                     existing.author_login = job.author_login;
+                    existing.author_id = job.author_id;
+                    existing.watched_author = job.watched_author;
+                    existing.requested_reviewer = job.requested_reviewer;
+                    existing.waiting = job.waiting;
+                    existing.detected_at = job.detected_at;
                 } else {
                     jobs.push(job);
                 }
@@ -396,7 +424,7 @@ impl Monitor {
                     .map_err(|_| ConnectionError::Configuration)?;
             }
             self.state.cursors.insert(
-                ticket.repository_id.clone(),
+                ticket.health_key.clone(),
                 PollCursor {
                     name: ticket.name.clone(),
                     account_id: result.connection.identity.id,
@@ -409,11 +437,11 @@ impl Monitor {
             Ok(())
         });
 
-        let health = self
-            .state
-            .health
-            .get_mut(&ticket.repository_id)
-            .ok_or("Monitoring attempt no longer exists.")?;
+        self.leases.remove(&ticket.provider_repository_id);
+        let Some(health) = self.state.health.get_mut(&ticket.health_key) else {
+            self.state.cursors.remove(&ticket.health_key);
+            return outcome.map_err(|error| format!("Repository check failed: {error:?}"));
+        };
         health.last_failure = outcome.as_ref().err().map(|error| format!("{error:?}"));
         if outcome.is_ok() {
             health.last_success = Some(now);
@@ -423,7 +451,24 @@ impl Monitor {
                 .repositories
                 .iter()
                 .find(|repository| repository.id == ticket.repository_id && repository.enabled)
-                .map(|repository| repository.overrides.effective(&settings.defaults).schedule),
+                .map(|repository| {
+                    if repository.assignments.is_empty() {
+                        repository.overrides.effective(&settings.defaults).schedule
+                    } else {
+                        let assignment_id = ticket
+                            .health_key
+                            .split_once(":assignment:")
+                            .map(|(_, id)| id);
+                        repository
+                            .assignments
+                            .iter()
+                            .find(|assignment| Some(assignment.id.as_str()) == assignment_id)
+                            .map(|assignment| assignment.schedule.clone())
+                            .unwrap_or_else(|| {
+                                repository.overrides.effective(&settings.defaults).schedule
+                            })
+                    }
+                }),
             Err(error) => {
                 health.schedule_available = false;
                 health.next_run = 0;
@@ -433,7 +478,12 @@ impl Monitor {
             }
         };
         let schedule_error = if let Some(schedule) = schedule {
-            match next_run(&schedule, now) {
+            let next = if ticket.manual && ticket.scheduled_next_run > now {
+                Ok(ticket.scheduled_next_run)
+            } else {
+                next_run(&schedule, now)
+            };
+            match next {
                 Ok(next) => {
                     health.next_run = next;
                     health.schedule_available = true;
