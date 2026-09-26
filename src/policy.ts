@@ -30,9 +30,14 @@ export interface Agent {
   id: string;
   name: string;
   model: string;
+  ai_account?: AiAccount;
   doctrine?: string;
   prompt: string;
   signature: string;
+}
+export interface AiAccount {
+  provider: "copilot";
+  account_id: string;
 }
 /** One agent running on one repository, with its own timer and
  * permissions. `approve` is stored but never executed. */

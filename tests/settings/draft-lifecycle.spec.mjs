@@ -3,37 +3,36 @@ import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   addRepository,
-  advancedSchedule,
+  assignment,
+  saveAssignment,
   closeDialog,
-  repositorySettings,
   saveChanges,
   section,
+  seedAgent,
+  setAgentPrompt,
+  editAgent,
+  setSchedule,
 } from "./navigation.mjs";
 
 test.beforeEach(async ({ page, store }) => {
   await store("seed_settings", { launch_at_login: true });
-  await store("save_repository", { repository: "octo/hello-world" });
-  await store("save_repository", { repository: "neighbor/keep-me" });
+  await seedAgent(store);
+  for (const repository of ["octo/hello-world", "neighbor/keep-me"])
+    await store("save_repository", { repository });
   await page.goto("/?view=settings");
-  await section(page, "Review defaults");
-  await expect(page.getByLabel("Review prompt", { exact: true })).toBeVisible();
 });
 
 for (const action of ["add", "disable"]) {
-  test(`unsaved global policy survives an unrelated repository ${action}`, async ({
+  test(`unsaved Agent prompt survives an unrelated repository ${action}`, async ({
     page,
     store,
   }) => {
     const original = (await store("snapshot")).settings;
-    const draft = "Unsaved global instructions must not disappear.";
-    await page.getByLabel("Review prompt", { exact: true }).fill(draft);
-    if (action === "add") {
-      await addRepository(page, "third/new");
-      await expect(
-        page.getByRole("article", { name: "third/new", exact: true }),
-      ).toBeVisible();
-    } else {
-      await section(page, "Repositories");
+    const prompt = "Unsaved Agent instructions must not disappear.";
+    await setAgentPrompt(page, prompt);
+    if (action === "add") await addRepository(page, "third/new");
+    else {
+      await section(page, "Integrations");
       await page
         .getByRole("checkbox", {
           name: "Monitor octo/hello-world",
@@ -41,151 +40,97 @@ for (const action of ["add", "disable"]) {
         })
         .uncheck();
     }
-    await section(page, "Review defaults");
-    await expect(page.getByLabel("Review prompt", { exact: true })).toHaveValue(
-      draft,
-    );
+    const modal = await editAgent(page);
+    await expect(
+      modal.getByRole("textbox", { name: "Prompt", exact: true }),
+    ).toHaveValue(prompt);
+    await closeDialog(page);
     expect((await store("snapshot")).settings).toEqual(original);
     await saveChanges(page);
     const saved = (await store("snapshot")).settings;
-    expect(saved.defaults).toEqual({ ...original.defaults, prompt: draft });
-    if (action === "add") {
+    expect(saved.agents[0]).toEqual({ ...original.agents[0], prompt });
+    expect(saved.defaults).toEqual(original.defaults);
+    if (action === "add")
       expect(saved.repositories.map(({ name }) => name)).toContain("third/new");
-    } else {
-      expect(
-        saved.repositories.find(({ name }) => name === "octo/hello-world")
-          .enabled,
-      ).toBe(false);
-    }
+    else expect(saved.repositories[0].enabled).toBe(false);
   });
 }
 
-for (const otherForm of ["global", "neighbor"]) {
-  test(`repository policy draft survives editing ${otherForm} until global Save without freezing inherited fields`, async ({
+for (const other of ["agent", "neighbor"]) {
+  test(`repository assignment draft survives editing ${other} until global Save with independent timers`, async ({
     page,
     store,
   }) => {
     const before = (await store("snapshot")).settings;
-    let modal = await repositorySettings(page, "octo/hello-world");
-    await modal
-      .getByLabel("Override review instructions", { exact: true })
-      .check();
-    await modal
-      .getByLabel("Review prompt", { exact: true })
-      .fill("Unsaved primary override.");
-    await closeDialog(page);
-    if (otherForm === "global") {
-      await section(page, "Review defaults");
-      await page
-        .getByLabel("Review prompt", { exact: true })
-        .fill("New authoritative global prompt.");
-      await section(page, "Automation");
-      await advancedSchedule(page);
-      await page.getByLabel("Interval minutes", { exact: true }).fill("25");
-    } else {
-      const neighbor = await repositorySettings(page, "neighbor/keep-me");
-      await neighbor
-        .getByLabel("Override review instructions", { exact: true })
-        .check();
-      await neighbor
-        .getByLabel("Review prompt", { exact: true })
-        .fill("Saved neighbor instructions.");
-      await closeDialog(page);
+    let modal = await assignment(page, "octo/hello-world");
+    await setSchedule(modal, { kind: "interval", minutes: 7, timezone: "UTC" });
+    await saveAssignment(page, modal);
+    if (other === "agent")
+      await setAgentPrompt(page, "Updated reusable Agent.");
+    else {
+      modal = await assignment(page, "neighbor/keep-me");
+      await setSchedule(modal, {
+        kind: "interval",
+        minutes: 25,
+        timezone: "Europe/London",
+      });
+      await saveAssignment(page, modal);
     }
     expect((await store("snapshot")).settings).toEqual(before);
-    modal = await repositorySettings(page, "octo/hello-world");
+    modal = await assignment(page, "octo/hello-world", 0);
     await expect(
-      modal.getByLabel("Override review instructions", { exact: true }),
-    ).toBeChecked();
-    await expect(
-      modal.getByLabel("Review prompt", { exact: true }),
-    ).toHaveValue("Unsaved primary override.");
-    if (otherForm === "global") {
-      await advancedSchedule(modal);
-      await expect(
-        modal.getByLabel("Interval minutes", { exact: true }),
-      ).toHaveValue("25");
-      await expect(
-        modal.getByLabel("Override schedule", { exact: true }),
-      ).not.toBeChecked();
-    }
+      modal.getByLabel("Interval minutes", { exact: true }),
+    ).toHaveValue("7");
+    await closeDialog(page);
     await closeDialog(page);
     await saveChanges(page);
     await page.reload();
     const saved = (await store("snapshot")).settings;
-    const primary = saved.repositories.find(
-      ({ name }) => name === "octo/hello-world",
-    );
-    expect(primary.overrides).toEqual({ prompt: "Unsaved primary override." });
-    if (otherForm === "global") {
-      expect(saved.defaults.prompt).toBe("New authoritative global prompt.");
-      expect(saved.defaults.schedule.minutes).toBe(25);
-    } else {
-      expect(
-        saved.repositories.find(({ name }) => name === "neighbor/keep-me")
-          .overrides,
-      ).toEqual({ prompt: "Saved neighbor instructions." });
-    }
-    modal = await repositorySettings(page, "octo/hello-world");
-    await expect(
-      modal.getByLabel("Review prompt", { exact: true }),
-    ).toHaveValue("Unsaved primary override.");
-    await expect(
-      modal.getByLabel("Override schedule", { exact: true }),
-    ).not.toBeChecked();
+    expect(saved.repositories[0].assignments[0].schedule.minutes).toBe(7);
+    if (other === "agent")
+      expect(saved.agents[0].prompt).toBe("Updated reusable Agent.");
+    else expect(saved.repositories[1].assignments[0].schedule.minutes).toBe(25);
+    expect(saved.defaults).toEqual(before.defaults);
   });
 }
 
-test("a clean-focus snapshot cannot overwrite edits entered before its reply", async ({
+test("a clean-focus snapshot cannot overwrite Agent edits entered before its reply", async ({
   page,
   store,
   ipc,
 }) => {
-  const original = (await store("snapshot")).settings.defaults;
+  const original = (await store("snapshot")).settings;
+  await section(page, "Agents");
   const hold = ipc.holdNext("snapshot");
   try {
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await hold.arrived;
-    await page
-      .getByLabel("Review prompt", { exact: true })
-      .fill("Draft entered after focus snapshot began.");
+    const modal = await editAgent(page);
+    const prompt = modal.getByRole("textbox", { name: "Prompt", exact: true });
+    await prompt.fill("Draft entered after focus snapshot began.");
     hold.release();
     await page.evaluate(() => window.__settingsIdle());
-    await expect(page.getByLabel("Review prompt", { exact: true })).toHaveValue(
+    await expect(prompt).toHaveValue(
       "Draft entered after focus snapshot began.",
     );
-    expect((await store("snapshot")).settings.defaults).toEqual(original);
+    expect((await store("snapshot")).settings).toEqual(original);
   } finally {
     hold.release();
-    await page.evaluate(() => window.__settingsIdle());
   }
 });
 
-for (const target of ["global", "repository"]) {
-  test(`${target} policy save disables the global editor and navigation while its reply is pending`, async ({
+for (const target of ["agent", "assignment"]) {
+  test(`${target} save disables editors and navigation while its reply is pending`, async ({
     page,
     store,
     ipc,
   }) => {
-    if (target === "repository") {
-      const modal = await repositorySettings(page, "octo/hello-world");
-      await modal
-        .getByLabel("Override review instructions", { exact: true })
-        .check();
-      await modal
-        .getByLabel("Review prompt", { exact: true })
-        .fill("Policy submitted before held reply.");
-      await closeDialog(page);
-    } else {
-      await page
-        .getByLabel("Review prompt", { exact: true })
-        .fill("Policy submitted before held reply.");
-    }
+    if (target === "agent")
+      await setAgentPrompt(page, "Submitted before held reply.");
+    else await saveAssignment(page, await assignment(page, "octo/hello-world"));
     const hold = ipc.holdNext("save_preferences");
     try {
-      await page
-        .getByRole("button", { name: "Save changes", exact: true })
-        .click();
+      await page.locator("#save-settings").click();
       await hold.arrived;
       const controls = await page
         .locator(
@@ -197,63 +142,44 @@ for (const target of ["global", "repository"]) {
       hold.release();
       await page.evaluate(() => window.__settingsIdle());
       const saved = (await store("snapshot")).settings;
-      const prompt =
-        target === "global"
-          ? saved.defaults.prompt
-          : saved.repositories.find(({ name }) => name === "octo/hello-world")
-              .overrides.prompt;
-      expect(prompt).toBe("Policy submitted before held reply.");
-      if (target === "repository") {
-        const modal = await repositorySettings(page, "octo/hello-world");
-        await expect(
-          modal.getByLabel("Review prompt", { exact: true }),
-        ).toBeEnabled();
-        await expect(
-          modal.getByLabel("Check frequency", { exact: true }),
-        ).toBeDisabled();
-      } else {
-        await expect(
-          page.getByLabel("Review prompt", { exact: true }),
-        ).toBeEnabled();
-      }
+      if (target === "agent")
+        expect(saved.agents[0].prompt).toBe("Submitted before held reply.");
+      else expect(saved.repositories[0].assignments).toHaveLength(1);
+      await expect(
+        page
+          .getByRole("navigation", { name: "Settings sections" })
+          .getByRole("button", { name: "Preferences" }),
+      ).toBeEnabled();
     } finally {
       hold.release();
-      await page.evaluate(() => window.__settingsIdle());
     }
   });
 }
 
-test("failed repository policy save restores editable overrides but not inherited controls", async ({
+test("failed assignment save restores editable fields but keeps Approve disabled", async ({
   page,
   dataRoot,
 }) => {
   const before = await readFile(join(dataRoot, "config/settings.json"));
-  let modal = await repositorySettings(page, "octo/hello-world");
-  await modal
-    .getByLabel("Override review instructions", { exact: true })
-    .check();
-  await modal
-    .getByLabel("Review prompt", { exact: true })
-    .fill("Keep editable after failed save.");
-  await closeDialog(page);
+  let modal = await assignment(page, "octo/hello-world");
+  await setSchedule(modal, { kind: "interval", minutes: 42, timezone: "UTC" });
+  await saveAssignment(page, modal);
   await mkdir(join(dataRoot, "config/settings.json.tmp"));
-  await page.getByRole("button", { name: "Save changes", exact: true }).click();
-  await expect(page.getByRole("alert")).toBeVisible();
+  await page.locator("#save-settings").click();
+  await expect(page.locator("#error")).toBeVisible();
+  await expect(page.locator("#save-settings")).toBeEnabled();
+  modal = await assignment(page, "octo/hello-world", 0);
   await expect(
-    page.getByRole("button", { name: "Save changes", exact: true }),
-  ).toBeEnabled();
-  modal = await repositorySettings(page, "octo/hello-world");
-  await expect(
-    modal.getByLabel("Review prompt", { exact: true }),
-  ).toBeEnabled();
-  await expect(modal.getByLabel("Review prompt", { exact: true })).toHaveValue(
-    "Keep editable after failed save.",
-  );
-  await expect(
-    modal.getByLabel("Override review instructions", { exact: true }),
+    modal.getByRole("combobox", {
+      name: "Check for pull requests",
+      exact: true,
+    }),
   ).toBeEnabled();
   await expect(
-    modal.getByLabel("Check frequency", { exact: true }),
+    modal.getByLabel("Interval minutes", { exact: true }),
+  ).toHaveValue("42");
+  await expect(
+    modal.getByRole("checkbox", { name: /^Approve/ }),
   ).toBeDisabled();
   expect(await readFile(join(dataRoot, "config/settings.json"))).toEqual(
     before,

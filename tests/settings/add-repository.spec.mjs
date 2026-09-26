@@ -14,10 +14,10 @@ test("adding a repository in Settings persists its canonical name after restart"
   await test.step("existing Settings renders real persisted startup preference", async () => {
     await page.goto("/?view=settings");
     await expect(
-      page.getByRole("heading", { name: "Repositories", exact: true }),
+      page.getByRole("heading", { name: "Integrations", exact: true }),
     ).toBeVisible();
     await expect(await startupPreference(page)).toBeChecked();
-    await expect(page.getByLabel("Request launch at login")).toBeDisabled();
+    await expect(await startupPreference(page)).toBeDisabled();
     await expect(page.getByRole("alert")).toBeHidden();
   });
 

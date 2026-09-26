@@ -99,6 +99,64 @@ impl Transport for HttpTransport {
     }
 }
 
+pub async fn current_identity_async(pair: &TokenPair) -> Result<super::Identity, ConnectionError> {
+    let client = reqwest::Client::builder()
+        .user_agent("PR-Sniper/0.1")
+        .redirect(Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|_| ConnectionError::Network)?;
+    let secret = zeroize::Zeroizing::new(format!("Bearer {}", pair.access_token()));
+    let mut authorization =
+        HeaderValue::from_str(&secret).map_err(|_| ConnectionError::InvalidResponse)?;
+    authorization.set_sensitive(true);
+    let mut response = client
+        .get("https://api.github.com/user")
+        .header(AUTHORIZATION, authorization)
+        .header(ACCEPT, "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .send()
+        .await
+        .map_err(|error| {
+            if error.is_timeout() {
+                ConnectionError::Timeout
+            } else {
+                ConnectionError::Network
+            }
+        })?;
+    let status = response.status().as_u16();
+    let mut headers = BTreeMap::new();
+    for name in ["x-ratelimit-remaining", "retry-after", "x-github-sso"] {
+        if let Some(value) = response.headers().get(name) {
+            headers.insert(
+                name.into(),
+                value
+                    .to_str()
+                    .map_err(|_| ConnectionError::InvalidResponse)?
+                    .into(),
+            );
+        }
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| ConnectionError::Network)?
+    {
+        if body.len() + chunk.len() > 64 * 1024 {
+            return Err(ConnectionError::InvalidResponse);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let (value, _) = super::provider::parse_response(Response {
+        status,
+        headers,
+        body,
+    })?;
+    super::verify_identity(&value, None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

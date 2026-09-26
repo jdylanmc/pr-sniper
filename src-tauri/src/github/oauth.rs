@@ -54,15 +54,39 @@ where
     C: SyncHttpClient,
     F: FnOnce(&url::Url) -> Result<(), OAuthError>,
 {
+    request_device_authorization_for_with(http_client, open_browser, OAuthPurpose::Repository)
+}
+
+#[derive(Clone, Copy)]
+pub enum OAuthPurpose {
+    Repository,
+    Copilot,
+}
+
+pub fn request_device_authorization_for_with<C, F>(
+    http_client: &C,
+    open_browser: F,
+    purpose: OAuthPurpose,
+) -> Result<PreparedDeviceAuthorization, OAuthError>
+where
+    C: SyncHttpClient,
+    F: FnOnce(&url::Url) -> Result<(), OAuthError>,
+{
     let diagnostic_http =
         |request| diagnostic_oauth_request(http_client, request, "device_authorization");
     let response: DeviceAuthorizationResponse<EmptyExtraDeviceAuthorizationFields> =
         device_oauth_client()?
             .exchange_device_code()
-            .add_scope(Scope::new("repo".into()))
+            .add_scope(Scope::new(
+                match purpose {
+                    OAuthPurpose::Repository => "repo",
+                    OAuthPurpose::Copilot => "read:user",
+                }
+                .into(),
+            ))
             .add_scope(Scope::new("offline_access".into()))
             .request(&diagnostic_http)
-            .map_err(|error| map_token_error::<C>(error))?;
+            .map_err(map_token_error)?;
     if response.user_code().secret().is_empty() || response.expires_in().is_zero() {
         return Err(OAuthError::InvalidResponse);
     }
@@ -169,6 +193,13 @@ impl GithubOAuthHttp {
         open_browser: impl FnOnce(&url::Url) -> Result<(), OAuthError>,
     ) -> Result<PreparedDeviceAuthorization, OAuthError> {
         request_device_authorization_with(&self.client, open_browser)
+    }
+
+    pub fn request_copilot_authorization(
+        &self,
+        open_browser: impl FnOnce(&url::Url) -> Result<(), OAuthError>,
+    ) -> Result<PreparedDeviceAuthorization, OAuthError> {
+        request_device_authorization_for_with(&self.client, open_browser, OAuthPurpose::Copilot)
     }
 
     pub fn poll_device_authorization(
@@ -298,7 +329,33 @@ pub fn refresh_token_with<C: SyncHttpClient>(
     let response = device_oauth_client()?
         .exchange_refresh_token(&refresh_token)
         .request(&diagnostic_http)
-        .map_err(map_token_error::<C>)?;
+        .map_err(map_token_error)?;
+    token_pair(response, issued_at)
+}
+
+pub async fn refresh_token_async(refresh: &str) -> Result<TokenPair, OAuthError> {
+    let issued_at = SystemTime::now();
+    let client = reqwest::Client::builder()
+        .user_agent("PR-Sniper/0.1")
+        .redirect(Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|_| OAuthError::Network)?;
+    let diagnostic_http = |request| {
+        let client = client.clone();
+        async move {
+            let mut response = oauth2::AsyncHttpClient::call(&client, request).await?;
+            normalize_oauth_response(&mut response, "refresh");
+            Ok::<_, oauth2::HttpClientError<reqwest::Error>>(response)
+        }
+    };
+    let refresh = RefreshToken::new(refresh.into());
+    let response = device_oauth_client()?
+        .exchange_refresh_token(&refresh)
+        .request_async(&diagnostic_http)
+        .await
+        .map_err(map_token_error)?;
     token_pair(response, issued_at)
 }
 
@@ -370,21 +427,23 @@ fn diagnostic_oauth_request<C: SyncHttpClient>(
 ) -> Result<oauth2::HttpResponse, C::Error> {
     let mut response = client.call(request);
     match &mut response {
-        Ok(response) => eprintln!(
-            "[github-auth] stage={stage}_http_response {}",
-            token_response_diagnostic(response)
-        ),
+        Ok(response) => normalize_oauth_response(response, stage),
         Err(_) => eprintln!("[github-auth] stage={stage}_http_response reason=network"),
     }
-    if let Ok(response) = &mut response {
-        let provider_error = serde_json::from_slice::<DiagnosticTokenFields>(response.body())
-            .ok()
-            .and_then(|fields| fields.error);
-        if response.status().is_success() && provider_error.is_some() {
-            *response.status_mut() = oauth2::http::StatusCode::BAD_REQUEST;
-        }
-    }
     response
+}
+
+fn normalize_oauth_response(response: &mut oauth2::HttpResponse, stage: &str) {
+    eprintln!(
+        "[github-auth] stage={stage}_http_response {}",
+        token_response_diagnostic(response)
+    );
+    let provider_error = serde_json::from_slice::<DiagnosticTokenFields>(response.body())
+        .ok()
+        .and_then(|fields| fields.error);
+    if response.status().is_success() && provider_error.is_some() {
+        *response.status_mut() = oauth2::http::StatusCode::BAD_REQUEST;
+    }
 }
 
 fn device_oauth_client() -> Result<
@@ -410,8 +469,8 @@ fn device_oauth_client() -> Result<
     )
 }
 
-fn map_token_error<C: SyncHttpClient>(
-    error: RequestTokenError<C::Error, oauth2::basic::BasicErrorResponse>,
+fn map_token_error<E: std::error::Error + 'static>(
+    error: RequestTokenError<E, oauth2::basic::BasicErrorResponse>,
 ) -> OAuthError {
     match error {
         RequestTokenError::Request(_) => OAuthError::Network,
