@@ -248,7 +248,9 @@ test("repository People resolves stable identity, isolates neighbors and reports
     .getByRole("button", { name: "Remove octocat", exact: true })
     .click();
   await expect(
-    parent.getByText("No one added. Every pull request is eligible."),
+    parent.getByText(
+      "No trusted authors yet. Only pull requests requesting this signed-in account are eligible.",
+    ),
   ).toBeVisible();
   await closeDialog(page);
   await saveChanges(page);

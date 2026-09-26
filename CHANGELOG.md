@@ -44,6 +44,13 @@ No release/versioning policy has been established yet.
 
 ### Added
 
+- Poll enabled, account-bound GitHub repositories from the active menu-bar
+  process on fixed intervals or five-field cron schedules in an explicit time
+  zone. Persist schedule health and revision-keyed queue jobs, deduplicate
+  repeat observations, and admit changed heads. Reviewer-only work outside the
+  trusted watchlist waits for confirmation; detection never starts an agent or
+  publishes a review. See [#3](https://github.com/jdylanmc/pr-sniper/issues/3).
+
 - Manage independent Copilot connections in Settings with browser sign-in,
   explicit account confirmation and Keychain storage. Each Agent selects its
   own connected account and a model returned by Copilot. Disconnect retains

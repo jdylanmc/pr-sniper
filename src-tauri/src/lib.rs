@@ -2,6 +2,7 @@ mod copilot;
 pub mod discovery;
 mod doctrine_seeds;
 pub mod github;
+pub mod monitoring;
 pub mod policy;
 pub mod startup;
 pub mod storage;
@@ -24,6 +25,7 @@ use tauri::{
 
 struct Host {
     store: Mutex<Store>,
+    monitor: Mutex<monitoring::Monitor>,
     error: Mutex<Option<String>>,
     isolated: bool,
     quitting: AtomicBool,
@@ -631,6 +633,92 @@ struct Snapshot {
 struct GithubMetadata {
     connection: Connection,
     pull_requests: Vec<PullRequest>,
+}
+
+#[derive(Serialize)]
+struct MonitoringSnapshot {
+    health: Vec<monitoring::ScheduleHealth>,
+    jobs: Vec<monitoring::QueueJob>,
+}
+
+#[tauri::command]
+fn monitoring_snapshot(host: State<'_, Host>) -> Result<MonitoringSnapshot, String> {
+    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+    let monitor = host
+        .monitor
+        .lock()
+        .map_err(|_| "Monitoring is unavailable.")?;
+    Ok(MonitoringSnapshot {
+        health: monitor.snapshot(),
+        jobs: store.load_queue()?,
+    })
+}
+
+fn now_seconds() -> Result<i64, String> {
+    SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .map_err(|_| "System clock precedes the Unix epoch.".into())
+}
+
+fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
+    let host = app.state::<Host>();
+    if host.quitting.load(Ordering::SeqCst) {
+        return Err("PR Sniper is quitting.".into());
+    }
+    let tickets = {
+        let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+        let mut monitor = host
+            .monitor
+            .lock()
+            .map_err(|_| "Monitoring is unavailable.")?;
+        monitor.prepare_checks(&store, now_seconds()?, immediate)?
+    };
+    for ticket in tickets {
+        let app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let ticket_for_poll = ticket.clone();
+            let account_id = ticket.provider_account_id.clone();
+            let result = (|| {
+                let host = app.state::<Host>();
+                let (identity, client) = github_session(&host, &account_id)?;
+                if identity.id != ticket_for_poll.provider_account_id {
+                    return Err(ConnectionError::WrongIdentity);
+                }
+                let connection = client.connect(
+                    &ticket_for_poll.name,
+                    Some(&ticket_for_poll.provider_account_id),
+                )?;
+                if connection.repository.id != ticket_for_poll.provider_repository_id {
+                    return Err(ConnectionError::RepositoryChanged);
+                }
+                let pull_requests = client.poll_pull_requests(&connection.repository)?;
+                Ok(monitoring::PollResult {
+                    connection,
+                    pull_requests,
+                })
+            })();
+            let host = app.state::<Host>();
+            apply_account_connection_failure(&host, &account_id, &result);
+            let saved = (|| {
+                let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+                let mut monitor = host
+                    .monitor
+                    .lock()
+                    .map_err(|_| "Monitoring is unavailable.")?;
+                monitor.finish(&store, ticket, result, now_seconds()?)
+            })();
+            if let Err(error) = saved {
+                report(&app, error);
+            }
+        });
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn check_now(app: tauri::AppHandle) -> Result<(), String> {
+    start_checks(&app, true)
 }
 
 #[derive(Serialize)]
@@ -1303,7 +1391,9 @@ pub fn run() {
             copilot::list_copilot_models,
             copilot::cancel_copilot_models,
             diagnostics,
-            open_diagnostics
+            open_diagnostics,
+            monitoring_snapshot,
+            check_now
         ])
         .setup(|app| {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -1323,8 +1413,10 @@ pub fn run() {
             let github_auth = GithubAuth::restore(&github_credentials, &github_legacy_credentials);
             let copilot = copilot::Integration::new(isolated)?;
             let store = Store::new(root);
+            let monitor = monitoring::Monitor::restore(&store).map_err(std::io::Error::other)?;
             app.manage(Host {
                 store: Mutex::new(store),
+                monitor: Mutex::new(monitor),
                 error: Mutex::new(None),
                 isolated,
                 quitting: AtomicBool::new(false),
@@ -1340,15 +1432,22 @@ pub fn run() {
                 copilot,
             });
             record(app.handle(), DiagnosticEvent::SessionStarted);
+            let scheduler_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    let host = scheduler_app.state::<Host>();
+                    if host.quitting.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    if let Err(error) = start_checks(&scheduler_app, false) {
+                        report(&scheduler_app, error);
+                    }
+                }
+            });
             let status = MenuItem::with_id(app, "status", "Status", true, None::<&str>)?;
             let queue = MenuItem::with_id(app, "queue", "Review Queue", true, None::<&str>)?;
-            let check = MenuItem::with_id(
-                app,
-                "check",
-                "Check Now (not implemented)",
-                false,
-                None::<&str>,
-            )?;
+            let check = MenuItem::with_id(app, "check", "Check Now", true, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
             let separator = PredefinedMenuItem::separator(app)?;
             let quit = MenuItem::with_id(app, "quit", "Quit PR Sniper", true, Some("CmdOrCtrl+Q"))?;
@@ -1365,6 +1464,12 @@ pub fn run() {
                 .menu(&menu)
                 .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| {
+                    if event.id.as_ref() == "check" {
+                        if let Err(error) = start_checks(app, true) {
+                            report(app, error);
+                        }
+                        return;
+                    }
                     if event.id.as_ref() == "quit" {
                         record(app, DiagnosticEvent::QuitRequested);
                         let host = app.state::<Host>();

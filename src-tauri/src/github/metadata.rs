@@ -48,6 +48,31 @@ pub struct ChangedFile {
 }
 
 impl<T: Transport> GithubClient<T> {
+    pub fn poll_pull_requests(
+        &self,
+        repository: &RemoteRepository,
+    ) -> Result<Vec<PullRequest>, ConnectionError> {
+        let name = crate::storage::canonical_repository(&repository.name)
+            .map_err(|_| ConnectionError::InvalidRepository)?;
+        let list = self.pages(&format!(
+            "/repos/{name}/pulls?state=open&sort=updated&direction=desc&per_page=100&page=1"
+        ))?;
+        let mut ids = HashSet::new();
+        let mut numbers = HashSet::new();
+        list.iter()
+            .map(|value| {
+                let pull = polling_pull_request(value)?;
+                if !ids.insert(pull.id.clone()) || !numbers.insert(pull.number) {
+                    return Err(ConnectionError::IncompleteRead);
+                }
+                if pull.base_repository_id != repository.id {
+                    return Err(ConnectionError::RepositoryChanged);
+                }
+                Ok(pull)
+            })
+            .collect()
+    }
+
     pub fn pull_requests(
         &self,
         repository: &RemoteRepository,
@@ -233,6 +258,60 @@ impl<T: Transport> GithubClient<T> {
             }
         }
     }
+}
+
+fn polling_pull_request(value: &Value) -> Result<PullRequest, ConnectionError> {
+    let id = decimal_id(&value["id"])?;
+    let number = unsigned(&value["number"])?;
+    if number == 0 {
+        return Err(ConnectionError::InvalidResponse);
+    }
+    let state = match (value["state"].as_str(), value["merged"].as_bool()) {
+        (Some("open"), None | Some(false)) => Lifecycle::Open,
+        (Some("closed"), None | Some(false)) => Lifecycle::Closed,
+        (Some("closed"), Some(true)) => Lifecycle::Merged,
+        _ => return Err(ConnectionError::InvalidResponse),
+    };
+    let author = match value.get("user") {
+        Some(Value::Null) => None,
+        Some(user) => Some(verify_identity(user, None)?),
+        None => return Err(ConnectionError::InvalidResponse),
+    };
+    let requested_reviewers = array(&value["requested_reviewers"])?
+        .iter()
+        .map(|reviewer| verify_identity(reviewer, None))
+        .collect::<Result<Vec<_>, _>>()?;
+    let requested_teams = array(&value["requested_teams"])?
+        .iter()
+        .map(|team| {
+            Ok(RequestedTeam {
+                id: decimal_id(&team["id"])?,
+                slug: text(&team["slug"])?,
+            })
+        })
+        .collect::<Result<Vec<_>, ConnectionError>>()?;
+    let base_repository_id = decimal_id(&value["base"]["repo"]["id"])?;
+    let head_repository_id = match value["head"].get("repo") {
+        Some(Value::Null) => None,
+        Some(repository) => Some(decimal_id(&repository["id"])?),
+        None => return Err(ConnectionError::InvalidResponse),
+    };
+    Ok(PullRequest {
+        id,
+        number,
+        title: text(&value["title"])?,
+        author,
+        requested_reviewers,
+        requested_teams,
+        state,
+        draft: boolean(value, "draft")?,
+        head_sha: sha(&value["head"]["sha"])?,
+        base_sha: sha(&value["base"]["sha"])?,
+        head_repository_id,
+        base_repository_id,
+        updated_at: text(&value["updated_at"])?,
+        files: Vec::new(),
+    })
 }
 
 fn array(value: &Value) -> Result<&Vec<Value>, ConnectionError> {
