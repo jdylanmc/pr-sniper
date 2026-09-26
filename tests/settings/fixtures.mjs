@@ -90,6 +90,8 @@ export const test = base.extend({
       const pending = new Set();
       window.__TAURI_INTERNALS__ = {
         invoke: (command, args) => {
+          if (["github_auth_state", "copilot_auth_state"].includes(command))
+            return Promise.resolve({ accounts: [], flow: { state: "idle" } });
           const request = window.__settingsInvoke(command, args);
           const settled = request.finally(() => pending.delete(settled));
           pending.add(settled);

@@ -7,6 +7,9 @@ No release/versioning policy has been established yet.
 
 ### Fixed
 
+- Keep an assignment's frequency selector synchronized with advanced interval
+  edits, so the displayed timer matches the draft that will be saved.
+
 - Persist the complete 23-doctrine starter library on first settings load,
   independent of tab order or which section is saved first. Preserve edited,
   custom and deliberately empty libraries across restarts; existing legacy
