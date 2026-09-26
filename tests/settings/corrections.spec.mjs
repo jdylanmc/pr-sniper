@@ -4,6 +4,9 @@ import {
   repositorySettings,
   closeDialog,
   saveChanges,
+  seedAgent,
+  setAgentPrompt,
+  editAgent,
 } from "./navigation.mjs";
 
 for (const api of ["showModal", "close"]) {
@@ -87,13 +90,13 @@ test("R1 missing dialog and inert APIs retain a true keyboard modal", async ({
     await page.locator(".settings-sidebar").getAttribute("aria-hidden"),
   ).toBe("true");
   await page
-    .locator('[data-section="reviews"]')
+    .locator('[data-section="agents"]')
     .evaluate((element) => element.focus());
   expect(
     await modal.evaluate((element) => element.contains(document.activeElement)),
   ).toBe(true);
   await page
-    .locator('[data-section="reviews"]')
+    .locator('[data-section="agents"]')
     .evaluate((element) => element.click());
   await expect(modal).toBeVisible();
   await page.screenshot({
@@ -114,6 +117,7 @@ test("R2 dismissed repository reply cannot resurrect a reset draft", async ({
   ipc,
 }) => {
   await store("seed_settings", { launch_at_login: false });
+  await seedAgent(store);
   await page.goto("/?view=settings");
   const before = (await store("snapshot")).settings;
   const hold = ipc.holdNext("canonical_repository_name");
@@ -129,10 +133,7 @@ test("R2 dismissed repository reply cannot resurrect a reset draft", async ({
       .click();
     await hold.arrived;
     await closeDialog(page);
-    await section(page, "Review defaults");
-    await page
-      .getByLabel("Review prompt", { exact: true })
-      .fill("Reset this edit.");
+    await setAgentPrompt(page, "Reset this edit.");
     await page
       .getByRole("button", { name: "Reset changes", exact: true })
       .click();
@@ -141,9 +142,7 @@ test("R2 dismissed repository reply cannot resurrect a reset draft", async ({
     await expect(
       page.getByRole("button", { name: "Save changes", exact: true }),
     ).toBeDisabled({ timeout: 1500 });
-    await page
-      .getByLabel("Review prompt", { exact: true })
-      .fill("Keep only this edit.");
+    await setAgentPrompt(page, "Keep only this edit.");
     await page
       .getByRole("button", { name: "Save changes", exact: true })
       .click();
@@ -152,7 +151,7 @@ test("R2 dismissed repository reply cannot resurrect a reset draft", async ({
     ).toBeVisible();
     expect((await store("snapshot")).settings).toEqual({
       ...before,
-      defaults: { ...before.defaults, prompt: "Keep only this edit." },
+      agents: [{ ...before.agents[0], prompt: "Keep only this edit." }],
     });
   } finally {
     hold.release();
@@ -277,6 +276,7 @@ for (const kind of ["add", "rename"]) {
       ipc,
     }) => {
       await store("save_repository", { repository: "octo/original" });
+      await seedAgent(store);
       const before = (await store("snapshot")).settings;
       await page.goto("/?view=settings");
       if (kind === "rename") {
@@ -304,17 +304,14 @@ for (const kind of ["add", "rename"]) {
           .click();
         await hold.arrived;
         await closeDialog(page);
-        await section(page, "Review defaults");
-        await page
-          .getByLabel("Review prompt", { exact: true })
-          .fill("An independent saved edit.");
+        await setAgentPrompt(page, "An independent saved edit.");
         await page
           .getByRole("button", { name: "Save changes", exact: true })
           .click();
         await expect(
           page.getByText("All changes saved", { exact: true }),
         ).toBeVisible();
-        await section(page, "Repositories");
+        await section(page, "Integrations");
         await page
           .getByRole("button", {
             name: "Add repository manually...",
@@ -339,14 +336,13 @@ for (const kind of ["add", "rename"]) {
         ).toBeFocused();
         await expect(replacement.getByRole("alert")).toBeHidden();
         await closeDialog(page);
-        await section(page, "Review defaults");
-        await page
-          .getByLabel("Review prompt", { exact: true })
-          .fill("A later independent save.");
+        await setAgentPrompt(page, "A later independent save.");
         await saveChanges(page);
         expect((await store("snapshot")).settings).toEqual({
           ...before,
-          defaults: { ...before.defaults, prompt: "A later independent save." },
+          agents: [
+            { ...before.agents[0], prompt: "A later independent save." },
+          ],
         });
       } finally {
         hold.release();
@@ -402,9 +398,9 @@ test("R2 repeated submit dispatch cannot start a second repository request", asy
 
 for (const editor of [
   "edit-repository",
-  "new-preset",
-  "edit-preset",
-  "import-preset",
+  "new-doctrine",
+  "edit-doctrine",
+  "edit-agent",
 ]) {
   test(`R3 focus reply retains ${editor} text and focus; intentional close permits refresh`, async ({
     page,
@@ -412,11 +408,11 @@ for (const editor of [
     ipc,
   }) => {
     await store("save_repository", { repository: "octo/original" });
+    await seedAgent(store);
     const before = (await store("snapshot")).settings;
-    before.presets = [
+    before.doctrines = [
       {
-        id: "a17a5695-0e09-489b-bcb2-1da94dc3b8aa",
-        name: "Existing preset",
+        title: "existing-doctrine",
         body: "Existing instructions.",
       },
     ];
@@ -424,7 +420,11 @@ for (const editor of [
     await page.goto("/?view=settings");
     await section(
       page,
-      editor === "edit-repository" ? "Repositories" : "Review presets",
+      editor === "edit-repository"
+        ? "Integrations"
+        : editor === "edit-agent"
+          ? "Agents"
+          : "Doctrines",
     );
     const hold = ipc.holdNext("snapshot");
     try {
@@ -440,19 +440,17 @@ for (const editor of [
           .getByRole("button", { name: "Edit repository", exact: true })
           .click();
         label = "GitHub repository";
-      } else if (editor === "new-preset") {
+      } else if (editor === "new-doctrine") {
         await page
-          .getByRole("button", { name: "New preset", exact: true })
+          .getByRole("button", { name: "New doctrine", exact: true })
           .click();
-        label = "Review instructions";
-      } else if (editor === "edit-preset") {
+        label = "Principles";
+      } else if (editor === "edit-doctrine") {
         await page.getByRole("button", { name: "Edit", exact: true }).click();
-        label = "Review instructions";
+        label = "Principles";
       } else {
-        await page
-          .getByRole("button", { name: "Import...", exact: true })
-          .click();
-        label = "Preset JSON";
+        await editAgent(page);
+        label = "Prompt";
       }
       const input = page
         .getByRole("dialog")
@@ -467,19 +465,15 @@ for (const editor of [
       await expect(input).toHaveValue(expected);
       await expect(input).toBeFocused();
       await closeDialog(page);
-      await store("save_defaults", {
-        policy: {
-          ...before.defaults,
-          prompt: "External update after deliberate close.",
-        },
-      });
+      before.agents[0].prompt = "External update after deliberate close.";
+      await store("seed_settings", before);
       await page.evaluate(async () => {
         window.dispatchEvent(new Event("focus"));
         await window.__settingsIdle();
       });
-      await section(page, "Review defaults");
+      const agent = await editAgent(page);
       await expect(
-        page.getByLabel("Review prompt", { exact: true }),
+        agent.getByRole("textbox", { name: "Prompt", exact: true }),
       ).toHaveValue("External update after deliberate close.");
     } finally {
       hold.release();
@@ -491,7 +485,7 @@ for (const viewport of [
   { width: 1180, height: 800 },
   { width: 390, height: 844 },
 ]) {
-  test(`R1 fallback nested policy, People and presets remain modal at ${viewport.width}`, async ({
+  test(`R1 fallback nested repository People and doctrine editors remain modal at ${viewport.width}`, async ({
     page,
     store,
   }, testInfo) => {
@@ -517,9 +511,6 @@ for (const viewport of [
       name: "Settings for octo/project",
       exact: true,
     });
-    await modal
-      .getByRole("checkbox", { name: "Override people", exact: true })
-      .check();
     await modal
       .getByRole("button", { name: "Add people", exact: true })
       .click();
@@ -547,33 +538,35 @@ for (const viewport of [
       path: testInfo.outputPath(`fallback-policy-${viewport.width}.png`),
     });
     await closeDialog(page);
-    if (viewport.width < 600)
-      await page
-        .getByLabel("Settings section", { exact: true })
-        .selectOption("presets");
-    else await section(page, "Review presets");
-    await page.getByRole("button", { name: "New preset", exact: true }).click();
+    await section(page, "Doctrines");
+    await page
+      .getByRole("button", { name: "New doctrine", exact: true })
+      .click();
     modal = page.getByRole("dialog", {
-      name: "New review preset",
+      name: "New doctrine",
       exact: true,
     });
+    await modal.getByLabel("Title", { exact: true }).fill("fallback-doctrine");
     await modal
-      .getByLabel("Preset name", { exact: true })
-      .fill("Fallback preset");
-    await modal
-      .getByLabel("Review instructions", { exact: true })
+      .getByRole("textbox", { name: "Principles", exact: true })
       .fill("Review compatibility.");
     await modal
-      .getByRole("button", { name: "Save preset", exact: true })
+      .getByRole("button", { name: "Save doctrine", exact: true })
       .click();
     await saveChanges(page);
-    expect((await store("snapshot")).settings.presets[0].name).toBe(
-      "Fallback preset",
+    expect((await store("snapshot")).settings.doctrines.at(-1).title).toBe(
+      "fallback-doctrine",
     );
-    await page.getByRole("button", { name: "Edit", exact: true }).click();
+    const doctrine = page.locator(".doctrine-card").filter({
+      has: page.getByRole("heading", {
+        name: "fallback-doctrine",
+        exact: true,
+      }),
+    });
+    await doctrine.getByRole("button", { name: "Edit", exact: true }).click();
     await page.keyboard.press("Escape");
     await expect(
-      page.getByRole("button", { name: "Edit", exact: true }),
+      doctrine.getByRole("button", { name: "Edit", exact: true }),
     ).toBeFocused();
     const footer = await page
       .getByRole("button", { name: "Save changes", exact: true })

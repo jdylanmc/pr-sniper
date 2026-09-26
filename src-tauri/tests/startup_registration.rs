@@ -156,6 +156,7 @@ fn failed_settings_save_does_not_leave_new_registration_enabled() {
 fn failed_registration_write_leaves_settings_and_prior_bytes_unchanged() {
     let fixture = Fixture::new();
     let registration = registration(&fixture);
+    let settings = fixture.store().load_settings().unwrap();
     let previous = b"prior registration";
     fs::write(fixture.path().join("PR Sniper.plist"), previous).unwrap();
     fs::write(
@@ -170,7 +171,8 @@ fn failed_registration_write_leaves_settings_and_prior_bytes_unchanged() {
         fs::read(fixture.path().join("PR Sniper.plist")).unwrap(),
         previous
     );
-    assert!(!fixture.path().join("config/settings.json").exists());
+    assert_eq!(fixture.store().load_settings().unwrap(), settings);
+    assert!(!settings.launch_at_login);
 }
 
 #[test]

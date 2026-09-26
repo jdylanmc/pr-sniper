@@ -8,6 +8,29 @@ mod support;
 use support::Fixture;
 
 #[test]
+fn legacy_and_disconnected_ai_agents_load_without_remapping() {
+    let fixture = Fixture::new();
+    let mut value = serde_json::to_value(Settings::default()).unwrap();
+    value["agents"] = serde_json::json!([
+        {"id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "name":"Legacy", "model":"copilot", "prompt":"Review carefully.", "signature":"Fixture"},
+        {"id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "name":"Pinned", "model":"returned-model", "ai_account":{"provider":"copilot","account_id":"101"}, "prompt":"Review carefully.", "signature":"Fixture"}
+    ]);
+    let settings: Settings = serde_json::from_value(value).unwrap();
+    fixture.store().save_settings(&settings).unwrap();
+    let reloaded = fixture.store().load_settings().unwrap();
+    assert_eq!(settings, reloaded);
+    assert!(reloaded.agents[0].ai_account.is_none());
+    assert_eq!(reloaded.agents[0].model, "copilot");
+    assert_eq!(
+        reloaded.agents[1].ai_account.as_ref().unwrap().account_id,
+        "101"
+    );
+    let mut invalid = settings.clone();
+    invalid.agents[1].ai_account.as_mut().unwrap().account_id = "mutable-login".into();
+    assert!(fixture.store().save_settings(&invalid).is_err());
+    assert_eq!(fixture.store().load_settings().unwrap(), settings);
+}
+#[test]
 fn explicit_login_preference_survives_a_fresh_store() {
     let fixture = Fixture::new();
     let store = fixture.store();
@@ -31,7 +54,7 @@ fn explicit_login_preference_survives_a_fresh_store() {
 }
 
 #[test]
-fn fresh_profile_is_opted_out_without_creating_settings() {
+fn fresh_profile_persists_starters_without_opting_in_to_startup() {
     let fixture = Fixture::new();
 
     let settings = fixture.store().load_settings().expect("load new profile");
@@ -41,9 +64,10 @@ fn fresh_profile_is_opted_out_without_creating_settings() {
         "login must require explicit opt-in"
     );
     assert!(
-        !fixture.path().join("config/settings.json").exists(),
-        "reading defaults must not create a persisted opt-in"
+        fixture.path().join("config/settings.json").exists(),
+        "starter doctrines must be persisted without enabling startup"
     );
+    assert!(!fixture.store().load_settings().unwrap().launch_at_login);
 }
 
 #[test]
@@ -180,6 +204,7 @@ fn ordinary_configuration_contains_only_nonsecret_settings() {
         persisted,
         serde_json::json!({
             "launch_at_login": true,
+            "doctrines": [],
             "defaults": {
                 "schedule": {"kind":"interval","minutes":15,"timezone":"UTC"},
                 "watched_authors": [],

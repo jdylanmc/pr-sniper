@@ -95,6 +95,23 @@ fn device_authorization_requests_secretless_repo_access_and_opens_verified_githu
 }
 
 #[test]
+fn copilot_authorization_requests_identity_and_refresh_not_repository_access() {
+    use pr_sniper_lib::github::oauth::{request_device_authorization_for_with, OAuthPurpose};
+    let http = |request: oauth2::HttpRequest| {
+        let fields: BTreeMap<String, String> =
+            serde_urlencoded::from_bytes(request.body()).unwrap();
+        assert_eq!(fields["client_id"], "Ov23lidoL3QovWyfxnA4");
+        assert_eq!(fields["scope"], "read:user offline_access");
+        assert!(!fields.contains_key("client_secret"));
+        Ok::<_, std::io::Error>(oauth2::http::Response::builder().status(200)
+            .header("content-type", "application/json")
+            .body(br#"{"device_code":"fixture","user_code":"TEST-CODE","verification_uri":"https://github.com/login/device","expires_in":900,"interval":5}"#.to_vec()).unwrap())
+    };
+    let result =
+        request_device_authorization_for_with(&http, |_| Ok(()), OAuthPurpose::Copilot).unwrap();
+    assert_eq!(result.user_code(), "TEST-CODE");
+}
+#[test]
 fn device_authorization_preserves_disabled_registration_errors_without_opening_the_browser() {
     for status in [200, 400] {
         let http = |_request: oauth2::HttpRequest| {

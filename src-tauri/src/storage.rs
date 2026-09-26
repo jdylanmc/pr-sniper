@@ -45,7 +45,8 @@ pub struct Settings {
     pub presets: Vec<ReviewPreset>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_review_preset: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    // An explicitly empty library is saved, never confused with uninitialized data.
+    #[serde(default)]
     pub doctrines: Vec<Doctrine>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agents: Vec<Agent>,
@@ -70,9 +71,19 @@ pub struct Agent {
     pub name: String,
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_account: Option<AiAccount>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doctrine: Option<String>,
     pub prompt: String,
     pub signature: String,
+}
+
+/// Stable connection reference, never a credential or mutable login.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AiAccount {
+    pub provider: String,
+    pub account_id: String,
 }
 
 /// One agent running on one repository: its own timer and permissions.
@@ -226,6 +237,15 @@ impl Settings {
             crate::policy::validate_configuration_text(&agent.model)?;
             crate::policy::validate_configuration_text(&agent.prompt)?;
             crate::policy::validate_configuration_text(&agent.signature)?;
+            if let Some(account) = &agent.ai_account {
+                if account.provider != "copilot"
+                    || !is_provider_id(&ProviderId::Github, &account.account_id)
+                {
+                    return Err(
+                        "Choose a supported AI provider and stable account identity.".into(),
+                    );
+                }
+            }
         }
         let mut ids = HashSet::new();
         let mut bindings = HashSet::new();
@@ -302,9 +322,7 @@ impl Settings {
                     return Err("Assignments need a unique identity.".into());
                 }
                 if !agent_ids.contains(&assignment.agent_id) {
-                    return Err(
-                        "The selected agent no longer exists. Choose a local agent.".into(),
-                    );
+                    return Err("The selected agent no longer exists. Choose a local agent.".into());
                 }
                 assignment.schedule.validate()?;
             }
@@ -447,7 +465,15 @@ impl Store {
         let path = self.root.join("config/settings.json");
         let bytes = match fs::read(path) {
             Ok(bytes) => bytes,
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Settings::default()),
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                let settings = Settings {
+                    doctrines: crate::doctrine_seeds::doctrines(),
+                    ..Settings::default()
+                };
+                settings.validate()?;
+                self.write_settings(&settings)?;
+                return Ok(settings);
+            }
             Err(_) => return Err("Cannot read settings. Check local file permissions.".into()),
         };
         let mut settings: Settings = serde_json::from_slice(&bytes)

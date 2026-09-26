@@ -7,6 +7,14 @@ No release/versioning policy has been established yet.
 
 ### Fixed
 
+- Keep an assignment's frequency selector synchronized with advanced interval
+  edits, so the displayed timer matches the draft that will be saved.
+
+- Persist the complete 23-doctrine starter library on first settings load,
+  independent of tab order or which section is saved first. Preserve edited,
+  custom and deliberately empty libraries across restarts; existing legacy
+  settings without a doctrine field remain unchanged.
+
 - Keep GitHub accounts and sign-in controls within the Settings window, with
   readable account details and wrapping actions. Show a prominent selectable
   one-time code beside **Copy code**, preserve clipboard feedback and keyboard
@@ -15,13 +23,16 @@ No release/versioning policy has been established yet.
 
 ### Changed
 
+- Require macOS 13.5 or later for the application, matching the bundled Copilot
+  runtime's minimum.
+
 - Anchor Settings to the approved compact sidebar, with repository selection,
   readable GitHub people lookup, preserved model selections, local review
   presets and separate review/publication switches. Settings drafts save together
   and detect conflicting updates; existing custom prompts, cron schedules and
   per-field overrides remain supported. Discovery reads only metadata beneath an
-  explicitly chosen folder, never repository code. Agent/model health remains
-  explicitly unavailable; no automation or approval is enabled by this change.
+  explicitly chosen folder, never repository code. Review execution health
+  remains unavailable; no automation or approval is enabled by this change.
   Dialogs include an accessible older-WebKit fallback with viewport sizing
   preserved in production builds; delayed replies preserve
   open forms and cannot restore dismissed repository edits. Multiple local
@@ -32,6 +43,17 @@ No release/versioning policy has been established yet.
   See the [approved Settings design](docs/agent/design/settings-default.md).
 
 ### Added
+
+- Manage independent Copilot connections in Settings with browser sign-in,
+  explicit account confirmation and Keychain storage. Each Agent selects its
+  own connected account and a model returned by Copilot. Disconnect retains
+  dependent Agents and assignments needing reconnect, without switching
+  accounts. The green check verifies sign-in only; it does not test a
+  subscription or run a prompt. Failed credential deletion stays visible and
+  retryable, including when cancelling another sign-in. Late state reads cannot
+  undo account actions, and failed refreshed-credential saves mark only the
+  affected account unavailable.
+  See [Copilot Settings](docs/copilot-settings.md).
 
 - Connect through the registered PR Sniper GitHub OAuth App in the default browser
   using GitHub's secretless device authorization flow, a provider-issued one-time

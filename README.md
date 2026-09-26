@@ -5,18 +5,23 @@ Tauri 2, Rust and vanilla TypeScript. The tray exposes **Status**, **Review
 Queue**, **Settings** and **Quit PR Sniper**.
 
 Settings can explicitly verify a configured GitHub connection and read complete
-pull-request metadata. This increment does **not** poll repositories, run agents,
+pull-request metadata. It also manages independent Copilot AI accounts with
+browser sign-in and per-Agent account/model selection; see
+[Copilot Settings](docs/copilot-settings.md). This increment does **not** poll repositories, run agents,
 publish comments or perform automated setup. Check Now is disabled. Product scope lives in the
 [approved specification](docs/agent/specs/pr-sniper-mvp.nano.md), not this
 implementation summary.
 
 ## Develop on macOS
 
-Requirements: macOS 12+, Xcode Command Line Tools (or full Xcode), Node
+Requirements: macOS 13.5+, Xcode Command Line Tools (or full Xcode), Node
 24.20.0 and Rust 1.98.1 via rustup. `.node-version`, `rust-toolchain.toml`,
 `package-lock.json` and `src-tauri/Cargo.lock` pin the baseline.
 Install prerequisites yourself using their official installers; these commands
 do not install global tools.
+
+The application's macOS 13.5 minimum matches the bundled official Copilot
+runtime's deployment target.
 
 ```sh
 npm ci
@@ -35,7 +40,9 @@ command too when finished.
 For isolated runs, use an absolute application-data directory:
 
 ```sh
-PR_SNIPER_DATA_DIR="$(mktemp -d)" npm run tauri -- dev
+PR_SNIPER_DATA_DIR="$(mktemp -d)" \
+PR_SNIPER_KEYCHAIN_SERVICE="com.jdylanmc.pr-sniper.tests.dev-$(uuidgen)" \
+npm run tauri -- dev
 ```
 
 That override never changes login items and disables the startup checkbox.
@@ -82,9 +89,8 @@ limit. Failed configuration writes are visible, not reported as successful saves
 If configuration commits but recording diagnostics fails, Settings shows the
 committed state with a separate warning, rather than reporting a failed save.
 
-Settings opens the [approved A sidebar](docs/agent/design/settings-default.md):
-**Repositories**, **People**, **Review defaults**, **Automation** and **Review
-presets**. Choose a local root folder to discover GitHub remotes and select
+Settings retains the compact sidebar design, with **Integrations**, **Doctrines**,
+**Agents**, and **Preferences**. In Integrations, choose a local root folder to discover GitHub remotes and select
 repositories with searchable checkboxes, or add a repository manually. Discovery
 reads bounded Git metadata only: no Git commands, hooks, includes or repository
 code execute. It skips nested symlinks, stops descending at repositories, and
@@ -99,43 +105,40 @@ changes** returns to the saved state. A conflicting external update is rejected,
 not overwritten. The draft remains intact until **Discard draft and reload**
 explicitly replaces it with the latest saved settings. Controls are disabled
 during saving and failed writes retain the draft. Startup registration is
-separate and changes immediately on explicit choice in **Automation > Startup
-and diagnostics**. Closing a repository editor cancels its pending draft lookup;
+separate and changes immediately on explicit choice in **Preferences**.
+AI and repository connections also save immediately, independently of the
+Settings draft. Closing a repository editor cancels its pending draft lookup;
 delayed replies cannot restore dismissed edits.
 Focus refreshes preserve open repository and preset forms. Dialogs retain focus,
 Escape/Close and background isolation when native dialog APIs are unavailable;
 viewport sizing also falls back for older WebKit versions. Production JavaScript
 syntax and CSS optimization target Safari 15, preserving viewport fallbacks
 through minification. Browser tests inspect the emitted stylesheet and exercise
-its layout with unsupported viewport units and dialog APIs. The macOS 12 minimum
-is unchanged; build targets do not polyfill runtime APIs, and these simulations
+its layout with unsupported viewport units and dialog APIs. The app requires
+macOS 13.5 or later; build targets do not polyfill runtime APIs, and these simulations
 are not native acceptance evidence.
 
-Repository **Settings** offers an independent **Override** checkbox for each
-visible policy field. Unchecked fields use current global defaults. Existing
-reviewer-assignment and adapter values remain preserved in storage but the
-reviewer-assignment control is not part of ordinary Settings. **Run reviews
-automatically** and **Post review comments automatically** remain independent,
-off by default; changing configuration executes neither reviews nor publication.
+Repository **Settings** assigns reusable Agents with their own schedules and
+comment preferences, and resolves watched people using the repository's
+explicit GitHub account. Existing global defaults and overrides remain
+preserved in storage. Configuring an assignment executes neither reviews nor
+publication; approval submission remains unavailable.
 
-Scheduling starts in the system-local time zone for a new profile. Existing
-intervals, five-field cron expressions and saved time zones remain unchanged;
-**Advanced scheduling** exposes cron, custom interval and time-zone selection,
-with the ordinary frequency and time-zone summary kept in sync with the draft.
-**Model** lists Default first and preserves saved model/named-agent selections.
-Installed-model discovery and agent health are explicitly unavailable, not
-simulated.
+**Doctrines** manages plain-text review principles. A fresh configuration
+persists all 23 bundled doctrines on first load, before any Settings tab is
+visited. The canonical local doctrine documents are embedded in the app; no
+download or local source checkout is needed at runtime. Edits, additions and
+deletions (including deleting the whole library) survive restart. Existing
+libraries are never topped up or replaced. Legacy settings without a doctrine
+field remain empty, since the older format also omitted deliberately empty
+libraries; subsequent saves record an explicit empty list.
 
-**People** resolves an exact GitHub login using the current CLI credential and
-stores the provider's stable numeric identity. Names/logins are display labels;
-IDs remain the matching key. Repository access and the signed-in account are
-verified separately. **Review presets** creates and edits named machine-local
-instructions. Import accepts inert JSON with only `name` and `body` strings
-(24 KB maximum; 80-character names and 12,000-character instructions).
-Select a preset globally or per repository; edits update selected prompts.
-Editing a prompt directly switches that field to custom instructions without
-changing other overrides. Existing custom prompts are retained.
-Never put credentials in presets, prompts or other configuration fields.
+**Agents** selects a Copilot
+account and a real model returned by that account, alongside an optional
+doctrine, prompt and signature. Provider and model are distinct. Old Agents
+without AI account bindings remain unconfigured until explicitly updated.
+Disconnecting an AI account preserves dependent Agents and assignments.
+Never put credentials in doctrines, prompts or other configuration fields.
 
 Saving validates the effective policy on the Rust storage boundary, including
 positive whole-minute intervals, five-field cron syntax, IANA time zones,
@@ -145,31 +148,27 @@ echoing them. This is not a general-purpose secret detector: all configuration
 must remain nonsecret. Invalid input does not replace the last valid saved
 configuration; malformed or unreadable files are reported rather than reset.
 `state/diagnostics.jsonl` records timestamped, fixed-schema host events, capped at
-256 KiB plus one rotated file. **Settings > Automation > Startup and diagnostics**
+256 KiB plus one rotated file. **Settings > Preferences**
 opens
 an in-app reader, not an arbitrary filesystem or shell interface.
 Invalid settings are reported rather than silently reset or overwritten.
 
-GitHub CLI credentials are acquired in memory, never saved by PR Sniper.
-Any future app-owned persisted credentials must use macOS secure storage,
-never config, state or diagnostics.
+App-owned GitHub and Copilot token pairs use separate account-addressed macOS
+Keychain services, never config, state or diagnostics. Neither Settings
+connection copies terminal credentials. A green Copilot check verifies sign-in
+only, not a subscription, seat or inference request.
 See the [bounded architecture decision](docs/adr/0001-macos-foundation.md).
 
 ## Read-only GitHub connection
 
-Install and authenticate the official GitHub CLI yourself. PR Sniper never runs
-login, logout, installation or credential-configuration commands. It uses the
-trusted current user's `gh` from an absolute PATH directory, with Homebrew's
-usual directories as Finder-launch fallbacks. A bounded version/health probe
-rejects missing or broken executables and shims; this is not a cryptographic
-provenance check or a sandbox for an untrusted executable.
-
-In **Settings**, save a repository, then open its **Settings > Repository and
-connection > Verify GitHub connection**. Optionally enter the expected stable decimal GitHub account ID; the
-verified ID is filled in for subsequent checks. This pin is window-session state,
-not a persisted account selection. A different account fails visibly instead
-of silently switching identities. Connections use saved repository names,
-not unsaved rename drafts.
+In **Integrations > Git repositories**, connect an account through the PR Sniper
+GitHub OAuth App and confirm its stable identity. Repository OAuth requests
+the broad `repo` scope for public/private access. Explicitly select the acting
+account and repository, then save. In its **Settings > Repository and
+connection**, verify the GitHub connection. A different account fails visibly
+instead of silently switching identities. Connections use saved bindings,
+not unsaved rename drafts. Copilot credentials do not determine the repository
+acting identity.
 
 The application verifies `/user`, repository metadata and an actual PR read.
 Read access is separate from comment capability: classic OAuth `repo` or
@@ -193,7 +192,8 @@ record only fixed connection/read success or failure events, never raw provider
 bodies, tokens or subprocess output. HTTPS credentials travel only in a sensitive
 authorization header; redirects are disabled.
 
-For an explicit real read-only smoke using the same native client:
+For an explicitly authorized legacy CLI-credential read-only diagnostic using
+the native provider client (not the Settings OAuth connection):
 
 ```sh
 cargo run --manifest-path src-tauri/Cargo.toml --locked --example github_read -- \

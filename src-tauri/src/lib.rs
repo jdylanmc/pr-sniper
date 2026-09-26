@@ -1,4 +1,6 @@
+mod copilot;
 pub mod discovery;
+mod doctrine_seeds;
 pub mod github;
 pub mod policy;
 pub mod startup;
@@ -31,6 +33,22 @@ struct Host {
         github::token_store::RotationSafeStore<github::macos_keychain::MacKeychainStore>,
     github_legacy_credentials:
         github::token_store::RotationSafeStore<github::macos_keychain::MacKeychainStore>,
+    copilot: Arc<copilot::Integration>,
+}
+
+#[derive(Clone, Copy)]
+enum ConnectionRole {
+    Repository,
+    Copilot,
+}
+
+impl ConnectionRole {
+    fn auth(self, host: &Host) -> &Mutex<GithubAuth> {
+        match self {
+            Self::Repository => &host.github_auth,
+            Self::Copilot => &host.copilot.auth,
+        }
+    }
 }
 
 struct GithubAuth {
@@ -66,6 +84,11 @@ enum GithubAccountState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum GithubAuthFailure {
+    VerificationPending,
+    VerificationRequired,
+    Disconnected,
+    DisconnectPending,
+    DisconnectFailed,
     Expired,
     Denied,
     DeviceFlowDisabled,
@@ -176,6 +199,17 @@ impl GithubAuth {
             GithubFlowView::Idle
         };
         GithubAuthView { accounts, flow }
+    }
+
+    fn copilot_view(&self) -> GithubAuthView {
+        let mut view = self.view();
+        for account in &mut view.accounts {
+            match account {
+                GithubAccountView::Connected { provider, .. }
+                | GithubAccountView::ReconnectRequired { provider, .. } => *provider = "copilot",
+            }
+        }
+        view
     }
 
     fn set_failure(&mut self, account_id: &str, reason: GithubAuthFailure) {
@@ -327,27 +361,22 @@ impl GithubAuth {
         Ok(persisted)
     }
 
-    fn restore(
+    fn restore_accounts(
         store: &github::token_store::RotationSafeStore<github::macos_keychain::MacKeychainStore>,
-        legacy_store: &github::token_store::RotationSafeStore<
-            github::macos_keychain::MacKeychainStore,
-        >,
-    ) -> Self {
+        provider: github::token_store::ProviderId,
+    ) -> Result<Self, github::token_store::StoreError> {
         use github::token_store::{ProviderAccountId, RotationError};
         let mut auth = Self::new();
-        let accounts = match store.accounts() {
-            Ok(accounts) => accounts,
-            Err(_) => return auth,
-        };
+        let accounts = store.accounts()?;
         for account in accounts {
-            if account.provider.as_str() != "github" {
+            if account.provider != provider {
                 continue;
             }
             let identity = github::Identity {
                 id: account.account_id.clone(),
                 login: account.login.clone(),
             };
-            let id = ProviderAccountId::github(&account.account_id);
+            let id = ProviderAccountId::new(provider.clone(), &account.account_id)?;
             let transport = match github::oauth::GithubOAuthHttp::new() {
                 Ok(transport) => transport,
                 Err(error) => {
@@ -416,6 +445,24 @@ impl GithubAuth {
                 }
             }
         }
+        Ok(auth)
+    }
+
+    fn restore(
+        store: &github::token_store::RotationSafeStore<github::macos_keychain::MacKeychainStore>,
+        legacy_store: &github::token_store::RotationSafeStore<
+            github::macos_keychain::MacKeychainStore,
+        >,
+    ) -> Self {
+        use github::token_store::ProviderAccountId;
+        let mut auth =
+            match Self::restore_accounts(store, github::token_store::ProviderId::github()) {
+                Ok(auth) => auth,
+                Err(_) => {
+                    eprintln!("GitHub credential registry is unavailable.");
+                    Self::new()
+                }
+            };
         match legacy_store.accounts() {
             Ok(legacy_accounts) => {
                 for account in legacy_accounts {
@@ -870,6 +917,7 @@ fn start_github_browser_auth(
         app.clone(),
         attempt_id,
         cancel_rx,
+        ConnectionRole::Repository,
     ));
     Ok(view)
 }
@@ -878,6 +926,7 @@ async fn complete_github_device_auth(
     app: tauri::AppHandle,
     attempt_id: u64,
     cancel_rx: tokio::sync::oneshot::Receiver<()>,
+    role: ConnectionRole,
 ) {
     let cancelled = Arc::new(AtomicBool::new(false));
     let cancellation = Arc::clone(&cancelled);
@@ -891,28 +940,30 @@ async fn complete_github_device_auth(
         let transport = github::oauth::GithubOAuthHttp::new().map_err(failure_from_oauth_error)?;
         let browser_app = work_app.clone();
         let browser_cancelled = Arc::clone(&cancelled);
-        let authorization = transport
-            .request_device_authorization(|url| {
-                if browser_cancelled.load(Ordering::SeqCst)
-                    || !browser_app
-                        .state::<Host>()
-                        .github_auth
-                        .lock()
-                        .ok()
-                        .is_some_and(|auth| auth.is_active_attempt(attempt_id))
-                {
-                    return Err(github::oauth::OAuthError::Cancelled);
-                }
-                webbrowser::open(url.as_str()).map_err(|_| github::oauth::OAuthError::BrowserOpen)
-            })
-            .map_err(failure_from_oauth_error)?;
+        let open_browser = |url: &url::Url| {
+            if browser_cancelled.load(Ordering::SeqCst)
+                || !role
+                    .auth(&browser_app.state::<Host>())
+                    .lock()
+                    .ok()
+                    .is_some_and(|auth| auth.is_active_attempt(attempt_id))
+            {
+                return Err(github::oauth::OAuthError::Cancelled);
+            }
+            webbrowser::open(url.as_str()).map_err(|_| github::oauth::OAuthError::BrowserOpen)
+        };
+        let authorization = match role {
+            ConnectionRole::Repository => transport.request_device_authorization(open_browser),
+            ConnectionRole::Copilot => transport.request_copilot_authorization(open_browser),
+        }
+        .map_err(failure_from_oauth_error)?;
         if cancelled.load(Ordering::SeqCst) {
             return Err(GithubAuthFailure::Cancelled);
         }
         {
             let host = work_app.state::<Host>();
-            let mut auth = host
-                .github_auth
+            let mut auth = role
+                .auth(&host)
                 .lock()
                 .map_err(|_| GithubAuthFailure::InvalidResponse)?;
             if !auth.set_device_authorization(
@@ -939,7 +990,7 @@ async fn complete_github_device_auth(
     .await
     .unwrap_or(Err(GithubAuthFailure::InvalidResponse));
     let host = app.state::<Host>();
-    let Ok(mut auth) = host.github_auth.lock() else {
+    let Ok(mut auth) = role.auth(&host).lock() else {
         return;
     };
     eprintln!(
@@ -1243,6 +1294,14 @@ pub fn run() {
             confirm_github_account,
             cancel_github_auth,
             disconnect_github_auth,
+            copilot::copilot_auth_state,
+            copilot::start_copilot_auth,
+            copilot::confirm_copilot_account,
+            copilot::cancel_copilot_auth,
+            copilot::disconnect_copilot_account,
+            copilot::verify_copilot_account,
+            copilot::list_copilot_models,
+            copilot::cancel_copilot_models,
             diagnostics,
             open_diagnostics
         ])
@@ -1262,6 +1321,7 @@ pub fn run() {
             let github_legacy_credentials =
                 github::token_store::RotationSafeStore::new(legacy_github_keychain);
             let github_auth = GithubAuth::restore(&github_credentials, &github_legacy_credentials);
+            let copilot = copilot::Integration::new(isolated)?;
             let store = Store::new(root);
             app.manage(Host {
                 store: Mutex::new(store),
@@ -1277,6 +1337,7 @@ pub fn run() {
                 github_auth: Mutex::new(github_auth),
                 github_credentials,
                 github_legacy_credentials,
+                copilot,
             });
             record(app.handle(), DiagnosticEvent::SessionStarted);
             let status = MenuItem::with_id(app, "status", "Status", true, None::<&str>)?;
@@ -1293,9 +1354,7 @@ pub fn run() {
             let quit = MenuItem::with_id(app, "quit", "Quit PR Sniper", true, Some("CmdOrCtrl+Q"))?;
             let menu = Menu::with_items(
                 app,
-                &[
-                    &status, &queue, &check, &settings, &separator, &quit,
-                ],
+                &[&status, &queue, &check, &settings, &separator, &quit],
             )?;
             TrayIconBuilder::with_id("pr-sniper")
                 .icon(tauri::image::Image::from_bytes(include_bytes!(
@@ -1310,10 +1369,31 @@ pub fn run() {
                         record(app, DiagnosticEvent::QuitRequested);
                         let host = app.state::<Host>();
                         host.quitting.store(true, Ordering::SeqCst);
-                        if let Ok(mut auth) = host.github_auth.lock() {
-                            auth.cancel_attempt();
-                        }
-                        app.exit(0);
+                        host.copilot.request_shutdown();
+                        let shutdown_app = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let cancel_app = shutdown_app.clone();
+                            if tauri::async_runtime::spawn_blocking(move || {
+                                let host = cancel_app.state::<Host>();
+                                if let Ok(mut auth) = host.github_auth.lock() {
+                                    auth.cancel_attempt();
+                                }
+                                host.copilot.shutdown();
+                            })
+                            .await
+                            .is_err()
+                            {
+                                eprintln!("Authentication shutdown could not finish.");
+                            }
+                            let deadline =
+                                tokio::time::Instant::now() + std::time::Duration::from_secs(7);
+                            while !shutdown_app.state::<Host>().copilot.lookups_finished()
+                                && tokio::time::Instant::now() < deadline
+                            {
+                                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                            }
+                            shutdown_app.exit(0);
+                        });
                         return;
                     }
 

@@ -1,6 +1,15 @@
 import { expect, test } from "./fixtures.mjs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import {
+  seedAgent,
+  setAgentPrompt,
+  saveChanges,
+  assignment,
+  saveAssignment,
+  advancedSchedule,
+  closeDialog,
+} from "./navigation.mjs";
 
 test("discovery preserves the fetch URL and reports ambiguous remotes", async ({
   store,
@@ -57,23 +66,21 @@ test("a settings conflict keeps the draft until explicit discard and reload", as
   page,
   store,
 }) => {
+  await seedAgent(store);
   await page.goto("/?view=settings");
-  await page
-    .getByRole("button", { name: "Review defaults", exact: true })
-    .click();
-  const prompt = page.getByLabel("Review prompt", { exact: true });
-  await prompt.fill("My unsaved local draft");
+  await setAgentPrompt(page, "My unsaved local draft");
 
-  const external = (await store("snapshot")).settings.defaults;
-  await store("save_defaults", {
-    policy: { ...external, prompt: "A concurrent external edit" },
-  });
+  const external = (await store("snapshot")).settings;
+  external.agents[0].prompt = "A concurrent external edit";
+  await store("seed_settings", external);
 
   await page.getByRole("button", { name: "Save changes", exact: true }).click();
-  await expect(page.getByRole("alert")).toContainText(
+  await expect(page.locator("#error")).toContainText(
     "Settings changed in another window",
   );
-  await expect(prompt).toHaveValue("My unsaved local draft");
+  await expect(page.locator(".agent-card")).toContainText(
+    "My unsaved local draft",
+  );
 
   await page
     .getByRole("button", {
@@ -81,69 +88,61 @@ test("a settings conflict keeps the draft until explicit discard and reload", as
       exact: true,
     })
     .click();
-  await expect(prompt).toHaveValue("A concurrent external edit");
+  await expect(page.locator(".agent-card")).toContainText(
+    "A concurrent external edit",
+  );
 
-  await prompt.fill("Saved after explicit recovery");
-  await page.getByRole("button", { name: "Save changes", exact: true }).click();
-  await expect(
-    page.getByText("All changes saved", { exact: true }),
-  ).toBeVisible();
-  expect((await store("snapshot")).settings.defaults.prompt).toBe(
+  await setAgentPrompt(page, "Saved after explicit recovery");
+  await saveChanges(page);
+  expect((await store("snapshot")).settings.agents[0].prompt).toBe(
     "Saved after explicit recovery",
   );
 });
 
 test("advanced schedule edits immediately match the displayed and saved draft", async ({
-  browser,
+  page,
   store,
-  baseURL,
 }) => {
-  const context = await browser.newContext({
-    baseURL,
-    timezoneId: "America/New_York",
+  await seedAgent(store);
+  await store("save_repository", { repository: "fixture/project" });
+  await page.goto("/?view=settings");
+  let modal = await assignment(page, "fixture/project");
+  await advancedSchedule(modal);
+  await modal.getByLabel("Interval minutes", { exact: true }).fill("42");
+
+  let frequency = modal.getByRole("combobox", {
+    name: "Check for pull requests",
+    exact: true,
   });
-  const page = await context.newPage();
-  await page.exposeFunction("__settingsInvoke", store);
-  await page.addInitScript(() => {
-    window.__TAURI_INTERNALS__ = { invoke: window.__settingsInvoke };
+  await expect(frequency).toHaveValue("42");
+  await expect(frequency.locator("option:checked")).toHaveText(
+    "Every 42 minutes",
+  );
+  await modal.getByLabel("Time zone", { exact: true }).fill("UTC");
+  await saveAssignment(page, modal);
+  await saveChanges(page);
+  expect(
+    (await store("snapshot")).settings.repositories[0].assignments[0].schedule,
+  ).toEqual({
+    kind: "interval",
+    minutes: 42,
+    timezone: "UTC",
   });
-  try {
-    await page.goto("/?view=settings");
-    await page.getByRole("button", { name: "Automation", exact: true }).click();
-    await page.getByText("Advanced scheduling", { exact: true }).click();
-    await page.getByLabel("Interval minutes", { exact: true }).fill("42");
 
-    const frequency = page.getByLabel("Check frequency", { exact: true });
-    await expect(frequency).toHaveValue("42");
-    await expect(frequency.locator("option:checked")).toHaveText(
-      "Every 42 minutes",
-    );
-    await page.getByLabel("Time zone", { exact: true }).selectOption("UTC");
-    await expect(page.getByText(/Time zone: UTC \(selected\)/)).toBeVisible();
-
-    await page
-      .getByRole("button", { name: "Save changes", exact: true })
-      .click();
-    await expect(
-      page.getByText("All changes saved", { exact: true }),
-    ).toBeVisible();
-    expect((await store("snapshot")).settings.defaults.schedule).toEqual({
-      kind: "interval",
-      minutes: 42,
-      timezone: "UTC",
-    });
-
-    await page.reload();
-    await page.getByRole("button", { name: "Automation", exact: true }).click();
-    await page.getByText("Advanced scheduling", { exact: true }).click();
-    await expect(frequency).toHaveValue("42");
-    await expect(
-      page.getByLabel("Interval minutes", { exact: true }),
-    ).toHaveValue("42");
-    await expect(page.getByLabel("Time zone", { exact: true })).toHaveValue(
-      "UTC",
-    );
-  } finally {
-    await context.close();
-  }
+  await page.reload();
+  modal = await assignment(page, "fixture/project", 0);
+  await advancedSchedule(modal);
+  frequency = modal.getByRole("combobox", {
+    name: "Check for pull requests",
+    exact: true,
+  });
+  await expect(frequency).toHaveValue("42");
+  await expect(
+    modal.getByLabel("Interval minutes", { exact: true }),
+  ).toHaveValue("42");
+  await expect(modal.getByLabel("Time zone", { exact: true })).toHaveValue(
+    "UTC",
+  );
+  await closeDialog(page);
+  await closeDialog(page);
 });
