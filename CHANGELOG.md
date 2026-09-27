@@ -44,6 +44,15 @@ No release/versioning policy has been established yet.
 
 ### Added
 
+- Run assignment-bound Copilot reviews with the configured AI account, model,
+  prompt and doctrine, manually or through the automatic-start gate. Require
+  exact-revision trust confirmation for forks and untrusted authors; expose only
+  verified immutable read tools, never target code execution or publication.
+  Review Queue provides cancellation, durable bounded retries, complete ordered
+  file guides, structured findings, machine decisions and session/usage details.
+  Invalid, incomplete or stale results fail visibly. See
+  [#22](https://github.com/jdylanmc/pr-sniper/issues/22).
+
 - Persist each repository poll's operation identity, attempt count and
   15-minute retry deadline before provider work. Interrupted polls retain the
   same budget across restart; transient failures receive at most three bounded

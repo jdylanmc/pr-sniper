@@ -261,7 +261,7 @@ impl<T: Transport> GithubClient<T> {
         Ok(result)
     }
 
-    fn pages(&self, first: &str) -> Result<Vec<Value>, ConnectionError> {
+    pub(super) fn pages(&self, first: &str) -> Result<Vec<Value>, ConnectionError> {
         let mut path = first.to_string();
         let mut seen = HashSet::new();
         let mut result = Vec::new();
@@ -288,7 +288,7 @@ impl<T: Transport> GithubClient<T> {
     }
 }
 
-fn polling_pull_request(value: &Value) -> Result<PullRequest, ConnectionError> {
+pub(super) fn polling_pull_request(value: &Value) -> Result<PullRequest, ConnectionError> {
     let id = decimal_id(&value["id"])?;
     let number = unsigned(&value["number"])?;
     if number == 0 {

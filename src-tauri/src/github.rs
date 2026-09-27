@@ -4,6 +4,7 @@ pub mod macos_keychain;
 pub mod metadata;
 pub mod oauth;
 pub mod provider;
+pub mod review;
 pub mod token_store;
 
 use serde::Serialize;

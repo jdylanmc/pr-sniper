@@ -1,6 +1,6 @@
 mod backend;
-mod operation;
-mod runtime;
+pub(crate) mod operation;
+pub(crate) mod runtime;
 
 use crate::{
     complete_github_device_auth,
@@ -44,6 +44,42 @@ impl Integration {
             "com.jdylanmc.pr-sniper.copilot.oauth-app.v1".into()
         };
         Ok(Arc::new(Self::with_backend(NativeBackend::new(service))))
+    }
+
+    pub(crate) async fn review<T: github::provider::Transport + Send + Sync + 'static>(
+        self: &Arc<Self>,
+        request: crate::review::runtime::Request<T>,
+        cancelled: Arc<AtomicBool>,
+        deadline: Instant,
+    ) -> Result<crate::review::ReviewResult, crate::review::Failure> {
+        use crate::review::Failure;
+        let id = request
+            .selection
+            .agent
+            .ai_account
+            .as_ref()
+            .ok_or_else(|| Failure::permanent("Choose a Copilot account."))?
+            .account_id
+            .clone();
+        let mut operation = self.operation(&id, deadline).map_err(Failure::permanent)?;
+        operation.cancelled = cancelled;
+        operation
+            .wait(self.restore())
+            .await
+            .map_err(Failure::operation)?
+            .map_err(Failure::permanent)?;
+        let (identity, pair) = self
+            .credential(&id, &operation)
+            .await
+            .map_err(Failure::operation)?;
+        let final_operation = operation.clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            crate::review::runtime::run(&identity, &pair, &operation, request)
+        })
+        .await
+        .map_err(|_| Failure::permanent("Review worker could not finish."))?;
+        final_operation.check().map_err(Failure::operation)?;
+        result
     }
 }
 
