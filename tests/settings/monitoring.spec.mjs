@@ -44,8 +44,8 @@ test("Review Queue renders acting schedule identity and every persisted detectio
   const snapshot = {
     health: [
       {
-        repository_id: "configuration-1",
-        name: "example/repo",
+        repository_id: "scheduled",
+        name: "scheduled/repo",
         schedule_key: "interval:5:America/New_York",
         provider_account_id: "22",
         account_login: "current-login",
@@ -62,9 +62,45 @@ test("Review Queue renders acting schedule identity and every persisted detectio
         manual_pending: true,
       },
       {
-        repository_id: "configuration-2",
-        name: "other/repo",
+        repository_id: "checking",
+        name: "checking/repo",
+        schedule_key: "interval:10:UTC",
+        provider_account_id: "22",
+        account_login: "current-login",
+        assignment_id: null,
+        agent_id: null,
+        agent_name: null,
+        enabled: true,
+        last_attempt: 1_800_000_010,
+        last_success: null,
+        next_run: 1_800_000_600,
+        schedule_available: true,
+        last_failure: null,
+        in_flight: true,
+        manual_pending: false,
+      },
+      {
+        repository_id: "blocked",
+        name: "unbound/repo",
         schedule_key: "cron:0 9 * * MON-FRI:UTC",
+        provider_account_id: null,
+        account_login: null,
+        assignment_id: null,
+        agent_id: null,
+        agent_name: null,
+        enabled: true,
+        last_attempt: null,
+        last_success: null,
+        next_run: 0,
+        schedule_available: false,
+        last_failure: "account_binding_required",
+        in_flight: false,
+        manual_pending: false,
+      },
+      {
+        repository_id: "unavailable",
+        name: "unavailable/repo",
+        schedule_key: "",
         provider_account_id: "23",
         account_login: null,
         assignment_id: null,
@@ -75,7 +111,25 @@ test("Review Queue renders acting schedule identity and every persisted detectio
         last_success: null,
         next_run: 0,
         schedule_available: false,
-        last_failure: "account_disconnected",
+        last_failure: null,
+        in_flight: false,
+        manual_pending: false,
+      },
+      {
+        repository_id: "disabled",
+        name: "disabled/repo",
+        schedule_key: "interval:15:UTC",
+        provider_account_id: "24",
+        account_login: "disabled-account",
+        assignment_id: null,
+        agent_id: null,
+        agent_name: null,
+        enabled: false,
+        last_attempt: null,
+        last_success: null,
+        next_run: 0,
+        schedule_available: false,
+        last_failure: null,
         in_flight: false,
         manual_pending: false,
       },
@@ -109,14 +163,28 @@ test("Review Queue renders acting schedule identity and every persisted detectio
 
   await page.goto("/?view=queue");
   const health = page.locator("#schedule-health");
-  await expect(health).toContainText("Immediate check pending");
+  await expect(
+    health.locator("p").filter({ hasText: "scheduled/repo" }),
+  ).toContainText("scheduled/repo: Scheduled; immediate check pending.");
+  await expect(
+    health.locator("p").filter({ hasText: "checking/repo" }),
+  ).toContainText("checking/repo: Checking.");
+  const blocked = health.locator("p").filter({ hasText: "unbound/repo" });
+  await expect(blocked).toContainText("unbound/repo: Blocked.");
+  await expect(blocked).toContainText("Acting account: unbound");
+  await expect(blocked).toContainText("Next run: Unavailable");
+  await expect(
+    health.locator("p").filter({ hasText: "unavailable/repo" }),
+  ).toContainText("unavailable/repo: Unavailable.");
+  await expect(
+    health.locator("p").filter({ hasText: "disabled/repo" }),
+  ).toContainText("disabled/repo: Disabled.");
   await expect(health).toContainText("current-login (22)");
   await expect(health).toContainText(
     "Security reviewer (agent-1), assignment assignment-1",
   );
   await expect(health).toContainText("interval:5:America/New_York");
   await expect(health).toContainText("stable ID 23 (login unavailable)");
-  await expect(health).toContainText("Needs attention");
 
   for (const [, label] of waitingStates)
     await expect(page.locator("#review-jobs")).toContainText(label);

@@ -41,6 +41,26 @@ interface MonitoringSnapshot {
 const time = (value: number | null) =>
   value === null ? "Never" : new Date(value * 1000).toLocaleString();
 
+const blockingFailures = new Set([
+  "account_binding_required",
+  "account_disconnected",
+  "configuration",
+  "invalid_schedule",
+  "provider_unavailable",
+  "settings_unavailable",
+]);
+
+function healthLabel(item: Health) {
+  if (!item.enabled) return "Disabled";
+  if (item.in_flight) return "Checking";
+  if (item.last_failure && blockingFailures.has(item.last_failure))
+    return "Blocked";
+  if (!item.schedule_available) return "Unavailable";
+  return item.manual_pending
+    ? "Scheduled; immediate check pending"
+    : "Scheduled";
+}
+
 function waitingLabel(waiting: string) {
   switch (waiting) {
     case "trust_confirmation":
@@ -96,15 +116,7 @@ export function renderMonitoring(
       }
       for (const item of snapshot.health) {
         const row = document.createElement("p");
-        const state = !item.enabled
-          ? "Disabled"
-          : item.in_flight
-            ? "Checking"
-            : item.manual_pending
-              ? "Immediate check pending"
-              : item.schedule_available
-                ? "Scheduled"
-                : "Needs attention";
+        const state = healthLabel(item);
         const next = !item.enabled
           ? "Disabled"
           : item.schedule_available
