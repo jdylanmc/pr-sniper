@@ -802,6 +802,91 @@ struct MonitoringSnapshot {
     jobs: Vec<monitoring::QueueJob>,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ApplyMonitoringActivation {
+    repository_id: String,
+    preview_id: String,
+    mode: monitoring::ActivationMode,
+    selected_pull_request_ids: Vec<String>,
+}
+
+fn stage_monitoring_activation(
+    generations: &Mutex<BTreeMap<String, u64>>,
+    auth: &Mutex<GithubAuth>,
+    store: &Mutex<Store>,
+    monitor: &Mutex<monitoring::Monitor>,
+    evidence: monitoring::ActivationPreviewEvidence,
+) -> Result<monitoring::ActivationPreviewView, ConnectionError> {
+    let generations = generations
+        .lock()
+        .map_err(|_| ConnectionError::Configuration)?;
+    let auth = auth.lock().map_err(|_| ConnectionError::Configuration)?;
+    auth.account_session_allowed(&evidence.context.account_id)?;
+    let store = store.lock().map_err(|_| ConnectionError::Configuration)?;
+    let settings = store
+        .load_settings()
+        .map_err(|_| ConnectionError::Configuration)?;
+    let current_generation = generations
+        .get(&evidence.context.account_id)
+        .copied()
+        .unwrap_or(0);
+    monitor
+        .lock()
+        .map_err(|_| ConnectionError::Configuration)?
+        .stage_activation_preview(&settings, evidence, current_generation)
+}
+
+fn apply_staged_monitoring_activation(
+    generations: &Mutex<BTreeMap<String, u64>>,
+    auth: &Mutex<GithubAuth>,
+    store: &Mutex<Store>,
+    monitor: &Mutex<monitoring::Monitor>,
+    request: ApplyMonitoringActivation,
+    now: i64,
+) -> Result<monitoring::ActivationStatus, String> {
+    let preview_context = monitor
+        .lock()
+        .map_err(|_| "Monitoring is unavailable.")?
+        .activation_preview_context(&request.preview_id)
+        .ok_or("Monitoring scope preview expired. Preview again.")?;
+    if preview_context.repository_id != request.repository_id {
+        return Err("Monitoring scope preview belongs to another repository.".into());
+    }
+    let generations = generations
+        .lock()
+        .map_err(|_| "Monitoring coordination is unavailable.")?;
+    let auth = auth
+        .lock()
+        .map_err(|_| "GitHub connection state is unavailable.")?;
+    let store = store.lock().map_err(|_| "Storage is unavailable.")?;
+    let settings = store.load_settings()?;
+    let context =
+        monitoring::Monitor::activation_context(&settings, &preview_context.repository_id)
+            .map_err(|_| "Repository monitoring configuration changed. Preview again.")?;
+    if context != preview_context {
+        return Err("Repository monitoring configuration changed. Preview again.".into());
+    }
+    auth.account_session_allowed(&context.account_id)
+        .map_err(|_| "Reconnect the acting GitHub account, then preview again.")?;
+    let generation = generations.get(&context.account_id).copied().unwrap_or(0);
+    monitor
+        .lock()
+        .map_err(|_| "Monitoring is unavailable.")?
+        .apply_activation(
+            &store,
+            &settings,
+            monitoring::ActivationApplication {
+                repository_id: &request.repository_id,
+                preview_id: &request.preview_id,
+                mode: request.mode,
+                selected_pull_request_ids: &request.selected_pull_request_ids,
+                account_generation: generation,
+                now,
+            },
+        )
+}
+
 #[tauri::command]
 async fn monitoring_snapshot(app: tauri::AppHandle) -> Result<MonitoringSnapshot, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -835,6 +920,55 @@ fn now_seconds() -> Result<i64, String> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
         .map_err(|_| "System clock precedes the Unix epoch.".into())
+}
+
+fn synchronize_monitoring_configuration(
+    generations: &Mutex<BTreeMap<String, u64>>,
+    auth: &Mutex<GithubAuth>,
+    store: &Mutex<Store>,
+    monitor: &Mutex<monitoring::Monitor>,
+) -> Result<(), String> {
+    let _generation = generations
+        .lock()
+        .map_err(|_| "Monitoring coordination is unavailable.")?;
+    let accounts = auth
+        .lock()
+        .map_err(|_| "GitHub connection state is unavailable.")?
+        .monitoring_accounts();
+    let store = store.lock().map_err(|_| "Storage is unavailable.")?;
+    monitor
+        .lock()
+        .map_err(|_| "Monitoring is unavailable.")?
+        .synchronize_configuration(&store, &accounts, now_seconds()?)
+}
+
+fn finish_committed_settings(
+    generations: &Mutex<BTreeMap<String, u64>>,
+    auth: &Mutex<GithubAuth>,
+    store: &Mutex<Store>,
+    monitor: &Mutex<monitoring::Monitor>,
+    settings: Settings,
+) -> SavedSettings {
+    let monitoring_warning = synchronize_monitoring_configuration(generations, auth, store, monitor).err().map(|_| {
+        "Settings saved, but monitoring scope could not be synchronized. New detections remain paused until local monitoring storage is available."
+            .to_string()
+    });
+    let mut saved = match store.lock() {
+        Ok(store) => store.finish_settings_save(settings),
+        Err(_) => SavedSettings {
+            settings,
+            warning: Some(
+                "Settings saved, but host diagnostics could not be recorded. Check local storage permissions."
+                    .into(),
+            ),
+        },
+    };
+    saved.warning = match (monitoring_warning, saved.warning) {
+        (Some(monitoring), Some(diagnostics)) => Some(format!("{monitoring} {diagnostics}")),
+        (Some(monitoring), None) => Some(monitoring),
+        (None, warning) => warning,
+    };
+    saved
 }
 
 fn prepare_monitoring_checks(
@@ -978,6 +1112,119 @@ async fn check_now(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|_| "The immediate repository check could not start.".to_string())?
 }
 
+#[tauri::command]
+async fn monitoring_activation_status(
+    app: tauri::AppHandle,
+    repository_id: String,
+) -> Result<monitoring::ActivationStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<Host>();
+        let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+        let settings = store.load_settings()?;
+        let monitor = host
+            .monitor
+            .lock()
+            .map_err(|_| "Monitoring is unavailable.")?;
+        Ok(monitor.activation_status(&settings, &repository_id))
+    })
+    .await
+    .map_err(|_| "Monitoring scope status could not be read.".to_string())?
+}
+
+#[tauri::command]
+async fn preview_monitoring_activation(
+    app: tauri::AppHandle,
+    repository_id: String,
+) -> Result<monitoring::ActivationPreviewView, ConnectionError> {
+    let app_for_read = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let host = app_for_read.state::<Host>();
+        let (account_generation, context) = {
+            let generations = host
+                .github_generations
+                .lock()
+                .map_err(|_| ConnectionError::Configuration)?;
+            let store = host
+                .store
+                .lock()
+                .map_err(|_| ConnectionError::Configuration)?;
+            let settings = store
+                .load_settings()
+                .map_err(|_| ConnectionError::Configuration)?;
+            let context = monitoring::Monitor::activation_context(&settings, &repository_id)?;
+            (
+                generations.get(&context.account_id).copied().unwrap_or(0),
+                context,
+            )
+        };
+        let account_for_failure = context.account_id.clone();
+        let result = (|| {
+            let (identity, client) = github_session(&host, &context.account_id)?;
+            let connection = client.connect(&context.name, Some(&context.account_id))?;
+            if connection.repository.id != context.provider_repository_id {
+                return Err(ConnectionError::RepositoryChanged);
+            }
+            let pull_requests = client.poll_pull_requests(&connection.repository)?;
+            let creation_watermark = client.latest_pull_request_number(&connection.repository)?;
+            stage_monitoring_activation(
+                &host.github_generations,
+                &host.github_auth,
+                &host.store,
+                &host.monitor,
+                monitoring::ActivationPreviewEvidence {
+                    context,
+                    connection: Connection {
+                        identity,
+                        ..connection
+                    },
+                    pull_requests,
+                    creation_watermark,
+                    account_generation,
+                },
+            )
+        })();
+        apply_account_connection_failure(&host, &account_for_failure, &result);
+        result
+    })
+    .await
+    .map_err(|_| ConnectionError::ProviderFailure)?;
+    result
+}
+
+#[tauri::command]
+fn cancel_monitoring_activation(host: State<'_, Host>, preview_id: String) -> Result<(), String> {
+    host.monitor
+        .lock()
+        .map_err(|_| "Monitoring is unavailable.")?
+        .cancel_activation_preview(&preview_id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn apply_monitoring_activation(
+    app: tauri::AppHandle,
+    request: ApplyMonitoringActivation,
+) -> Result<monitoring::ActivationStatus, String> {
+    let app_for_apply = app.clone();
+    let status = tauri::async_runtime::spawn_blocking(move || {
+        let host = app_for_apply.state::<Host>();
+        apply_staged_monitoring_activation(
+            &host.github_generations,
+            &host.github_auth,
+            &host.store,
+            &host.monitor,
+            request,
+            now_seconds()?,
+        )
+    })
+    .await
+    .map_err(|_| "Monitoring scope could not be applied.".to_string())??;
+    if let Err(error) = start_checks(&app, true) {
+        report(&app, error);
+    }
+    Ok(status)
+}
+
 #[derive(Serialize)]
 struct GithubRepositories {
     identity: github::Identity,
@@ -1065,9 +1312,17 @@ fn save_preferences(
         serde_json::from_value(settings).map_err(|_| "Unsupported settings configuration.")?;
     let expected =
         serde_json::from_value(expected).map_err(|_| "Unsupported settings snapshot.")?;
-    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
-    let saved = store.save_preferences(settings, &expected)?;
-    Ok(store.finish_settings_save(saved))
+    let saved = {
+        let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+        store.save_preferences(settings, &expected)?
+    };
+    Ok(finish_committed_settings(
+        &host.github_generations,
+        &host.github_auth,
+        &host.store,
+        &host.monitor,
+        saved,
+    ))
 }
 
 #[tauri::command]
@@ -1176,9 +1431,17 @@ fn save_login(host: State<'_, Host>, enabled: bool) -> Result<(), String> {
 
 #[tauri::command]
 fn save_repository(host: State<'_, Host>, repository: String) -> Result<SavedSettings, String> {
-    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
-    let settings = store.add_repository(&repository)?;
-    Ok(store.finish_settings_save(settings))
+    let settings = {
+        let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+        store.add_repository(&repository)?
+    };
+    Ok(finish_committed_settings(
+        &host.github_generations,
+        &host.github_auth,
+        &host.store,
+        &host.monitor,
+        settings,
+    ))
 }
 
 #[tauri::command]
@@ -1188,16 +1451,32 @@ fn update_repository(
     repository: String,
     enabled: bool,
 ) -> Result<SavedSettings, String> {
-    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
-    let settings = store.update_repository(&id, &repository, enabled)?;
-    Ok(store.finish_settings_save(settings))
+    let settings = {
+        let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+        store.update_repository(&id, &repository, enabled)?
+    };
+    Ok(finish_committed_settings(
+        &host.github_generations,
+        &host.github_auth,
+        &host.store,
+        &host.monitor,
+        settings,
+    ))
 }
 
 #[tauri::command]
 fn remove_repository(host: State<'_, Host>, id: String) -> Result<SavedSettings, String> {
-    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
-    let settings = store.remove_repository(&id)?;
-    Ok(store.finish_settings_save(settings))
+    let settings = {
+        let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+        store.remove_repository(&id)?
+    };
+    Ok(finish_committed_settings(
+        &host.github_generations,
+        &host.github_auth,
+        &host.store,
+        &host.monitor,
+        settings,
+    ))
 }
 
 #[tauri::command]
@@ -1206,9 +1485,17 @@ fn save_defaults(
     policy: serde_json::Value,
 ) -> Result<SavedSettings, String> {
     let policy = serde_json::from_value(policy).map_err(|_| "Unsupported policy configuration.")?;
-    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
-    let settings = store.save_defaults(policy)?;
-    Ok(store.finish_settings_save(settings))
+    let settings = {
+        let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+        store.save_defaults(policy)?
+    };
+    Ok(finish_committed_settings(
+        &host.github_generations,
+        &host.github_auth,
+        &host.store,
+        &host.monitor,
+        settings,
+    ))
 }
 
 #[tauri::command]
@@ -1219,9 +1506,17 @@ fn save_repository_policy(
 ) -> Result<SavedSettings, String> {
     let overrides = serde_json::from_value(overrides)
         .map_err(|_| "Unsupported policy override configuration.")?;
-    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
-    let settings = store.save_repository_policy(&id, overrides)?;
-    Ok(store.finish_settings_save(settings))
+    let settings = {
+        let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+        store.save_repository_policy(&id, overrides)?
+    };
+    Ok(finish_committed_settings(
+        &host.github_generations,
+        &host.github_auth,
+        &host.store,
+        &host.monitor,
+        settings,
+    ))
 }
 
 #[tauri::command]
@@ -1725,7 +2020,11 @@ pub fn run() {
             diagnostics,
             open_diagnostics,
             monitoring_snapshot,
-            check_now
+            check_now,
+            monitoring_activation_status,
+            preview_monitoring_activation,
+            cancel_monitoring_activation,
+            apply_monitoring_activation
         ])
         .setup(|app| {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -1889,10 +2188,12 @@ pub fn run() {
 #[cfg(test)]
 mod github_auth_tests {
     use super::{
-        disconnect_github_account, failure_from_connection_error, failure_from_oauth_error,
+        apply_staged_monitoring_activation, disconnect_github_account,
+        failure_from_connection_error, failure_from_oauth_error, finish_committed_settings,
         finish_monitored_ticket, github_keychain_stores, persist_oauth_account_with_cleanup,
-        rotation_connection_error, GithubAccountState, GithubAccountView, GithubAuth,
-        GithubAuthFailure, GithubFlowView, OAuthAccountPersistence,
+        rotation_connection_error, stage_monitoring_activation, ApplyMonitoringActivation,
+        GithubAccountState, GithubAccountView, GithubAuth, GithubAuthFailure, GithubFlowView,
+        OAuthAccountPersistence,
     };
     use crate::github::token_store::{
         AccountRegistry, AccountRegistryStore, CredentialKey, CredentialStore, RotationError,
@@ -1905,7 +2206,8 @@ mod github_auth_tests {
         provider::{Capabilities, CommentCapability, Connection, RemoteRepository},
     };
     use crate::monitoring::{
-        Monitor, PollResult, WAITING_ACCOUNT_DISCONNECTED, WAITING_HUMAN_START,
+        ActivationMode, ActivationPreviewEvidence, Monitor, PollResult,
+        WAITING_ACCOUNT_DISCONNECTED, WAITING_HUMAN_START,
     };
     use crate::policy::{PolicyOverrides, WatchedIdentity};
     use crate::storage::{ProviderId as SettingsProviderId, Repository, Settings, Store};
@@ -2013,6 +2315,25 @@ mod github_auth_tests {
             assignments: Vec::new(),
         });
         store.save_settings(&settings).unwrap();
+        let context = Monitor::activation_context(&settings, &settings.repositories[0].id).unwrap();
+        let mut state = store.load_monitoring_state().unwrap();
+        state.activations.insert(
+            context.repository_id.clone(),
+            crate::monitoring::MonitoringActivation {
+                version: "00000000-0000-4000-8000-000000000099".into(),
+                repository_id: context.repository_id,
+                name: context.name,
+                account_id: context.account_id,
+                provider_repository_id: context.provider_repository_id,
+                trigger_policy: context.trigger_policy,
+                creation_watermark: 0,
+                mode: ActivationMode::NewOnly,
+                selected_existing: 0,
+                baseline: BTreeMap::new(),
+                confirmed_at: 1_799_999_999,
+            },
+        );
+        store.save_monitoring_state(&state).unwrap();
         let monitor = Monitor::restore(&store).unwrap();
         let mut auth = GithubAuth::new();
         auth.accounts.insert(
@@ -2125,6 +2446,165 @@ mod github_auth_tests {
             Some(WAITING_ACCOUNT_DISCONNECTED)
         );
         assert_eq!(health.next_run, 0);
+    }
+
+    #[test]
+    fn activation_native_boundary_rejects_generation_and_disconnect_races() {
+        let (_root, store, monitor, auth) = monitoring_fixture();
+        let settings = store.load_settings().unwrap();
+        let context = Monitor::activation_context(&settings, &settings.repositories[0].id).unwrap();
+        let generations = Mutex::new(BTreeMap::new());
+        let auth = Mutex::new(auth);
+        let store = Mutex::new(store);
+        let monitor = Mutex::new(monitor);
+        let preview = stage_monitoring_activation(
+            &generations,
+            &auth,
+            &store,
+            &monitor,
+            ActivationPreviewEvidence {
+                context: context.clone(),
+                connection: monitoring_result().connection,
+                pull_requests: monitoring_result().pull_requests,
+                creation_watermark: 1,
+                account_generation: 0,
+            },
+        )
+        .unwrap();
+        *generations.lock().unwrap().entry("22".into()).or_default() += 1;
+        assert!(apply_staged_monitoring_activation(
+            &generations,
+            &auth,
+            &store,
+            &monitor,
+            ApplyMonitoringActivation {
+                repository_id: context.repository_id.clone(),
+                preview_id: preview.preview_id,
+                mode: ActivationMode::NewOnly,
+                selected_pull_request_ids: Vec::new(),
+            },
+            1_800_000_000,
+        )
+        .is_err());
+
+        let preview = stage_monitoring_activation(
+            &generations,
+            &auth,
+            &store,
+            &monitor,
+            ActivationPreviewEvidence {
+                context: context.clone(),
+                connection: monitoring_result().connection,
+                pull_requests: Vec::new(),
+                creation_watermark: 1,
+                account_generation: 1,
+            },
+        )
+        .unwrap();
+        auth.lock()
+            .unwrap()
+            .set_failure("22", GithubAuthFailure::Disconnected);
+        assert!(apply_staged_monitoring_activation(
+            &generations,
+            &auth,
+            &store,
+            &monitor,
+            ApplyMonitoringActivation {
+                repository_id: context.repository_id,
+                preview_id: preview.preview_id,
+                mode: ActivationMode::NewOnly,
+                selected_pull_request_ids: Vec::new(),
+            },
+            1_800_000_001,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn activation_request_cannot_apply_another_repository_preview() {
+        let (_root, store, _monitor, mut auth) = monitoring_fixture();
+        let mut state = store.load_monitoring_state().unwrap();
+        state.activations.clear();
+        store.save_monitoring_state(&state).unwrap();
+        let mut settings = store.load_settings().unwrap();
+        let mut second = settings.repositories[0].clone();
+        second.id = "00000000-0000-4000-8000-000000000002".into();
+        second.name = "example/other".into();
+        second.provider_account_id = Some("23".into());
+        second.provider_repository_id = Some("200".into());
+        settings.repositories.push(second);
+        store.save_settings(&settings).unwrap();
+        auth.accounts.insert(
+            "23".into(),
+            GithubAccountState::Connected(identity("23", "other-account")),
+        );
+        let context =
+            Monitor::activation_context(&settings, "00000000-0000-4000-8000-000000000001").unwrap();
+        let generations = Mutex::new(BTreeMap::new());
+        let auth = Mutex::new(auth);
+        let store = Mutex::new(store);
+        let monitor = Mutex::new(Monitor::restore(&store.lock().unwrap()).unwrap());
+        let preview = stage_monitoring_activation(
+            &generations,
+            &auth,
+            &store,
+            &monitor,
+            ActivationPreviewEvidence {
+                context,
+                connection: monitoring_result().connection,
+                pull_requests: Vec::new(),
+                creation_watermark: 1,
+                account_generation: 0,
+            },
+        )
+        .unwrap();
+        auth.lock()
+            .unwrap()
+            .set_failure("22", GithubAuthFailure::Disconnected);
+        assert!(apply_staged_monitoring_activation(
+            &generations,
+            &auth,
+            &store,
+            &monitor,
+            ApplyMonitoringActivation {
+                repository_id: "00000000-0000-4000-8000-000000000002".into(),
+                preview_id: preview.preview_id,
+                mode: ActivationMode::NewOnly,
+                selected_pull_request_ids: Vec::new(),
+            },
+            1_800_000_000,
+        )
+        .is_err());
+        assert!(store
+            .lock()
+            .unwrap()
+            .load_monitoring_state()
+            .unwrap()
+            .activations
+            .is_empty());
+    }
+
+    #[test]
+    fn committed_settings_sync_failure_returns_saved_state_with_warning() {
+        let (root, store, monitor, auth) = monitoring_fixture();
+        let mut settings = store.load_settings().unwrap();
+        settings.repositories[0].enabled = false;
+        store.save_settings(&settings).unwrap();
+        fs::create_dir(root.path().join("state/monitoring.json.tmp")).unwrap();
+        fs::create_dir(root.path().join("state/diagnostics.jsonl")).unwrap();
+        let store = Mutex::new(store);
+        let saved = finish_committed_settings(
+            &Mutex::new(BTreeMap::new()),
+            &Mutex::new(auth),
+            &store,
+            &Mutex::new(monitor),
+            settings.clone(),
+        );
+        assert_eq!(saved.settings, settings);
+        let warning = saved.warning.unwrap();
+        assert!(warning.contains("monitoring scope"));
+        assert!(warning.contains("diagnostics"));
+        assert_eq!(store.lock().unwrap().load_settings().unwrap(), settings);
     }
 
     #[test]

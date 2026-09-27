@@ -166,10 +166,33 @@ ticks cause one check, not a catch-up burst. **Check Now** coalesces one pending
 read for every eligible account and assignment, then drains them serially when
 multiple bindings address the same remote repository.
 
+An enabled, account-bound repository does not begin new detection until its
+monitoring scope is explicitly confirmed in Settings. The preview reads the
+real matching open pull requests, shows the count before confirmation, selects
+no existing pull requests by default, and offers **New pull requests only** or
+an explicitly selected subset of existing pull requests plus new pull requests.
+Scope confirmation saves immediately as a separate native operation and requires
+relevant repository/filter drafts to be saved first. Existing configured
+repositories require this confirmation after upgrade; their queue history is
+retained. The native activation record
+stores the account/repository binding, effective author/reviewer filter, latest
+all-state pull-request number, immutable initial heads, observed heads and
+durably admitted heads. Missing, stale or invalid activation blocks timer and
+**Check Now** detection rather than enabling a backlog.
+
+Filter-only edits preserve the confirmed creation watermark, baseline heads,
+initial selection and admitted heads; every poll applies the current effective
+author/reviewer filter. An unchanged excluded old head remains excluded when a
+filter widens, while its later matching head qualifies. Preview/apply and
+already-running polls still pin the filter they started with and reject stale
+results.
+
 Polling reads paginated open pull-request metadata through the repository's
-connected OAuth account. A stable watched-author identity or a request for the
-signed-in account as reviewer admits a non-draft revision. Reviewer-only work
-outside the trusted watchlist waits for explicit confirmation. Repeat
+connected OAuth account. A populated watched-author filter or a request for the
+signed-in account as reviewer admits a non-draft revision. An empty effective
+watched-author filter matches all authors only after scope activation; it does
+not establish trust. Reviewer-only, all-author, fork and otherwise untrusted
+work waits for explicit confirmation. Repeat
 observations deduplicate by provider, account, stable repository, pull request,
 head revision and trigger policy; a new head can be queued independently.
 Successful open-pull-request scans and configuration changes retain earlier
@@ -179,8 +202,10 @@ nonterminal: it records "not seen" and is rechecked on the next scan rather than
 inventing a closed or merged state. Poll pages use stable creation order to
 reduce page reordering while scanning active repositories. Schedule health
 identifies the acting account, assignment and Agent, and persists pending,
-success and recoverable failure state. Detection never clones a repository,
-starts an agent, executes repository code, mutates GitHub or publishes a review.
+success and recoverable failure state. Unchanged old heads stay excluded, while
+a matching new head on an old pull request enters detection. Detection never
+clones a repository, starts an agent, executes repository code, mutates GitHub
+or publishes a review.
 
 App-owned GitHub and Copilot token pairs use separate account-addressed macOS
 Keychain services, never config, state or diagnostics. Neither Settings

@@ -38,7 +38,7 @@ export function createDialogs(root: HTMLElement, changed: () => void) {
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
-      entry.modal.close();
+      if (entry.modal.dataset.closeLocked !== "true") entry.modal.close();
     } else if (event.key === "Tab") {
       const items = controls(entry.modal);
       const index = items.indexOf(document.activeElement as HTMLElement);
@@ -89,8 +89,11 @@ export function createDialogs(root: HTMLElement, changed: () => void) {
     }
   }
   function close(entry: Entry) {
-    if (!stack.includes(entry)) return;
-    while (top() !== entry) close(top());
+    if (!stack.includes(entry) || entry.modal.dataset.closeLocked === "true")
+      return false;
+    while (top() !== entry) {
+      if (!close(top())) return false;
+    }
     changed();
     stack.pop();
     if (entry.nativeClose) entry.nativeClose();
@@ -98,6 +101,7 @@ export function createDialogs(root: HTMLElement, changed: () => void) {
       entry.modal.open = false;
       entry.modal.removeAttribute("open");
     }
+    entry.modal.dispatchEvent(new Event("pr-sniper:dialog-closed"));
     entry.modal.removeEventListener("input", changed);
     entry.modal.removeEventListener("change", changed);
     for (const { element, ariaHidden, inert } of entry.hidden) {
@@ -110,11 +114,12 @@ export function createDialogs(root: HTMLElement, changed: () => void) {
     if (entry.opener instanceof HTMLElement && entry.opener.isConnected)
       entry.opener.focus({ preventScroll: true });
     else if (top()) focusFirst(top().modal);
+    return true;
   }
   return {
     hasOpen: () => stack.length > 0,
     closeAll: () => {
-      while (top()) close(top());
+      while (top()) if (!close(top())) break;
     },
     show(modal: HTMLDialogElement) {
       changed();

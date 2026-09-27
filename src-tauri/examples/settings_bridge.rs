@@ -46,6 +46,15 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
                 .map_err(|_| "Unsupported settings snapshot.")?;
             recorded_settings(store, store.save_preferences(settings, &expected)?)
         }
+        "monitoring_activation_status" => {
+            let repository_id = request.args["repositoryId"]
+                .as_str()
+                .ok_or("Repository ID is required.")?;
+            let settings = store.load_settings()?;
+            let monitor = pr_sniper_lib::monitoring::Monitor::restore(store)?;
+            serde_json::to_value(monitor.activation_status(&settings, repository_id))
+                .map_err(|_| "Cannot encode monitoring scope status.".into())
+        }
         "canonical_repository_name" => {
             let repository = request.args["repository"]
                 .as_str()
