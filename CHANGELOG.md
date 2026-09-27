@@ -44,6 +44,14 @@ No release/versioning policy has been established yet.
 
 ### Added
 
+- Persist each repository poll's operation identity, attempt count and
+  15-minute retry deadline before provider work. Interrupted polls retain the
+  same budget across restart; transient failures receive at most three bounded
+  retries, while expired or non-retryable operations stop visibly for explicit
+  retry from Review Queue. Detection-only operations explicitly contain no
+  attempted mutation or provider receipt. See
+  [#7](https://github.com/jdylanmc/pr-sniper/issues/7).
+
 - Poll enabled, account-bound GitHub repositories from the active menu-bar
   process using each saved assignment's fixed interval or five-field cron
   schedule in an explicit time zone, with the effective repository policy as a

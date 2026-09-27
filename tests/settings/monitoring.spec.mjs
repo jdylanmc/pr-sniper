@@ -138,6 +138,33 @@ test("Review Queue renders acting schedule identity and every persisted detectio
         manual_pending: false,
       },
       {
+        repository_id: "manual-retry",
+        name: "retry/repo",
+        schedule_key: "interval:15:UTC",
+        provider_account_id: "22",
+        account_login: "current-login",
+        assignment_id: null,
+        agent_id: null,
+        agent_name: null,
+        enabled: true,
+        last_attempt: 1_800_000_020,
+        last_success: null,
+        next_run: 0,
+        schedule_available: false,
+        last_failure: "MissingScope",
+        in_flight: false,
+        manual_pending: false,
+        operation: {
+          id: "operation-1",
+          operation_type: "repository_poll",
+          state: "manual_retry",
+          attempt_count: 1,
+          retry_deadline: 1_800_000_900,
+          next_attempt_at: null,
+          failure: "permanent",
+        },
+      },
+      {
         repository_id: "disabled",
         name: "disabled/repo",
         schedule_key: "interval:15:UTC",
@@ -174,10 +201,15 @@ test("Review Queue renders acting schedule identity and every persisted detectio
   await page.addInitScript((value) => {
     const invoke = window.__TAURI_INTERNALS__.invoke;
     window.__monitoringChecks = 0;
+    window.__monitoringRetries = [];
     window.__TAURI_INTERNALS__.invoke = (command, args) => {
       if (command === "monitoring_snapshot") return Promise.resolve(value);
       if (command === "check_now") {
         window.__monitoringChecks++;
+        return Promise.resolve();
+      }
+      if (command === "retry_monitoring_operation") {
+        window.__monitoringRetries.push(args.operationId);
         return Promise.resolve();
       }
       return invoke(command, args);
@@ -205,6 +237,12 @@ test("Review Queue renders acting schedule identity and every persisted detectio
   await expect(
     health.locator("p").filter({ hasText: "scope-required/repo" }),
   ).toContainText("scope-required/repo: Blocked.");
+  const retry = health.locator("p").filter({ hasText: "retry/repo" });
+  await expect(retry).toContainText("retry/repo: Manual retry required.");
+  await retry.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect
+    .poll(() => page.evaluate(() => window.__monitoringRetries))
+    .toEqual(["operation-1"]);
   await expect(health).toContainText("current-login (22)");
   await expect(health).toContainText(
     "Security reviewer (agent-1), assignment assignment-1",
