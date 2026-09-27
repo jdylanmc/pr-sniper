@@ -7,8 +7,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-// No session is ever created: these are client-scoped identity/catalog calls only.
-fn options(
+// Shared account-isolated environment for catalog queries and restricted reviews.
+pub(crate) fn options(
     program: PathBuf,
     root: &Path,
     token: &str,
@@ -47,7 +47,7 @@ fn options(
         .with_env_remove(remove)
 }
 
-pub(super) fn models(
+pub(crate) fn models(
     identity: &Identity,
     pair: &TokenPair,
     cancelled: &AtomicBool,

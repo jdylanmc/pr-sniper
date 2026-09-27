@@ -41,6 +41,31 @@ article {
   margin-top: 16px;
   padding: 16px;
 }
+.review-run {
+  overflow-wrap: anywhere;
+}
+.review-run .review-decision {
+  border-left: 3px solid #145967;
+  padding-left: 12px;
+  font-weight: 600;
+}
+.review-run .review-failure {
+  border-left: 3px solid #a53221;
+  padding-left: 12px;
+}
+.review-run details {
+  margin: 12px 0;
+}
+.review-run summary {
+  cursor: pointer;
+}
+.review-run li {
+  margin: 12px 0;
+}
+.review-run summary:focus-visible {
+  outline: 3px solid #d47516;
+  outline-offset: 3px;
+}
 .actions {
   display: flex;
   flex-wrap: wrap;

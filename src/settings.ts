@@ -1017,6 +1017,8 @@ export async function mountSettings(app: HTMLElement) {
       `<p class="settings-hint">${escape(repository.provider === "github" ? `GitHub acting account: ${githubAccounts.find((account) => account.account_id === repository.provider_account_id)?.login ?? repository.provider_account_id ?? "not selected"}.` : "Azure DevOps account binding is not available in this build.")}</p>
         <div class="section-actions"><h2>Monitoring scope</h2><button data-configure-scope ${repository.provider_account_id && repository.provider_repository_id ? "" : "disabled"}>Configure scope</button></div>
         <p class="settings-hint" data-scope-status>Reading monitoring scope...</p>
+        <label for="repository-review-start">Review start</label><select id="repository-review-start" data-review-start><option value="inherit">Use default (${draft.defaults.automatic_agent_start ? "automatic" : "manual"})</option><option value="automatic">Start automatically when trusted and eligible</option><option value="manual">Require manual start</option></select>
+        <p class="settings-hint">Saved with your draft. Forks and untrusted authors always require confirmation. Reviews stay local; this does not enable publication.</p>
         <div class="section-actions"><h2>Agents on this repository</h2><button class="primary" data-assign-agent ${agents().length ? "" : "disabled"}>Assign agent</button></div>
         <div class="assignment-list"></div>
         ${agents().length ? "" : '<p class="settings-hint">Create an agent first, on the Agents tab.</p>'}
@@ -1027,6 +1029,24 @@ export async function mountSettings(app: HTMLElement) {
     );
     renderAssignments();
     renderWatchlist();
+    const reviewStart = modal.querySelector<HTMLSelectElement>(
+      "[data-review-start]",
+    )!;
+    reviewStart.value =
+      repository.overrides?.automatic_agent_start === undefined
+        ? "inherit"
+        : repository.overrides.automatic_agent_start
+          ? "automatic"
+          : "manual";
+    reviewStart.onchange = () => {
+      repository.overrides ??= {};
+      if (reviewStart.value === "inherit")
+        delete repository.overrides.automatic_agent_start;
+      else
+        repository.overrides.automatic_agent_start =
+          reviewStart.value === "automatic";
+      changed();
+    };
     const scopeStatus = modal.querySelector<HTMLElement>(
       "[data-scope-status]",
     )!;
@@ -1388,7 +1408,7 @@ export async function mountSettings(app: HTMLElement) {
             "",
           )}${option("cron", "Custom schedule (cron)", schedule.kind === "cron" ? "cron" : "")}</select></label>
         <details ${schedule.kind === "cron" ? "open" : ""}><summary>Advanced scheduling</summary><label>Interval minutes<input name="minutes" type="number" min="1" step="1" value="${schedule.kind === "interval" ? schedule.minutes : 15}" /></label><label>Cron expression<input name="cron" value="${escape(schedule.kind === "cron" ? schedule.expression : "0 9 * * MON-FRI")}" /></label><label>Time zone<input name="timezone" value="${escape(schedule.timezone)}" /></label></details>
-        <div class="permission-row"><label><input type="checkbox" name="comment" ${(existing?.comment ?? true) ? "checked" : ""} />Comment<small>Post findings on the pull request.</small></label><label><input type="checkbox" name="approve" disabled ${existing?.approve ? "checked" : ""} />Approve<small>Coming soon -- once we trust the aim.</small></label></div>
+        <div class="permission-row"><label><input type="checkbox" name="comment" ${(existing?.comment ?? true) ? "checked" : ""} />Comment<small>Saved for future publication; reviews stay local.</small></label><label><input type="checkbox" name="approve" disabled ${existing?.approve ? "checked" : ""} />Approve<small>Coming soon -- once we trust the aim.</small></label></div>
         <p class="settings-hint">Each assignment runs on its own timer, independent of any other agent on this repository.</p><p role="alert" hidden></p><button class="primary">${existing ? "Save assignment" : "Assign agent"}</button></form>`,
     );
     const frequency =
@@ -1528,8 +1548,17 @@ export async function mountSettings(app: HTMLElement) {
 
   function renderPreferences() {
     content.innerHTML = `<div class="settings-group"><fieldset aria-label="Startup"><legend>Startup</legend><label class="setting-row"><span>Open PR Sniper at login<small>${snapshot.isolated ? "Isolated development run: changing macOS login items is disabled." : `Saved request, not effective macOS state. Registration: ${snapshot.login_registration ?? "unavailable"}.`}</small></span><input id="login" type="checkbox" role="switch" ${draft.launch_at_login ? "checked" : ""} ${snapshot.isolated || snapshot.login_registration === null ? "disabled" : ""} /></label></fieldset></div>
+      <div class="settings-group"><fieldset aria-label="Review execution"><legend>Review execution</legend><label class="setting-row"><span>Start eligible reviews automatically<small>Default for assigned repositories. Forks and untrusted authors still require confirmation; results remain local.</small></span><input id="automatic-review-start" type="checkbox" role="switch" ${draft.defaults.automatic_agent_start ? "checked" : ""} /></label></fieldset></div>
       <div class="settings-group"><fieldset aria-label="Notifications"><legend>Notifications</legend><label class="setting-row"><span>Notify me when a review finishes<small>Coming soon.</small></span><input type="checkbox" role="switch" disabled /></label></fieldset></div>
       <div class="settings-group"><fieldset aria-label="Diagnostics"><legend>Diagnostics</legend><p class="settings-hint">Settings and logs live in your macOS app-support folder. Open a redacted diagnostics view to check in on them without exposing tokens.</p><button id="diagnostics">Open redacted diagnostics</button></fieldset></div>`;
+    content.querySelector<HTMLInputElement>(
+      "#automatic-review-start",
+    )!.onchange = (event) => {
+      draft.defaults.automatic_agent_start = (
+        event.target as HTMLInputElement
+      ).checked;
+      changed();
+    };
     content.querySelector<HTMLInputElement>("#login")!.onchange = async (
       event,
     ) => {

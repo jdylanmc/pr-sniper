@@ -111,6 +111,8 @@ pub struct ScheduleHealth {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QueueJob {
+    #[serde(default)]
+    pub assignment_id: Option<String>,
     pub provider: String,
     pub account_id: String,
     pub account_login: String,
@@ -1382,6 +1384,7 @@ impl Monitor {
                 continue;
             }
             let job = QueueJob {
+                assignment_id: configuration.assignment_id.clone(),
                 provider: "github".into(),
                 account_id: result.connection.identity.id.clone(),
                 account_login: result.connection.identity.login.clone(),
@@ -1714,42 +1717,87 @@ fn finish_failed_operation(health: &mut ScheduleHealth, error: &MonitoringError,
     let Some(operation) = health.operation.as_mut() else {
         return;
     };
-    let failure = retryable_failure(error);
-    operation.failure = Some(failure.clone());
-    if failure == OperationFailure::Permanent {
-        operation.state = OperationState::Failed;
-        operation.next_attempt_at = None;
-        health.next_run = 0;
-        health.schedule_available = false;
-        return;
+    operation.fail(error, now);
+    health.next_run = operation.next_attempt_at.unwrap_or(0);
+    health.schedule_available = operation.next_attempt_at.is_some();
+}
+
+impl JobOperation {
+    pub fn fail(&mut self, error: &MonitoringError, now: i64) {
+        let operation = self;
+        let failure = retryable_failure(error);
+        operation.failure = Some(failure.clone());
+        if failure == OperationFailure::Permanent {
+            operation.state = OperationState::Failed;
+            operation.next_attempt_at = None;
+            return;
+        }
+        if operation.attempt_count > MAX_RETRIES || now >= operation.retry_deadline {
+            operation.state = OperationState::ManualRetry;
+            operation.next_attempt_at = None;
+            return;
+        }
+        let retry_count = operation.attempt_count;
+        let delay = match error {
+            MonitoringError::Recoverable {
+                retry_after_seconds: Some(delay),
+                ..
+            } => *delay,
+            _ => retry_delay_seconds(&operation.id, retry_count),
+        };
+        let next_attempt = now.saturating_add(delay);
+        if next_attempt >= operation.retry_deadline {
+            operation.state = OperationState::ManualRetry;
+            operation.next_attempt_at = None;
+            return;
+        }
+        operation.state = OperationState::Queued;
+        operation.next_attempt_at = Some(next_attempt);
     }
-    if operation.attempt_count > MAX_RETRIES || now >= operation.retry_deadline {
-        operation.state = OperationState::ManualRetry;
-        operation.next_attempt_at = None;
-        health.next_run = 0;
-        health.schedule_available = false;
-        return;
+
+    pub fn begin_attempt(&mut self, now: i64) -> Result<(), String> {
+        if now >= self.retry_deadline || self.attempt_count > MAX_RETRIES {
+            self.state = OperationState::ManualRetry;
+            self.next_attempt_at = None;
+            return Err("Review retry budget exhausted. Manual retry is required.".into());
+        }
+        if !matches!(
+            self.state,
+            OperationState::Queued | OperationState::Interrupted
+        ) || self.next_attempt_at.is_none_or(|next| now < next)
+        {
+            return Err("This review is not ready to run.".into());
+        }
+        self.attempt_count += 1;
+        self.state = OperationState::Running;
+        self.next_attempt_at = None;
+        Ok(())
     }
-    let retry_count = operation.attempt_count;
-    let delay = match error {
-        MonitoringError::Recoverable {
-            retry_after_seconds: Some(delay),
-            ..
-        } => *delay,
-        _ => retry_delay_seconds(&operation.id, retry_count),
-    };
-    let next_attempt = now.saturating_add(delay);
-    if next_attempt >= operation.retry_deadline {
-        operation.state = OperationState::ManualRetry;
-        operation.next_attempt_at = None;
-        health.next_run = 0;
-        health.schedule_available = false;
-        return;
+
+    pub fn review(job: &QueueJob, now: i64) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            provider: job.provider.clone(),
+            account_id: job.account_id.clone(),
+            configuration_id: job.configuration_id.clone(),
+            repository_id: job.repository_id.clone(),
+            pull_request_id: Some(job.pull_request_id.clone()),
+            head_sha: Some(job.head_sha.clone()),
+            trigger_policy: job.trigger_policy.clone(),
+            operation_type: "copilot_review".into(),
+            state: OperationState::Queued,
+            attempt_count: 0,
+            initial_attempt_at: now,
+            retry_deadline: now + RETRY_WINDOW_SECONDS,
+            next_attempt_at: Some(now),
+            failure: None,
+            attempted_mutation: None,
+            pending_review_id: None,
+            owned_thread_id: None,
+            triggering_external_comment_id: None,
+            confirmed_receipt: None,
+        }
     }
-    operation.state = OperationState::Queued;
-    operation.next_attempt_at = Some(next_attempt);
-    health.next_run = next_attempt;
-    health.schedule_available = true;
 }
 
 fn retryable_failure(error: &MonitoringError) -> OperationFailure {
@@ -1807,7 +1855,7 @@ fn waiting_state(
     }
 }
 
-fn check_error(error: ConnectionError) -> MonitoringError {
+pub(crate) fn check_error(error: ConnectionError) -> MonitoringError {
     let (failure, retry_after_seconds) = match error {
         ConnectionError::Timeout => (OperationFailure::Timeout, None),
         ConnectionError::RateLimited => (OperationFailure::RateLimited, None),
@@ -1862,7 +1910,8 @@ fn configuration_changed() -> MonitoringError {
 }
 
 fn same_job(left: &QueueJob, right: &QueueJob) -> bool {
-    left.provider == right.provider
+    left.assignment_id == right.assignment_id
+        && left.provider == right.provider
         && left.account_id == right.account_id
         && left.configuration_id == right.configuration_id
         && left.repository_id == right.repository_id
@@ -1882,6 +1931,48 @@ fn trigger_policy(
     authors.sort_unstable();
     serde_json::to_string(&(authors, reviewer_assignment))
         .map_err(|_| ConnectionError::Configuration)
+}
+
+pub fn review_policy(
+    settings: &Settings,
+    job: &QueueJob,
+    pull: Option<&PullRequest>,
+) -> Result<Policy, String> {
+    let configuration = configured_schedules(settings)
+        .into_iter()
+        .find(|c| c.repository_id == job.configuration_id)
+        .ok_or("Repository was removed.")?;
+    if !configuration.enabled
+        || !configuration.provider_supported
+        || configuration.name != job.repository_name
+        || configuration.provider_account_id.as_deref() != Some(&job.account_id)
+        || configuration.provider_repository_id.as_deref() != Some(&job.repository_id)
+        || configuration.trigger_policy.as_deref() != Some(&job.trigger_policy)
+        || !actionable(job)
+    {
+        return Err("Review eligibility or repository configuration changed.".into());
+    }
+    if let Some(pull) = pull {
+        if pull.id != job.pull_request_id
+            || pull.number != job.number
+            || pull.head_sha != job.head_sha
+            || pull.base_repository_id != job.repository_id
+            || pull.state != Lifecycle::Open
+            || pull.draft
+            || !eligibility(
+                &configuration.watched_authors,
+                &configuration.policy,
+                &job.account_id,
+                pull,
+            )
+            .eligible()
+        {
+            return Err(
+                "Pull request revision or eligibility changed; wait for the next poll.".into(),
+            );
+        }
+    }
+    Ok(configuration.policy)
 }
 
 fn schedule_key(schedule: &Schedule) -> String {

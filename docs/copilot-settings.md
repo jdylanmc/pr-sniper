@@ -9,9 +9,10 @@ Settings has four tabs: **Integrations**, **Doctrines**, **Agents**, and
 | Copilot AI account        | AI credentials and that account's returned model catalog                  |
 
 All accounts are user-selected. The same GitHub identity can be connected to
-either or both roles; connecting one never connects the other. This build
-does not run reviews, send prompts, publish comments, submit approvals, or
-check subscriptions/seats.
+either or both roles; connecting one never connects the other. Settings does
+not run reviews or probe subscriptions/seats. Assigned reviews start separately
+from Review Queue or the effective automatic-start gate; they never publish
+comments or submit approvals. See [local review execution](../README.md#local-copilot-reviews).
 
 ## Connect and configure
 
@@ -30,7 +31,8 @@ check subscriptions/seats.
 
 **Verify sign-in** rechecks GitHub `/user`, not a subscription or inference
 endpoint. Models are fetched only when editing an Agent with a connected
-account or explicitly retrying its model list. Network, provider, access and
+account, explicitly retrying its model list, or checking the exact configured
+model before an authorized review. Network, provider, access and
 policy failures are shown separately from verified sign-in. An empty returned
 catalog is described as empty, not replaced by built-in model choices.
 Unavailable/disabled saved models remain visible until explicitly changed.
@@ -86,8 +88,10 @@ HOME, working directory and Copilot state directory. It uses explicit token
 authentication, `use_logged_in_user=false`, stdio transport, SDK empty mode
 and disabled keytar. The child environment retains only explicitly supplied
 safe values: ambient GitHub tokens, direct-provider keys, Node hooks, telemetry
-configuration, plugins and MCP configuration are not inherited. No SDK session,
-tool or inference request is created. This is isolation of credentials and
+configuration, plugins and MCP configuration are not inherited. Catalog lookups
+create no SDK session, tool or inference request. Reviews reuse the same
+account-isolated environment with an exact custom read-tool allowlist and
+deny-by-default permission handler. This is isolation of credentials and
 configuration, not an operating-system sandbox.
 
 The credential travels in the SDK's child environment, never command arguments,

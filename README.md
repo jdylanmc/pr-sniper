@@ -6,8 +6,10 @@ Queue**, **Settings** and **Quit PR Sniper**.
 
 Settings can explicitly verify a configured GitHub connection and read complete
 pull-request metadata. The active tray process also polls enabled, account-bound
-GitHub repositories and persists eligible revisions in the Review Queue. It
-does not run agents or publish comments. Settings manages independent Copilot
+GitHub repositories and persists eligible revisions in the Review Queue.
+Assigned Copilot Agents can review each admitted revision manually or through
+the automatic-start gate, with validated results kept locally. Nothing is
+published to GitHub. Settings manages independent Copilot
 AI accounts with browser sign-in and per-Agent account/model selection; see
 [Copilot Settings](docs/copilot-settings.md). Product scope lives in the
 [approved specification](docs/agent/specs/pr-sniper-mvp.nano.md), not this
@@ -172,7 +174,7 @@ Timeout, rate-limit, network and provider-server failures receive at most three
 automatic retries with bounded backoff. Restart preserves the same operation
 and budget; interruption after the deadline and non-retryable failures require
 an explicit **Retry** from Review Queue. Poll operations record no attempted
-mutation or provider receipt because this detection-only increment does not
+mutation or provider receipt because polling does not
 publish comments.
 
 An enabled, account-bound repository does not begin new detection until its
@@ -203,7 +205,7 @@ watched-author filter matches all authors only after scope activation; it does
 not establish trust. Reviewer-only, all-author, fork and otherwise untrusted
 work waits for explicit confirmation. Repeat
 observations deduplicate by provider, account, stable repository, pull request,
-head revision and trigger policy; a new head can be queued independently.
+head revision, trigger policy and assignment; a new head can be queued independently.
 Successful open-pull-request scans and configuration changes retain earlier
 revision hashes as visibly non-actionable history instead of leaving obsolete
 detections ready to start. Absence from one paginated open-pull-request scan is
@@ -215,6 +217,49 @@ success and recoverable failure state. Unchanged old heads stay excluded, while
 a matching new head on an old pull request enters detection. Detection never
 clones a repository, starts an agent, executes repository code, mutates GitHub
 or publishes a review.
+
+## Local Copilot reviews
+
+Configure an Agent's Copilot account, returned model, prompt and optional
+doctrine, then assign it to a repository. **Review Queue > Agent reviews**
+shows each assignment's detected revisions. Existing pre-review detections
+remain history until that assignment polls again; opening the queue does not
+silently start legacy work.
+
+**Start review** is explicit when automatic start is disabled. Enabling the
+**Preferences > Start eligible reviews automatically** default (or **Review
+start** in a repository's Settings) admits trusted, eligible assignment detections
+to the serial review runner. Forks and authors outside the trusted watchlist
+always require a checkbox confirmation for that exact revision. All-author
+monitoring is not trust. **Cancel review** stops inference and requires an
+explicit retry; changing the account, Agent, prompt, doctrine, repository or
+start gate invalidates affected in-flight work.
+
+The host reads complete paginated changed-file metadata and immutable base/head
+trees through the bound repository account. Copilot gets only three host-owned
+tools: batch changed-file reads, exact source reads, and literal path search.
+No repository is checked out, no symlink is followed, and no target commands,
+builds, tests, hooks, installs, or provider mutations are exposed. Before
+inference, the pinned runtime's actual tool catalog must exactly match that
+allowlist. Missing enforcement blocks the review even after trust confirmation.
+This is a constrained current-user process, **not an operating-system sandbox**.
+
+The independent AI account/model and configured review lens are pinned for the
+attempt. Head/base revisions, lifecycle, triggers, repository state and start/
+trust gates are rechecked before invocation; stale results are rejected.
+Validated results contain a one-sentence synopsis, an ordered guide for every
+changed file, structured findings, a machine decision, and runtime/session/
+token metadata. Every changed file must actually have been read. Missing,
+duplicate or invalid file entries fail validation; only invalid ordering falls
+back to bytewise ascending paths. Machine-cleared never means human approval.
+
+Review state is persisted before work. Restart preserves operation identity,
+attempt count, confirmations and the original 15-minute budget, with at most
+three retries for recognized transient failures. Expired budgets and permanent
+failures require **Retry review**, which creates a new operation without
+deleting history. Results remain local; GitHub comment publication is separate
+future work. Provider file/tree limits and the explicit 1 MiB per-tool-response
+limit fail visibly rather than returning silently truncated context.
 
 App-owned GitHub and Copilot token pairs use separate account-addressed macOS
 Keychain services, never config, state or diagnostics. Neither Settings
