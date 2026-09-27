@@ -3,6 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 interface Health {
   repository_id: string;
   name: string;
+  schedule_key: string;
+  provider_account_id: string | null;
+  account_login: string | null;
+  assignment_id: string | null;
+  agent_id: string | null;
+  agent_name: string | null;
   enabled: boolean;
   last_attempt: number | null;
   last_success: number | null;
@@ -10,6 +16,7 @@ interface Health {
   schedule_available: boolean;
   last_failure: string | null;
   in_flight: boolean;
+  manual_pending: boolean;
 }
 
 interface Job {
@@ -33,6 +40,35 @@ interface MonitoringSnapshot {
 
 const time = (value: number | null) =>
   value === null ? "Never" : new Date(value * 1000).toLocaleString();
+
+function waitingLabel(waiting: string) {
+  switch (waiting) {
+    case "trust_confirmation":
+      return "Waiting for explicit trust confirmation; no review has started.";
+    case "human_start":
+      return "Automatic start is disabled; manual review start is not implemented here.";
+    case "agent_unavailable":
+      return "Automatic start is configured, but review-agent support is not implemented here.";
+    case "account_disconnected":
+      return "Not actionable: the acting GitHub account is disconnected.";
+    case "repository_disabled":
+      return "Not actionable: repository monitoring is disabled.";
+    case "repository_removed":
+      return "Not actionable: the repository was removed from Settings.";
+    case "binding_changed":
+      return "Not actionable: the repository account binding changed.";
+    case "policy_changed":
+      return "Not actionable: the trigger policy changed.";
+    case "superseded":
+      return "Not actionable: a newer head revision superseded this detection.";
+    case "ineligible":
+      return "Not actionable: this revision is no longer eligible.";
+    case "no_longer_current":
+      return "Not actionable: this pull request is no longer in the complete open-pull-request scan.";
+    default:
+      return `Not actionable: unrecognized queue state (${waiting}).`;
+  }
+}
 
 export function renderMonitoring(
   root: HTMLElement,
@@ -64,13 +100,25 @@ export function renderMonitoring(
           ? "Disabled"
           : item.in_flight
             ? "Checking"
-            : "Scheduled";
+            : item.manual_pending
+              ? "Immediate check pending"
+              : item.schedule_available
+                ? "Scheduled"
+                : "Needs attention";
         const next = !item.enabled
           ? "Disabled"
           : item.schedule_available
             ? time(item.next_run)
             : "Unavailable";
-        row.textContent = `${item.name}: ${state}. Last attempt: ${time(item.last_attempt)}. Last success: ${time(item.last_success)}. Next run: ${next}. Last failure: ${item.last_failure ?? "None"}.`;
+        const account = item.provider_account_id
+          ? item.account_login
+            ? `${item.account_login} (${item.provider_account_id})`
+            : `stable ID ${item.provider_account_id} (login unavailable)`
+          : "unbound";
+        const assignment = item.assignment_id
+          ? `${item.agent_name ?? "Missing agent"} (${item.agent_id ?? "unknown agent ID"}), assignment ${item.assignment_id}`
+          : "legacy repository schedule";
+        row.textContent = `${item.name}: ${state}. Acting account: ${account}. Assignment: ${assignment}. Schedule: ${item.schedule_key || "Unavailable"}. Last attempt: ${time(item.last_attempt)}. Last success: ${time(item.last_success)}. Next run: ${next}. Last failure: ${item.last_failure ?? "None"}.`;
         health.append(row);
       }
       if (!snapshot.jobs.length)
@@ -89,14 +137,8 @@ export function renderMonitoring(
         ]
           .filter(Boolean)
           .join(" and ");
-        const waiting =
-          job.waiting === "trust_confirmation"
-            ? "Waiting for explicit trust confirmation; no review has started."
-            : job.waiting === "human_start"
-              ? "Automatic start is disabled; manual review start is not implemented here."
-              : "Automatic start is configured, but review-agent support is not implemented here.";
         const details = document.createElement("p");
-        details.textContent = `Acting account: ${job.account_login} (${job.account_id}). Author: ${author}. Trigger: ${reasons}. Head ${job.head_sha}. ${waiting}`;
+        details.textContent = `Acting account: ${job.account_login} (${job.account_id}). Author: ${author}. Trigger: ${reasons || "historical detection"}. Head ${job.head_sha}. ${waitingLabel(job.waiting)}`;
         row.append(title, details);
         jobs.append(row);
       }

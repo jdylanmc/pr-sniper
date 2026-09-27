@@ -162,8 +162,9 @@ repository has no assignments, its effective global/per-repository policy
 schedule is used for backward compatibility. Cron times
 skipped by a spring daylight-saving jump run at the first valid local time;
 repeated fall-back times run once at their first occurrence. Sleep or missed
-ticks cause one check, not a catch-up burst. Check Now uses the same per-repo
-exclusion, account binding and eligibility checks.
+ticks cause one check, not a catch-up burst. **Check Now** coalesces one pending
+read for every eligible account and assignment, then drains them serially when
+multiple bindings address the same remote repository.
 
 Polling reads paginated open pull-request metadata through the repository's
 connected OAuth account. A stable watched-author identity or a request for the
@@ -171,9 +172,12 @@ signed-in account as reviewer admits a non-draft revision. Reviewer-only work
 outside the trusted watchlist waits for explicit confirmation. Repeat
 observations deduplicate by provider, account, stable repository, pull request,
 head revision and trigger policy; a new head can be queued independently.
-Schedule health, cursors and queue jobs persist locally. Detection never clones
-a repository, starts an agent, executes repository code, mutates GitHub or
-publishes a review.
+Complete successful scans and configuration changes retain earlier revision
+hashes as visibly non-actionable history instead of leaving obsolete detections
+ready to start. Schedule health identifies the acting account, assignment and
+Agent, and persists pending, success and recoverable failure state. Detection
+never clones a repository, starts an agent, executes repository code, mutates
+GitHub or publishes a review.
 
 App-owned GitHub and Copilot token pairs use separate account-addressed macOS
 Keychain services, never config, state or diagnostics. Neither Settings
