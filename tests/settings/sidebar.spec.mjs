@@ -261,7 +261,7 @@ test("repository People resolves stable identity, isolates neighbors and reports
     .click();
   await expect(
     parent.getByText(
-      "No trusted authors yet. Only pull requests requesting this signed-in account are eligible.",
+      "No people added for this repository. Inherited watched authors still apply; reviewer requests qualify when that trigger is enabled.",
     ),
   ).toBeVisible();
   await closeDialog(page);
