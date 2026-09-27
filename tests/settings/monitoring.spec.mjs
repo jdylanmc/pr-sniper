@@ -36,6 +36,10 @@ const waitingStates = [
     "no_longer_current",
     "Not seen in the latest open-PR scan; rechecked next scan. This is not a terminal closed or merged state.",
   ],
+  [
+    "scope_excluded",
+    "Not actionable: this unchanged existing revision was excluded by the confirmed monitoring scope.",
+  ],
 ];
 
 test("Review Queue renders acting schedule identity and every persisted detection state", async ({
@@ -116,6 +120,24 @@ test("Review Queue renders acting schedule identity and every persisted detectio
         manual_pending: false,
       },
       {
+        repository_id: "scope-required",
+        name: "scope-required/repo",
+        schedule_key: "",
+        provider_account_id: "25",
+        account_login: "scope-owner",
+        assignment_id: null,
+        agent_id: null,
+        agent_name: null,
+        enabled: true,
+        last_attempt: null,
+        last_success: null,
+        next_run: 0,
+        schedule_available: false,
+        last_failure: "scope_confirmation_required",
+        in_flight: false,
+        manual_pending: false,
+      },
+      {
         repository_id: "disabled",
         name: "disabled/repo",
         schedule_key: "interval:15:UTC",
@@ -143,7 +165,8 @@ test("Review Queue renders acting schedule identity and every persisted detectio
       head_sha: String(index).padStart(40, "a"),
       author_id: "11",
       author_login: "author",
-      watched_author: true,
+      watched_author: index !== 1,
+      all_authors: index === 1,
       requested_reviewer: false,
       waiting,
     })),
@@ -179,6 +202,9 @@ test("Review Queue renders acting schedule identity and every persisted detectio
   await expect(
     health.locator("p").filter({ hasText: "disabled/repo" }),
   ).toContainText("disabled/repo: Disabled.");
+  await expect(
+    health.locator("p").filter({ hasText: "scope-required/repo" }),
+  ).toContainText("scope-required/repo: Blocked.");
   await expect(health).toContainText("current-login (22)");
   await expect(health).toContainText(
     "Security reviewer (agent-1), assignment assignment-1",
@@ -194,6 +220,9 @@ test("Review Queue renders acting schedule identity and every persisted detectio
         "Automatic start is configured, but review-agent support is not implemented here.",
     }),
   ).toHaveCount(1);
+  await expect(page.locator("#review-jobs")).toContainText(
+    "Trigger: all-author monitoring scope",
+  );
 
   await page.getByRole("button", { name: "Check Now", exact: true }).click();
   await expect

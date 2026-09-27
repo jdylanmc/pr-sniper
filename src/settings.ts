@@ -49,6 +49,35 @@ interface Discovery {
   repositories: Discovered[];
   warnings: string[];
 }
+interface MonitoringActivationStatus {
+  repository_id: string;
+  active: boolean;
+  reason: string | null;
+  mode: "new_only" | "selected_existing" | null;
+  selected_existing: number;
+  creation_watermark: number | null;
+}
+interface MonitoringActivationCandidate {
+  pull_request_id: string;
+  number: number;
+  title: string;
+  head_sha: string;
+  author_id: string | null;
+  author_login: string | null;
+  watched_author: boolean;
+  all_authors: boolean;
+  requested_reviewer: boolean;
+  trust_confirmation_required: boolean;
+}
+interface MonitoringActivationPreview {
+  preview_id: string;
+  repository_id: string;
+  name: string;
+  account_id: string;
+  account_login: string;
+  creation_watermark: number;
+  candidates: MonitoringActivationCandidate[];
+}
 type Section = "doctrines" | "agents" | "integrations" | "preferences";
 
 // Direct integrations, distinct from the models available through Copilot.
@@ -986,6 +1015,8 @@ export async function mountSettings(app: HTMLElement) {
     const modal = dialog(
       `Settings for ${repository.name}`,
       `<p class="settings-hint">${escape(repository.provider === "github" ? `GitHub acting account: ${githubAccounts.find((account) => account.account_id === repository.provider_account_id)?.login ?? repository.provider_account_id ?? "not selected"}.` : "Azure DevOps account binding is not available in this build.")}</p>
+        <div class="section-actions"><h2>Monitoring scope</h2><button data-configure-scope ${repository.provider_account_id && repository.provider_repository_id ? "" : "disabled"}>Configure scope</button></div>
+        <p class="settings-hint" data-scope-status>Reading monitoring scope...</p>
         <div class="section-actions"><h2>Agents on this repository</h2><button class="primary" data-assign-agent ${agents().length ? "" : "disabled"}>Assign agent</button></div>
         <div class="assignment-list"></div>
         ${agents().length ? "" : '<p class="settings-hint">Create an agent first, on the Agents tab.</p>'}
@@ -996,6 +1027,13 @@ export async function mountSettings(app: HTMLElement) {
     );
     renderAssignments();
     renderWatchlist();
+    const scopeStatus = modal.querySelector<HTMLElement>(
+      "[data-scope-status]",
+    )!;
+    const configureScope = modal.querySelector<HTMLButtonElement>(
+      "[data-configure-scope]",
+    )!;
+    void refreshScopeStatus();
     if (
       saved.repositories?.some(
         (r) => r.id === repository.id && r.name === repository.name,
@@ -1021,6 +1059,7 @@ export async function mountSettings(app: HTMLElement) {
         });
     modal.querySelector<HTMLButtonElement>("[data-add-people]")!.onclick = () =>
       addPersonDialog(repository, () => renderWatchlist());
+    configureScope.onclick = () => void configureMonitoringScope();
     modal.querySelector<HTMLButtonElement>("#rename-repository")!.onclick =
       () => {
         modal.close();
@@ -1042,6 +1081,199 @@ export async function mountSettings(app: HTMLElement) {
             render();
           };
       };
+
+    async function refreshScopeStatus() {
+      if (
+        !repository.provider_account_id ||
+        !repository.provider_repository_id ||
+        !saved.repositories?.some((item) => item.id === repository.id)
+      ) {
+        scopeStatus.textContent =
+          "Save and bind this repository before confirming monitoring scope.";
+        return;
+      }
+      try {
+        const status = await invoke<MonitoringActivationStatus>(
+          "monitoring_activation_status",
+          { repositoryId: repository.id },
+        );
+        if (!modal.open) return;
+        scopeStatus.textContent = status.active
+          ? status.mode === "selected_existing"
+            ? `Active for new pull requests and ${status.selected_existing} selected existing pull request${status.selected_existing === 1 ? "" : "s"}.`
+            : "Active for new pull requests only."
+          : "Scope confirmation required. New detections are paused; existing queue history is preserved.";
+      } catch {
+        if (modal.open)
+          scopeStatus.textContent =
+            "Monitoring scope status is unavailable. Check local storage and retry.";
+      }
+    }
+
+    async function configureMonitoringScope() {
+      if (dirty()) {
+        scopeStatus.textContent =
+          "Save changes before previewing monitoring scope. Your draft has not been changed.";
+        return;
+      }
+      configureScope.disabled = true;
+      scopeStatus.textContent =
+        "Reading matching open pull requests through the bound GitHub account...";
+      try {
+        const preview = await invoke<MonitoringActivationPreview>(
+          "preview_monitoring_activation",
+          { repositoryId: repository.id },
+        );
+        if (!modal.open) {
+          await invoke("cancel_monitoring_activation", {
+            previewId: preview.preview_id,
+          }).catch(() => undefined);
+          return;
+        }
+        showScopePreview(preview);
+      } catch (cause) {
+        scopeStatus.textContent = reason(cause);
+      } finally {
+        if (modal.open) configureScope.disabled = false;
+      }
+    }
+
+    function showScopePreview(preview: MonitoringActivationPreview) {
+      const scope = dialog(
+        `Monitoring scope for ${repository.name}`,
+        `<p>Found <strong data-matching-count>${preview.candidates.length}</strong> matching open, non-draft pull request${preview.candidates.length === 1 ? "" : "s"} through ${escape(preview.account_login)} (${escape(preview.account_id)}).</p>
+        <p class="settings-hint">Choose what can enter detection now. New head revisions are evaluated later against the current author/reviewer filter. All-author matching does not establish trust.</p>
+        <fieldset class="activation-choice"><legend>Initial scope</legend>
+          <label><input type="radio" name="scope-mode" value="new_only" checked />New pull requests only</label>
+          <label><input type="radio" name="scope-mode" value="selected_existing" />Selected existing pull requests plus new pull requests</label>
+        </fieldset>
+        <div class="repository-toolbar"><input type="search" data-scope-search aria-label="Find matching pull request" placeholder="Find by number, title or author..." /><span data-selection-count>0 selected</span></div>
+        <div class="activation-list" data-scope-list></div>
+        <p role="alert" hidden></p>
+        <div class="settings-actions"><button class="primary" data-confirm-scope>Confirm monitoring scope</button><button data-cancel-scope>Cancel</button></div>`,
+      );
+      const list = scope.querySelector<HTMLElement>("[data-scope-list]")!;
+      const search = scope.querySelector<HTMLInputElement>(
+        "[data-scope-search]",
+      )!;
+      const count = scope.querySelector<HTMLElement>("[data-selection-count]")!;
+      const alert = scope.querySelector<HTMLElement>("[role=alert]")!;
+      const confirm = scope.querySelector<HTMLButtonElement>(
+        "[data-confirm-scope]",
+      )!;
+      const selected = new Set<string>();
+      let previewActive = true;
+
+      const mode = () =>
+        scope.querySelector<HTMLInputElement>(
+          'input[name="scope-mode"]:checked',
+        )!.value as "new_only" | "selected_existing";
+      const selectionEnabled = () => mode() === "selected_existing";
+      const updateCount = () => {
+        count.textContent = `${selected.size} selected`;
+      };
+      const renderCandidates = () => {
+        const query = search.value.trim().toLowerCase();
+        list.replaceChildren();
+        const candidates = preview.candidates.filter((candidate) =>
+          `${candidate.number} ${candidate.title} ${candidate.author_login ?? ""}`
+            .toLowerCase()
+            .includes(query),
+        );
+        if (!candidates.length) {
+          list.innerHTML =
+            '<p class="settings-empty">No matching pull requests.</p>';
+          return;
+        }
+        for (const candidate of candidates) {
+          const row = document.createElement("label");
+          row.className = "activation-row";
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.disabled = !selectionEnabled();
+          checkbox.checked = selected.has(candidate.pull_request_id);
+          checkbox.setAttribute(
+            "aria-label",
+            `Include pull request ${candidate.number}`,
+          );
+          checkbox.onchange = () => {
+            if (checkbox.checked) selected.add(candidate.pull_request_id);
+            else selected.delete(candidate.pull_request_id);
+            updateCount();
+          };
+          const details = document.createElement("span");
+          const author = candidate.author_login ?? "deleted or unavailable";
+          const triggers = [
+            candidate.watched_author ? "watched author" : "",
+            candidate.all_authors ? "all-author scope" : "",
+            candidate.requested_reviewer ? "requested reviewer" : "",
+          ]
+            .filter(Boolean)
+            .join(" and ");
+          details.innerHTML = `<strong>#${candidate.number} ${escape(candidate.title)}</strong><small>${escape(author)} \u00b7 ${escape(triggers)}${candidate.trust_confirmation_required ? " \u00b7 trust confirmation required" : ""}</small>`;
+          row.append(checkbox, details);
+          list.append(row);
+        }
+      };
+      const discardPreview = async () => {
+        if (!previewActive) return;
+        previewActive = false;
+        await invoke("cancel_monitoring_activation", {
+          previewId: preview.preview_id,
+        }).catch(() => undefined);
+      };
+      for (const radio of scope.querySelectorAll<HTMLInputElement>(
+        'input[name="scope-mode"]',
+      ))
+        radio.onchange = () => {
+          if (!selectionEnabled()) selected.clear();
+          updateCount();
+          renderCandidates();
+        };
+      search.oninput = renderCandidates;
+      scope.querySelector<HTMLButtonElement>("[data-cancel-scope]")!.onclick =
+        async () => {
+          await discardPreview();
+          scope.close();
+          await refreshScopeStatus();
+        };
+      scope
+        .querySelector<HTMLButtonElement>("[aria-label='Close dialog']")!
+        .addEventListener("click", () => void discardPreview());
+      scope.addEventListener("cancel", () => void discardPreview());
+      confirm.onclick = async () => {
+        alert.hidden = true;
+        if (selectionEnabled() && !selected.size) {
+          alert.textContent =
+            "Select at least one existing pull request, or choose new pull requests only.";
+          alert.hidden = false;
+          return;
+        }
+        confirm.disabled = true;
+        try {
+          await invoke<MonitoringActivationStatus>(
+            "apply_monitoring_activation",
+            {
+              request: {
+                repositoryId: repository.id,
+                previewId: preview.preview_id,
+                mode: mode(),
+                selectedPullRequestIds: [...selected],
+              },
+            },
+          );
+          previewActive = false;
+          scope.close();
+          await refreshScopeStatus();
+        } catch (cause) {
+          alert.textContent = reason(cause);
+          alert.hidden = false;
+          confirm.disabled = false;
+        }
+      };
+      updateCount();
+      renderCandidates();
+    }
 
     function renderAssignments() {
       const list = modal.querySelector<HTMLElement>(".assignment-list")!;

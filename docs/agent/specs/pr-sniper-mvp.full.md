@@ -24,6 +24,14 @@ automation/publication gates or the no-provider-approval boundary, and does not
 claim successful live OAuth/model verification. Historical Discovery artifacts
 and their original source revision remain preserved.
 
+On 2026-09-26 the human approved explicit monitoring activation. Every enabled,
+account-bound repository requires a native scope record before timer or manual
+checks may admit new detections. Settings must preview the real filtered open
+backlog and support new-only or explicitly selected existing revisions plus new
+work. Existing configurations pause after upgrade without deleting history.
+An empty effective watched-author filter means all authors after activation,
+but trust remains separate. This amendment changes detection admission only.
+
 ## Problem and Users
 
 The primary user is a human reviewer whose pull-request workload spans repositories and teammates. Teammate authors receive machine-authored feedback through GitHub. PR Sniper detects eligible work, invokes the configured local agent, publishes validated comments, follows its own unresolved conversations, and prepares the final human handoff.
@@ -120,6 +128,8 @@ Electron remains a fallback only if later Windows or process-control evidence ex
 - PR-052 [AC-018]: Migration from the combined active-account secure record, earlier active-marker-plus-credential layout, or superseded authentication generation shall write and confirm the current account-addressed credential and registry before deleting legacy records. Unknown or GitHub App-generation records shall require explicit OAuth App reconnect and shall never be used for provider reads or refresh. Every interruption shall preserve at least one confirmed credential copy and converge safely on retry.
 - PR-053 [AC-002, AC-018]: Migration of repository records that predate explicit account binding shall assign an account only when the binding is unambiguous. Multiple plausible accounts require a visible user choice; implementing that repository-schema migration is separate from the secure-account foundation.
 - PR-054 [AC-002, AC-007, AC-018]: `ProviderId`, `ProviderAccountId` and stable provider-repository identity shall be provider-neutral concepts. Future Azure DevOps support shall connect accounts independently, discover or directly resolve repositories accessible to each account, require explicit repository selection and preserve account-addressed credentials, cache isolation and visible acting identity without a global active account or silent reassignment; it shall not appear connected, selectable or functional before its provider and authentication exist.
+- PR-055 [AC-004, AC-005, AC-006, AC-018]: An enabled, account-bound repository shall not admit timer or manual-check detections until the user confirms a native monitoring scope from a complete provider preview. Scope shall be new pull requests only or an explicitly selected subset of matching open, non-draft existing revisions plus new pull requests; existing configurations without valid scope shall pause new detections and retain historical jobs.
+- PR-056 [AC-005, AC-006, AC-011, AC-018]: Monitoring activation shall persist the stable binding, effective watched-author/reviewer filter, a latest all-state pull-request-number watermark, and immutable baseline heads. Unknown pull requests at or below the watermark shall be conservatively baselined on first observation, unchanged excluded heads shall remain excluded, and matching new heads may become eligible. An empty effective watched-author filter shall match all authors without establishing trust.
 
 ## Product Decisions
 
@@ -140,26 +150,26 @@ Electron remains a fallback only if later Windows or process-control evidence ex
 
 ## Traceability
 
-| Nano authority | Supporting requirements                                       | Discovery basis                                                                   |
-| -------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| AC-001         | PR-001–PR-002, PD-001–PD-002                                  | Tray POCs and Tauri selection                                                     |
-| AC-002         | PR-003, PR-047–PR-049, PR-051, PR-053, PD-012–PD-013          | Repository and concurrent-account product context                                 |
-| AC-003         | PR-004–PR-005, PR-015, PR-022, PR-049                         | Monitoring, Settings, explicit AI account/model, acting-identity, and pre-invocation gate decisions |
-| AC-004         | PR-006                                                        | Scheduled polling decision                                                        |
-| AC-005         | PR-007                                                        | GitHub filtering POC                                                              |
-| AC-006         | PR-008–PR-009                                                 | Head-SHA deduplication evidence                                                   |
+| Nano authority | Supporting requirements                                       | Discovery basis                                                                                                 |
+| -------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| AC-001         | PR-001–PR-002, PD-001–PD-002                                  | Tray POCs and Tauri selection                                                                                   |
+| AC-002         | PR-003, PR-047–PR-049, PR-051, PR-053, PD-012–PD-013          | Repository and concurrent-account product context                                                               |
+| AC-003         | PR-004–PR-005, PR-015, PR-022, PR-049                         | Monitoring, Settings, explicit AI account/model, acting-identity, and pre-invocation gate decisions             |
+| AC-004         | PR-006                                                        | Scheduled polling decision                                                                                      |
+| AC-005         | PR-007, PR-055–PR-056                                         | GitHub filtering and explicit activation boundary                                                               |
+| AC-006         | PR-008–PR-009, PR-055–PR-056                                  | Head-SHA deduplication, watermark and baseline evidence                                                         |
 | AC-007         | PR-010–PR-011, PR-046, PR-048, PR-054, PD-003, PD-012, PD-014 | GitHub OAuth App registration, device authorization, browser launch, provider polling and identity confirmation |
-| AC-009         | PR-014–PR-015, PD-004                                         | Local agent inventory and Copilot POC                                             |
-| AC-010         | PR-016–PR-018                                                 | Real agent-review POC and complete-file decision                                  |
-| AC-011         | PR-019–PR-021, PD-005                                         | Cancellation evidence and trust decision                                          |
-| AC-012         | PR-023–PR-028, PD-006                                         | GitHub review API evidence and race decision                                      |
-| AC-013         | PR-029–PR-030, PD-007                                         | Conversation-loop decision                                                        |
-| AC-014         | PR-031, PD-008                                                | Signature decision                                                                |
-| AC-015         | PR-032, PD-009                                                | Icon decision                                                                     |
-| AC-016         | PR-033–PR-034                                                 | Queue and notification issues                                                     |
-| AC-017         | PR-035–PR-036, PD-010                                         | Human-handoff and approval-identity decisions                                     |
-| AC-018         | PR-037–PR-039, PR-045–PR-054, PD-012–PD-014                   | Account-addressed secure storage, migration, binding, and rotating-token evidence |
-| AC-019         | PR-040–PR-044, PD-011                                         | Provider and agent failure evidence                                               |
+| AC-009         | PR-014–PR-015, PD-004                                         | Local agent inventory and Copilot POC                                                                           |
+| AC-010         | PR-016–PR-018                                                 | Real agent-review POC and complete-file decision                                                                |
+| AC-011         | PR-019–PR-021, PD-005                                         | Cancellation evidence and trust decision                                                                        |
+| AC-012         | PR-023–PR-028, PD-006                                         | GitHub review API evidence and race decision                                                                    |
+| AC-013         | PR-029–PR-030, PD-007                                         | Conversation-loop decision                                                                                      |
+| AC-014         | PR-031, PD-008                                                | Signature decision                                                                                              |
+| AC-015         | PR-032, PD-009                                                | Icon decision                                                                                                   |
+| AC-016         | PR-033–PR-034                                                 | Queue and notification issues                                                                                   |
+| AC-017         | PR-035–PR-036, PD-010                                         | Human-handoff and approval-identity decisions                                                                   |
+| AC-018         | PR-037–PR-039, PR-045–PR-054, PD-012–PD-014                   | Account-addressed secure storage, migration, binding, and rotating-token evidence                               |
+| AC-019         | PR-040–PR-044, PD-011                                         | Provider and agent failure evidence                                                                             |
 
 ## Open Questions
 

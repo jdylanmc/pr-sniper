@@ -9,10 +9,11 @@ use pr_sniper_lib::{
         ConnectionError, Identity,
     },
     monitoring::{
-        next_run, AccountAvailability, Monitor, MonitoringError, PollResult,
+        next_run, AccountAvailability, ActivationApplication, ActivationBaseline, ActivationMode,
+        Monitor, MonitoringActivation, MonitoringError, PollResult, SCOPE_CONFIRMATION_REQUIRED,
         WAITING_BINDING_CHANGED, WAITING_HUMAN_START, WAITING_INELIGIBLE,
         WAITING_NO_LONGER_CURRENT, WAITING_POLICY_CHANGED, WAITING_REPOSITORY_DISABLED,
-        WAITING_REPOSITORY_REMOVED, WAITING_SUPERSEDED,
+        WAITING_REPOSITORY_REMOVED, WAITING_SCOPE_EXCLUDED, WAITING_SUPERSEDED,
     },
     policy::{PolicyOverrides, Schedule, WatchedIdentity},
     storage::{Agent, Assignment, ProviderId, Repository, Settings, Store},
@@ -46,12 +47,105 @@ fn repository(enabled: bool) -> Repository {
 }
 
 fn store() -> (tempfile::TempDir, Store) {
+    let (root, store) = unactivated_store();
+    activate(&store, 0, BTreeMap::new());
+    (root, store)
+}
+
+fn unactivated_store() -> (tempfile::TempDir, Store) {
     let root = tempfile::tempdir().unwrap();
     let store = Store::new(root.path().to_path_buf());
     let mut settings = Settings::default();
     settings.repositories.push(repository(true));
     store.save_settings(&settings).unwrap();
     (root, store)
+}
+
+fn activate(
+    store: &Store,
+    creation_watermark: u64,
+    baseline: BTreeMap<String, ActivationBaseline>,
+) {
+    let settings = store.load_settings().unwrap();
+    activate_repository(
+        store,
+        &settings.repositories[0].id,
+        creation_watermark,
+        baseline,
+    );
+}
+
+fn activate_repository(
+    store: &Store,
+    repository_id: &str,
+    creation_watermark: u64,
+    baseline: BTreeMap<String, ActivationBaseline>,
+) {
+    let settings = store.load_settings().unwrap();
+    let context = Monitor::activation_context(&settings, repository_id).unwrap();
+    let mut state = store.load_monitoring_state().unwrap();
+    state.activations.insert(
+        context.repository_id.clone(),
+        MonitoringActivation {
+            version: "00000000-0000-4000-8000-000000000099".into(),
+            repository_id: context.repository_id,
+            name: context.name,
+            account_id: context.account_id,
+            provider_repository_id: context.provider_repository_id,
+            trigger_policy: context.trigger_policy,
+            creation_watermark,
+            mode: ActivationMode::NewOnly,
+            selected_existing: baseline.values().filter(|item| item.selected).count(),
+            baseline,
+            confirmed_at: 1_799_999_999,
+        },
+    );
+    store.save_monitoring_state(&state).unwrap();
+}
+
+fn stage_preview(
+    monitor: &mut Monitor,
+    store: &Store,
+    pulls: Vec<PullRequest>,
+    creation_watermark: u64,
+) -> pr_sniper_lib::monitoring::ActivationPreviewView {
+    let settings = store.load_settings().unwrap();
+    let context = Monitor::activation_context(&settings, &settings.repositories[0].id).unwrap();
+    monitor
+        .stage_activation_preview(
+            &settings,
+            pr_sniper_lib::monitoring::ActivationPreviewEvidence {
+                context,
+                connection: poll_result(Vec::new(), "current-login").connection,
+                pull_requests: pulls,
+                creation_watermark,
+                account_generation: 0,
+            },
+            0,
+        )
+        .unwrap()
+}
+
+fn apply_preview(
+    monitor: &mut Monitor,
+    store: &Store,
+    preview_id: &str,
+    mode: ActivationMode,
+    selected_pull_request_ids: &[String],
+    account_generation: u64,
+    now: i64,
+) -> Result<pr_sniper_lib::monitoring::ActivationStatus, String> {
+    monitor.apply_activation(
+        store,
+        &store.load_settings().unwrap(),
+        ActivationApplication {
+            preview_id,
+            mode,
+            selected_pull_request_ids,
+            account_generation,
+            now,
+        },
+    )
 }
 
 fn set_settings(store: &Store, settings: &Settings) {
@@ -240,6 +334,470 @@ fn interval_cron_timezone_and_daylight_transitions_are_explicit() {
 }
 
 #[test]
+fn configured_repository_requires_explicit_scope_before_any_check() {
+    let (_root, store) = unactivated_store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    assert!(monitor
+        .prepare_checks(&store, 1_800_000_000, true)
+        .unwrap()
+        .is_empty());
+    assert!(monitor
+        .prepare_checks(&store, 1_900_000_000, false)
+        .unwrap()
+        .is_empty());
+    let health = monitor.snapshot().remove(0);
+    assert!(!health.schedule_available);
+    assert_eq!(
+        health.last_failure.as_deref(),
+        Some(SCOPE_CONFIRMATION_REQUIRED)
+    );
+    assert!(
+        !monitor
+            .activation_status(
+                &store.load_settings().unwrap(),
+                "00000000-0000-4000-8000-000000000001"
+            )
+            .active
+    );
+    assert!(store.load_queue().unwrap().is_empty());
+}
+
+#[test]
+fn missing_activation_pauses_new_detection_without_deleting_history() {
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_000,
+        vec![pull(
+            "1",
+            1,
+            "11",
+            "historical",
+            &[],
+            HEAD_A,
+            "2026-09-25T10:00:00Z",
+        )],
+        "current-login",
+    )
+    .unwrap();
+    let history = store.load_queue().unwrap();
+    let mut state = store.load_monitoring_state().unwrap();
+    state.activations.clear();
+    store.save_monitoring_state(&state).unwrap();
+
+    let mut restarted = Monitor::restore(&store).unwrap();
+    assert!(restarted
+        .prepare_checks(&store, 1_800_000_100, true)
+        .unwrap()
+        .is_empty());
+    assert_eq!(store.load_queue().unwrap(), history);
+}
+
+#[test]
+fn invalid_or_corrupt_activation_state_never_enables_monitoring() {
+    let (_root, store) = unactivated_store();
+    let settings = store.load_settings().unwrap();
+    let context = Monitor::activation_context(&settings, &settings.repositories[0].id).unwrap();
+    let mut state = store.load_monitoring_state().unwrap();
+    state.activations.insert(
+        context.repository_id.clone(),
+        MonitoringActivation {
+            version: "00000000-0000-4000-8000-000000000099".into(),
+            repository_id: context.repository_id,
+            name: context.name,
+            account_id: "23".into(),
+            provider_repository_id: context.provider_repository_id,
+            trigger_policy: context.trigger_policy,
+            creation_watermark: 0,
+            mode: ActivationMode::NewOnly,
+            selected_existing: 0,
+            baseline: BTreeMap::new(),
+            confirmed_at: 1_800_000_000,
+        },
+    );
+    store.save_monitoring_state(&state).unwrap();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    assert!(monitor
+        .prepare_checks(&store, 1_800_000_001, true)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        monitor.snapshot()[0].last_failure.as_deref(),
+        Some(SCOPE_CONFIRMATION_REQUIRED)
+    );
+    assert!(store
+        .load_monitoring_state()
+        .unwrap()
+        .activations
+        .is_empty());
+
+    let root = tempfile::tempdir().unwrap();
+    let corrupt = Store::new(root.path().to_path_buf());
+    let mut settings = Settings::default();
+    settings.repositories.push(repository(true));
+    corrupt.save_settings(&settings).unwrap();
+    std::fs::create_dir_all(root.path().join("state")).unwrap();
+    std::fs::write(
+        root.path().join("state/monitoring.json"),
+        br#"{"health":{},"cursors":{},"activations":{"configuration":{"unknown":true}}}"#,
+    )
+    .unwrap();
+    assert!(Monitor::restore(&corrupt).is_err());
+}
+
+#[test]
+fn new_only_baselines_existing_unknown_old_heads_and_admits_later_heads() {
+    let (_root, store) = unactivated_store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let existing = pull(
+        "1",
+        1,
+        "11",
+        "existing",
+        &[],
+        HEAD_A,
+        "2026-09-25T10:00:00Z",
+    );
+    let preview = stage_preview(&mut monitor, &store, vec![existing.clone()], 3);
+    assert_eq!(preview.candidates.len(), 1);
+    assert!(preview.candidates[0].all_authors);
+    assert!(!preview.candidates[0].watched_author);
+    assert!(preview.candidates[0].trust_confirmation_required);
+    apply_preview(
+        &mut monitor,
+        &store,
+        &preview.preview_id,
+        ActivationMode::NewOnly,
+        &[],
+        0,
+        1_800_000_000,
+    )
+    .unwrap();
+
+    let omitted_old = pull("2", 2, "12", "omitted", &[], HEAD_A, "2026-09-25T10:01:00Z");
+    let new_pull = pull("4", 4, "13", "new", &[], HEAD_A, "2026-09-25T10:02:00Z");
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_010,
+        vec![existing, omitted_old.clone(), new_pull],
+        "current-login",
+    )
+    .unwrap();
+    let jobs = store.load_queue().unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].pull_request_id, "4");
+    assert!(jobs[0].all_authors);
+    assert!(!jobs[0].watched_author);
+    assert_eq!(jobs[0].waiting, "trust_confirmation");
+
+    let changed_old = pull("2", 2, "12", "omitted", &[], HEAD_B, "2026-09-25T10:03:00Z");
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_020,
+        vec![changed_old],
+        "current-login",
+    )
+    .unwrap();
+    let jobs = store.load_queue().unwrap();
+    assert_eq!(jobs.len(), 2);
+    assert!(jobs
+        .iter()
+        .any(|job| job.pull_request_id == "2" && job.head_sha == HEAD_B));
+
+    let mut restarted = Monitor::restore(&store).unwrap();
+    check(
+        &mut restarted,
+        &store,
+        1_800_000_030,
+        vec![pull(
+            "2",
+            2,
+            "12",
+            "omitted",
+            &[],
+            HEAD_B,
+            "2026-09-25T10:03:00Z",
+        )],
+        "current-login",
+    )
+    .unwrap();
+    assert_eq!(store.load_queue().unwrap().len(), 2);
+}
+
+#[test]
+fn selected_existing_queues_only_selected_heads_and_deduplicates() {
+    let (_root, store) = unactivated_store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let first = pull("1", 1, "11", "first", &[], HEAD_A, "2026-09-25T10:00:00Z");
+    let second = pull("2", 2, "12", "second", &[], HEAD_A, "2026-09-25T10:01:00Z");
+    let preview = stage_preview(&mut monitor, &store, vec![first.clone(), second.clone()], 2);
+    apply_preview(
+        &mut monitor,
+        &store,
+        &preview.preview_id,
+        ActivationMode::SelectedExisting,
+        &["2".into()],
+        0,
+        1_800_000_000,
+    )
+    .unwrap();
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_010,
+        vec![first, second.clone()],
+        "current-login",
+    )
+    .unwrap();
+    assert_eq!(store.load_queue().unwrap().len(), 1);
+    assert_eq!(store.load_queue().unwrap()[0].pull_request_id, "2");
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_020,
+        vec![second],
+        "current-login",
+    )
+    .unwrap();
+    assert_eq!(store.load_queue().unwrap().len(), 1);
+}
+
+#[test]
+fn reconfirming_new_only_retires_existing_actionable_history_without_deleting_it() {
+    let (_root, store) = store();
+    let existing = pull(
+        "1",
+        1,
+        "11",
+        "existing",
+        &[],
+        HEAD_A,
+        "2026-09-25T10:00:00Z",
+    );
+    let mut monitor = Monitor::restore(&store).unwrap();
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_000,
+        vec![existing.clone()],
+        "current-login",
+    )
+    .unwrap();
+    assert_eq!(store.load_queue().unwrap()[0].waiting, "trust_confirmation");
+
+    let preview = stage_preview(&mut monitor, &store, vec![existing.clone()], 1);
+    apply_preview(
+        &mut monitor,
+        &store,
+        &preview.preview_id,
+        ActivationMode::NewOnly,
+        &[],
+        0,
+        1_800_000_010,
+    )
+    .unwrap();
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_020,
+        vec![existing],
+        "current-login",
+    )
+    .unwrap();
+    let jobs = store.load_queue().unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].waiting, WAITING_SCOPE_EXCLUDED);
+}
+
+#[test]
+fn activation_preview_filters_lifecycle_and_uses_watched_or_reviewer_matching() {
+    let (_root, store) = unactivated_store();
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].watched_authors = vec![WatchedIdentity {
+        id: "11".into(),
+        login: "watched".into(),
+    }];
+    set_settings(&store, &settings);
+    let mut watched = pull("1", 1, "11", "watched", &[], HEAD_A, "2026-09-25T10:00:00Z");
+    let reviewer = pull(
+        "2",
+        2,
+        "12",
+        "reviewer",
+        &[(ACCOUNT_ID, "current-login")],
+        HEAD_A,
+        "2026-09-25T10:01:00Z",
+    );
+    let unrelated = pull(
+        "3",
+        3,
+        "13",
+        "unrelated",
+        &[],
+        HEAD_A,
+        "2026-09-25T10:02:00Z",
+    );
+    let mut draft = pull("4", 4, "11", "watched", &[], HEAD_A, "2026-09-25T10:03:00Z");
+    draft.draft = true;
+    let mut closed = pull("5", 5, "11", "watched", &[], HEAD_A, "2026-09-25T10:04:00Z");
+    closed.state = Lifecycle::Closed;
+    watched.head_repository_id = Some(REPOSITORY_ID.into());
+    let preview = stage_preview(
+        &mut Monitor::restore(&store).unwrap(),
+        &store,
+        vec![watched, reviewer, unrelated, draft, closed],
+        5,
+    );
+    assert_eq!(preview.candidates.len(), 2);
+    assert!(preview.candidates[0].watched_author);
+    assert!(!preview.candidates[0].trust_confirmation_required);
+    assert!(preview.candidates[1].requested_reviewer);
+    assert!(preview.candidates[1].trust_confirmation_required);
+}
+
+#[test]
+fn activation_preview_cancel_stale_generation_and_write_failure_never_apply() {
+    let (root, store) = unactivated_store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let preview = stage_preview(
+        &mut monitor,
+        &store,
+        vec![pull(
+            "1",
+            1,
+            "11",
+            "existing",
+            &[],
+            HEAD_A,
+            "2026-09-25T10:00:00Z",
+        )],
+        1,
+    );
+    monitor.cancel_activation_preview(&preview.preview_id);
+    assert!(apply_preview(
+        &mut monitor,
+        &store,
+        &preview.preview_id,
+        ActivationMode::NewOnly,
+        &[],
+        0,
+        1_800_000_000,
+    )
+    .is_err());
+
+    let preview = stage_preview(
+        &mut monitor,
+        &store,
+        vec![pull(
+            "1",
+            1,
+            "11",
+            "existing",
+            &[],
+            HEAD_A,
+            "2026-09-25T10:00:00Z",
+        )],
+        1,
+    );
+    assert!(apply_preview(
+        &mut monitor,
+        &store,
+        &preview.preview_id,
+        ActivationMode::SelectedExisting,
+        &["browser-invented-id".into()],
+        0,
+        1_800_000_001,
+    )
+    .is_err());
+
+    let preview = stage_preview(&mut monitor, &store, Vec::new(), 0);
+    let mut changed = store.load_settings().unwrap();
+    changed.repositories[0].watched_authors = vec![WatchedIdentity {
+        id: "44".into(),
+        login: "changed".into(),
+    }];
+    set_settings(&store, &changed);
+    assert!(monitor
+        .apply_activation(
+            &store,
+            &changed,
+            ActivationApplication {
+                preview_id: &preview.preview_id,
+                mode: ActivationMode::NewOnly,
+                selected_pull_request_ids: &[],
+                account_generation: 0,
+                now: 1_800_000_001,
+            },
+        )
+        .is_err());
+    set_settings(
+        &store,
+        &Settings {
+            repositories: vec![repository(true)],
+            ..Settings::default()
+        },
+    );
+
+    let preview = stage_preview(&mut monitor, &store, Vec::new(), 0);
+    assert!(apply_preview(
+        &mut monitor,
+        &store,
+        &preview.preview_id,
+        ActivationMode::NewOnly,
+        &[],
+        1,
+        1_800_000_001,
+    )
+    .is_err());
+
+    let preview = stage_preview(&mut monitor, &store, Vec::new(), 0);
+    std::fs::create_dir_all(root.path().join("state")).unwrap();
+    std::fs::create_dir(root.path().join("state/monitoring.json.tmp")).unwrap();
+    assert!(apply_preview(
+        &mut monitor,
+        &store,
+        &preview.preview_id,
+        ActivationMode::NewOnly,
+        &[],
+        0,
+        1_800_000_002,
+    )
+    .is_err());
+    assert!(
+        !monitor
+            .activation_status(
+                &store.load_settings().unwrap(),
+                "00000000-0000-4000-8000-000000000001"
+            )
+            .active
+    );
+}
+
+#[test]
+fn ordinary_settings_save_preserves_native_activation_and_restart_state() {
+    let (_root, store) = store();
+    let before = store.load_monitoring_state().unwrap().activations;
+    let expected = store.load_settings().unwrap();
+    let mut changed = expected.clone();
+    changed.root_folder = Some("/fixture/root".into());
+    store.save_preferences(changed, &expected).unwrap();
+    let restored = Monitor::restore(&store).unwrap();
+    assert_eq!(store.load_monitoring_state().unwrap().activations, before);
+    assert!(
+        restored
+            .activation_status(
+                &store.load_settings().unwrap(),
+                "00000000-0000-4000-8000-000000000001"
+            )
+            .active
+    );
+}
+
+#[test]
 fn repeated_manual_checks_coalesce_behind_the_inflight_read() {
     let (_root, store) = store();
     let mut monitor = Monitor::restore(&store).unwrap();
@@ -363,6 +921,12 @@ fn shared_repository_bindings_are_serialized_across_accounts() {
     second.provider_account_id = Some("23".into());
     settings.repositories.push(second);
     set_settings(&store, &settings);
+    activate_repository(
+        &store,
+        "00000000-0000-4000-8000-000000000002",
+        0,
+        BTreeMap::new(),
+    );
 
     let mut monitor = Monitor::restore(&store).unwrap();
     assert!(monitor
@@ -449,6 +1013,7 @@ fn author_reviewer_and_combined_triggers_filter_before_queueing() {
         login: "old-author-login".into(),
     }];
     set_settings(&store, &settings);
+    activate(&store, 0, BTreeMap::new());
     let mut monitor = Monitor::restore(&store).unwrap();
     let pulls = vec![
         pull(
@@ -514,7 +1079,8 @@ fn closed_draft_and_unassigned_revisions_never_enqueue() {
     closed.state = Lifecycle::Closed;
     let mut draft = pull("2", 2, "11", "author", &[], HEAD_A, "2026-09-25T10:01:00Z");
     draft.draft = true;
-    let unrelated = pull("3", 3, "11", "author", &[], HEAD_A, "2026-09-25T10:02:00Z");
+    let mut unrelated = pull("3", 3, "11", "author", &[], HEAD_A, "2026-09-25T10:02:00Z");
+    unrelated.author = None;
     check(
         &mut monitor,
         &store,
@@ -535,6 +1101,7 @@ fn polling_deduplicates_repeats_but_admits_new_heads_and_survives_restart() {
         login: "author".into(),
     }];
     set_settings(&store, &settings);
+    activate(&store, 0, BTreeMap::new());
     let original = pull("1", 1, "11", "author", &[], HEAD_A, "2026-09-25T10:00:00Z");
     let mut monitor = Monitor::restore(&store).unwrap();
     check(
@@ -630,6 +1197,13 @@ fn failed_attempt_health_is_visible_and_persists_across_restart() {
 #[test]
 fn reviewer_removal_and_reassignment_only_admit_current_eligibility() {
     let (_root, store) = store();
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].watched_authors = vec![WatchedIdentity {
+        id: "11".into(),
+        login: "watched".into(),
+    }];
+    set_settings(&store, &settings);
+    activate(&store, 0, BTreeMap::new());
     let mut monitor = Monitor::restore(&store).unwrap();
     let reviewer_only = pull(
         "1",
@@ -821,6 +1395,7 @@ fn store_with_detected_job() -> (tempfile::TempDir, Store, Monitor) {
         login: "author".into(),
     }];
     set_settings(&store, &settings);
+    activate(&store, 0, BTreeMap::new());
     let mut monitor = Monitor::restore(&store).unwrap();
     check(
         &mut monitor,
@@ -850,6 +1425,7 @@ fn scans_retire_superseded_ineligible_and_unseen_jobs_without_erasing_history() 
         login: "author".into(),
     }];
     set_settings(&store, &settings);
+    activate(&store, 0, BTreeMap::new());
     let mut monitor = Monitor::restore(&store).unwrap();
     check(
         &mut monitor,
@@ -1147,12 +1723,13 @@ fn removed_inflight_schedule_keeps_exclusion_until_the_read_finishes() {
         monitor.snapshot()[0].repository_id,
         "00000000-0000-4000-8000-000000000002"
     );
+    assert!(monitor
+        .prepare_checks(&store, 1_800_000_003, true)
+        .unwrap()
+        .is_empty());
     assert_eq!(
-        monitor
-            .prepare_checks(&store, 1_800_000_003, true)
-            .unwrap()
-            .len(),
-        1
+        monitor.snapshot()[0].last_failure.as_deref(),
+        Some(SCOPE_CONFIRMATION_REQUIRED)
     );
 }
 
@@ -1187,6 +1764,16 @@ fn disable_reenable_and_rebind_reset_health_and_cursor_honestly() {
     monitor
         .synchronize_configuration(&store, &accounts, 1_800_000_020)
         .unwrap();
+    assert!(!monitor.snapshot()[0].schedule_available);
+    assert_eq!(
+        monitor.snapshot()[0].last_failure.as_deref(),
+        Some(SCOPE_CONFIRMATION_REQUIRED)
+    );
+    activate(&store, 0, BTreeMap::new());
+    monitor = Monitor::restore(&store).unwrap();
+    monitor
+        .synchronize_configuration(&store, &accounts, 1_800_000_021)
+        .unwrap();
     assert!(monitor.snapshot()[0].schedule_available);
 
     settings.repositories[0].provider_account_id = Some("23".into());
@@ -1198,6 +1785,10 @@ fn disable_reenable_and_rebind_reset_health_and_cursor_honestly() {
     assert_eq!(rebound.provider_account_id.as_deref(), Some("23"));
     assert_eq!(rebound.account_login.as_deref(), Some("other-login"));
     assert_eq!(rebound.last_success, None);
+    assert_eq!(
+        rebound.last_failure.as_deref(),
+        Some(SCOPE_CONFIRMATION_REQUIRED)
+    );
     assert!(store.load_monitoring_state().unwrap().cursors.is_empty());
 }
 
@@ -1253,6 +1844,12 @@ fn one_manual_request_drains_every_account_and_assignment_for_a_shared_repositor
     });
     settings.repositories.push(second);
     set_settings(&store, &settings);
+    activate_repository(
+        &store,
+        "00000000-0000-4000-8000-000000000002",
+        0,
+        BTreeMap::new(),
+    );
     let accounts = available_accounts(&[("22", "account-a"), ("23", "account-b")]);
     let mut monitor = Monitor::restore(&store).unwrap();
     let mut tickets = monitor
@@ -1338,6 +1935,12 @@ fn cancelling_manual_pending_work_does_not_start_another_read() {
     second.provider_account_id = Some("23".into());
     settings.repositories.push(second);
     set_settings(&store, &settings);
+    activate_repository(
+        &store,
+        "00000000-0000-4000-8000-000000000002",
+        0,
+        BTreeMap::new(),
+    );
     let accounts = available_accounts(&[("22", "account-a"), ("23", "account-b")]);
     let mut monitor = Monitor::restore(&store).unwrap();
     let mut tickets = monitor
@@ -1408,6 +2011,85 @@ fn persisted_legacy_health_migrates_identity_fields_without_losing_history() {
     }))
     .unwrap();
     assert!(job.configuration_id.is_empty());
+    assert!(!job.all_authors);
+}
+
+#[derive(Clone)]
+struct LargeActivationFixture {
+    requests: Arc<Mutex<Vec<String>>>,
+}
+
+impl Transport for LargeActivationFixture {
+    fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+        self.requests.lock().unwrap().push(path.into());
+        let (body, link, scope) = match path {
+            "/user" => (json!({"id": 22, "login": "current-login"}), None, None),
+            "/repos/example/repo" => (
+                json!({
+                    "id": 100,
+                    "full_name": "example/repo",
+                    "private": false,
+                    "archived": false,
+                    "disabled": false,
+                    "permissions": {"pull": true}
+                }),
+                None,
+                Some("repo"),
+            ),
+            "/repos/example/repo/pulls?state=open&per_page=1" => (json!([]), None, None),
+            "/repos/example/repo/pulls?state=all&sort=created&direction=desc&per_page=1" => (
+                json!([open_pr(
+                    1800,
+                    1800,
+                    11,
+                    HEAD_A,
+                    "2026-09-25T10:00:00Z"
+                )]),
+                None,
+                None,
+            ),
+            _ if path.starts_with(
+                "/repos/example/repo/pulls?state=open&sort=created&direction=asc&per_page=100&page=",
+            ) => {
+                let page: u64 = path.rsplit('=').next().unwrap().parse().unwrap();
+                if !(1..=18).contains(&page) {
+                    return Err(ConnectionError::InvalidResponse);
+                }
+                let start = (page - 1) * 100 + 1;
+                let pulls: Vec<_> = (start..start + 100)
+                    .map(|number| {
+                        open_pr(
+                            number,
+                            number,
+                            10_000 + number,
+                            HEAD_A,
+                            "2026-09-25T10:00:00Z",
+                        )
+                    })
+                    .collect();
+                let link = (page < 18).then(|| {
+                    format!(
+                        "<https://api.github.com/repos/example/repo/pulls?state=open&sort=created&direction=asc&per_page=100&page={}>; rel=\"next\"",
+                        page + 1
+                    )
+                });
+                (json!(pulls), link, None)
+            }
+            _ => return Err(ConnectionError::InvalidResponse),
+        };
+        let mut headers = BTreeMap::new();
+        if let Some(link) = link {
+            headers.insert("link".into(), link);
+        }
+        if let Some(scope) = scope {
+            headers.insert("x-oauth-scopes".into(), scope.into());
+        }
+        Ok(Response {
+            status: 200,
+            headers,
+            body: serde_json::to_vec(&body).unwrap(),
+        })
+    }
 }
 
 #[test]
@@ -1439,4 +2121,48 @@ fn account_bound_polling_reads_every_page_using_only_get_requests() {
             "/repos/example/repo/pulls?state=open&sort=created&direction=asc&per_page=100&page=2",
         ]
     );
+}
+
+#[test]
+fn activation_preview_counts_all_1800_matching_open_pull_requests() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let client = GithubClient::new(LargeActivationFixture {
+        requests: requests.clone(),
+    });
+    let connection = client.connect(REPOSITORY_NAME, Some(ACCOUNT_ID)).unwrap();
+    let pulls = client.poll_pull_requests(&connection.repository).unwrap();
+    let watermark = client
+        .latest_pull_request_number(&connection.repository)
+        .unwrap();
+    assert_eq!(pulls.len(), 1_800);
+    assert_eq!(watermark, 1_800);
+
+    let (_root, store) = unactivated_store();
+    let settings = store.load_settings().unwrap();
+    let context = Monitor::activation_context(&settings, &settings.repositories[0].id).unwrap();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let preview = monitor
+        .stage_activation_preview(
+            &settings,
+            pr_sniper_lib::monitoring::ActivationPreviewEvidence {
+                context,
+                connection,
+                pull_requests: pulls,
+                creation_watermark: watermark,
+                account_generation: 0,
+            },
+            0,
+        )
+        .unwrap();
+    assert_eq!(preview.candidates.len(), 1_800);
+    assert_eq!(preview.candidates.first().unwrap().number, 1);
+    assert_eq!(preview.candidates.last().unwrap().number, 1_800);
+    let requests = requests.lock().unwrap();
+    assert!(requests.contains(
+        &"/repos/example/repo/pulls?state=open&sort=created&direction=asc&per_page=100&page=18"
+            .into()
+    ));
+    assert!(requests.contains(
+        &"/repos/example/repo/pulls?state=all&sort=created&direction=desc&per_page=1".into()
+    ));
 }

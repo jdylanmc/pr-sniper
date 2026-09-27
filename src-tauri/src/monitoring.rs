@@ -20,6 +20,8 @@ pub const WAITING_POLICY_CHANGED: &str = "policy_changed";
 pub const WAITING_SUPERSEDED: &str = "superseded";
 pub const WAITING_INELIGIBLE: &str = "ineligible";
 pub const WAITING_NO_LONGER_CURRENT: &str = "no_longer_current";
+pub const WAITING_SCOPE_EXCLUDED: &str = "scope_excluded";
+pub const SCOPE_CONFIRMATION_REQUIRED: &str = "scope_confirmation_required";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountAvailability {
@@ -74,6 +76,8 @@ pub struct QueueJob {
     pub author_id: Option<String>,
     pub author_login: Option<String>,
     pub watched_author: bool,
+    #[serde(default)]
+    pub all_authors: bool,
     pub requested_reviewer: bool,
     pub waiting: String,
     pub detected_at: i64,
@@ -96,6 +100,110 @@ pub struct MonitoringState {
     pub health: BTreeMap<String, ScheduleHealth>,
     #[serde(default)]
     pub cursors: BTreeMap<String, PollCursor>,
+    #[serde(default)]
+    pub activations: BTreeMap<String, MonitoringActivation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivationMode {
+    NewOnly,
+    SelectedExisting,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivationBaseline {
+    pub number: u64,
+    pub head_sha: String,
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MonitoringActivation {
+    pub version: String,
+    pub repository_id: String,
+    pub name: String,
+    pub account_id: String,
+    pub provider_repository_id: String,
+    pub trigger_policy: String,
+    pub creation_watermark: u64,
+    pub mode: ActivationMode,
+    pub selected_existing: usize,
+    pub baseline: BTreeMap<String, ActivationBaseline>,
+    pub confirmed_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ActivationCandidate {
+    pub pull_request_id: String,
+    pub number: u64,
+    pub title: String,
+    pub head_sha: String,
+    pub author_id: Option<String>,
+    pub author_login: Option<String>,
+    pub watched_author: bool,
+    pub all_authors: bool,
+    pub requested_reviewer: bool,
+    pub trust_confirmation_required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ActivationPreviewView {
+    pub preview_id: String,
+    pub repository_id: String,
+    pub name: String,
+    pub account_id: String,
+    pub account_login: String,
+    pub creation_watermark: u64,
+    pub candidates: Vec<ActivationCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ActivationStatus {
+    pub repository_id: String,
+    pub active: bool,
+    pub reason: Option<String>,
+    pub mode: Option<ActivationMode>,
+    pub selected_existing: usize,
+    pub creation_watermark: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivationContext {
+    pub repository_id: String,
+    pub name: String,
+    pub account_id: String,
+    pub provider_repository_id: String,
+    pub policy: Policy,
+    pub watched_authors: Vec<WatchedIdentity>,
+    pub trigger_policy: String,
+}
+
+pub struct ActivationPreviewEvidence {
+    pub context: ActivationContext,
+    pub connection: Connection,
+    pub pull_requests: Vec<PullRequest>,
+    pub creation_watermark: u64,
+    pub account_generation: u64,
+}
+
+pub struct ActivationApplication<'a> {
+    pub preview_id: &'a str,
+    pub mode: ActivationMode,
+    pub selected_pull_request_ids: &'a [String],
+    pub account_generation: u64,
+    pub now: i64,
+}
+
+#[derive(Clone)]
+struct ActivationPreview {
+    context: ActivationContext,
+    candidates: BTreeMap<String, ActivationCandidate>,
+    creation_watermark: u64,
+    account_generation: u64,
+    previous_activation_version: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +217,7 @@ pub struct PollTicket {
     pub watched_authors: Vec<WatchedIdentity>,
     pub trigger_policy: String,
     pub updated_after: Option<String>,
+    pub activation_version: String,
     pub account_generation: u64,
 }
 
@@ -164,6 +273,7 @@ struct ConfiguredSchedule {
 pub struct Monitor {
     state: MonitoringState,
     leases: BTreeMap<String, String>,
+    previews: BTreeMap<String, ActivationPreview>,
 }
 
 impl Monitor {
@@ -180,11 +290,233 @@ impl Monitor {
         Ok(Self {
             state,
             leases: BTreeMap::new(),
+            previews: BTreeMap::new(),
         })
     }
 
     pub fn snapshot(&self) -> Vec<ScheduleHealth> {
         self.state.health.values().cloned().collect()
+    }
+
+    pub fn activation_context(
+        settings: &Settings,
+        repository_id: &str,
+    ) -> Result<ActivationContext, ConnectionError> {
+        let repository = settings
+            .repositories
+            .iter()
+            .find(|repository| repository.id == repository_id && repository.enabled)
+            .ok_or(ConnectionError::Configuration)?;
+        let binding = repository
+            .account_binding()
+            .ok_or(ConnectionError::Configuration)?;
+        if binding.account.provider != ProviderId::Github
+            || binding.repository.provider != ProviderId::Github
+        {
+            return Err(ConnectionError::Configuration);
+        }
+        let policy = repository.overrides.effective(&settings.defaults);
+        let watched_authors = effective_watched_authors(repository, &policy);
+        let trigger_policy = trigger_policy(&watched_authors, policy.reviewer_assignment)?;
+        Ok(ActivationContext {
+            repository_id: repository.id.clone(),
+            name: repository.name.clone(),
+            account_id: binding.account.account_id,
+            provider_repository_id: binding.repository.repository_id,
+            policy,
+            watched_authors,
+            trigger_policy,
+        })
+    }
+
+    pub fn activation_status(&self, settings: &Settings, repository_id: &str) -> ActivationStatus {
+        let context = Self::activation_context(settings, repository_id).ok();
+        let activation = context.as_ref().and_then(|context| {
+            self.state
+                .activations
+                .get(repository_id)
+                .filter(|activation| activation_matches_context(activation, context))
+        });
+        ActivationStatus {
+            repository_id: repository_id.into(),
+            active: activation.is_some(),
+            reason: activation
+                .is_none()
+                .then(|| SCOPE_CONFIRMATION_REQUIRED.into()),
+            mode: activation.map(|activation| activation.mode.clone()),
+            selected_existing: activation
+                .map(|activation| activation.selected_existing)
+                .unwrap_or(0),
+            creation_watermark: activation.map(|activation| activation.creation_watermark),
+        }
+    }
+
+    pub fn stage_activation_preview(
+        &mut self,
+        settings: &Settings,
+        evidence: ActivationPreviewEvidence,
+        current_generation: u64,
+    ) -> Result<ActivationPreviewView, ConnectionError> {
+        let current = Self::activation_context(settings, &evidence.context.repository_id)?;
+        if current != evidence.context
+            || current_generation != evidence.account_generation
+            || evidence.connection.identity.id != current.account_id
+            || evidence.connection.repository.id != current.provider_repository_id
+            || evidence.connection.repository.name != current.name
+        {
+            return Err(ConnectionError::Configuration);
+        }
+        let mut candidates = BTreeMap::new();
+        for pull in evidence.pull_requests {
+            if pull.base_repository_id != current.provider_repository_id {
+                return Err(ConnectionError::RepositoryChanged);
+            }
+            if pull.state != Lifecycle::Open
+                || pull.draft
+                || pull.number > evidence.creation_watermark
+            {
+                continue;
+            }
+            let eligibility = eligibility(
+                &current.watched_authors,
+                &current.policy,
+                &current.account_id,
+                &pull,
+            );
+            if !eligibility.eligible() {
+                continue;
+            }
+            let candidate = ActivationCandidate {
+                pull_request_id: pull.id.clone(),
+                number: pull.number,
+                title: pull.title,
+                head_sha: pull.head_sha,
+                author_id: pull.author.as_ref().map(|author| author.id.clone()),
+                author_login: pull.author.as_ref().map(|author| author.login.clone()),
+                watched_author: eligibility.watched_author,
+                all_authors: eligibility.all_authors,
+                requested_reviewer: eligibility.requested_reviewer,
+                trust_confirmation_required: !eligibility.watched_author
+                    || pull.head_repository_id.as_deref()
+                        != Some(current.provider_repository_id.as_str()),
+            };
+            if candidates
+                .insert(candidate.pull_request_id.clone(), candidate)
+                .is_some()
+            {
+                return Err(ConnectionError::IncompleteRead);
+            }
+        }
+        let preview_id = uuid::Uuid::new_v4().to_string();
+        let mut visible_candidates: Vec<_> = candidates.values().cloned().collect();
+        visible_candidates.sort_by_key(|candidate| candidate.number);
+        let view = ActivationPreviewView {
+            preview_id: preview_id.clone(),
+            repository_id: current.repository_id.clone(),
+            name: current.name.clone(),
+            account_id: current.account_id.clone(),
+            account_login: evidence.connection.identity.login,
+            creation_watermark: evidence.creation_watermark,
+            candidates: visible_candidates,
+        };
+        self.previews
+            .retain(|_, preview| preview.context.repository_id != current.repository_id);
+        self.previews.insert(
+            preview_id,
+            ActivationPreview {
+                context: current.clone(),
+                candidates,
+                creation_watermark: view.creation_watermark,
+                account_generation: current_generation,
+                previous_activation_version: self
+                    .state
+                    .activations
+                    .get(&current.repository_id)
+                    .map(|activation| activation.version.clone()),
+            },
+        );
+        Ok(view)
+    }
+
+    pub fn cancel_activation_preview(&mut self, preview_id: &str) {
+        self.previews.remove(preview_id);
+    }
+
+    pub fn apply_activation(
+        &mut self,
+        store: &Store,
+        settings: &Settings,
+        application: ActivationApplication<'_>,
+    ) -> Result<ActivationStatus, String> {
+        let preview = self
+            .previews
+            .get(application.preview_id)
+            .cloned()
+            .ok_or("Monitoring scope preview expired. Preview again.")?;
+        let context = Self::activation_context(settings, &preview.context.repository_id)
+            .map_err(|_| "Repository monitoring configuration changed. Preview again.")?;
+        if context != preview.context
+            || application.account_generation != preview.account_generation
+        {
+            self.previews.remove(application.preview_id);
+            return Err("Repository monitoring configuration changed. Preview again.".into());
+        }
+        let current_version = self
+            .state
+            .activations
+            .get(&context.repository_id)
+            .map(|activation| activation.version.clone());
+        if current_version != preview.previous_activation_version {
+            self.previews.remove(application.preview_id);
+            return Err("Monitoring scope changed in another operation. Preview again.".into());
+        }
+        let selected: HashSet<_> = application.selected_pull_request_ids.iter().collect();
+        if selected.len() != application.selected_pull_request_ids.len()
+            || selected
+                .iter()
+                .any(|id| !preview.candidates.contains_key(*id))
+            || (application.mode == ActivationMode::NewOnly && !selected.is_empty())
+            || (application.mode == ActivationMode::SelectedExisting && selected.is_empty())
+        {
+            return Err("Choose a valid monitoring scope from the current preview.".into());
+        }
+        let previous = self.state.clone();
+        let baseline = preview
+            .candidates
+            .values()
+            .map(|candidate| {
+                (
+                    candidate.pull_request_id.clone(),
+                    ActivationBaseline {
+                        number: candidate.number,
+                        head_sha: candidate.head_sha.clone(),
+                        selected: selected.contains(&candidate.pull_request_id),
+                    },
+                )
+            })
+            .collect();
+        self.state.activations.insert(
+            context.repository_id.clone(),
+            MonitoringActivation {
+                version: uuid::Uuid::new_v4().to_string(),
+                repository_id: context.repository_id.clone(),
+                name: context.name,
+                account_id: context.account_id,
+                provider_repository_id: context.provider_repository_id,
+                trigger_policy: context.trigger_policy,
+                creation_watermark: preview.creation_watermark,
+                mode: application.mode,
+                selected_existing: selected.len(),
+                baseline,
+                confirmed_at: application.now,
+            },
+        );
+        if let Err(error) = store.save_monitoring_state(&self.state) {
+            self.state = previous;
+            return Err(error);
+        }
+        self.previews.remove(application.preview_id);
+        Ok(self.activation_status(settings, &context.repository_id))
     }
 
     pub fn prepare_checks(
@@ -209,6 +541,7 @@ impl Monitor {
         let previous = self.state.clone();
         let previous_leases = self.leases.clone();
         let configured = configured_schedules(&settings);
+        self.reconcile_activations(&configured);
         self.synchronize_health(&configured, accounts, now);
         if let Err(error) = self.synchronize_jobs(store, &configured, accounts) {
             self.state = previous;
@@ -235,6 +568,7 @@ impl Monitor {
         let settings = store.load_settings()?;
         let configured = configured_schedules(&settings);
         let previous = self.state.clone();
+        self.reconcile_activations(&configured);
         self.synchronize_health(&configured, accounts, now);
         if let Err(error) = self.synchronize_jobs(store, &configured, accounts) {
             self.state = previous;
@@ -279,6 +613,9 @@ impl Monitor {
         self.state
             .cursors
             .retain(|_, cursor| cursor.account_id != account_id);
+        self.state
+            .activations
+            .retain(|_, activation| activation.account_id != account_id);
         for health in self.state.health.values_mut() {
             if health.provider_account_id.as_deref() == Some(account_id) {
                 health.schedule_available = false;
@@ -294,6 +631,16 @@ impl Monitor {
             }
         }
         Ok(())
+    }
+
+    fn reconcile_activations(&mut self, configured: &[ConfiguredSchedule]) {
+        self.state.activations.retain(|repository_id, activation| {
+            configured.iter().any(|configuration| {
+                configuration.repository_id == *repository_id
+                    && configuration.enabled
+                    && activation_matches_configuration(activation, configuration)
+            })
+        });
     }
 
     pub fn discard_account_result(
@@ -411,6 +758,18 @@ impl Monitor {
                 unavailable_health(health, "configuration");
                 continue;
             }
+            if !self
+                .state
+                .activations
+                .get(&configuration.repository_id)
+                .is_some_and(|activation| {
+                    activation_matches_configuration(activation, configuration)
+                })
+            {
+                unavailable_health(health, SCOPE_CONFIRMATION_REQUIRED);
+                self.state.cursors.remove(&configuration.health_key);
+                continue;
+            }
 
             let key = schedule_key(&configuration.schedule);
             if health.schedule_key != key || health.next_run == 0 {
@@ -520,6 +879,14 @@ impl Monitor {
             let Some(policy_key) = configuration.trigger_policy.as_ref() else {
                 continue;
             };
+            let Some(activation) = self
+                .state
+                .activations
+                .get(&configuration.repository_id)
+                .filter(|activation| activation_matches_configuration(activation, configuration))
+            else {
+                continue;
+            };
             let Some(health) = self.state.health.get_mut(&configuration.health_key) else {
                 continue;
             };
@@ -569,6 +936,7 @@ impl Monitor {
                 watched_authors: configuration.watched_authors.clone(),
                 trigger_policy: policy_key.clone(),
                 updated_after: cursor.and_then(|cursor| cursor.updated_after),
+                activation_version: activation.version.clone(),
                 account_generation: 0,
             });
         }
@@ -665,6 +1033,16 @@ impl Monitor {
             .find(|configuration| configuration.health_key == ticket.health_key)
             .filter(|configuration| configuration_matches_ticket(configuration, ticket))
             .ok_or_else(configuration_changed)?;
+        let mut activation = self
+            .state
+            .activations
+            .get(&ticket.repository_id)
+            .filter(|activation| {
+                activation.version == ticket.activation_version
+                    && activation_matches_configuration(activation, configuration)
+            })
+            .cloned()
+            .ok_or_else(configuration_changed)?;
         if result.connection.identity.id != ticket.provider_account_id {
             return Err(check_error(ConnectionError::WrongIdentity));
         }
@@ -688,18 +1066,14 @@ impl Monitor {
             if pull.base_repository_id != ticket.provider_repository_id {
                 return Err(check_error(ConnectionError::RepositoryChanged));
             }
-            let watched_author = pull.author.as_ref().is_some_and(|author| {
-                ticket
-                    .watched_authors
-                    .iter()
-                    .any(|watched| watched.id == author.id)
-            });
-            let requested_reviewer = ticket.policy.reviewer_assignment
-                && pull
-                    .requested_reviewers
-                    .iter()
-                    .any(|reviewer| reviewer.id == result.connection.identity.id);
-            observed.push((pull, watched_author, requested_reviewer));
+            let eligibility = eligibility(
+                &ticket.watched_authors,
+                &ticket.policy,
+                &result.connection.identity.id,
+                &pull,
+            );
+            let admitted = eligibility.eligible() && activation_admits(&mut activation, &pull);
+            observed.push((pull, eligibility, admitted));
         }
 
         let mut jobs = store.load_queue().map_err(MonitoringError::Storage)?;
@@ -718,21 +1092,19 @@ impl Monitor {
                 .find(|(pull, _, _)| pull.id == job.pull_request_id)
             {
                 Some((pull, _, _)) if pull.head_sha != job.head_sha => WAITING_SUPERSEDED.into(),
-                Some((pull, watched, reviewer))
-                    if pull.state != Lifecycle::Open || pull.draft || (!watched && !reviewer) =>
+                Some((pull, eligibility, _))
+                    if pull.state != Lifecycle::Open || pull.draft || !eligibility.eligible() =>
                 {
                     WAITING_INELIGIBLE.into()
                 }
+                Some((_, _, false)) => WAITING_SCOPE_EXCLUDED.into(),
                 Some(_) => continue,
                 None => WAITING_NO_LONGER_CURRENT.into(),
             };
         }
 
-        for (pull, watched_author, requested_reviewer) in observed {
-            if pull.state != Lifecycle::Open
-                || pull.draft
-                || (!watched_author && !requested_reviewer)
-            {
+        for (pull, eligibility, admitted) in observed {
+            if pull.state != Lifecycle::Open || pull.draft || !eligibility.eligible() || !admitted {
                 continue;
             }
             let job = QueueJob {
@@ -749,10 +1121,15 @@ impl Monitor {
                 trigger_policy: ticket.trigger_policy.clone(),
                 author_id: pull.author.as_ref().map(|author| author.id.clone()),
                 author_login: pull.author.as_ref().map(|author| author.login.clone()),
-                watched_author,
-                requested_reviewer,
-                waiting: waiting_state(watched_author, pull.head_repository_id.as_deref(), ticket)
-                    .into(),
+                watched_author: eligibility.watched_author,
+                all_authors: eligibility.all_authors,
+                requested_reviewer: eligibility.requested_reviewer,
+                waiting: waiting_state(
+                    eligibility.watched_author,
+                    pull.head_repository_id.as_deref(),
+                    ticket,
+                )
+                .into(),
                 detected_at: now,
             };
             if let Some(existing) = jobs.iter_mut().find(|existing| same_job(existing, &job)) {
@@ -766,6 +1143,9 @@ impl Monitor {
         if jobs != previous_jobs {
             store.save_queue(&jobs).map_err(MonitoringError::Storage)?;
         }
+        self.state
+            .activations
+            .insert(ticket.repository_id.clone(), activation);
         self.state.cursors.insert(
             ticket.health_key.clone(),
             PollCursor {
@@ -798,14 +1178,113 @@ fn configured_accounts(settings: &Settings) -> BTreeMap<String, AccountAvailabil
         .collect()
 }
 
+#[derive(Clone, Copy)]
+struct Eligibility {
+    watched_author: bool,
+    all_authors: bool,
+    requested_reviewer: bool,
+}
+
+impl Eligibility {
+    fn eligible(self) -> bool {
+        self.watched_author || self.all_authors || self.requested_reviewer
+    }
+}
+
+fn eligibility(
+    watched_authors: &[WatchedIdentity],
+    policy: &Policy,
+    account_id: &str,
+    pull: &PullRequest,
+) -> Eligibility {
+    let watched_author = pull.author.as_ref().is_some_and(|author| {
+        watched_authors
+            .iter()
+            .any(|watched| watched.id == author.id)
+    });
+    let all_authors = watched_authors.is_empty() && pull.author.is_some();
+    let requested_reviewer = policy.reviewer_assignment
+        && pull
+            .requested_reviewers
+            .iter()
+            .any(|reviewer| reviewer.id == account_id);
+    Eligibility {
+        watched_author,
+        all_authors,
+        requested_reviewer,
+    }
+}
+
+fn activation_admits(activation: &mut MonitoringActivation, pull: &PullRequest) -> bool {
+    if pull.number > activation.creation_watermark {
+        return true;
+    }
+    match activation.baseline.get_mut(&pull.id) {
+        Some(baseline) if baseline.head_sha == pull.head_sha => {
+            let selected = baseline.selected;
+            baseline.selected = false;
+            selected
+        }
+        Some(baseline) => {
+            baseline.number = pull.number;
+            baseline.head_sha = pull.head_sha.clone();
+            baseline.selected = false;
+            true
+        }
+        None => {
+            activation.baseline.insert(
+                pull.id.clone(),
+                ActivationBaseline {
+                    number: pull.number,
+                    head_sha: pull.head_sha.clone(),
+                    selected: false,
+                },
+            );
+            false
+        }
+    }
+}
+
+fn effective_watched_authors(
+    repository: &crate::storage::Repository,
+    policy: &Policy,
+) -> Vec<WatchedIdentity> {
+    let mut watched_authors = policy.watched_authors.clone();
+    watched_authors.extend(repository.watched_authors.iter().cloned());
+    watched_authors.sort_by(|left, right| left.id.cmp(&right.id));
+    watched_authors.dedup_by(|left, right| left.id == right.id);
+    watched_authors
+}
+
+fn activation_matches_context(
+    activation: &MonitoringActivation,
+    context: &ActivationContext,
+) -> bool {
+    activation.repository_id == context.repository_id
+        && activation.name == context.name
+        && activation.account_id == context.account_id
+        && activation.provider_repository_id == context.provider_repository_id
+        && activation.trigger_policy == context.trigger_policy
+}
+
+fn activation_matches_configuration(
+    activation: &MonitoringActivation,
+    configuration: &ConfiguredSchedule,
+) -> bool {
+    configuration.enabled
+        && activation.repository_id == configuration.repository_id
+        && activation.name == configuration.name
+        && configuration.provider_account_id.as_deref() == Some(&activation.account_id)
+        && configuration.provider_repository_id.as_deref()
+            == Some(&activation.provider_repository_id)
+        && configuration.trigger_policy.as_deref() == Some(&activation.trigger_policy)
+}
+
 fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {
     let mut configured = Vec::new();
     for repository in &settings.repositories {
         let policy = repository.overrides.effective(&settings.defaults);
-        let mut watched_authors = policy.watched_authors.clone();
-        watched_authors.extend(repository.watched_authors.iter().cloned());
-        watched_authors.sort_by(|left, right| left.id.cmp(&right.id));
-        watched_authors.dedup_by(|left, right| left.id == right.id);
+        let watched_authors = effective_watched_authors(repository, &policy);
         let policy_key = trigger_policy(&watched_authors, policy.reviewer_assignment).ok();
         let binding = repository.account_binding();
         let provider_supported = binding.as_ref().is_some_and(|binding| {
@@ -891,6 +1370,7 @@ fn configuration_failure(failure: Option<&str>) -> bool {
                 | "configuration"
                 | "invalid_schedule"
                 | "settings_unavailable"
+                | "scope_confirmation_required"
         )
     )
 }

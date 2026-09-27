@@ -29,6 +29,7 @@ interface Job {
   author_id: string | null;
   author_login: string | null;
   watched_author: boolean;
+  all_authors: boolean;
   requested_reviewer: boolean;
   waiting: string;
 }
@@ -47,6 +48,7 @@ const blockingFailures = new Set([
   "configuration",
   "invalid_schedule",
   "provider_unavailable",
+  "scope_confirmation_required",
   "settings_unavailable",
 ]);
 
@@ -85,6 +87,8 @@ function waitingLabel(waiting: string) {
       return "Not actionable: this revision is no longer eligible.";
     case "no_longer_current":
       return "Not seen in the latest open-PR scan; rechecked next scan. This is not a terminal closed or merged state.";
+    case "scope_excluded":
+      return "Not actionable: this unchanged existing revision was excluded by the confirmed monitoring scope.";
     default:
       return `Not actionable: unrecognized queue state (${waiting}).`;
   }
@@ -145,6 +149,7 @@ export function renderMonitoring(
             : "deleted or unavailable";
         const reasons = [
           job.watched_author ? "watched author" : "",
+          job.all_authors ? "all-author monitoring scope" : "",
           job.requested_reviewer ? "requested reviewer" : "",
         ]
           .filter(Boolean)
