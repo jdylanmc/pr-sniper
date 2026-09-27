@@ -408,18 +408,8 @@ impl GithubAuth {
         true
     }
 
-    #[cfg(test)]
     fn finish_attempt(
         &mut self,
-        attempt_id: u64,
-        outcome: Result<(github::Identity, github::oauth::TokenPair), GithubAuthFailure>,
-    ) {
-        self.finish_attempt_for_role(ConnectionRole::Copilot, attempt_id, outcome);
-    }
-
-    fn finish_attempt_for_role(
-        &mut self,
-        role: ConnectionRole,
         attempt_id: u64,
         outcome: Result<(github::Identity, github::oauth::TokenPair), GithubAuthFailure>,
     ) {
@@ -442,11 +432,6 @@ impl GithubAuth {
                 let duplicate_account =
                     expected_account_id.is_none() && self.accounts.contains_key(&identity.id);
                 if wrong_identity || duplicate_account {
-                    if matches!(role, ConnectionRole::Copilot) {
-                        if let Some(expected) = expected_account_id {
-                            self.set_failure(&expected, GithubAuthFailure::WrongIdentity);
-                        }
-                    }
                     self.failure = Some(GithubAuthFailure::WrongIdentity);
                 } else {
                     self.pending = Some(PendingGithubAccount { identity, pair });
@@ -455,11 +440,6 @@ impl GithubAuth {
                 }
             }
             Err(reason) => {
-                if matches!(role, ConnectionRole::Copilot) {
-                    if let Some(expected) = expected_account_id {
-                        self.set_failure(&expected, reason);
-                    }
-                }
                 if reason != GithubAuthFailure::Cancelled {
                     self.failure = Some(reason);
                 }
@@ -1366,7 +1346,7 @@ async fn complete_github_device_auth(
             "failure"
         }
     );
-    auth.finish_attempt_for_role(role, attempt_id, outcome);
+    auth.finish_attempt(attempt_id, outcome);
 }
 
 #[tauri::command]
@@ -1911,8 +1891,8 @@ mod github_auth_tests {
     use super::{
         disconnect_github_account, failure_from_connection_error, failure_from_oauth_error,
         finish_monitored_ticket, github_keychain_stores, persist_oauth_account_with_cleanup,
-        rotation_connection_error, ConnectionRole, GithubAccountState, GithubAccountView,
-        GithubAuth, GithubAuthFailure, GithubFlowView, OAuthAccountPersistence,
+        rotation_connection_error, GithubAccountState, GithubAccountView, GithubAuth,
+        GithubAuthFailure, GithubFlowView, OAuthAccountPersistence,
     };
     use crate::github::token_store::{
         AccountRegistry, AccountRegistryStore, CredentialKey, CredentialStore, RotationError,
@@ -2748,120 +2728,112 @@ mod github_auth_tests {
     }
 
     #[test]
-    fn failed_repository_reconnect_preserves_saved_account_state_and_reports_flow_failure() {
-        for reason in [
-            GithubAuthFailure::Denied,
-            GithubAuthFailure::Expired,
-            GithubAuthFailure::BrowserOpen,
+    fn failed_replacement_attempts_preserve_saved_account_authority() {
+        for existing in [
+            None,
+            Some(GithubAuthFailure::Network),
+            Some(GithubAuthFailure::Expired),
+            Some(GithubAuthFailure::MissingScope),
+            Some(GithubAuthFailure::DisconnectFailed),
         ] {
-            let mut auth = GithubAuth::new();
-            auth.accounts.insert(
-                "101".into(),
-                GithubAccountState::ReconnectRequired {
-                    identity: identity("101", "existing"),
-                    reason: GithubAuthFailure::Network,
-                },
-            );
-            let (cancel, _) = tokio::sync::oneshot::channel();
-            let attempt = auth.start_attempt(Some("101".into()), cancel);
-            auth.finish_attempt_for_role(ConnectionRole::Repository, attempt, Err(reason));
+            for attempt_failure in [
+                GithubAuthFailure::Denied,
+                GithubAuthFailure::Expired,
+                GithubAuthFailure::BrowserOpen,
+                GithubAuthFailure::Network,
+                GithubAuthFailure::Timeout,
+            ] {
+                let mut auth = GithubAuth::new();
+                match existing {
+                    None => {
+                        auth.accounts.insert(
+                            "101".into(),
+                            GithubAccountState::Connected(identity("101", "existing")),
+                        );
+                    }
+                    Some(reason) => {
+                        auth.accounts.insert(
+                            "101".into(),
+                            GithubAccountState::ReconnectRequired {
+                                identity: identity("101", "existing"),
+                                reason,
+                            },
+                        );
+                    }
+                }
+                let before = serde_json::to_value(auth.copilot_view()).unwrap();
+                let (cancel, _) = tokio::sync::oneshot::channel();
+                let attempt = auth.start_attempt(Some("101".into()), cancel);
+                auth.finish_attempt(attempt, Err(attempt_failure));
 
-            assert!(matches!(
-                auth.accounts.get("101"),
-                Some(GithubAccountState::ReconnectRequired {
-                    reason: GithubAuthFailure::Network,
-                    ..
-                })
-            ));
-            assert_eq!(auth.account_session_allowed("101"), Ok(()));
-            assert!(matches!(
-                auth.view().flow,
-                GithubFlowView::Failed { reason: flow_reason } if flow_reason == reason
-            ));
+                assert_eq!(
+                    serde_json::to_value(auth.copilot_view()).unwrap()["accounts"],
+                    before["accounts"]
+                );
+                assert!(matches!(
+                    auth.view().flow,
+                    GithubFlowView::Failed { reason } if reason == attempt_failure
+                ));
+            }
         }
+    }
 
+    #[test]
+    fn mismatched_replacement_cancel_and_successful_confirmation_respect_authority_boundary() {
         let mut auth = GithubAuth::new();
         auth.accounts.insert(
             "101".into(),
             GithubAccountState::ReconnectRequired {
                 identity: identity("101", "existing"),
-                reason: GithubAuthFailure::Network,
+                reason: GithubAuthFailure::MissingScope,
             },
         );
+        let before = serde_json::to_value(auth.copilot_view()).unwrap();
+
         let (cancel, _) = tokio::sync::oneshot::channel();
-        let attempt = auth.start_attempt(Some("101".into()), cancel);
-        auth.finish_attempt_for_role(
-            ConnectionRole::Repository,
-            attempt,
-            Ok((identity("202", "wrong"), pair("wrong"))),
+        let mismatch = auth.start_attempt(Some("101".into()), cancel);
+        auth.finish_attempt(mismatch, Ok((identity("202", "wrong"), pair("wrong"))));
+        assert_eq!(
+            serde_json::to_value(auth.copilot_view()).unwrap()["accounts"],
+            before["accounts"]
         );
-        assert!(matches!(
-            auth.accounts.get("101"),
-            Some(GithubAccountState::ReconnectRequired {
-                reason: GithubAuthFailure::Network,
-                ..
-            })
-        ));
-        assert_eq!(auth.account_session_allowed("101"), Ok(()));
         assert!(matches!(
             auth.view().flow,
             GithubFlowView::Failed {
                 reason: GithubAuthFailure::WrongIdentity
             }
         ));
-    }
-
-    #[test]
-    fn failed_repository_reconnect_preserves_existing_block_and_cancel_is_unchanged() {
-        let mut auth = GithubAuth::new();
-        auth.accounts.insert(
-            "101".into(),
-            GithubAccountState::ReconnectRequired {
-                identity: identity("101", "existing"),
-                reason: GithubAuthFailure::MissingScope,
-            },
-        );
-        let (cancel, _) = tokio::sync::oneshot::channel();
-        let attempt = auth.start_attempt(Some("101".into()), cancel);
-        auth.finish_attempt_for_role(
-            ConnectionRole::Repository,
-            attempt,
-            Err(GithubAuthFailure::Denied),
-        );
-        assert!(matches!(
-            auth.accounts.get("101"),
-            Some(GithubAccountState::ReconnectRequired {
-                reason: GithubAuthFailure::MissingScope,
-                ..
-            })
-        ));
-        assert_eq!(
-            auth.account_session_allowed("101"),
-            Err(ConnectionError::MissingScope)
-        );
-        assert!(matches!(
-            auth.view().flow,
-            GithubFlowView::Failed {
-                reason: GithubAuthFailure::Denied
-            }
-        ));
 
         let (cancel, _) = tokio::sync::oneshot::channel();
         let cancelled = auth.start_attempt(Some("101".into()), cancel);
         assert!(auth.cancel_attempt());
-        auth.finish_attempt_for_role(
-            ConnectionRole::Repository,
-            cancelled,
-            Err(GithubAuthFailure::Cancelled),
+        auth.finish_attempt(cancelled, Err(GithubAuthFailure::Cancelled));
+        assert_eq!(
+            serde_json::to_value(auth.copilot_view()).unwrap()["accounts"],
+            before["accounts"]
+        );
+        assert!(matches!(auth.view().flow, GithubFlowView::Idle));
+
+        let (cancel, _) = tokio::sync::oneshot::channel();
+        let success = auth.start_attempt(Some("101".into()), cancel);
+        auth.finish_attempt(
+            success,
+            Ok((identity("101", "replacement"), pair("replacement"))),
+        );
+        assert_eq!(
+            serde_json::to_value(auth.copilot_view()).unwrap()["accounts"],
+            before["accounts"]
         );
         assert!(matches!(
-            auth.accounts.get("101"),
-            Some(GithubAccountState::ReconnectRequired {
-                reason: GithubAuthFailure::MissingScope,
-                ..
-            })
+            auth.view().flow,
+            GithubFlowView::PendingAccountConfirmation { .. }
         ));
-        assert!(matches!(auth.view().flow, GithubFlowView::Idle));
+        auth.confirm_with(|_, _| Ok(())).unwrap();
+        assert!(matches!(
+            auth.accounts.get("101"),
+            Some(GithubAccountState::Connected(identity))
+                if identity.login == "replacement"
+        ));
     }
 
     #[test]
