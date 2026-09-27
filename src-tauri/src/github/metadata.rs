@@ -48,6 +48,34 @@ pub struct ChangedFile {
 }
 
 impl<T: Transport> GithubClient<T> {
+    pub fn latest_pull_request_number(
+        &self,
+        repository: &RemoteRepository,
+    ) -> Result<u64, ConnectionError> {
+        let name = crate::storage::canonical_repository(&repository.name)
+            .map_err(|_| ConnectionError::InvalidRepository)?;
+        let (value, _) = self.read(&format!(
+            "/repos/{name}/pulls?state=all&sort=created&direction=desc&per_page=1"
+        ))?;
+        let pulls = array(&value)?;
+        if pulls.len() > 1 {
+            return Err(ConnectionError::InvalidResponse);
+        }
+        pulls
+            .first()
+            .map(|pull| {
+                if decimal_id(&pull["base"]["repo"]["id"])? != repository.id {
+                    return Err(ConnectionError::RepositoryChanged);
+                }
+                pull["number"]
+                    .as_u64()
+                    .filter(|number| *number > 0)
+                    .ok_or(ConnectionError::InvalidResponse)
+            })
+            .transpose()
+            .map(|number| number.unwrap_or(0))
+    }
+
     pub fn poll_pull_requests(
         &self,
         repository: &RemoteRepository,

@@ -49,6 +49,19 @@ No release/versioning policy has been established yet.
   schedule in an explicit time zone, with the effective repository policy as a
   legacy fallback when no assignments exist. **Check Now** covers every eligible
   account and assignment while serializing reads of the same remote repository.
+  Require explicit monitoring-scope confirmation before any enabled repository
+  admits new detections. Settings previews the real filtered backlog and lets
+  the user choose new pull requests only or selected existing revisions plus
+  new work; existing configurations pause safely after upgrade while retaining
+  history. Native activation persists the bound account/repository, filter,
+  creation watermark, initial/observed heads and durable admitted-head identity
+  so unchanged unselected old revisions stay excluded while selected or matching
+  new heads remain admitted across polls and restart. An empty watched-author
+  filter means all authors after activation without making those authors trusted;
+  requested-reviewer matching applies only when that trigger is enabled.
+  Filter-only edits preserve the confirmed boundary and admitted-head history
+  while each poll uses the current filter; stale previews and in-flight results
+  remain fenced to their original filter.
   Persist acting-account and assignment schedule health plus revision-keyed
   detection history, deduplicate repeat observations, and retain superseded,
   ineligible or configuration-invalidated revisions as visibly non-actionable.

@@ -22,7 +22,7 @@ test("Settings exposes exactly four approved tabs and no prototype or retired co
   await page.goto("/?view=settings");
   await expect(
     page.getByText(
-      "PR Sniper polls configured repositories while the menu-bar app is active. Detection does not run reviews or publish comments.",
+      "PR Sniper polls scope-confirmed configured repositories while the menu-bar app is active. Detection does not run reviews or publish comments.",
       { exact: true },
     ),
   ).toBeVisible();
@@ -223,7 +223,7 @@ test("repository People resolves stable identity, isolates neighbors and reports
   let parent = await repositorySettings(page, "fixture/one");
   await expect(
     parent.getByText(
-      "Optional. Watched authors qualify; pull requests requesting the signed-in account also qualify when the effective inherited reviewer-assignment trigger is enabled. Exact GitHub login, no wildcards.",
+      "Optional. A nonempty effective watched-author filter qualifies those authors. An empty effective author filter means all authors only after scope confirmation and never establishes trust. Pull requests requesting the signed-in account also qualify when the effective inherited reviewer-assignment trigger is enabled. Exact GitHub login, no wildcards.",
       { exact: true },
     ),
   ).toBeVisible();
@@ -261,7 +261,7 @@ test("repository People resolves stable identity, isolates neighbors and reports
     .click();
   await expect(
     parent.getByText(
-      "No people added for this repository. Inherited watched authors still apply; reviewer requests qualify when that trigger is enabled.",
+      "No people added for this repository. Inherited watched authors still apply; if the effective author filter is empty, all authors qualify only after scope confirmation and are not trusted. Reviewer requests qualify when that trigger is enabled.",
     ),
   ).toBeVisible();
   await closeDialog(page);
