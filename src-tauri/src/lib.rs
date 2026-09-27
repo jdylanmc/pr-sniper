@@ -225,6 +225,32 @@ impl GithubAuth {
         }
     }
 
+    fn account_connected(&self, account_id: &str) -> bool {
+        matches!(
+            self.accounts.get(account_id),
+            Some(GithubAccountState::Connected(_))
+        )
+    }
+
+    fn monitoring_accounts(&self) -> BTreeMap<String, monitoring::AccountAvailability> {
+        self.accounts
+            .iter()
+            .map(|(id, state)| {
+                let (identity, connected) = match state {
+                    GithubAccountState::Connected(identity) => (identity, true),
+                    GithubAccountState::ReconnectRequired { identity, .. } => (identity, false),
+                };
+                (
+                    id.clone(),
+                    monitoring::AccountAvailability {
+                        login: identity.login.clone(),
+                        connected,
+                    },
+                )
+            })
+            .collect()
+    }
+
     fn apply_connection_result<T>(
         &mut self,
         account_id: &str,
@@ -584,6 +610,14 @@ fn github_session(
 > {
     use github::token_store::ProviderAccountId;
     let result = (|| {
+        if !host
+            .github_auth
+            .lock()
+            .map_err(|_| ConnectionError::Configuration)?
+            .account_connected(account_id)
+        {
+            return Err(ConnectionError::SignedOut);
+        }
         let transport = github::oauth::GithubOAuthHttp::new().map_err(|error| match error {
             github::oauth::OAuthError::Network => ConnectionError::Network,
             github::oauth::OAuthError::InvalidResponse => ConnectionError::InvalidResponse,
@@ -643,16 +677,31 @@ struct MonitoringSnapshot {
 }
 
 #[tauri::command]
-fn monitoring_snapshot(host: State<'_, Host>) -> Result<MonitoringSnapshot, String> {
-    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
-    let monitor = host
-        .monitor
-        .lock()
-        .map_err(|_| "Monitoring is unavailable.")?;
-    Ok(MonitoringSnapshot {
-        health: monitor.snapshot(),
-        jobs: store.load_queue()?,
+async fn monitoring_snapshot(app: tauri::AppHandle) -> Result<MonitoringSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<Host>();
+        let _generation = host
+            .github_generations
+            .lock()
+            .map_err(|_| "Monitoring coordination is unavailable.")?;
+        let accounts = host
+            .github_auth
+            .lock()
+            .map_err(|_| "GitHub connection state is unavailable.")?
+            .monitoring_accounts();
+        let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+        let mut monitor = host
+            .monitor
+            .lock()
+            .map_err(|_| "Monitoring is unavailable.")?;
+        monitor.synchronize_configuration(&store, &accounts, now_seconds()?)?;
+        Ok(MonitoringSnapshot {
+            health: monitor.snapshot(),
+            jobs: store.load_queue()?,
+        })
     })
+    .await
+    .map_err(|_| "Monitoring state could not be read.".to_string())?
 }
 
 fn now_seconds() -> Result<i64, String> {
@@ -662,19 +711,76 @@ fn now_seconds() -> Result<i64, String> {
         .map_err(|_| "System clock precedes the Unix epoch.".into())
 }
 
+fn prepare_monitoring_checks(
+    host: &Host,
+    now: i64,
+    immediate: bool,
+) -> Result<Vec<monitoring::PollTicket>, String> {
+    let generations = host
+        .github_generations
+        .lock()
+        .map_err(|_| "Monitoring coordination is unavailable.")?;
+    let accounts = host
+        .github_auth
+        .lock()
+        .map_err(|_| "GitHub connection state is unavailable.")?
+        .monitoring_accounts();
+    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+    let mut monitor = host
+        .monitor
+        .lock()
+        .map_err(|_| "Monitoring is unavailable.")?;
+    let mut tickets = monitor.prepare_checks_with_accounts(&store, &accounts, now, immediate)?;
+    for ticket in &mut tickets {
+        ticket.account_generation = generations
+            .get(&ticket.provider_account_id)
+            .copied()
+            .unwrap_or(0);
+    }
+    Ok(tickets)
+}
+
+fn finish_monitored_ticket(
+    generations: &Mutex<BTreeMap<String, u64>>,
+    auth: &Mutex<GithubAuth>,
+    store: &Mutex<Store>,
+    monitor: &Mutex<monitoring::Monitor>,
+    ticket: monitoring::PollTicket,
+    result: Result<monitoring::PollResult, ConnectionError>,
+    now: i64,
+) -> Result<(), monitoring::MonitoringError> {
+    let generations = generations.lock().map_err(|_| {
+        monitoring::MonitoringError::Storage("Monitoring coordination is unavailable.".into())
+    })?;
+    let auth = auth.lock().map_err(|_| {
+        monitoring::MonitoringError::Storage("GitHub connection state is unavailable.".into())
+    })?;
+    let account_connected = auth.account_connected(&ticket.provider_account_id);
+    let accounts = auth.monitoring_accounts();
+    drop(auth);
+    let current_generation = generations
+        .get(&ticket.provider_account_id)
+        .copied()
+        .unwrap_or(0);
+    let store = store
+        .lock()
+        .map_err(|_| monitoring::MonitoringError::Storage("Storage is unavailable.".into()))?;
+    let mut monitor = monitor
+        .lock()
+        .map_err(|_| monitoring::MonitoringError::Storage("Monitoring is unavailable.".into()))?;
+    if current_generation != ticket.account_generation || !account_connected {
+        monitor.discard_account_result(&store, &accounts, ticket, now)
+    } else {
+        monitor.finish_with_accounts(&store, &accounts, ticket, result, now)
+    }
+}
+
 fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
     let host = app.state::<Host>();
     if host.quitting.load(Ordering::SeqCst) {
         return Err("PR Sniper is quitting.".into());
     }
-    let tickets = {
-        let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
-        let mut monitor = host
-            .monitor
-            .lock()
-            .map_err(|_| "Monitoring is unavailable.")?;
-        monitor.prepare_checks(&store, now_seconds()?, immediate)?
-    };
+    let tickets = prepare_monitoring_checks(&host, now_seconds()?, immediate)?;
     for ticket in tickets {
         let app = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
@@ -682,13 +788,6 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
             let account_id = ticket.provider_account_id.clone();
             let result = (|| {
                 let host = app.state::<Host>();
-                let generation = host
-                    .github_generations
-                    .lock()
-                    .map_err(|_| ConnectionError::Configuration)?
-                    .get(&account_id)
-                    .copied()
-                    .unwrap_or(0);
                 let (identity, client) = github_session(&host, &account_id)?;
                 if identity.id != ticket_for_poll.provider_account_id {
                     return Err(ConnectionError::WrongIdentity);
@@ -701,33 +800,43 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                     return Err(ConnectionError::RepositoryChanged);
                 }
                 let pull_requests = client.poll_pull_requests(&connection.repository)?;
-                let current_generation = host
-                    .github_generations
-                    .lock()
-                    .map_err(|_| ConnectionError::Configuration)?
-                    .get(&account_id)
-                    .copied()
-                    .unwrap_or(0);
-                if current_generation != generation {
-                    return Err(ConnectionError::SignedOut);
-                }
                 Ok(monitoring::PollResult {
                     connection,
                     pull_requests,
                 })
             })();
+            let connection_failure = result.as_ref().err().copied();
             let host = app.state::<Host>();
-            apply_account_connection_failure(&host, &account_id, &result);
-            let saved = (|| {
-                let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
-                let mut monitor = host
-                    .monitor
-                    .lock()
-                    .map_err(|_| "Monitoring is unavailable.")?;
-                monitor.finish(&store, ticket, result, now_seconds()?)
-            })();
-            if let Err(error) = saved {
-                report(&app, error);
+            let saved = match now_seconds() {
+                Ok(now) => finish_monitored_ticket(
+                    &host.github_generations,
+                    &host.github_auth,
+                    &host.store,
+                    &host.monitor,
+                    ticket,
+                    result,
+                    now,
+                ),
+                Err(error) => Err(monitoring::MonitoringError::Storage(error)),
+            };
+            if let Some(error) = connection_failure {
+                apply_account_connection_failure(&host, &account_id, &Err::<(), _>(error));
+            }
+            let continue_checks = match &saved {
+                Ok(()) => true,
+                Err(error) if error.requires_host_report() => {
+                    report(&app, error.message().into());
+                    false
+                }
+                Err(error) => {
+                    eprintln!("PR Sniper: {}", error.message());
+                    true
+                }
+            };
+            if continue_checks && !host.quitting.load(Ordering::SeqCst) {
+                if let Err(error) = start_checks(&app, false) {
+                    report(&app, error);
+                }
             }
         });
     }
@@ -735,8 +844,10 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn check_now(app: tauri::AppHandle) -> Result<(), String> {
-    start_checks(&app, true)
+async fn check_now(app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || start_checks(&app, true))
+        .await
+        .map_err(|_| "The immediate repository check could not start.".to_string())?
 }
 
 #[derive(Serialize)]
@@ -1149,44 +1260,102 @@ fn cancel_github_auth(host: State<'_, Host>) -> Result<GithubAuthView, String> {
     Ok(auth.view())
 }
 
+fn disconnect_github_account<Current, Legacy>(
+    auth: &Mutex<GithubAuth>,
+    generations: &Mutex<BTreeMap<String, u64>>,
+    store: &Mutex<Store>,
+    monitor: &Mutex<monitoring::Monitor>,
+    account_id: String,
+    remove_current: Current,
+    remove_legacy: Legacy,
+) -> Result<GithubAuthView, String>
+where
+    Current: FnOnce() -> Result<(), String>,
+    Legacy: FnOnce() -> Result<(), String>,
+{
+    {
+        let mut auth = auth
+            .lock()
+            .map_err(|_| "GitHub connection state is unavailable.")?;
+        if !auth.accounts.contains_key(&account_id) {
+            return Err("No connected GitHub account is available to disconnect.".into());
+        }
+        auth.set_failure(&account_id, GithubAuthFailure::DisconnectPending);
+    }
+    let mut generations = generations
+        .lock()
+        .map_err(|_| "Monitoring coordination is unavailable.")?;
+    *generations.entry(account_id.clone()).or_default() += 1;
+    let monitoring_result = {
+        let store = store.lock().map_err(|_| "Storage is unavailable.")?;
+        let mut monitor = monitor.lock().map_err(|_| "Monitoring is unavailable.")?;
+        monitor.disconnect_account(&store, &account_id)
+    };
+    if monitoring_result.is_err() {
+        if let Ok(mut auth) = auth.lock() {
+            auth.set_failure(&account_id, GithubAuthFailure::DisconnectFailed);
+        }
+        return Err(
+            "GitHub disconnect is pending because monitoring state could not be saved. Retry disconnect."
+                .into(),
+        );
+    }
+    if let Err(error) = remove_current() {
+        if let Ok(mut auth) = auth.lock() {
+            auth.set_failure(&account_id, GithubAuthFailure::DisconnectFailed);
+        }
+        return Err(error);
+    }
+    if let Err(error) = remove_legacy() {
+        if let Ok(mut auth) = auth.lock() {
+            auth.set_failure(&account_id, GithubAuthFailure::DisconnectFailed);
+        }
+        return Err(error);
+    }
+    drop(generations);
+    let mut auth = auth
+        .lock()
+        .map_err(|_| "GitHub connection state is unavailable.")?;
+    auth.accounts.remove(&account_id);
+    Ok(auth.view())
+}
+
 #[tauri::command]
-fn disconnect_github_auth(
-    host: State<'_, Host>,
+async fn disconnect_github_auth(
+    app: tauri::AppHandle,
     account_id: String,
 ) -> Result<GithubAuthView, String> {
     use github::token_store::ProviderAccountId;
-    let mut auth = host
-        .github_auth
-        .lock()
-        .map_err(|_| "GitHub connection state is unavailable.")?;
-    if !auth.accounts.contains_key(&account_id) {
-        return Err("No connected GitHub account is available to disconnect.".into());
-    }
-    host.github_credentials
-        .remove_account(&ProviderAccountId::github(&account_id))
-        .map_err(|_| "GitHub credentials could not be deleted securely.")?;
-    host.github_legacy_credentials
-        .remove_account(&ProviderAccountId::github(&account_id))
-        .map_err(|_| "Superseded GitHub credentials could not be deleted securely.")?;
-    if let Ok(mut generations) = host.github_generations.lock() {
-        *generations.entry(account_id.clone()).or_default() += 1;
-    }
-    if let Ok(store) = host.store.lock() {
-        if let Ok(mut queue) = store.load_queue() {
-            let mut changed = false;
-            for job in &mut queue {
-                if job.account_id == account_id && job.waiting != "account_disconnected" {
-                    job.waiting = "account_disconnected".into();
-                    changed = true;
-                }
-            }
-            if changed {
-                let _ = store.save_queue(&queue);
-            }
-        }
-    }
-    auth.accounts.remove(&account_id);
-    Ok(auth.view())
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<Host>();
+        let current_key = ProviderAccountId::github(&account_id);
+        let legacy_key = ProviderAccountId::github(&account_id);
+        disconnect_github_account(
+            &host.github_auth,
+            &host.github_generations,
+            &host.store,
+            &host.monitor,
+            account_id,
+            || {
+                host.github_credentials
+                    .remove_account(&current_key)
+                    .map_err(|_| {
+                        "GitHub credentials could not be deleted securely. Retry disconnect."
+                            .into()
+                    })
+            },
+            || {
+                host.github_legacy_credentials
+                    .remove_account(&legacy_key)
+                    .map_err(|_| {
+                        "Superseded GitHub credentials could not be deleted securely. Retry disconnect."
+                            .into()
+                    })
+            },
+        )
+    })
+    .await
+    .map_err(|_| "GitHub disconnect could not finish. Retry disconnect.".to_string())?
 }
 
 fn configured_repository(host: &Host, id: &str) -> Result<storage::Repository, ConnectionError> {
@@ -1501,9 +1670,12 @@ pub fn run() {
                 .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| {
                     if event.id.as_ref() == "check" {
-                        if let Err(error) = start_checks(app, true) {
-                            report(app, error);
-                        }
+                        let check_app = app.clone();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            if let Err(error) = start_checks(&check_app, true) {
+                                report(&check_app, error);
+                            }
+                        });
                         return;
                     }
                     if event.id.as_ref() == "quit" {
@@ -1518,6 +1690,15 @@ pub fn run() {
                                 let host = cancel_app.state::<Host>();
                                 if let Ok(mut auth) = host.github_auth.lock() {
                                     auth.cancel_attempt();
+                                }
+                                if let Ok(store) = host.store.lock() {
+                                    if let Ok(mut monitor) = host.monitor.lock() {
+                                        if monitor.cancel_pending_checks(&store).is_err() {
+                                            eprintln!(
+                                                "Pending monitoring checks could not be cancelled."
+                                            );
+                                        }
+                                    }
                                 }
                                 host.copilot.shutdown();
                             })
@@ -1580,22 +1761,32 @@ pub fn run() {
 #[cfg(test)]
 mod github_auth_tests {
     use super::{
-        failure_from_connection_error, failure_from_oauth_error, github_keychain_stores,
-        persist_oauth_account_with_cleanup, rotation_connection_error, GithubAccountState,
-        GithubAuth, GithubAuthFailure, OAuthAccountPersistence,
+        disconnect_github_account, failure_from_connection_error, failure_from_oauth_error,
+        finish_monitored_ticket, github_keychain_stores, persist_oauth_account_with_cleanup,
+        rotation_connection_error, GithubAccountState, GithubAuth, GithubAuthFailure,
+        OAuthAccountPersistence,
     };
-    use crate::github::oauth::OAuthError;
     use crate::github::token_store::{
         AccountRegistry, AccountRegistryStore, CredentialKey, CredentialStore, RotationError,
         StoreError,
     };
     use crate::github::ConnectionError;
+    use crate::github::{
+        metadata::{Lifecycle, PullRequest},
+        oauth::OAuthError,
+        provider::{Capabilities, CommentCapability, Connection, RemoteRepository},
+    };
+    use crate::monitoring::{Monitor, PollResult, WAITING_ACCOUNT_DISCONNECTED};
+    use crate::policy::{PolicyOverrides, WatchedIdentity};
+    use crate::storage::{ProviderId as SettingsProviderId, Repository, Settings, Store};
     use std::{
         collections::BTreeMap,
+        fs,
         sync::{
             atomic::{AtomicBool, AtomicUsize, Ordering},
-            Arc, Mutex,
+            Arc, Barrier, Mutex,
         },
+        thread,
         time::{Duration, SystemTime},
     };
 
@@ -1669,6 +1860,275 @@ mod github_auth_tests {
             Duration::from_secs(60),
             Duration::from_secs(120),
         )
+    }
+
+    fn monitoring_fixture() -> (tempfile::TempDir, Store, Monitor, GithubAuth) {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::new(root.path().to_path_buf());
+        let mut settings = Settings::default();
+        settings.repositories.push(Repository {
+            id: "00000000-0000-4000-8000-000000000001".into(),
+            provider: SettingsProviderId::Github,
+            name: "example/repo".into(),
+            enabled: true,
+            provider_account_id: Some("22".into()),
+            legacy_installation_id: None,
+            provider_repository_id: Some("100".into()),
+            overrides: PolicyOverrides::default(),
+            review_preset: None,
+            watched_authors: vec![WatchedIdentity {
+                id: "11".into(),
+                login: "author".into(),
+            }],
+            assignments: Vec::new(),
+        });
+        store.save_settings(&settings).unwrap();
+        let monitor = Monitor::restore(&store).unwrap();
+        let mut auth = GithubAuth::new();
+        auth.accounts.insert(
+            "22".into(),
+            GithubAccountState::Connected(identity("22", "current-login")),
+        );
+        (root, store, monitor, auth)
+    }
+
+    fn monitoring_result() -> PollResult {
+        PollResult {
+            connection: Connection {
+                identity: identity("22", "current-login"),
+                repository: RemoteRepository {
+                    id: "100".into(),
+                    name: "example/repo".into(),
+                },
+                capabilities: Capabilities {
+                    read: true,
+                    comment: CommentCapability::Available,
+                },
+            },
+            pull_requests: vec![PullRequest {
+                id: "1".into(),
+                number: 1,
+                title: "PR 1".into(),
+                author: Some(identity("11", "author")),
+                requested_reviewers: Vec::new(),
+                requested_teams: Vec::new(),
+                state: Lifecycle::Open,
+                draft: false,
+                head_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                base_sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+                head_repository_id: Some("100".into()),
+                base_repository_id: "100".into(),
+                updated_at: "2026-09-25T10:00:00Z".into(),
+                files: Vec::new(),
+            }],
+        }
+    }
+
+    #[test]
+    fn disconnect_between_provider_result_and_commit_cannot_resurrect_work_or_cursor() {
+        let (_root, store, mut monitor, auth) = monitoring_fixture();
+        let accounts = auth.monitoring_accounts();
+        let mut tickets = monitor
+            .prepare_checks_with_accounts(&store, &accounts, 1_800_000_000, true)
+            .unwrap();
+        let ticket = tickets.remove(0);
+        let generations = Arc::new(Mutex::new(BTreeMap::new()));
+        let auth = Arc::new(Mutex::new(auth));
+        let store = Arc::new(Mutex::new(store));
+        let monitor = Arc::new(Mutex::new(monitor));
+        let result_ready = Arc::new(Barrier::new(2));
+        let resume_commit = Arc::new(Barrier::new(2));
+        let worker = {
+            let generations = generations.clone();
+            let auth = auth.clone();
+            let store = store.clone();
+            let monitor = monitor.clone();
+            let result_ready = result_ready.clone();
+            let resume_commit = resume_commit.clone();
+            thread::spawn(move || {
+                let result = monitoring_result();
+                result_ready.wait();
+                resume_commit.wait();
+                finish_monitored_ticket(
+                    &generations,
+                    &auth,
+                    &store,
+                    &monitor,
+                    ticket,
+                    Ok(result),
+                    1_800_000_002,
+                )
+            })
+        };
+
+        result_ready.wait();
+        disconnect_github_account(
+            &auth,
+            &generations,
+            &store,
+            &monitor,
+            "22".into(),
+            || Ok(()),
+            || Ok(()),
+        )
+        .unwrap();
+        resume_commit.wait();
+        worker.join().unwrap().unwrap();
+
+        let store_guard = store.lock().unwrap();
+        assert!(store_guard.load_queue().unwrap().is_empty());
+        assert!(store_guard
+            .load_monitoring_state()
+            .unwrap()
+            .cursors
+            .is_empty());
+        drop(store_guard);
+        let restored = {
+            let store = store.lock().unwrap();
+            Monitor::restore(&store).unwrap()
+        };
+        let health = restored.snapshot().remove(0);
+        assert!(!health.in_flight);
+        assert!(!health.manual_pending);
+        assert_eq!(
+            health.last_failure.as_deref(),
+            Some(WAITING_ACCOUNT_DISCONNECTED)
+        );
+        assert_eq!(health.next_run, 0);
+    }
+
+    #[test]
+    fn disconnect_queue_failure_is_visible_and_retryable_before_credential_cleanup() {
+        let (root, store, mut monitor, auth) = monitoring_fixture();
+        let accounts = auth.monitoring_accounts();
+        let mut tickets = monitor
+            .prepare_checks_with_accounts(&store, &accounts, 1_800_000_000, true)
+            .unwrap();
+        monitor
+            .finish_with_accounts(
+                &store,
+                &accounts,
+                tickets.remove(0),
+                Ok(monitoring_result()),
+                1_800_000_001,
+            )
+            .unwrap();
+        fs::create_dir(root.path().join("state/queue.json.tmp")).unwrap();
+
+        let auth = Mutex::new(auth);
+        let generations = Mutex::new(BTreeMap::new());
+        let store = Mutex::new(store);
+        let monitor = Mutex::new(monitor);
+        let deletions = AtomicUsize::new(0);
+        let error = disconnect_github_account(
+            &auth,
+            &generations,
+            &store,
+            &monitor,
+            "22".into(),
+            || {
+                deletions.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            || {
+                deletions.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("monitoring state could not be saved"));
+        assert_eq!(deletions.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            auth.lock().unwrap().accounts.get("22"),
+            Some(GithubAccountState::ReconnectRequired {
+                reason: GithubAuthFailure::DisconnectFailed,
+                ..
+            })
+        ));
+
+        fs::remove_dir(root.path().join("state/queue.json.tmp")).unwrap();
+        disconnect_github_account(
+            &auth,
+            &generations,
+            &store,
+            &monitor,
+            "22".into(),
+            || {
+                deletions.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            || {
+                deletions.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(deletions.load(Ordering::SeqCst), 2);
+        assert!(!auth.lock().unwrap().accounts.contains_key("22"));
+        assert_eq!(
+            store.lock().unwrap().load_queue().unwrap()[0].waiting,
+            WAITING_ACCOUNT_DISCONNECTED
+        );
+    }
+
+    #[test]
+    fn disconnect_retries_after_current_credentials_were_already_removed() {
+        let (_root, store, monitor, auth) = monitoring_fixture();
+        let auth = Mutex::new(auth);
+        let generations = Mutex::new(BTreeMap::new());
+        let store = Mutex::new(store);
+        let monitor = Mutex::new(monitor);
+        let current_deletions = AtomicUsize::new(0);
+        let legacy_deletions = AtomicUsize::new(0);
+
+        let error = disconnect_github_account(
+            &auth,
+            &generations,
+            &store,
+            &monitor,
+            "22".into(),
+            || {
+                current_deletions.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            || {
+                legacy_deletions.fetch_add(1, Ordering::SeqCst);
+                Err("Superseded GitHub credentials could not be deleted securely. Retry disconnect.".into())
+            },
+        )
+        .err()
+        .unwrap();
+        assert!(error.starts_with("Superseded GitHub credentials"));
+        assert_eq!(current_deletions.load(Ordering::SeqCst), 1);
+        assert_eq!(legacy_deletions.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            auth.lock().unwrap().accounts.get("22"),
+            Some(GithubAccountState::ReconnectRequired {
+                reason: GithubAuthFailure::DisconnectFailed,
+                ..
+            })
+        ));
+
+        disconnect_github_account(
+            &auth,
+            &generations,
+            &store,
+            &monitor,
+            "22".into(),
+            || {
+                current_deletions.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            || {
+                legacy_deletions.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(current_deletions.load(Ordering::SeqCst), 2);
+        assert_eq!(legacy_deletions.load(Ordering::SeqCst), 2);
+        assert!(!auth.lock().unwrap().accounts.contains_key("22"));
     }
 
     #[test]

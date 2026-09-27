@@ -47,11 +47,15 @@ No release/versioning policy has been established yet.
 - Poll enabled, account-bound GitHub repositories from the active menu-bar
   process using each saved assignment's fixed interval or five-field cron
   schedule in an explicit time zone, with the effective repository policy as a
-  legacy fallback when no assignments exist. Persist schedule health and
-  revision-keyed queue jobs, deduplicate repeat observations, and admit changed
-  heads without treating mutable timestamp pagination as a lossless cursor.
-  Reviewer-only work outside the trusted watchlist waits for confirmation;
-  detection never starts an agent or publishes a review. See
+  legacy fallback when no assignments exist. **Check Now** covers every eligible
+  account and assignment while serializing reads of the same remote repository.
+  Persist acting-account and assignment schedule health plus revision-keyed
+  detection history, deduplicate repeat observations, and retain superseded,
+  ineligible or configuration-invalidated revisions as visibly non-actionable.
+  Disconnects fence late provider results before queue or cursor commits, while
+  ordinary provider failures remain recoverable schedule health. Reviewer-only
+  work outside the trusted watchlist waits for confirmation; detection never
+  starts an agent or publishes a review. See
   [#3](https://github.com/jdylanmc/pr-sniper/issues/3).
 
 - Manage independent Copilot connections in Settings with browser sign-in,

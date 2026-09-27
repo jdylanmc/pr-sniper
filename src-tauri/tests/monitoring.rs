@@ -8,7 +8,12 @@ use pr_sniper_lib::{
         },
         ConnectionError, Identity,
     },
-    monitoring::{next_run, Monitor, PollResult},
+    monitoring::{
+        next_run, AccountAvailability, Monitor, MonitoringError, PollResult,
+        WAITING_BINDING_CHANGED, WAITING_INELIGIBLE, WAITING_NO_LONGER_CURRENT,
+        WAITING_POLICY_CHANGED, WAITING_REPOSITORY_DISABLED, WAITING_REPOSITORY_REMOVED,
+        WAITING_SUPERSEDED,
+    },
     policy::{PolicyOverrides, Schedule, WatchedIdentity},
     storage::{Agent, Assignment, ProviderId, Repository, Settings, Store},
 };
@@ -90,15 +95,25 @@ fn pull(
 }
 
 fn poll_result(pulls: Vec<PullRequest>, login: &str) -> PollResult {
+    poll_result_for(ACCOUNT_ID, REPOSITORY_ID, REPOSITORY_NAME, pulls, login)
+}
+
+fn poll_result_for(
+    account_id: &str,
+    repository_id: &str,
+    repository_name: &str,
+    pulls: Vec<PullRequest>,
+    login: &str,
+) -> PollResult {
     PollResult {
         connection: Connection {
             identity: Identity {
-                id: ACCOUNT_ID.into(),
+                id: account_id.into(),
                 login: login.into(),
             },
             repository: RemoteRepository {
-                id: REPOSITORY_ID.into(),
-                name: REPOSITORY_NAME.into(),
+                id: repository_id.into(),
+                name: repository_name.into(),
             },
             capabilities: Capabilities {
                 read: true,
@@ -109,14 +124,30 @@ fn poll_result(pulls: Vec<PullRequest>, login: &str) -> PollResult {
     }
 }
 
+fn available_accounts(ids: &[(&str, &str)]) -> BTreeMap<String, AccountAvailability> {
+    ids.iter()
+        .map(|(id, login)| {
+            (
+                (*id).into(),
+                AccountAvailability {
+                    login: (*login).into(),
+                    connected: true,
+                },
+            )
+        })
+        .collect()
+}
+
 fn check(
     monitor: &mut Monitor,
     store: &Store,
     at: i64,
     pulls: Vec<PullRequest>,
     login: &str,
-) -> Result<(), String> {
-    let mut tickets = monitor.prepare_checks(store, at, true)?;
+) -> Result<(), MonitoringError> {
+    let mut tickets = monitor
+        .prepare_checks(store, at, true)
+        .map_err(MonitoringError::Storage)?;
     assert_eq!(tickets.len(), 1);
     monitor.finish(
         store,
@@ -209,7 +240,7 @@ fn interval_cron_timezone_and_daylight_transitions_are_explicit() {
 }
 
 #[test]
-fn manual_and_scheduled_checks_share_one_non_overlapping_path() {
+fn repeated_manual_checks_coalesce_behind_the_inflight_read() {
     let (_root, store) = store();
     let mut monitor = Monitor::restore(&store).unwrap();
     let mut first = monitor.prepare_checks(&store, 1_800_000_000, true).unwrap();
@@ -227,26 +258,21 @@ fn manual_and_scheduled_checks_share_one_non_overlapping_path() {
             1_800_000_002,
         )
         .unwrap();
-    assert!(monitor
+    let pending = monitor
         .prepare_checks(&store, 1_800_000_003, false)
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert!(monitor
+        .prepare_checks(&store, 1_800_000_004, false)
         .unwrap()
         .is_empty());
-    assert_eq!(
-        monitor
-            .prepare_checks(&store, 1_800_000_003, true)
-            .unwrap()
-            .len(),
-        1
-    );
 }
 
 #[test]
 fn manual_check_preserves_the_upcoming_scheduled_occurrence() {
     let (_root, store) = store();
     let mut monitor = Monitor::restore(&store).unwrap();
-    let mut first = monitor
-        .prepare_checks(&store, 1_800_000_000, true)
-        .unwrap();
+    let mut first = monitor.prepare_checks(&store, 1_800_000_000, true).unwrap();
     assert_eq!(first.len(), 1);
     let scheduled = monitor.snapshot()[0].next_run;
     monitor
@@ -257,9 +283,7 @@ fn manual_check_preserves_the_upcoming_scheduled_occurrence() {
             1_800_000_001,
         )
         .unwrap();
-    let mut manual = monitor
-        .prepare_checks(&store, 1_800_000_100, true)
-        .unwrap();
+    let mut manual = monitor.prepare_checks(&store, 1_800_000_100, true).unwrap();
     assert_eq!(manual.len(), 1);
     monitor
         .finish(
@@ -318,9 +342,7 @@ fn each_assignment_schedule_has_its_own_health_and_due_ticket() {
     ];
     set_settings(&store, &settings);
     let mut monitor = Monitor::restore(&store).unwrap();
-    let tickets = monitor
-        .prepare_checks(&store, 1_800_000_000, true)
-        .unwrap();
+    let tickets = monitor.prepare_checks(&store, 1_800_000_000, true).unwrap();
     assert_eq!(tickets.len(), 1);
     assert!(monitor
         .snapshot()
@@ -550,8 +572,16 @@ fn polling_deduplicates_repeats_but_admits_new_heads_and_survives_restart() {
     .unwrap();
     let jobs = store.load_queue().unwrap();
     assert_eq!(jobs.len(), 2);
-    assert!(jobs.iter().any(|job| job.head_sha == HEAD_A));
-    assert!(jobs.iter().any(|job| job.head_sha == HEAD_B));
+    assert_eq!(
+        jobs.iter()
+            .find(|job| job.head_sha == HEAD_A)
+            .unwrap()
+            .waiting,
+        WAITING_SUPERSEDED
+    );
+    assert!(jobs
+        .iter()
+        .any(|job| job.head_sha == HEAD_B && job.waiting == "human_start"));
     assert_eq!(restarted.snapshot()[0].last_success, Some(1_800_000_201));
 }
 
@@ -560,14 +590,15 @@ fn failed_attempt_health_is_visible_and_persists_across_restart() {
     let (_root, store) = store();
     let mut monitor = Monitor::restore(&store).unwrap();
     let mut tickets = monitor.prepare_checks(&store, 1_800_000_000, true).unwrap();
-    assert!(monitor
+    let error = monitor
         .finish(
             &store,
             tickets.remove(0),
             Err(ConnectionError::Network),
             1_800_000_010,
         )
-        .is_err());
+        .unwrap_err();
+    assert!(!error.requires_host_report());
 
     let health = monitor.snapshot().remove(0);
     assert_eq!(health.last_attempt, Some(1_800_000_000));
@@ -575,12 +606,25 @@ fn failed_attempt_health_is_visible_and_persists_across_restart() {
     assert_eq!(health.last_failure.as_deref(), Some("Network"));
     assert!(health.next_run > 1_800_000_010);
 
-    let restarted = Monitor::restore(&store).unwrap();
+    let mut restarted = Monitor::restore(&store).unwrap();
     let restored = restarted.snapshot().remove(0);
     assert_eq!(restored.last_attempt, health.last_attempt);
     assert_eq!(restored.last_success, health.last_success);
     assert_eq!(restored.next_run, health.next_run);
     assert_eq!(restored.last_failure, health.last_failure);
+
+    let mut retry = restarted
+        .prepare_checks(&store, 1_800_000_020, true)
+        .unwrap();
+    restarted
+        .finish(
+            &store,
+            retry.remove(0),
+            Ok(poll_result(Vec::new(), "current-login")),
+            1_800_000_021,
+        )
+        .unwrap();
+    assert_eq!(restarted.snapshot()[0].last_failure, None);
 }
 
 #[test]
@@ -617,6 +661,7 @@ fn reviewer_removal_and_reassignment_only_admit_current_eligibility() {
     )
     .unwrap();
     assert_eq!(store.load_queue().unwrap().len(), 1);
+    assert_eq!(store.load_queue().unwrap()[0].waiting, WAITING_SUPERSEDED);
 
     let reassigned = pull(
         "1",
@@ -636,6 +681,11 @@ fn reviewer_removal_and_reassignment_only_admit_current_eligibility() {
     )
     .unwrap();
     assert_eq!(store.load_queue().unwrap().len(), 2);
+    assert!(store
+        .load_queue()
+        .unwrap()
+        .iter()
+        .any(|job| job.head_sha == HEAD_B && job.waiting == "trust_confirmation"));
 }
 
 #[test]
@@ -761,6 +811,567 @@ impl Transport for ReadOnlyGithubFixture {
             body: serde_json::to_vec(&body).unwrap(),
         })
     }
+}
+
+fn store_with_detected_job() -> (tempfile::TempDir, Store, Monitor) {
+    let (root, store) = store();
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].watched_authors = vec![WatchedIdentity {
+        id: "11".into(),
+        login: "author".into(),
+    }];
+    set_settings(&store, &settings);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_000,
+        vec![pull(
+            "1",
+            1,
+            "11",
+            "author",
+            &[],
+            HEAD_A,
+            "2026-09-25T10:00:00Z",
+        )],
+        "current-login",
+    )
+    .unwrap();
+    (root, store, monitor)
+}
+
+#[test]
+fn complete_scans_retire_superseded_ineligible_and_absent_jobs_without_erasing_history() {
+    let (_root, store) = store();
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].watched_authors = vec![WatchedIdentity {
+        id: "11".into(),
+        login: "author".into(),
+    }];
+    set_settings(&store, &settings);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_000,
+        vec![
+            pull("1", 1, "11", "author", &[], HEAD_A, "2026-09-25T10:00:00Z"),
+            pull(
+                "2",
+                2,
+                "33",
+                "reviewer-only",
+                &[(ACCOUNT_ID, "current-login")],
+                HEAD_A,
+                "2026-09-25T10:01:00Z",
+            ),
+            pull("3", 3, "11", "author", &[], HEAD_A, "2026-09-25T10:02:00Z"),
+        ],
+        "current-login",
+    )
+    .unwrap();
+
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_100,
+        vec![
+            pull("1", 1, "11", "author", &[], HEAD_B, "2026-09-25T10:03:00Z"),
+            pull(
+                "2",
+                2,
+                "33",
+                "reviewer-only",
+                &[],
+                HEAD_A,
+                "2026-09-25T10:04:00Z",
+            ),
+        ],
+        "current-login",
+    )
+    .unwrap();
+
+    let jobs = store.load_queue().unwrap();
+    assert_eq!(jobs.len(), 4);
+    assert_eq!(
+        jobs.iter()
+            .find(|job| job.pull_request_id == "1" && job.head_sha == HEAD_A)
+            .unwrap()
+            .waiting,
+        WAITING_SUPERSEDED
+    );
+    assert_eq!(
+        jobs.iter()
+            .find(|job| job.pull_request_id == "2")
+            .unwrap()
+            .waiting,
+        WAITING_INELIGIBLE
+    );
+    assert_eq!(
+        jobs.iter()
+            .find(|job| job.pull_request_id == "3")
+            .unwrap()
+            .waiting,
+        WAITING_NO_LONGER_CURRENT
+    );
+    assert!(jobs.iter().any(|job| job.pull_request_id == "1"
+        && job.head_sha == HEAD_B
+        && job.waiting == "human_start"));
+
+    let before_failure = jobs;
+    let mut tickets = monitor.prepare_checks(&store, 1_800_000_200, true).unwrap();
+    let error = monitor
+        .finish(
+            &store,
+            tickets.remove(0),
+            Err(ConnectionError::Network),
+            1_800_000_201,
+        )
+        .unwrap_err();
+    assert!(!error.requires_host_report());
+    assert_eq!(store.load_queue().unwrap(), before_failure);
+}
+
+#[test]
+fn configuration_changes_retire_actionable_jobs_before_a_provider_scan() {
+    for (case, expected) in [
+        ("policy", WAITING_POLICY_CHANGED),
+        ("disabled", WAITING_REPOSITORY_DISABLED),
+        ("removed", WAITING_REPOSITORY_REMOVED),
+        ("replaced", WAITING_REPOSITORY_REMOVED),
+        ("rebound", WAITING_BINDING_CHANGED),
+    ] {
+        let (_root, store, mut monitor) = store_with_detected_job();
+        let mut settings = store.load_settings().unwrap();
+        match case {
+            "policy" => {
+                settings.repositories[0].watched_authors = vec![WatchedIdentity {
+                    id: "12".into(),
+                    login: "different-author".into(),
+                }];
+            }
+            "disabled" => settings.repositories[0].enabled = false,
+            "removed" => settings.repositories.clear(),
+            "replaced" => {
+                settings.repositories[0].id = "00000000-0000-4000-8000-000000000099".into();
+            }
+            "rebound" => settings.repositories[0].provider_account_id = Some("23".into()),
+            _ => unreachable!(),
+        }
+        set_settings(&store, &settings);
+        let accounts = available_accounts(&[("22", "current-login"), ("23", "other-login")]);
+        monitor
+            .synchronize_configuration(&store, &accounts, 1_800_000_100)
+            .unwrap();
+        assert_eq!(
+            store.load_queue().unwrap()[0].waiting,
+            expected,
+            "case {case}"
+        );
+    }
+}
+
+#[test]
+fn schedule_reconciliation_uses_only_exact_legacy_or_assignment_keys() {
+    let (_root, store) = store();
+    let accounts = available_accounts(&[(ACCOUNT_ID, "current-login")]);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    monitor
+        .synchronize_configuration(&store, &accounts, 1_800_000_000)
+        .unwrap();
+    assert_eq!(
+        monitor.snapshot()[0].repository_id,
+        "00000000-0000-4000-8000-000000000001"
+    );
+    assert_eq!(monitor.snapshot().len(), 1);
+    assert!(monitor.snapshot()[0].assignment_id.is_none());
+
+    let mut settings = store.load_settings().unwrap();
+    settings.agents = vec![
+        Agent {
+            id: "00000000-0000-4000-8000-000000000020".into(),
+            name: "Agent A".into(),
+            model: "gpt-4o".into(),
+            ai_account: None,
+            doctrine: None,
+            prompt: "review".into(),
+            signature: "sig-a".into(),
+        },
+        Agent {
+            id: "00000000-0000-4000-8000-000000000021".into(),
+            name: "Agent B".into(),
+            model: "gpt-4o".into(),
+            ai_account: None,
+            doctrine: None,
+            prompt: "review".into(),
+            signature: "sig-b".into(),
+        },
+    ];
+    settings.repositories[0].assignments = vec![
+        Assignment {
+            id: "00000000-0000-4000-8000-000000000010".into(),
+            agent_id: settings.agents[0].id.clone(),
+            schedule: Schedule::Interval {
+                minutes: 5,
+                timezone: "UTC".into(),
+            },
+            comment: false,
+            approve: false,
+        },
+        Assignment {
+            id: "00000000-0000-4000-8000-000000000011".into(),
+            agent_id: settings.agents[1].id.clone(),
+            schedule: Schedule::Interval {
+                minutes: 15,
+                timezone: "UTC".into(),
+            },
+            comment: false,
+            approve: false,
+        },
+    ];
+    set_settings(&store, &settings);
+    monitor
+        .synchronize_configuration(&store, &accounts, 1_800_000_010)
+        .unwrap();
+    let health = monitor.snapshot();
+    assert_eq!(health.len(), 2);
+    assert!(health.iter().all(|item| item.assignment_id.is_some()));
+    assert!(health
+        .iter()
+        .any(|item| item.agent_name.as_deref() == Some("Agent A")));
+
+    settings.repositories[0].assignments.remove(0);
+    set_settings(&store, &settings);
+    monitor
+        .synchronize_configuration(&store, &accounts, 1_800_000_020)
+        .unwrap();
+    let health = monitor.snapshot();
+    assert_eq!(health.len(), 1);
+    assert_eq!(
+        health[0].assignment_id.as_deref(),
+        Some("00000000-0000-4000-8000-000000000011")
+    );
+
+    settings.repositories[0].assignments.clear();
+    set_settings(&store, &settings);
+    monitor
+        .synchronize_configuration(&store, &accounts, 1_800_000_030)
+        .unwrap();
+    assert_eq!(monitor.snapshot().len(), 1);
+    assert!(monitor.snapshot()[0].assignment_id.is_none());
+}
+
+#[test]
+fn removed_inflight_schedule_keeps_exclusion_until_the_read_finishes() {
+    let (_root, store) = store();
+    let mut settings = store.load_settings().unwrap();
+    settings.agents.push(Agent {
+        id: "00000000-0000-4000-8000-000000000020".into(),
+        name: "Agent A".into(),
+        model: "gpt-4o".into(),
+        ai_account: None,
+        doctrine: None,
+        prompt: "review".into(),
+        signature: "sig".into(),
+    });
+    settings.repositories[0].assignments.push(Assignment {
+        id: "00000000-0000-4000-8000-000000000010".into(),
+        agent_id: settings.agents[0].id.clone(),
+        schedule: Schedule::Interval {
+            minutes: 5,
+            timezone: "UTC".into(),
+        },
+        comment: false,
+        approve: false,
+    });
+    set_settings(&store, &settings);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let mut tickets = monitor.prepare_checks(&store, 1_800_000_000, true).unwrap();
+    let ticket = tickets.remove(0);
+
+    let mut replacement = repository(true);
+    replacement.id = "00000000-0000-4000-8000-000000000002".into();
+    settings.repositories = vec![replacement];
+    set_settings(&store, &settings);
+    assert!(monitor
+        .prepare_checks(&store, 1_800_000_001, true)
+        .unwrap()
+        .is_empty());
+    assert!(monitor
+        .finish(
+            &store,
+            ticket,
+            Ok(poll_result(Vec::new(), "current-login")),
+            1_800_000_002,
+        )
+        .is_err());
+    assert_eq!(monitor.snapshot().len(), 1);
+    assert_eq!(
+        monitor.snapshot()[0].repository_id,
+        "00000000-0000-4000-8000-000000000002"
+    );
+    assert_eq!(
+        monitor
+            .prepare_checks(&store, 1_800_000_003, true)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn disable_reenable_and_rebind_reset_health_and_cursor_honestly() {
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_000,
+        Vec::new(),
+        "current-login",
+    )
+    .unwrap();
+    assert!(!store.load_monitoring_state().unwrap().cursors.is_empty());
+
+    let accounts = available_accounts(&[("22", "current-login"), ("23", "other-login")]);
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].enabled = false;
+    set_settings(&store, &settings);
+    monitor
+        .synchronize_configuration(&store, &accounts, 1_800_000_010)
+        .unwrap();
+    let disabled = monitor.snapshot().remove(0);
+    assert!(!disabled.enabled);
+    assert!(!disabled.schedule_available);
+    assert_eq!(disabled.next_run, 0);
+
+    settings.repositories[0].enabled = true;
+    set_settings(&store, &settings);
+    monitor
+        .synchronize_configuration(&store, &accounts, 1_800_000_020)
+        .unwrap();
+    assert!(monitor.snapshot()[0].schedule_available);
+
+    settings.repositories[0].provider_account_id = Some("23".into());
+    set_settings(&store, &settings);
+    monitor
+        .synchronize_configuration(&store, &accounts, 1_800_000_030)
+        .unwrap();
+    let rebound = monitor.snapshot().remove(0);
+    assert_eq!(rebound.provider_account_id.as_deref(), Some("23"));
+    assert_eq!(rebound.account_login.as_deref(), Some("other-login"));
+    assert_eq!(rebound.last_success, None);
+    assert!(store.load_monitoring_state().unwrap().cursors.is_empty());
+}
+
+#[test]
+fn one_manual_request_drains_every_account_and_assignment_for_a_shared_repository() {
+    let (_root, store) = store();
+    let mut settings = store.load_settings().unwrap();
+    settings.agents = (0..3)
+        .map(|index| Agent {
+            id: format!("00000000-0000-4000-8000-00000000002{index}"),
+            name: format!("Agent {index}"),
+            model: "gpt-4o".into(),
+            ai_account: None,
+            doctrine: None,
+            prompt: "review".into(),
+            signature: "sig".into(),
+        })
+        .collect();
+    settings.repositories[0].assignments = vec![
+        Assignment {
+            id: "00000000-0000-4000-8000-000000000010".into(),
+            agent_id: settings.agents[0].id.clone(),
+            schedule: Schedule::Interval {
+                minutes: 5,
+                timezone: "UTC".into(),
+            },
+            comment: false,
+            approve: false,
+        },
+        Assignment {
+            id: "00000000-0000-4000-8000-000000000011".into(),
+            agent_id: settings.agents[1].id.clone(),
+            schedule: Schedule::Interval {
+                minutes: 10,
+                timezone: "UTC".into(),
+            },
+            comment: false,
+            approve: false,
+        },
+    ];
+    let mut second = repository(true);
+    second.id = "00000000-0000-4000-8000-000000000002".into();
+    second.provider_account_id = Some("23".into());
+    second.assignments.push(Assignment {
+        id: "00000000-0000-4000-8000-000000000012".into(),
+        agent_id: settings.agents[2].id.clone(),
+        schedule: Schedule::Interval {
+            minutes: 15,
+            timezone: "UTC".into(),
+        },
+        comment: false,
+        approve: false,
+    });
+    settings.repositories.push(second);
+    set_settings(&store, &settings);
+    let accounts = available_accounts(&[("22", "account-a"), ("23", "account-b")]);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let mut tickets = monitor
+        .prepare_checks_with_accounts(&store, &accounts, 1_800_000_000, true)
+        .unwrap();
+    assert_eq!(tickets.len(), 1);
+    assert_eq!(
+        monitor
+            .snapshot()
+            .iter()
+            .filter(|health| health.manual_pending)
+            .count(),
+        2
+    );
+
+    let mut sequence = Vec::new();
+    loop {
+        let ticket = tickets.remove(0);
+        sequence.push((
+            ticket.provider_account_id.clone(),
+            ticket.health_key.clone(),
+        ));
+        monitor
+            .finish_with_accounts(
+                &store,
+                &accounts,
+                ticket.clone(),
+                Ok(poll_result_for(
+                    &ticket.provider_account_id,
+                    &ticket.provider_repository_id,
+                    &ticket.name,
+                    Vec::new(),
+                    accounts[&ticket.provider_account_id].login.as_str(),
+                )),
+                1_800_000_001 + sequence.len() as i64,
+            )
+            .unwrap();
+        tickets = monitor
+            .prepare_checks_with_accounts(
+                &store,
+                &accounts,
+                1_800_000_010 + sequence.len() as i64,
+                false,
+            )
+            .unwrap();
+        if tickets.is_empty() {
+            break;
+        }
+        assert_eq!(tickets.len(), 1);
+    }
+    assert_eq!(
+        sequence,
+        vec![
+            (
+                "22".into(),
+                "00000000-0000-4000-8000-000000000001:assignment:00000000-0000-4000-8000-000000000010"
+                    .into()
+            ),
+            (
+                "22".into(),
+                "00000000-0000-4000-8000-000000000001:assignment:00000000-0000-4000-8000-000000000011"
+                    .into()
+            ),
+            (
+                "23".into(),
+                "00000000-0000-4000-8000-000000000002:assignment:00000000-0000-4000-8000-000000000012"
+                    .into()
+            ),
+        ]
+    );
+    assert!(monitor
+        .snapshot()
+        .iter()
+        .all(|health| !health.manual_pending && !health.in_flight));
+}
+
+#[test]
+fn cancelling_manual_pending_work_does_not_start_another_read() {
+    let (_root, store) = store();
+    let mut settings = store.load_settings().unwrap();
+    let mut second = repository(true);
+    second.id = "00000000-0000-4000-8000-000000000002".into();
+    second.provider_account_id = Some("23".into());
+    settings.repositories.push(second);
+    set_settings(&store, &settings);
+    let accounts = available_accounts(&[("22", "account-a"), ("23", "account-b")]);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let mut tickets = monitor
+        .prepare_checks_with_accounts(&store, &accounts, 1_800_000_000, true)
+        .unwrap();
+    assert_eq!(tickets.len(), 1);
+    monitor.cancel_pending_checks(&store).unwrap();
+    let ticket = tickets.remove(0);
+    monitor
+        .finish_with_accounts(
+            &store,
+            &accounts,
+            ticket.clone(),
+            Ok(poll_result_for(
+                &ticket.provider_account_id,
+                &ticket.provider_repository_id,
+                &ticket.name,
+                Vec::new(),
+                "account-a",
+            )),
+            1_800_000_001,
+        )
+        .unwrap();
+    assert!(monitor
+        .prepare_checks_with_accounts(&store, &accounts, 1_800_000_002, false)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn persisted_legacy_health_migrates_identity_fields_without_losing_history() {
+    let value = json!({
+        "repository_id": "configuration",
+        "name": "example/repo",
+        "schedule_key": "interval:5:UTC",
+        "provider_repository_id": "100",
+        "enabled": true,
+        "last_attempt": 10,
+        "last_success": 11,
+        "next_run": 12,
+        "schedule_available": true,
+        "last_failure": null,
+        "in_flight": false
+    });
+    let health: pr_sniper_lib::monitoring::ScheduleHealth = serde_json::from_value(value).unwrap();
+    assert_eq!(health.last_success, Some(11));
+    assert_eq!(health.provider_account_id, None);
+    assert_eq!(health.assignment_id, None);
+    assert!(!health.manual_pending);
+
+    let job: pr_sniper_lib::monitoring::QueueJob = serde_json::from_value(json!({
+        "provider": "github",
+        "account_id": "22",
+        "account_login": "current-login",
+        "repository_id": "100",
+        "repository_name": "example/repo",
+        "pull_request_id": "1",
+        "number": 1,
+        "title": "PR 1",
+        "head_sha": HEAD_A,
+        "trigger_policy": "legacy-policy",
+        "author_id": "11",
+        "author_login": "author",
+        "watched_author": true,
+        "requested_reviewer": false,
+        "waiting": "human_start",
+        "detected_at": 10
+    }))
+    .unwrap();
+    assert!(job.configuration_id.is_empty());
 }
 
 #[test]
