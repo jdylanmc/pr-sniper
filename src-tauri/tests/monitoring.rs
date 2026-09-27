@@ -10,9 +10,9 @@ use pr_sniper_lib::{
     },
     monitoring::{
         next_run, AccountAvailability, Monitor, MonitoringError, PollResult,
-        WAITING_BINDING_CHANGED, WAITING_INELIGIBLE, WAITING_NO_LONGER_CURRENT,
-        WAITING_POLICY_CHANGED, WAITING_REPOSITORY_DISABLED, WAITING_REPOSITORY_REMOVED,
-        WAITING_SUPERSEDED,
+        WAITING_BINDING_CHANGED, WAITING_HUMAN_START, WAITING_INELIGIBLE,
+        WAITING_NO_LONGER_CURRENT, WAITING_POLICY_CHANGED, WAITING_REPOSITORY_DISABLED,
+        WAITING_REPOSITORY_REMOVED, WAITING_SUPERSEDED,
     },
     policy::{PolicyOverrides, Schedule, WatchedIdentity},
     storage::{Agent, Assignment, ProviderId, Repository, Settings, Store},
@@ -772,7 +772,7 @@ impl Transport for ReadOnlyGithubFixture {
                 Some("repo"),
             ),
             "/repos/example/repo/pulls?state=open&per_page=1" => (json!([]), None, None),
-            "/repos/example/repo/pulls?state=open&sort=updated&direction=desc&per_page=100&page=1" => (
+            "/repos/example/repo/pulls?state=open&sort=created&direction=asc&per_page=100&page=1" => (
                 json!([open_pr(
                     1001,
                     31,
@@ -780,10 +780,10 @@ impl Transport for ReadOnlyGithubFixture {
                     HEAD_A,
                     "2026-09-25T10:00:00Z"
                 )]),
-                Some("<https://api.github.com/repos/example/repo/pulls?state=open&sort=updated&direction=desc&per_page=100&page=2>; rel=\"next\""),
+                Some("<https://api.github.com/repos/example/repo/pulls?state=open&sort=created&direction=asc&per_page=100&page=2>; rel=\"next\""),
                 None,
             ),
-            "/repos/example/repo/pulls?state=open&sort=updated&direction=desc&per_page=100&page=2" => {
+            "/repos/example/repo/pulls?state=open&sort=created&direction=asc&per_page=100&page=2" => {
                 let mut pull = open_pr(
                     1002,
                     32,
@@ -842,7 +842,7 @@ fn store_with_detected_job() -> (tempfile::TempDir, Store, Monitor) {
 }
 
 #[test]
-fn complete_scans_retire_superseded_ineligible_and_absent_jobs_without_erasing_history() {
+fn scans_retire_superseded_ineligible_and_unseen_jobs_without_erasing_history() {
     let (_root, store) = store();
     let mut settings = store.load_settings().unwrap();
     settings.repositories[0].watched_authors = vec![WatchedIdentity {
@@ -919,7 +919,43 @@ fn complete_scans_retire_superseded_ineligible_and_absent_jobs_without_erasing_h
         && job.head_sha == HEAD_B
         && job.waiting == "human_start"));
 
-    let before_failure = jobs;
+    let mut reappeared = pull("3", 3, "11", "author", &[], HEAD_A, "2026-09-25T10:05:00Z");
+    reappeared.title = "PR 3 reappeared".into();
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_150,
+        vec![reappeared],
+        "current-login",
+    )
+    .unwrap();
+    let reactivated = store.load_queue().unwrap();
+    assert_eq!(reactivated.len(), 4);
+    assert_eq!(
+        reactivated
+            .iter()
+            .filter(|job| job.pull_request_id == "3" && job.head_sha == HEAD_A)
+            .count(),
+        1
+    );
+    assert_eq!(
+        reactivated
+            .iter()
+            .find(|job| job.pull_request_id == "3" && job.head_sha == HEAD_A)
+            .unwrap()
+            .waiting,
+        WAITING_HUMAN_START
+    );
+    assert_eq!(
+        reactivated
+            .iter()
+            .find(|job| job.pull_request_id == "3" && job.head_sha == HEAD_A)
+            .unwrap()
+            .title,
+        "PR 3 reappeared"
+    );
+
+    let before_failure = reactivated;
     let mut tickets = monitor.prepare_checks(&store, 1_800_000_200, true).unwrap();
     let error = monitor
         .finish(
@@ -1390,13 +1426,17 @@ fn account_bound_polling_reads_every_page_using_only_get_requests() {
     assert_eq!(pulls[0].requested_reviewers[0].id, ACCOUNT_ID);
     assert_eq!(pulls[1].head_sha, HEAD_B);
     assert!(pulls.iter().all(|pull| pull.files.is_empty()));
+    let requests = requests.lock().unwrap();
+    let poll_requests: Vec<_> = requests
+        .iter()
+        .filter(|path| path.contains("per_page=100"))
+        .cloned()
+        .collect();
     assert_eq!(
-        requests
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|path| path.contains("per_page=100"))
-            .count(),
-        2
+        poll_requests,
+        vec![
+            "/repos/example/repo/pulls?state=open&sort=created&direction=asc&per_page=100&page=1",
+            "/repos/example/repo/pulls?state=open&sort=created&direction=asc&per_page=100&page=2",
+        ]
     );
 }
