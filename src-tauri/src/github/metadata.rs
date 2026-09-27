@@ -55,7 +55,7 @@ impl<T: Transport> GithubClient<T> {
         let name = crate::storage::canonical_repository(&repository.name)
             .map_err(|_| ConnectionError::InvalidRepository)?;
         let list = self.pages(&format!(
-            "/repos/{name}/pulls?state=open&sort=updated&direction=desc&per_page=100&page=1"
+            "/repos/{name}/pulls?state=open&sort=created&direction=asc&per_page=100&page=1"
         ))?;
         let mut ids = HashSet::new();
         let mut numbers = HashSet::new();

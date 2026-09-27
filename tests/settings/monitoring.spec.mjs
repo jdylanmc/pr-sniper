@@ -34,7 +34,7 @@ const waitingStates = [
   ["ineligible", "Not actionable: this revision is no longer eligible."],
   [
     "no_longer_current",
-    "Not actionable: this pull request is no longer in the complete open-pull-request scan.",
+    "Not seen in the latest open-PR scan; rechecked next scan. This is not a terminal closed or merged state.",
   ],
 ];
 

@@ -172,12 +172,15 @@ signed-in account as reviewer admits a non-draft revision. Reviewer-only work
 outside the trusted watchlist waits for explicit confirmation. Repeat
 observations deduplicate by provider, account, stable repository, pull request,
 head revision and trigger policy; a new head can be queued independently.
-Complete successful scans and configuration changes retain earlier revision
-hashes as visibly non-actionable history instead of leaving obsolete detections
-ready to start. Schedule health identifies the acting account, assignment and
-Agent, and persists pending, success and recoverable failure state. Detection
-never clones a repository, starts an agent, executes repository code, mutates
-GitHub or publishes a review.
+Successful open-pull-request scans and configuration changes retain earlier
+revision hashes as visibly non-actionable history instead of leaving obsolete
+detections ready to start. Absence from one paginated open-pull-request scan is
+nonterminal: it records "not seen" and is rechecked on the next scan rather than
+inventing a closed or merged state. Poll pages use stable creation order to
+reduce page reordering while scanning active repositories. Schedule health
+identifies the acting account, assignment and Agent, and persists pending,
+success and recoverable failure state. Detection never clones a repository,
+starts an agent, executes repository code, mutates GitHub or publishes a review.
 
 App-owned GitHub and Copilot token pairs use separate account-addressed macOS
 Keychain services, never config, state or diagnostics. Neither Settings

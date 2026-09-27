@@ -84,7 +84,7 @@ function waitingLabel(waiting: string) {
     case "ineligible":
       return "Not actionable: this revision is no longer eligible.";
     case "no_longer_current":
-      return "Not actionable: this pull request is no longer in the complete open-pull-request scan.";
+      return "Not seen in the latest open-PR scan; rechecked next scan. This is not a terminal closed or merged state.";
     default:
       return `Not actionable: unrecognized queue state (${waiting}).`;
   }
