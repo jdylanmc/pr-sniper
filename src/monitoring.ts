@@ -17,6 +17,21 @@ interface Health {
   last_failure: string | null;
   in_flight: boolean;
   manual_pending: boolean;
+  operation: {
+    id: string;
+    operation_type: string;
+    state:
+      | "queued"
+      | "running"
+      | "interrupted"
+      | "completed"
+      | "failed"
+      | "manual_retry";
+    attempt_count: number;
+    retry_deadline: number;
+    next_attempt_at: number | null;
+    failure: string | null;
+  } | null;
 }
 
 interface Job {
@@ -54,6 +69,10 @@ const blockingFailures = new Set([
 
 function healthLabel(item: Health) {
   if (!item.enabled) return "Disabled";
+  if (item.operation?.state === "manual_retry") return "Manual retry required";
+  if (item.operation?.state === "failed") return "Failed; correction required";
+  if (item.operation?.state === "interrupted") return "Interrupted";
+  if (item.operation?.state === "queued") return "Retry queued";
   if (item.in_flight) return "Checking";
   if (item.last_failure && blockingFailures.has(item.last_failure))
     return "Blocked";
@@ -135,6 +154,38 @@ export function renderMonitoring(
           ? `${item.agent_name ?? "Missing agent"} (${item.agent_id ?? "unknown agent ID"}), assignment ${item.assignment_id}`
           : "legacy repository schedule";
         row.textContent = `${item.name}: ${state}. Acting account: ${account}. Assignment: ${assignment}. Schedule: ${item.schedule_key || "Unavailable"}. Last attempt: ${time(item.last_attempt)}. Last success: ${time(item.last_success)}. Next run: ${next}. Last failure: ${item.last_failure ?? "None"}.`;
+        if (item.operation) {
+          row.append(
+            ` Operation: ${item.operation.operation_type}; attempts ${item.operation.attempt_count}; retry deadline ${time(item.operation.retry_deadline)}.`,
+          );
+        }
+        if (
+          item.operation?.state === "manual_retry" ||
+          item.operation?.state === "failed"
+        ) {
+          const retry = document.createElement("button");
+          retry.type = "button";
+          retry.textContent =
+            item.operation.state === "failed"
+              ? "Retry after correction"
+              : "Retry";
+          retry.addEventListener("click", async () => {
+            retry.disabled = true;
+            try {
+              await invoke("retry_monitoring_operation", {
+                operationId: item.operation!.id,
+              });
+              await refresh();
+            } catch {
+              showError(
+                "Could not retry the monitoring operation. Check its current state and local diagnostics.",
+              );
+            } finally {
+              retry.disabled = false;
+            }
+          });
+          row.append(" ", retry);
+        }
         health.append(row);
       }
       if (!snapshot.jobs.length)

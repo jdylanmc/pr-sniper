@@ -10,9 +10,9 @@ use pr_sniper_lib::{
     },
     monitoring::{
         next_run, AccountAvailability, ActivationApplication, ActivationBaseline, ActivationMode,
-        Monitor, MonitoringActivation, MonitoringError, MonitoringState, PollResult,
-        SCOPE_CONFIRMATION_REQUIRED, WAITING_BINDING_CHANGED, WAITING_HUMAN_START,
-        WAITING_INELIGIBLE, WAITING_NO_LONGER_CURRENT, WAITING_POLICY_CHANGED,
+        Monitor, MonitoringActivation, MonitoringError, MonitoringState, OperationFailure,
+        OperationState, PollResult, SCOPE_CONFIRMATION_REQUIRED, WAITING_BINDING_CHANGED,
+        WAITING_HUMAN_START, WAITING_INELIGIBLE, WAITING_NO_LONGER_CURRENT, WAITING_POLICY_CHANGED,
         WAITING_REPOSITORY_DISABLED, WAITING_REPOSITORY_REMOVED, WAITING_SCOPE_EXCLUDED,
         WAITING_SUPERSEDED,
     },
@@ -1242,6 +1242,231 @@ fn manual_check_preserves_the_upcoming_scheduled_occurrence() {
 }
 
 #[test]
+fn interrupted_poll_recovers_with_the_same_budget_and_identity() {
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let tickets = monitor.prepare_checks(&store, 1_800_000_000, true).unwrap();
+    assert_eq!(tickets.len(), 1);
+    let running = monitor.snapshot()[0].operation.clone().unwrap();
+    assert_eq!(running.state, OperationState::Running);
+    assert_eq!(running.attempt_count, 1);
+    assert_eq!(running.retry_deadline, 1_800_000_900);
+
+    drop(monitor);
+    let mut restored = Monitor::restore(&store).unwrap();
+    let interrupted = restored.snapshot()[0].operation.clone().unwrap();
+    assert_eq!(interrupted.id, running.id);
+    assert_eq!(interrupted.state, OperationState::Interrupted);
+    assert_eq!(interrupted.attempt_count, 1);
+    assert_eq!(
+        store
+            .load_monitoring_state()
+            .unwrap()
+            .health
+            .values()
+            .next()
+            .unwrap()
+            .operation,
+        Some(interrupted)
+    );
+
+    let retried = restored
+        .prepare_checks(&store, 1_800_000_001, false)
+        .unwrap();
+    assert_eq!(retried.len(), 1);
+    let running_again = restored.snapshot()[0].operation.clone().unwrap();
+    assert_eq!(running_again.id, running.id);
+    assert_eq!(running_again.state, OperationState::Running);
+    assert_eq!(running_again.attempt_count, 2);
+    assert_eq!(running_again.retry_deadline, running.retry_deadline);
+}
+
+#[test]
+fn interrupted_poll_past_its_deadline_requires_manual_retry() {
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    assert_eq!(
+        monitor
+            .prepare_checks(&store, 1_800_000_000, true)
+            .unwrap()
+            .len(),
+        1
+    );
+    drop(monitor);
+
+    let mut restored = Monitor::restore(&store).unwrap();
+    assert!(restored
+        .prepare_checks(&store, 1_800_000_901, false)
+        .unwrap()
+        .is_empty());
+    let health = &restored.snapshot()[0];
+    let operation = health.operation.as_ref().unwrap();
+    assert_eq!(operation.state, OperationState::ManualRetry);
+    assert_eq!(operation.failure, Some(OperationFailure::Permanent));
+    assert_eq!(operation.attempt_count, 1);
+    assert_eq!(health.next_run, 0);
+    assert!(!health.schedule_available);
+}
+
+#[test]
+fn transient_poll_failures_stop_after_three_retries_and_manual_retry_resets_budget() {
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let mut now = 1_800_000_000;
+
+    for expected_attempt in 1..=4 {
+        let mut tickets = monitor
+            .prepare_checks(&store, now, expected_attempt == 1)
+            .unwrap();
+        assert_eq!(tickets.len(), 1);
+        assert_eq!(
+            monitor.snapshot()[0]
+                .operation
+                .as_ref()
+                .unwrap()
+                .attempt_count,
+            expected_attempt
+        );
+        monitor
+            .finish(
+                &store,
+                tickets.remove(0),
+                Err(ConnectionError::Network),
+                now + 1,
+            )
+            .unwrap_err();
+        let health = &monitor.snapshot()[0];
+        let operation = health.operation.as_ref().unwrap();
+        assert_eq!(operation.failure, Some(OperationFailure::Network));
+        if expected_attempt < 4 {
+            assert_eq!(operation.state, OperationState::Queued);
+            now = operation.next_attempt_at.unwrap();
+        } else {
+            assert_eq!(operation.state, OperationState::ManualRetry);
+            assert!(!health.schedule_available);
+            assert_eq!(health.next_run, 0);
+        }
+    }
+
+    let expired = monitor.snapshot()[0].operation.clone().unwrap();
+    monitor
+        .manual_retry_operation(&store, &expired.id, now + 1)
+        .unwrap();
+    let reset = monitor.snapshot()[0].operation.clone().unwrap();
+    assert_ne!(reset.id, expired.id);
+    assert_eq!(reset.state, OperationState::Queued);
+    assert_eq!(reset.attempt_count, 0);
+    assert_eq!(reset.initial_attempt_at, now + 1);
+    assert_eq!(reset.retry_deadline, now + 901);
+}
+
+#[test]
+fn check_now_preserves_an_existing_retry_budget() {
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let mut tickets = monitor.prepare_checks(&store, 1_800_000_000, true).unwrap();
+    monitor
+        .finish(
+            &store,
+            tickets.remove(0),
+            Err(ConnectionError::Network),
+            1_800_000_001,
+        )
+        .unwrap_err();
+    let queued = monitor.snapshot()[0].operation.clone().unwrap();
+
+    let mut retry = monitor.prepare_checks(&store, 1_800_000_002, true).unwrap();
+    assert_eq!(retry.len(), 1);
+    let running = monitor.snapshot()[0].operation.clone().unwrap();
+    assert_eq!(running.id, queued.id);
+    assert_eq!(running.initial_attempt_at, queued.initial_attempt_at);
+    assert_eq!(running.retry_deadline, queued.retry_deadline);
+    assert_eq!(running.attempt_count, 2);
+
+    monitor
+        .finish(
+            &store,
+            retry.remove(0),
+            Ok(poll_result(Vec::new(), "current-login")),
+            1_800_000_003,
+        )
+        .unwrap();
+}
+
+#[test]
+fn provider_retry_after_takes_precedence_and_cannot_cross_the_deadline() {
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let mut tickets = monitor.prepare_checks(&store, 1_800_000_000, true).unwrap();
+    monitor
+        .finish(
+            &store,
+            tickets.remove(0),
+            Err(ConnectionError::RateLimitedAfter(900)),
+            1_800_000_001,
+        )
+        .unwrap_err();
+    let health = &monitor.snapshot()[0];
+    let operation = health.operation.as_ref().unwrap();
+    assert_eq!(operation.state, OperationState::ManualRetry);
+    assert_eq!(operation.failure, Some(OperationFailure::RateLimited));
+    assert_eq!(operation.next_attempt_at, None);
+}
+
+#[test]
+fn provider_server_retry_after_takes_precedence() {
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let mut tickets = monitor.prepare_checks(&store, 1_800_000_000, true).unwrap();
+    monitor
+        .finish(
+            &store,
+            tickets.remove(0),
+            Err(ConnectionError::ProviderFailureAfter(120)),
+            1_800_000_001,
+        )
+        .unwrap_err();
+    let operation = monitor.snapshot()[0].operation.clone().unwrap();
+    assert_eq!(operation.state, OperationState::Queued);
+    assert_eq!(operation.failure, Some(OperationFailure::Provider));
+    assert_eq!(operation.next_attempt_at, Some(1_800_000_121));
+}
+
+#[test]
+fn permanent_poll_failure_requires_manual_retry_without_an_automatic_retry() {
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let mut tickets = monitor.prepare_checks(&store, 1_800_000_000, true).unwrap();
+    monitor
+        .finish(
+            &store,
+            tickets.remove(0),
+            Err(ConnectionError::MissingScope),
+            1_800_000_001,
+        )
+        .unwrap_err();
+    let health = &monitor.snapshot()[0];
+    let operation = health.operation.as_ref().unwrap();
+    assert_eq!(operation.state, OperationState::Failed);
+    assert_eq!(operation.failure, Some(OperationFailure::Permanent));
+    assert_eq!(operation.attempt_count, 1);
+    assert_eq!(operation.attempted_mutation, None);
+    assert_eq!(operation.confirmed_receipt, None);
+    assert!(monitor
+        .prepare_checks(&store, 1_800_000_100, false)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        store
+            .load_monitoring_state()
+            .unwrap()
+            .operations
+            .get(&operation.id),
+        Some(operation)
+    );
+}
+
+#[test]
 fn each_assignment_schedule_has_its_own_health_and_due_ticket() {
     let (_root, store) = store();
     let mut settings = store.load_settings().unwrap();
@@ -2088,6 +2313,7 @@ fn removed_inflight_schedule_keeps_exclusion_until_the_read_finishes() {
     let mut monitor = Monitor::restore(&store).unwrap();
     let mut tickets = monitor.prepare_checks(&store, 1_800_000_000, true).unwrap();
     let ticket = tickets.remove(0);
+    let operation_id = monitor.snapshot()[0].operation.as_ref().unwrap().id.clone();
 
     let mut replacement = repository(true);
     replacement.id = "00000000-0000-4000-8000-000000000002".into();
@@ -2118,6 +2344,15 @@ fn removed_inflight_schedule_keeps_exclusion_until_the_read_finishes() {
         monitor.snapshot()[0].last_failure.as_deref(),
         Some(SCOPE_CONFIRMATION_REQUIRED)
     );
+    let archived = store
+        .load_monitoring_state()
+        .unwrap()
+        .operations
+        .get(&operation_id)
+        .cloned()
+        .unwrap();
+    assert_eq!(archived.state, OperationState::Failed);
+    assert_eq!(archived.failure, Some(OperationFailure::Permanent));
 }
 
 #[test]

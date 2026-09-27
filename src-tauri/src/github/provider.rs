@@ -166,6 +166,11 @@ impl<T: Transport> GithubClient<T> {
 }
 
 pub(super) fn parse_response(response: Response) -> Result<(Value, Response), ConnectionError> {
+    let retry_after_seconds = response
+        .headers
+        .get("retry-after")
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| *value >= 0);
     let rate_limit_message = response.status == 403
         && serde_json::from_slice::<Value>(&response.body)
             .ok()
@@ -177,7 +182,7 @@ pub(super) fn parse_response(response: Response) -> Result<(Value, Response), Co
     match response.status {
         200 => (),
         401 => return Err(ConnectionError::SignedOut),
-        429 => return Err(ConnectionError::RateLimited),
+        429 => return Err(rate_limited(retry_after_seconds)),
         403 if response.headers.contains_key("x-github-sso") => {
             return Err(ConnectionError::OrganizationPolicyDenied)
         }
@@ -188,15 +193,28 @@ pub(super) fn parse_response(response: Response) -> Result<(Value, Response), Co
             || response.headers.contains_key("retry-after")
             || rate_limit_message =>
         {
-            return Err(ConnectionError::RateLimited)
+            return Err(rate_limited(retry_after_seconds))
         }
 
         403 | 404 => return Err(ConnectionError::MissingReadPermission),
-        _ => return Err(ConnectionError::ProviderFailure),
+        500..=599 => {
+            return Err(retry_after_seconds.map_or(
+                ConnectionError::ProviderFailure,
+                ConnectionError::ProviderFailureAfter,
+            ))
+        }
+        _ => return Err(ConnectionError::InvalidResponse),
     }
     let value =
         serde_json::from_slice(&response.body).map_err(|_| ConnectionError::InvalidResponse)?;
     Ok((value, response))
+}
+
+fn rate_limited(retry_after_seconds: Option<i64>) -> ConnectionError {
+    retry_after_seconds.map_or(
+        ConnectionError::RateLimited,
+        ConnectionError::RateLimitedAfter,
+    )
 }
 
 fn has_scope(response: &Response, expected: &str) -> bool {

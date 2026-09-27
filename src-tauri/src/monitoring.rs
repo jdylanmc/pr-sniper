@@ -22,6 +22,54 @@ pub const WAITING_INELIGIBLE: &str = "ineligible";
 pub const WAITING_NO_LONGER_CURRENT: &str = "no_longer_current";
 pub const WAITING_SCOPE_EXCLUDED: &str = "scope_excluded";
 pub const SCOPE_CONFIRMATION_REQUIRED: &str = "scope_confirmation_required";
+const RETRY_WINDOW_SECONDS: i64 = 15 * 60;
+const MAX_RETRIES: u8 = 3;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationState {
+    Queued,
+    Running,
+    Interrupted,
+    Completed,
+    Failed,
+    ManualRetry,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationFailure {
+    Timeout,
+    RateLimited,
+    Network,
+    Provider,
+    Permanent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JobOperation {
+    pub id: String,
+    pub provider: String,
+    pub account_id: String,
+    pub configuration_id: String,
+    pub repository_id: String,
+    pub pull_request_id: Option<String>,
+    pub head_sha: Option<String>,
+    pub trigger_policy: String,
+    pub operation_type: String,
+    pub state: OperationState,
+    pub attempt_count: u8,
+    pub initial_attempt_at: i64,
+    pub retry_deadline: i64,
+    pub next_attempt_at: Option<i64>,
+    pub failure: Option<OperationFailure>,
+    pub attempted_mutation: Option<String>,
+    pub pending_review_id: Option<String>,
+    pub owned_thread_id: Option<String>,
+    pub triggering_external_comment_id: Option<String>,
+    pub confirmed_receipt: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountAvailability {
@@ -56,6 +104,8 @@ pub struct ScheduleHealth {
     pub in_flight: bool,
     #[serde(default)]
     pub manual_pending: bool,
+    #[serde(default)]
+    pub operation: Option<JobOperation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +152,8 @@ pub struct MonitoringState {
     pub cursors: BTreeMap<String, PollCursor>,
     #[serde(default)]
     pub activations: BTreeMap<String, MonitoringActivation>,
+    #[serde(default)]
+    pub operations: BTreeMap<String, JobOperation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,7 +288,12 @@ pub struct PollResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonitoringError {
-    Recoverable { code: String, message: String },
+    Recoverable {
+        code: String,
+        message: String,
+        failure: OperationFailure,
+        retry_after_seconds: Option<i64>,
+    },
     Storage(String),
 }
 
@@ -287,6 +344,7 @@ pub struct Monitor {
 impl Monitor {
     pub fn restore(store: &Store) -> Result<Self, String> {
         let mut state = store.load_monitoring_state()?;
+        let previous = state.clone();
         for activation in state.activations.values_mut() {
             for baseline in activation.baseline.values_mut() {
                 if baseline.observed_head_sha.is_empty() {
@@ -303,7 +361,16 @@ impl Monitor {
                 health.in_flight = false;
                 health.last_failure = Some("interrupted".into());
                 health.next_run = 0;
+                if let Some(operation) = health.operation.as_mut() {
+                    if operation.state == OperationState::Running {
+                        operation.state = OperationState::Interrupted;
+                        operation.next_attempt_at = Some(0);
+                    }
+                }
             }
+        }
+        if state != previous {
+            store.save_monitoring_state(&state)?;
         }
         Ok(Self {
             state,
@@ -699,6 +766,7 @@ impl Monitor {
             health.schedule_available = false;
             health.next_run = 0;
             health.last_failure = Some(WAITING_ACCOUNT_DISCONNECTED.into());
+            stop_operation_for_correction(health);
         }
         self.state.cursors.remove(&ticket.health_key);
         let settings = store.load_settings().map_err(MonitoringError::Storage)?;
@@ -719,12 +787,55 @@ impl Monitor {
             .iter()
             .map(|configuration| configuration.health_key.as_str())
             .collect();
+        let removed_operations: Vec<_> = self
+            .state
+            .health
+            .iter()
+            .filter(|(key, health)| !expected.contains(key.as_str()) && !health.in_flight)
+            .filter_map(|(_, health)| health.operation.clone())
+            .map(|mut operation| {
+                if operation.state != OperationState::Completed {
+                    operation.state = OperationState::Failed;
+                    operation.next_attempt_at = None;
+                    operation.failure = Some(OperationFailure::Permanent);
+                }
+                operation
+            })
+            .collect();
+        for operation in removed_operations {
+            self.state
+                .operations
+                .insert(operation.id.clone(), operation);
+        }
         self.state
             .health
             .retain(|key, health| expected.contains(key.as_str()) || health.in_flight);
         self.state
             .cursors
             .retain(|key, _| expected.contains(key.as_str()));
+
+        for configuration in configured {
+            let previous = self
+                .state
+                .health
+                .get(&configuration.health_key)
+                .filter(|health| {
+                    health.name != configuration.name
+                        || health.provider_account_id != configuration.provider_account_id
+                        || health.provider_repository_id != configuration.provider_repository_id
+                })
+                .and_then(|health| health.operation.clone());
+            if let Some(mut operation) = previous {
+                if operation.state != OperationState::Completed {
+                    operation.state = OperationState::Failed;
+                    operation.next_attempt_at = None;
+                    operation.failure = Some(OperationFailure::Permanent);
+                }
+                self.state
+                    .operations
+                    .insert(operation.id.clone(), operation);
+            }
+        }
 
         for configuration in configured {
             let health = self
@@ -749,6 +860,7 @@ impl Monitor {
                     last_failure: None,
                     in_flight: false,
                     manual_pending: false,
+                    operation: None,
                 });
             let binding_changed = health.name != configuration.name
                 || health.provider_account_id != configuration.provider_account_id
@@ -757,6 +869,7 @@ impl Monitor {
                 health.last_success = None;
                 health.next_run = 0;
                 health.account_login = None;
+                health.operation = None;
                 self.state.cursors.remove(&configuration.health_key);
             }
             health.repository_id = configuration.repository_id.clone();
@@ -810,6 +923,42 @@ impl Monitor {
             {
                 unavailable_health(health, SCOPE_CONFIRMATION_REQUIRED);
                 self.state.cursors.remove(&configuration.health_key);
+                continue;
+            }
+            if health
+                .operation
+                .as_ref()
+                .is_some_and(|operation| operation.state == OperationState::ManualRetry)
+            {
+                health.next_run = 0;
+                health.schedule_available = false;
+                continue;
+            }
+            if health.operation.as_ref().is_some_and(|operation| {
+                matches!(
+                    operation.state,
+                    OperationState::Queued | OperationState::Interrupted
+                ) && now >= operation.retry_deadline
+            }) {
+                if let Some(operation) = health.operation.as_mut() {
+                    operation.state = OperationState::ManualRetry;
+                    operation.next_attempt_at = None;
+                    operation.failure = Some(OperationFailure::Permanent);
+                }
+                health.next_run = 0;
+                health.schedule_available = false;
+                continue;
+            }
+            if let Some(next_attempt) = health.operation.as_ref().and_then(|operation| {
+                matches!(
+                    operation.state,
+                    OperationState::Queued | OperationState::Interrupted
+                )
+                .then_some(operation.next_attempt_at)
+                .flatten()
+            }) {
+                health.next_run = next_attempt;
+                health.schedule_available = true;
                 continue;
             }
 
@@ -962,6 +1111,7 @@ impl Monitor {
             health.last_failure = None;
             health.in_flight = true;
             health.manual_pending = false;
+            start_poll_operation(health, configuration, now, manual);
             if !manual {
                 health.next_run = next_run(&configuration.schedule, now).unwrap_or(0);
             }
@@ -1023,6 +1173,7 @@ impl Monitor {
                 self.leases.remove(&ticket.provider_repository_id);
                 if let Some(health) = self.state.health.get_mut(&ticket.health_key) {
                     unavailable_health(health, "settings_unavailable");
+                    stop_operation_for_correction(health);
                 }
                 let _ = store.save_monitoring_state(&self.state);
                 return Err(MonitoringError::Storage(error));
@@ -1049,17 +1200,94 @@ impl Monitor {
                         health.account_login = Some(login.clone());
                         health.last_success = Some(now);
                         health.last_failure = None;
+                        if let Some(operation) = health.operation.as_mut() {
+                            operation.state = OperationState::Completed;
+                            operation.next_attempt_at = None;
+                            operation.failure = None;
+                        }
                     }
                     Err(error) => {
                         health.last_failure = Some(error.health_failure().into());
+                        finish_failed_operation(health, error, now);
                     }
                 }
             }
+        } else if let Some(health) = self.state.health.get_mut(&ticket.health_key) {
+            health.last_failure = Some("configuration_changed".into());
+            stop_operation_for_correction(health);
+        }
+        if let Some(operation) = self
+            .state
+            .health
+            .get(&ticket.health_key)
+            .and_then(|health| health.operation.as_ref())
+            .filter(|operation| {
+                matches!(
+                    operation.state,
+                    OperationState::Completed
+                        | OperationState::Failed
+                        | OperationState::ManualRetry
+                )
+            })
+            .cloned()
+        {
+            self.state
+                .operations
+                .insert(operation.id.clone(), operation);
         }
         store
             .save_monitoring_state(&self.state)
             .map_err(MonitoringError::Storage)?;
         outcome.map(|_| ())
+    }
+
+    pub fn manual_retry_operation(
+        &mut self,
+        store: &Store,
+        operation_id: &str,
+        now: i64,
+    ) -> Result<(), String> {
+        let previous = self.state.clone();
+        let health = self
+            .state
+            .health
+            .values_mut()
+            .find(|health| {
+                health.operation.as_ref().is_some_and(|operation| {
+                    operation.id == operation_id
+                        && matches!(
+                            operation.state,
+                            OperationState::Failed | OperationState::ManualRetry
+                        )
+                })
+            })
+            .ok_or("This operation is not waiting for manual retry.")?;
+        let previous_operation = health
+            .operation
+            .clone()
+            .ok_or("This operation is not waiting for manual retry.")?;
+        let operation = health
+            .operation
+            .as_mut()
+            .ok_or("This operation is not waiting for manual retry.")?;
+        operation.id = uuid::Uuid::new_v4().to_string();
+        operation.state = OperationState::Queued;
+        operation.attempt_count = 0;
+        operation.initial_attempt_at = now;
+        operation.retry_deadline = now + RETRY_WINDOW_SECONDS;
+        operation.next_attempt_at = Some(now);
+        operation.failure = None;
+        health.last_failure = None;
+        health.next_run = now;
+        health.schedule_available = true;
+        self.state
+            .operations
+            .insert(previous_operation.id.clone(), previous_operation);
+        if let Err(error) = store.save_monitoring_state(&self.state) {
+            self.state = previous;
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn commit_success(
@@ -1411,6 +1639,136 @@ fn unavailable_health(health: &mut ScheduleHealth, failure: &str) {
     health.schedule_available = false;
     health.last_failure = Some(failure.into());
     health.manual_pending = false;
+    stop_operation_for_correction(health);
+}
+
+fn stop_operation_for_correction(health: &mut ScheduleHealth) {
+    let Some(operation) = health.operation.as_mut() else {
+        return;
+    };
+    if matches!(
+        operation.state,
+        OperationState::Running | OperationState::Queued | OperationState::Interrupted
+    ) {
+        operation.state = OperationState::Failed;
+        operation.next_attempt_at = None;
+        operation.failure = Some(OperationFailure::Permanent);
+    }
+}
+
+fn start_poll_operation(
+    health: &mut ScheduleHealth,
+    configuration: &ConfiguredSchedule,
+    now: i64,
+    manual: bool,
+) {
+    let retrying = health.operation.as_ref().is_some_and(|operation| {
+        matches!(
+            operation.state,
+            OperationState::Queued | OperationState::Interrupted
+        ) && operation
+            .next_attempt_at
+            .is_some_and(|next| manual || now >= next)
+            && now < operation.retry_deadline
+            && operation.attempt_count <= MAX_RETRIES
+    });
+    if retrying {
+        if let Some(operation) = health.operation.as_mut() {
+            operation.state = OperationState::Running;
+            operation.attempt_count += 1;
+            operation.next_attempt_at = None;
+            return;
+        }
+    }
+    health.operation = Some(JobOperation {
+        id: uuid::Uuid::new_v4().to_string(),
+        provider: "github".into(),
+        account_id: configuration
+            .provider_account_id
+            .clone()
+            .unwrap_or_default(),
+        configuration_id: configuration.repository_id.clone(),
+        repository_id: configuration
+            .provider_repository_id
+            .clone()
+            .unwrap_or_default(),
+        pull_request_id: None,
+        head_sha: None,
+        trigger_policy: configuration.trigger_policy.clone().unwrap_or_default(),
+        operation_type: "repository_poll".into(),
+        state: OperationState::Running,
+        attempt_count: 1,
+        initial_attempt_at: now,
+        retry_deadline: now + RETRY_WINDOW_SECONDS,
+        next_attempt_at: None,
+        failure: None,
+        attempted_mutation: None,
+        pending_review_id: None,
+        owned_thread_id: None,
+        triggering_external_comment_id: None,
+        confirmed_receipt: None,
+    });
+}
+
+fn finish_failed_operation(health: &mut ScheduleHealth, error: &MonitoringError, now: i64) {
+    let Some(operation) = health.operation.as_mut() else {
+        return;
+    };
+    let failure = retryable_failure(error);
+    operation.failure = Some(failure.clone());
+    if failure == OperationFailure::Permanent {
+        operation.state = OperationState::Failed;
+        operation.next_attempt_at = None;
+        health.next_run = 0;
+        health.schedule_available = false;
+        return;
+    }
+    if operation.attempt_count > MAX_RETRIES || now >= operation.retry_deadline {
+        operation.state = OperationState::ManualRetry;
+        operation.next_attempt_at = None;
+        health.next_run = 0;
+        health.schedule_available = false;
+        return;
+    }
+    let retry_count = operation.attempt_count;
+    let delay = match error {
+        MonitoringError::Recoverable {
+            retry_after_seconds: Some(delay),
+            ..
+        } => *delay,
+        _ => retry_delay_seconds(&operation.id, retry_count),
+    };
+    let next_attempt = now.saturating_add(delay);
+    if next_attempt >= operation.retry_deadline {
+        operation.state = OperationState::ManualRetry;
+        operation.next_attempt_at = None;
+        health.next_run = 0;
+        health.schedule_available = false;
+        return;
+    }
+    operation.state = OperationState::Queued;
+    operation.next_attempt_at = Some(next_attempt);
+    health.next_run = next_attempt;
+    health.schedule_available = true;
+}
+
+fn retryable_failure(error: &MonitoringError) -> OperationFailure {
+    match error {
+        MonitoringError::Recoverable { failure, .. } => failure.clone(),
+        MonitoringError::Storage(_) => OperationFailure::Permanent,
+    }
+}
+
+fn retry_delay_seconds(operation_id: &str, retry_count: u8) -> i64 {
+    let base = 5_i64.saturating_mul(1_i64 << retry_count.saturating_sub(1).min(6));
+    let jitter = operation_id
+        .bytes()
+        .chain([retry_count])
+        .fold(0_u64, |value, byte| {
+            value.wrapping_mul(31).wrapping_add(byte as u64)
+        })
+        % 4;
+    base + jitter as i64
 }
 
 fn configuration_failure(failure: Option<&str>) -> bool {
@@ -1450,9 +1808,47 @@ fn waiting_state(
 }
 
 fn check_error(error: ConnectionError) -> MonitoringError {
+    let (failure, retry_after_seconds) = match error {
+        ConnectionError::Timeout => (OperationFailure::Timeout, None),
+        ConnectionError::RateLimited => (OperationFailure::RateLimited, None),
+        ConnectionError::RateLimitedAfter(retry_after_seconds) => {
+            (OperationFailure::RateLimited, Some(retry_after_seconds))
+        }
+        ConnectionError::Network => (OperationFailure::Network, None),
+        ConnectionError::ProviderFailure => (OperationFailure::Provider, None),
+        ConnectionError::ProviderFailureAfter(retry_after_seconds) => {
+            (OperationFailure::Provider, Some(retry_after_seconds))
+        }
+        _ => (OperationFailure::Permanent, None),
+    };
     MonitoringError::Recoverable {
-        code: format!("{error:?}"),
+        code: connection_error_code(error).into(),
         message: format!("Repository check failed: {error:?}"),
+        failure,
+        retry_after_seconds,
+    }
+}
+
+fn connection_error_code(error: ConnectionError) -> &'static str {
+    match error {
+        ConnectionError::WrongIdentity => "WrongIdentity",
+        ConnectionError::InvalidResponse => "InvalidResponse",
+        ConnectionError::MissingCli => "MissingCli",
+        ConnectionError::BrokenCli => "BrokenCli",
+        ConnectionError::SignedOut => "SignedOut",
+        ConnectionError::Timeout => "Timeout",
+        ConnectionError::MissingReadPermission => "MissingReadPermission",
+        ConnectionError::MissingScope => "MissingScope",
+        ConnectionError::OrganizationPolicyDenied => "OrganizationPolicyDenied",
+        ConnectionError::RateLimited | ConnectionError::RateLimitedAfter(_) => "RateLimited",
+        ConnectionError::Network => "Network",
+        ConnectionError::ProviderFailure => "ProviderFailure",
+        ConnectionError::ProviderFailureAfter(_) => "ProviderFailure",
+        ConnectionError::IncompleteRead => "IncompleteRead",
+        ConnectionError::RevisionChanged => "RevisionChanged",
+        ConnectionError::InvalidRepository => "InvalidRepository",
+        ConnectionError::RepositoryChanged => "RepositoryChanged",
+        ConnectionError::Configuration => "Configuration",
     }
 }
 
@@ -1460,6 +1856,8 @@ fn configuration_changed() -> MonitoringError {
     MonitoringError::Recoverable {
         code: "configuration_changed".into(),
         message: "Repository check was discarded because its configuration changed.".into(),
+        failure: OperationFailure::Permanent,
+        retry_after_seconds: None,
     }
 }
 

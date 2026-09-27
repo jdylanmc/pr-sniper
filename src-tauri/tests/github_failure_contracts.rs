@@ -167,7 +167,11 @@ fn rate_limits_are_distinct_from_permission_failures() {
 
         let result = GithubClient::new(transport).connect("jdylanmc/pr-sniper", Some("6954990"));
 
-        assert_eq!(result, Err(ConnectionError::RateLimited), "{header:?}");
+        let expected = match header {
+            Some(("retry-after", "60")) => Err(ConnectionError::RateLimitedAfter(60)),
+            _ => Err(ConnectionError::RateLimited),
+        };
+        assert_eq!(result, expected, "{header:?}");
     }
 }
 
@@ -182,6 +186,33 @@ fn provider_failure_is_not_reported_as_missing_permission() {
     let result = GithubClient::new(transport).connect("jdylanmc/pr-sniper", Some("6954990"));
 
     assert_eq!(result, Err(ConnectionError::ProviderFailure));
+}
+
+#[test]
+fn provider_server_retry_after_is_preserved() {
+    let mut transport = ready_transport();
+    let mut unavailable = response(503, json!({"message": "Provider unavailable"}));
+    unavailable
+        .headers
+        .insert("retry-after".into(), "120".into());
+    transport.responses.insert(PULLS, Ok(unavailable));
+
+    let result = GithubClient::new(transport).connect("jdylanmc/pr-sniper", Some("6954990"));
+
+    assert_eq!(result, Err(ConnectionError::ProviderFailureAfter(120)));
+}
+
+#[test]
+fn explicit_provider_rejection_is_not_classified_as_a_retryable_server_failure() {
+    let mut transport = ready_transport();
+    transport.responses.insert(
+        PULLS,
+        Ok(response(422, json!({"message": "Validation failed"}))),
+    );
+
+    let result = GithubClient::new(transport).connect("jdylanmc/pr-sniper", Some("6954990"));
+
+    assert_eq!(result, Err(ConnectionError::InvalidResponse));
 }
 
 #[test]
