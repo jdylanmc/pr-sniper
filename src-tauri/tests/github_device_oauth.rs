@@ -478,7 +478,7 @@ fn refresh_classifies_github_http_200_error_envelopes_without_a_client_secret() 
 fn refresh_distinguishes_rejected_grants_from_transient_provider_outages() {
     for (status, body, expected) in [
         (
-            400,
+            200,
             br#"{"error":"invalid_grant","error_description":"private"}"#.as_slice(),
             OAuthError::RefreshRejected,
         ),
@@ -492,6 +492,12 @@ fn refresh_distinguishes_rejected_grants_from_transient_provider_outages() {
             br#"{"error":"server_error","error_description":"private"}"#.as_slice(),
             OAuthError::Provider,
         ),
+        (
+            200,
+            br#"{"error":"unknown_refresh_problem","error_description":"private"}"#.as_slice(),
+            OAuthError::Provider,
+        ),
+        (502, br#"not-json"#.as_slice(), OAuthError::InvalidResponse),
         (
             429,
             br#"{"error":"temporarily_unavailable","error_description":"private"}"#.as_slice(),

@@ -264,7 +264,7 @@ for (const [warning, message] of [
     ).toBeEnabled();
     await expect(
       card.getByRole("button", { name: "Reconnect jdylanmc" }),
-    ).toHaveCount(0);
+    ).toBeEnabled();
   });
 }
 

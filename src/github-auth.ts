@@ -196,6 +196,13 @@ export function renderGithubAuth(
         commandButton(accountActions, "Disconnect", "disconnect_github_auth", {
           accountId: account.account_id,
         }).setAttribute("aria-label", `Disconnect ${account.login}`);
+        if (account.warning)
+          commandButton(
+            accountActions,
+            "Reconnect",
+            "start_github_browser_auth",
+            { expectedAccountId: account.account_id },
+          ).setAttribute("aria-label", `Reconnect ${account.login}`);
         actionButton(accountActions, "Load repositories", async () => {
           const result = await invoke<{
             identity: { id: string; login: string };

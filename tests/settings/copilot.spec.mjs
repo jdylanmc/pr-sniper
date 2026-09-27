@@ -46,6 +46,52 @@ async function bridge(page, handler) {
   });
 }
 
+test("Copilot UI keeps unverified transient accounts blocked while verified accounts remain selectable", async ({
+  page,
+}) => {
+  await bridge(page, () =>
+    idle([
+      {
+        provider: "copilot",
+        account_id: "101",
+        login: "unverified-ai",
+        state: "reconnect_required",
+        reason: "network",
+      },
+      account("202", "verified-ai"),
+    ]),
+  );
+  await page.goto("/?view=settings");
+  const card = page.locator(".copilot-auth-card");
+  const unverified = card.getByRole("article", {
+    name: "Copilot account unverified-ai",
+  });
+  const verified = card.getByRole("article", {
+    name: "Copilot account verified-ai",
+  });
+  await expect(unverified).toContainText(
+    "Cannot reach GitHub to verify sign-in",
+  );
+  await expect(unverified.locator(".copilot-check")).toHaveCount(0);
+  await expect(
+    unverified.getByRole("button", {
+      name: "Reconnect Copilot unverified-ai",
+    }),
+  ).toBeEnabled();
+  await expect(verified).toContainText("Signed in as verified-ai");
+  await expect(verified.locator(".copilot-check")).toHaveCount(1);
+
+  await section(page, "Agents");
+  await page.getByRole("button", { name: "New agent", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "New agent", exact: true });
+  await expect(
+    dialog.locator('select[name="ai-account"] option[value="101"]'),
+  ).toHaveAttribute("disabled", "");
+  await expect(
+    dialog.locator('select[name="ai-account"] option[value="202"]'),
+  ).not.toHaveAttribute("disabled", "");
+});
+
 for (const pendingAction of [
   "verify_copilot_account",
   "disconnect_copilot_account",
