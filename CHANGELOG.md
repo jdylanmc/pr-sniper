@@ -52,6 +52,8 @@ No release/versioning policy has been established yet.
   Persist acting-account and assignment schedule health plus revision-keyed
   detection history, deduplicate repeat observations, and retain superseded,
   ineligible or configuration-invalidated revisions as visibly non-actionable.
+  Health labels distinguish disabled, checking, blocked, unavailable and
+  scheduled repositories instead of presenting an unusable schedule as active.
   Disconnects fence late provider results before queue or cursor commits, while
   ordinary provider failures remain recoverable schedule health. Reviewer-only
   work outside the trusted watchlist waits for confirmation; detection never
