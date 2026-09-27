@@ -4,6 +4,7 @@ mod doctrine_seeds;
 pub mod github;
 pub mod monitoring;
 pub mod policy;
+pub mod review;
 pub mod startup;
 pub mod storage;
 
@@ -37,6 +38,7 @@ struct Host {
     github_legacy_credentials:
         github::token_store::RotationSafeStore<github::macos_keychain::MacKeychainStore>,
     copilot: Arc<copilot::Integration>,
+    reviews: review::Coordinator,
 }
 
 #[derive(Clone, Copy)]
@@ -804,6 +806,7 @@ struct GithubMetadata {
 struct MonitoringSnapshot {
     health: Vec<monitoring::ScheduleHealth>,
     jobs: Vec<monitoring::QueueJob>,
+    reviews: Vec<review::host::Candidate>,
 }
 
 #[derive(serde::Deserialize)]
@@ -913,6 +916,7 @@ async fn monitoring_snapshot(app: tauri::AppHandle) -> Result<MonitoringSnapshot
         Ok(MonitoringSnapshot {
             health: monitor.snapshot(),
             jobs: store.load_queue()?,
+            reviews: review::host::candidates(&store)?,
         })
     })
     .await
@@ -2046,6 +2050,8 @@ pub fn run() {
             open_diagnostics,
             monitoring_snapshot,
             retry_monitoring_operation,
+            review::host::start_review,
+            review::host::cancel_review,
             check_now,
             monitoring_activation_status,
             preview_monitoring_activation,
@@ -2070,6 +2076,7 @@ pub fn run() {
             let github_auth = GithubAuth::restore(&github_credentials, &github_legacy_credentials);
             let copilot = copilot::Integration::new(isolated)?;
             let store = Store::new(root);
+            review::restore(&store).map_err(std::io::Error::other)?;
             let monitor = monitoring::Monitor::restore(&store).map_err(std::io::Error::other)?;
             app.manage(Host {
                 store: Mutex::new(store),
@@ -2088,6 +2095,7 @@ pub fn run() {
                 github_credentials,
                 github_legacy_credentials,
                 copilot,
+                reviews: review::Coordinator::default(),
             });
             record(app.handle(), DiagnosticEvent::SessionStarted);
             let scheduler_app = app.handle().clone();
@@ -2099,6 +2107,9 @@ pub fn run() {
                         break;
                     }
                     if let Err(error) = start_checks(&scheduler_app, false) {
+                        report(&scheduler_app, error);
+                    }
+                    if let Err(error) = review::Coordinator::pump(&scheduler_app) {
                         report(&scheduler_app, error);
                     }
                 }
@@ -2136,6 +2147,7 @@ pub fn run() {
                         let host = app.state::<Host>();
                         host.quitting.store(true, Ordering::SeqCst);
                         host.copilot.request_shutdown();
+                        host.reviews.cancel_all();
                         let shutdown_app = app.clone();
                         tauri::async_runtime::spawn(async move {
                             let cancel_app = shutdown_app.clone();
@@ -2162,7 +2174,8 @@ pub fn run() {
                             }
                             let deadline =
                                 tokio::time::Instant::now() + std::time::Duration::from_secs(7);
-                            while !shutdown_app.state::<Host>().copilot.lookups_finished()
+                            while (!shutdown_app.state::<Host>().copilot.lookups_finished()
+                                || !shutdown_app.state::<Host>().reviews.finished())
                                 && tokio::time::Instant::now() < deadline
                             {
                                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;

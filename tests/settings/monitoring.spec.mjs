@@ -7,11 +7,11 @@ const waitingStates = [
   ],
   [
     "human_start",
-    "Automatic start is disabled; manual review start is not implemented here.",
+    "Automatic start is disabled; start an assigned Agent below.",
   ],
   [
     "agent_unavailable",
-    "Automatic start is configured, but review-agent support is not implemented here.",
+    "Automatic start is configured; an available assigned Agent can review this revision.",
   ],
   [
     "account_disconnected",
@@ -255,7 +255,7 @@ test("Review Queue renders acting schedule identity and every persisted detectio
   await expect(
     page.locator("#review-jobs article").filter({
       hasText:
-        "Automatic start is configured, but review-agent support is not implemented here.",
+        "Automatic start is configured; an available assigned Agent can review this revision.",
     }),
   ).toHaveCount(1);
   await expect(page.locator("#review-jobs")).toContainText(
