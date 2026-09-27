@@ -55,9 +55,10 @@ No release/versioning policy has been established yet.
   Health labels distinguish disabled, checking, blocked, unavailable and
   scheduled repositories instead of presenting an unusable schedule as active.
   Disconnects fence late provider results before queue or cursor commits, while
-  ordinary provider failures remain recoverable schedule health. Reviewer-only
-  work outside the trusted watchlist waits for confirmation; detection never
-  starts an agent or publishes a review. See
+  offline startup, rate limits and ordinary provider failures remain visible
+  and retryable without discarding a verified account; successful verification
+  clears the warning. Reviewer-only work outside the trusted watchlist waits for
+  confirmation; detection never starts an agent or publishes a review. See
   [#3](https://github.com/jdylanmc/pr-sniper/issues/3).
 
 - Manage independent Copilot connections in Settings with browser sign-in,
