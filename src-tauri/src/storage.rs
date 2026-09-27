@@ -418,6 +418,61 @@ impl Store {
         Self { root }
     }
 
+    pub fn load_queue(&self) -> Result<Vec<crate::monitoring::QueueJob>, String> {
+        match fs::read(self.root.join("state/queue.json")) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|_| "Review queue is invalid; no polling result was saved.".into()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+            Err(_) => Err("Cannot read the review queue. Check local file permissions.".into()),
+        }
+    }
+
+    pub fn save_queue(&self, jobs: &[crate::monitoring::QueueJob]) -> Result<(), String> {
+        self.write_state("queue.json", jobs)
+    }
+
+    pub fn load_monitoring_state(&self) -> Result<crate::monitoring::MonitoringState, String> {
+        match fs::read(self.root.join("state/monitoring.json")) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|_| "Monitoring state is invalid; polling cannot resume.".into()),
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                Ok(crate::monitoring::MonitoringState::default())
+            }
+            Err(_) => Err("Cannot read monitoring state. Check local file permissions.".into()),
+        }
+    }
+
+    pub fn save_monitoring_state(
+        &self,
+        state: &crate::monitoring::MonitoringState,
+    ) -> Result<(), String> {
+        self.write_state("monitoring.json", state)
+    }
+
+    fn write_state<T: Serialize + ?Sized>(&self, name: &str, value: &T) -> Result<(), String> {
+        let directory = self.root.join("state");
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&directory)
+            .map_err(|_| "Cannot create monitoring state directory.".to_string())?;
+        let bytes =
+            serde_json::to_vec_pretty(value).map_err(|_| "Cannot encode monitoring state.")?;
+        let temporary = directory.join(format!("{name}.tmp"));
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temporary)
+            .map_err(|_| "Cannot write monitoring state.")?;
+        file.write_all(&bytes)
+            .and_then(|_| file.sync_all())
+            .map_err(|_| "Cannot flush monitoring state.")?;
+        fs::rename(temporary, directory.join(name))
+            .map_err(|_| "Cannot replace monitoring state.".into())
+    }
+
     pub fn has_saved_settings(&self) -> bool {
         self.root.join("config/settings.json").exists()
     }

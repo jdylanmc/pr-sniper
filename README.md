@@ -5,10 +5,11 @@ Tauri 2, Rust and vanilla TypeScript. The tray exposes **Status**, **Review
 Queue**, **Settings** and **Quit PR Sniper**.
 
 Settings can explicitly verify a configured GitHub connection and read complete
-pull-request metadata. It also manages independent Copilot AI accounts with
-browser sign-in and per-Agent account/model selection; see
-[Copilot Settings](docs/copilot-settings.md). This increment does **not** poll repositories, run agents,
-publish comments or perform automated setup. Check Now is disabled. Product scope lives in the
+pull-request metadata. The active tray process also polls enabled, account-bound
+GitHub repositories and persists eligible revisions in the Review Queue. It
+does not run agents or publish comments. Settings manages independent Copilot
+AI accounts with browser sign-in and per-Agent account/model selection; see
+[Copilot Settings](docs/copilot-settings.md). Product scope lives in the
 [approved specification](docs/agent/specs/pr-sniper-mvp.nano.md), not this
 implementation summary.
 
@@ -118,11 +119,11 @@ its layout with unsupported viewport units and dialog APIs. The app requires
 macOS 13.5 or later; build targets do not polyfill runtime APIs, and these simulations
 are not native acceptance evidence.
 
-Repository **Settings** assigns reusable Agents with their own schedules and
+Repository **Settings** assigns reusable Agents with saved schedules and
 comment preferences, and resolves watched people using the repository's
 explicit GitHub account. Existing global defaults and overrides remain
-preserved in storage. Configuring an assignment executes neither reviews nor
-publication; approval submission remains unavailable.
+preserved in storage. Assignments do not start agents in this detection-only
+increment; approval submission remains unavailable.
 
 **Doctrines** manages plain-text review principles. A fresh configuration
 persists all 23 bundled doctrines on first load, before any Settings tab is
@@ -152,6 +153,34 @@ configuration; malformed or unreadable files are reported rather than reset.
 opens
 an in-app reader, not an arbitrary filesystem or shell interface.
 Invalid settings are reported rather than silently reset or overwritten.
+
+## Scheduled monitoring
+
+While the menu-bar process is active, each saved repository assignment uses its
+own interval or five-field cron schedule and explicit IANA time zone. When a
+repository has no assignments, its effective global/per-repository policy
+schedule is used for backward compatibility. Cron times
+skipped by a spring daylight-saving jump run at the first valid local time;
+repeated fall-back times run once at their first occurrence. Sleep or missed
+ticks cause one check, not a catch-up burst. **Check Now** coalesces one pending
+read for every eligible account and assignment, then drains them serially when
+multiple bindings address the same remote repository.
+
+Polling reads paginated open pull-request metadata through the repository's
+connected OAuth account. A stable watched-author identity or a request for the
+signed-in account as reviewer admits a non-draft revision. Reviewer-only work
+outside the trusted watchlist waits for explicit confirmation. Repeat
+observations deduplicate by provider, account, stable repository, pull request,
+head revision and trigger policy; a new head can be queued independently.
+Successful open-pull-request scans and configuration changes retain earlier
+revision hashes as visibly non-actionable history instead of leaving obsolete
+detections ready to start. Absence from one paginated open-pull-request scan is
+nonterminal: it records "not seen" and is rechecked on the next scan rather than
+inventing a closed or merged state. Poll pages use stable creation order to
+reduce page reordering while scanning active repositories. Schedule health
+identifies the acting account, assignment and Agent, and persists pending,
+success and recoverable failure state. Detection never clones a repository,
+starts an agent, executes repository code, mutates GitHub or publishes a review.
 
 App-owned GitHub and Copilot token pairs use separate account-addressed macOS
 Keychain services, never config, state or diagnostics. Neither Settings

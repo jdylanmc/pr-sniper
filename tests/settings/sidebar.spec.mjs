@@ -20,6 +20,12 @@ test("Settings exposes exactly four approved tabs and no prototype or retired co
   page,
 }) => {
   await page.goto("/?view=settings");
+  await expect(
+    page.getByText(
+      "PR Sniper polls configured repositories while the menu-bar app is active. Detection does not run reviews or publish comments.",
+      { exact: true },
+    ),
+  ).toBeVisible();
   const nav = page.getByRole("navigation", { name: "Settings sections" });
   await expect(nav.getByRole("button")).toHaveText([
     "Integrations",
@@ -215,6 +221,12 @@ test("repository People resolves stable identity, isolates neighbors and reports
   });
   await page.goto("/?view=settings");
   let parent = await repositorySettings(page, "fixture/one");
+  await expect(
+    parent.getByText(
+      "Optional. Watched authors qualify; pull requests requesting the signed-in account also qualify when the effective inherited reviewer-assignment trigger is enabled. Exact GitHub login, no wildcards.",
+      { exact: true },
+    ),
+  ).toBeVisible();
   await parent.getByRole("button", { name: "Add people", exact: true }).click();
   let picker = page.getByRole("dialog", { name: "Add people", exact: true });
   await picker.getByLabel("GitHub login", { exact: true }).fill("@octocat");
@@ -248,7 +260,9 @@ test("repository People resolves stable identity, isolates neighbors and reports
     .getByRole("button", { name: "Remove octocat", exact: true })
     .click();
   await expect(
-    parent.getByText("No one added. Every pull request is eligible."),
+    parent.getByText(
+      "No people added for this repository. Inherited watched authors still apply; reviewer requests qualify when that trigger is enabled.",
+    ),
   ).toBeVisible();
   await closeDialog(page);
   await saveChanges(page);

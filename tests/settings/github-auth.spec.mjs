@@ -182,8 +182,6 @@ for (const [reason, message] of [
   ["expired", "authorization expired"],
   ["denied", "authorization was denied"],
   ["device_flow_disabled", "maintainer must enable Device Flow"],
-  ["network", "network request failed"],
-  ["provider", "GitHub rejected"],
   [
     "authentication_changed",
     "Superseded GitHub App credentials are not reused",
@@ -224,6 +222,49 @@ for (const [reason, message] of [
     await expect(
       card.getByRole("button", { name: "Reconnect jdylanmc" }),
     ).toBeVisible();
+  });
+}
+
+for (const [warning, message] of [
+  ["network", "network request failed"],
+  ["rate_limited", "rate limited the verification request"],
+  ["provider", "GitHub rejected"],
+  ["invalid_response", "invalid authorization response"],
+  ["timeout", "sign-in timed out"],
+]) {
+  test(`retryable ${warning} verification warning keeps the account usable`, async ({
+    page,
+  }) => {
+    await page.addInitScript((failureWarning) => {
+      const original = window.__TAURI_INTERNALS__.invoke;
+      window.__TAURI_INTERNALS__.invoke = (command, args) =>
+        command === "github_auth_state"
+          ? Promise.resolve({
+              accounts: [
+                {
+                  provider: "github",
+                  state: "connected",
+                  account_id: "6954990",
+                  login: "jdylanmc",
+                  warning: failureWarning,
+                },
+              ],
+              flow: { state: "idle" },
+            })
+          : original(command, args);
+    }, warning);
+    await page.goto("/?view=settings");
+    const card = page.locator(".github-auth-card");
+    await expect(card).toContainText(message);
+    await expect(
+      card.getByRole("button", { name: "Disconnect jdylanmc" }),
+    ).toBeEnabled();
+    await expect(
+      card.getByRole("button", { name: "Load repositories for jdylanmc" }),
+    ).toBeEnabled();
+    await expect(
+      card.getByRole("button", { name: "Reconnect jdylanmc" }),
+    ).toBeEnabled();
   });
 }
 

@@ -329,7 +329,7 @@ pub fn refresh_token_with<C: SyncHttpClient>(
     let response = device_oauth_client()?
         .exchange_refresh_token(&refresh_token)
         .request(&diagnostic_http)
-        .map_err(map_token_error)?;
+        .map_err(map_refresh_token_error)?;
     token_pair(response, issued_at)
 }
 
@@ -355,7 +355,7 @@ pub async fn refresh_token_async(refresh: &str) -> Result<TokenPair, OAuthError>
         .exchange_refresh_token(&refresh)
         .request_async(&diagnostic_http)
         .await
-        .map_err(map_token_error)?;
+        .map_err(map_refresh_token_error)?;
     token_pair(response, issued_at)
 }
 
@@ -494,6 +494,29 @@ fn map_token_error<E: std::error::Error + 'static>(
     }
 }
 
+fn map_refresh_token_error<E: std::error::Error + 'static>(
+    error: RequestTokenError<E, oauth2::basic::BasicErrorResponse>,
+) -> OAuthError {
+    match error {
+        RequestTokenError::ServerResponse(error) if refresh_grant_rejected(error.error()) => {
+            OAuthError::RefreshRejected
+        }
+        other => map_token_error(other),
+    }
+}
+
+fn refresh_grant_rejected(error: &BasicErrorResponseType) -> bool {
+    matches!(error, BasicErrorResponseType::InvalidGrant)
+        || matches!(
+            error,
+            BasicErrorResponseType::Extension(code)
+                if matches!(
+                    code.as_str(),
+                    "bad_refresh_token" | "expired_token" | "revoked_token"
+                )
+        )
+}
+
 fn token_pair(
     response: oauth2::StandardTokenResponse<oauth2::EmptyExtraTokenFields, BasicTokenType>,
     issued_at: SystemTime,
@@ -540,6 +563,7 @@ pub enum OAuthError {
     Denied,
     DeviceFlowDisabled,
     Expired,
+    RefreshRejected,
     Provider,
 }
 

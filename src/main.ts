@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import crosshair from "./crosshair.svg";
 import "./style.css";
+import { renderMonitoring } from "./monitoring";
 import { mountSettings } from "./settings";
 
 interface Snapshot {
@@ -67,9 +68,9 @@ async function load() {
             .join("\n")
         : "No host events recorded.";
     } else if (view === "queue") {
-      content.innerHTML = `<h2>No review queue yet</h2><p>Settings can verify GitHub connections and read PR metadata. Polling, reviews and comment publication are not implemented. Queue behavior arrives in a later slice.</p>`;
+      renderMonitoring(content, showError);
     } else {
-      content.innerHTML = `<h2>Menu-bar host is running</h2><p>Verify GitHub connections and read complete PR metadata explicitly in Settings. Monitoring is not implemented, no background reviews are running, and no comments will be published.</p><p id="version"></p>`;
+      content.innerHTML = `<h2>Menu-bar host is running</h2><p>Scheduled GitHub checks run while PR Sniper is active. Detection queues eligible pull requests but does not start an agent or publish comments. Open Review Queue from the menu-bar menu to see schedule health and queued revisions.</p><p id="version"></p>`;
       content.querySelector("#version")!.textContent =
         `PR Sniper ${state.version}`;
     }
@@ -86,8 +87,9 @@ async function load() {
 }
 
 if (view === "settings") void mountSettings(app);
+else if (view === "queue") void load();
 else void load();
 window.addEventListener("focus", () => {
-  if (view === "settings") return;
+  if (view === "settings" || view === "queue") return;
   void load();
 });

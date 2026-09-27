@@ -5,6 +5,7 @@ type GithubAuthFailure =
   | "denied"
   | "device_flow_disabled"
   | "network"
+  | "rate_limited"
   | "provider"
   | "invalid_response"
   | "browser_open"
@@ -21,6 +22,7 @@ export interface GithubAccount {
   login: string;
   state: "connected" | "reconnect_required";
   reason?: GithubAuthFailure;
+  warning?: GithubAuthFailure;
 }
 
 type GithubAuthView = {
@@ -183,7 +185,9 @@ export function renderGithubAuth(
       const state = document.createElement("p");
       state.textContent =
         account.state === "connected"
-          ? "Connected through the PR Sniper GitHub OAuth App."
+          ? account.warning
+            ? `Connected through the PR Sniper GitHub OAuth App. Last verification needs retry: ${failureMessage(account.warning)}`
+            : "Connected through the PR Sniper GitHub OAuth App."
           : `Needs attention. ${failureMessage(account.reason)}`;
       description.append(heading, state);
       const accountActions = document.createElement("div");
@@ -192,6 +196,13 @@ export function renderGithubAuth(
         commandButton(accountActions, "Disconnect", "disconnect_github_auth", {
           accountId: account.account_id,
         }).setAttribute("aria-label", `Disconnect ${account.login}`);
+        if (account.warning)
+          commandButton(
+            accountActions,
+            "Reconnect",
+            "start_github_browser_auth",
+            { expectedAccountId: account.account_id },
+          ).setAttribute("aria-label", `Reconnect ${account.login}`);
         actionButton(accountActions, "Load repositories", async () => {
           const result = await invoke<{
             identity: { id: string; login: string };
@@ -333,6 +344,8 @@ function failureMessage(reason?: GithubAuthFailure) {
       device_flow_disabled:
         "The PR Sniper GitHub OAuth App Device Flow registration is unavailable. A maintainer must enable Device Flow before sign-in can work.",
       network: "The GitHub network request failed.",
+      rate_limited:
+        "GitHub rate limited the verification request. Retry later.",
       provider: "GitHub rejected or could not validate the connection.",
       invalid_response: "GitHub returned an invalid authorization response.",
       browser_open: "PR Sniper could not open the default browser.",
