@@ -1,0 +1,3 @@
+Disposable native monitoring acceptance fixture.
+Revision one: detect this pull request without running an agent or publishing comments.
+This fixture is closed without merging after the acceptance check.
