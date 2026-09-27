@@ -58,12 +58,13 @@ No release/versioning policy has been established yet.
   scheduled repositories instead of presenting an unusable schedule as active.
   Disconnects fence late provider results before queue or cursor commits, while
   offline startup, rate limits and ordinary provider failures remain visible
-  and retryable without discarding a verified account; successful verification
-  clears the warning. Definite invalid, expired or revoked refresh grants still
-  require reconnect, and repository retry warnings never make an unverified
-  Copilot account appear connected. Reviewer-only work outside the trusted
-  watchlist waits for confirmation; detection never starts an agent or publishes
-  a review. See
+  and retryable without discarding a verified account; warnings retain an
+  explicit reconnect escape and successful verification clears them. Definite
+  invalid, expired or revoked refresh grants still require reconnect, and
+  repository retry warnings never make an unverified Copilot account appear
+  connected or selectable. Reviewer-only work outside the trusted watchlist
+  waits for confirmation; detection never starts an agent or publishes a review.
+  See
   [#3](https://github.com/jdylanmc/pr-sniper/issues/3).
 
 - Manage independent Copilot connections in Settings with browser sign-in,
