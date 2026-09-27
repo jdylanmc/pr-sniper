@@ -654,7 +654,9 @@ fn failure_from_oauth_error(error: github::oauth::OAuthError) -> GithubAuthFailu
 fn failure_from_connection_error(error: ConnectionError) -> GithubAuthFailure {
     match error {
         ConnectionError::Network => GithubAuthFailure::Network,
-        ConnectionError::RateLimited => GithubAuthFailure::RateLimited,
+        ConnectionError::RateLimited | ConnectionError::RateLimitedAfter(_) => {
+            GithubAuthFailure::RateLimited
+        }
         ConnectionError::Timeout => GithubAuthFailure::Timeout,
         ConnectionError::InvalidResponse => GithubAuthFailure::InvalidResponse,
         ConnectionError::SignedOut => GithubAuthFailure::Expired,
@@ -679,7 +681,9 @@ fn apply_account_connection_failure<T>(
                 | ConnectionError::Network
                 | ConnectionError::Timeout
                 | ConnectionError::RateLimited
+                | ConnectionError::RateLimitedAfter(_)
                 | ConnectionError::ProviderFailure
+                | ConnectionError::ProviderFailureAfter(_)
                 | ConnectionError::InvalidResponse
         ) {
             if let Ok(mut auth) = host.github_auth.lock() {
@@ -913,6 +917,27 @@ async fn monitoring_snapshot(app: tauri::AppHandle) -> Result<MonitoringSnapshot
     })
     .await
     .map_err(|_| "Monitoring state could not be read.".to_string())?
+}
+
+#[tauri::command]
+async fn retry_monitoring_operation(
+    app: tauri::AppHandle,
+    operation_id: String,
+) -> Result<(), String> {
+    let app_for_retry = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app_for_retry.state::<Host>();
+        let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+        let result = host
+            .monitor
+            .lock()
+            .map_err(|_| "Monitoring is unavailable.")?
+            .manual_retry_operation(&store, &operation_id, now_seconds()?);
+        result
+    })
+    .await
+    .map_err(|_| "The monitoring operation could not be retried.".to_string())??;
+    start_checks(&app, false)
 }
 
 fn now_seconds() -> Result<i64, String> {
@@ -2020,6 +2045,7 @@ pub fn run() {
             diagnostics,
             open_diagnostics,
             monitoring_snapshot,
+            retry_monitoring_operation,
             check_now,
             monitoring_activation_status,
             preview_monitoring_activation,

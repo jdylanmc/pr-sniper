@@ -166,6 +166,15 @@ ticks cause one check, not a catch-up burst. **Check Now** coalesces one pending
 read for every eligible account and assignment, then drains them serially when
 multiple bindings address the same remote repository.
 
+Each repository poll persists its provider/account/repository/policy identity,
+attempt count and 15-minute retry deadline before the provider read begins.
+Timeout, rate-limit, network and provider-server failures receive at most three
+automatic retries with bounded backoff. Restart preserves the same operation
+and budget; interruption after the deadline and non-retryable failures require
+an explicit **Retry** from Review Queue. Poll operations record no attempted
+mutation or provider receipt because this detection-only increment does not
+publish comments.
+
 An enabled, account-bound repository does not begin new detection until its
 monitoring scope is explicitly confirmed in Settings. The preview reads the
 real matching open pull requests, shows the count before confirmation, selects
