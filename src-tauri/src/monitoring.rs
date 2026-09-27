@@ -115,8 +115,10 @@ pub enum ActivationMode {
 #[serde(deny_unknown_fields)]
 pub struct ActivationBaseline {
     pub number: u64,
-    pub head_sha: String,
-    pub selected: bool,
+    pub initial_head_sha: String,
+    pub observed_head_sha: String,
+    pub initially_selected: bool,
+    pub admitted_head_sha: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,6 +192,7 @@ pub struct ActivationPreviewEvidence {
 }
 
 pub struct ActivationApplication<'a> {
+    pub repository_id: &'a str,
     pub preview_id: &'a str,
     pub mode: ActivationMode,
     pub selected_pull_request_ids: &'a [String],
@@ -201,6 +204,7 @@ pub struct ActivationApplication<'a> {
 struct ActivationPreview {
     context: ActivationContext,
     candidates: BTreeMap<String, ActivationCandidate>,
+    baseline: BTreeMap<String, ActivationBaseline>,
     creation_watermark: u64,
     account_generation: u64,
     previous_activation_version: Option<String>,
@@ -367,14 +371,30 @@ impl Monitor {
             return Err(ConnectionError::Configuration);
         }
         let mut candidates = BTreeMap::new();
+        let mut baseline = BTreeMap::new();
         for pull in evidence.pull_requests {
             if pull.base_repository_id != current.provider_repository_id {
                 return Err(ConnectionError::RepositoryChanged);
             }
-            if pull.state != Lifecycle::Open
-                || pull.draft
-                || pull.number > evidence.creation_watermark
+            if pull.state != Lifecycle::Open || pull.number > evidence.creation_watermark {
+                continue;
+            }
+            if baseline
+                .insert(
+                    pull.id.clone(),
+                    ActivationBaseline {
+                        number: pull.number,
+                        initial_head_sha: pull.head_sha.clone(),
+                        observed_head_sha: pull.head_sha.clone(),
+                        initially_selected: false,
+                        admitted_head_sha: None,
+                    },
+                )
+                .is_some()
             {
+                return Err(ConnectionError::IncompleteRead);
+            }
+            if pull.draft {
                 continue;
             }
             let eligibility = eligibility(
@@ -426,6 +446,7 @@ impl Monitor {
             ActivationPreview {
                 context: current.clone(),
                 candidates,
+                baseline,
                 creation_watermark: view.creation_watermark,
                 account_generation: current_generation,
                 previous_activation_version: self
@@ -442,6 +463,12 @@ impl Monitor {
         self.previews.remove(preview_id);
     }
 
+    pub fn activation_preview_context(&self, preview_id: &str) -> Option<ActivationContext> {
+        self.previews
+            .get(preview_id)
+            .map(|preview| preview.context.clone())
+    }
+
     pub fn apply_activation(
         &mut self,
         store: &Store,
@@ -453,6 +480,9 @@ impl Monitor {
             .get(application.preview_id)
             .cloned()
             .ok_or("Monitoring scope preview expired. Preview again.")?;
+        if preview.context.repository_id != application.repository_id {
+            return Err("Monitoring scope preview belongs to another repository.".into());
+        }
         let context = Self::activation_context(settings, &preview.context.repository_id)
             .map_err(|_| "Repository monitoring configuration changed. Preview again.")?;
         if context != preview.context
@@ -481,20 +511,18 @@ impl Monitor {
             return Err("Choose a valid monitoring scope from the current preview.".into());
         }
         let previous = self.state.clone();
-        let baseline = preview
-            .candidates
-            .values()
-            .map(|candidate| {
-                (
-                    candidate.pull_request_id.clone(),
-                    ActivationBaseline {
-                        number: candidate.number,
-                        head_sha: candidate.head_sha.clone(),
-                        selected: selected.contains(&candidate.pull_request_id),
-                    },
-                )
-            })
-            .collect();
+        let mut baseline = preview.baseline;
+        for selected_id in &selected {
+            let candidate = preview
+                .candidates
+                .get(*selected_id)
+                .ok_or("Choose a valid monitoring scope from the current preview.")?;
+            let entry = baseline
+                .get_mut(*selected_id)
+                .ok_or("Monitoring scope preview is incomplete. Preview again.")?;
+            entry.initially_selected = true;
+            entry.admitted_head_sha = Some(candidate.head_sha.clone());
+        }
         self.state.activations.insert(
             context.repository_id.clone(),
             MonitoringActivation {
@@ -1066,13 +1094,17 @@ impl Monitor {
             if pull.base_repository_id != ticket.provider_repository_id {
                 return Err(check_error(ConnectionError::RepositoryChanged));
             }
+            let admission_candidate = activation_admission_candidate(&mut activation, &pull);
             let eligibility = eligibility(
                 &ticket.watched_authors,
                 &ticket.policy,
                 &result.connection.identity.id,
                 &pull,
             );
-            let admitted = eligibility.eligible() && activation_admits(&mut activation, &pull);
+            let admitted = eligibility.eligible() && admission_candidate;
+            if admitted {
+                mark_activation_admitted(&mut activation, &pull);
+            }
             observed.push((pull, eligibility, admitted));
         }
 
@@ -1215,32 +1247,41 @@ fn eligibility(
     }
 }
 
-fn activation_admits(activation: &mut MonitoringActivation, pull: &PullRequest) -> bool {
+fn activation_admission_candidate(
+    activation: &mut MonitoringActivation,
+    pull: &PullRequest,
+) -> bool {
     if pull.number > activation.creation_watermark {
         return true;
     }
     match activation.baseline.get_mut(&pull.id) {
-        Some(baseline) if baseline.head_sha == pull.head_sha => {
-            let selected = baseline.selected;
-            baseline.selected = false;
-            selected
-        }
         Some(baseline) => {
             baseline.number = pull.number;
-            baseline.head_sha = pull.head_sha.clone();
-            baseline.selected = false;
-            true
+            baseline.observed_head_sha = pull.head_sha.clone();
+            baseline.admitted_head_sha.as_deref() == Some(pull.head_sha.as_str())
+                || baseline.initial_head_sha != pull.head_sha
         }
         None => {
             activation.baseline.insert(
                 pull.id.clone(),
                 ActivationBaseline {
                     number: pull.number,
-                    head_sha: pull.head_sha.clone(),
-                    selected: false,
+                    initial_head_sha: pull.head_sha.clone(),
+                    observed_head_sha: pull.head_sha.clone(),
+                    initially_selected: false,
+                    admitted_head_sha: None,
                 },
             );
             false
+        }
+    }
+}
+
+fn mark_activation_admitted(activation: &mut MonitoringActivation, pull: &PullRequest) {
+    if pull.number <= activation.creation_watermark {
+        if let Some(baseline) = activation.baseline.get_mut(&pull.id) {
+            baseline.observed_head_sha = pull.head_sha.clone();
+            baseline.admitted_head_sha = Some(pull.head_sha.clone());
         }
     }
 }

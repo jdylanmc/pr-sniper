@@ -1161,8 +1161,15 @@ export async function mountSettings(app: HTMLElement) {
       const confirm = scope.querySelector<HTMLButtonElement>(
         "[data-confirm-scope]",
       )!;
+      const cancel = scope.querySelector<HTMLButtonElement>(
+        "[data-cancel-scope]",
+      )!;
+      const close = scope.querySelector<HTMLButtonElement>(
+        "[aria-label='Close dialog']",
+      )!;
       const selected = new Set<string>();
       let previewActive = true;
+      let applying = false;
 
       const mode = () =>
         scope.querySelector<HTMLInputElement>(
@@ -1217,10 +1224,16 @@ export async function mountSettings(app: HTMLElement) {
       };
       const discardPreview = async () => {
         if (!previewActive) return;
-        previewActive = false;
-        await invoke("cancel_monitoring_activation", {
-          previewId: preview.preview_id,
-        }).catch(() => undefined);
+        try {
+          await invoke("cancel_monitoring_activation", {
+            previewId: preview.preview_id,
+          });
+          previewActive = false;
+        } catch {
+          showError(
+            "Monitoring scope preview cleanup failed. Reopen the repository and cancel or replace the preview before confirming scope.",
+          );
+        }
       };
       for (const radio of scope.querySelectorAll<HTMLInputElement>(
         'input[name="scope-mode"]',
@@ -1231,16 +1244,16 @@ export async function mountSettings(app: HTMLElement) {
           renderCandidates();
         };
       search.oninput = renderCandidates;
-      scope.querySelector<HTMLButtonElement>("[data-cancel-scope]")!.onclick =
-        async () => {
-          await discardPreview();
+      cancel.onclick = async () => {
+        await discardPreview();
+        if (!previewActive) {
           scope.close();
           await refreshScopeStatus();
-        };
-      scope
-        .querySelector<HTMLButtonElement>("[aria-label='Close dialog']")!
-        .addEventListener("click", () => void discardPreview());
-      scope.addEventListener("cancel", () => void discardPreview());
+        }
+      };
+      scope.addEventListener("pr-sniper:dialog-closed", () => {
+        if (previewActive && !applying) void discardPreview();
+      });
       confirm.onclick = async () => {
         alert.hidden = true;
         if (selectionEnabled() && !selected.size) {
@@ -1249,7 +1262,11 @@ export async function mountSettings(app: HTMLElement) {
           alert.hidden = false;
           return;
         }
+        applying = true;
+        scope.dataset.closeLocked = "true";
         confirm.disabled = true;
+        cancel.disabled = true;
+        close.disabled = true;
         try {
           await invoke<MonitoringActivationStatus>(
             "apply_monitoring_activation",
@@ -1266,9 +1283,21 @@ export async function mountSettings(app: HTMLElement) {
           scope.close();
           await refreshScopeStatus();
         } catch (cause) {
-          alert.textContent = reason(cause);
-          alert.hidden = false;
-          confirm.disabled = false;
+          const message = reason(cause);
+          if (scope.isConnected) {
+            alert.textContent = message;
+            alert.hidden = false;
+          } else {
+            showError(`Monitoring scope was not applied. ${message}`);
+          }
+        } finally {
+          applying = false;
+          if (scope.isConnected) {
+            delete scope.dataset.closeLocked;
+            confirm.disabled = false;
+            cancel.disabled = false;
+            close.disabled = false;
+          }
         }
       };
       updateCount();

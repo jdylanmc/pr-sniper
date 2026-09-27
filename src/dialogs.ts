@@ -38,7 +38,7 @@ export function createDialogs(root: HTMLElement, changed: () => void) {
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
-      entry.modal.close();
+      if (entry.modal.dataset.closeLocked !== "true") entry.modal.close();
     } else if (event.key === "Tab") {
       const items = controls(entry.modal);
       const index = items.indexOf(document.activeElement as HTMLElement);
@@ -98,6 +98,7 @@ export function createDialogs(root: HTMLElement, changed: () => void) {
       entry.modal.open = false;
       entry.modal.removeAttribute("open");
     }
+    entry.modal.dispatchEvent(new Event("pr-sniper:dialog-closed"));
     entry.modal.removeEventListener("input", changed);
     entry.modal.removeEventListener("change", changed);
     for (const { element, ariaHidden, inert } of entry.hidden) {

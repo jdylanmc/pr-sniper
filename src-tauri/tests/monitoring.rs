@@ -95,7 +95,10 @@ fn activate_repository(
             trigger_policy: context.trigger_policy,
             creation_watermark,
             mode: ActivationMode::NewOnly,
-            selected_existing: baseline.values().filter(|item| item.selected).count(),
+            selected_existing: baseline
+                .values()
+                .filter(|item| item.initially_selected)
+                .count(),
             baseline,
             confirmed_at: 1_799_999_999,
         },
@@ -135,10 +138,12 @@ fn apply_preview(
     account_generation: u64,
     now: i64,
 ) -> Result<pr_sniper_lib::monitoring::ActivationStatus, String> {
+    let settings = store.load_settings().unwrap();
     monitor.apply_activation(
         store,
-        &store.load_settings().unwrap(),
+        &settings,
         ActivationApplication {
+            repository_id: &settings.repositories[0].id,
             preview_id,
             mode,
             selected_pull_request_ids,
@@ -555,6 +560,7 @@ fn selected_existing_queues_only_selected_heads_and_deduplicates() {
     .unwrap();
     assert_eq!(store.load_queue().unwrap().len(), 1);
     assert_eq!(store.load_queue().unwrap()[0].pull_request_id, "2");
+    assert_eq!(store.load_queue().unwrap()[0].waiting, "trust_confirmation");
     check(
         &mut monitor,
         &store,
@@ -564,6 +570,26 @@ fn selected_existing_queues_only_selected_heads_and_deduplicates() {
     )
     .unwrap();
     assert_eq!(store.load_queue().unwrap().len(), 1);
+    assert_eq!(store.load_queue().unwrap()[0].waiting, "trust_confirmation");
+    let mut restarted = Monitor::restore(&store).unwrap();
+    check(
+        &mut restarted,
+        &store,
+        1_800_000_030,
+        vec![pull(
+            "2",
+            2,
+            "12",
+            "second",
+            &[],
+            HEAD_A,
+            "2026-09-25T10:01:00Z",
+        )],
+        "current-login",
+    )
+    .unwrap();
+    assert_eq!(store.load_queue().unwrap().len(), 1);
+    assert_eq!(store.load_queue().unwrap()[0].waiting, "trust_confirmation");
 }
 
 #[test]
@@ -611,6 +637,144 @@ fn reconfirming_new_only_retires_existing_actionable_history_without_deleting_it
     let jobs = store.load_queue().unwrap();
     assert_eq!(jobs.len(), 1);
     assert_eq!(jobs[0].waiting, WAITING_SCOPE_EXCLUDED);
+}
+
+#[test]
+fn changed_old_head_remains_eligible_after_an_ineligible_observation() {
+    let (_root, store) = unactivated_store();
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].watched_authors = vec![WatchedIdentity {
+        id: "11".into(),
+        login: "watched".into(),
+    }];
+    set_settings(&store, &settings);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let old = pull(
+        "1",
+        1,
+        "12",
+        "outside-filter",
+        &[],
+        HEAD_A,
+        "2026-09-25T10:00:00Z",
+    );
+    let preview = stage_preview(&mut monitor, &store, vec![old], 1);
+    assert!(preview.candidates.is_empty());
+    apply_preview(
+        &mut monitor,
+        &store,
+        &preview.preview_id,
+        ActivationMode::NewOnly,
+        &[],
+        0,
+        1_800_000_000,
+    )
+    .unwrap();
+
+    let changed_ineligible = pull(
+        "1",
+        1,
+        "12",
+        "outside-filter",
+        &[],
+        HEAD_B,
+        "2026-09-25T10:01:00Z",
+    );
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_010,
+        vec![changed_ineligible],
+        "current-login",
+    )
+    .unwrap();
+    assert!(store.load_queue().unwrap().is_empty());
+
+    let changed_now_reviewer = pull(
+        "1",
+        1,
+        "12",
+        "outside-filter",
+        &[(ACCOUNT_ID, "current-login")],
+        HEAD_B,
+        "2026-09-25T10:02:00Z",
+    );
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_020,
+        vec![changed_now_reviewer.clone()],
+        "current-login",
+    )
+    .unwrap();
+    assert_eq!(store.load_queue().unwrap().len(), 1);
+    assert_eq!(store.load_queue().unwrap()[0].waiting, "trust_confirmation");
+    let mut restarted = Monitor::restore(&store).unwrap();
+    check(
+        &mut restarted,
+        &store,
+        1_800_000_030,
+        vec![changed_now_reviewer],
+        "current-login",
+    )
+    .unwrap();
+    assert_eq!(store.load_queue().unwrap().len(), 1);
+    assert_eq!(store.load_queue().unwrap()[0].waiting, "trust_confirmation");
+}
+
+#[test]
+fn draft_and_nonmatching_preview_heads_are_baselined_before_filtering() {
+    let (_root, store) = unactivated_store();
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].watched_authors = vec![WatchedIdentity {
+        id: "11".into(),
+        login: "watched".into(),
+    }];
+    set_settings(&store, &settings);
+    let mut draft = pull("1", 1, "11", "watched", &[], HEAD_A, "2026-09-25T10:00:00Z");
+    draft.draft = true;
+    let nonmatching = pull(
+        "2",
+        2,
+        "12",
+        "outside-filter",
+        &[],
+        HEAD_A,
+        "2026-09-25T10:01:00Z",
+    );
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let preview = stage_preview(&mut monitor, &store, vec![draft, nonmatching], 2);
+    assert!(preview.candidates.is_empty());
+    apply_preview(
+        &mut monitor,
+        &store,
+        &preview.preview_id,
+        ActivationMode::NewOnly,
+        &[],
+        0,
+        1_800_000_000,
+    )
+    .unwrap();
+
+    let ready_same_head = pull("1", 1, "11", "watched", &[], HEAD_A, "2026-09-25T10:02:00Z");
+    let nonmatching_now_reviewer = pull(
+        "2",
+        2,
+        "12",
+        "outside-filter",
+        &[(ACCOUNT_ID, "current-login")],
+        HEAD_A,
+        "2026-09-25T10:03:00Z",
+    );
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_010,
+        vec![ready_same_head, nonmatching_now_reviewer],
+        "current-login",
+    )
+    .unwrap();
+    assert!(store.load_queue().unwrap().is_empty());
 }
 
 #[test]
@@ -726,6 +890,7 @@ fn activation_preview_cancel_stale_generation_and_write_failure_never_apply() {
             &store,
             &changed,
             ActivationApplication {
+                repository_id: &changed.repositories[0].id,
                 preview_id: &preview.preview_id,
                 mode: ActivationMode::NewOnly,
                 selected_pull_request_ids: &[],

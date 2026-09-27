@@ -173,9 +173,9 @@ requests only** or an explicitly selected subset of existing pull requests plus
 new pull requests. Existing configured repositories require this confirmation
 after upgrade; their queue history is retained. The native activation record
 stores the account/repository binding, effective author/reviewer filter, latest
-all-state pull-request number, and immutable baseline heads. Missing, stale or
-invalid activation blocks timer and **Check Now** detection rather than enabling
-a backlog.
+all-state pull-request number, immutable initial heads, observed heads and
+durably admitted heads. Missing, stale or invalid activation blocks timer and
+**Check Now** detection rather than enabling a backlog.
 
 Polling reads paginated open pull-request metadata through the repository's
 connected OAuth account. A populated watched-author filter or a request for the

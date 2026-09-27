@@ -180,6 +180,7 @@ test("activation cancel and failed apply leave scope unchanged and retryable", a
   await seedBoundRepository(store);
   let preview = 0;
   let cancelled = 0;
+  let failCancel = false;
   let failApply = true;
   const required = {
     repository_id: "configuration",
@@ -202,6 +203,7 @@ test("activation cancel and failed apply leave scope unchanged and retryable", a
         candidates: candidates(1),
       };
     if (command === "cancel_monitoring_activation") {
+      if (failCancel) throw "cleanup failed";
       cancelled++;
       return null;
     }
@@ -233,6 +235,39 @@ test("activation cancel and failed apply leave scope unchanged and retryable", a
     name: `Monitoring scope for ${repositoryName}`,
     exact: true,
   });
+  await scope.press("Escape");
+  await expect(scope).not.toBeVisible();
+  await expect.poll(() => cancelled).toBe(2);
+
+  await repository.getByRole("button", { name: "Configure scope" }).click();
+  scope = page.getByRole("dialog", {
+    name: `Monitoring scope for ${repositoryName}`,
+    exact: true,
+  });
+  await page
+    .locator(`dialog[aria-label="Settings for ${repositoryName}"]`)
+    .evaluate((element) => element.close());
+  await expect(scope).not.toBeVisible();
+  await expect.poll(() => cancelled).toBe(3);
+
+  let reopened = await repositorySettings(page, repositoryName);
+  failCancel = true;
+  await reopened.getByRole("button", { name: "Configure scope" }).click();
+  scope = page.getByRole("dialog", {
+    name: `Monitoring scope for ${repositoryName}`,
+    exact: true,
+  });
+  await scope.press("Escape");
+  await expect(page.locator("#error")).toContainText(
+    "Monitoring scope preview cleanup failed",
+  );
+  failCancel = false;
+
+  await reopened.getByRole("button", { name: "Configure scope" }).click();
+  scope = page.getByRole("dialog", {
+    name: `Monitoring scope for ${repositoryName}`,
+    exact: true,
+  });
   await scope
     .getByRole("button", { name: "Confirm monitoring scope", exact: true })
     .click();
@@ -245,4 +280,63 @@ test("activation cancel and failed apply leave scope unchanged and retryable", a
     .getByRole("button", { name: "Confirm monitoring scope", exact: true })
     .click();
   await expect(scope).not.toBeVisible();
+});
+
+test("activation apply locks dismissal until the authoritative result returns", async ({
+  page,
+  store,
+}) => {
+  await seedBoundRepository(store);
+  const apply = Promise.withResolvers();
+  let status = {
+    repository_id: "configuration",
+    active: false,
+    reason: "scope_confirmation_required",
+    mode: null,
+    selected_existing: 0,
+    creation_watermark: null,
+  };
+  await activationFixture(page, (command, args) => {
+    if (command === "monitoring_activation_status") return status;
+    if (command === "preview_monitoring_activation")
+      return {
+        preview_id: "preview-held",
+        repository_id: args.repositoryId,
+        name: repositoryName,
+        account_id: "101",
+        account_login: "fixture-owner",
+        creation_watermark: 0,
+        candidates: [],
+      };
+    if (command === "apply_monitoring_activation") return apply.promise;
+    return null;
+  });
+  await page.goto("/?view=settings");
+  const repository = await repositorySettings(page, repositoryName);
+  await repository.getByRole("button", { name: "Configure scope" }).click();
+  const scope = page.getByRole("dialog", {
+    name: `Monitoring scope for ${repositoryName}`,
+    exact: true,
+  });
+  await scope
+    .getByRole("button", { name: "Confirm monitoring scope", exact: true })
+    .click();
+  await expect(
+    scope.getByRole("button", { name: "Close dialog", exact: true }),
+  ).toBeDisabled();
+  await scope.press("Escape");
+  await expect(scope).toBeVisible();
+  status = {
+    repository_id: "configuration",
+    active: true,
+    reason: null,
+    mode: "new_only",
+    selected_existing: 0,
+    creation_watermark: 0,
+  };
+  apply.resolve(status);
+  await expect(scope).not.toBeVisible();
+  await expect(repository.locator("[data-scope-status]")).toContainText(
+    "Active for new pull requests only",
+  );
 });
