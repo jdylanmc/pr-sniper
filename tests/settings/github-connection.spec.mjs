@@ -626,9 +626,9 @@ test("missing repo scope disables every binding for one account only", async ({
 
 for (const [commandError, stateReason] of [
   ["signed_out", "expired"],
-  ["provider_failure", "provider"],
   ["configuration", "credentials_unavailable"],
-  ["wrong_identity", "provider"],
+  ["wrong_identity", "wrong_identity"],
+  ["missing_scope", "missing_scope"],
 ]) {
   test(`mid-session ${commandError} clears every cache for that account`, async ({
     page,
@@ -723,7 +723,9 @@ for (const [commandError, stateReason] of [
         ? "authorization expired"
         : stateReason === "credentials_unavailable"
           ? "could not be restored or stored safely"
-          : "GitHub rejected",
+          : stateReason === "missing_scope"
+            ? "no longer grants the required repo scope"
+            : "unexpected account",
     );
     await closeDialog(page);
 
@@ -742,5 +744,100 @@ for (const [commandError, stateReason] of [
     await expect(page.locator(".github-auth-card")).toContainText(
       "account-b (202)",
     );
+  });
+}
+
+for (const [commandError, warning, message] of [
+  ["network", "network", "network request failed"],
+  ["rate_limited", "rate_limited", "rate limited the verification request"],
+  ["provider_failure", "provider", "GitHub rejected"],
+]) {
+  test(`mid-session ${commandError} keeps the verified account available for retry`, async ({
+    page,
+    store,
+  }) => {
+    await store("save_repository", { repository: "octo/one" });
+    await store("save_repository", { repository: "octo/two" });
+    const settings = (await store("snapshot")).settings;
+    for (const [index, repository] of settings.repositories.entries())
+      Object.assign(repository, {
+        provider_account_id: "101",
+        provider_repository_id: String(index + 1),
+      });
+    await store("seed_settings", settings);
+    let transient = false;
+    await page.exposeFunction("__githubRetryable", (command, args) => {
+      if (command === "github_auth_state")
+        return {
+          accounts: [
+            {
+              provider: "github",
+              state: "connected",
+              account_id: "101",
+              login: "account-a",
+              ...(transient ? { warning } : {}),
+            },
+          ],
+          flow: { state: "idle" },
+        };
+      const first =
+        args.id === settings.repositories[0].id ||
+        args.expectedRepositoryId === "1";
+      const connection = {
+        identity: { id: "101", login: "account-a" },
+        repository: {
+          id: first ? "1" : "2",
+          name: first ? "octo/one" : "octo/two",
+        },
+        capabilities: { read: true, comment: "available" },
+      };
+      if (command === "read_provider_metadata" && transient) throw commandError;
+      return command === "read_provider_metadata"
+        ? { connection, pull_requests: [] }
+        : connection;
+    });
+    await page.addInitScript(() => {
+      const original = window.__TAURI_INTERNALS__.invoke;
+      window.__TAURI_INTERNALS__.invoke = (command, args) =>
+        [
+          "github_auth_state",
+          "verify_provider_connection",
+          "read_provider_metadata",
+        ].includes(command)
+          ? window.__githubRetryable(command, args)
+          : original(command, args);
+    });
+    await page.goto("/?view=settings");
+
+    for (const name of ["octo/one", "octo/two"]) {
+      const card = await connection(page, name);
+      await card
+        .getByRole("button", { name: "Verify GitHub connection", exact: true })
+        .click();
+      await card
+        .getByRole("button", { name: "Read PR metadata", exact: true })
+        .click();
+      await expect(card.getByRole("status")).toContainText("Complete metadata");
+      await closeDialog(page);
+    }
+
+    transient = true;
+    let card = await connection(page, "octo/one");
+    await card
+      .getByRole("button", { name: "Read PR metadata", exact: true })
+      .click();
+    await expect(page.locator(".github-auth-card")).toContainText(message);
+    await closeDialog(page);
+
+    card = await connection(page, "octo/two");
+    await expect(
+      card.getByRole("button", {
+        name: "Verify GitHub connection",
+        exact: true,
+      }),
+    ).toBeEnabled();
+    await expect(
+      card.getByRole("button", { name: "Read PR metadata", exact: true }),
+    ).toBeEnabled();
   });
 }
