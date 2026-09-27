@@ -475,6 +475,63 @@ fn refresh_classifies_github_http_200_error_envelopes_without_a_client_secret() 
 }
 
 #[test]
+fn refresh_distinguishes_rejected_grants_from_transient_provider_outages() {
+    for (status, body, expected) in [
+        (
+            400,
+            br#"{"error":"invalid_grant","error_description":"private"}"#.as_slice(),
+            OAuthError::RefreshRejected,
+        ),
+        (
+            200,
+            br#"{"error":"bad_refresh_token","error_description":"private"}"#.as_slice(),
+            OAuthError::RefreshRejected,
+        ),
+        (
+            500,
+            br#"{"error":"server_error","error_description":"private"}"#.as_slice(),
+            OAuthError::Provider,
+        ),
+        (
+            429,
+            br#"{"error":"temporarily_unavailable","error_description":"private"}"#.as_slice(),
+            OAuthError::Provider,
+        ),
+    ] {
+        let http = |_request: oauth2::HttpRequest| {
+            Ok::<_, std::io::Error>(
+                oauth2::http::Response::builder()
+                    .status(status)
+                    .header("content-type", "application/json")
+                    .body(body.to_vec())
+                    .unwrap(),
+            )
+        };
+        assert_eq!(
+            pr_sniper_lib::github::oauth::refresh_token_with(
+                oauth2::RefreshToken::new("refresh-secret".into()),
+                UNIX_EPOCH,
+                &http,
+            ),
+            Err(expected),
+            "status={status}"
+        );
+    }
+
+    let offline = |_request: oauth2::HttpRequest| {
+        Err::<oauth2::HttpResponse, _>(std::io::Error::other("offline"))
+    };
+    assert_eq!(
+        pr_sniper_lib::github::oauth::refresh_token_with(
+            oauth2::RefreshToken::new("refresh-secret".into()),
+            UNIX_EPOCH,
+            &offline,
+        ),
+        Err(OAuthError::Network)
+    );
+}
+
+#[test]
 fn refresh_rotates_the_complete_device_flow_token_pair_without_a_client_secret() {
     let http = |request: oauth2::HttpRequest| {
         let fields: BTreeMap<String, String> =
