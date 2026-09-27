@@ -30,7 +30,10 @@ checks may admit new detections. Settings must preview the real filtered open
 backlog and support new-only or explicitly selected existing revisions plus new
 work. Existing configurations pause after upgrade without deleting history.
 An empty effective watched-author filter means all authors after activation,
-but trust remains separate. This amendment changes detection admission only.
+but trust remains separate. Filter-only edits preserve the confirmed boundary,
+baseline, initial selection and admitted heads while current polling uses the
+current effective filter; stale previews and in-flight reads remain pinned to
+their starting filter. This amendment changes detection admission only.
 
 ## Problem and Users
 
@@ -130,6 +133,7 @@ Electron remains a fallback only if later Windows or process-control evidence ex
 - PR-054 [AC-002, AC-007, AC-018]: `ProviderId`, `ProviderAccountId` and stable provider-repository identity shall be provider-neutral concepts. Future Azure DevOps support shall connect accounts independently, discover or directly resolve repositories accessible to each account, require explicit repository selection and preserve account-addressed credentials, cache isolation and visible acting identity without a global active account or silent reassignment; it shall not appear connected, selectable or functional before its provider and authentication exist.
 - PR-055 [AC-004, AC-005, AC-006, AC-018]: An enabled, account-bound repository shall not admit timer or manual-check detections until the user confirms a native monitoring scope from a complete provider preview. Settings shall show the matching count before confirmation and shall not preselect existing pull requests. Scope shall be new pull requests only or an explicitly selected subset of matching open, non-draft existing revisions plus new pull requests; existing configurations without valid scope shall pause new detections and retain historical jobs.
 - PR-056 [AC-005, AC-006, AC-011, AC-018]: Monitoring activation shall persist the stable binding, effective watched-author/reviewer filter, a latest all-state pull-request-number watermark, immutable initial heads, current observed heads and durably admitted heads. Unknown pull requests at or below the watermark shall be conservatively baselined on first observation, unchanged unselected heads shall remain excluded, matching changed heads shall become eligible, and admitted heads shall remain admitted across polling and restart independently of later review state. An empty effective watched-author filter shall match all authors without establishing trust; requested-reviewer matching shall apply only when enabled.
+- PR-057 [AC-003, AC-005, AC-006, AC-018]: Filter-only edits shall preserve an active monitoring scope's creation watermark, baseline heads, initial selection and admitted heads while each poll applies the current effective filter. Filter changes shall invalidate stale previews and stale in-flight results without requiring scope reconfirmation or broadly admitting unchanged old heads.
 
 ## Product Decisions
 

@@ -1319,7 +1319,6 @@ fn activation_matches_context(
         && activation.name == context.name
         && activation.account_id == context.account_id
         && activation.provider_repository_id == context.provider_repository_id
-        && activation.trigger_policy == context.trigger_policy
 }
 
 fn activation_matches_configuration(
@@ -1332,7 +1331,6 @@ fn activation_matches_configuration(
         && configuration.provider_account_id.as_deref() == Some(&activation.account_id)
         && configuration.provider_repository_id.as_deref()
             == Some(&activation.provider_repository_id)
-        && configuration.trigger_policy.as_deref() == Some(&activation.trigger_policy)
 }
 
 fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {

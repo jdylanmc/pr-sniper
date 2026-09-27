@@ -180,6 +180,13 @@ all-state pull-request number, immutable initial heads, observed heads and
 durably admitted heads. Missing, stale or invalid activation blocks timer and
 **Check Now** detection rather than enabling a backlog.
 
+Filter-only edits preserve the confirmed creation watermark, baseline heads,
+initial selection and admitted heads; every poll applies the current effective
+author/reviewer filter. An unchanged excluded old head remains excluded when a
+filter widens, while its later matching head qualifies. Preview/apply and
+already-running polls still pin the filter they started with and reject stale
+results.
+
 Polling reads paginated open pull-request metadata through the repository's
 connected OAuth account. A populated watched-author filter or a request for the
 signed-in account as reviewer admits a non-draft revision. An empty effective

@@ -59,6 +59,9 @@ No release/versioning policy has been established yet.
   new heads remain admitted across polls and restart. An empty watched-author
   filter means all authors after activation without making those authors trusted;
   requested-reviewer matching applies only when that trigger is enabled.
+  Filter-only edits preserve the confirmed boundary and admitted-head history
+  while each poll uses the current filter; stale previews and in-flight results
+  remain fenced to their original filter.
   Persist acting-account and assignment schedule health plus revision-keyed
   detection history, deduplicate repeat observations, and retain superseded,
   ineligible or configuration-invalidated revisions as visibly non-actionable.

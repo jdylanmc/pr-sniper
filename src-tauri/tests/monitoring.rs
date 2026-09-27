@@ -724,6 +724,227 @@ fn changed_old_head_remains_eligible_after_an_ineligible_observation() {
 }
 
 #[test]
+fn filter_only_edits_preserve_scope_but_do_not_admit_unchanged_old_heads() {
+    let (_root, store) = unactivated_store();
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].watched_authors = vec![WatchedIdentity {
+        id: "11".into(),
+        login: "initial-filter".into(),
+    }];
+    set_settings(&store, &settings);
+    let old = pull(
+        "1",
+        1,
+        "12",
+        "new-filter-author",
+        &[],
+        HEAD_A,
+        "2026-09-25T10:00:00Z",
+    );
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let preview = stage_preview(&mut monitor, &store, vec![old.clone()], 1);
+    assert!(preview.candidates.is_empty());
+    apply_preview(
+        &mut monitor,
+        &store,
+        &preview.preview_id,
+        ActivationMode::NewOnly,
+        &[],
+        0,
+        1_800_000_000,
+    )
+    .unwrap();
+
+    settings.repositories[0].watched_authors = vec![WatchedIdentity {
+        id: "12".into(),
+        login: "new-filter-author".into(),
+    }];
+    set_settings(&store, &settings);
+    monitor
+        .synchronize_configuration(
+            &store,
+            &available_accounts(&[(ACCOUNT_ID, "current-login")]),
+            1_800_000_005,
+        )
+        .unwrap();
+    assert!(
+        monitor
+            .activation_status(&settings, &settings.repositories[0].id)
+            .active
+    );
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_010,
+        vec![old],
+        "current-login",
+    )
+    .unwrap();
+    assert!(store.load_queue().unwrap().is_empty());
+
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_020,
+        vec![pull(
+            "1",
+            1,
+            "12",
+            "new-filter-author",
+            &[],
+            HEAD_B,
+            "2026-09-25T10:01:00Z",
+        )],
+        "current-login",
+    )
+    .unwrap();
+    assert_eq!(store.load_queue().unwrap().len(), 1);
+    assert_eq!(store.load_queue().unwrap()[0].head_sha, HEAD_B);
+}
+
+#[test]
+fn filter_change_rejects_an_inflight_ticket_without_revoking_activation() {
+    let (_root, store) = store();
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].watched_authors = vec![WatchedIdentity {
+        id: "11".into(),
+        login: "old-filter".into(),
+    }];
+    set_settings(&store, &settings);
+    let mut state = store.load_monitoring_state().unwrap();
+    let context = Monitor::activation_context(&settings, &settings.repositories[0].id).unwrap();
+    state
+        .activations
+        .get_mut(&settings.repositories[0].id)
+        .unwrap()
+        .trigger_policy = context.trigger_policy;
+    store.save_monitoring_state(&state).unwrap();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let ticket = monitor
+        .prepare_checks(&store, 1_800_000_000, true)
+        .unwrap()
+        .remove(0);
+
+    settings.repositories[0].watched_authors = vec![WatchedIdentity {
+        id: "12".into(),
+        login: "new-filter".into(),
+    }];
+    set_settings(&store, &settings);
+    assert!(monitor
+        .finish(
+            &store,
+            ticket,
+            Ok(poll_result(
+                vec![pull(
+                    "1",
+                    1,
+                    "11",
+                    "old-filter",
+                    &[],
+                    HEAD_A,
+                    "2026-09-25T10:00:00Z",
+                )],
+                "current-login",
+            )),
+            1_800_000_001,
+        )
+        .is_err());
+    assert!(store.load_queue().unwrap().is_empty());
+    assert!(
+        monitor
+            .activation_status(&settings, &settings.repositories[0].id)
+            .active
+    );
+}
+
+#[test]
+fn selected_old_head_reactivates_without_duplication_after_filter_roundtrip() {
+    let (_root, store) = unactivated_store();
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].watched_authors = vec![WatchedIdentity {
+        id: "11".into(),
+        login: "selected-author".into(),
+    }];
+    set_settings(&store, &settings);
+    let selected = pull(
+        "1",
+        1,
+        "11",
+        "selected-author",
+        &[],
+        HEAD_A,
+        "2026-09-25T10:00:00Z",
+    );
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let preview = stage_preview(&mut monitor, &store, vec![selected.clone()], 1);
+    apply_preview(
+        &mut monitor,
+        &store,
+        &preview.preview_id,
+        ActivationMode::SelectedExisting,
+        &["1".into()],
+        0,
+        1_800_000_000,
+    )
+    .unwrap();
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_010,
+        vec![selected.clone()],
+        "current-login",
+    )
+    .unwrap();
+    assert_eq!(store.load_queue().unwrap().len(), 1);
+
+    settings.repositories[0].watched_authors = vec![WatchedIdentity {
+        id: "12".into(),
+        login: "other-author".into(),
+    }];
+    set_settings(&store, &settings);
+    monitor
+        .synchronize_configuration(
+            &store,
+            &available_accounts(&[(ACCOUNT_ID, "current-login")]),
+            1_800_000_015,
+        )
+        .unwrap();
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_020,
+        vec![selected.clone()],
+        "current-login",
+    )
+    .unwrap();
+    assert_ne!(store.load_queue().unwrap()[0].waiting, WAITING_HUMAN_START);
+
+    settings.repositories[0].watched_authors = vec![WatchedIdentity {
+        id: "11".into(),
+        login: "selected-author".into(),
+    }];
+    set_settings(&store, &settings);
+    monitor
+        .synchronize_configuration(
+            &store,
+            &available_accounts(&[(ACCOUNT_ID, "current-login")]),
+            1_800_000_025,
+        )
+        .unwrap();
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_030,
+        vec![selected],
+        "current-login",
+    )
+    .unwrap();
+    let jobs = store.load_queue().unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].waiting, WAITING_HUMAN_START);
+}
+
+#[test]
 fn draft_and_nonmatching_preview_heads_are_baselined_before_filtering() {
     let (_root, store) = unactivated_store();
     let mut settings = store.load_settings().unwrap();

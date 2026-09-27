@@ -29,7 +29,9 @@ Existing configurations pause new detection after upgrade while preserving
 history. An empty effective watched-author filter means all authors only after
 activation and does not establish trust. This amendment changes detection
 admission only; it does not authorize review execution, comments, approval or
-merge.
+merge. Filter-only edits preserve the confirmed scope boundary and head history
+while each poll uses the current effective filter; previews and in-flight checks
+remain pinned to their starting filter.
 
 ## Acceptance Criteria
 
