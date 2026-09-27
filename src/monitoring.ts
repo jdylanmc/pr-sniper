@@ -52,6 +52,44 @@ interface Job {
 interface MonitoringSnapshot {
   health: Health[];
   jobs: Job[];
+  reviews?: ReviewCandidate[];
+}
+
+interface ReviewCandidate {
+  key: string;
+  assignment_id: string;
+  agent_name: string;
+  job: Job;
+  trust_required: boolean;
+  blocked: string | null;
+  run: {
+    phase: string;
+    error: string | null;
+    selection: { agent: { model: string; ai_account: { account_id: string } } };
+    operation: NonNullable<Health["operation"]>;
+    result: {
+      output: {
+        synopsis: string;
+        decision: "machine_sign_off" | "human_input_required";
+        files: { path: string; explanation: string; order: number }[];
+        findings: {
+          path: string;
+          side: string;
+          line: number;
+          severity: string;
+          title: string;
+          explanation: string;
+          confidence: number;
+        }[];
+      };
+      model: string;
+      session_id: string;
+      runtime_version: string;
+      input_tokens: number;
+      output_tokens: number;
+      tool_calls: number;
+    } | null;
+  } | null;
 }
 
 const time = (value: number | null) =>
@@ -87,9 +125,9 @@ function waitingLabel(waiting: string) {
     case "trust_confirmation":
       return "Waiting for explicit trust confirmation; no review has started.";
     case "human_start":
-      return "Automatic start is disabled; manual review start is not implemented here.";
+      return "Automatic start is disabled; start an assigned Agent below.";
     case "agent_unavailable":
-      return "Automatic start is configured, but review-agent support is not implemented here.";
+      return "Automatic start is configured; an available assigned Agent can review this revision.";
     case "account_disconnected":
       return "Not actionable: the acting GitHub account is disconnected.";
     case "repository_disabled":
@@ -118,19 +156,185 @@ export function renderMonitoring(
   showError: (message: string) => void,
 ) {
   root.innerHTML = `<button id="check-now" type="button">Check Now</button>
-    <p>Monitoring runs only while the menu-bar app is active. Checks read GitHub metadata and queue eligible revisions; they never start an agent or publish comments.</p>
+    <p>Monitoring and assigned reviews run while the menu-bar app is active. Reviews use read-only tools and stay local; nothing is published to GitHub.</p>
+    <h2>Agent reviews</h2><section id="agent-reviews"></section>
     <h2>Schedule health</h2><section id="schedule-health"></section>
     <h2>Detected pull requests</h2><section id="review-jobs"></section>`;
   const check = root.querySelector<HTMLButtonElement>("#check-now")!;
   const health = root.querySelector<HTMLElement>("#schedule-health")!;
   const jobs = root.querySelector<HTMLElement>("#review-jobs")!;
+  const reviews = root.querySelector<HTMLElement>("#agent-reviews")!;
+  const trust = new Set<string>();
+  const expanded = new Set<string>();
+  const pending = new Set<string>();
+  let reviewsSignature = "";
   let loading = false;
+
+  async function act(candidate: ReviewCandidate, cancel: boolean) {
+    if (pending.has(candidate.key)) return;
+    pending.add(candidate.key);
+    try {
+      if (cancel) {
+        await invoke("cancel_review", {
+          operationId: candidate.run!.operation.id,
+        });
+      } else {
+        await invoke("start_review", {
+          candidateKey: candidate.key,
+          confirmTrust: trust.has(candidate.key),
+        });
+        trust.delete(candidate.key);
+      }
+    } catch (error) {
+      showError(
+        typeof error === "string"
+          ? error
+          : "Review action failed. Check local diagnostics.",
+      );
+    } finally {
+      pending.delete(candidate.key);
+      reviewsSignature = "";
+      await refresh();
+    }
+  }
+
+  function renderReviews(candidates: ReviewCandidate[]) {
+    reviews.replaceChildren();
+    if (!candidates.length) {
+      reviews.textContent =
+        "No assigned reviews. Configure an Agent with a Copilot account and model, assign it to a repository, then detect an eligible revision.";
+      return;
+    }
+    candidates.sort(
+      (a, b) => Number(!!b.run?.result) - Number(!!a.run?.result),
+    );
+    const running = candidates.some(
+      (c) => c.run?.operation.state === "running",
+    );
+    for (const candidate of candidates) {
+      const row = document.createElement("article");
+      row.className = "review-run";
+      const heading = document.createElement("h3");
+      heading.textContent = `${candidate.job.repository_name} #${candidate.job.number} / ${candidate.agent_name}`;
+      const identity = document.createElement("p");
+      identity.className = "hint";
+      identity.textContent = `GitHub: ${candidate.job.account_login} (${candidate.job.account_id}). Head ${candidate.job.head_sha}.`;
+      row.append(heading, identity);
+      const run = candidate.run;
+      const state = document.createElement("p");
+      state.textContent = run
+        ? `${run.phase}. State: ${run.operation.state}; attempt ${run.operation.attempt_count}; deadline ${time(run.operation.retry_deadline)}. Copilot account: ${run.selection.agent.ai_account.account_id}; model: ${run.selection.agent.model}.`
+        : (candidate.blocked ??
+          (candidate.trust_required
+            ? "Trust confirmation required for this exact revision."
+            : "Waiting for manual start or the automatic start gate."));
+      row.append(state);
+      if (run?.error) {
+        const error = document.createElement("p");
+        error.className = "review-failure";
+        error.textContent = run.error;
+        row.append(error);
+      }
+      if (candidate.blocked && run) {
+        const blocked = document.createElement("p");
+        blocked.textContent = candidate.blocked;
+        row.append(blocked);
+      }
+      const result = run?.result;
+      if (result) {
+        const decision = document.createElement("p");
+        decision.className = "review-decision";
+        decision.textContent =
+          result.output.decision === "machine_sign_off"
+            ? "Machine-cleared. Automated review completed; final human review required. This is not GitHub approval."
+            : "Human input required. Automated review completed; inspect the findings and finish the review.";
+        const synopsis = document.createElement("p");
+        synopsis.textContent = result.output.synopsis;
+        row.append(decision, synopsis);
+        for (const finding of result.output.findings) {
+          const item = document.createElement("details");
+          const summary = document.createElement("summary");
+          summary.textContent = `${finding.severity}: ${finding.title} (${finding.path}, ${finding.side} line ${finding.line}; confidence ${finding.confidence}%)`;
+          const explanation = document.createElement("p");
+          explanation.textContent = finding.explanation;
+          item.append(summary, explanation);
+          row.append(item);
+        }
+        const guide = document.createElement("details");
+        guide.open = expanded.has(candidate.key);
+        guide.addEventListener("toggle", () => {
+          if (guide.open) expanded.add(candidate.key);
+          else expanded.delete(candidate.key);
+        });
+        const summary = document.createElement("summary");
+        summary.textContent = `Complete file guide (${result.output.files.length} files)`;
+        const list = document.createElement("ol");
+        for (const file of result.output.files) {
+          const item = document.createElement("li");
+          const path = document.createElement("strong");
+          path.textContent = file.path;
+          item.append(path, `: ${file.explanation}`);
+          list.append(item);
+        }
+        guide.append(summary, list);
+        const usage = document.createElement("p");
+        usage.className = "hint";
+        usage.textContent = `Session ${result.session_id}; runtime ${result.runtime_version}; model ${result.model}. Tokens: ${result.input_tokens} input, ${result.output_tokens} output. Read-tool calls: ${result.tool_calls}.`;
+        row.append(guide, usage);
+      } else if (!candidate.blocked) {
+        const isRunning = run?.operation.state === "running";
+        let consent: HTMLInputElement | undefined;
+        if (candidate.trust_required && !isRunning) {
+          const label = document.createElement("label");
+          consent = document.createElement("input");
+          consent.type = "checkbox";
+          consent.checked = trust.has(candidate.key);
+          label.append(
+            consent,
+            "I trust this exact revision for read-only AI review. This does not allow code execution or publication.",
+          );
+          row.append(label);
+        }
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = isRunning
+          ? "Cancel review"
+          : run
+            ? "Retry review"
+            : "Start review";
+        const updateDisabled = () => {
+          button.disabled =
+            pending.has(candidate.key) ||
+            (!isRunning &&
+              (running ||
+                (candidate.trust_required && !trust.has(candidate.key))));
+        };
+        consent?.addEventListener("change", () => {
+          if (consent.checked) trust.add(candidate.key);
+          else trust.delete(candidate.key);
+          updateDisabled();
+        });
+        updateDisabled();
+        button.addEventListener("click", () => {
+          button.disabled = true;
+          void act(candidate, isRunning);
+        });
+        row.append(button);
+      }
+      reviews.append(row);
+    }
+  }
 
   async function refresh() {
     if (loading || !root.isConnected) return;
     loading = true;
     try {
       const snapshot = await invoke<MonitoringSnapshot>("monitoring_snapshot");
+      const signature = JSON.stringify(snapshot.reviews ?? []);
+      if (signature !== reviewsSignature) {
+        renderReviews(snapshot.reviews ?? []);
+        reviewsSignature = signature;
+      }
       health.replaceChildren();
       jobs.replaceChildren();
       if (!snapshot.health.length) {

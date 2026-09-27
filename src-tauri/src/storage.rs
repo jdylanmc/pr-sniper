@@ -431,6 +431,19 @@ impl Store {
         self.write_state("queue.json", jobs)
     }
 
+    pub fn load_reviews(&self) -> Result<Vec<crate::review::ReviewRun>, String> {
+        match fs::read(self.root.join("state/reviews.json")) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|_| "Review state is invalid; execution cannot resume.".into()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+            Err(_) => Err("Cannot read review state. Check local storage permissions.".into()),
+        }
+    }
+
+    pub fn save_reviews(&self, reviews: &[crate::review::ReviewRun]) -> Result<(), String> {
+        self.write_state("reviews.json", reviews)
+    }
+
     pub fn load_monitoring_state(&self) -> Result<crate::monitoring::MonitoringState, String> {
         match fs::read(self.root.join("state/monitoring.json")) {
             Ok(bytes) => serde_json::from_slice(&bytes)
