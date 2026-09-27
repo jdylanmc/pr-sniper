@@ -2,6 +2,7 @@ mod copilot;
 pub mod discovery;
 mod doctrine_seeds;
 pub mod github;
+pub mod monitoring;
 pub mod policy;
 pub mod startup;
 pub mod storage;
@@ -24,11 +25,13 @@ use tauri::{
 
 struct Host {
     store: Mutex<Store>,
+    monitor: Mutex<monitoring::Monitor>,
     error: Mutex<Option<String>>,
     isolated: bool,
     quitting: AtomicBool,
     registration: LoginRegistration,
     github_auth: Mutex<GithubAuth>,
+    github_generations: Mutex<BTreeMap<String, u64>>,
     github_credentials:
         github::token_store::RotationSafeStore<github::macos_keychain::MacKeychainStore>,
     github_legacy_credentials:
@@ -93,6 +96,7 @@ enum GithubAuthFailure {
     Denied,
     DeviceFlowDisabled,
     Network,
+    RateLimited,
     Provider,
     InvalidResponse,
     BrowserOpen,
@@ -134,6 +138,8 @@ enum GithubAccountView {
         provider: &'static str,
         account_id: String,
         login: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        warning: Option<GithubAuthFailure>,
     },
     ReconnectRequired {
         provider: &'static str,
@@ -170,7 +176,18 @@ impl GithubAuth {
                     provider: "github",
                     account_id: identity.id.clone(),
                     login: identity.login.clone(),
+                    warning: None,
                 },
+                GithubAccountState::ReconnectRequired { identity, reason }
+                    if reason.retryable_without_reconnect() =>
+                {
+                    GithubAccountView::Connected {
+                        provider: "github",
+                        account_id: identity.id.clone(),
+                        login: identity.login.clone(),
+                        warning: Some(*reason),
+                    }
+                }
                 GithubAccountState::ReconnectRequired { identity, reason } => {
                     GithubAccountView::ReconnectRequired {
                         provider: "github",
@@ -181,6 +198,13 @@ impl GithubAuth {
                 }
             })
             .collect();
+        GithubAuthView {
+            accounts,
+            flow: self.flow_view(),
+        }
+    }
+
+    fn flow_view(&self) -> GithubFlowView {
         let flow = if let Some(pending) = self.pending.as_ref() {
             GithubFlowView::PendingAccountConfirmation {
                 account_id: pending.identity.id.clone(),
@@ -198,18 +222,34 @@ impl GithubAuth {
         } else {
             GithubFlowView::Idle
         };
-        GithubAuthView { accounts, flow }
+        flow
     }
 
     fn copilot_view(&self) -> GithubAuthView {
-        let mut view = self.view();
-        for account in &mut view.accounts {
-            match account {
-                GithubAccountView::Connected { provider, .. }
-                | GithubAccountView::ReconnectRequired { provider, .. } => *provider = "copilot",
-            }
+        let accounts = self
+            .accounts
+            .values()
+            .map(|state| match state {
+                GithubAccountState::Connected(identity) => GithubAccountView::Connected {
+                    provider: "copilot",
+                    account_id: identity.id.clone(),
+                    login: identity.login.clone(),
+                    warning: None,
+                },
+                GithubAccountState::ReconnectRequired { identity, reason } => {
+                    GithubAccountView::ReconnectRequired {
+                        provider: "copilot",
+                        account_id: identity.id.clone(),
+                        login: identity.login.clone(),
+                        reason: *reason,
+                    }
+                }
+            })
+            .collect();
+        GithubAuthView {
+            accounts,
+            flow: self.flow_view(),
         }
-        view
     }
 
     fn set_failure(&mut self, account_id: &str, reason: GithubAuthFailure) {
@@ -222,14 +262,105 @@ impl GithubAuth {
         }
     }
 
-    fn apply_connection_result<T>(
+    fn account_session_allowed(&self, account_id: &str) -> Result<(), ConnectionError> {
+        match self.accounts.get(account_id) {
+            Some(GithubAccountState::Connected(_)) => Ok(()),
+            Some(GithubAccountState::ReconnectRequired { reason, .. })
+                if reason.retryable_without_reconnect() =>
+            {
+                Ok(())
+            }
+            Some(GithubAccountState::ReconnectRequired { reason, .. }) => {
+                Err(reason.connection_error())
+            }
+            None => Err(ConnectionError::SignedOut),
+        }
+    }
+
+    fn publish_session_success(
         &mut self,
         account_id: &str,
-        result: &Result<T, ConnectionError>,
-    ) {
-        if matches!(result, Err(ConnectionError::MissingScope)) {
-            self.set_failure(account_id, GithubAuthFailure::MissingScope);
+        identity: github::Identity,
+    ) -> Result<(), ConnectionError> {
+        self.account_session_allowed(account_id)?;
+        if identity.id != account_id {
+            self.publish_session_failure(account_id, ConnectionError::WrongIdentity);
+            return Err(ConnectionError::WrongIdentity);
         }
+        self.accounts
+            .insert(account_id.into(), GithubAccountState::Connected(identity));
+        Ok(())
+    }
+
+    fn publish_session_failure(&mut self, account_id: &str, error: ConnectionError) {
+        let reason = failure_from_connection_error(error);
+        let Some(state) = self.accounts.get(account_id) else {
+            return;
+        };
+        if matches!(
+            state,
+            GithubAccountState::ReconnectRequired {
+                reason: GithubAuthFailure::Disconnected
+                    | GithubAuthFailure::DisconnectPending
+                    | GithubAuthFailure::DisconnectFailed,
+                ..
+            }
+        ) || (reason.retryable_without_reconnect()
+            && matches!(
+                state,
+                GithubAccountState::ReconnectRequired {
+                    reason: current,
+                    ..
+                } if !current.retryable_without_reconnect()
+            ))
+        {
+            return;
+        }
+        self.set_failure(account_id, reason);
+    }
+
+    fn publish_restored_identity(
+        &mut self,
+        expected: github::Identity,
+        result: Result<github::Identity, ConnectionError>,
+    ) {
+        let state = match result {
+            Ok(identity) if identity.id == expected.id => GithubAccountState::Connected(identity),
+            Ok(_) => GithubAccountState::ReconnectRequired {
+                identity: expected,
+                reason: GithubAuthFailure::WrongIdentity,
+            },
+            Err(error) => GithubAccountState::ReconnectRequired {
+                identity: expected,
+                reason: failure_from_connection_error(error),
+            },
+        };
+        let id = match &state {
+            GithubAccountState::Connected(identity)
+            | GithubAccountState::ReconnectRequired { identity, .. } => identity.id.clone(),
+        };
+        self.accounts.insert(id, state);
+    }
+
+    fn monitoring_accounts(&self) -> BTreeMap<String, monitoring::AccountAvailability> {
+        self.accounts
+            .iter()
+            .map(|(id, state)| {
+                let (identity, connected) = match state {
+                    GithubAccountState::Connected(identity) => (identity, true),
+                    GithubAccountState::ReconnectRequired { identity, reason } => {
+                        (identity, reason.retryable_without_reconnect())
+                    }
+                };
+                (
+                    id.clone(),
+                    monitoring::AccountAvailability {
+                        login: identity.login.clone(),
+                        connected,
+                    },
+                )
+            })
+            .collect()
     }
 
     fn start_attempt(
@@ -301,9 +432,6 @@ impl GithubAuth {
                 let duplicate_account =
                     expected_account_id.is_none() && self.accounts.contains_key(&identity.id);
                 if wrong_identity || duplicate_account {
-                    if let Some(expected) = expected_account_id {
-                        self.set_failure(&expected, GithubAuthFailure::WrongIdentity);
-                    }
                     self.failure = Some(GithubAuthFailure::WrongIdentity);
                 } else {
                     self.pending = Some(PendingGithubAccount { identity, pair });
@@ -312,9 +440,6 @@ impl GithubAuth {
                 }
             }
             Err(reason) => {
-                if let Some(expected) = expected_account_id {
-                    self.set_failure(&expected, reason);
-                }
                 if reason != GithubAuthFailure::Cancelled {
                     self.failure = Some(reason);
                 }
@@ -393,10 +518,7 @@ impl GithubAuth {
             let pair = match store.refresh_if_needed(&id, SystemTime::now(), |current| {
                 transport
                     .refresh(current.refresh_token())
-                    .map_err(|error| match error {
-                        github::oauth::OAuthError::Network => RotationError::Network,
-                        _ => RotationError::Provider,
-                    })
+                    .map_err(oauth_refresh_rotation_error)
             }) {
                 Ok(pair) => pair,
                 Err(error) => {
@@ -420,30 +542,7 @@ impl GithubAuth {
             let current = github::http::HttpTransport::from_token_pair(&pair)
                 .map(github::provider::GithubClient::new)
                 .and_then(|client| client.current_identity());
-            match current {
-                Ok(current) if current.id == identity.id => {
-                    auth.accounts
-                        .insert(current.id.clone(), GithubAccountState::Connected(current));
-                }
-                Ok(_) => {
-                    auth.accounts.insert(
-                        identity.id.clone(),
-                        GithubAccountState::ReconnectRequired {
-                            identity,
-                            reason: GithubAuthFailure::Provider,
-                        },
-                    );
-                }
-                Err(error) => {
-                    auth.accounts.insert(
-                        identity.id.clone(),
-                        GithubAccountState::ReconnectRequired {
-                            identity,
-                            reason: failure_from_connection_error(error),
-                        },
-                    );
-                }
-            }
+            auth.publish_restored_identity(identity, current);
         }
         Ok(auth)
     }
@@ -500,6 +599,43 @@ impl GithubAuth {
     }
 }
 
+impl GithubAuthFailure {
+    fn retryable_without_reconnect(self) -> bool {
+        matches!(
+            self,
+            Self::Network
+                | Self::RateLimited
+                | Self::Provider
+                | Self::InvalidResponse
+                | Self::Timeout
+        )
+    }
+
+    fn connection_error(self) -> ConnectionError {
+        match self {
+            Self::Expired
+            | Self::Disconnected
+            | Self::DisconnectPending
+            | Self::DisconnectFailed => ConnectionError::SignedOut,
+            Self::WrongIdentity => ConnectionError::WrongIdentity,
+            Self::MissingScope => ConnectionError::MissingScope,
+            Self::CredentialsUnavailable
+            | Self::AuthenticationChanged
+            | Self::VerificationPending
+            | Self::VerificationRequired => ConnectionError::Configuration,
+            Self::Network => ConnectionError::Network,
+            Self::RateLimited => ConnectionError::RateLimited,
+            Self::InvalidResponse => ConnectionError::InvalidResponse,
+            Self::Timeout => ConnectionError::Timeout,
+            Self::Provider
+            | Self::Denied
+            | Self::DeviceFlowDisabled
+            | Self::BrowserOpen
+            | Self::Cancelled => ConnectionError::ProviderFailure,
+        }
+    }
+}
+
 fn failure_from_oauth_error(error: github::oauth::OAuthError) -> GithubAuthFailure {
     match error {
         github::oauth::OAuthError::InvalidResponse => GithubAuthFailure::InvalidResponse,
@@ -511,14 +647,18 @@ fn failure_from_oauth_error(error: github::oauth::OAuthError) -> GithubAuthFailu
         github::oauth::OAuthError::Denied => GithubAuthFailure::Denied,
         github::oauth::OAuthError::DeviceFlowDisabled => GithubAuthFailure::DeviceFlowDisabled,
         github::oauth::OAuthError::Expired => GithubAuthFailure::Expired,
+        github::oauth::OAuthError::RefreshRejected => GithubAuthFailure::Expired,
     }
 }
 
 fn failure_from_connection_error(error: ConnectionError) -> GithubAuthFailure {
     match error {
-        ConnectionError::Network | ConnectionError::Timeout => GithubAuthFailure::Network,
+        ConnectionError::Network => GithubAuthFailure::Network,
+        ConnectionError::RateLimited => GithubAuthFailure::RateLimited,
+        ConnectionError::Timeout => GithubAuthFailure::Timeout,
         ConnectionError::InvalidResponse => GithubAuthFailure::InvalidResponse,
         ConnectionError::SignedOut => GithubAuthFailure::Expired,
+        ConnectionError::WrongIdentity => GithubAuthFailure::WrongIdentity,
         ConnectionError::MissingScope => GithubAuthFailure::MissingScope,
         ConnectionError::Configuration => GithubAuthFailure::CredentialsUnavailable,
         _ => GithubAuthFailure::Provider,
@@ -530,11 +670,22 @@ fn apply_account_connection_failure<T>(
     account_id: &str,
     result: &Result<T, ConnectionError>,
 ) {
-    if !matches!(result, Err(ConnectionError::MissingScope)) {
-        return;
-    }
-    if let Ok(mut auth) = host.github_auth.lock() {
-        auth.apply_connection_result(account_id, result);
+    if let Err(error) = result {
+        if matches!(
+            error,
+            ConnectionError::SignedOut
+                | ConnectionError::WrongIdentity
+                | ConnectionError::MissingScope
+                | ConnectionError::Network
+                | ConnectionError::Timeout
+                | ConnectionError::RateLimited
+                | ConnectionError::ProviderFailure
+                | ConnectionError::InvalidResponse
+        ) {
+            if let Ok(mut auth) = host.github_auth.lock() {
+                auth.publish_session_failure(account_id, *error);
+            }
+        }
     }
 }
 
@@ -569,6 +720,18 @@ fn rotation_connection_error(error: github::token_store::RotationError) -> Conne
     }
 }
 
+fn oauth_refresh_rotation_error(
+    error: github::oauth::OAuthError,
+) -> github::token_store::RotationError {
+    match error {
+        github::oauth::OAuthError::Network => github::token_store::RotationError::Network,
+        github::oauth::OAuthError::RefreshRejected => {
+            github::token_store::RotationError::ReconnectRequired
+        }
+        _ => github::token_store::RotationError::Provider,
+    }
+}
+
 fn github_session(
     host: &Host,
     account_id: &str,
@@ -581,6 +744,10 @@ fn github_session(
 > {
     use github::token_store::ProviderAccountId;
     let result = (|| {
+        host.github_auth
+            .lock()
+            .map_err(|_| ConnectionError::Configuration)?
+            .account_session_allowed(account_id)?;
         let transport = github::oauth::GithubOAuthHttp::new().map_err(|error| match error {
             github::oauth::OAuthError::Network => ConnectionError::Network,
             github::oauth::OAuthError::InvalidResponse => ConnectionError::InvalidResponse,
@@ -592,26 +759,22 @@ fn github_session(
             .refresh_if_needed(&key, SystemTime::now(), |current| {
                 transport
                     .refresh(current.refresh_token())
-                    .map_err(|error| match error {
-                        github::oauth::OAuthError::Network => {
-                            github::token_store::RotationError::Network
-                        }
-                        _ => github::token_store::RotationError::Provider,
-                    })
+                    .map_err(oauth_refresh_rotation_error)
             })
             .map_err(rotation_connection_error)?;
         let client = github::provider::GithubClient::new(
             github::http::HttpTransport::from_token_pair(&pair)?,
         );
         let identity = client.current_identity()?;
-        if identity.id != account_id {
-            return Err(ConnectionError::WrongIdentity);
-        }
+        host.github_auth
+            .lock()
+            .map_err(|_| ConnectionError::Configuration)?
+            .publish_session_success(account_id, identity.clone())?;
         Ok((identity, client))
     })();
     if let Err(error) = result {
         if let Ok(mut auth) = host.github_auth.lock() {
-            auth.set_failure(account_id, failure_from_connection_error(error));
+            auth.publish_session_failure(account_id, error);
         }
     }
     result
@@ -631,6 +794,188 @@ struct Snapshot {
 struct GithubMetadata {
     connection: Connection,
     pull_requests: Vec<PullRequest>,
+}
+
+#[derive(Serialize)]
+struct MonitoringSnapshot {
+    health: Vec<monitoring::ScheduleHealth>,
+    jobs: Vec<monitoring::QueueJob>,
+}
+
+#[tauri::command]
+async fn monitoring_snapshot(app: tauri::AppHandle) -> Result<MonitoringSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<Host>();
+        let _generation = host
+            .github_generations
+            .lock()
+            .map_err(|_| "Monitoring coordination is unavailable.")?;
+        let accounts = host
+            .github_auth
+            .lock()
+            .map_err(|_| "GitHub connection state is unavailable.")?
+            .monitoring_accounts();
+        let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+        let mut monitor = host
+            .monitor
+            .lock()
+            .map_err(|_| "Monitoring is unavailable.")?;
+        monitor.synchronize_configuration(&store, &accounts, now_seconds()?)?;
+        Ok(MonitoringSnapshot {
+            health: monitor.snapshot(),
+            jobs: store.load_queue()?,
+        })
+    })
+    .await
+    .map_err(|_| "Monitoring state could not be read.".to_string())?
+}
+
+fn now_seconds() -> Result<i64, String> {
+    SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .map_err(|_| "System clock precedes the Unix epoch.".into())
+}
+
+fn prepare_monitoring_checks(
+    host: &Host,
+    now: i64,
+    immediate: bool,
+) -> Result<Vec<monitoring::PollTicket>, String> {
+    let generations = host
+        .github_generations
+        .lock()
+        .map_err(|_| "Monitoring coordination is unavailable.")?;
+    let accounts = host
+        .github_auth
+        .lock()
+        .map_err(|_| "GitHub connection state is unavailable.")?
+        .monitoring_accounts();
+    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+    let mut monitor = host
+        .monitor
+        .lock()
+        .map_err(|_| "Monitoring is unavailable.")?;
+    let mut tickets = monitor.prepare_checks_with_accounts(&store, &accounts, now, immediate)?;
+    for ticket in &mut tickets {
+        ticket.account_generation = generations
+            .get(&ticket.provider_account_id)
+            .copied()
+            .unwrap_or(0);
+    }
+    Ok(tickets)
+}
+
+fn finish_monitored_ticket(
+    generations: &Mutex<BTreeMap<String, u64>>,
+    auth: &Mutex<GithubAuth>,
+    store: &Mutex<Store>,
+    monitor: &Mutex<monitoring::Monitor>,
+    ticket: monitoring::PollTicket,
+    result: Result<monitoring::PollResult, ConnectionError>,
+    now: i64,
+) -> Result<(), monitoring::MonitoringError> {
+    let generations = generations.lock().map_err(|_| {
+        monitoring::MonitoringError::Storage("Monitoring coordination is unavailable.".into())
+    })?;
+    let auth = auth.lock().map_err(|_| {
+        monitoring::MonitoringError::Storage("GitHub connection state is unavailable.".into())
+    })?;
+    let account_available = auth
+        .account_session_allowed(&ticket.provider_account_id)
+        .is_ok();
+    let accounts = auth.monitoring_accounts();
+    drop(auth);
+    let current_generation = generations
+        .get(&ticket.provider_account_id)
+        .copied()
+        .unwrap_or(0);
+    let store = store
+        .lock()
+        .map_err(|_| monitoring::MonitoringError::Storage("Storage is unavailable.".into()))?;
+    let mut monitor = monitor
+        .lock()
+        .map_err(|_| monitoring::MonitoringError::Storage("Monitoring is unavailable.".into()))?;
+    if current_generation != ticket.account_generation || !account_available {
+        monitor.discard_account_result(&store, &accounts, ticket, now)
+    } else {
+        monitor.finish_with_accounts(&store, &accounts, ticket, result, now)
+    }
+}
+
+fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
+    let host = app.state::<Host>();
+    if host.quitting.load(Ordering::SeqCst) {
+        return Err("PR Sniper is quitting.".into());
+    }
+    let tickets = prepare_monitoring_checks(&host, now_seconds()?, immediate)?;
+    for ticket in tickets {
+        let app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let ticket_for_poll = ticket.clone();
+            let account_id = ticket.provider_account_id.clone();
+            let result = (|| {
+                let host = app.state::<Host>();
+                let (identity, client) = github_session(&host, &account_id)?;
+                if identity.id != ticket_for_poll.provider_account_id {
+                    return Err(ConnectionError::WrongIdentity);
+                }
+                let connection = client.connect(
+                    &ticket_for_poll.name,
+                    Some(&ticket_for_poll.provider_account_id),
+                )?;
+                if connection.repository.id != ticket_for_poll.provider_repository_id {
+                    return Err(ConnectionError::RepositoryChanged);
+                }
+                let pull_requests = client.poll_pull_requests(&connection.repository)?;
+                Ok(monitoring::PollResult {
+                    connection,
+                    pull_requests,
+                })
+            })();
+            let connection_failure = result.as_ref().err().copied();
+            let host = app.state::<Host>();
+            if let Some(error) = connection_failure {
+                apply_account_connection_failure(&host, &account_id, &Err::<(), _>(error));
+            }
+            let saved = match now_seconds() {
+                Ok(now) => finish_monitored_ticket(
+                    &host.github_generations,
+                    &host.github_auth,
+                    &host.store,
+                    &host.monitor,
+                    ticket,
+                    result,
+                    now,
+                ),
+                Err(error) => Err(monitoring::MonitoringError::Storage(error)),
+            };
+            let continue_checks = match &saved {
+                Ok(()) => true,
+                Err(error) if error.requires_host_report() => {
+                    report(&app, error.message().into());
+                    false
+                }
+                Err(error) => {
+                    eprintln!("PR Sniper: {}", error.message());
+                    true
+                }
+            };
+            if continue_checks && !host.quitting.load(Ordering::SeqCst) {
+                if let Err(error) = start_checks(&app, false) {
+                    report(&app, error);
+                }
+            }
+        });
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn check_now(app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || start_checks(&app, true))
+        .await
+        .map_err(|_| "The immediate repository check could not start.".to_string())?
 }
 
 #[derive(Serialize)]
@@ -1043,27 +1388,102 @@ fn cancel_github_auth(host: State<'_, Host>) -> Result<GithubAuthView, String> {
     Ok(auth.view())
 }
 
+fn disconnect_github_account<Current, Legacy>(
+    auth: &Mutex<GithubAuth>,
+    generations: &Mutex<BTreeMap<String, u64>>,
+    store: &Mutex<Store>,
+    monitor: &Mutex<monitoring::Monitor>,
+    account_id: String,
+    remove_current: Current,
+    remove_legacy: Legacy,
+) -> Result<GithubAuthView, String>
+where
+    Current: FnOnce() -> Result<(), String>,
+    Legacy: FnOnce() -> Result<(), String>,
+{
+    {
+        let mut auth = auth
+            .lock()
+            .map_err(|_| "GitHub connection state is unavailable.")?;
+        if !auth.accounts.contains_key(&account_id) {
+            return Err("No connected GitHub account is available to disconnect.".into());
+        }
+        auth.set_failure(&account_id, GithubAuthFailure::DisconnectPending);
+    }
+    let mut generations = generations
+        .lock()
+        .map_err(|_| "Monitoring coordination is unavailable.")?;
+    *generations.entry(account_id.clone()).or_default() += 1;
+    let monitoring_result = {
+        let store = store.lock().map_err(|_| "Storage is unavailable.")?;
+        let mut monitor = monitor.lock().map_err(|_| "Monitoring is unavailable.")?;
+        monitor.disconnect_account(&store, &account_id)
+    };
+    if monitoring_result.is_err() {
+        if let Ok(mut auth) = auth.lock() {
+            auth.set_failure(&account_id, GithubAuthFailure::DisconnectFailed);
+        }
+        return Err(
+            "GitHub disconnect is pending because monitoring state could not be saved. Retry disconnect."
+                .into(),
+        );
+    }
+    if let Err(error) = remove_current() {
+        if let Ok(mut auth) = auth.lock() {
+            auth.set_failure(&account_id, GithubAuthFailure::DisconnectFailed);
+        }
+        return Err(error);
+    }
+    if let Err(error) = remove_legacy() {
+        if let Ok(mut auth) = auth.lock() {
+            auth.set_failure(&account_id, GithubAuthFailure::DisconnectFailed);
+        }
+        return Err(error);
+    }
+    drop(generations);
+    let mut auth = auth
+        .lock()
+        .map_err(|_| "GitHub connection state is unavailable.")?;
+    auth.accounts.remove(&account_id);
+    Ok(auth.view())
+}
+
 #[tauri::command]
-fn disconnect_github_auth(
-    host: State<'_, Host>,
+async fn disconnect_github_auth(
+    app: tauri::AppHandle,
     account_id: String,
 ) -> Result<GithubAuthView, String> {
     use github::token_store::ProviderAccountId;
-    let mut auth = host
-        .github_auth
-        .lock()
-        .map_err(|_| "GitHub connection state is unavailable.")?;
-    if !auth.accounts.contains_key(&account_id) {
-        return Err("No connected GitHub account is available to disconnect.".into());
-    }
-    host.github_credentials
-        .remove_account(&ProviderAccountId::github(&account_id))
-        .map_err(|_| "GitHub credentials could not be deleted securely.")?;
-    host.github_legacy_credentials
-        .remove_account(&ProviderAccountId::github(&account_id))
-        .map_err(|_| "Superseded GitHub credentials could not be deleted securely.")?;
-    auth.accounts.remove(&account_id);
-    Ok(auth.view())
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<Host>();
+        let current_key = ProviderAccountId::github(&account_id);
+        let legacy_key = ProviderAccountId::github(&account_id);
+        disconnect_github_account(
+            &host.github_auth,
+            &host.github_generations,
+            &host.store,
+            &host.monitor,
+            account_id,
+            || {
+                host.github_credentials
+                    .remove_account(&current_key)
+                    .map_err(|_| {
+                        "GitHub credentials could not be deleted securely. Retry disconnect."
+                            .into()
+                    })
+            },
+            || {
+                host.github_legacy_credentials
+                    .remove_account(&legacy_key)
+                    .map_err(|_| {
+                        "Superseded GitHub credentials could not be deleted securely. Retry disconnect."
+                            .into()
+                    })
+            },
+        )
+    })
+    .await
+    .map_err(|_| "GitHub disconnect could not finish. Retry disconnect.".to_string())?
 }
 
 fn configured_repository(host: &Host, id: &str) -> Result<storage::Repository, ConnectionError> {
@@ -1303,7 +1723,9 @@ pub fn run() {
             copilot::list_copilot_models,
             copilot::cancel_copilot_models,
             diagnostics,
-            open_diagnostics
+            open_diagnostics,
+            monitoring_snapshot,
+            check_now
         ])
         .setup(|app| {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -1323,8 +1745,10 @@ pub fn run() {
             let github_auth = GithubAuth::restore(&github_credentials, &github_legacy_credentials);
             let copilot = copilot::Integration::new(isolated)?;
             let store = Store::new(root);
+            let monitor = monitoring::Monitor::restore(&store).map_err(std::io::Error::other)?;
             app.manage(Host {
                 store: Mutex::new(store),
+                monitor: Mutex::new(monitor),
                 error: Mutex::new(None),
                 isolated,
                 quitting: AtomicBool::new(false),
@@ -1335,20 +1759,28 @@ pub fn run() {
                     std::env::current_exe()?.canonicalize()?,
                 ),
                 github_auth: Mutex::new(github_auth),
+                github_generations: Mutex::new(BTreeMap::new()),
                 github_credentials,
                 github_legacy_credentials,
                 copilot,
             });
             record(app.handle(), DiagnosticEvent::SessionStarted);
+            let scheduler_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    let host = scheduler_app.state::<Host>();
+                    if host.quitting.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    if let Err(error) = start_checks(&scheduler_app, false) {
+                        report(&scheduler_app, error);
+                    }
+                }
+            });
             let status = MenuItem::with_id(app, "status", "Status", true, None::<&str>)?;
             let queue = MenuItem::with_id(app, "queue", "Review Queue", true, None::<&str>)?;
-            let check = MenuItem::with_id(
-                app,
-                "check",
-                "Check Now (not implemented)",
-                false,
-                None::<&str>,
-            )?;
+            let check = MenuItem::with_id(app, "check", "Check Now", true, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
             let separator = PredefinedMenuItem::separator(app)?;
             let quit = MenuItem::with_id(app, "quit", "Quit PR Sniper", true, Some("CmdOrCtrl+Q"))?;
@@ -1365,6 +1797,15 @@ pub fn run() {
                 .menu(&menu)
                 .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| {
+                    if event.id.as_ref() == "check" {
+                        let check_app = app.clone();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            if let Err(error) = start_checks(&check_app, true) {
+                                report(&check_app, error);
+                            }
+                        });
+                        return;
+                    }
                     if event.id.as_ref() == "quit" {
                         record(app, DiagnosticEvent::QuitRequested);
                         let host = app.state::<Host>();
@@ -1377,6 +1818,15 @@ pub fn run() {
                                 let host = cancel_app.state::<Host>();
                                 if let Ok(mut auth) = host.github_auth.lock() {
                                     auth.cancel_attempt();
+                                }
+                                if let Ok(store) = host.store.lock() {
+                                    if let Ok(mut monitor) = host.monitor.lock() {
+                                        if monitor.cancel_pending_checks(&store).is_err() {
+                                            eprintln!(
+                                                "Pending monitoring checks could not be cancelled."
+                                            );
+                                        }
+                                    }
                                 }
                                 host.copilot.shutdown();
                             })
@@ -1439,23 +1889,35 @@ pub fn run() {
 #[cfg(test)]
 mod github_auth_tests {
     use super::{
-        failure_from_connection_error, failure_from_oauth_error, github_keychain_stores,
-        persist_oauth_account_with_cleanup, rotation_connection_error, GithubAccountState,
-        GithubAuth, GithubAuthFailure, OAuthAccountPersistence,
+        disconnect_github_account, failure_from_connection_error, failure_from_oauth_error,
+        finish_monitored_ticket, github_keychain_stores, persist_oauth_account_with_cleanup,
+        rotation_connection_error, GithubAccountState, GithubAccountView, GithubAuth,
+        GithubAuthFailure, GithubFlowView, OAuthAccountPersistence,
     };
-    use crate::github::oauth::OAuthError;
     use crate::github::token_store::{
         AccountRegistry, AccountRegistryStore, CredentialKey, CredentialStore, RotationError,
         StoreError,
     };
     use crate::github::ConnectionError;
+    use crate::github::{
+        metadata::{Lifecycle, PullRequest},
+        oauth::OAuthError,
+        provider::{Capabilities, CommentCapability, Connection, RemoteRepository},
+    };
+    use crate::monitoring::{
+        Monitor, PollResult, WAITING_ACCOUNT_DISCONNECTED, WAITING_HUMAN_START,
+    };
+    use crate::policy::{PolicyOverrides, WatchedIdentity};
+    use crate::storage::{ProviderId as SettingsProviderId, Repository, Settings, Store};
     use std::{
         collections::BTreeMap,
+        fs,
         sync::{
             atomic::{AtomicBool, AtomicUsize, Ordering},
-            Arc, Mutex,
+            Arc, Barrier, Mutex,
         },
-        time::{Duration, SystemTime},
+        thread,
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     #[derive(Clone, Default)]
@@ -1530,6 +1992,275 @@ mod github_auth_tests {
         )
     }
 
+    fn monitoring_fixture() -> (tempfile::TempDir, Store, Monitor, GithubAuth) {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::new(root.path().to_path_buf());
+        let mut settings = Settings::default();
+        settings.repositories.push(Repository {
+            id: "00000000-0000-4000-8000-000000000001".into(),
+            provider: SettingsProviderId::Github,
+            name: "example/repo".into(),
+            enabled: true,
+            provider_account_id: Some("22".into()),
+            legacy_installation_id: None,
+            provider_repository_id: Some("100".into()),
+            overrides: PolicyOverrides::default(),
+            review_preset: None,
+            watched_authors: vec![WatchedIdentity {
+                id: "11".into(),
+                login: "author".into(),
+            }],
+            assignments: Vec::new(),
+        });
+        store.save_settings(&settings).unwrap();
+        let monitor = Monitor::restore(&store).unwrap();
+        let mut auth = GithubAuth::new();
+        auth.accounts.insert(
+            "22".into(),
+            GithubAccountState::Connected(identity("22", "current-login")),
+        );
+        (root, store, monitor, auth)
+    }
+
+    fn monitoring_result() -> PollResult {
+        PollResult {
+            connection: Connection {
+                identity: identity("22", "current-login"),
+                repository: RemoteRepository {
+                    id: "100".into(),
+                    name: "example/repo".into(),
+                },
+                capabilities: Capabilities {
+                    read: true,
+                    comment: CommentCapability::Available,
+                },
+            },
+            pull_requests: vec![PullRequest {
+                id: "1".into(),
+                number: 1,
+                title: "PR 1".into(),
+                author: Some(identity("11", "author")),
+                requested_reviewers: Vec::new(),
+                requested_teams: Vec::new(),
+                state: Lifecycle::Open,
+                draft: false,
+                head_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                base_sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+                head_repository_id: Some("100".into()),
+                base_repository_id: "100".into(),
+                updated_at: "2026-09-25T10:00:00Z".into(),
+                files: Vec::new(),
+            }],
+        }
+    }
+
+    #[test]
+    fn disconnect_between_provider_result_and_commit_cannot_resurrect_work_or_cursor() {
+        let (_root, store, mut monitor, auth) = monitoring_fixture();
+        let accounts = auth.monitoring_accounts();
+        let mut tickets = monitor
+            .prepare_checks_with_accounts(&store, &accounts, 1_800_000_000, true)
+            .unwrap();
+        let ticket = tickets.remove(0);
+        let generations = Arc::new(Mutex::new(BTreeMap::new()));
+        let auth = Arc::new(Mutex::new(auth));
+        let store = Arc::new(Mutex::new(store));
+        let monitor = Arc::new(Mutex::new(monitor));
+        let result_ready = Arc::new(Barrier::new(2));
+        let resume_commit = Arc::new(Barrier::new(2));
+        let worker = {
+            let generations = generations.clone();
+            let auth = auth.clone();
+            let store = store.clone();
+            let monitor = monitor.clone();
+            let result_ready = result_ready.clone();
+            let resume_commit = resume_commit.clone();
+            thread::spawn(move || {
+                let result = monitoring_result();
+                result_ready.wait();
+                resume_commit.wait();
+                finish_monitored_ticket(
+                    &generations,
+                    &auth,
+                    &store,
+                    &monitor,
+                    ticket,
+                    Ok(result),
+                    1_800_000_002,
+                )
+            })
+        };
+
+        result_ready.wait();
+        disconnect_github_account(
+            &auth,
+            &generations,
+            &store,
+            &monitor,
+            "22".into(),
+            || Ok(()),
+            || Ok(()),
+        )
+        .unwrap();
+        resume_commit.wait();
+        worker.join().unwrap().unwrap();
+
+        let store_guard = store.lock().unwrap();
+        assert!(store_guard.load_queue().unwrap().is_empty());
+        assert!(store_guard
+            .load_monitoring_state()
+            .unwrap()
+            .cursors
+            .is_empty());
+        drop(store_guard);
+        let restored = {
+            let store = store.lock().unwrap();
+            Monitor::restore(&store).unwrap()
+        };
+        let health = restored.snapshot().remove(0);
+        assert!(!health.in_flight);
+        assert!(!health.manual_pending);
+        assert_eq!(
+            health.last_failure.as_deref(),
+            Some(WAITING_ACCOUNT_DISCONNECTED)
+        );
+        assert_eq!(health.next_run, 0);
+    }
+
+    #[test]
+    fn disconnect_queue_failure_is_visible_and_retryable_before_credential_cleanup() {
+        let (root, store, mut monitor, auth) = monitoring_fixture();
+        let accounts = auth.monitoring_accounts();
+        let mut tickets = monitor
+            .prepare_checks_with_accounts(&store, &accounts, 1_800_000_000, true)
+            .unwrap();
+        monitor
+            .finish_with_accounts(
+                &store,
+                &accounts,
+                tickets.remove(0),
+                Ok(monitoring_result()),
+                1_800_000_001,
+            )
+            .unwrap();
+        fs::create_dir(root.path().join("state/queue.json.tmp")).unwrap();
+
+        let auth = Mutex::new(auth);
+        let generations = Mutex::new(BTreeMap::new());
+        let store = Mutex::new(store);
+        let monitor = Mutex::new(monitor);
+        let deletions = AtomicUsize::new(0);
+        let error = disconnect_github_account(
+            &auth,
+            &generations,
+            &store,
+            &monitor,
+            "22".into(),
+            || {
+                deletions.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            || {
+                deletions.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("monitoring state could not be saved"));
+        assert_eq!(deletions.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            auth.lock().unwrap().accounts.get("22"),
+            Some(GithubAccountState::ReconnectRequired {
+                reason: GithubAuthFailure::DisconnectFailed,
+                ..
+            })
+        ));
+
+        fs::remove_dir(root.path().join("state/queue.json.tmp")).unwrap();
+        disconnect_github_account(
+            &auth,
+            &generations,
+            &store,
+            &monitor,
+            "22".into(),
+            || {
+                deletions.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            || {
+                deletions.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(deletions.load(Ordering::SeqCst), 2);
+        assert!(!auth.lock().unwrap().accounts.contains_key("22"));
+        assert_eq!(
+            store.lock().unwrap().load_queue().unwrap()[0].waiting,
+            WAITING_ACCOUNT_DISCONNECTED
+        );
+    }
+
+    #[test]
+    fn disconnect_retries_after_current_credentials_were_already_removed() {
+        let (_root, store, monitor, auth) = monitoring_fixture();
+        let auth = Mutex::new(auth);
+        let generations = Mutex::new(BTreeMap::new());
+        let store = Mutex::new(store);
+        let monitor = Mutex::new(monitor);
+        let current_deletions = AtomicUsize::new(0);
+        let legacy_deletions = AtomicUsize::new(0);
+
+        let error = disconnect_github_account(
+            &auth,
+            &generations,
+            &store,
+            &monitor,
+            "22".into(),
+            || {
+                current_deletions.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            || {
+                legacy_deletions.fetch_add(1, Ordering::SeqCst);
+                Err("Superseded GitHub credentials could not be deleted securely. Retry disconnect.".into())
+            },
+        )
+        .err()
+        .unwrap();
+        assert!(error.starts_with("Superseded GitHub credentials"));
+        assert_eq!(current_deletions.load(Ordering::SeqCst), 1);
+        assert_eq!(legacy_deletions.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            auth.lock().unwrap().accounts.get("22"),
+            Some(GithubAccountState::ReconnectRequired {
+                reason: GithubAuthFailure::DisconnectFailed,
+                ..
+            })
+        ));
+
+        disconnect_github_account(
+            &auth,
+            &generations,
+            &store,
+            &monitor,
+            "22".into(),
+            || {
+                current_deletions.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            || {
+                legacy_deletions.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(current_deletions.load(Ordering::SeqCst), 2);
+        assert_eq!(legacy_deletions.load(Ordering::SeqCst), 2);
+        assert!(!auth.lock().unwrap().accounts.contains_key("22"));
+    }
+
     #[test]
     fn oauth_failures_preserve_their_host_reason() {
         for (error, expected) in [
@@ -1548,6 +2279,7 @@ mod github_auth_tests {
                 GithubAuthFailure::DeviceFlowDisabled,
             ),
             (OAuthError::Expired, GithubAuthFailure::Expired),
+            (OAuthError::RefreshRejected, GithubAuthFailure::Expired),
         ] {
             assert_eq!(failure_from_oauth_error(error), expected);
         }
@@ -1565,7 +2297,11 @@ mod github_auth_tests {
         );
         assert_eq!(
             failure_from_connection_error(ConnectionError::Timeout),
-            GithubAuthFailure::Network
+            GithubAuthFailure::Timeout
+        );
+        assert_eq!(
+            failure_from_connection_error(ConnectionError::RateLimited),
+            GithubAuthFailure::RateLimited
         );
         assert_eq!(
             rotation_connection_error(RotationError::Network),
@@ -1575,6 +2311,265 @@ mod github_auth_tests {
             failure_from_connection_error(rotation_connection_error(RotationError::Provider)),
             GithubAuthFailure::Provider
         );
+    }
+
+    #[test]
+    fn offline_restore_failures_stay_visible_admitted_and_recoverable() {
+        for (error, expected) in [
+            (ConnectionError::Network, GithubAuthFailure::Network),
+            (ConnectionError::RateLimited, GithubAuthFailure::RateLimited),
+            (
+                ConnectionError::ProviderFailure,
+                GithubAuthFailure::Provider,
+            ),
+        ] {
+            let mut auth = GithubAuth::new();
+            auth.publish_restored_identity(identity("22", "stored-login"), Err(error));
+
+            assert_eq!(auth.account_session_allowed("22"), Ok(()));
+            assert!(auth.monitoring_accounts()["22"].connected);
+            assert!(matches!(
+                &auth.view().accounts[0],
+                GithubAccountView::Connected {
+                    warning: Some(reason),
+                    ..
+                } if *reason == expected
+            ));
+
+            auth.publish_session_success("22", identity("22", "current-login"))
+                .unwrap();
+            assert!(matches!(
+                auth.accounts.get("22"),
+                Some(GithubAccountState::Connected(identity))
+                    if identity.login == "current-login"
+            ));
+            assert!(matches!(
+                &auth.view().accounts[0],
+                GithubAccountView::Connected { warning: None, .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn rejected_refresh_blocks_restore_and_future_session_admission() {
+        let http = |_request: oauth2::HttpRequest| {
+            Ok::<_, std::io::Error>(
+                oauth2::http::Response::builder()
+                    .status(400)
+                    .header("content-type", "application/json")
+                    .body(br#"{"error":"invalid_grant"}"#.to_vec())
+                    .unwrap(),
+            )
+        };
+        let oauth_error = crate::github::oauth::refresh_token_with(
+            oauth2::RefreshToken::new("rejected-refresh".into()),
+            UNIX_EPOCH,
+            &http,
+        )
+        .unwrap_err();
+        assert_eq!(oauth_error, OAuthError::RefreshRejected);
+        let connection_error =
+            rotation_connection_error(super::oauth_refresh_rotation_error(oauth_error));
+        assert_eq!(connection_error, ConnectionError::SignedOut);
+
+        let mut restored = GithubAuth::new();
+        restored.publish_restored_identity(identity("22", "stored-login"), Err(connection_error));
+        assert_eq!(
+            restored.account_session_allowed("22"),
+            Err(ConnectionError::SignedOut)
+        );
+        assert!(!restored.monitoring_accounts()["22"].connected);
+        assert!(matches!(
+            restored.accounts.get("22"),
+            Some(GithubAccountState::ReconnectRequired {
+                reason: GithubAuthFailure::Expired,
+                ..
+            })
+        ));
+        let (_root, store, mut monitor, _) = monitoring_fixture();
+        assert!(monitor
+            .prepare_checks_with_accounts(
+                &store,
+                &restored.monitoring_accounts(),
+                1_800_000_000,
+                true,
+            )
+            .unwrap()
+            .is_empty());
+
+        let mut session = GithubAuth::new();
+        session.accounts.insert(
+            "22".into(),
+            GithubAccountState::Connected(identity("22", "current-login")),
+        );
+        session.publish_session_failure("22", connection_error);
+        assert_eq!(
+            session.account_session_allowed("22"),
+            Err(ConnectionError::SignedOut)
+        );
+        assert!(matches!(
+            &session.view().accounts[0],
+            GithubAccountView::ReconnectRequired {
+                reason: GithubAuthFailure::Expired,
+                ..
+            }
+        ));
+        let (_root, store, mut monitor, _) = monitoring_fixture();
+        assert!(monitor
+            .prepare_checks_with_accounts(
+                &store,
+                &session.monitoring_accounts(),
+                1_800_000_000,
+                true,
+            )
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn transient_session_failures_keep_monitoring_admitted_until_scheduled_recovery() {
+        for (error, expected) in [
+            (ConnectionError::Network, GithubAuthFailure::Network),
+            (ConnectionError::RateLimited, GithubAuthFailure::RateLimited),
+            (
+                ConnectionError::ProviderFailure,
+                GithubAuthFailure::Provider,
+            ),
+        ] {
+            let (_root, store, mut monitor, auth) = monitoring_fixture();
+            let accounts = auth.monitoring_accounts();
+            let initial = monitor
+                .prepare_checks_with_accounts(&store, &accounts, 1_800_000_000, true)
+                .unwrap()
+                .remove(0);
+            let generations = Mutex::new(BTreeMap::new());
+            let auth = Mutex::new(auth);
+            let store = Mutex::new(store);
+            let monitor = Mutex::new(monitor);
+            finish_monitored_ticket(
+                &generations,
+                &auth,
+                &store,
+                &monitor,
+                initial,
+                Ok(monitoring_result()),
+                1_800_000_001,
+            )
+            .unwrap();
+
+            let due = monitor.lock().unwrap().snapshot()[0].next_run;
+            auth.lock().unwrap().publish_session_failure("22", error);
+            assert!(matches!(
+                &auth.lock().unwrap().view().accounts[0],
+                GithubAccountView::Connected {
+                    warning: Some(reason),
+                    ..
+                } if *reason == expected
+            ));
+            let accounts = auth.lock().unwrap().monitoring_accounts();
+            let failed_ticket = {
+                let store = store.lock().unwrap();
+                monitor
+                    .lock()
+                    .unwrap()
+                    .prepare_checks_with_accounts(&store, &accounts, due, false)
+                    .unwrap()
+                    .remove(0)
+            };
+            let failure = finish_monitored_ticket(
+                &generations,
+                &auth,
+                &store,
+                &monitor,
+                failed_ticket,
+                Err(error),
+                due + 1,
+            )
+            .unwrap_err();
+            assert!(!failure.requires_host_report());
+            assert_eq!(
+                store.lock().unwrap().load_queue().unwrap()[0].waiting,
+                WAITING_HUMAN_START
+            );
+            let health = monitor.lock().unwrap().snapshot().remove(0);
+            let expected_failure = format!("{error:?}");
+            assert_eq!(
+                health.last_failure.as_deref(),
+                Some(expected_failure.as_str())
+            );
+            let next_due = health.next_run;
+
+            let accounts = auth.lock().unwrap().monitoring_accounts();
+            let recovery_ticket = {
+                let store = store.lock().unwrap();
+                monitor
+                    .lock()
+                    .unwrap()
+                    .prepare_checks_with_accounts(&store, &accounts, next_due, false)
+                    .unwrap()
+                    .remove(0)
+            };
+            auth.lock()
+                .unwrap()
+                .publish_session_success("22", identity("22", "recovered-login"))
+                .unwrap();
+            finish_monitored_ticket(
+                &generations,
+                &auth,
+                &store,
+                &monitor,
+                recovery_ticket,
+                Ok(monitoring_result()),
+                next_due + 1,
+            )
+            .unwrap();
+            assert!(matches!(
+                auth.lock().unwrap().accounts.get("22"),
+                Some(GithubAccountState::Connected(_))
+            ));
+            let recovered = monitor.lock().unwrap().snapshot().remove(0);
+            assert_eq!(recovered.last_failure, None);
+            assert_eq!(recovered.last_success, Some(next_due + 1));
+        }
+    }
+
+    #[test]
+    fn invalidating_session_failures_block_without_transient_downgrade() {
+        for (error, expected) in [
+            (ConnectionError::SignedOut, GithubAuthFailure::Expired),
+            (
+                ConnectionError::WrongIdentity,
+                GithubAuthFailure::WrongIdentity,
+            ),
+            (
+                ConnectionError::MissingScope,
+                GithubAuthFailure::MissingScope,
+            ),
+            (
+                ConnectionError::Configuration,
+                GithubAuthFailure::CredentialsUnavailable,
+            ),
+        ] {
+            let mut auth = GithubAuth::new();
+            auth.accounts.insert(
+                "22".into(),
+                GithubAccountState::Connected(identity("22", "current-login")),
+            );
+            auth.publish_session_failure("22", error);
+            assert!(auth.account_session_allowed("22").is_err());
+            assert!(!auth.monitoring_accounts()["22"].connected);
+            assert!(matches!(
+                &auth.view().accounts[0],
+                GithubAccountView::ReconnectRequired { reason, .. } if *reason == expected
+            ));
+
+            auth.publish_session_failure("22", ConnectionError::Network);
+            assert!(matches!(
+                auth.accounts.get("22"),
+                Some(GithubAccountState::ReconnectRequired { reason, .. })
+                    if *reason == expected
+            ));
+        }
     }
 
     #[test]
@@ -1733,6 +2728,115 @@ mod github_auth_tests {
     }
 
     #[test]
+    fn failed_replacement_attempts_preserve_saved_account_authority() {
+        for existing in [
+            None,
+            Some(GithubAuthFailure::Network),
+            Some(GithubAuthFailure::Expired),
+            Some(GithubAuthFailure::MissingScope),
+            Some(GithubAuthFailure::DisconnectFailed),
+        ] {
+            for attempt_failure in [
+                GithubAuthFailure::Denied,
+                GithubAuthFailure::Expired,
+                GithubAuthFailure::BrowserOpen,
+                GithubAuthFailure::Network,
+                GithubAuthFailure::Timeout,
+            ] {
+                let mut auth = GithubAuth::new();
+                match existing {
+                    None => {
+                        auth.accounts.insert(
+                            "101".into(),
+                            GithubAccountState::Connected(identity("101", "existing")),
+                        );
+                    }
+                    Some(reason) => {
+                        auth.accounts.insert(
+                            "101".into(),
+                            GithubAccountState::ReconnectRequired {
+                                identity: identity("101", "existing"),
+                                reason,
+                            },
+                        );
+                    }
+                }
+                let before = serde_json::to_value(auth.copilot_view()).unwrap();
+                let (cancel, _) = tokio::sync::oneshot::channel();
+                let attempt = auth.start_attempt(Some("101".into()), cancel);
+                auth.finish_attempt(attempt, Err(attempt_failure));
+
+                assert_eq!(
+                    serde_json::to_value(auth.copilot_view()).unwrap()["accounts"],
+                    before["accounts"]
+                );
+                assert!(matches!(
+                    auth.view().flow,
+                    GithubFlowView::Failed { reason } if reason == attempt_failure
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn mismatched_replacement_cancel_and_successful_confirmation_respect_authority_boundary() {
+        let mut auth = GithubAuth::new();
+        auth.accounts.insert(
+            "101".into(),
+            GithubAccountState::ReconnectRequired {
+                identity: identity("101", "existing"),
+                reason: GithubAuthFailure::MissingScope,
+            },
+        );
+        let before = serde_json::to_value(auth.copilot_view()).unwrap();
+
+        let (cancel, _) = tokio::sync::oneshot::channel();
+        let mismatch = auth.start_attempt(Some("101".into()), cancel);
+        auth.finish_attempt(mismatch, Ok((identity("202", "wrong"), pair("wrong"))));
+        assert_eq!(
+            serde_json::to_value(auth.copilot_view()).unwrap()["accounts"],
+            before["accounts"]
+        );
+        assert!(matches!(
+            auth.view().flow,
+            GithubFlowView::Failed {
+                reason: GithubAuthFailure::WrongIdentity
+            }
+        ));
+
+        let (cancel, _) = tokio::sync::oneshot::channel();
+        let cancelled = auth.start_attempt(Some("101".into()), cancel);
+        assert!(auth.cancel_attempt());
+        auth.finish_attempt(cancelled, Err(GithubAuthFailure::Cancelled));
+        assert_eq!(
+            serde_json::to_value(auth.copilot_view()).unwrap()["accounts"],
+            before["accounts"]
+        );
+        assert!(matches!(auth.view().flow, GithubFlowView::Idle));
+
+        let (cancel, _) = tokio::sync::oneshot::channel();
+        let success = auth.start_attempt(Some("101".into()), cancel);
+        auth.finish_attempt(
+            success,
+            Ok((identity("101", "replacement"), pair("replacement"))),
+        );
+        assert_eq!(
+            serde_json::to_value(auth.copilot_view()).unwrap()["accounts"],
+            before["accounts"]
+        );
+        assert!(matches!(
+            auth.view().flow,
+            GithubFlowView::PendingAccountConfirmation { .. }
+        ));
+        auth.confirm_with(|_, _| Ok(())).unwrap();
+        assert!(matches!(
+            auth.accounts.get("101"),
+            Some(GithubAccountState::Connected(identity))
+                if identity.login == "replacement"
+        ));
+    }
+
+    #[test]
     fn confirmation_is_the_only_persistence_boundary_and_failure_is_retryable() {
         let mut auth = GithubAuth::new();
         let (cancel, _) = tokio::sync::oneshot::channel();
@@ -1802,7 +2906,7 @@ mod github_auth_tests {
             GithubAccountState::Connected(identity("202", "second")),
         );
 
-        auth.apply_connection_result::<()>("101", &Err(ConnectionError::MissingScope));
+        auth.publish_session_failure("101", ConnectionError::MissingScope);
 
         assert!(matches!(
             auth.accounts.get("101"),
@@ -1816,10 +2920,13 @@ mod github_auth_tests {
             Some(GithubAccountState::Connected(identity)) if identity.login == "second"
         ));
 
-        auth.apply_connection_result::<()>("202", &Err(ConnectionError::OrganizationPolicyDenied));
+        auth.publish_session_failure("202", ConnectionError::OrganizationPolicyDenied);
         assert!(matches!(
             auth.accounts.get("202"),
-            Some(GithubAccountState::Connected(_))
+            Some(GithubAccountState::ReconnectRequired {
+                reason: GithubAuthFailure::Provider,
+                ..
+            })
         ));
     }
 

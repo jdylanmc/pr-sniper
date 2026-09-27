@@ -50,6 +50,34 @@ fn disconnected_identity_survives_native_keychain_restart_without_touching_repos
 }
 
 #[test]
+fn copilot_view_keeps_unverified_transient_failures_reconnect_required() {
+    for reason in [
+        GithubAuthFailure::Network,
+        GithubAuthFailure::Timeout,
+        GithubAuthFailure::Provider,
+    ] {
+        let mut auth = GithubAuth::new();
+        auth.accounts.insert(
+            "101".into(),
+            GithubAccountState::ReconnectRequired {
+                identity: github::Identity {
+                    id: "101".into(),
+                    login: "fixture-login".into(),
+                },
+                reason,
+            },
+        );
+        let view = serde_json::to_value(auth.copilot_view()).unwrap();
+        assert_eq!(view["accounts"][0]["state"], "reconnect_required");
+        assert_eq!(
+            view["accounts"][0]["reason"],
+            serde_json::to_value(reason).unwrap()
+        );
+        assert!(view["accounts"][0].get("warning").is_none());
+    }
+}
+
+#[test]
 fn independent_flows_keep_reconnect_identity_and_cancel_pending_secrets() {
     let mut repo = GithubAuth::new();
     let mut ai = GithubAuth::new();
@@ -398,6 +426,8 @@ async fn transient_identity_failures_do_not_erase_verified_sign_in() {
             .unwrap();
         assert!(integration.credential("101", &operation).await.is_err());
         assert_eq!(account_view(&integration, "101"), original);
+        assert_eq!(account_view(&integration, "101")["state"], "connected");
+        assert!(account_view(&integration, "101").get("warning").is_none());
     }
     let integration = fake_integration();
     let original = account_view(&integration, "101");
