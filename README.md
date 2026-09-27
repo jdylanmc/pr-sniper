@@ -168,10 +168,13 @@ multiple bindings address the same remote repository.
 
 An enabled, account-bound repository does not begin new detection until its
 monitoring scope is explicitly confirmed in Settings. The preview reads the
-real matching open pull requests, shows the count, and offers **New pull
-requests only** or an explicitly selected subset of existing pull requests plus
-new pull requests. Existing configured repositories require this confirmation
-after upgrade; their queue history is retained. The native activation record
+real matching open pull requests, shows the count before confirmation, selects
+no existing pull requests by default, and offers **New pull requests only** or
+an explicitly selected subset of existing pull requests plus new pull requests.
+Scope confirmation saves immediately as a separate native operation and requires
+relevant repository/filter drafts to be saved first. Existing configured
+repositories require this confirmation after upgrade; their queue history is
+retained. The native activation record
 stores the account/repository binding, effective author/reviewer filter, latest
 all-state pull-request number, immutable initial heads, observed heads and
 durably admitted heads. Missing, stale or invalid activation blocks timer and
@@ -193,7 +196,7 @@ inventing a closed or merged state. Poll pages use stable creation order to
 reduce page reordering while scanning active repositories. Schedule health
 identifies the acting account, assignment and Agent, and persists pending,
 success and recoverable failure state. Unchanged old heads stay excluded, while
-a matching new head on an old pull request can enter detection. Detection never
+a matching new head on an old pull request enters detection. Detection never
 clones a repository, starts an agent, executes repository code, mutates GitHub
 or publishes a review.
 

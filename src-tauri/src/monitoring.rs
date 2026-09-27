@@ -115,9 +115,13 @@ pub enum ActivationMode {
 #[serde(deny_unknown_fields)]
 pub struct ActivationBaseline {
     pub number: u64,
+    #[serde(alias = "head_sha")]
     pub initial_head_sha: String,
+    #[serde(default)]
     pub observed_head_sha: String,
+    #[serde(default, alias = "selected")]
     pub initially_selected: bool,
+    #[serde(default)]
     pub admitted_head_sha: Option<String>,
 }
 
@@ -283,6 +287,16 @@ pub struct Monitor {
 impl Monitor {
     pub fn restore(store: &Store) -> Result<Self, String> {
         let mut state = store.load_monitoring_state()?;
+        for activation in state.activations.values_mut() {
+            for baseline in activation.baseline.values_mut() {
+                if baseline.observed_head_sha.is_empty() {
+                    baseline.observed_head_sha = baseline.initial_head_sha.clone();
+                }
+                if baseline.initially_selected && baseline.admitted_head_sha.is_none() {
+                    baseline.admitted_head_sha = Some(baseline.initial_head_sha.clone());
+                }
+            }
+        }
         for health in state.health.values_mut() {
             health.manual_pending = false;
             if health.in_flight {

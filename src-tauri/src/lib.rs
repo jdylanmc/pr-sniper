@@ -2591,6 +2591,7 @@ mod github_auth_tests {
         settings.repositories[0].enabled = false;
         store.save_settings(&settings).unwrap();
         fs::create_dir(root.path().join("state/monitoring.json.tmp")).unwrap();
+        fs::create_dir(root.path().join("state/diagnostics.jsonl")).unwrap();
         let store = Mutex::new(store);
         let saved = finish_committed_settings(
             &Mutex::new(BTreeMap::new()),
@@ -2600,7 +2601,9 @@ mod github_auth_tests {
             settings.clone(),
         );
         assert_eq!(saved.settings, settings);
-        assert!(saved.warning.unwrap().contains("monitoring scope"));
+        let warning = saved.warning.unwrap();
+        assert!(warning.contains("monitoring scope"));
+        assert!(warning.contains("diagnostics"));
         assert_eq!(store.lock().unwrap().load_settings().unwrap(), settings);
     }
 

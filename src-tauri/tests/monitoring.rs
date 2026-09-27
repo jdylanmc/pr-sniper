@@ -10,10 +10,11 @@ use pr_sniper_lib::{
     },
     monitoring::{
         next_run, AccountAvailability, ActivationApplication, ActivationBaseline, ActivationMode,
-        Monitor, MonitoringActivation, MonitoringError, PollResult, SCOPE_CONFIRMATION_REQUIRED,
-        WAITING_BINDING_CHANGED, WAITING_HUMAN_START, WAITING_INELIGIBLE,
-        WAITING_NO_LONGER_CURRENT, WAITING_POLICY_CHANGED, WAITING_REPOSITORY_DISABLED,
-        WAITING_REPOSITORY_REMOVED, WAITING_SCOPE_EXCLUDED, WAITING_SUPERSEDED,
+        Monitor, MonitoringActivation, MonitoringError, MonitoringState, PollResult,
+        SCOPE_CONFIRMATION_REQUIRED, WAITING_BINDING_CHANGED, WAITING_HUMAN_START,
+        WAITING_INELIGIBLE, WAITING_NO_LONGER_CURRENT, WAITING_POLICY_CHANGED,
+        WAITING_REPOSITORY_DISABLED, WAITING_REPOSITORY_REMOVED, WAITING_SCOPE_EXCLUDED,
+        WAITING_SUPERSEDED,
     },
     policy::{PolicyOverrides, Schedule, WatchedIdentity},
     storage::{Agent, Assignment, ProviderId, Repository, Settings, Store},
@@ -2177,6 +2178,51 @@ fn persisted_legacy_health_migrates_identity_fields_without_losing_history() {
     .unwrap();
     assert!(job.configuration_id.is_empty());
     assert!(!job.all_authors);
+
+    let (_activation_root, migration_store) = unactivated_store();
+    let migration_settings = migration_store.load_settings().unwrap();
+    let context =
+        Monitor::activation_context(&migration_settings, &migration_settings.repositories[0].id)
+            .unwrap();
+    let activation: MonitoringActivation = serde_json::from_value(json!({
+        "version": "activation",
+        "repository_id": context.repository_id,
+        "name": "example/repo",
+        "account_id": "22",
+        "provider_repository_id": "100",
+        "trigger_policy": context.trigger_policy,
+        "creation_watermark": 1,
+        "mode": "selected_existing",
+        "selected_existing": 1,
+        "baseline": {
+            "1": {
+                "number": 1,
+                "head_sha": HEAD_A,
+                "selected": true
+            }
+        },
+        "confirmed_at": 10
+    }))
+    .unwrap();
+    let mut state = MonitoringState::default();
+    state
+        .activations
+        .insert(migration_settings.repositories[0].id.clone(), activation);
+    migration_store.save_monitoring_state(&state).unwrap();
+    let mut migrated = Monitor::restore(&migration_store).unwrap();
+    migrated
+        .synchronize_configuration(
+            &migration_store,
+            &available_accounts(&[(ACCOUNT_ID, "current-login")]),
+            11,
+        )
+        .unwrap();
+    let persisted = migration_store.load_monitoring_state().unwrap();
+    let baseline = &persisted.activations[&migration_settings.repositories[0].id].baseline["1"];
+    assert_eq!(baseline.initial_head_sha, HEAD_A);
+    assert_eq!(baseline.observed_head_sha, HEAD_A);
+    assert!(baseline.initially_selected);
+    assert_eq!(baseline.admitted_head_sha.as_deref(), Some(HEAD_A));
 }
 
 #[derive(Clone)]

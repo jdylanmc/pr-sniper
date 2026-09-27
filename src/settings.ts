@@ -729,7 +729,7 @@ export async function mountSettings(app: HTMLElement) {
       <div class="integration-group"><h2>Git repositories</h2><div class="github-auth"></div><div class="folder-card"><div class="folder-symbol">${icon("folder")}</div><div><strong>${escape(draft.root_folder ?? "Choose your repository folder")}</strong><p>${discovery ? `${discovery.repositories.length} local repositories discovered` : "Only a folder you choose is scanned."}</p></div><button id="choose-folder">Choose folder...</button></div>
       <div class="repository-toolbar"><input id="repo-search" type="search" aria-label="Find a repository" placeholder="Find a repository..." value="${escape(query)}" /><button id="select-visible">Select visible</button></div>
       <div class="list-label"><span>Repository</span><span id="selected-count"></span></div><div class="repository-list"></div>
-      <p class="settings-hint">PR Sniper polls configured repositories while the menu-bar app is active. Detection does not run reviews or publish comments.</p>
+      <p class="settings-hint">PR Sniper polls scope-confirmed configured repositories while the menu-bar app is active. Detection does not run reviews or publish comments.</p>
       <div class="settings-actions"><button id="add-repository">Add repository manually...</button>${draft.root_folder ? '<button id="rescan">Scan chosen folder</button>' : ""}</div>
       ${discovery?.warnings.map((warning) => `<p class="settings-notice">${escape(warning)}</p>`).join("") ?? ""}</div>`;
     disposeCopilot = renderCopilotAuth(
@@ -1022,7 +1022,7 @@ export async function mountSettings(app: HTMLElement) {
         ${agents().length ? "" : '<p class="settings-hint">Create an agent first, on the Agents tab.</p>'}
         <div class="section-actions"><h2>People you watch</h2><button data-add-people>Add people</button></div>
         <div class="watchlist"></div>
-        <p class="settings-hint">Optional. Watched authors qualify; pull requests requesting the signed-in account also qualify when the effective inherited reviewer-assignment trigger is enabled. Exact GitHub login, no wildcards.</p>
+        <p class="settings-hint">Optional. A nonempty effective watched-author filter qualifies those authors. An empty effective author filter means all authors only after scope confirmation and never establishes trust. Pull requests requesting the signed-in account also qualify when the effective inherited reviewer-assignment trigger is enabled. Exact GitHub login, no wildcards.</p>
         <details><summary>Repository and connection</summary><div class="settings-actions"><button id="rename-repository">Edit repository</button><button id="remove-repository">Remove repository</button></div><div class="connection"></div></details>`,
     );
     renderAssignments();
@@ -1280,6 +1280,7 @@ export async function mountSettings(app: HTMLElement) {
             },
           );
           previewActive = false;
+          delete scope.dataset.closeLocked;
           scope.close();
           await refreshScopeStatus();
         } catch (cause) {
@@ -1333,7 +1334,7 @@ export async function mountSettings(app: HTMLElement) {
       const people = repository.watched_authors ?? [];
       if (!people.length) {
         list.innerHTML =
-          '<p class="settings-empty">No people added for this repository. Inherited watched authors still apply; reviewer requests qualify when that trigger is enabled.</p>';
+          '<p class="settings-empty">No people added for this repository. Inherited watched authors still apply; if the effective author filter is empty, all authors qualify only after scope confirmation and are not trusted. Reviewer requests qualify when that trigger is enabled.</p>';
         return;
       }
       list.innerHTML = "";

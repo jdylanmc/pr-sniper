@@ -89,8 +89,11 @@ export function createDialogs(root: HTMLElement, changed: () => void) {
     }
   }
   function close(entry: Entry) {
-    if (!stack.includes(entry)) return;
-    while (top() !== entry) close(top());
+    if (!stack.includes(entry) || entry.modal.dataset.closeLocked === "true")
+      return false;
+    while (top() !== entry) {
+      if (!close(top())) return false;
+    }
     changed();
     stack.pop();
     if (entry.nativeClose) entry.nativeClose();
@@ -111,11 +114,12 @@ export function createDialogs(root: HTMLElement, changed: () => void) {
     if (entry.opener instanceof HTMLElement && entry.opener.isConnected)
       entry.opener.focus({ preventScroll: true });
     else if (top()) focusFirst(top().modal);
+    return true;
   }
   return {
     hasOpen: () => stack.length > 0,
     closeAll: () => {
-      while (top()) close(top());
+      while (top()) if (!close(top())) break;
     },
     show(modal: HTMLDialogElement) {
       changed();

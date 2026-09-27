@@ -21,8 +21,10 @@ these requirements are not evidence of live provider acceptance.
 
 The human-approved 2026-09-26 monitoring-activation amendment requires an
 explicit backlog boundary for every enabled, account-bound repository before
-new detection begins. Initial scope is either new pull requests only or a
-human-selected subset of matching existing revisions plus new pull requests.
+new detection begins. Settings shall show the matching count before confirmation
+and shall not preselect any existing pull request. Initial scope is either new
+pull requests only or a human-selected subset of matching existing revisions
+plus new pull requests.
 Existing configurations pause new detection after upgrade while preserving
 history. An empty effective watched-author filter means all authors only after
 activation and does not establish trust. This amendment changes detection
