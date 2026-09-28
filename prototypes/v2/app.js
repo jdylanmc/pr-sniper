@@ -799,12 +799,22 @@ function repoEditor(id) {
     <fieldset class="check-group"><legend>Assigned agents</legend>${state.agents.map((agent) => `<label><input type="checkbox" name="agentIds" value="${esc(agent.id)}" ${checked(repo.agentIds.includes(agent.id))} /><span>${esc(agent.name)}<small>${agent.completion === "approve" ? "May approve" : "Human handoff"}</small></span></label>`).join("")}</fieldset>
     <details class="check-group"><summary>People you watch <span class="count-badge">${repo.watched.length}</span></summary>${Demo.people.map((person) => `<label><input type="checkbox" name="watched" value="${esc(person)}" ${checked(repo.watched.includes(person))} /><span>${esc(person)}</span></label>`).join("")}<p class="section-note">Empty means all authors after activation, not blanket trust. Untrusted sample revisions require confirmation.</p></details>
     <div class="form-group"><h2>Detection schedule</h2>${field("Schedule type", `<select name="schedule">${option("interval", "Fixed interval", repo.schedule)}${option("cron", "Cron (advanced)", repo.schedule)}</select>`)}
-      <div data-schedule="interval" ${repo.schedule !== "interval" ? "hidden" : ""}>${field("Check every (minutes)", `<input name="minutes" type="number" min="1" step="1" value="${repo.minutes}" required />`)}</div>
-      <div data-schedule="cron" ${repo.schedule !== "cron" ? "hidden" : ""}>${field("Five-field cron", input("cron", repo.cron))}${field("Time zone", input("zone", repo.zone))}<p class="section-note">Shape and time-zone validation only. No real timer or cron execution.</p></div>
+      <div data-schedule="interval">${field("Check every (minutes)", `<input name="minutes" type="number" min="1" step="1" value="${repo.minutes}" required />`)}</div>
+      <div data-schedule="cron">${field("Five-field cron", input("cron", repo.cron))}${field("Time zone", input("zone", repo.zone))}<p class="section-note">Shape and time-zone validation only. No real timer or cron execution.</p></div>
     </div>
     <div class="form-group"><h2>Automation overrides</h2>${["start", "comments"].map((key) => field(key === "start" ? "Start reviews automatically" : "Publish comments automatically", `<select name="${key}">${option("inherit", `Use global default (${state.preferences[key === "start" ? "automaticStart" : "automaticComments"] ? "on" : "off"})`, repo[key])}${option("on", "On for this repository", repo[key])}${option("off", "Off for this repository", repo[key])}</select>`)).join("")}</div>
     ${id ? '<p class="inline-warning">Changed assignments do not silently reassign existing packets. Active reviews restart; unassigned packets stay visibly blocked.</p>' : ""}
     ${editorFooter("repo", id)}</form></div>`;
+}
+
+function syncSchedule(form) {
+  const schedule = form.elements.namedItem("schedule").value;
+  form.querySelectorAll("[data-schedule]").forEach((element) => {
+    element.hidden = element.dataset.schedule !== schedule;
+    element.querySelectorAll("input").forEach((control) => {
+      control.disabled = element.hidden;
+    });
+  });
 }
 
 function doctrineEditor(id) {
@@ -1065,6 +1075,8 @@ function render(direction = 0, focus = false) {
   next.className = `app-view ${current.page === "queue" ? "queue-view" : ""}`;
   next.dataset.page = current.page;
   next.innerHTML = html;
+  if (current.page === "repo")
+    syncSchedule(next.querySelector('[data-form="repo"]'));
   if (previous) {
     previous.inert = true;
     previous.setAttribute("aria-hidden", "true");
@@ -1150,7 +1162,13 @@ function readForm(form) {
           },
         },
       ];
-    case "repo":
+    case "repo": {
+      const schedule = value("schedule");
+      const saved = state.repos.find((repo) => repo.id === id) ?? {
+        minutes: Number(form.elements.namedItem("minutes").defaultValue),
+        cron: form.elements.namedItem("cron").defaultValue,
+        zone: form.elements.namedItem("zone").defaultValue,
+      };
       return [
         "save-repo",
         {
@@ -1162,15 +1180,19 @@ function readForm(form) {
             scope: bool("scope"),
             agentIds: all("agentIds"),
             watched: all("watched"),
-            schedule: value("schedule"),
-            minutes: Number(value("minutes")),
-            cron: value("cron"),
-            zone: value("zone"),
+            schedule,
+            minutes:
+              schedule === "interval"
+                ? Number(value("minutes"))
+                : saved.minutes,
+            cron: schedule === "cron" ? value("cron") : saved.cron,
+            zone: schedule === "cron" ? value("zone") : saved.zone,
             start: value("start"),
             comments: value("comments"),
           },
         },
       ];
+    }
     case "doctrine":
       return [
         "save-doctrine",
@@ -1299,12 +1321,8 @@ stage.addEventListener("change", (event) => {
       .closest("form")
       .querySelector('button[type="submit"]').disabled = !event.target.checked;
   }
-  if (event.target.name === "schedule") {
-    const form = event.target.closest("form");
-    form.querySelectorAll("[data-schedule]").forEach((element) => {
-      element.hidden = element.dataset.schedule !== event.target.value;
-    });
-  }
+  if (event.target.name === "schedule")
+    syncSchedule(event.target.closest("form"));
 });
 
 popover.addEventListener("click", (event) => {

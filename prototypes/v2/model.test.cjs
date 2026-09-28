@@ -337,8 +337,51 @@ test("a fresh revision's clear result does not reuse earlier findings or synopsi
   );
 });
 
-test("cron and saved configuration failures remain explicit", () => {
+test("repository schedules validate only the selected mode without resetting inactive values", () => {
   const state = M.seed();
+  for (const schedule of [
+    { schedule: "cron", minutes: 0 },
+    { schedule: "interval", cron: "", zone: "" },
+  ]) {
+    const repo = { ...plain(state.repos[0]), ...schedule };
+    const next = M.update(state, "save-repo", { repo });
+    assert.deepEqual(plain(next.repos[0]), repo);
+    assert.doesNotThrow(() => M.validate(plain(next)));
+  }
+});
+
+test("active schedule and saved configuration failures remain explicit", () => {
+  const state = M.seed();
+  for (const minutes of [
+    0,
+    -1,
+    1.5,
+    NaN,
+    Infinity,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])
+    assert.throws(
+      () =>
+        M.update(state, "save-repo", {
+          repo: { ...plain(state.repos[0]), minutes },
+        }),
+      /positive whole-minute/,
+    );
+  assert.throws(
+    () =>
+      M.update(state, "save-repo", {
+        repo: { ...plain(state.repos[0]), schedule: "unknown" },
+      }),
+    /schedule/,
+  );
+  for (const field of ["cron", "zone"])
+    assert.throws(
+      () =>
+        M.update(state, "save-repo", {
+          repo: { ...plain(state.repos[0]), schedule: "cron", [field]: "" },
+        }),
+      /must not be empty/,
+    );
   assert.throws(
     () =>
       M.update(state, "save-repo", {

@@ -525,14 +525,19 @@
         "Invalid automation overrides.",
       );
       requireValue(
-        ["interval", "cron"].includes(item.schedule) && integer(item.minutes),
-        "Choose a positive whole-minute interval.",
+        ["interval", "cron"].includes(item.schedule),
+        "Choose a valid schedule type.",
       );
-      requireValue(
-        text(item.cron) && text(item.zone),
-        "Cron and time zone must not be empty.",
-      );
+      if (item.schedule === "interval")
+        requireValue(
+          integer(item.minutes),
+          "Choose a positive whole-minute interval.",
+        );
       if (item.schedule === "cron") {
+        requireValue(
+          text(item.cron) && text(item.zone),
+          "Cron and time zone must not be empty.",
+        );
         const fields = item.cron.trim().split(/\s+/);
         requireValue(
           fields.length === 5 &&
