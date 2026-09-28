@@ -165,7 +165,7 @@ test("running review exposes cancellation and safe visible failures", async ({
   ]);
 });
 
-test("completed review renders every file safely and never offers publication or approval", async ({
+test("completed review renders every file safely without inventing publication state or approval", async ({
   page,
 }) => {
   const review = {

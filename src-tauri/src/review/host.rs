@@ -194,9 +194,19 @@ impl Coordinator {
                 return Err("Automatic start is disabled; explicitly start this review.".into());
             }
             let mut reviews = store.load_reviews()?;
+            if candidate
+                .run
+                .as_ref()
+                .is_some_and(|run| run.operation.state == OperationState::Completed)
+                && store.load_publications()?.iter().any(|publication| {
+                    publication.review.key == candidate.key && publication.reserves_revision()
+                })
+            {
+                return Err("Reconcile the original publication before reviewing this revision again; a confirmed published batch cannot be replaced.".into());
+            }
             let now = now_seconds()?;
             let mut run = match candidate.run {
-                Some(run) if run.operation.state == OperationState::Completed => {
+                Some(run) if run.operation.state == OperationState::Completed && !manual => {
                     return Err("This Agent already reviewed this revision.".into())
                 }
                 Some(run)
@@ -521,7 +531,7 @@ async fn execute(
         local_gate: gate.clone(),
     };
     let integration = app.state::<Host>().copilot.clone();
-    let result = integration.review(request, cancelled, deadline).await?;
+    let mut result = integration.review(request, cancelled, deadline).await?;
     let final_app = app.clone();
     let pull = tauri::async_runtime::spawn_blocking(move || remote_gate(&final_app, &run))
         .await
@@ -532,6 +542,7 @@ async fn execute(
         ));
     }
     gate()?;
+    result.reviewed_base_sha = Some(expected_base);
     Ok((result, generation))
 }
 

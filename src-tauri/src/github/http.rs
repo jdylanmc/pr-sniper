@@ -58,7 +58,40 @@ impl HttpTransport {
 
 impl Transport for HttpTransport {
     fn get(&self, path: &str) -> Result<Response, ConnectionError> {
-        let response = self.client.execute(self.request(path)?).map_err(|error| {
+        self.execute(self.request(path)?)
+    }
+}
+
+impl super::publication::MutationTransport for HttpTransport {
+    fn mutate(
+        &self,
+        path: &str,
+        mutation: super::publication::Request,
+    ) -> Result<Response, ConnectionError> {
+        let mut request = self.request(path)?;
+        let (method, body) = match mutation {
+            super::publication::Request::Post(body) => (reqwest::Method::POST, Some(body)),
+            super::publication::Request::Delete => (reqwest::Method::DELETE, None),
+        };
+        *request.method_mut() = method;
+        if let Some(body) = body {
+            request.headers_mut().insert(
+                reqwest::header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            );
+            *request.body_mut() = Some(
+                serde_json::to_vec(&body)
+                    .map_err(|_| ConnectionError::InvalidResponse)?
+                    .into(),
+            );
+        }
+        self.execute(request)
+    }
+}
+
+impl HttpTransport {
+    fn execute(&self, request: Request) -> Result<Response, ConnectionError> {
+        let response = self.client.execute(request).map_err(|error| {
             if error.is_timeout() {
                 ConnectionError::Timeout
             } else {
@@ -72,6 +105,7 @@ impl Transport for HttpTransport {
             "x-oauth-scopes",
             "x-ratelimit-remaining",
             "retry-after",
+            "x-github-sso",
         ] {
             if let Some(value) = response.headers().get(name) {
                 headers.insert(

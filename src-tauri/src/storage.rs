@@ -444,6 +444,22 @@ impl Store {
         self.write_state("reviews.json", reviews)
     }
 
+    pub fn load_publications(&self) -> Result<Vec<crate::publication::Publication>, String> {
+        match fs::read(self.root.join("state/publications.json")) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|_| "Publication state is invalid; no GitHub mutation is allowed.".into()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+            Err(_) => Err("Cannot read publication state. Check local storage permissions.".into()),
+        }
+    }
+
+    pub fn save_publications(
+        &self,
+        publications: &[crate::publication::Publication],
+    ) -> Result<(), String> {
+        self.write_state("publications.json", publications)
+    }
+
     pub fn load_monitoring_state(&self) -> Result<crate::monitoring::MonitoringState, String> {
         match fs::read(self.root.join("state/monitoring.json")) {
             Ok(bytes) => serde_json::from_slice(&bytes)

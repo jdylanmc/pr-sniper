@@ -1361,6 +1361,71 @@ fn transient_poll_failures_stop_after_three_retries_and_manual_retry_resets_budg
 }
 
 #[test]
+fn publication_revision_recheck_is_durable_scoped_and_preserves_poll_backoff() {
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let now = 1_800_000_000;
+    check(
+        &mut monitor,
+        &store,
+        now,
+        vec![pull(
+            "9",
+            1,
+            "11",
+            "author",
+            &[],
+            HEAD_A,
+            "2027-01-15T00:00:00Z",
+        )],
+        "current-login",
+    )
+    .unwrap();
+    let job = store.load_queue().unwrap().remove(0);
+    monitor
+        .request_revision_check(&store, &job, now + 2)
+        .unwrap();
+    assert!(!monitor.snapshot()[0].manual_pending);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let mut tickets = monitor.prepare_checks(&store, now + 2, false).unwrap();
+    assert_eq!(tickets.len(), 1);
+    monitor
+        .finish(
+            &store,
+            tickets.remove(0),
+            Err(ConnectionError::RateLimitedAfter(30)),
+            now + 3,
+        )
+        .unwrap_err();
+    let queued = monitor.snapshot()[0].operation.clone().unwrap();
+    monitor
+        .request_revision_check(&store, &job, now + 4)
+        .unwrap();
+    assert_eq!(monitor.snapshot()[0].next_run, now + 33);
+    assert!(monitor
+        .prepare_checks(&store, now + 4, false)
+        .unwrap()
+        .is_empty());
+    let mut tickets = monitor.prepare_checks(&store, now + 33, false).unwrap();
+    assert_eq!(tickets.len(), 1);
+    let operation = monitor.snapshot()[0].operation.clone().unwrap();
+    assert_eq!(operation.id, queued.id);
+    assert_eq!(operation.retry_deadline, queued.retry_deadline);
+    assert_eq!(operation.attempt_count, 2);
+    monitor
+        .finish(
+            &store,
+            tickets.remove(0),
+            Err(ConnectionError::MissingReadPermission),
+            now + 34,
+        )
+        .unwrap_err();
+    assert!(monitor
+        .request_revision_check(&store, &job, now + 35)
+        .is_err());
+}
+
+#[test]
 fn check_now_preserves_an_existing_retry_budget() {
     let (_root, store) = store();
     let mut monitor = Monitor::restore(&store).unwrap();

@@ -5,14 +5,17 @@ Settings has four tabs: **Integrations**, **Doctrines**, **Agents**, and
 
 | Connection                | Purpose                                                                   |
 | ------------------------- | ------------------------------------------------------------------------- |
-| GitHub repository account | Repository access and the acting identity for future comments/publication |
+| GitHub repository account | Repository access and the acting identity for gated comment publication |
 | Copilot AI account        | AI credentials and that account's returned model catalog                  |
 
 All accounts are user-selected. The same GitHub identity can be connected to
 either or both roles; connecting one never connects the other. Settings does
 not run reviews or probe subscriptions/seats. Assigned reviews start separately
-from Review Queue or the effective automatic-start gate; they never publish
-comments or submit approvals. See [local review execution](../README.md#local-copilot-reviews).
+from Review Queue or the effective automatic-start gate. The Copilot adapter
+never publishes comments or submits approvals; a separate host operation
+publishes validated results through the current publication gate using the
+repository account. See [local review execution](../README.md#local-copilot-reviews)
+and [comment publication](../README.md#revision-safe-comment-publication).
 
 ## Connect and configure
 
