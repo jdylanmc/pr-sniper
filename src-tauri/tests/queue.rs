@@ -214,7 +214,12 @@ fn polling_and_restart_keep_exact_destinations_without_retargeting_old_heads() {
     seed(&store, std::slice::from_ref(&run), &[published(&run)]);
     let before = queue::snapshot(&store, vec![]).unwrap();
     let id = before.items[0].id.clone();
+    queue::select(&store, Some(&id)).unwrap();
     let restored = Store::new(root.path().into());
+    assert_eq!(
+        restored.load_queue_selection().unwrap().as_deref(),
+        Some(id.as_str())
+    );
     assert_eq!(queue::snapshot(&restored, vec![]).unwrap().items[0].id, id);
     assert_eq!(
         queue::destination(&restored, &id, None).unwrap().as_str(),
@@ -225,6 +230,11 @@ fn polling_and_restart_keep_exact_destinations_without_retargeting_old_heads() {
     assert_eq!(file.fragment().unwrap().len(), 69);
     assert!(queue::destination(&restored, &id, Some("https://evil.invalid")).is_err());
     assert!(queue::destination(&restored, "missing", None).is_err());
+    assert!(queue::select(&restored, Some("missing")).is_err());
+    assert_eq!(
+        restored.load_queue_selection().unwrap().as_deref(),
+        Some(id.as_str())
+    );
     let mut old = run.job.clone();
     old.waiting = "superseded".into();
     let mut next = run.job.clone();
@@ -399,4 +409,34 @@ fn base_only_movement_and_legacy_detections_cannot_claim_current_readiness() {
         .warnings
         .iter()
         .any(|w| w.contains("target base changed")));
+}
+
+#[test]
+fn queue_selection_is_profile_scoped_and_read_write_failures_are_visible() {
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let store = Store::new(first.path().into());
+    let run = review(1);
+    seed(&store, std::slice::from_ref(&run), &[published(&run)]);
+    let id = queue::item_id(&run.job);
+    queue::select(&store, Some(&id)).unwrap();
+    assert_eq!(
+        Store::new(second.path().into())
+            .load_queue_selection()
+            .unwrap(),
+        None
+    );
+    let path = first.path().join("state/queue-selection.json");
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    std::fs::write(&path, "invalid").unwrap();
+    assert!(store.load_queue_selection().is_err());
+    queue::select(&store, None).unwrap();
+    assert_eq!(store.load_queue_selection().unwrap(), None);
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    assert!(queue::select(&store, Some(&id)).is_err());
 }

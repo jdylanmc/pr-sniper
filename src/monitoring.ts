@@ -209,7 +209,7 @@ export function renderMonitoring(
   let reviewsSignature = "";
   let loading = false;
   let snapshot: MonitoringSnapshot | undefined;
-  let selection: QueueItem | null | undefined = null;
+  let selection: QueueItem | null | undefined;
   const followUps = renderFollowUps(
     root.querySelector<HTMLElement>("#thread-follow-ups")!,
     showError,
@@ -245,6 +245,15 @@ export function renderMonitoring(
 
   function renderEvidence() {
     if (!snapshot) return;
+    if (selection === undefined) {
+      reviews.textContent =
+        "Select an available queue item to inspect its saved evidence.";
+      reviewsSignature = "";
+      followUps([]);
+      root.querySelector<HTMLElement>("#thread-follow-ups")!.textContent =
+        "Select an available queue item to inspect its conversation.";
+      return;
+    }
     const candidates = (snapshot.reviews ?? []).filter(
       (r) => selection === null || !!selection?.review_keys.includes(r.key),
     );

@@ -26,6 +26,32 @@ async function captureDestinations(page) {
   });
 }
 
+test("a delayed restoration cannot overwrite a newer explicit native selection", async ({
+  page,
+  store,
+  ipc,
+}) => {
+  await queueFixture(store);
+  const items = (await store("monitoring_snapshot")).items;
+  const old = items.find((item) => item.job.number === 9);
+  const current = items.find((item) => item.job.number === 1);
+  await store("select_queue_item", { itemId: old.id });
+  const held = ipc.holdNext("queue_selection");
+  await page.goto("/?view=queue");
+  await held.arrived;
+  await page
+    .locator("#handoff-queue")
+    .getByRole("article", { name: "example/repo #1", exact: true })
+    .getByRole("button", { name: "Evidence and actions" })
+    .click();
+  await expect.poll(() => store("queue_selection")).toBe(current.id);
+  held.release();
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(page.locator("#agent-reviews article")).toHaveCount(1);
+  await expect(page.locator("#agent-reviews")).toContainText("example/repo #1");
+  expect(new URL(page.url()).hash).toBe(`#item=${current.id}`);
+});
+
 test("persisted queue prioritizes operator handoffs, not author waits or local-only sign-off", async ({
   page,
   store,
@@ -83,6 +109,7 @@ test("exact account and revision selection survives reload with complete ordered
     .click();
   await expect(page.locator("#evidence-heading")).toBeFocused();
   expect(new URL(page.url()).hash).toBe(`#item=${item.id}`);
+  await expect.poll(() => store("queue_selection")).toBe(item.id);
   await page.reload();
   const evidence = page.locator("#agent-reviews");
   await expect(evidence.locator("article")).toHaveCount(1);
@@ -171,6 +198,7 @@ test("cold deep links select only their exact item and missing destinations neve
   await page.goto(`/?view=queue#item=${item.id}`);
   await expect(page.locator("#agent-reviews article")).toHaveCount(1);
   await expect(page.locator("#agent-reviews")).toContainText("example/repo #1");
+  await expect.poll(() => store("queue_selection")).toBe(item.id);
   await page.goto("about:blank");
   await page.goto("/?view=queue");
   await expect(page.locator("#agent-reviews article")).toHaveCount(1);
