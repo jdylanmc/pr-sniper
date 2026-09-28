@@ -22,6 +22,6 @@
     "icon": ["icons/icon.png", "icons/icon.icns"],
     "category": "DeveloperTool",
     "shortDescription": "Human-owned pull request review, from your menu bar.",
-    "macOS": { "minimumSystemVersion": "13.5" }
+    "macOS": { "minimumSystemVersion": "13.5", "signingIdentity": "-" }
   }
 }

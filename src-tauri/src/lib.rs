@@ -4,6 +4,7 @@ mod doctrine_seeds;
 pub mod follow_up;
 pub mod github;
 pub mod monitoring;
+pub mod notifications;
 pub mod policy;
 pub mod publication;
 pub mod queue;
@@ -44,6 +45,7 @@ struct Host {
     reviews: review::Coordinator,
     publications: publication::host::Coordinator,
     follow_ups: follow_up::host::Coordinator,
+    notifications: notifications::host::Coordinator,
 }
 
 #[derive(Clone, Copy)]
@@ -896,25 +898,29 @@ fn apply_staged_monitoring_activation(
 async fn monitoring_snapshot(app: tauri::AppHandle) -> Result<queue::Snapshot, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let host = app.state::<Host>();
-        let _generation = host
-            .github_generations
-            .lock()
-            .map_err(|_| "Monitoring coordination is unavailable.")?;
-        let accounts = host
-            .github_auth
-            .lock()
-            .map_err(|_| "GitHub connection state is unavailable.")?
-            .monitoring_accounts();
-        let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
-        let mut monitor = host
-            .monitor
-            .lock()
-            .map_err(|_| "Monitoring is unavailable.")?;
-        monitor.synchronize_configuration(&store, &accounts, now_seconds()?)?;
-        queue::snapshot(&store, monitor.snapshot())
+        queue_snapshot(&host)
     })
     .await
     .map_err(|_| "Monitoring state could not be read.".to_string())?
+}
+
+fn queue_snapshot(host: &Host) -> Result<queue::Snapshot, String> {
+    let _generation = host
+        .github_generations
+        .lock()
+        .map_err(|_| "Monitoring coordination is unavailable.")?;
+    let accounts = host
+        .github_auth
+        .lock()
+        .map_err(|_| "GitHub connection state is unavailable.")?
+        .monitoring_accounts();
+    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+    let mut monitor = host
+        .monitor
+        .lock()
+        .map_err(|_| "Monitoring is unavailable.")?;
+    monitor.synchronize_configuration(&store, &accounts, now_seconds()?)?;
+    queue::snapshot(&store, monitor.snapshot())
 }
 
 #[tauri::command]
@@ -2130,6 +2136,10 @@ pub fn run() {
             open_queue_item,
             queue_selection,
             select_queue_item,
+            notifications::host::notification_snapshot,
+            notifications::host::set_notifications_enabled,
+            notifications::host::test_notification,
+            notifications::host::open_notification,
             monitoring_snapshot,
             retry_monitoring_operation,
             review::host::start_review,
@@ -2166,6 +2176,7 @@ pub fn run() {
             publication::restore(&store).map_err(std::io::Error::other)?;
             follow_up::restore(&store).map_err(std::io::Error::other)?;
             let monitor = monitoring::Monitor::restore(&store).map_err(std::io::Error::other)?;
+            let notification_restore = notifications::restore(&store);
             app.manage(Host {
                 store: Mutex::new(store),
                 monitor: Mutex::new(monitor),
@@ -2186,7 +2197,11 @@ pub fn run() {
                 reviews: review::Coordinator::default(),
                 publications: publication::host::Coordinator::default(),
                 follow_ups: follow_up::host::Coordinator::default(),
+                notifications: notifications::host::Coordinator::new(app.handle()),
             });
+            if let Err(error) = notification_restore {
+                report(app.handle(), error);
+            }
             record(app.handle(), DiagnosticEvent::SessionStarted);
             let scheduler_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -2208,6 +2223,7 @@ pub fn run() {
                     if let Err(error) = follow_up::host::Coordinator::pump(&scheduler_app) {
                         report(&scheduler_app, error);
                     }
+                    notifications::host::Coordinator::pump(&scheduler_app);
                 }
             });
             let status = MenuItem::with_id(app, "status", "Status", true, None::<&str>)?;
