@@ -460,6 +460,21 @@ impl Store {
         self.write_state("publications.json", publications)
     }
 
+    pub fn load_follow_ups(&self) -> Result<Vec<crate::follow_up::FollowUp>, String> {
+        match fs::read(self.root.join("state/follow-ups.json")) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|_| "Thread follow-up state is invalid; automation is blocked.".into()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+            Err(_) => {
+                Err("Cannot read thread follow-up state. Check local storage permissions.".into())
+            }
+        }
+    }
+
+    pub fn save_follow_ups(&self, runs: &[crate::follow_up::FollowUp]) -> Result<(), String> {
+        self.write_state("follow-ups.json", runs)
+    }
+
     pub fn load_monitoring_state(&self) -> Result<crate::monitoring::MonitoringState, String> {
         match fs::read(self.root.join("state/monitoring.json")) {
             Ok(bytes) => serde_json::from_slice(&bytes)

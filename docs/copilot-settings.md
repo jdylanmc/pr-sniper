@@ -16,6 +16,9 @@ never publishes comments or submits approvals; a separate host operation
 publishes validated results through the current publication gate using the
 repository account. See [local review execution](../README.md#local-copilot-reviews)
 and [comment publication](../README.md#revision-safe-comment-publication).
+Owned-thread follow-up analysis uses that same constrained account/model
+runtime; its reply, quiet or human-input result goes through a separate
+publication gate. See [owned-thread follow-ups](../README.md#owned-thread-follow-ups).
 
 ## Connect and configure
 

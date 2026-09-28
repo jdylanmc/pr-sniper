@@ -10,6 +10,8 @@ GitHub repositories and persists eligible revisions in the Review Queue.
 Assigned Copilot Agents can review each admitted revision manually or through
 the automatic-start gate, with validated results kept locally. A separate
 publication gate can submit one revision-bound GitHub `COMMENT` review.
+New external comments in verified owned threads can receive an evidence-backed
+follow-up, or remain quiet/wait for human judgment.
 Settings manages independent Copilot
 AI accounts with browser sign-in and per-Agent account/model selection; see
 [Copilot Settings](docs/copilot-settings.md). Product scope lives in the
@@ -285,8 +287,8 @@ the summary reports their count rather than silently dropping them or posting
 them at guessed locations. Summaries and machine sign-off end with the canonical
 ` PR Sniper` and explicitly request final human review. The existing saved
 custom Agent signature is not applied by this slice; signature customization
-and its revised default remain separate #30 work. No `APPROVE`, merging or
-thread-reply operation is implemented here.
+and its revised default remain separate #30 work. No `APPROVE` or merging is
+implemented. Owned-thread replies use the separate follow-up workflow below.
 
 Before and after mutations the host rechecks account/repository identity, head
 and reviewed target base, open/non-draft lifecycle, eligibility, active monitoring
@@ -324,6 +326,64 @@ is retained and retry only reconciles that existing review. Starting another
 local review cannot hide an active, uncertain or confirmed publication.
 Live mutation acceptance requires an explicitly authorized disposable PR and
 cleanup; deterministic provider fixtures do not claim a live publication pass.
+
+## Owned-thread follow-ups
+
+Each assignment's scheduled poll also checks unresolved threads rooted in its
+confirmed PR Sniper inline comments. Ownership requires the saved review and
+comment receipts, repository/account identity, original commit and exact root
+body; a matching username alone is not sufficient. GitHub GraphQL supplies
+resolution state and complete paginated published conversations. Unpublished
+pending comments are excluded, so private drafts cannot trigger public replies.
+Comment discovery failures use the existing poll operation's retry budget.
+
+The latest published external comment creates a durable key containing provider,
+account, configuration, owned-thread ID, comment ID and reviewed head. Multiple
+new comments between polls are coalesced into that latest trigger while the full
+published conversation remains context. PR Sniper's own signed replies cannot
+trigger themselves; an actual human comment through the same account can.
+Repeated polling/restart does not create another job for the same key.
+
+**Review Queue > Thread follow-ups** shows the conversation, acting account,
+revision, draft/evidence and separate analysis/publication states. Existing
+automatic-start and automatic-comment defaults/overrides apply, and the
+assignment must allow **Comment**. With those gates off, use **Start follow-up**
+and a separate checked **Publish reply** confirmation. **Cancel follow-up**
+stops inference or withdraws permission before a reply; it cannot remove an
+already confirmed comment.
+
+Analysis reuses the same pinned Copilot account/model, current review lens,
+isolated runtime and three immutable read tools. It still reads every changed
+file. A publishable reply is bounded, contains substantive new information and
+quotes exact verified immutable source lines. Normalized repeats,
+acknowledgment-only filler, speculative phrasing and unsubstantiated answers
+stay quiet. Invalid or fabricated source citations fail visibly. Semantic review
+quality still depends on the model and human review; citations are not proof of
+every inference.
+
+Human-judgment questions enter **human input required** with no publishable
+body. That state pauses automatic follow-ups for the thread; a later external
+comment can be started explicitly after the human decision. Quiet and human-input
+results have no publication action. Resolved, changed, superseded or stale
+threads stop rather than responding to an outdated conversation. Follow-ups
+remain bound to the originating reviewed head/base; a push must go through
+normal new-revision review, not silently retarget an old reply.
+
+Replies are posted only to the verified root comment, end with ` PR Sniper`,
+and never resolve a thread, approve a PR or merge. Before and after the mutation,
+the host revalidates the live thread, revision, lifecycle, eligibility, account,
+trust, scope and publication gate. A late change preserves the confirmed receipt
+as **stale after publication**, without posting again.
+
+Private atomic `state/follow-ups.json` records frozen input/output, both operation
+budgets, attempted mutation, original review/thread/trigger identity and reply
+receipt. Analysis and publication each receive the existing three-retry,
+15-minute budget when started. Restart preserves those budgets.
+**Reconcile / retry reply** retains the original key and body: a lost response
+must be reconciled against the full remote thread before any further effect.
+An absent uncertain reply never authorizes another POST, even after manual
+retry. Live mutation acceptance still requires a separately approved disposable
+PR; provider fixtures do not claim a live reply pass.
 
 ## Read-only GitHub connection
 

@@ -193,10 +193,10 @@ pub struct ReviewOutput {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ReviewResult {
+pub struct ReviewResult<O = ReviewOutput> {
     #[serde(default)]
     pub reviewed_base_sha: Option<String>,
-    pub output: ReviewOutput,
+    pub output: O,
     pub session_id: String,
     pub model: String,
     pub runtime_version: String,
@@ -205,14 +205,16 @@ pub struct ReviewResult {
     pub tool_calls: u64,
 }
 
-pub fn validate_output(text: &str, paths: &[String]) -> Result<ReviewOutput, Failure> {
+pub(crate) fn json_body(text: &str) -> &str {
     let text = text.trim();
-    let text = text
-        .strip_prefix("```json\n")
+    text.strip_prefix("```json\n")
         .or_else(|| text.strip_prefix("```\n"))
         .and_then(|body| body.strip_suffix("\n```"))
-        .unwrap_or(text);
-    let mut output: ReviewOutput = serde_json::from_str(text).map_err(|_| {
+        .unwrap_or(text)
+}
+
+pub fn validate_output(text: &str, paths: &[String]) -> Result<ReviewOutput, Failure> {
+    let mut output: ReviewOutput = serde_json::from_str(json_body(text)).map_err(|_| {
         Failure::permanent(
             "Copilot's final response does not match the required review JSON schema.",
         )
@@ -439,6 +441,18 @@ impl Events {
         model: String,
         runtime_version: String,
     ) -> Result<ReviewResult, Failure> {
+        self.finish_with(session_id, model, runtime_version, |text| {
+            validate_output(text, paths)
+        })
+    }
+
+    pub fn finish_with<O>(
+        self,
+        session_id: String,
+        model: String,
+        runtime_version: String,
+        validate: impl FnOnce(&str) -> Result<O, Failure>,
+    ) -> Result<ReviewResult<O>, Failure> {
         if !self.idle || !self.usage_seen {
             return Err(Failure::permanent(
                 "Copilot ended without completion and usage evidence.",
@@ -446,7 +460,7 @@ impl Events {
         }
         Ok(ReviewResult {
             reviewed_base_sha: None,
-            output: validate_output(self.message.as_deref().ok_or_else(Failure::schema)?, paths)?,
+            output: validate(self.message.as_deref().ok_or_else(Failure::schema)?)?,
             session_id,
             model,
             runtime_version,
