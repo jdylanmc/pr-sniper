@@ -44,6 +44,15 @@ No release/versioning policy has been established yet.
 
 ### Added
 
+- Put machine-cleared PRs and operator-input work first in Review Queue, while
+  published findings wait on the PR author. Aggregate all current assignments
+  without hiding publication failures, uncertain outcomes or stale revisions.
+  Preserve exact selection across restart, complete guide/file navigation,
+  evidence and gated recovery actions. Fix assignment matching so one Agent's
+  detection cannot mask another's review/publication/follow-up state. Native
+  notifications remain the next separate delivery. See
+  [#2](https://github.com/jdylanmc/pr-sniper/issues/2).
+
 - Follow published external comments in verified PR Sniper-owned unresolved
   threads with a constrained, evidence-backed reply, silence or a human-input
   wait. Preserve per-thread/comment/revision identities and separate bounded

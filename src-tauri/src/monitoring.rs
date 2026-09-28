@@ -124,6 +124,8 @@ pub struct QueueJob {
     pub number: u64,
     pub title: String,
     pub head_sha: String,
+    #[serde(default)]
+    pub observed_base_sha: Option<String>,
     pub trigger_policy: String,
     pub author_id: Option<String>,
     pub author_login: Option<String>,
@@ -1441,6 +1443,7 @@ impl Monitor {
                 number: pull.number,
                 title: pull.title,
                 head_sha: pull.head_sha,
+                observed_base_sha: Some(pull.base_sha),
                 trigger_policy: ticket.trigger_policy.clone(),
                 author_id: pull.author.as_ref().map(|author| author.id.clone()),
                 author_login: pull.author.as_ref().map(|author| author.login.clone()),

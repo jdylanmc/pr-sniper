@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { renderFollowUps, type FollowUpCandidate } from "./follow-up";
+import { openDestination, renderQueue, type QueueItem } from "./queue";
 
 interface Health {
   repository_id: string;
@@ -51,6 +52,7 @@ interface Job {
 }
 
 interface MonitoringSnapshot {
+  items?: QueueItem[];
   health: Health[];
   jobs: Job[];
   reviews?: ReviewCandidate[];
@@ -187,8 +189,11 @@ export function renderMonitoring(
   root: HTMLElement,
   showError: (message: string) => void,
 ) {
-  root.innerHTML = `<button id="check-now" type="button">Check Now</button>
+  root.innerHTML = `<div class="actions"><button id="check-now" type="button">Check Now</button><button id="queue-settings" type="button">Open Settings</button><button id="queue-diagnostics" type="button">Open Diagnostics</button></div>
+    <h2>Your review inbox</h2><section id="handoff-queue"></section>
+    <h2 id="evidence-heading" tabindex="-1">Review evidence and actions</h2>
     <p>Monitoring and assigned reviews run while the menu-bar app is active. Copilot uses read-only tools. GitHub comments require a separate publication gate; machine sign-off is not approval.</p>
+    <p class="hint">Saved review evidence is tied to the head shown. GitHub links open the live PR or current diff in your browser's signed-in account; check its current revision and requirements before deciding to merge.</p>
     <h2>Agent reviews</h2><section id="agent-reviews"></section>
     <h2>Thread follow-ups</h2><section id="thread-follow-ups"></section>
     <h2>Schedule health</h2><section id="schedule-health"></section>
@@ -203,11 +208,61 @@ export function renderMonitoring(
   const publishConsent = new Set<string>();
   let reviewsSignature = "";
   let loading = false;
+  let snapshot: MonitoringSnapshot | undefined;
+  let selection: QueueItem | null | undefined = null;
   const followUps = renderFollowUps(
     root.querySelector<HTMLElement>("#thread-follow-ups")!,
     showError,
     refresh,
   );
+  const queue = renderQueue(
+    root.querySelector<HTMLElement>("#handoff-queue")!,
+    showError,
+    (item, focus) => {
+      selection = item;
+      renderEvidence();
+      if (focus) {
+        const heading = root.querySelector<HTMLElement>("#evidence-heading")!;
+        heading.focus();
+        heading.scrollIntoView({ block: "start" });
+      }
+    },
+  );
+  for (const [id, command] of [
+    ["#queue-settings", "open_settings"],
+    ["#queue-diagnostics", "open_diagnostics"],
+  ]) {
+    root.querySelector(id)!.addEventListener("click", async () => {
+      try {
+        await invoke(command);
+      } catch {
+        showError(
+          "Could not open the requested application window. Try the menu-bar menu.",
+        );
+      }
+    });
+  }
+
+  function renderEvidence() {
+    if (!snapshot) return;
+    const candidates = (snapshot.reviews ?? []).filter(
+      (r) => selection === null || !!selection?.review_keys.includes(r.key),
+    );
+    const replies = (snapshot.follow_ups ?? []).filter(
+      (f) =>
+        selection === null || !!selection?.follow_up_ids.includes(f.run.id),
+    );
+    const signature = JSON.stringify([
+      candidates,
+      snapshot.publications,
+      snapshot.items,
+    ]);
+    if (signature !== reviewsSignature) {
+      renderReviews(candidates, snapshot.publications ?? []);
+      reviewsSignature = signature;
+    }
+    followUps(replies, snapshot.follow_ups ?? []);
+  }
 
   async function act(candidate: ReviewCandidate, cancel: boolean) {
     if (pending.has(candidate.key)) return;
@@ -397,10 +452,7 @@ export function renderMonitoring(
         "No assigned reviews. Configure an Agent with a Copilot account and model, assign it to a repository, then detect an eligible revision.";
       return;
     }
-    candidates.sort(
-      (a, b) => Number(!!b.run?.result) - Number(!!a.run?.result),
-    );
-    const running = candidates.some(
+    const running = (snapshot?.reviews ?? candidates).some(
       (c) => c.run?.operation.state === "running",
     );
     for (const candidate of candidates) {
@@ -438,8 +490,8 @@ export function renderMonitoring(
         decision.className = "review-decision";
         decision.textContent =
           result.output.decision === "machine_sign_off"
-            ? "Machine-cleared. Automated review completed; final human review required. This is not GitHub approval."
-            : "Human input required. Automated review completed; inspect the findings and finish the review.";
+            ? "Local result: machine sign-off. Automated analysis completed; publication and handoff status are separate. This is not GitHub approval."
+            : "Human input required by the review. Published findings wait on the PR author; unpublished findings still need your attention.";
         const synopsis = document.createElement("p");
         synopsis.textContent = result.output.synopsis;
         row.append(decision, synopsis);
@@ -465,6 +517,20 @@ export function renderMonitoring(
           const item = document.createElement("li");
           const path = document.createElement("strong");
           path.textContent = file.path;
+          const queueItem = snapshot?.items?.find((item) =>
+            item.review_keys.includes(candidate.key),
+          );
+          if (queueItem) {
+            const link = document.createElement("a");
+            link.href = "#";
+            link.textContent = file.path;
+            link.title = "Open this file in the current GitHub PR diff";
+            link.onclick = (event) => {
+              event.preventDefault();
+              void openDestination(queueItem.id, file.path, showError);
+            };
+            path.replaceChildren(link);
+          }
           item.append(path, `: ${file.explanation}`);
           list.append(item);
         }
@@ -525,16 +591,9 @@ export function renderMonitoring(
     if (loading || !root.isConnected) return;
     loading = true;
     try {
-      const snapshot = await invoke<MonitoringSnapshot>("monitoring_snapshot");
-      followUps(snapshot.follow_ups ?? []);
-      const signature = JSON.stringify([
-        snapshot.reviews ?? [],
-        snapshot.publications ?? [],
-      ]);
-      if (signature !== reviewsSignature) {
-        renderReviews(snapshot.reviews ?? [], snapshot.publications ?? []);
-        reviewsSignature = signature;
-      }
+      snapshot = await invoke<MonitoringSnapshot>("monitoring_snapshot");
+      if (snapshot.items) queue(snapshot.items);
+      renderEvidence();
       health.replaceChildren();
       jobs.replaceChildren();
       if (!snapshot.health.length) {

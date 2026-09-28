@@ -370,7 +370,7 @@ fn validate_saved_selection(store: &crate::storage::Store, run: &ReviewRun) -> R
     let jobs = store.load_queue().map_err(Failure::permanent)?;
     let job = jobs
         .iter()
-        .find(|j| key(j, &run.assignment_id) == run.key)
+        .find(|j| run.matches_job(j))
         .ok_or_else(|| Failure::permanent("Review detection is no longer available."))?;
     let current =
         Selection::resolve(&settings, job, &run.assignment_id).map_err(Failure::permanent)?;

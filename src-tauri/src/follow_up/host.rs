@@ -161,8 +161,7 @@ pub(crate) fn admit(
     for observation in observations {
         let run = FollowUp::new(&observation.origin, observation.thread)?;
         if jobs.iter().any(|job| {
-            crate::review::key(job, &run.review.assignment_id) == run.review.key
-                && monitoring::review_policy(&settings, job, None).is_ok()
+            run.review.matches_job(job) && monitoring::review_policy(&settings, job, None).is_ok()
         }) {
             super::admit(&mut runs, &observation.origin, run.thread)?;
         }
@@ -175,11 +174,11 @@ pub(crate) fn admit(
 
 #[derive(Serialize)]
 pub(crate) struct Candidate {
-    run: FollowUp,
-    blocked: Option<String>,
-    automatic_start: bool,
-    automatic_publication: bool,
-    human_gate: bool,
+    pub(crate) run: FollowUp,
+    pub(crate) blocked: Option<String>,
+    pub(crate) automatic_start: bool,
+    pub(crate) automatic_publication: bool,
+    pub(crate) human_gate: bool,
 }
 
 pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
@@ -191,7 +190,7 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
         .map(|run| {
             let policy = jobs
                 .iter()
-                .find(|j| crate::review::key(j, &run.review.assignment_id) == run.review.key)
+                .find(|j| run.review.matches_job(j))
                 .ok_or("This revision is no longer detected.".to_string())
                 .and_then(|job| {
                     let selection = Selection::resolve(&settings, job, &run.review.assignment_id)?;
@@ -362,9 +361,7 @@ impl Coordinator {
                     let jobs = store.load_queue()?;
                     let job = jobs
                         .iter()
-                        .find(|j| {
-                            crate::review::key(j, &run.review.assignment_id) == run.review.key
-                        })
+                        .find(|j| run.review.matches_job(j))
                         .ok_or("The reviewed revision is no longer available.")?;
                     run.review.selection =
                         Selection::resolve(&settings, job, &run.review.assignment_id)?;
@@ -544,7 +541,7 @@ impl Native {
         let jobs = store.load_queue().map_err(Failure::permanent)?;
         let job = jobs
             .iter()
-            .find(|j| crate::review::key(j, &run.review.assignment_id) == run.review.key)
+            .find(|j| run.review.matches_job(j))
             .ok_or_else(|| Failure::permanent("The reviewed revision is no longer detected."))?;
         let selection = Selection::resolve(&settings, job, &run.review.assignment_id)
             .map_err(Failure::permanent)?;
@@ -659,9 +656,7 @@ impl Environment for Native {
             .map_err(|_| Failure::permanent("Thread storage unavailable."))?;
         let settings = store.load_settings().map_err(Failure::permanent)?;
         let jobs = store.load_queue().map_err(Failure::permanent)?;
-        let current_job = jobs
-            .iter()
-            .find(|j| crate::review::key(j, &run.review.assignment_id) == run.review.key);
+        let current_job = jobs.iter().find(|j| run.review.matches_job(j));
         let current_auto = current_job
             .and_then(|j| publication::automatic_policy(&settings, &run.review, j).ok())
             .unwrap_or(false);
