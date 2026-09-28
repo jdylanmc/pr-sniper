@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { renderFollowUps, type FollowUpCandidate } from "./follow-up";
 import { openDestination, renderQueue, type QueueItem } from "./queue";
+import { renderNotificationHistory } from "./notifications";
 
 interface Health {
   repository_id: string;
@@ -196,6 +197,7 @@ export function renderMonitoring(
     <p class="hint">Saved review evidence is tied to the head shown. GitHub links open the live PR or current diff in your browser's signed-in account; check its current revision and requirements before deciding to merge.</p>
     <h2>Agent reviews</h2><section id="agent-reviews"></section>
     <h2>Thread follow-ups</h2><section id="thread-follow-ups"></section>
+    <h2>Notifications</h2><section id="notification-history"></section>
     <h2>Schedule health</h2><section id="schedule-health"></section>
     <h2>Detected pull requests</h2><section id="review-jobs"></section>`;
   const check = root.querySelector<HTMLButtonElement>("#check-now")!;
@@ -210,6 +212,10 @@ export function renderMonitoring(
   let loading = false;
   let snapshot: MonitoringSnapshot | undefined;
   let selection: QueueItem | null | undefined;
+  const refreshNotifications = renderNotificationHistory(
+    root.querySelector<HTMLElement>("#notification-history")!,
+    showError,
+  );
   const followUps = renderFollowUps(
     root.querySelector<HTMLElement>("#thread-follow-ups")!,
     showError,
@@ -688,6 +694,7 @@ export function renderMonitoring(
       );
     } finally {
       loading = false;
+      void refreshNotifications();
     }
   }
 

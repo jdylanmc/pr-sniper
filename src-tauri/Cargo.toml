@@ -31,7 +31,10 @@ base64 = "0.22"
 sha2 = "=0.10.9"
 tempfile = "3"
 tracing = "0.1"
-objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSProcessInfo"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSProcessInfo", "NSBundle", "NSString", "NSError"] }
+objc2 = "=0.6.4"
+block2 = "=0.6.2"
+objc2-user-notifications = { version = "=0.3.2", default-features = false, features = ["std", "block2", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
