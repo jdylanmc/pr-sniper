@@ -44,6 +44,48 @@ article {
 .review-run {
   overflow-wrap: anywhere;
 }
+.queue-item {
+  border-left: 4px solid #80979d;
+}
+.queue-item[data-state="machine_signed_off"],
+.queue-item[data-state="waiting_for_human"] {
+  border-left-color: #145967;
+}
+.queue-item[data-state="failed"],
+.queue-item[data-state="stale_after_publication"] {
+  border-left-color: #a53221;
+}
+.queue-item[data-selected="true"] {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+}
+.queue-item .queue-state {
+  font-weight: 700;
+  margin: 0;
+}
+.queue-item h3 {
+  margin: 4px 0;
+}
+.queue-item p {
+  overflow-wrap: anywhere;
+}
+#handoff-queue {
+  margin-top: 12px;
+}
+a {
+  color: inherit;
+  text-underline-offset: 3px;
+}
+a:focus-visible,
+#evidence-heading:focus-visible {
+  outline: 3px solid #d47516;
+  outline-offset: 3px;
+}
+@media (max-width: 480px) {
+  main {
+    padding: 20px 16px;
+  }
+}
 .review-run .review-decision {
   border-left: 3px solid #145967;
   padding-left: 12px;

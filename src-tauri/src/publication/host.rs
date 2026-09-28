@@ -16,10 +16,10 @@ pub(crate) struct Coordinator {
 
 #[derive(Serialize)]
 pub(crate) struct Candidate {
-    review_operation_id: String,
-    automatic: bool,
-    blocked: Option<String>,
-    publication: Option<Publication>,
+    pub(crate) review_operation_id: String,
+    pub(crate) automatic: bool,
+    pub(crate) blocked: Option<String>,
+    pub(crate) publication: Option<Publication>,
 }
 
 pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
@@ -34,7 +34,7 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
     Ok(reviews.iter()
         .filter(|review| review.operation.state == OperationState::Completed && review.result.is_some())
         .map(|review| {
-            let mut policy = jobs.iter().find(|job| crate::review::key(job, &review.assignment_id) == review.key)
+            let mut policy = jobs.iter().find(|job| review.matches_job(job))
                 .ok_or("Review detection is no longer available.".to_string())
                 .and_then(|job| automatic_policy(&settings, review, job))
                 .and_then(|automatic| {
@@ -276,7 +276,7 @@ impl Native {
         let jobs = store.load_queue().map_err(Failure::permanent)?;
         let job = jobs
             .iter()
-            .find(|job| crate::review::key(job, &run.review.assignment_id) == run.review.key)
+            .find(|job| run.review.matches_job(job))
             .ok_or_else(|| Failure::permanent("Review detection is no longer available."))?;
         let automatic =
             automatic_policy(&settings, &run.review, job).map_err(Failure::permanent)?;
@@ -357,8 +357,7 @@ impl Environment for Native {
         let mut gate = evaluate_gate(
             &settings,
             run,
-            jobs.iter()
-                .find(|job| crate::review::key(job, &run.review.assignment_id) == run.review.key),
+            jobs.iter().find(|job| run.review.matches_job(job)),
             &pull,
             active,
             connection.capabilities.comment == CommentCapability::Available,

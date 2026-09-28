@@ -225,7 +225,7 @@ pub fn validate_analysis_commit(
     let jobs = store.load_queue().map_err(Failure::permanent)?;
     let job = jobs
         .iter()
-        .find(|job| crate::review::key(job, &run.review.assignment_id) == run.review.key)
+        .find(|job| run.review.matches_job(job))
         .ok_or_else(|| Failure::permanent("The reviewed revision is no longer available."))?;
     let current = crate::review::Selection::resolve(&settings, job, &run.review.assignment_id)
         .map_err(Failure::permanent)?;

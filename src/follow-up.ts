@@ -87,8 +87,13 @@ export function renderFollowUps(
       await refresh();
     }
   }
-  return (candidates: FollowUpCandidate[]) => {
-    const next = JSON.stringify(candidates);
+  return (candidates: FollowUpCandidate[], all = candidates) => {
+    const working = all.some(
+      ({ run }) =>
+        run.analysis?.state === "running" ||
+        run.publication?.state === "running",
+    );
+    const next = JSON.stringify([candidates, working]);
     if (next === signature) return;
     signature = next;
     root.replaceChildren();
@@ -97,11 +102,6 @@ export function renderFollowUps(
         "No new external comments in verified PR Sniper-owned threads.";
       return;
     }
-    const working = candidates.some(
-      ({ run }) =>
-        run.analysis?.state === "running" ||
-        run.publication?.state === "running",
-    );
     for (const candidate of candidates) {
       const run = candidate.run;
       const job = run.review.job;

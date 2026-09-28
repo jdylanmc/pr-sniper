@@ -6,6 +6,7 @@ pub mod github;
 pub mod monitoring;
 pub mod policy;
 pub mod publication;
+pub mod queue;
 pub mod review;
 pub mod startup;
 pub mod storage;
@@ -806,15 +807,6 @@ struct GithubMetadata {
     pull_requests: Vec<PullRequest>,
 }
 
-#[derive(Serialize)]
-struct MonitoringSnapshot {
-    health: Vec<monitoring::ScheduleHealth>,
-    jobs: Vec<monitoring::QueueJob>,
-    reviews: Vec<review::host::Candidate>,
-    publications: Vec<publication::host::Candidate>,
-    follow_ups: Vec<follow_up::host::Candidate>,
-}
-
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ApplyMonitoringActivation {
@@ -901,7 +893,7 @@ fn apply_staged_monitoring_activation(
 }
 
 #[tauri::command]
-async fn monitoring_snapshot(app: tauri::AppHandle) -> Result<MonitoringSnapshot, String> {
+async fn monitoring_snapshot(app: tauri::AppHandle) -> Result<queue::Snapshot, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let host = app.state::<Host>();
         let _generation = host
@@ -919,13 +911,7 @@ async fn monitoring_snapshot(app: tauri::AppHandle) -> Result<MonitoringSnapshot
             .lock()
             .map_err(|_| "Monitoring is unavailable.")?;
         monitor.synchronize_configuration(&store, &accounts, now_seconds()?)?;
-        Ok(MonitoringSnapshot {
-            health: monitor.snapshot(),
-            jobs: store.load_queue()?,
-            reviews: review::host::candidates(&store)?,
-            publications: publication::host::candidates(&store)?,
-            follow_ups: follow_up::host::candidates(&store)?,
-        })
+        queue::snapshot(&store, monitor.snapshot())
     })
     .await
     .map_err(|_| "Monitoring state could not be read.".to_string())?
@@ -1947,6 +1933,56 @@ fn open_diagnostics(app: tauri::AppHandle) -> Result<(), String> {
     open_window(&app, "diagnostics", "Diagnostics")
 }
 
+#[tauri::command]
+fn open_settings(app: tauri::AppHandle) -> Result<(), String> {
+    open_window(&app, "settings", "Settings")
+}
+
+#[tauri::command]
+async fn open_queue_destination(
+    app: tauri::AppHandle,
+    item_id: String,
+    file: Option<String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let url = {
+            let host = app.state::<Host>();
+            let store = host
+                .store
+                .lock()
+                .map_err(|_| "Queue storage is unavailable.")?;
+            queue::destination(&store, &item_id, file.as_deref())?
+        };
+        webbrowser::open(url.as_str())
+            .map_err(|_| "Could not open this GitHub destination. Try again.".into())
+    })
+    .await
+    .map_err(|_| "Could not open the queue destination.".to_string())?
+}
+
+#[tauri::command]
+fn open_queue_item(app: tauri::AppHandle, item_id: String) -> Result<(), String> {
+    {
+        let host = app.state::<Host>();
+        let store = host
+            .store
+            .lock()
+            .map_err(|_| "Queue storage is unavailable.")?;
+        queue::destination(&store, &item_id, None)?;
+    }
+    open_window(&app, "queue", "Review Queue")?;
+    let window = app
+        .get_webview_window("queue")
+        .ok_or("Review Queue window is unavailable.")?;
+    let mut url = window
+        .url()
+        .map_err(|_| "Queue navigation is unavailable.")?;
+    url.set_fragment(Some(&format!("item={item_id}")));
+    window
+        .navigate(url)
+        .map_err(|_| "Could not navigate to the exact queue item.".into())
+}
+
 fn open_window(app: &tauri::AppHandle, label: &str, title: &str) -> Result<(), String> {
     let window = if let Some(window) = app.get_webview_window(label) {
         window
@@ -1958,8 +1994,16 @@ fn open_window(app: &tauri::AppHandle, label: &str, title: &str) -> Result<(), S
         )
         .title(format!("PR Sniper - {title}"))
         .inner_size(
-            if label == "settings" { 1120.0 } else { 640.0 },
-            if label == "settings" { 760.0 } else { 520.0 },
+            match label {
+                "settings" => 1120.0,
+                "queue" => 900.0,
+                _ => 640.0,
+            },
+            if matches!(label, "settings" | "queue") {
+                760.0
+            } else {
+                520.0
+            },
         )
         .min_inner_size(390.0, 360.0)
         .visible(false)
@@ -2064,6 +2108,9 @@ pub fn run() {
             copilot::cancel_copilot_models,
             diagnostics,
             open_diagnostics,
+            open_settings,
+            open_queue_destination,
+            open_queue_item,
             monitoring_snapshot,
             retry_monitoring_operation,
             review::host::start_review,
