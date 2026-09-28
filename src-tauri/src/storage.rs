@@ -22,6 +22,10 @@ pub enum DiagnosticEvent {
     GithubConnectionFailed,
     GithubMetadataRead,
     GithubReadFailed,
+    NotificationAccepted,
+    NotificationFailed,
+    NotificationOpened,
+    NotificationActivated,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -441,6 +445,28 @@ impl Store {
                 "Cannot read the saved queue destination. Check local storage permissions.".into(),
             ),
         }
+    }
+
+    pub fn load_notifications(&self) -> Result<crate::notifications::Ledger, String> {
+        let ledger = match fs::read(self.root.join("state/notifications.json")) {
+            Ok(bytes) => serde_json::from_slice::<crate::notifications::Ledger>(&bytes)
+                .map_err(|_| "Notification history is invalid; no notices can be sent.")?,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                crate::notifications::Ledger::default()
+            }
+            Err(_) => {
+                return Err(
+                    "Cannot read notification history. Check local storage permissions.".into(),
+                )
+            }
+        };
+        ledger.validate()?;
+        Ok(ledger)
+    }
+
+    pub fn save_notifications(&self, ledger: &crate::notifications::Ledger) -> Result<(), String> {
+        ledger.validate()?;
+        self.write_state("notifications.json", ledger)
     }
 
     pub fn save_queue_selection(&self, id: Option<&str>) -> Result<(), String> {

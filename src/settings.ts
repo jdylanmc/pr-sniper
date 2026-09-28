@@ -19,6 +19,7 @@ import type {
 import type { Repository } from "./repositories";
 import "./settings.css";
 import { createDialogs } from "./dialogs";
+import { mountNotificationSettings } from "./notifications";
 
 interface ConfiguredRepository extends Repository {
   watched_authors?: WatchedIdentity[];
@@ -1570,8 +1571,12 @@ export async function mountSettings(app: HTMLElement) {
     content.innerHTML = `<div class="settings-group"><fieldset aria-label="Startup"><legend>Startup</legend><label class="setting-row"><span>Open PR Sniper at login<small>${snapshot.isolated ? "Isolated development run: changing macOS login items is disabled." : `Saved request, not effective macOS state. Registration: ${snapshot.login_registration ?? "unavailable"}.`}</small></span><input id="login" type="checkbox" role="switch" ${draft.launch_at_login ? "checked" : ""} ${snapshot.isolated || snapshot.login_registration === null ? "disabled" : ""} /></label></fieldset></div>
       <div class="settings-group"><fieldset aria-label="Review execution"><legend>Review execution</legend><label class="setting-row"><span>Start eligible reviews automatically<small>Default for assigned repositories. Forks and untrusted authors still require confirmation; publication has its own gate.</small></span><input id="automatic-review-start" type="checkbox" role="switch" ${draft.defaults.automatic_agent_start ? "checked" : ""} /></label></fieldset></div>
       <div class="settings-group"><fieldset aria-label="Comment publication"><legend>Comment publication</legend><label class="setting-row"><span>Publish review comments automatically<small>Default for assigned repositories that allow Comment. Revalidates revision, trust and eligibility before publication. Never approves or merges.</small></span><input id="automatic-publication" type="checkbox" role="switch" ${draft.defaults.automatic_comment_publication ? "checked" : ""} /></label></fieldset></div>
-      <div class="settings-group"><fieldset aria-label="Notifications"><legend>Notifications</legend><label class="setting-row"><span>Notify me when a review finishes<small>Coming soon.</small></span><input type="checkbox" role="switch" disabled /></label></fieldset></div>
+      <div class="settings-group" id="notification-settings"></div>
       <div class="settings-group"><fieldset aria-label="Diagnostics"><legend>Diagnostics</legend><p class="settings-hint">Settings and logs live in your macOS app-support folder. Open a redacted diagnostics view to check in on them without exposing tokens.</p><button id="diagnostics">Open redacted diagnostics</button></fieldset></div>`;
+    mountNotificationSettings(
+      content.querySelector<HTMLElement>("#notification-settings")!,
+      showError,
+    );
     content.querySelector<HTMLInputElement>(
       "#automatic-review-start",
     )!.onchange = (event) => {
