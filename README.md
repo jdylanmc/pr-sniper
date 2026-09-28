@@ -8,8 +8,9 @@ Settings can explicitly verify a configured GitHub connection and read complete
 pull-request metadata. The active tray process also polls enabled, account-bound
 GitHub repositories and persists eligible revisions in the Review Queue.
 Assigned Copilot Agents can review each admitted revision manually or through
-the automatic-start gate, with validated results kept locally. Nothing is
-published to GitHub. Settings manages independent Copilot
+the automatic-start gate, with validated results kept locally. A separate
+publication gate can submit one revision-bound GitHub `COMMENT` review.
+Settings manages independent Copilot
 AI accounts with browser sign-in and per-Agent account/model selection; see
 [Copilot Settings](docs/copilot-settings.md). Product scope lives in the
 [approved specification](docs/agent/specs/pr-sniper-mvp.nano.md), not this
@@ -124,8 +125,8 @@ are not native acceptance evidence.
 Repository **Settings** assigns reusable Agents with saved schedules and
 comment preferences, and resolves watched people using the repository's
 explicit GitHub account. Existing global defaults and overrides remain
-preserved in storage. Assignments do not start agents in this detection-only
-increment; approval submission remains unavailable.
+preserved in storage. Review start and comment publication have separate
+automatic/manual gates; approval submission remains unavailable.
 
 **Doctrines** manages plain-text review principles. A fresh configuration
 persists all 23 bundled doctrines on first load, before any Settings tab is
@@ -257,8 +258,8 @@ Review state is persisted before work. Restart preserves operation identity,
 attempt count, confirmations and the original 15-minute budget, with at most
 three retries for recognized transient failures. Expired budgets and permanent
 failures require **Retry review**, which creates a new operation without
-deleting history. Results remain local; GitHub comment publication is separate
-future work. Provider file/tree limits and the explicit 1 MiB per-tool-response
+deleting history. Results remain local until the separate publication gate
+admits them. Provider file/tree limits and the explicit 1 MiB per-tool-response
 limit fail visibly rather than returning silently truncated context.
 
 App-owned GitHub and Copilot token pairs use separate account-addressed macOS
@@ -266,6 +267,63 @@ Keychain services, never config, state or diagnostics. Neither Settings
 connection copies terminal credentials. A green Copilot check verifies sign-in
 only, not a subscription, seat or inference request.
 See the [bounded architecture decision](docs/adr/0001-macos-foundation.md).
+
+## Revision-safe comment publication
+
+An assignment must allow **Comment**. The **Preferences > Publish review
+comments automatically** default and each repository's **Comment publication**
+override independently choose automatic publication or explicit confirmation.
+Review Queue shows the acting repository GitHub account, exact head, local
+findings, publication state and confirmed provider receipts. **Publish review**
+requires a checked confirmation for that review. Copilot credentials never
+publish to GitHub, and the read-only agent adapter has no mutation tools.
+
+The host freezes the validated output, maps findings only to verified diff
+lines, creates one pending review with an explicit commit SHA, then submits it
+with `COMMENT`. Findings outside the available diff remain visible locally;
+the summary reports their count rather than silently dropping them or posting
+them at guessed locations. Summaries and machine sign-off end with the canonical
+` PR Sniper` and explicitly request final human review. The existing saved
+custom Agent signature is not applied by this slice; signature customization
+and its revised default remain separate #30 work. No `APPROVE`, merging or
+thread-reply operation is implemented here.
+
+Before and after mutations the host rechecks account/repository identity, head
+and reviewed target base, open/non-draft lifecycle, eligibility, active monitoring
+scope, trust and current publication permission. Disabling Comment or changing
+the publication gate stops the attempt; a queued confirmation is not a permanent
+grant. **Withdraw publication confirmation** revokes that attempt and removes
+only its exact owned pending batch when it can be verified. Cleanup can remove
+that batch after revocation or a stale head, but cannot publish or modify another
+pending review. A confirmed visible batch cannot be undone by cancellation.
+
+A changed head requests a new scoped monitoring check only when currently
+eligible; the normal admission/deduplication path queues it. Eligibility loss
+does not requeue ineligible work. A head or gate change after visible submission
+retains the receipt and reports **stale after publication**. Target-base movement
+without a new head requires an explicit **Review again**, not publication against
+a different diff. Older local results without a persisted reviewed base also
+require another review. New local review attempts cannot bypass an existing
+pending, uncertain or published batch for the same revision and assignment.
+
+Private `state/publications.json` stores immutable output, mutation intent,
+pending-review identity, confirmed receipts and retry budgets before subsequent
+effects. Restart reconciles the complete remote review and inline comment set,
+including acting identity and exact content, before any repeat mutation. A
+missing receipt after an uncertain create never authorizes another create;
+it remains visibly unresolved even after manual retry. Another pending review
+owned by the signed-in account is never silently submitted or deleted.
+
+Transient failures use the shared limit of three retries within 15 minutes,
+preserving the operation and deadline across restart. Explicit rejection,
+configuration and permission errors require correction. **Reconcile / retry
+publication** starts a fresh budget but retains the original publication identity
+and uncertainty. Provider acceptance and local machine sign-off remain distinct.
+If GitHub confirms submission but the final eligibility check fails, the receipt
+is retained and retry only reconciles that existing review. Starting another
+local review cannot hide an active, uncertain or confirmed publication.
+Live mutation acceptance requires an explicitly authorized disposable PR and
+cleanup; deterministic provider fixtures do not claim a live publication pass.
 
 ## Read-only GitHub connection
 

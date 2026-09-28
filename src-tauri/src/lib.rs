@@ -4,6 +4,7 @@ mod doctrine_seeds;
 pub mod github;
 pub mod monitoring;
 pub mod policy;
+pub mod publication;
 pub mod review;
 pub mod startup;
 pub mod storage;
@@ -39,6 +40,7 @@ struct Host {
         github::token_store::RotationSafeStore<github::macos_keychain::MacKeychainStore>,
     copilot: Arc<copilot::Integration>,
     reviews: review::Coordinator,
+    publications: publication::host::Coordinator,
 }
 
 #[derive(Clone, Copy)]
@@ -807,6 +809,7 @@ struct MonitoringSnapshot {
     health: Vec<monitoring::ScheduleHealth>,
     jobs: Vec<monitoring::QueueJob>,
     reviews: Vec<review::host::Candidate>,
+    publications: Vec<publication::host::Candidate>,
 }
 
 #[derive(serde::Deserialize)]
@@ -917,6 +920,7 @@ async fn monitoring_snapshot(app: tauri::AppHandle) -> Result<MonitoringSnapshot
             health: monitor.snapshot(),
             jobs: store.load_queue()?,
             reviews: review::host::candidates(&store)?,
+            publications: publication::host::candidates(&store)?,
         })
     })
     .await
@@ -2052,6 +2056,8 @@ pub fn run() {
             retry_monitoring_operation,
             review::host::start_review,
             review::host::cancel_review,
+            publication::host::publish_review,
+            publication::host::cancel_publication,
             check_now,
             monitoring_activation_status,
             preview_monitoring_activation,
@@ -2077,6 +2083,7 @@ pub fn run() {
             let copilot = copilot::Integration::new(isolated)?;
             let store = Store::new(root);
             review::restore(&store).map_err(std::io::Error::other)?;
+            publication::restore(&store).map_err(std::io::Error::other)?;
             let monitor = monitoring::Monitor::restore(&store).map_err(std::io::Error::other)?;
             app.manage(Host {
                 store: Mutex::new(store),
@@ -2096,6 +2103,7 @@ pub fn run() {
                 github_legacy_credentials,
                 copilot,
                 reviews: review::Coordinator::default(),
+                publications: publication::host::Coordinator::default(),
             });
             record(app.handle(), DiagnosticEvent::SessionStarted);
             let scheduler_app = app.handle().clone();
@@ -2110,6 +2118,9 @@ pub fn run() {
                         report(&scheduler_app, error);
                     }
                     if let Err(error) = review::Coordinator::pump(&scheduler_app) {
+                        report(&scheduler_app, error);
+                    }
+                    if let Err(error) = publication::host::Coordinator::pump(&scheduler_app) {
                         report(&scheduler_app, error);
                     }
                 }
@@ -2175,7 +2186,8 @@ pub fn run() {
                             let deadline =
                                 tokio::time::Instant::now() + std::time::Duration::from_secs(7);
                             while (!shutdown_app.state::<Host>().copilot.lookups_finished()
-                                || !shutdown_app.state::<Host>().reviews.finished())
+                                || !shutdown_app.state::<Host>().reviews.finished()
+                                || !shutdown_app.state::<Host>().publications.finished())
                                 && tokio::time::Instant::now() < deadline
                             {
                                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
