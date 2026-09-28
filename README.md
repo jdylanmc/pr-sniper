@@ -77,7 +77,9 @@ install/launch/close/quit and scoped visual checks, including capability limits.
 The bundle is `src-tauri/target/release/bundle/macos/PR Sniper.app`.
 For a local user installation, copy it with Finder to `~/Applications` (create
 that directory if needed), then open it. Quit any earlier PR Sniper instance
-first. This is a local development bundle, not a signed/notarized distribution:
+first. Local/CI bundles are ad-hoc signed with their bundle identity so macOS can
+authorize notifications. This does not use a Developer ID certificate and is
+not a notarized distribution:
 Gatekeeper may require explicit approval under Privacy & Security for a
 downloaded CI artifact. Do not disable Gatekeeper globally. Production signing,
 notarization, updates, Homebrew and Windows packages are out of scope.
@@ -215,6 +217,9 @@ the Settings draft. Notifications default off; adding a GitHub account or
 enabling review execution does not opt in. Existing attention states become
 eligible once on. Use the packaged `.app`; a development web server is not a
 native notification host.
+The bundle signature must bind Info.plist and match the application identifier;
+the compiler's executable-only signature is not sufficient. `npm run bundle`
+supplies the required local ad-hoc signature without a signing certificate.
 
 PR Sniper notifies the operator about confirmation, human input, readiness for
 final review and failures. Routine queued/reviewing work and author waits do not

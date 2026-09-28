@@ -134,10 +134,12 @@ impl Adapter for Native {
     fn request_permission(&self) -> Result<Permission, String> {
         let (tx, rx) = mpsc::sync_channel(1);
         let completion = RcBlock::new(move |_granted: Bool, error: *mut NSError| {
-            let result = if error.is_null() {
-                Ok(())
-            } else {
-                Err("macOS could not complete the notification permission request.".to_string())
+            let result = match unsafe { error.as_ref() } {
+                None => Ok(()),
+                Some(error) => Err(format!(
+                    "macOS notification permission request failed ({}: {}). Check the app's notification permission and bundle signing identity.",
+                    error.domain(), error.code(),
+                )),
             };
             let _ = tx.send(result);
         });
@@ -164,10 +166,13 @@ impl Adapter for Native {
         );
         let (tx, rx) = mpsc::sync_channel(1);
         let completion = RcBlock::new(move |error: *mut NSError| {
-            let result = if error.is_null() {
-                Ok(())
-            } else {
-                Err("macOS rejected the notification request.".to_string())
+            let result = match unsafe { error.as_ref() } {
+                None => Ok(()),
+                Some(error) => Err(format!(
+                    "macOS rejected the notification request ({}: {}).",
+                    error.domain(),
+                    error.code(),
+                )),
             };
             // A timeout is already recorded as unknown; a late callback must not resend.
             let _ = tx.send(result);

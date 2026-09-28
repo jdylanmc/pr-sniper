@@ -51,10 +51,7 @@ function permissionText(state: Snapshot) {
   } Focus may suppress banners. No notification proves that a person saw or acknowledged it.`;
 }
 
-export function mountNotificationSettings(
-  root: HTMLElement,
-  showError: (message: string) => void,
-) {
+export function mountNotificationSettings(root: HTMLElement) {
   root.innerHTML = `<fieldset aria-label="Notifications"><legend>Notifications</legend>
     <label class="setting-row"><span>Notify me when my attention is needed<small>Confirmation, human input, ready-for-review and failures. Off until you opt in. Changes immediately, separately from Save changes.</small></span><input id="notification-enabled" type="checkbox" role="switch" disabled /></label>
     <p class="settings-hint">Banners contain no PR titles, repository names or code. Opening an alert only opens its saved destination; it never starts, publishes, approves or merges.</p>
@@ -75,6 +72,7 @@ export function mountNotificationSettings(
   let revision = 0;
   let selected = "";
   let targetsSignature = "";
+  let actionError: string | null = null;
   let state: Snapshot | undefined;
   target.onchange = () => {
     selected = target.value;
@@ -100,8 +98,8 @@ export function mountNotificationSettings(
       state = next;
       enabled.checked = next.enabled;
       status.textContent = permissionText(next);
-      error.textContent = next.error ?? "";
-      error.hidden = !next.error;
+      error.textContent = [actionError, next.error].filter(Boolean).join("\n");
+      error.hidden = !error.textContent;
       const targets = JSON.stringify(next.targets);
       if (targets !== targetsSignature) {
         targetsSignature = targets;
@@ -134,6 +132,8 @@ export function mountNotificationSettings(
   async function act(command: string, args: Record<string, unknown>) {
     if (busy) return;
     busy = true;
+    actionError = null;
+    error.hidden = true;
     revision++;
     updateControls();
     status.textContent =
@@ -143,12 +143,10 @@ export function mountNotificationSettings(
     try {
       await invoke(command, args);
     } catch (cause) {
-      if (root.isConnected)
-        showError(
-          typeof cause === "string"
-            ? cause
-            : "Notification action failed. Check its saved state.",
-        );
+      actionError =
+        typeof cause === "string"
+          ? cause
+          : "Notification action failed. Check its saved state.";
     } finally {
       busy = false;
       await refresh();

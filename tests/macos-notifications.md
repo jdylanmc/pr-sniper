@@ -14,6 +14,10 @@ not prove OS banner presentation or the notification-center callback.
   `PR Sniper Notifications Test` product name. macOS authorization belongs to a
   bundle identifier, not an app-data profile; a separate test bundle prevents
   changing production PR Sniper notification permission.
+- Use the configured ad-hoc bundle signing, then verify with
+  `codesign --verify --strict` and `codesign -dv --verbose=2`. The signature's
+  identifier must match Info.plist and bind it; an executable-only compiler
+  signature was observed to fail native authorization.
 - Always launch the bundle executable with an absolute test-owned
   `PR_SNIPER_DATA_DIR` and unique
   `PR_SNIPER_KEYCHAIN_SERVICE=com.jdylanmc.pr-sniper.tests.<id>`. Never omit these

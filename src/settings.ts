@@ -1575,7 +1575,6 @@ export async function mountSettings(app: HTMLElement) {
       <div class="settings-group"><fieldset aria-label="Diagnostics"><legend>Diagnostics</legend><p class="settings-hint">Settings and logs live in your macOS app-support folder. Open a redacted diagnostics view to check in on them without exposing tokens.</p><button id="diagnostics">Open redacted diagnostics</button></fieldset></div>`;
     mountNotificationSettings(
       content.querySelector<HTMLElement>("#notification-settings")!,
-      showError,
     );
     content.querySelector<HTMLInputElement>(
       "#automatic-review-start",

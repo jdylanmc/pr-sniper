@@ -49,7 +49,9 @@ No release/versioning policy has been established yet.
   destinations. Persist transition deduplication and pre-send intent across
   restart; show denied, failed, uncertain and OS-accepted-but-unconfirmed
   delivery in Review Queue. Notification clicks only navigate, never approve,
-  publish or merge. See [#15](https://github.com/jdylanmc/pr-sniper/issues/15).
+  publish or merge. Local/CI bundles use bundle-bound ad-hoc signing for macOS
+  notification identity; Developer ID signing and notarization remain out of
+  scope. See [#15](https://github.com/jdylanmc/pr-sniper/issues/15).
 
 - Put machine-cleared PRs and operator-input work first in Review Queue, while
   published findings wait on the PR author. Aggregate all current assignments
