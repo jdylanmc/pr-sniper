@@ -212,6 +212,7 @@ export async function mountSettings(app: HTMLElement) {
   let updateAgentAccounts: (() => void) | undefined;
   let refreshAgentAccounts: (() => void) | undefined;
   const dialogs = createDialogs(content, () => revision++);
+  const notificationView = { target: "" };
   const dirty = () =>
     !!draft && JSON.stringify(draft) !== JSON.stringify(saved);
   const showError = (message: string) => {
@@ -1575,6 +1576,7 @@ export async function mountSettings(app: HTMLElement) {
       <div class="settings-group"><fieldset aria-label="Diagnostics"><legend>Diagnostics</legend><p class="settings-hint">Settings and logs live in your macOS app-support folder. Open a redacted diagnostics view to check in on them without exposing tokens.</p><button id="diagnostics">Open redacted diagnostics</button></fieldset></div>`;
     mountNotificationSettings(
       content.querySelector<HTMLElement>("#notification-settings")!,
+      notificationView,
     );
     content.querySelector<HTMLInputElement>(
       "#automatic-review-start",
