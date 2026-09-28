@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { renderFollowUps, type FollowUpCandidate } from "./follow-up";
 
 interface Health {
   repository_id: string;
@@ -54,6 +55,7 @@ interface MonitoringSnapshot {
   jobs: Job[];
   reviews?: ReviewCandidate[];
   publications?: PublicationCandidate[];
+  follow_ups?: FollowUpCandidate[];
 }
 
 interface PublicationCandidate {
@@ -188,6 +190,7 @@ export function renderMonitoring(
   root.innerHTML = `<button id="check-now" type="button">Check Now</button>
     <p>Monitoring and assigned reviews run while the menu-bar app is active. Copilot uses read-only tools. GitHub comments require a separate publication gate; machine sign-off is not approval.</p>
     <h2>Agent reviews</h2><section id="agent-reviews"></section>
+    <h2>Thread follow-ups</h2><section id="thread-follow-ups"></section>
     <h2>Schedule health</h2><section id="schedule-health"></section>
     <h2>Detected pull requests</h2><section id="review-jobs"></section>`;
   const check = root.querySelector<HTMLButtonElement>("#check-now")!;
@@ -200,6 +203,11 @@ export function renderMonitoring(
   const publishConsent = new Set<string>();
   let reviewsSignature = "";
   let loading = false;
+  const followUps = renderFollowUps(
+    root.querySelector<HTMLElement>("#thread-follow-ups")!,
+    showError,
+    refresh,
+  );
 
   async function act(candidate: ReviewCandidate, cancel: boolean) {
     if (pending.has(candidate.key)) return;
@@ -518,6 +526,7 @@ export function renderMonitoring(
     loading = true;
     try {
       const snapshot = await invoke<MonitoringSnapshot>("monitoring_snapshot");
+      followUps(snapshot.follow_ups ?? []);
       const signature = JSON.stringify([
         snapshot.reviews ?? [],
         snapshot.publications ?? [],

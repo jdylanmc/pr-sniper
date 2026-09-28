@@ -25,6 +25,19 @@ impl<T: Transport> Transport for GuardedTransport<T> {
     }
 }
 
+impl<T: super::threads::QueryTransport> super::threads::QueryTransport for GuardedTransport<T> {
+    fn query(
+        &self,
+        query: &str,
+        variables: Value,
+    ) -> Result<super::provider::Response, ConnectionError> {
+        (self.guard)()?;
+        let result = self.transport.query(query, variables)?;
+        (self.guard)()?;
+        Ok(result)
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ReviewFile {
     pub path: String,
