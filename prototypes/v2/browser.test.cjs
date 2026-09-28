@@ -188,11 +188,101 @@ async function check(engine, name) {
     await page.locator('input[name="scope"]').check();
     await page.locator("details.check-group summary").click();
     await page.locator('input[name="watched"]').first().check();
-    await page.locator('input[name="minutes"]').fill("15");
+    await page.locator('input[name="minutes"]').fill("");
+    await page.locator('select[name="schedule"]').selectOption("cron");
+    await page.locator('input[name="cron"]').fill("0 9 * * 1-5");
+    await page.locator('input[name="zone"]').fill("Europe/London");
     await page.locator('[data-form="repo"] button[type="submit"]').click();
     await settle();
     assert.equal((await state()).repos.length, 4);
     const newRepoId = (await state()).repos.at(-1).id;
+    let savedRepo = (await state()).repos.at(-1);
+    assert.equal(savedRepo.schedule, "cron");
+    assert.equal(savedRepo.minutes, 5);
+    assert.equal(savedRepo.cron, "0 9 * * 1-5");
+    assert.equal(savedRepo.zone, "Europe/London");
+    const editRepo = async () => {
+      await page.locator(`[data-page="repo"][data-id="${newRepoId}"]`).click();
+      await settle();
+    };
+    const saveRepo = async () => {
+      await page.locator('[data-form="repo"] button[type="submit"]').click();
+      await settle();
+    };
+    const rejectActiveInput = async (field, value) => {
+      const before = await state();
+      const control = page.locator(`input[name="${field}"]`);
+      await control.fill(value);
+      await saveRepo();
+      assert.deepEqual(await state(), before);
+      assert.equal(await control.isVisible(), true);
+      assert.equal(
+        await control.evaluate(
+          (element) =>
+            element.willValidate &&
+            !element.validity.valid &&
+            !!element.validationMessage &&
+            document.activeElement === element,
+        ),
+        true,
+        `${name}: ${field}=${JSON.stringify(value)} must fail visibly`,
+      );
+      assert.equal(await control.inputValue(), value);
+    };
+
+    await editRepo();
+    await page.locator('input[name="cron"]').fill("");
+    await page.locator('input[name="zone"]').fill("");
+    await page.locator('select[name="schedule"]').selectOption("interval");
+    for (const minutes of ["", "0", "1.5"])
+      await rejectActiveInput("minutes", minutes);
+    await page.locator('input[name="minutes"]').fill("15");
+    await saveRepo();
+    assert.deepEqual((await state()).repos.at(-1), {
+      ...savedRepo,
+      schedule: "interval",
+      minutes: 15,
+    });
+    savedRepo = (await state()).repos.at(-1);
+
+    await editRepo();
+    await page.locator('input[name="minutes"]').fill("");
+    await page.locator('select[name="schedule"]').selectOption("cron");
+    await rejectActiveInput("cron", "");
+    await page.locator('input[name="cron"]').fill("0 9 * * 1-5");
+    await rejectActiveInput("zone", "");
+    await page.locator('input[name="zone"]').fill("Europe/London");
+    for (const [field, value, error, valid] of [
+      ["cron", "* *", /five-field cron/, "0 9 * * 1-5"],
+      ["zone", "Invalid/Place", /IANA time zone/, "Europe/London"],
+    ]) {
+      const before = await state();
+      await page.locator(`input[name="${field}"]`).fill(value);
+      await saveRepo();
+      assert.deepEqual(await state(), before);
+      assert.equal(await page.locator("#app-notice").isVisible(), true);
+      assert.match(await page.locator("#app-notice").textContent(), error);
+      assert.equal(
+        await page.locator(`input[name="${field}"]`).isVisible(),
+        true,
+      );
+      assert.equal(
+        await page.locator(`input[name="${field}"]`).inputValue(),
+        value,
+      );
+      await page.locator(`input[name="${field}"]`).fill(valid);
+    }
+    await saveRepo();
+    assert.deepEqual((await state()).repos.at(-1), {
+      ...savedRepo,
+      schedule: "cron",
+    });
+    await page.reload();
+    await page.locator("#tray-trigger").click();
+    assert.deepEqual((await state()).repos.at(-1), {
+      ...savedRepo,
+      schedule: "cron",
+    });
     await settings();
     await page.locator('[data-page="doctrines"]').click();
     await settle();

@@ -173,6 +173,10 @@ async function check(engine, name) {
       .check();
     await page.locator("details.check-group summary").click();
     await page.locator('input[name="watched"]').first().check();
+    await page.locator('select[name="schedule"]').selectOption("cron");
+    await page.locator('input[name="cron"]').fill("");
+    await page.locator('input[name="zone"]').fill("");
+    await page.locator('select[name="schedule"]').selectOption("interval");
     await page.locator('input[name="minutes"]').fill("15");
     await page.locator('select[name="start"]').selectOption("on");
     await page.locator('select[name="comments"]').selectOption("off");
@@ -183,6 +187,10 @@ async function check(engine, name) {
     );
     assert.equal((await state()).reviews.length, 0);
     assert.equal((await state()).monitoring, false);
+    assert.equal((await state()).repos[0].schedule, "interval");
+    assert.equal((await state()).repos[0].minutes, 15);
+    assert.equal((await state()).repos[0].cron, "*/15 * * * *");
+    assert.equal((await state()).repos[0].zone, "America/New_York");
     await snapshot("ready");
     await click('.genie-card [data-page="setup-review"]');
     assert.equal(

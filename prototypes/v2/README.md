@@ -153,6 +153,10 @@ Shared resource edits update their uses; affected active attempts restart rather
 than silently changing a pinned review. Historical snapshots remain intact.
 Referenced resources cannot be deleted without resolving their uses.
 
+Repository saves validate only the selected schedule. Inactive schedule fields
+retain their last saved values (or fixture defaults for a new repository), not
+unsaved edits made before switching modes.
+
 Malformed saved data is reported without overwriting it. Failed saves do not
 claim success or update in-memory state. Competing tabs require reload before
 saving over changed data. Existing v2 data without scenario metadata is treated
