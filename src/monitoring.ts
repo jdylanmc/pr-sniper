@@ -53,6 +53,35 @@ interface MonitoringSnapshot {
   health: Health[];
   jobs: Job[];
   reviews?: ReviewCandidate[];
+  publications?: PublicationCandidate[];
+}
+
+interface PublicationCandidate {
+  review_operation_id: string;
+  automatic: boolean;
+  blocked: string | null;
+  publication: {
+    id: string;
+    phase:
+      | "preparing"
+      | "pending"
+      | "published"
+      | "stale"
+      | "stale_after_publication"
+      | "stopped"
+      | "unresolved";
+    operation: NonNullable<Health["operation"]>;
+    error: string | null;
+    uncertain: boolean;
+    cancelled: boolean;
+    history: unknown[];
+    batch: { unmappable: number[] } | null;
+    receipts: {
+      review_id: string;
+      state: "pending" | "commented" | "deleted";
+      comment_ids: string[];
+    }[];
+  } | null;
 }
 
 interface ReviewCandidate {
@@ -68,6 +97,7 @@ interface ReviewCandidate {
     selection: { agent: { model: string; ai_account: { account_id: string } } };
     operation: NonNullable<Health["operation"]>;
     result: {
+      reviewed_base_sha?: string | null;
       output: {
         synopsis: string;
         decision: "machine_sign_off" | "human_input_required";
@@ -156,7 +186,7 @@ export function renderMonitoring(
   showError: (message: string) => void,
 ) {
   root.innerHTML = `<button id="check-now" type="button">Check Now</button>
-    <p>Monitoring and assigned reviews run while the menu-bar app is active. Reviews use read-only tools and stay local; nothing is published to GitHub.</p>
+    <p>Monitoring and assigned reviews run while the menu-bar app is active. Copilot uses read-only tools. GitHub comments require a separate publication gate; machine sign-off is not approval.</p>
     <h2>Agent reviews</h2><section id="agent-reviews"></section>
     <h2>Schedule health</h2><section id="schedule-health"></section>
     <h2>Detected pull requests</h2><section id="review-jobs"></section>`;
@@ -167,6 +197,7 @@ export function renderMonitoring(
   const trust = new Set<string>();
   const expanded = new Set<string>();
   const pending = new Set<string>();
+  const publishConsent = new Set<string>();
   let reviewsSignature = "";
   let loading = false;
 
@@ -198,7 +229,160 @@ export function renderMonitoring(
     }
   }
 
-  function renderReviews(candidates: ReviewCandidate[]) {
+  async function publicationAction(
+    candidate: ReviewCandidate,
+    publication: PublicationCandidate,
+    cancel: boolean,
+  ) {
+    if (pending.has(candidate.key)) return;
+    pending.add(candidate.key);
+    try {
+      if (cancel) {
+        await invoke("cancel_publication", {
+          publicationId: publication.publication!.id,
+        });
+      } else {
+        await invoke("publish_review", {
+          reviewOperationId: candidate.run!.operation.id,
+        });
+      }
+      publishConsent.delete(candidate.run!.operation.id);
+    } catch (error) {
+      showError(
+        typeof error === "string"
+          ? error
+          : "Publication action failed. Check the original review before retrying.",
+      );
+    } finally {
+      pending.delete(candidate.key);
+      reviewsSignature = "";
+      await refresh();
+    }
+  }
+
+  function renderPublication(
+    row: HTMLElement,
+    candidate: ReviewCandidate,
+    state: PublicationCandidate,
+  ) {
+    const publication = state.publication;
+    const info = document.createElement("p");
+    info.className = "publication-state";
+    info.textContent = publication
+      ? `Publication: ${publication.phase.replaceAll("_", " ")}. Operation: ${publication.operation.state}; attempt ${publication.operation.attempt_count}; deadline ${time(publication.operation.retry_deadline)}; prior budgets ${publication.history.length}.`
+      : `Publication: ${state.automatic ? "automatic when eligible" : "waiting for confirmation"}.`;
+    row.append(info);
+    if (state.blocked || publication?.error) {
+      const error = document.createElement("p");
+      error.className = "review-failure";
+      error.textContent = [state.blocked, publication?.error]
+        .filter(Boolean)
+        .join(" ");
+      row.append(error);
+    }
+    if (publication?.uncertain) {
+      const warning = document.createElement("p");
+      warning.textContent =
+        "GitHub outcome is unresolved. Reconciliation checks the original batch; it does not authorize a replacement.";
+      row.append(warning);
+    }
+    const receipt = publication?.receipts.at(-1);
+    if (receipt) {
+      const remote = document.createElement("p");
+      remote.textContent = `Confirmed GitHub review ${receipt.review_id}: ${receipt.state}. ${receipt.comment_ids.length} inline comment receipt(s). This is not GitHub approval.`;
+      row.append(remote);
+    }
+    if (publication?.batch?.unmappable.length) {
+      const warning = document.createElement("p");
+      warning.textContent = `${publication.batch.unmappable.length} finding(s) could not be mapped to the reviewed diff and were not posted. All findings remain visible above.`;
+      row.append(warning);
+    }
+    const terminal =
+      publication?.phase === "stale" ||
+      (publication?.operation.state === "completed" &&
+        ["published", "stale_after_publication"].includes(publication.phase)) ||
+      receipt?.state === "deleted";
+    const working =
+      publication &&
+      ["running", "queued", "interrupted"].includes(
+        publication.operation.state,
+      );
+    if (working && !publication.cancelled && receipt?.state !== "commented") {
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.textContent = "Withdraw publication confirmation";
+      cancel.disabled = pending.has(candidate.key);
+      cancel.onclick = () => {
+        cancel.disabled = true;
+        void publicationAction(candidate, state, true);
+      };
+      row.append(cancel);
+    } else if (!terminal && (!state.blocked || publication)) {
+      const label = document.createElement("label");
+      const consent = document.createElement("input");
+      consent.type = "checkbox";
+      consent.checked = publishConsent.has(candidate.run!.operation.id);
+      label.append(
+        consent,
+        `Publish or reconcile this exact revision as ${candidate.job.account_login} (${candidate.job.account_id}). This submits comments, not approval.`,
+      );
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = publication
+        ? "Reconcile / retry publication"
+        : "Publish review";
+      button.disabled = !consent.checked || pending.has(candidate.key);
+      consent.onchange = () => {
+        if (consent.checked) publishConsent.add(candidate.run!.operation.id);
+        else publishConsent.delete(candidate.run!.operation.id);
+        button.disabled = !consent.checked || pending.has(candidate.key);
+      };
+      button.onclick = () => {
+        button.disabled = true;
+        void publicationAction(candidate, state, false);
+      };
+      row.append(label, button);
+    }
+    if (
+      (!candidate.run?.result?.reviewed_base_sha ||
+        state.blocked ||
+        publication?.phase === "stale") &&
+      !candidate.blocked
+    ) {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.textContent = "Review again";
+      retry.disabled =
+        pending.has(candidate.key) ||
+        (candidate.trust_required && !trust.has(candidate.key));
+      if (candidate.trust_required) {
+        const label = document.createElement("label");
+        const consent = document.createElement("input");
+        consent.type = "checkbox";
+        consent.checked = trust.has(candidate.key);
+        label.append(
+          consent,
+          "I trust this exact revision for another read-only AI review.",
+        );
+        consent.onchange = () => {
+          if (consent.checked) trust.add(candidate.key);
+          else trust.delete(candidate.key);
+          retry.disabled = pending.has(candidate.key) || !consent.checked;
+        };
+        row.append(label);
+      }
+      retry.onclick = () => {
+        retry.disabled = true;
+        void act(candidate, false);
+      };
+      row.append(retry);
+    }
+  }
+
+  function renderReviews(
+    candidates: ReviewCandidate[],
+    publications: PublicationCandidate[],
+  ) {
     reviews.replaceChildren();
     if (!candidates.length) {
       reviews.textContent =
@@ -281,6 +465,10 @@ export function renderMonitoring(
         usage.className = "hint";
         usage.textContent = `Session ${result.session_id}; runtime ${result.runtime_version}; model ${result.model}. Tokens: ${result.input_tokens} input, ${result.output_tokens} output. Read-tool calls: ${result.tool_calls}.`;
         row.append(guide, usage);
+        const publication = publications.find(
+          (p) => p.review_operation_id === run.operation.id,
+        );
+        if (publication) renderPublication(row, candidate, publication);
       } else if (!candidate.blocked) {
         const isRunning = run?.operation.state === "running";
         let consent: HTMLInputElement | undefined;
@@ -330,9 +518,12 @@ export function renderMonitoring(
     loading = true;
     try {
       const snapshot = await invoke<MonitoringSnapshot>("monitoring_snapshot");
-      const signature = JSON.stringify(snapshot.reviews ?? []);
+      const signature = JSON.stringify([
+        snapshot.reviews ?? [],
+        snapshot.publications ?? [],
+      ]);
       if (signature !== reviewsSignature) {
-        renderReviews(snapshot.reviews ?? []);
+        renderReviews(snapshot.reviews ?? [], snapshot.publications ?? []);
         reviewsSignature = signature;
       }
       health.replaceChildren();

@@ -194,6 +194,8 @@ pub struct ReviewOutput {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewResult {
+    #[serde(default)]
+    pub reviewed_base_sha: Option<String>,
     pub output: ReviewOutput,
     pub session_id: String,
     pub model: String,
@@ -443,6 +445,7 @@ impl Events {
             ));
         }
         Ok(ReviewResult {
+            reviewed_base_sha: None,
             output: validate_output(self.message.as_deref().ok_or_else(Failure::schema)?, paths)?,
             session_id,
             model,
