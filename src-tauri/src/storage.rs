@@ -431,6 +431,22 @@ impl Store {
         self.write_state("queue.json", jobs)
     }
 
+    pub fn load_queue_selection(&self) -> Result<Option<String>, String> {
+        match fs::read(self.root.join("state/queue-selection.json")) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
+                "The saved queue destination is invalid; select an item explicitly.".into()
+            }),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(_) => Err(
+                "Cannot read the saved queue destination. Check local storage permissions.".into(),
+            ),
+        }
+    }
+
+    pub fn save_queue_selection(&self, id: Option<&str>) -> Result<(), String> {
+        self.write_state("queue-selection.json", &id)
+    }
+
     pub fn load_reviews(&self) -> Result<Vec<crate::review::ReviewRun>, String> {
         match fs::read(self.root.join("state/reviews.json")) {
             Ok(bytes) => serde_json::from_slice(&bytes)

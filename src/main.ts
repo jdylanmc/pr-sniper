@@ -70,7 +70,7 @@ async function load() {
     } else if (view === "queue") {
       renderMonitoring(content, showError);
     } else {
-      content.innerHTML = `<h2>Menu-bar host is running</h2><p>Scheduled GitHub checks run while PR Sniper is active. Detection queues eligible pull requests but does not start an agent or publish comments. Open Review Queue from the menu-bar menu to see schedule health and queued revisions.</p><p id="version"></p>`;
+      content.innerHTML = `<h2>Menu-bar host is running</h2><p>Scheduled GitHub checks, assigned reviews and separately gated comments run while PR Sniper is active. Open Review Queue from the menu-bar menu for PRs ready for your final review, author follow-ups, confirmation requests and recovery actions.</p><p id="version"></p>`;
       content.querySelector("#version")!.textContent =
         `PR Sniper ${state.version}`;
     }
