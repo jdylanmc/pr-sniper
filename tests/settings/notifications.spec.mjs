@@ -154,12 +154,17 @@ test("denied permission leaves opt-in off and visible rather than claiming succe
 }) => {
   await page.addInitScript(() => {
     const original = window.__TAURI_INTERNALS__.invoke;
+    window.__denyNotifications = true;
     window.__TAURI_INTERNALS__.invoke = async (command, args) => {
-      if (command === "set_notifications_enabled" && args.enabled) {
+      if (
+        command === "set_notifications_enabled" &&
+        args.enabled &&
+        window.__denyNotifications
+      ) {
         throw "macOS denied notifications. Enable them in System Settings before opting in.";
       }
       const result = await original(command, args);
-      if (command === "notification_snapshot") {
+      if (command === "notification_snapshot" && window.__denyNotifications) {
         result.permission = {
           authorization: "denied",
           alerts_enabled: false,
@@ -175,7 +180,7 @@ test("denied permission leaves opt-in off and visible rather than claiming succe
     name: /^Notify me when my attention/,
   });
   await enabled.check();
-  await expect(page.locator("#error")).toContainText(
+  await expect(page.locator("#notification-error")).toContainText(
     "macOS denied notifications",
   );
   await expect(enabled).not.toBeChecked();
@@ -183,6 +188,14 @@ test("denied permission leaves opt-in off and visible rather than claiming succe
   await expect(page.locator("#notification-permission")).toContainText(
     "permission: denied",
   );
+  await page.evaluate(() => {
+    window.__denyNotifications = false;
+  });
+  await enabled.check();
+  await expect
+    .poll(async () => (await store("notification_snapshot")).enabled)
+    .toBe(true);
+  await expect(page.locator("#notification-error")).toBeHidden();
 });
 
 test("late native status cannot restore a notification panel after navigating away", async ({
