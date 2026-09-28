@@ -64,30 +64,54 @@ export function renderQueue(
   showError: (message: string) => void,
   select: (item: QueueItem | null | undefined, focus: boolean) => void,
 ) {
-  const savedKey = "pr-sniper.queue.selected";
   const fromUrl = () => new URLSearchParams(location.hash.slice(1)).get("item");
-  let selected = fromUrl();
-  try {
-    selected ??= localStorage.getItem(savedKey);
-    if (selected) localStorage.setItem(savedKey, selected);
-  } catch {
-    showError(
-      "Could not restore the queue destination. Select an item explicitly.",
-    );
-  }
+  let selected: string | null | undefined = fromUrl();
   let items: QueueItem[] = [];
   let signature = "";
+  let loaded = false;
+  let initialized = false;
+  let selectionRevision = 0;
+  let saving = Promise.resolve();
+
+  function persist(id: string | null) {
+    saving = saving.then(async () => {
+      try {
+        await invoke("select_queue_item", { itemId: id });
+      } catch (error) {
+        showError(
+          typeof error === "string"
+            ? error
+            : "Queue selection could not be saved; it may not survive restart.",
+        );
+      }
+    });
+  }
+
+  void invoke<string | null>("queue_selection")
+    .then((stored) => {
+      if (selectionRevision) return;
+      selected = fromUrl() ?? stored;
+      initialized = true;
+      select(selected === null ? null : undefined, false);
+      if (fromUrl() !== null) persist(selected);
+      draw(false);
+    })
+    .catch(() => {
+      if (selectionRevision) return;
+      initialized = true;
+      selected = fromUrl() ?? undefined;
+      showError(
+        "Could not restore the queue destination. Select an item explicitly; no substitute was selected.",
+      );
+      select(undefined, false);
+      draw(false);
+    });
 
   function choose(id: string | null, focus: boolean) {
+    selectionRevision++;
+    initialized = true;
     selected = id;
-    try {
-      if (id) localStorage.setItem(savedKey, id);
-      else localStorage.removeItem(savedKey);
-    } catch {
-      showError(
-        "Queue selection could not be saved; it may not survive restart.",
-      );
-    }
+    persist(id);
     const url = new URL(location.href);
     url.hash = id ? new URLSearchParams({ item: id }).toString() : "";
     history.replaceState(null, "", url);
@@ -95,6 +119,7 @@ export function renderQueue(
   }
 
   function draw(focus: boolean) {
+    if (!loaded) return;
     signature = JSON.stringify([items, selected]);
     root.replaceChildren();
     const intro = document.createElement("p");
@@ -153,7 +178,7 @@ export function renderQueue(
       row.append(actions);
       root.append(row);
     }
-    if (selected) {
+    if (initialized && selected !== null) {
       const navigation = document.createElement("p");
       navigation.setAttribute("role", "status");
       navigation.textContent = items.some((item) => item.id === selected)
@@ -165,7 +190,14 @@ export function renderQueue(
       navigation.append(" ", clear);
       root.append(navigation);
     }
-    select(selected ? items.find((item) => item.id === selected) : null, focus);
+    select(
+      !initialized
+        ? undefined
+        : selected === null
+          ? null
+          : items.find((item) => item.id === selected),
+      focus,
+    );
   }
 
   window.addEventListener("hashchange", () => {
@@ -173,6 +205,7 @@ export function renderQueue(
   });
   return (next: QueueItem[]) => {
     items = next;
+    loaded = true;
     if (JSON.stringify([items, selected]) !== signature) draw(false);
   };
 }

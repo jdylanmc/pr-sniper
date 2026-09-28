@@ -71,6 +71,11 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             request.args["file"].as_str(),
         )?
         .as_str())),
+        "queue_selection" => Ok(json!(store.load_queue_selection()?)),
+        "select_queue_item" => {
+            pr_sniper_lib::queue::select(store, request.args["itemId"].as_str())?;
+            Ok(Value::Null)
+        }
         "save_preferences" => {
             let settings = serde_json::from_value(request.args["settings"].clone())
                 .map_err(|_| "Unsupported settings configuration.")?;

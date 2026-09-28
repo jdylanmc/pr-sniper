@@ -194,7 +194,8 @@ inherit another Agent's result.
 findings, conversations, acting account, publication receipts and gated
 start/confirmation/retry controls. **Open Settings**, **Open Diagnostics** and
 schedule recovery remain available. The selected item survives reopening and
-restart through local webview storage; unavailable identities produce a visible
+restart through private native `state/queue-selection.json` storage, including
+isolated app profiles; unavailable identities produce a visible
 missing-destination message, never selection of a different PR. Stable queue IDs
 are derived from persisted provider, account, local/remote repository, PR,
 revision and trigger-policy identities, not list positions or mutable logins.

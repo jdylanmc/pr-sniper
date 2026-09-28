@@ -476,3 +476,10 @@ pub fn destination(store: &Store, id: &str, file: Option<&str>) -> Result<url::U
     }
     Ok(url)
 }
+
+pub fn select(store: &Store, id: Option<&str>) -> Result<(), String> {
+    if let Some(id) = id {
+        destination(store, id, None)?;
+    }
+    store.save_queue_selection(id)
+}

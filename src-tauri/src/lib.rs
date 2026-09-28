@@ -1968,7 +1968,7 @@ fn open_queue_item(app: tauri::AppHandle, item_id: String) -> Result<(), String>
             .store
             .lock()
             .map_err(|_| "Queue storage is unavailable.")?;
-        queue::destination(&store, &item_id, None)?;
+        queue::select(&store, Some(&item_id))?;
     }
     open_window(&app, "queue", "Review Queue")?;
     let window = app
@@ -1981,6 +1981,23 @@ fn open_queue_item(app: tauri::AppHandle, item_id: String) -> Result<(), String>
     window
         .navigate(url)
         .map_err(|_| "Could not navigate to the exact queue item.".into())
+}
+
+#[tauri::command]
+fn queue_selection(host: State<'_, Host>) -> Result<Option<String>, String> {
+    host.store
+        .lock()
+        .map_err(|_| "Queue storage is unavailable.")?
+        .load_queue_selection()
+}
+
+#[tauri::command]
+fn select_queue_item(host: State<'_, Host>, item_id: Option<String>) -> Result<(), String> {
+    let store = host
+        .store
+        .lock()
+        .map_err(|_| "Queue storage is unavailable.")?;
+    queue::select(&store, item_id.as_deref())
 }
 
 fn open_window(app: &tauri::AppHandle, label: &str, title: &str) -> Result<(), String> {
@@ -2111,6 +2128,8 @@ pub fn run() {
             open_settings,
             open_queue_destination,
             open_queue_item,
+            queue_selection,
+            select_queue_item,
             monitoring_snapshot,
             retry_monitoring_operation,
             review::host::start_review,
