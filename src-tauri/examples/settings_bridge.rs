@@ -72,6 +72,59 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
         )?
         .as_str())),
         "queue_selection" => Ok(json!(store.load_queue_selection()?)),
+        "notification_snapshot" => serde_json::to_value(pr_sniper_lib::notifications::snapshot(
+            store,
+            Ok(pr_sniper_lib::notifications::Permission {
+                authorization: "authorized".into(),
+                alerts_enabled: true,
+                center_enabled: true,
+            }),
+        )?)
+        .map_err(|_| "Cannot encode notification test state.".into()),
+        "set_notifications_enabled" => {
+            let mut ledger = store.load_notifications()?;
+            ledger.enabled = request.args["enabled"]
+                .as_bool()
+                .ok_or("Enabled flag required.")?;
+            store.save_notifications(&ledger)?;
+            Ok(Value::Null)
+        }
+        "seed_notifications" => {
+            let ledger = serde_json::from_value(request.args)
+                .map_err(|_| "Invalid notification fixture.")?;
+            store.save_notifications(&ledger)?;
+            Ok(Value::Null)
+        }
+        "observe_notifications" => {
+            let snapshot = pr_sniper_lib::queue::snapshot(store, vec![])?;
+            let mut ledger = store.load_notifications()?;
+            ledger.observe(
+                &pr_sniper_lib::notifications::frames(&snapshot),
+                1_800_000_000,
+            )?;
+            store.save_notifications(&ledger)?;
+            Ok(json!(ledger))
+        }
+        "test_notification" => {
+            let destination = if let Some(item_id) = request.args["itemId"].as_str() {
+                pr_sniper_lib::queue::destination(store, item_id, None)?;
+                pr_sniper_lib::notifications::Destination::QueueItem {
+                    item_id: item_id.into(),
+                }
+            } else {
+                pr_sniper_lib::notifications::Destination::Settings
+            };
+            let mut ledger = store.load_notifications()?;
+            let id = ledger.enqueue_test(destination, 1_800_000_000)?;
+            store.save_notifications(&ledger)?;
+            Ok(json!(id))
+        }
+        "notification_destination" => Ok(json!(pr_sniper_lib::notifications::destination(
+            store,
+            request.args["id"]
+                .as_str()
+                .ok_or("Notification ID required.")?,
+        )?)),
         "select_queue_item" => {
             pr_sniper_lib::queue::select(store, request.args["itemId"].as_str())?;
             Ok(Value::Null)

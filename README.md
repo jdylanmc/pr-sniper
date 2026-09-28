@@ -207,9 +207,52 @@ is the immutable saved review. Check the displayed reviewed head against GitHub'
 current revision, browser account and merge requirements. Navigation never
 confirms a start, publishes comments, approves or merges.
 
-This inbox supplies the destination and handoff-state contract for native
-notifications in [#15](https://github.com/jdylanmc/pr-sniper/issues/15).
-Notifications are not implemented by the queue delivery.
+### Native macOS notifications
+
+In **Settings > Preferences > Notifications**, explicitly opt in to notifications.
+This requests real macOS authorization and saves immediately, separately from
+the Settings draft. Notifications default off; adding a GitHub account or
+enabling review execution does not opt in. Existing attention states become
+eligible once on. Use the packaged `.app`; a development web server is not a
+native notification host.
+
+PR Sniper notifies the operator about confirmation, human input, readiness for
+final review and failures. Routine queued/reviewing work and author waits do not
+notify. The queue's authoritative state determines the category: local sign-off
+cannot erase publication failures or stale evidence. A click opens the exact
+saved queue item, or Settings for a scheduling/account failure without a PR. It
+never confirms, starts, publishes, approves or merges anything.
+
+Banner text is generic: no PR title, repository name, author name, code or
+provider error text. Requests use the PR Sniper bundle identity and ordinary
+UserNotifications alerts, grouped by an opaque repository/account identity.
+They do not request critical or time-sensitive authorization or bypass Focus.
+macOS authorization is per application, even when testing an isolated profile.
+
+Private `state/notifications.json` retains profile-scoped request identities,
+observed transitions, send intent, outcomes and exact destinations. Unchanged
+polls/restarts do not repeat a transition. A genuinely new cause or re-entry after
+leaving an attention state can notify again. Send intent is saved before the OS
+request; interruption or a lost callback becomes **Outcome unknown**, never a
+blind resend. Turning notifications off prevents new submissions; an already
+accepted request may still appear. Events known denied or failed also remain in
+history rather than being automatically replayed after permission changes.
+
+**Review Queue > Notifications** distinguishes queued, submitting, accepted but
+unconfirmed, unknown, denied, failed and no-longer-current requests. OS acceptance
+does not prove a banner appeared: Focus or notification settings may suppress
+it. **Destination opened** records navigation, not human acknowledgment, review,
+approval or merge. Missing/foreign-profile destinations fail visibly without
+opening a different PR. Native activation, acceptance, failure and navigation
+also have fixed-schema diagnostics events.
+
+**Send test notification** uses the chosen exact queue item or Settings, without
+running a review or publishing anything. For denial, check **System Settings >
+Notifications > PR Sniper**. Notification categories, per-repository preferences,
+Windows support and update notices from the broad historical issue remain
+outside the approved macOS P11 slice.
+See [native notification acceptance](tests/macos-notifications.md) for isolated
+OS delivery/click-through verification and its evidence limits.
 
 ### Polling and detection
 

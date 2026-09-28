@@ -44,13 +44,19 @@ No release/versioning policy has been established yet.
 
 ### Added
 
+- Add opt-in macOS notifications for operator confirmation, human input,
+  final review and failure, with generic private banner text and exact saved
+  destinations. Persist transition deduplication and pre-send intent across
+  restart; show denied, failed, uncertain and OS-accepted-but-unconfirmed
+  delivery in Review Queue. Notification clicks only navigate, never approve,
+  publish or merge. See [#15](https://github.com/jdylanmc/pr-sniper/issues/15).
+
 - Put machine-cleared PRs and operator-input work first in Review Queue, while
   published findings wait on the PR author. Aggregate all current assignments
   without hiding publication failures, uncertain outcomes or stale revisions.
   Preserve exact selection across restart, complete guide/file navigation,
   evidence and gated recovery actions. Fix assignment matching so one Agent's
-  detection cannot mask another's review/publication/follow-up state. Native
-  notifications remain the next separate delivery. See
+  detection cannot mask another's review/publication/follow-up state. See
   [#2](https://github.com/jdylanmc/pr-sniper/issues/2).
 
 - Follow published external comments in verified PR Sniper-owned unresolved
