@@ -85,7 +85,24 @@ impl super::publication::MutationTransport for HttpTransport {
                     .into(),
             );
         }
+
         self.execute(request)
+    }
+}
+
+impl super::threads::QueryTransport for HttpTransport {
+    fn query(
+        &self,
+        query: &str,
+        variables: serde_json::Value,
+    ) -> Result<Response, ConnectionError> {
+        super::publication::MutationTransport::mutate(
+            self,
+            "/graphql",
+            super::publication::Request::Post(
+                serde_json::json!({"query":query,"variables":variables}),
+            ),
+        )
     }
 }
 
