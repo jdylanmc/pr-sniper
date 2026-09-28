@@ -161,6 +161,58 @@ Invalid settings are reported rather than silently reset or overwritten.
 
 ## Scheduled monitoring
 
+### Human-handoff inbox
+
+**Review Queue** puts PRs ready for your final review and items needing your
+input ahead of routine work. It combines the current assigned reviews,
+publication receipts, owned-thread follow-ups and monitoring health into one
+account/repository/revision-bound item. Every currently assigned Agent must
+finish before the item can be machine-cleared; adding an assignment does not
+inherit another Agent's result.
+
+- **Ready for your final review:** all current assigned reviews have signed off,
+  and enabled comment publication has a confirmed completed receipt. An
+  intentionally review-only assignment needs no publication. Automated review
+  completed; you still inspect the current PR and decide whether to merge on
+  GitHub. This is not GitHub approval, a mergeability/checks guarantee, or evidence
+  that a human personally reviewed it.
+- **Waiting for PR author:** review findings or questions were successfully
+  published. The author needs to respond or update the PR. A machine-sign-off
+  summary alone does not create an author wait.
+- **Needs your input:** a follow-up requires human judgment, findings remain
+  local, or some findings could not be published. PR Sniper does not imply the
+  author saw unpublished feedback.
+- Confirmation, queued/reviewing, pending publication, blocked, failed and stale
+  states remain distinct. A local sign-off never overrides a lost response,
+  rejected publication, failed final verification, or current monitoring failure.
+  Old published revisions retain a **Stale after publication** warning.
+  Polls retain the observed target base as well as the head; a moved base also
+  invalidates readiness. Older saved detections wait for a successful poll to
+  establish that base before becoming ready.
+
+**Evidence and actions** opens that exact item's complete ordered file guide,
+findings, conversations, acting account, publication receipts and gated
+start/confirmation/retry controls. **Open Settings**, **Open Diagnostics** and
+schedule recovery remain available. The selected item survives reopening and
+restart through private native `state/queue-selection.json` storage, including
+isolated app profiles; unavailable identities produce a visible
+missing-destination message, never selection of a different PR. Stable queue IDs
+are derived from persisted provider, account, local/remote repository, PR,
+revision and trigger-policy identities, not list positions or mutable logins.
+
+**Open PR on GitHub** and each guide's file link resolve against saved native
+queue identity. File links open the matching file anchor in GitHub's current PR
+diff, including deleted or renamed files; they do not pretend that the live diff
+is the immutable saved review. Check the displayed reviewed head against GitHub's
+current revision, browser account and merge requirements. Navigation never
+confirms a start, publishes comments, approves or merges.
+
+This inbox supplies the destination and handoff-state contract for native
+notifications in [#15](https://github.com/jdylanmc/pr-sniper/issues/15).
+Notifications are not implemented by the queue delivery.
+
+### Polling and detection
+
 While the menu-bar process is active, each saved repository assignment uses its
 own interval or five-field cron schedule and explicit IANA time zone. When a
 repository has no assignments, its effective global/per-repository policy

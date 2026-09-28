@@ -125,6 +125,13 @@ pub struct ReviewRun {
     pub result: Option<ReviewResult>,
 }
 
+impl ReviewRun {
+    pub fn matches_job(&self, job: &QueueJob) -> bool {
+        job.assignment_id.as_deref() == Some(&self.assignment_id)
+            && key(job, &self.assignment_id) == self.key
+    }
+}
+
 pub fn restore(store: &Store) -> Result<(), String> {
     let mut reviews = store.load_reviews()?;
     let mut changed = false;

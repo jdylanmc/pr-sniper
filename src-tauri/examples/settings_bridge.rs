@@ -39,6 +39,43 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
                 ,"settings_persisted": store.has_saved_settings()
             }))
         }
+        "seed_queue_state" => {
+            let jobs: Vec<_> = serde_json::from_value(request.args["jobs"].clone())
+                .map_err(|_| "Invalid queue fixture.")?;
+            let reviews: Vec<_> = serde_json::from_value(request.args["reviews"].clone())
+                .map_err(|_| "Invalid review fixture.")?;
+            let publications: Vec<_> = serde_json::from_value(request.args["publications"].clone())
+                .map_err(|_| "Invalid publication fixture.")?;
+            let follow_ups: Vec<_> = serde_json::from_value(request.args["follow_ups"].clone())
+                .map_err(|_| "Invalid follow-up fixture.")?;
+            store.save_queue(&jobs)?;
+            store.save_reviews(&reviews)?;
+            store.save_publications(&publications)?;
+            store.save_follow_ups(&follow_ups)?;
+            Ok(Value::Null)
+        }
+        "monitoring_snapshot" => serde_json::to_value(pr_sniper_lib::queue::snapshot(
+            store,
+            store
+                .load_monitoring_state()?
+                .health
+                .into_values()
+                .collect(),
+        )?)
+        .map_err(|_| "Cannot encode queue.".into()),
+        "queue_destination" => Ok(json!(pr_sniper_lib::queue::destination(
+            store,
+            request.args["itemId"]
+                .as_str()
+                .ok_or("Item identity required.")?,
+            request.args["file"].as_str(),
+        )?
+        .as_str())),
+        "queue_selection" => Ok(json!(store.load_queue_selection()?)),
+        "select_queue_item" => {
+            pr_sniper_lib::queue::select(store, request.args["itemId"].as_str())?;
+            Ok(Value::Null)
+        }
         "save_preferences" => {
             let settings = serde_json::from_value(request.args["settings"].clone())
                 .map_err(|_| "Unsupported settings configuration.")?;
