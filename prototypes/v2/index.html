@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>PR Sniper / vNext prototype</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./style.css" />
+    <script src="./model.js" defer></script>
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <svg
+      class="icon-library"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+    >
+      <defs>
+        <symbol id="crosshair" viewBox="0 0 32 32">
+          <circle cx="16" cy="16" r="10" />
+          <path d="M16 1v9m0 12v9M1 16h9m12 0h9" />
+        </symbol>
+        <symbol id="queue" viewBox="0 0 24 24">
+          <path d="m4 4-2 11v5h20v-5L20 4ZM2 15h6l2 3h4l2-3h6M8 8h8M7 11h10" />
+        </symbol>
+        <symbol id="activity" viewBox="0 0 24 24">
+          <path d="M2 12h5l3-8 4 16 3-8h5" />
+        </symbol>
+        <symbol id="reviewed" viewBox="0 0 24 24">
+          <rect x="4" y="3" width="16" height="18" rx="3" />
+          <path d="m8 10 3 3 5-5M8 17h8" />
+        </symbol>
+        <symbol id="settings" viewBox="0 0 24 24">
+          <path d="M4 6h16M4 12h16M4 18h16" />
+          <circle cx="8" cy="6" r="2" />
+          <circle cx="16" cy="12" r="2" />
+          <circle cx="10" cy="18" r="2" />
+        </symbol>
+        <symbol id="close" viewBox="0 0 24 24">
+          <path d="m6 6 12 12M6 18 18 6" />
+        </symbol>
+        <symbol id="check" viewBox="0 0 24 24">
+          <path d="m5 12 4 4L19 6" />
+        </symbol>
+        <symbol id="pull-request" viewBox="0 0 24 24">
+          <circle cx="6" cy="5" r="2" />
+          <circle cx="6" cy="19" r="2" />
+          <circle cx="18" cy="19" r="2" />
+          <path d="M6 7v10M18 17v-6a6 6 0 0 0-6-6m0 0 3-3m-3 3 3 3" />
+        </symbol>
+        <symbol id="question" viewBox="0 0 24 24">
+          <path d="M9 8a3 3 0 1 1 5 2.2c-1.3.8-2 1.3-2 3M12 17h.01" />
+          <circle cx="12" cy="12" r="10" />
+        </symbol>
+        <symbol id="wifi" viewBox="0 0 24 24">
+          <path
+            d="M2 8a16 16 0 0 1 20 0M5 12a11 11 0 0 1 14 0M9 16a5 5 0 0 1 6 0M12 20h.01"
+          />
+        </symbol>
+        <symbol id="battery" viewBox="0 0 24 24">
+          <rect x="2" y="7" width="17" height="10" rx="2" />
+          <path d="M22 10v4M5 10h11v4H5Z" />
+        </symbol>
+        <symbol id="search" viewBox="0 0 24 24">
+          <circle cx="10" cy="10" r="6" />
+          <path d="m15 15 6 6" />
+        </symbol>
+        <symbol id="moon" viewBox="0 0 24 24">
+          <path d="M20 15A9 9 0 0 1 9 4a9 9 0 1 0 11 11Z" />
+        </symbol>
+        <symbol id="folder" viewBox="0 0 24 24">
+          <path d="M3 6h7l2 3h9v11H3ZM3 6V4h7l2 2h7v3" />
+        </symbol>
+        <symbol id="terminal" viewBox="0 0 24 24">
+          <path d="m5 6 6 6-6 6M13 18h6" />
+        </symbol>
+        <symbol id="compass" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="10" />
+          <path d="m16 7-3 6-6 3 3-6Z" />
+        </symbol>
+        <symbol id="mail" viewBox="0 0 24 24">
+          <rect x="2" y="4" width="20" height="16" rx="2" />
+          <path d="m3 5 9 8 9-8" />
+        </symbol>
+        <symbol id="music" viewBox="0 0 24 24">
+          <path d="M9 18V5l11-2v13M9 9l11-2" />
+          <ellipse cx="6" cy="18" rx="3" ry="2" />
+          <ellipse cx="17" cy="16" rx="3" ry="2" />
+        </symbol>
+        <symbol id="trash" viewBox="0 0 24 24">
+          <path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M9 10v7M15 10v7" />
+        </symbol>
+        <symbol id="back" viewBox="0 0 24 24">
+          <path d="m14 5-7 7 7 7M7 12h14" />
+        </symbol>
+        <symbol id="chevron" viewBox="0 0 24 24">
+          <path d="m9 5 7 7-7 7" />
+        </symbol>
+        <symbol id="plus" viewBox="0 0 24 24">
+          <path d="M12 4v16M4 12h16" />
+        </symbol>
+        <symbol id="spark" viewBox="0 0 24 24">
+          <path
+            d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3ZM20 2v4m-2-2h4"
+          />
+        </symbol>
+        <symbol id="book" viewBox="0 0 24 24">
+          <path
+            d="M12 5C9 3 5 3 3 4v15c3-1 6-1 9 1 3-2 6-2 9-1V4c-3-1-6-1-9 1ZM12 5v15"
+          />
+        </symbol>
+        <symbol id="people" viewBox="0 0 24 24">
+          <circle cx="9" cy="7" r="3" />
+          <path
+            d="M3 21v-3a6 6 0 0 1 12 0v3M16 4a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 5v2"
+          />
+        </symbol>
+      </defs>
+    </svg>
+
+    <div class="desktop" aria-label="Mock macOS desktop">
+      <header class="menubar" aria-label="Mock desktop menu bar">
+        <div class="desktop-menus" aria-hidden="true">
+          <svg class="desktop-mark" viewBox="0 0 24 24">
+            <path
+              d="M15.9 3c.2 1.5-.8 3.2-2.3 3.8-.7-1.4.5-3.2 2.3-3.8Zm3.7 14.1c-.6 1.5-1.9 4-3.5 4-1 0-1.5-.6-2.7-.6-1.1 0-1.8.6-2.7.6-1.6 0-3.1-2.7-3.9-4.5C5.3 12.8 6.5 8 9.5 7.9c1.4-.1 2.4.7 3.4.7 1 0 2.1-1 3.8-.7 1.1.2 1.9.7 2.5 1.4-2.4 1.5-2.3 5 .4 6.1l.6.3-.6 1.4Z"
+            />
+          </svg>
+          <strong>Lorem</strong>
+          <span>Ipsum</span>
+          <span>Dolor</span>
+          <span class="optional-menu">Sit amet</span>
+        </div>
+        <div class="menu-utilities">
+          <button
+            id="tray-trigger"
+            class="tray-trigger"
+            type="button"
+            aria-label="Open PR Sniper"
+            aria-haspopup="dialog"
+            aria-expanded="false"
+            aria-controls="sniper-popover"
+            title="PR Sniper"
+          >
+            <svg class="icon"><use href="#crosshair" /></svg>
+            <span class="tray-dot" aria-hidden="true"></span>
+          </button>
+          <span class="decorative-utilities" aria-hidden="true">
+            <svg class="icon"><use href="#moon" /></svg>
+            <svg class="icon"><use href="#wifi" /></svg>
+            <svg class="icon battery-icon"><use href="#battery" /></svg>
+            <svg class="icon"><use href="#search" /></svg>
+          </span>
+          <time id="desktop-clock"></time>
+        </div>
+      </header>
+
+      <nav class="desktop-scenarios" aria-label="Prototype starting states">
+        <button
+          class="desktop-shortcut"
+          type="button"
+          data-scenario="configured"
+          aria-label="Reset and open Configured demo"
+          aria-pressed="true"
+        >
+          <span class="shortcut-icon"
+            ><svg class="icon"><use href="#crosshair" /></svg
+            ><span class="shortcut-badge"
+              ><svg class="icon"><use href="#check" /></svg></span
+          ></span>
+          <strong>Configured</strong><small>Reset to busy app</small>
+        </button>
+        <button
+          class="desktop-shortcut"
+          type="button"
+          data-scenario="fresh"
+          aria-label="Reset and open Fresh install demo"
+          aria-pressed="false"
+        >
+          <span class="shortcut-icon shortcut-fresh"
+            ><svg class="icon"><use href="#crosshair" /></svg
+            ><span class="shortcut-badge"
+              ><svg class="icon"><use href="#spark" /></svg></span
+          ></span>
+          <strong>Fresh install</strong><small>Reset to first launch</small>
+        </button>
+      </nav>
+
+      <div class="desktop-hint" id="desktop-hint">
+        <svg class="icon"><use href="#crosshair" /></svg>
+        <div>
+          <strong>A second set of eyes.</strong>
+          <p>Choose a desktop demo, or open PR Sniper from the menu bar.</p>
+        </div>
+      </div>
+
+      <p class="prototype-caption">
+        PR Sniper <span>vNext / interactive prototype</span>
+      </p>
+
+      <div class="dock" aria-label="Decorative mock desktop dock">
+        <span class="dock-app finder" title="Files" aria-label="Files">
+          <span class="finder-eyes"></span><span class="finder-smile"></span>
+        </span>
+        <span class="dock-app browser" title="Browser"
+          ><svg class="icon"><use href="#compass" /></svg
+        ></span>
+        <span class="dock-app email" title="Mail"
+          ><svg class="icon"><use href="#mail" /></svg
+        ></span>
+        <span class="dock-app calendar" title="Calendar"
+          ><span>Mon</span><strong>28</strong></span
+        >
+        <span class="dock-app notes" title="Notes"
+          ><span></span><span></span><span></span
+        ></span>
+        <span class="dock-app player" title="Music"
+          ><svg class="icon"><use href="#music" /></svg
+        ></span>
+        <span class="dock-app console" title="Terminal"
+          ><svg class="icon"><use href="#terminal" /></svg
+        ></span>
+        <span class="dock-divider"></span>
+        <span class="dock-app files" title="Downloads"
+          ><svg class="icon"><use href="#folder" /></svg
+        ></span>
+        <span class="dock-app bin" title="Trash"
+          ><svg class="icon"><use href="#trash" /></svg
+        ></span>
+      </div>
+
+      <section
+        id="sniper-popover"
+        class="sniper-popover"
+        role="dialog"
+        aria-label="PR Sniper prototype"
+        aria-describedby="prototype-note"
+        hidden
+      >
+        <div class="popover-surface">
+          <header class="app-header">
+            <div class="app-brand">
+              <svg class="icon"><use href="#crosshair" /></svg>
+              <span>PR Sniper</span>
+              <button
+                id="monitoring-toggle"
+                class="monitoring-status"
+                type="button"
+                role="switch"
+                aria-label="Monitoring across all repositories"
+                aria-checked="true"
+                aria-describedby="monitoring-help"
+              >
+                <span id="monitoring-label">Monitoring</span>
+                <span class="switch-track" aria-hidden="true"></span>
+              </button>
+              <span id="monitoring-help" class="sr-only"
+                >Turn off to pause all automation, discard active review
+                progress, and return those reviews to the queue.</span
+              >
+              <button
+                class="close-button"
+                id="close-popover"
+                type="button"
+                aria-label="Close PR Sniper"
+              >
+                <svg class="icon"><use href="#close" /></svg>
+              </button>
+            </div>
+            <div class="page-heading">
+              <button
+                id="back-button"
+                class="back-button"
+                type="button"
+                aria-label="Back"
+                hidden
+              >
+                <svg class="icon"><use href="#back" /></svg>
+              </button>
+              <h1 id="page-title" tabindex="-1">Your queue</h1>
+            </div>
+            <img class="sniper-brand-art" src="./sniper-mark.png" alt="" />
+          </header>
+          <div id="app-notice" class="app-notice" role="alert" hidden></div>
+          <main
+            id="view-stage"
+            class="view-stage"
+            aria-label="PR Sniper pages"
+          ></main>
+          <p id="toast" class="toast" role="status" hidden></p>
+
+          <nav class="bottom-nav" aria-label="PR Sniper">
+            <button
+              type="button"
+              id="queue-home"
+              data-nav="queue"
+              class="nav-item"
+              aria-current="page"
+            >
+              <svg class="icon"><use href="#queue" /></svg><span>Queue</span>
+            </button>
+            <button type="button" class="nav-item" data-nav="running">
+              <span class="nav-icon"
+                ><svg class="icon"><use href="#activity" /></svg
+                ><span class="nav-count" id="running-nav-count">4</span></span
+              ><span>Running</span>
+            </button>
+            <button type="button" class="nav-item" data-nav="reviewed">
+              <svg class="icon"><use href="#reviewed" /></svg
+              ><span>Reviewed</span>
+            </button>
+            <button type="button" class="nav-item" data-nav="settings">
+              <svg class="icon"><use href="#settings" /></svg
+              ><span>Settings</span>
+            </button>
+          </nav>
+          <p class="prototype-note" id="prototype-note">
+            Prototype / sample data / saved in this browser
+          </p>
+        </div>
+      </section>
+      <p
+        class="sr-only"
+        id="lane-announcement"
+        role="status"
+        aria-live="polite"
+      ></p>
+      <noscript
+        ><p class="noscript-notice">
+          Enable JavaScript to open the PR Sniper prototype.
+        </p></noscript
+      >
+    </div>
+  </body>
+</html>

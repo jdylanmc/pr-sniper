@@ -18,6 +18,14 @@ AI accounts with browser sign-in and per-Agent account/model selection; see
 [approved specification](docs/agent/specs/pr-sniper-mvp.nano.md), not this
 implementation summary.
 
+## vNext design prototype
+
+The [standalone vNext POC](prototypes/v2/README.md) includes configured and
+fresh-install demos, guided Genie setup, and mock review workflows. Open
+`prototypes/v2/index.html` in a browser; no app build is needed. Its screenshots,
+local checks, and limitations are documented alongside it. This is design
+evidence, not production application behavior.
+
 ## Develop on macOS
 
 Requirements: macOS 13.5+, Xcode Command Line Tools (or full Xcode), Node
