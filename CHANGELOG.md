@@ -44,6 +44,15 @@ No release/versioning policy has been established yet.
 
 ### Added
 
+- Publish validated review findings as one signed, revision-bound GitHub
+  `COMMENT` batch through independent automatic/manual publication gates.
+  Persist mutation intent and receipts, reconcile uncertain outcomes without
+  blind duplicate posting, retain unmappable findings locally, and discard
+  stale owned pending reviews. Review Queue exposes confirmation withdrawal,
+  reconciliation/retry, and stale-after-publication status; provider approval
+  and merging remain unavailable. See
+  [#23](https://github.com/jdylanmc/pr-sniper/issues/23).
+
 - Run assignment-bound Copilot reviews with the configured AI account, model,
   prompt and doctrine, manually or through the automatic-start gate. Require
   exact-revision trust confirmation for forks and untrusted authors; expose only

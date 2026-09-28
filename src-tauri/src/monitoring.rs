@@ -708,6 +708,50 @@ impl Monitor {
         Ok(())
     }
 
+    pub fn request_revision_check(
+        &mut self,
+        store: &Store,
+        job: &QueueJob,
+        now: i64,
+    ) -> Result<(), String> {
+        let previous = self.state.clone();
+        let health = self
+            .state
+            .health
+            .values_mut()
+            .find(|health| {
+                health.repository_id == job.configuration_id
+                    && health.assignment_id == job.assignment_id
+                    && health.enabled
+                    && health.schedule_available
+                    && health.provider_account_id.as_deref() == Some(&job.account_id)
+                    && health.provider_repository_id.as_deref() == Some(&job.repository_id)
+            })
+            .ok_or("The eligible revision could not be queued; check monitoring health.")?;
+        if health.operation.as_ref().is_some_and(|operation| {
+            matches!(
+                operation.state,
+                OperationState::Failed | OperationState::ManualRetry
+            )
+        }) {
+            return Err("Monitoring needs correction or manual retry before the new revision can be queued.".into());
+        }
+        // A publication recheck must not bypass a poll's existing retry budget or Retry-After.
+        if health.operation.as_ref().is_none_or(|operation| {
+            !matches!(
+                operation.state,
+                OperationState::Queued | OperationState::Interrupted
+            )
+        }) {
+            health.next_run = health.next_run.min(now.max(1));
+        }
+        if let Err(error) = store.save_monitoring_state(&self.state) {
+            self.state = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     pub fn disconnect_account(&mut self, store: &Store, account_id: &str) -> Result<(), String> {
         let mut jobs = store.load_queue()?;
         let previous_jobs = jobs.clone();
@@ -1973,6 +2017,23 @@ pub fn review_policy(
         }
     }
     Ok(configuration.policy)
+}
+
+pub fn new_revision_eligible(settings: &Settings, job: &QueueJob, pull: &PullRequest) -> bool {
+    let Some(configuration) = configured_schedules(settings)
+        .into_iter()
+        .find(|c| c.repository_id == job.configuration_id && c.assignment_id == job.assignment_id)
+    else {
+        return false;
+    };
+    let Some(trigger) = configuration.trigger_policy else {
+        return false;
+    };
+    let mut current = job.clone();
+    current.head_sha = pull.head_sha.clone();
+    current.trigger_policy = trigger;
+    current.waiting = WAITING_HUMAN_START.into();
+    review_policy(settings, &current, Some(pull)).is_ok()
 }
 
 fn schedule_key(schedule: &Schedule) -> String {
