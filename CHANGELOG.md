@@ -44,6 +44,11 @@ No release/versioning policy has been established yet.
 
 ### Added
 
+- Add an inspectable, standalone vNext design POC with configured and
+  fresh-install demos, guided Genie setup, browser-local mock review workflows,
+  and synthetic screenshots. No production integration. See
+  [#52](https://github.com/jdylanmc/pr-sniper/issues/52).
+
 - Add opt-in macOS notifications for operator confirmation, human input,
   final review and failure, with generic private banner text and exact saved
   destinations. Persist transition deduplication and pre-send intent across
