@@ -214,41 +214,75 @@ pub fn evaluate_gate(
     can_comment: bool,
     cancelled: bool,
 ) -> Gate {
-    let head_changed = pull.head_sha != run.review.job.head_sha;
+    evaluate_review_gate(
+        settings,
+        &run.review,
+        current_job,
+        pull,
+        GatePermissions {
+            active,
+            can_comment,
+            cancelled,
+            automatic: run.automatic,
+            confirmed: run.confirmed,
+        },
+    )
+}
+
+pub struct GatePermissions {
+    pub active: bool,
+    pub can_comment: bool,
+    pub cancelled: bool,
+    pub automatic: bool,
+    pub confirmed: bool,
+}
+
+pub fn evaluate_review_gate(
+    settings: &Settings,
+    review: &ReviewRun,
+    current_job: Option<&QueueJob>,
+    pull: &crate::github::metadata::PullRequest,
+    permissions: GatePermissions,
+) -> Gate {
+    let GatePermissions {
+        active,
+        can_comment,
+        cancelled,
+        automatic,
+        confirmed,
+    } = permissions;
+    let head_changed = pull.head_sha != review.job.head_sha;
     let stale = head_changed
-        || run
-            .review
+        || review
             .result
             .as_ref()
             .and_then(|r| r.reviewed_base_sha.as_ref())
             != Some(&pull.base_sha);
     let requeue = head_changed
         && active
-        && crate::monitoring::new_revision_eligible(settings, &run.review.job, pull);
+        && crate::monitoring::new_revision_eligible(settings, &review.job, pull);
     let policy = current_job
         .ok_or_else(|| "Review detection is no longer available.".to_string())
-        .and_then(|job| automatic_policy(settings, &run.review, job));
+        .and_then(|job| automatic_policy(settings, review, job));
     let mut stop = match policy {
         Err(error) => Some(error),
-        Ok(automatic) if automatic != run.automatic => {
+        Ok(current) if current != automatic => {
             Some("The publication gate changed; confirm again before retrying.".into())
         }
         _ => None,
     };
-    if cancelled || (!run.confirmed && !run.automatic) {
+    if cancelled || (!confirmed && !automatic) {
         stop = Some("Publication confirmation was withdrawn.".into());
     } else if !active {
         stop = Some("Monitoring scope is no longer active.".into());
     }
     if stop.is_none() {
-        stop = crate::monitoring::review_policy(settings, &run.review.job, Some(pull)).err();
+        stop = crate::monitoring::review_policy(settings, &review.job, Some(pull)).err();
     }
     if stop.is_none() && stale {
         stop = Some("The reviewed diff changed; this output is stale.".into());
     }
-    if stop.is_none()
-        && crate::review::requires_trust(&run.review.job, pull)
-        && !run.review.trust_confirmed
+    if stop.is_none() && crate::review::requires_trust(&review.job, pull) && !review.trust_confirmed
     {
         stop = Some("Trust confirmation for this exact revision is required.".into());
     }

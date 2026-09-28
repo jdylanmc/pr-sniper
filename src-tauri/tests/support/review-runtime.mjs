@@ -117,6 +117,12 @@ process.stdin.on("data", (chunk) => {
             content:
               scenario === "malformed"
                 ? "not JSON"
+                : scenario.startsWith("follow-up-")
+                  ? JSON.stringify({
+                      decision: scenario === "follow-up-human" ? "human_input_required" : "quiet",
+                      body: "", new_information: "", evidence: [],
+                      reason: "A human decision is required or no new evidence exists.",
+                    })
                 : JSON.stringify({
                     synopsis: "The empty synthetic change has no findings.",
                     files: [],

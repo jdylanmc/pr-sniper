@@ -515,6 +515,7 @@ async fn execute(
     let expected_base = context.pull.base_sha.clone();
     let send_base = expected_base.clone();
     let request = runtime::Request {
+        task: runtime::FullReview,
         context,
         client,
         repository_name: run.job.repository_name.clone(),

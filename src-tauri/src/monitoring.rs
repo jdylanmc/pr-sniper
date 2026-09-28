@@ -271,6 +271,7 @@ struct ActivationPreview {
 #[derive(Debug, Clone)]
 pub struct PollTicket {
     pub health_key: String,
+    pub assignment_id: Option<String>,
     pub repository_id: String,
     pub name: String,
     pub provider_account_id: String,
@@ -1166,6 +1167,7 @@ impl Monitor {
                 .insert(repository_id.clone(), configuration.health_key.clone());
             tickets.push(PollTicket {
                 health_key: configuration.health_key.clone(),
+                assignment_id: configuration.assignment_id.clone(),
                 repository_id: configuration.repository_id.clone(),
                 name: configuration.name.clone(),
                 provider_account_id: account_id.clone(),

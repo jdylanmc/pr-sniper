@@ -44,6 +44,15 @@ No release/versioning policy has been established yet.
 
 ### Added
 
+- Follow published external comments in verified PR Sniper-owned unresolved
+  threads with a constrained, evidence-backed reply, silence or a human-input
+  wait. Preserve per-thread/comment/revision identities and separate bounded
+  analysis/publication budgets; reconcile lost reply responses without blind
+  duplicates. Review Queue exposes the complete conversation, source evidence,
+  explicit start/publication gates, cancellation and recovery. Private drafts
+  and machine replies cannot self-trigger. See
+  [#24](https://github.com/jdylanmc/pr-sniper/issues/24).
+
 - Publish validated review findings as one signed, revision-bound GitHub
   `COMMENT` batch through independent automatic/manual publication gates.
   Persist mutation intent and receipts, reconcile uncertain outcomes without

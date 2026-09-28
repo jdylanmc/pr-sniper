@@ -1,6 +1,7 @@
 mod copilot;
 pub mod discovery;
 mod doctrine_seeds;
+pub mod follow_up;
 pub mod github;
 pub mod monitoring;
 pub mod policy;
@@ -41,6 +42,7 @@ struct Host {
     copilot: Arc<copilot::Integration>,
     reviews: review::Coordinator,
     publications: publication::host::Coordinator,
+    follow_ups: follow_up::host::Coordinator,
 }
 
 #[derive(Clone, Copy)]
@@ -810,6 +812,7 @@ struct MonitoringSnapshot {
     jobs: Vec<monitoring::QueueJob>,
     reviews: Vec<review::host::Candidate>,
     publications: Vec<publication::host::Candidate>,
+    follow_ups: Vec<follow_up::host::Candidate>,
 }
 
 #[derive(serde::Deserialize)]
@@ -921,6 +924,7 @@ async fn monitoring_snapshot(app: tauri::AppHandle) -> Result<MonitoringSnapshot
             jobs: store.load_queue()?,
             reviews: review::host::candidates(&store)?,
             publications: publication::host::candidates(&store)?,
+            follow_ups: follow_up::host::candidates(&store)?,
         })
     })
     .await
@@ -1081,6 +1085,7 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
         tauri::async_runtime::spawn_blocking(move || {
             let ticket_for_poll = ticket.clone();
             let account_id = ticket.provider_account_id.clone();
+            let mut follow_ups = Vec::new();
             let result = (|| {
                 let host = app.state::<Host>();
                 let (identity, client) = github_session(&host, &account_id)?;
@@ -1095,6 +1100,7 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                     return Err(ConnectionError::RepositoryChanged);
                 }
                 let pull_requests = client.poll_pull_requests(&connection.repository)?;
+                follow_ups = follow_up::host::scan(&app, &ticket_for_poll, &pull_requests)?;
                 Ok(monitoring::PollResult {
                     connection,
                     pull_requests,
@@ -1118,7 +1124,13 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                 Err(error) => Err(monitoring::MonitoringError::Storage(error)),
             };
             let continue_checks = match &saved {
-                Ok(()) => true,
+                Ok(()) => match follow_up::host::admit(&app, &ticket_for_poll, follow_ups) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        report(&app, error);
+                        false
+                    }
+                },
                 Err(error) if error.requires_host_report() => {
                     report(&app, error.message().into());
                     false
@@ -2058,6 +2070,8 @@ pub fn run() {
             review::host::cancel_review,
             publication::host::publish_review,
             publication::host::cancel_publication,
+            follow_up::host::start_follow_up,
+            follow_up::host::cancel_follow_up,
             check_now,
             monitoring_activation_status,
             preview_monitoring_activation,
@@ -2084,6 +2098,7 @@ pub fn run() {
             let store = Store::new(root);
             review::restore(&store).map_err(std::io::Error::other)?;
             publication::restore(&store).map_err(std::io::Error::other)?;
+            follow_up::restore(&store).map_err(std::io::Error::other)?;
             let monitor = monitoring::Monitor::restore(&store).map_err(std::io::Error::other)?;
             app.manage(Host {
                 store: Mutex::new(store),
@@ -2104,6 +2119,7 @@ pub fn run() {
                 copilot,
                 reviews: review::Coordinator::default(),
                 publications: publication::host::Coordinator::default(),
+                follow_ups: follow_up::host::Coordinator::default(),
             });
             record(app.handle(), DiagnosticEvent::SessionStarted);
             let scheduler_app = app.handle().clone();
@@ -2121,6 +2137,9 @@ pub fn run() {
                         report(&scheduler_app, error);
                     }
                     if let Err(error) = publication::host::Coordinator::pump(&scheduler_app) {
+                        report(&scheduler_app, error);
+                    }
+                    if let Err(error) = follow_up::host::Coordinator::pump(&scheduler_app) {
                         report(&scheduler_app, error);
                     }
                 }
@@ -2159,6 +2178,7 @@ pub fn run() {
                         host.quitting.store(true, Ordering::SeqCst);
                         host.copilot.request_shutdown();
                         host.reviews.cancel_all();
+                        host.follow_ups.cancel_all();
                         let shutdown_app = app.clone();
                         tauri::async_runtime::spawn(async move {
                             let cancel_app = shutdown_app.clone();
@@ -2187,7 +2207,8 @@ pub fn run() {
                                 tokio::time::Instant::now() + std::time::Duration::from_secs(7);
                             while (!shutdown_app.state::<Host>().copilot.lookups_finished()
                                 || !shutdown_app.state::<Host>().reviews.finished()
-                                || !shutdown_app.state::<Host>().publications.finished())
+                                || !shutdown_app.state::<Host>().publications.finished()
+                                || !shutdown_app.state::<Host>().follow_ups.finished())
                                 && tokio::time::Instant::now() < deadline
                             {
                                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;

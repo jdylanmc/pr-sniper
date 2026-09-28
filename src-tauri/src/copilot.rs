@@ -46,12 +46,15 @@ impl Integration {
         Ok(Arc::new(Self::with_backend(NativeBackend::new(service))))
     }
 
-    pub(crate) async fn review<T: github::provider::Transport + Send + Sync + 'static>(
+    pub(crate) async fn review<
+        T: github::provider::Transport + Send + Sync + 'static,
+        K: crate::review::runtime::Task,
+    >(
         self: &Arc<Self>,
-        request: crate::review::runtime::Request<T>,
+        request: crate::review::runtime::Request<T, K>,
         cancelled: Arc<AtomicBool>,
         deadline: Instant,
-    ) -> Result<crate::review::ReviewResult, crate::review::Failure> {
+    ) -> Result<crate::review::ReviewResult<K::Output>, crate::review::Failure> {
         use crate::review::Failure;
         let id = request
             .selection
