@@ -4,6 +4,22 @@ import { expect, test } from "./fixtures.mjs";
 import { section } from "./navigation.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
 
+test("focus refresh preserves the explicitly selected notification destination", async ({
+  page,
+  store,
+}) => {
+  await queueFixture(store);
+  const item = (await store("monitoring_snapshot")).items.find(
+    (item) => item.job.number === 9,
+  );
+  await page.goto("/?view=settings");
+  await section(page, "Preferences");
+  await page.getByLabel("Test destination").selectOption(item.id);
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(page.getByLabel("Test destination")).toHaveValue(item.id);
+});
+
 test("notification opt-in is immediate, independent and tests the explicitly selected queue item", async ({
   page,
   store,

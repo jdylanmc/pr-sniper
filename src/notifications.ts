@@ -51,7 +51,10 @@ function permissionText(state: Snapshot) {
   } Focus may suppress banners. No notification proves that a person saw or acknowledged it.`;
 }
 
-export function mountNotificationSettings(root: HTMLElement) {
+export function mountNotificationSettings(
+  root: HTMLElement,
+  view: { target: string },
+) {
   root.innerHTML = `<fieldset aria-label="Notifications"><legend>Notifications</legend>
     <label class="setting-row"><span>Notify me when my attention is needed<small>Confirmation, human input, ready-for-review and failures. Off until you opt in. Changes immediately, separately from Save changes.</small></span><input id="notification-enabled" type="checkbox" role="switch" disabled /></label>
     <p class="settings-hint">Banners contain no PR titles, repository names or code. Opening an alert only opens its saved destination; it never starts, publishes, approves or merges.</p>
@@ -70,12 +73,13 @@ export function mountNotificationSettings(root: HTMLElement) {
   let busy = false;
   let reading = false;
   let revision = 0;
-  let selected = "";
+  let selected = view.target;
   let targetsSignature = "";
   let actionError: string | null = null;
   let state: Snapshot | undefined;
   target.onchange = () => {
     selected = target.value;
+    view.target = selected;
     updateControls();
   };
 
