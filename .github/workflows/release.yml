@@ -1,0 +1,141 @@
+name: Signed macOS release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: pr-sniper-release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      version: ${{ steps.source.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require stable tagged main commit and exact green CI
+        id: source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -B scripts/release.py gate
+
+  tap-ready:
+    needs: gate
+    runs-on: ubuntu-latest
+    environment: pr-sniper-tap
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - name: Require scoped tap write access and merged cask validation
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: python3 -B scripts/release.py tap-ready
+
+  sign:
+    needs: [gate, tap-ready]
+    runs-on: macos-15
+    environment: pr-sniper-release
+    permissions:
+      contents: read
+    env:
+      SOURCE_SHA: ${{ needs.gate.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Check Apple Silicon host and pinned toolchain
+        run: |
+          test "$(uname -m)" = arm64
+          rustup show active-toolchain
+      - run: npm ci
+      - name: Build credential-free application bundle
+        run: npm run bundle
+      - name: Sign, notarize, staple and verify final archive
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          APPLE_NOTARY_KEY_ID: ${{ vars.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ vars.APPLE_NOTARY_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+        run: python3 -B scripts/sign_release.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: notarized-macos-release
+          path: ${{ runner.temp }}/pr-sniper-release-assets/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  publish:
+    needs: [gate, sign]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      SOURCE_SHA: ${{ needs.gate.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: notarized-macos-release
+          path: ${{ runner.temp }}/pr-sniper-release-assets
+      - name: Publish only verified versioned bytes
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -B scripts/release.py publish
+
+  tap:
+    needs: [gate, publish]
+    runs-on: macos-15
+    environment: pr-sniper-tap
+    permissions:
+      contents: read
+    env:
+      SOURCE_SHA: ${{ needs.gate.outputs.sha }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_DEVELOPER: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: notarized-macos-release
+          path: ${{ runner.temp }}/pr-sniper-release-assets
+      - name: Verify published bytes and update the exact cask
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: python3 -B scripts/release.py tap
