@@ -44,6 +44,14 @@ No release/versioning policy has been established yet.
 
 ### Added
 
+- Add stable-tag macOS release automation for Developer ID signing,
+  notarization/stapling, verified versioned archives and automatic dedicated
+  Homebrew cask updates. Gate signing on exact-commit main CI; keep Apple and
+  tap credentials separate from PR builds. Initial distribution targets
+  Apple Silicon on macOS 13.5+. The first release/install remains a separate
+  human-authorized acceptance step. See [release operations](docs/releases.md)
+  and [#12](https://github.com/jdylanmc/pr-sniper/issues/12).
+
 - Add an inspectable, standalone vNext design POC with configured and
   fresh-install demos, guided Genie setup, browser-local mock review workflows,
   and synthetic screenshots. No production integration. See

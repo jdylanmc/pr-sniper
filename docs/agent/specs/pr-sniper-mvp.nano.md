@@ -35,6 +35,15 @@ remain pinned to their starting filter.
 
 ## Acceptance Criteria
 
+The human-approved macOS distribution follow-up under #12 adds Apple Silicon
+Developer ID-signed/notarized releases and the dedicated
+`jdylanmc/homebrew-pr-sniper` cask. Explicit stable version tags automatically
+publish verified release assets and update the tap; ordinary PR CI remains
+credential-free. This supersedes the earlier Homebrew/production-signing
+exclusion only for that slice, not Windows, Intel or #14's in-app updater.
+See [release operations](../../releases.md). Workflow implementation and
+credential presence do not establish first-release/install acceptance.
+
 - AC-001: PR Sniper installs as a macOS application, runs without a persistent main window, exposes its primary actions from the menu bar, and can be enabled as an opt-in login item.
 - AC-002: The user can concurrently retain multiple provider accounts and explicitly select, edit, disable, re-enable, and remove any repository accessible to the chosen account without an application-defined maximum; each repository is bound to one provider, stable provider-account identity and stable provider-repository identity, overlapping access requires an explicit account choice, and provider, organization, project, tenant or local-resource limits are surfaced explicitly. GitHub implements this model in the MVP; Azure DevOps retains the same contract without a live implementation.
 - AC-003: The user can configure global defaults and per-repository overrides for schedule, watched authors, reviewer-assignment trigger, local agent, model or agent selector, prompt, automatic agent start, and automatic comment publication; Settings, queue work, confirmations, and publication state show the acting account. Each reusable Agent explicitly selects an AI provider/account reference (`AiAccount`) and an actual model returned for that account; no personal account or model is hardcoded, auto-selected or silently substituted. The repository connection supplies credentials and acting identity for repository access and publication, while the independent Copilot integration supplies AI credentials. Copilot is a provider, not a model; Claude models returned through Copilot are permitted while direct Claude, Codex and Grok integrations remain unavailable.

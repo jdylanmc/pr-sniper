@@ -90,7 +90,11 @@ authorize notifications. This does not use a Developer ID certificate and is
 not a notarized distribution:
 Gatekeeper may require explicit approval under Privacy & Security for a
 downloaded CI artifact. Do not disable Gatekeeper globally. Production signing,
-notarization, updates, Homebrew and Windows packages are out of scope.
+Windows and in-app updates remain outside this delivery. The separate
+[macOS release workflow](docs/releases.md) adds Developer ID signing,
+notarization and a Homebrew cask for explicitly tagged Apple Silicon releases.
+The first published version is a separate human-authorized release step; a
+local/CI ad-hoc bundle is not the notarized distribution.
 
 ## Local data and diagnostics
 
