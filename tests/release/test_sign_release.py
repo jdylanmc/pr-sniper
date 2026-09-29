@@ -1,4 +1,5 @@
 import json
+import io
 import os
 from pathlib import Path
 import plistlib
@@ -6,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from contextlib import redirect_stdout
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import release
@@ -86,12 +88,23 @@ class SignTests(unittest.TestCase):
                   "APPLE_NOTARY_KEY_ID": "ABCDEFGHIJ", "APPLE_NOTARY_ISSUER_ID": "00000000-0000-0000-0000-000000000001",
                   "APPLE_TEAM_ID": TEAM, "APPLE_SIGNING_IDENTITY": IDENTITY}
 
+        previous = ["/Users/runner/Library/Keychains/login.keychain-db", "/Library/Keychains/System.keychain"]
+        keychains = previous[:]
+
         def native(args, timeout=120):
+            nonlocal keychains
             self.calls.append(args)
             if args[:2] == ["git", "rev-parse"]:
                 return COMMIT.encode()
             if args == ["security", "list-keychains", "-d", "user"]:
-                return b'"/Users/runner/Library/Keychains/login.keychain-db"\n"/Library/Keychains/System.keychain"'
+                return "\n".join(json.dumps(path) for path in keychains).encode()
+            if args[:5] == ["security", "list-keychains", "-d", "user", "-s"]:
+                if not ((failure == "search-list" and len(args[5:]) == 3)
+                        or (failure == "restore" and args[5:] == previous)):
+                    keychains = args[5:]
+                return b""
+            if args[:2] == ["codesign", "--force"]:
+                self.assertEqual(keychains, [args[args.index("--keychain") + 1]] + previous)
             if args[:2] == ["security", "find-identity"]:
                 return f'1) {IDENTITY if failure != "identity" else "B" * 40} "Developer ID Application: Fixture ({TEAM})"'.encode()
             if args[:3] == ["xcrun", "notarytool", "submit"]:
@@ -128,11 +141,13 @@ class SignTests(unittest.TestCase):
         self.assertTrue(any(args[0] == "spctl" for args in self.calls))
         self.assertFalse(any("--deep" in args for args in self.calls))
         restore = [args for args in self.calls if args[:5] == ["security", "list-keychains", "-d", "user", "-s"]]
+        self.assertEqual(len(restore), 2)
+        self.assertEqual(restore[0][6:], restore[-1][5:])
         self.assertEqual(restore[-1][5:], ["/Users/runner/Library/Keychains/login.keychain-db", "/Library/Keychains/System.keychain"])
         self.assertFalse(list(self.root.glob("pr-sniper-sign-*")))
 
     def test_rejected_identity_notarization_timeout_or_cleanup_failure_cannot_report_success(self):
-        for failure in ["identity", "notary", "timeout", "cleanup"]:
+        for failure in ["identity", "notary", "timeout", "cleanup", "search-list", "restore"]:
             with self.subTest(failure=failure):
                 self.calls.clear()
                 output = self.root / "assets"
@@ -142,9 +157,9 @@ class SignTests(unittest.TestCase):
                     output.rmdir()
                 self.run_sign(failure)
                 self.assertTrue(any(args[:2] == ["security", "delete-keychain"] for args in self.calls))
-                if failure != "cleanup":
+                if failure not in ("cleanup", "restore"):
                     self.assertFalse(output.exists())
-                if failure == "identity":
+                if failure in ("identity", "search-list"):
                     self.assertFalse(any(args[:2] == ["codesign", "--force"] for args in self.calls))
                 self.assertFalse(list(self.root.glob("pr-sniper-sign-*")))
 
@@ -161,6 +176,35 @@ class SignTests(unittest.TestCase):
             self.assertNotIn("GITHUB_TOKEN", child)
             self.assertNotIn("HOMEBREW_TAP_TOKEN", child)
             self.assertEqual(child["PATH"], "/usr/bin")
+
+    def test_native_errors_identify_operation_without_echoing_output_or_arguments(self):
+        secret = "DO-NOT-PRINT-PRIVATE-MATERIAL"
+        for args, expected in [
+            (["codesign", "--force", "--sign", secret, "app"], "codesign/sign"),
+            (["codesign", "--verify", "--strict", "app"], "codesign/verify"),
+            (["security", "import", secret, "-P", secret], "security/import"),
+        ]:
+            with self.subTest(operation=expected), patch.object(sign_release.subprocess, "run") as native:
+                native.return_value.returncode = 1
+                native.return_value.stdout = secret.encode()
+                native.return_value.stderr = b"errSecInternalComponent: " + secret.encode()
+                output = io.StringIO()
+                with redirect_stdout(output), self.assertRaises(release.ReleaseError) as failure:
+                    sign_release.run(args)
+                message = str(failure.exception)
+                self.assertIn(expected, message)
+                self.assertIn("exit=1", message)
+                self.assertIn("category=security-internal-component", message)
+                self.assertNotIn(secret, message + output.getvalue())
+
+    def test_search_list_readback_and_parsing_fail_explicitly(self):
+        with patch.object(sign_release, "run", return_value=b'"/different/keychain"'):
+            with self.assertRaisesRegex(release.ReleaseError, "not confirmed"):
+                sign_release.set_keychain_search_list(["/expected/keychain"])
+        for result in [b'"unterminated', b'"relative/keychain"', b'"/path\nwith-control"']:
+            with self.subTest(result=result), patch.object(sign_release, "run", return_value=result), \
+                    self.assertRaises(release.ReleaseError):
+                sign_release.keychain_search_list()
 
 
 if __name__ == "__main__":

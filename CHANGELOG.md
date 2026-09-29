@@ -1,11 +1,17 @@
 # Changelog
 
 Notable changes are recorded here using [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-No release/versioning policy has been established yet.
+Stable release tags use Semantic Versioning; see [release operations](docs/releases.md).
 
 ## Unreleased
 
 ### Fixed
+
+- Add the owned CI signing keychain to the user search list before signing,
+  verify the change and verify restoration afterward. Report native operation,
+  exit code and fixed error category without echoing credentials or raw native
+  output. Prepare version 0.1.1 for the first-release recovery; the failed
+  v0.1.0 tag is preserved and has no published release assets.
 
 - Keep an assignment's frequency selector synchronized with advanced interval
   edits, so the displayed timer matches the draft that will be saved.
