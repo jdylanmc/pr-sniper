@@ -3,9 +3,9 @@ use crate::{
     failure_from_connection_error, failure_from_oauth_error,
     github::{
         self,
-        macos_keychain::MacKeychainStore,
         oauth::TokenPair,
         token_store::{ActiveAccount, CredentialStore, ProviderAccountId, RotationSafeStore},
+        NativeCredentialStore,
     },
     GithubAuthFailure,
 };
@@ -40,13 +40,13 @@ pub(crate) trait Backend: Send + Sync + 'static {
 }
 
 pub(crate) struct NativeBackend {
-    store: Arc<RotationSafeStore<MacKeychainStore>>,
+    store: Arc<RotationSafeStore<NativeCredentialStore>>,
 }
 
 impl NativeBackend {
     pub fn new(service: String) -> Self {
         Self {
-            store: Arc::new(RotationSafeStore::new(MacKeychainStore::with_service(
+            store: Arc::new(RotationSafeStore::new(NativeCredentialStore::with_service(
                 service,
             ))),
         }
@@ -61,7 +61,7 @@ impl NativeBackend {
     async fn storage<T: Send + 'static>(
         &self,
         work: impl FnOnce(
-                &RotationSafeStore<MacKeychainStore>,
+                &RotationSafeStore<NativeCredentialStore>,
             ) -> Result<T, github::token_store::StoreError>
             + Send
             + 'static,

@@ -13,28 +13,51 @@ pub(crate) fn options(
     root: &Path,
     token: &str,
     inherited_keys: impl Iterator<Item = OsString>,
-) -> ClientOptions {
-    let environment: Vec<(OsString, OsString)> = vec![
+) -> Result<ClientOptions, String> {
+    let mut environment: Vec<(OsString, OsString)> = vec![
         ("HOME".into(), root.into()),
         ("XDG_CONFIG_HOME".into(), root.join("config").into()),
         ("XDG_CACHE_HOME".into(), root.join("cache").into()),
         ("TMPDIR".into(), root.into()),
-        ("PATH".into(), "/usr/bin:/bin".into()),
         ("LANG".into(), "en_US.UTF-8".into()),
         ("COPILOT_AUTO_UPDATE".into(), "false".into()),
         ("COPILOT_TELEMETRY".into(), "false".into()),
     ];
+    #[cfg(not(windows))]
+    environment.push(("PATH".into(), "/usr/bin:/bin".into()));
+    #[cfg(windows)]
+    {
+        let windows = windows_directory()?;
+        let path = std::env::join_paths([windows.join("System32"), windows.clone()])
+            .map_err(|_| "Windows runtime path is unavailable.")?;
+        environment.extend([
+            ("SystemRoot".into(), windows.clone().into()),
+            ("WINDIR".into(), windows.into()),
+            ("PATH".into(), path),
+            ("USERPROFILE".into(), root.into()),
+            ("APPDATA".into(), root.join("roaming").into()),
+            ("LOCALAPPDATA".into(), root.join("local").into()),
+            ("TEMP".into(), root.into()),
+            ("TMP".into(), root.into()),
+        ]);
+    }
     // The SDK applies env_remove after its own injected values; retain only
     // keys we replace explicitly, never their ambient values.
     let remove: Vec<_> = inherited_keys
         .filter(|key| {
-            !environment.iter().any(|(safe, _)| safe == key)
-                && key != "COPILOT_SDK_AUTH_TOKEN"
-                && key != "COPILOT_HOME"
-                && key != "COPILOT_DISABLE_KEYTAR"
+            !environment
+                .iter()
+                .any(|(safe, _)| environment_key_eq(safe, key))
+                && ![
+                    "COPILOT_SDK_AUTH_TOKEN",
+                    "COPILOT_HOME",
+                    "COPILOT_DISABLE_KEYTAR",
+                ]
+                .iter()
+                .any(|safe| environment_key_eq(std::ffi::OsStr::new(safe), key))
         })
         .collect();
-    ClientOptions::new()
+    Ok(ClientOptions::new()
         .with_program(program)
         .with_transport(Transport::Stdio)
         .with_cwd(root)
@@ -44,7 +67,63 @@ pub(crate) fn options(
         .with_use_logged_in_user(false)
         .with_log_level(LogLevel::None)
         .with_env(environment)
-        .with_env_remove(remove)
+        .with_env_remove(remove))
+}
+
+fn environment_key_eq(left: &std::ffi::OsStr, right: &std::ffi::OsStr) -> bool {
+    #[cfg(windows)]
+    {
+        left.eq_ignore_ascii_case(right)
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
+#[cfg(windows)]
+fn windows_directory() -> Result<PathBuf, String> {
+    use std::os::windows::ffi::OsStringExt;
+    let mut buffer = vec![0u16; 32768];
+    let length = unsafe {
+        windows_sys::Win32::System::SystemInformation::GetWindowsDirectoryW(
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+        )
+    } as usize;
+    if length == 0 || length >= buffer.len() {
+        return Err("Windows runtime system directory is unavailable.".into());
+    }
+    Ok(OsString::from_wide(&buffer[..length]).into())
+}
+
+pub(crate) fn private_directory(prefix: &str) -> Result<tempfile::TempDir, String> {
+    let directory = tempfile::Builder::new()
+        .prefix(prefix)
+        .tempdir()
+        .map_err(|_| "Cannot create private Copilot runtime state. Check local storage.")?;
+    if crate::storage::private_fs::directory(directory.path()).is_err() {
+        directory
+            .close()
+            .map_err(|_| "Cannot protect or clean up private Copilot runtime state.")?;
+        return Err("Cannot protect private Copilot runtime state.".into());
+    }
+    Ok(directory)
+}
+
+pub(crate) fn runtime_program() -> Result<PathBuf, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let os = objc2_foundation::NSProcessInfo::processInfo().operatingSystemVersion();
+        if !supports_runtime(os.majorVersion, os.minorVersion) {
+            return Err("The bundled Copilot runtime requires macOS 13.5 or later. Your sign-in and saved Agent selections are unchanged.".into());
+        }
+    }
+    // Windows eligibility is established by the actual pinned native runtime,
+    // not a fabricated macOS version or an ambient CLI fallback.
+    github_copilot_sdk::install_bundled_cli().ok_or_else(|| {
+        "The bundled Copilot runtime is unavailable. Reinstall PR Sniper and retry.".into()
+    })
 }
 
 pub(crate) fn models(
@@ -59,31 +138,24 @@ pub(crate) fn models(
     if Instant::now() >= deadline {
         return Err("Copilot operation timed out. Retry.".into());
     }
-    let os = objc2_foundation::NSProcessInfo::processInfo().operatingSystemVersion();
-    if !supports_runtime(os.majorVersion, os.minorVersion) {
-        return Err("The bundled Copilot runtime requires macOS 13.5 or later. Your sign-in and saved Agent selections are unchanged.".into());
-    }
-    let program = github_copilot_sdk::install_bundled_cli()
-        .ok_or("The bundled Copilot runtime is unavailable. Reinstall PR Sniper and retry.")?;
-    let directory = tempfile::Builder::new()
-        .prefix("pr-sniper-copilot-")
-        .tempdir()
-        .map_err(|_| "Cannot create private Copilot runtime state. Check local storage.")?;
+    let program = runtime_program()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|_| "Cannot start the Copilot runtime. Retry.")?;
+    let directory = private_directory("pr-sniper-copilot-")?;
     // SDK transport errors/stderr can contain provider data. Return fixed
     // stage-specific errors instead, with all SDK tracing disabled here.
     let dispatch = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
     let result = tracing::dispatcher::with_default(&dispatch, || {
+        let options = options(
+            program,
+            directory.path(),
+            pair.access_token(),
+            std::env::vars_os().map(|(k, _)| k),
+        )?;
         runtime.block_on(query_with_deadline(
-            options(
-                program,
-                directory.path(),
-                pair.access_token(),
-                std::env::vars_os().map(|(k, _)| k),
-            ),
+            options,
             &identity.login,
             cancelled,
             deadline,
@@ -95,6 +167,7 @@ pub(crate) fn models(
     result
 }
 
+#[cfg(target_os = "macos")]
 fn supports_runtime(major: isize, minor: isize) -> bool {
     // Verified LC_BUILD_VERSION of the pinned 1.0.85 native runtime.
     major > 13 || (major == 13 && minor >= 5)
@@ -170,10 +243,69 @@ async fn query_with_deadline(
 }
 
 #[cfg(test)]
+pub(crate) fn fixture_program(name: &str) -> (PathBuf, PathBuf) {
+    let node = crate::process_path::executable(
+        "node",
+        &std::env::var_os("PATH").expect("Node test prerequisite"),
+    )
+    .expect("native Node test prerequisite");
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let sources = if manifest
+        .file_name()
+        .is_some_and(|name| name == "foundations")
+    {
+        manifest.parent().unwrap()
+    } else {
+        manifest
+    };
+    (node, sources.join("tests").join("support").join(name))
+}
+
+#[cfg(test)]
+pub(crate) fn assert_process_stopped(pid: u32) {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::{
+            Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0},
+            System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE},
+        };
+        let process = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+        if process.is_null() {
+            assert_eq!(
+                GetLastError(),
+                ERROR_INVALID_PARAMETER,
+                "cannot inspect owned child"
+            );
+        } else {
+            // TerminateJobObject requests termination asynchronously. Observe
+            // the native exit signal with a bound, not an immediate PID poll.
+            let status = WaitForSingleObject(process, 1000);
+            assert_ne!(CloseHandle(process), 0);
+            assert_eq!(
+                status, WAIT_OBJECT_0,
+                "owned SDK process must exit within one second of shutdown"
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    assert!(
+        !std::process::Command::new("/bin/kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success(),
+        "SDK child must be reaped before returning"
+    );
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn runtime_minimum_is_explicit_without_changing_app_minimum() {
         assert!(!supports_runtime(12, 7));
         assert!(!supports_runtime(13, 4));
@@ -201,7 +333,8 @@ mod tests {
             Path::new("/private/account-a"),
             "fixture-token",
             keys.into_iter().map(OsString::from),
-        );
+        )
+        .unwrap();
         assert_eq!(config.mode, ClientMode::Empty);
         assert_eq!(config.use_logged_in_user, Some(false));
         assert_eq!(config.github_token.as_deref(), Some("fixture-token"));
@@ -218,6 +351,64 @@ mod tests {
         assert!(config.builtin_plugin_directories.is_empty());
         assert!(!config.enable_remote_sessions);
         assert!(config.extra_args.is_empty());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_environment_replaces_mixed_case_system_and_private_paths() {
+        let root = Path::new(r"C:\private fixture\account");
+        let replaced = [
+            "SYSTEMROOT",
+            "windir",
+            "Home",
+            "userprofile",
+            "AppData",
+            "LocalAppData",
+            "temp",
+            "Tmp",
+            "Path",
+            "copilot_sdk_auth_token",
+            "copilot_home",
+            "copilot_disable_keytar",
+        ];
+        let denied = [
+            "gh_token",
+            "GitHub_Token",
+            "Node_Options",
+            "NODE_PATH",
+            "copilot_provider_base_url",
+            "openai_api_key",
+            "HTTP_PROXY",
+            "SSL_CERT_FILE",
+            "GIT_CONFIG_GLOBAL",
+            "COMSPEC",
+        ];
+        let config = options(
+            PathBuf::from(r"C:\explicit\node.exe"),
+            root,
+            "fixture",
+            replaced.into_iter().chain(denied).map(OsString::from),
+        )
+        .unwrap();
+        assert_eq!(config.env_remove, denied.map(OsString::from));
+        let env = |name: &str| {
+            config
+                .env
+                .iter()
+                .find(|(key, _)| key == name)
+                .unwrap()
+                .1
+                .clone()
+        };
+        assert_eq!(env("SystemRoot"), windows_directory().unwrap());
+        assert_eq!(env("WINDIR"), env("SystemRoot"));
+        for key in ["HOME", "USERPROFILE", "TEMP", "TMP"] {
+            assert_eq!(env(key), root);
+        }
+        assert_eq!(env("APPDATA"), root.join("roaming"));
+        assert_eq!(env("LOCALAPPDATA"), root.join("local"));
+        assert_eq!(config.github_token.as_deref(), Some("fixture"));
+        assert_eq!(config.use_logged_in_user, Some(false));
     }
 
     #[test]
@@ -241,14 +432,10 @@ mod tests {
     }
 
     fn fixture_options(root: &Path, token: &str) -> ClientOptions {
-        let node = std::env::split_paths(&std::env::var_os("PATH").unwrap())
-            .map(|dir| dir.join("node"))
-            .find(|path| path.is_file())
-            .expect("Node is a project test prerequisite");
+        let (node, script) = fixture_program("copilot-runtime.mjs");
         let mut config = options(node, root, token, std::env::vars_os().map(|(key, _)| key))
-            .with_prefix_args([Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/support/copilot-runtime.mjs")
-                .into_os_string()]);
+            .unwrap()
+            .with_prefix_args([script.into_os_string()]);
         config
             .env
             .push(("TEST_RECEIPT".into(), root.join("receipt.jsonl").into()));
@@ -283,14 +470,10 @@ mod tests {
             ]
             .contains(&event["method"].as_str().unwrap()));
         }
-        let process = std::process::Command::new("/bin/ps")
-            .args(["-p", &events[0]["pid"].to_string(), "-o", "pid="])
-            .output()
-            .unwrap();
-        assert!(
-            !process.status.success(),
-            "SDK child must be reaped before returning"
-        );
+        assert_process_stopped(events[0]["pid"].as_u64().unwrap() as u32);
+        if let Some(pid) = events[0]["childPid"].as_u64() {
+            assert_process_stopped(pid as u32);
+        }
     }
 
     #[tokio::test]
@@ -332,7 +515,7 @@ mod tests {
             ),
             ("blocked", "blocked", "model listing failed"),
         ] {
-            let root = tempfile::tempdir().unwrap();
+            let root = private_directory("pr-sniper-catalog-test-").unwrap();
             let error = query(
                 fixture_options(root.path(), token),
                 login,
@@ -348,7 +531,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancelling_a_waiting_catalog_shuts_down_its_client() {
-        let root = tempfile::tempdir().unwrap();
+        let root = private_directory("pr-sniper-cancel-test-").unwrap();
         let cancel = AtomicBool::new(false);
         let trigger = async {
             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -360,6 +543,9 @@ mod tests {
         );
         assert!(result.unwrap_err().contains("cancelled"));
         assert_stopped_and_catalog_only(root.path());
+        let path = root.path().to_owned();
+        root.close().expect("cleanup cancelled runtime");
+        assert!(!path.exists());
     }
 
     #[tokio::test]
@@ -378,6 +564,34 @@ mod tests {
             assert!(result.is_err());
             tokio::time::sleep(Duration::from_millis(50)).await;
             assert_stopped_and_catalog_only(root.path());
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(windows)]
+    async fn windows_cancellation_terminates_owned_descendants_even_if_shutdown_stalls() {
+        for stall in [false, true] {
+            let root = private_directory("pr-sniper-process-tree-test-").unwrap();
+            let mut options = fixture_options(root.path(), "waiting");
+            options.env.push(("TEST_SPAWN_CHILD".into(), "1".into()));
+            if stall {
+                options.env.push(("TEST_HANG_SHUTDOWN".into(), "1".into()));
+            }
+            let cancel = AtomicBool::new(false);
+            let trigger = async {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                cancel.store(true, Ordering::SeqCst);
+            };
+            let started = Instant::now();
+            let (result, ()) = tokio::join!(query(options, "waiting", &cancel), trigger);
+            assert!(result.unwrap_err().contains("cancelled"));
+            assert!(started.elapsed() < Duration::from_secs(8));
+            assert!(receipt(root.path())[0]["childPid"].as_u64().is_some());
+            assert_stopped_and_catalog_only(root.path());
+            assert!(started.elapsed() < Duration::from_secs(8));
+            let path = root.path().to_path_buf();
+            root.close().expect("cleanup owned process-tree runtime");
+            assert!(!path.exists());
         }
     }
 
@@ -403,15 +617,16 @@ mod tests {
     #[tokio::test]
     #[ignore = "explicit offline bundled-runtime smoke; no credentials or inference"]
     async fn bundled_runtime_handshakes_offline_without_credentials() {
-        let root = tempfile::tempdir().unwrap();
+        let root = private_directory("pr-sniper-offline-").unwrap();
         let reject_provider = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         reject_provider.set_nonblocking(true).unwrap();
         let mut config = options(
-            github_copilot_sdk::install_bundled_cli().expect("bundled native runtime"),
+            runtime_program().expect("bundled native runtime"),
             root.path(),
             "",
             std::env::vars_os().map(|(key, _)| key),
-        );
+        )
+        .unwrap();
         config.github_token = None;
         config.env_remove.push("COPILOT_SDK_AUTH_TOKEN".into());
         for (key, value) in [
@@ -423,13 +638,16 @@ mod tests {
             ("COPILOT_PROVIDER_TYPE", "openai".to_string()),
             ("COPILOT_MODEL", "synthetic-no-inference".to_string()),
         ] {
-            config.env_remove.retain(|name| name != key);
+            config
+                .env_remove
+                .retain(|name| !environment_key_eq(name, std::ffi::OsStr::new(key)));
             config.env.push((key.into(), value.into()));
         }
         let client = tokio::time::timeout(Duration::from_secs(30), Client::start(config))
             .await
             .unwrap()
             .unwrap();
+        let pid = client.pid().expect("owned bundled runtime process");
         let outcome = tokio::time::timeout(Duration::from_secs(10), async {
             let status = client.get_status().await.unwrap();
             let auth = client.get_auth_status().await.unwrap();
@@ -448,6 +666,10 @@ mod tests {
             matches!(reject_provider.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
         );
         assert!(matches!(cleanup, Ok(Ok(()))));
+        assert_process_stopped(pid);
+        let path = root.path().to_path_buf();
+        root.close().expect("remove owned offline runtime state");
+        assert!(!path.exists());
         eprintln!("offline bundled runtime: version={}, unauthenticated, model rejection, no provider requests, clean shutdown", status.version);
     }
 }

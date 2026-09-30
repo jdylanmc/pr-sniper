@@ -15,9 +15,31 @@ serde_json = "1"
 uuid = { version = "=1.26.1", features = ["v4"] }
 chrono-tz = "=0.10.4"
 croner = "=4.0.0"
+zeroize = "1"
+oauth2 = { version = "=5.0.0", default-features = false, features = ["reqwest-blocking", "rustls-tls", "timing-resistant-secret-traits"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+url = "=2.5.8"
+webbrowser = { version = "=1.2.4", features = ["hardened"] }
+tokio = { version = "1", features = ["rt", "time", "process", "io-util", "macros", "sync"] }
+
+[dev-dependencies]
+github-copilot-sdk = "=1.0.14"
+tempfile = "3"
+tracing = "0.1"
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSProcessInfo", "NSBundle", "NSString", "NSError"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Credentials", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_SystemInformation"] }
+
+[[test]]
+name = "github_token_store"
+path = "../tests/github_token_store.rs"
+
+[[test]]
+name = "macos_keychain"
+path = "../tests/macos_keychain.rs"
 
 [[test]]
 name = "settings_persistence"

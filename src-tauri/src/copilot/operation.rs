@@ -141,3 +141,72 @@ impl Operation {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn operation() -> Operation {
+        Operation::new(
+            Arc::new(AccountWork::default()),
+            Arc::new(AtomicBool::new(false)),
+            Instant::now() + OPERATION_LIMIT,
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn invalidated_generation_cannot_publish_complete_or_finish_a_transaction() {
+        let operation = operation();
+        let _gate = operation.account.gate.lock().await;
+        operation.account.invalidate(|| Ok(())).unwrap();
+        assert!(operation.check().is_err());
+        assert!(operation.publish::<()>(|| panic!("stale publish")).is_err());
+        assert!(operation
+            .complete::<()>(|| panic!("stale completion"))
+            .is_err());
+        assert!(operation
+            .finish_transaction::<()>(|| panic!("stale transaction"))
+            .is_err());
+        assert!(operation
+            .wait(async { panic!("stale work") })
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn cancellation_and_quit_bound_pending_work_without_hiding_transaction_failures() {
+        for quitting in [false, true] {
+            let operation = operation();
+            let trigger = async {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                if quitting {
+                    operation.quitting.store(true, Ordering::SeqCst);
+                } else {
+                    operation.cancelled.store(true, Ordering::SeqCst);
+                }
+            };
+            let (result, ()) = tokio::join!(operation.wait(std::future::pending::<()>()), trigger);
+            assert!(result.unwrap_err().contains("cancelled"));
+            assert_eq!(
+                operation.finish_transaction(|| Err::<(), _>("storage failure".into())),
+                Err("storage failure".into())
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn deadline_limits_pending_work_and_does_not_change_another_account() {
+        let mut expired = operation();
+        expired.deadline = Instant::now() + Duration::from_millis(20);
+        let current = operation();
+        assert!(expired
+            .wait(std::future::pending::<()>())
+            .await
+            .unwrap_err()
+            .contains("timed out"));
+        assert_eq!(current.publish(|| Ok(42)).unwrap(), 42);
+        assert_eq!(current.complete(|| Ok(43)).unwrap(), 43);
+        assert_eq!(current.wait(async { 44 }).await.unwrap(), 44);
+    }
+}

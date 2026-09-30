@@ -186,6 +186,7 @@ impl AccountRegistry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreError {
     InvalidData,
+    TooLarge,
     Unavailable,
 }
 

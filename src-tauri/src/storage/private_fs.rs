@@ -40,7 +40,7 @@ pub(super) fn existing_directory(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub(super) fn directory(path: &Path) -> io::Result<()> {
+pub(crate) fn directory(path: &Path) -> io::Result<()> {
     match existing_directory(path) {
         Ok(()) => {}
         Err(error) if error.kind() == ErrorKind::NotFound => {

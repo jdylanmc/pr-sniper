@@ -102,19 +102,15 @@ fn operation(seconds: u64) -> Operation {
     .unwrap()
 }
 fn options(root: &Path, scenario: &str) -> ClientOptions {
-    let node = std::env::split_paths(&std::env::var_os("PATH").unwrap())
-        .map(|d| d.join("node"))
-        .find(|p| p.is_file())
-        .unwrap();
+    let (node, script) = crate::copilot::runtime::fixture_program("review-runtime.mjs");
     let mut options = crate::copilot::runtime::options(
         node,
         root,
         "fixture",
         std::env::vars_os().map(|(k, _)| k),
     )
-    .with_prefix_args([Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/support/review-runtime.mjs")
-        .into_os_string()]);
+    .unwrap()
+    .with_prefix_args([script.into_os_string()]);
     for (k, v) in [
         ("REVIEW_SCENARIO", scenario.into()),
         ("TEST_RECEIPT", root.join("receipt.jsonl").into_os_string()),
@@ -135,13 +131,7 @@ fn stopped(root: &Path) {
     let receipt = receipt(root);
     assert_eq!(receipt[0]["ambient"], json!([]));
     let pid = receipt[0]["pid"].as_u64().unwrap();
-    assert!(!std::process::Command::new("/bin/kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .unwrap()
-        .success());
+    crate::copilot::runtime::assert_process_stopped(pid as u32);
 }
 
 #[test]
