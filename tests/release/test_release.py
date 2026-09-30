@@ -30,6 +30,7 @@ class Api:
         self.wrong_digest = False
         self.corrupt_download = False
         self.unknown_upload = False
+        self.confirm_dispatch = True
 
     def request(self, path, method="GET", value=None, missing=False, data=None, content_type=None):
         self.requests.append((method, path, value))
@@ -60,11 +61,14 @@ class Api:
                 raise release.ReleaseError("Unknown upload outcome")
             return asset
         if "/contents/Casks/pr-sniper.rb" in path:
-            if method == "PUT":
-                if self.cask:
-                    assert value["sha"] == self.cask["sha"]
-                self.cask = {"type": "file", "encoding": "base64", "content": value["content"], "sha": "new"}
+            assert method == "GET", "Parent must not directly write the cask."
             return self.cask
+        if path.endswith("/dispatches") and method == "POST":
+            if self.confirm_dispatch:
+                payload = value["client_payload"]
+                text = release.cask(release.version(payload["tag"]), payload["sha256"])
+                self.cask = {"type": "file", "encoding": "base64", "content": base64.b64encode(text.encode()).decode(), "sha": "new"}
+            return None
         raise AssertionError((method, path))
 
     def pages(self, path, field=None):
@@ -157,9 +161,8 @@ class ReleaseTests(unittest.TestCase):
         release.publish(self.api, self.directory)
         self.assertFalse(self.api.release["draft"])
         tap = Api()
-        with patch.object(release, "validate_cask") as validate:
-            release.tap_update(self.api, tap, self.directory)
-        validate.assert_called_once()
+        release.tap_update(self.api, tap, self.directory)
+        self.assertEqual(len([r for r in tap.requests if r[0] == "POST"]), 1)
         text = base64.b64decode(tap.cask["content"]).decode()
         self.assertEqual(text, release.cask("0.1.0", manifest["sha256"]))
         self.assertIn('depends_on arch: :arm64', text)
@@ -175,10 +178,10 @@ class ReleaseTests(unittest.TestCase):
         release.publish(self.api, self.directory)
         self.assertEqual(len([r for r in self.api.requests if r[0] != "GET"]), writes)
         tap = Api()
-        with patch.object(release, "validate_cask"):
-            release.tap_update(self.api, tap, self.directory)
-            release.tap_update(self.api, tap, self.directory)
-        self.assertEqual(len([r for r in tap.requests if r[0] == "PUT"]), 1)
+        release.tap_update(self.api, tap, self.directory)
+        release.tap_update(self.api, tap, self.directory)
+        self.assertEqual(len([r for r in tap.requests if r[0] == "POST"]), 1)
+        self.assertFalse(any(r[0] == "PUT" for r in tap.requests))
 
     def test_interrupted_upload_is_not_replaced_or_silently_published(self):
         self.assets()
@@ -218,7 +221,7 @@ class ReleaseTests(unittest.TestCase):
             tap = Api()
             tap.cask = {"type": "file", "encoding": "base64", "sha": "old",
                         "content": base64.b64encode(release.cask(existing, "0" * 64).encode()).decode()}
-            with patch.object(release, "validate_cask"), self.assertRaises(release.ReleaseError):
+            with self.assertRaises(release.ReleaseError):
                 release.tap_update(self.api, tap, self.directory)
             self.assertFalse(any(r[0] == "PUT" for r in tap.requests))
 
@@ -234,22 +237,31 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaises(release.ReleaseError):
                 release.cask(ver, digest)
 
-    def test_cask_validation_uses_a_registered_name_on_a_disposable_runner(self):
-        tap = self.directory / "homebrew-pr-sniper"
-        tap.mkdir()
-        commands = []
+    def test_accepted_dispatch_without_matching_cask_is_not_success_or_redispatched(self):
+        self.assets()
+        release.publish(self.api, self.directory)
+        tap = Api()
+        tap.confirm_dispatch = False
+        with patch.object(release.time, "monotonic", side_effect=[0, 0, 601]), \
+                patch.object(release.time, "sleep"), self.assertRaisesRegex(release.ReleaseError, "unconfirmed"):
+            release.tap_update(self.api, tap, self.directory)
+        self.assertEqual(len([r for r in tap.requests if r[0] == "POST"]), 1)
+        self.assertFalse(any(r[0] == "PUT" for r in tap.requests))
 
-        def command(args, timeout=120):
-            commands.append(args)
-            return str(tap) if args[:2] == ["brew", "--repository"] else ""
-
-        with patch.dict(os.environ, {"RUNNER_ENVIRONMENT": "github-hosted"}), \
-                patch.object(release, "command", command):
-            release.validate_cask(release.cask("0.1.0", "0" * 64))
-        self.assertEqual(commands[-1], ["brew", "audit", "--cask", "--online", "jdylanmc/pr-sniper/pr-sniper"])
-        self.assertTrue((tap / "Casks/pr-sniper.rb").is_file())
-        with patch.dict(os.environ, {"RUNNER_ENVIRONMENT": "self-hosted"}), self.assertRaises(release.ReleaseError):
-            release.validate_cask("not executable")
+    def test_repository_dispatch_accepts_only_its_expected_empty_204_response(self):
+        with patch.object(release.urllib.request, "build_opener") as opener, \
+                patch.object(release.json, "load") as load:
+            response = opener.return_value.open.return_value.__enter__.return_value
+            response.status = 204
+            result = release.Github("synthetic-token").request(
+                f"/repos/{release.TAP}/dispatches", "POST",
+                {"event_type": "pr-sniper-release", "client_payload": {"tag": "v0.1.0"}},
+            )
+            self.assertIsNone(result)
+            load.assert_not_called()
+            request = opener.return_value.open.call_args.args[0]
+            self.assertEqual(request.full_url, f"https://api.github.com/repos/{release.TAP}/dispatches")
+            self.assertEqual(request.get_method(), "POST")
 
     def test_native_configuration_does_not_accept_missing_wrong_or_ambiguous_identity(self):
         values = {"APPLE_CERTIFICATE_P12": base64.b64encode(b"fixture").decode(),
