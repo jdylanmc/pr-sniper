@@ -7,9 +7,12 @@ if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64' -or $metadata.target -cne 'x86_64-pc
 }
 $installer = Join-Path $tools 'installer.exe'
 if ($metadata.mode -eq 'LocalTest') {
-    if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or
-        $env:PR_SNIPER_PACKAGING_ACCEPTANCE -ne '1') {
-        throw 'Unsigned package installation is restricted to the disposable hosted-CI acceptance job. Never publish it.'
+    $hostedAcceptance = $env:GITHUB_ACTIONS -eq 'true' -and $env:RUNNER_ENVIRONMENT -eq 'github-hosted' -and
+        $env:PR_SNIPER_PACKAGING_ACCEPTANCE -eq '1'
+    $localConsent = $env:PR_SNIPER_UNSIGNED_LOCAL_TEST_SHA256 -match '^[a-fA-F0-9]{64}$' -and
+        $env:PR_SNIPER_UNSIGNED_LOCAL_TEST_SHA256 -ieq $metadata.sha256
+    if (-not $hostedAcceptance -and -not $localConsent) {
+        throw 'Unsigned installation requires hosted acceptance or explicit consent for this exact installer SHA256. Never publish it.'
     }
 } elseif ($metadata.mode -eq 'Public') {
     $url = "https://github.com/jdylanmc/pr-sniper/releases/download/v$($metadata.version)/pr-sniper-$($metadata.version)-x64-setup.exe"

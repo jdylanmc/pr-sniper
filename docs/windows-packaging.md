@@ -119,13 +119,40 @@ choco pack src-tauri\target\chocolatey-localtest\pr-sniper-localtest.nuspec `
 ```
 
 The test ID is **`pr-sniper-localtest`**, version `VERSION-localtest`. It embeds
-the exact checksum-pinned unsigned installer, says **NEVER PUBLISH**, and refuses
-installation outside the hosted acceptance job's explicit environment. This is
-an accident guard, not a security boundary against someone modifying scripts
-or spoofing environment variables. There is no push/publishing command or
+the exact checksum-pinned unsigned installer, says **NEVER PUBLISH**, and requires
+the hosted acceptance environment or an explicit operator opt-in for the exact
+installer hash, described below. This is an accident guard, not a security
+boundary against someone modifying scripts or environment variables.
+There is no push/publishing command or
 workflow for these packages; **never upload the test nupkg to any public feed**.
 Generated installer executables have `.ignore` markers so Chocolatey does not
 make command shims.
+
+### Explicitly authorized local lifecycle testing
+
+Local install/upgrade/uninstall requires separate human permission for this
+application and a single owner coordinating its stop, preservation and restore.
+After verifying the installer/package and preparing exact ownership receipts and
+rollback, that owner may set the **process-only**
+`PR_SNIPER_UNSIGNED_LOCAL_TEST_SHA256` to the independently verified SHA-256 of
+the specific unsigned installer. A missing/different hash still refuses local
+installation. Set the new exact hash separately for a test upgrade, then remove
+the variable afterward. This affects only `LocalTest` packages; public trust,
+checksum and release gates are unchanged. Do not spoof hosted-CI environment
+flags or run the fresh-runner acceptance script on a used desktop.
+
+A manually copied app is not an NSIS/Chocolatey installation and cannot be
+"uninstalled" through those tools. Before migration, the lifecycle owner must
+record its exact path/PID/hash and only its owned files/entries, arrange graceful
+Quit, and preserve those files in a verified rollback location. Preserve the
+application data directory and all credentials; do not export or enumerate
+credentials, recursively sweep registry trees, or delete another installation's
+entries. The installer intentionally refuses to overwrite an unowned executable:
+move only the receipted manual application files after coordination, never the
+entire application-data folder. Test through the private local feed, then restore
+a working normal application and verify its identity/runtime. Do not leave a
+disposable test-version application as the normal installation. Report each
+actual operation rather than treating this authorization as acceptance evidence.
 
 The public ID remains **`pr-sniper`**. An official-feed lookup on 2026-09-30
 returned no versions; that is not a reservation, ownership grant or promise of

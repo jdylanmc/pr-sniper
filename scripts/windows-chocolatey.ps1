@@ -74,7 +74,7 @@ $license = if ($Mode -eq 'Public') {
 } else { '' }
 $description = 'PR Sniper monitors configured repositories and prepares human-owned pull request review work. Windows x64 and Microsoft Edge WebView2 Evergreen Runtime are required. Installs for the invoking user; does not start the app or enable login, notification or review automation. Settings and credentials are preserved.'
 if ($Mode -eq 'LocalTest') {
-    $description = 'UNSIGNED HOSTED-CI TEST ONLY. NEVER PUBLISH. No project license or redistribution grant is asserted. ' + $description
+    $description = 'UNSIGNED TEST ONLY: hosted CI or explicitly authorized exact-hash local testing. NEVER PUBLISH. No project license or redistribution grant is asserted. ' + $description
 }
 @"
 <?xml version="1.0" encoding="utf-8"?>
