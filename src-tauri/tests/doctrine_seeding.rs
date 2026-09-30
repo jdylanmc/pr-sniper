@@ -176,7 +176,7 @@ fn initialized_catalog_does_not_bypass_stale_draft_protection() {
         .save_preferences(external.clone(), &expected)
         .unwrap();
     let mut stale = expected.clone();
-    stale.root_folder = Some("/fixture/root".into());
+    stale.root_folder = Some(fixture.path().to_str().unwrap().into());
     assert!(fixture
         .store()
         .save_preferences(stale, &expected)

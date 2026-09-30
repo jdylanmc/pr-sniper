@@ -2,6 +2,11 @@ use super::*;
 use crate::monitoring::QueueJob;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(windows)]
+#[allow(dead_code)]
+#[path = "../../tests/support/windows_permissions.rs"]
+mod windows_permissions;
+
 fn frame(category: Category, cause: &str) -> Frame {
     Frame {
         source: "queue:exact-revision".into(),
@@ -213,12 +218,17 @@ fn private_persistence_failure_prevents_native_request_and_corruption_is_not_emp
     let (root, store) = store();
     let frames = [frame(Category::Ready, "review")];
     let id = admit(&store, &frames);
-    use std::os::unix::fs::PermissionsExt;
     let path = root.path().join("state/notifications.json");
-    assert_eq!(
-        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    #[cfg(windows)]
+    windows_permissions::assert_private(&path, false);
     std::fs::write(&path, "invalid").unwrap();
     assert!(store.load_notifications().is_err());
     assert!(prepare(&store, &frames, &id, 100).is_err());
