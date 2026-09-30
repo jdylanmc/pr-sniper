@@ -56,8 +56,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 - Add Windows Credential Manager storage for independent repository and Copilot
   accounts, preserving shared token-pair and registry behavior with explicit
-  native capacity errors. Port the constrained Copilot runtime environment and
-  verify native process-tree cleanup and the bundled offline handshake. Full
+  native capacity errors without partially replacing a reconnect. Port the
+  constrained Copilot runtime environment, bounded cleanup after process-tree
+  termination and the bundled offline handshake. Full
   Windows application acceptance remains separate. See
   [#58](https://github.com/jdylanmc/pr-sniper/issues/58).
 
