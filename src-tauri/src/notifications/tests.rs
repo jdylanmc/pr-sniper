@@ -42,8 +42,8 @@ impl Adapter for Wire {
     fn permission(&self) -> Result<Permission, String> {
         Ok(Permission {
             authorization: "authorized".into(),
-            alerts_enabled: true,
-            center_enabled: true,
+            alerts_enabled: Some(true),
+            center_enabled: Some(true),
         })
     }
     fn request_permission(&self) -> Result<Permission, String> {
@@ -70,6 +70,33 @@ impl Adapter for Wire {
         } else {
             Ok(())
         }
+    }
+}
+
+#[test]
+fn windows_aggregate_permission_preserves_unknown_channels() {
+    let permission = Permission {
+        authorization: "authorized_aggregate".into(),
+        alerts_enabled: None,
+        center_enabled: None,
+    };
+    assert!(permission.allowed());
+    let json = serde_json::to_value(&permission).unwrap();
+    assert!(json["alerts_enabled"].is_null());
+    assert!(json["center_enabled"].is_null());
+    for authorization in [
+        "denied",
+        "disabled_for_user",
+        "disabled_by_policy",
+        "disabled_by_manifest",
+        "unknown",
+        "not_registered",
+    ] {
+        assert!(!Permission {
+            authorization: authorization.into(),
+            ..permission.clone()
+        }
+        .allowed());
     }
 }
 
@@ -238,15 +265,15 @@ fn native_failures_and_permission_denial_remain_visible_without_acknowledgment()
     for authorization in ["denied", "not_determined", "unknown"] {
         assert!(!Permission {
             authorization: authorization.into(),
-            alerts_enabled: true,
-            center_enabled: true
+            alerts_enabled: Some(true),
+            center_enabled: Some(true)
         }
         .allowed());
     }
     assert!(!Permission {
         authorization: "authorized".into(),
-        alerts_enabled: false,
-        center_enabled: false
+        alerts_enabled: Some(false),
+        center_enabled: Some(false)
     }
     .allowed());
 }

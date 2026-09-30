@@ -18,11 +18,12 @@ interface Notice {
   navigation_error: string | null;
 }
 interface Snapshot {
+  platform?: string;
   enabled: boolean;
   permission: {
     authorization: string;
-    alerts_enabled: boolean;
-    center_enabled: boolean;
+    alerts_enabled: boolean | null;
+    center_enabled: boolean | null;
   } | null;
   error: string | null;
   notices: Notice[];
@@ -30,24 +31,31 @@ interface Snapshot {
 }
 
 const phase: Record<Notice["phase"], string> = {
-  queued: "Queued; not yet submitted to macOS.",
+  queued: "Queued; not yet submitted to the operating system.",
   submitting: "Native submission started; delivery is not confirmed.",
   accepted_unconfirmed:
-    "Accepted by macOS; banner visibility is unconfirmed. Focus or notification settings may suppress it.",
+    "Accepted by the operating system; banner visibility is unconfirmed. Focus or notification settings may suppress it.",
   outcome_unknown:
     "Delivery outcome unknown. This transition will not be resent automatically.",
   permission_denied:
-    "Not sent: macOS permission or alert settings prevent delivery.",
+    "Not sent: operating system permission or notification settings prevent delivery.",
   failed: "Notification failed. The review remains available in the queue.",
   not_sent: "Not sent: the transition changed or notifications were disabled.",
 };
 
 function permissionText(state: Snapshot) {
   const permission = state.permission;
+  const os = state.platform === "windows" ? "Windows" : "macOS";
+  const channel = (value: boolean | null) =>
+    value === null
+      ? "unknown (not exposed by the OS API)"
+      : value
+        ? "enabled"
+        : "disabled";
   return `${state.enabled ? "On" : "Off"} in PR Sniper. ${
     permission
-      ? `macOS permission: ${permission.authorization.replaceAll("_", " ")}; banners ${permission.alerts_enabled ? "enabled" : "disabled"}; Notification Center ${permission.center_enabled ? "enabled" : "disabled"}.`
-      : "macOS permission unavailable; no delivery is assumed."
+      ? `${os} permission: ${permission.authorization.replaceAll("_", " ")}; banners ${channel(permission.alerts_enabled)}; Notification Center ${channel(permission.center_enabled)}.`
+      : `${os} permission unavailable; no delivery is assumed.`
   } Focus may suppress banners. No notification proves that a person saw or acknowledged it.`;
 }
 
@@ -58,11 +66,11 @@ export function mountNotificationSettings(
   root.innerHTML = `<fieldset aria-label="Notifications"><legend>Notifications</legend>
     <label class="setting-row"><span>Notify me when my attention is needed<small>Confirmation, human input, ready-for-review and failures. Off until you opt in. Changes immediately, separately from Save changes.</small></span><input id="notification-enabled" type="checkbox" role="switch" disabled /></label>
     <p class="settings-hint">Banners contain no PR titles, repository names or code. Opening an alert only opens its saved destination; it never starts, publishes, approves or merges.</p>
-    <p id="notification-permission" role="status">Reading macOS notification status...</p>
+    <p id="notification-permission" role="status">Reading operating system notification status...</p>
     <p id="notification-error" role="alert" hidden></p>
     <label>Test destination<select id="notification-target"><option value="">Settings</option></select></label>
     <button id="notification-test" type="button" disabled>Send test notification</button>
-    <p class="settings-hint">For blocked alerts, open System Settings &gt; Notifications &gt; PR Sniper. Review Queue retains notification history, even when a banner is missed.</p></fieldset>`;
+    <p id="notification-guidance" class="settings-hint">Review Queue retains notification history, even when a banner is missed.</p></fieldset>`;
   const enabled = root.querySelector<HTMLInputElement>(
     "#notification-enabled",
   )!;
@@ -102,6 +110,10 @@ export function mountNotificationSettings(
       state = next;
       enabled.checked = next.enabled;
       status.textContent = permissionText(next);
+      root.querySelector<HTMLElement>("#notification-guidance")!.textContent =
+        next.platform === "windows"
+          ? "Opting in explicitly creates this profile's Start Menu notification shortcut and current-user COM activation registration for this executable. Windows has no permission prompt here. For blocked alerts, open Windows Settings > System > Notifications > PR Sniper. Separate banner and notification center settings remain unknown to this app. Turning off stops new sends; saved notifications can still navigate."
+          : "For blocked alerts, open System Settings > Notifications > PR Sniper. Review Queue retains notification history, even when a banner is missed.";
       error.textContent = [actionError, next.error].filter(Boolean).join("\n");
       error.hidden = !error.textContent;
       const targets = JSON.stringify(next.targets);
@@ -142,7 +154,7 @@ export function mountNotificationSettings(
     updateControls();
     status.textContent =
       command === "set_notifications_enabled" && args.enabled
-        ? "Waiting for macOS permission. Notification opt-in is not enabled until authorization succeeds."
+        ? "Preparing notification identity and checking OS permission. Notification opt-in is not enabled until authorization succeeds."
         : "Updating notification state...";
     try {
       await invoke(command, args);

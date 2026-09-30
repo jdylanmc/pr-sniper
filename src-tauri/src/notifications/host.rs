@@ -6,21 +6,56 @@ use std::sync::{
 };
 use tauri::Manager;
 
+#[cfg(target_os = "macos")]
+use super::macos::Native;
+#[cfg(windows)]
+use super::windows::Native;
+
+#[cfg(target_os = "macos")]
+const PERMISSION_GUIDANCE: &str = "Check System Settings > Notifications > PR Sniper.";
+#[cfg(windows)]
+const PERMISSION_GUIDANCE: &str = "Check Windows Settings > System > Notifications > PR Sniper. Banner and notification center switches are not exposed separately by the Windows API.";
+
 pub(crate) struct Coordinator {
-    native: Result<macos::Native, String>,
+    native: Result<Native, String>,
     active: AtomicBool,
     configuration: AtomicU64,
     configuration_gate: Mutex<()>,
 }
 
 impl Coordinator {
-    pub(crate) fn new(app: &tauri::AppHandle) -> Self {
+    pub(crate) fn new(app: &tauri::AppHandle, _store: &Store, _root: &std::path::Path) -> Self {
         Self {
-            native: macos::Native::new(app),
+            #[cfg(target_os = "macos")]
+            native: Native::new(app),
+            #[cfg(windows)]
+            native: Native::new(app, _store, _root),
             active: AtomicBool::new(false),
             configuration: AtomicU64::new(0),
             configuration_gate: Mutex::new(()),
         }
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn ready(&self) -> Result<(), String> {
+        self.native.as_ref().map_err(Clone::clone)?.ready()
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn shutdown(&self) {
+        if let Ok(native) = &self.native {
+            native.shutdown();
+        }
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn matches_registration(
+        &self,
+        registration: &super::windows_native::Registration,
+    ) -> bool {
+        self.native
+            .as_ref()
+            .is_ok_and(|native| &native.registration == registration)
     }
 
     pub(crate) fn pump(app: &tauri::AppHandle) {
@@ -97,7 +132,7 @@ fn run(app: &tauri::AppHandle) -> Result<(), String> {
         let (phase, error) = match permission {
             Err(error) => (Phase::Failed, Some(error)),
             Ok(permission) if !permission.allowed() => (Phase::PermissionDenied,
-                Some("macOS has not authorized visible notifications. Check System Settings > Notifications > PR Sniper. This event remains in the queue and history.".into())),
+                Some(format!("The operating system has not authorized notifications. {PERMISSION_GUIDANCE} This event remains in the queue and history."))),
             Ok(_) => {
                 let enabled = host.store.lock().map_err(|_| "Notification storage unavailable.")?.load_notifications()?.enabled;
                 if !enabled || host.quitting.load(Ordering::SeqCst) {
@@ -145,6 +180,7 @@ pub struct Target {
 
 #[derive(Serialize)]
 pub struct Snapshot {
+    pub platform: &'static str,
     pub enabled: bool,
     pub permission: Option<Permission>,
     pub error: Option<String>,
@@ -161,6 +197,7 @@ pub fn view(store: &Store, permission: Result<Permission, String>) -> Result<Sna
         .cloned()
         .collect();
     Ok(Snapshot {
+        platform: std::env::consts::OS,
         enabled: ledger.enabled,
         error: if errors.is_empty() {
             None
@@ -233,7 +270,7 @@ pub(crate) async fn set_notifications_enabled(
         if enabled {
             let permission = host.notifications.native.as_ref().map_err(Clone::clone)?.request_permission()?;
             if !permission.allowed() {
-                return Err("macOS notifications are denied or alerts are disabled. Notification opt-in was not enabled; check System Settings > Notifications > PR Sniper.".into());
+                return Err(format!("Notifications are denied or unavailable. Notification opt-in was not enabled. {PERMISSION_GUIDANCE}"));
             }
         }
         let _gate = host.notifications.configuration_gate.lock().map_err(|_| "Notification settings unavailable.")?;
