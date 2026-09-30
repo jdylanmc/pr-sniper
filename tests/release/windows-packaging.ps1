@@ -22,6 +22,30 @@ function Reject([scriptblock] $Operation, [string] $Pattern) {
     Check ($null -ne $errorSeen -and $errorSeen -match $Pattern) "Expected rejection '$Pattern', got '$errorSeen'."
 }
 try {
+    . (Join-Path $repository 'scripts\windows-host-readiness.ps1')
+    . (Join-Path $repository 'packaging\chocolatey\removal-state.ps1')
+    $profile = Join-Path $fixture 'owned-profile'
+    New-Item -ItemType Directory (Join-Path $profile 'state') | Out-Null
+    $hostFixture = [pscustomobject]@{ HasExited = $false; MainWindowHandle = [IntPtr]123 }
+    $hostFixture | Add-Member ScriptMethod Refresh {}
+    Check (-not (Test-PrSniperHostReady $hostFixture $profile)) 'A live helper window alone is not profile readiness.'
+    [IO.File]::WriteAllText((Join-Path $profile 'state\notifications.json'), '{"profile_id":"beea9c15-e4ea-4af7-a4e5-687ff7290406","enabled":false}')
+    [IO.File]::WriteAllText((Join-Path $profile 'state\diagnostics.jsonl'), "{`"event`":`"session_started`"}`n")
+    Check (Test-PrSniperHostReady $hostFixture $profile) 'A nonzero internal HWND must not reject a ready owned host.'
+    $hostFixture.HasExited = $true
+    Reject { Test-PrSniperHostReady $hostFixture $profile } 'host exited'
+    Assert-PrSniperRemovalState -AppExists $false -TransactionExists $false -RegistryValueNames @('ForeignFixture') `
+        -ShortcutExists $true -ShortcutTarget 'C:\foreign.exe' -ExpectedApp 'C:\owned\pr-sniper.exe'
+    foreach ($name in @('PRSniperInstaller','DisplayVersion','UninstallString','NoModify','DisplayName')) {
+        Reject { Assert-PrSniperRemovalState -AppExists $false -TransactionExists $false -RegistryValueNames @($name) `
+            -ShortcutExists $false -ExpectedApp 'C:\owned\pr-sniper.exe' } 'registration remains'
+    }
+    Reject { Assert-PrSniperRemovalState -AppExists $true -TransactionExists $false -RegistryValueNames @() `
+        -ShortcutExists $false -ExpectedApp 'C:\owned\pr-sniper.exe' } 'Application removal'
+    Reject { Assert-PrSniperRemovalState -AppExists $false -TransactionExists $true -RegistryValueNames @() `
+        -ShortcutExists $false -ExpectedApp 'C:\owned\pr-sniper.exe' } 'transaction remains'
+    Reject { Assert-PrSniperRemovalState -AppExists $false -TransactionExists $false -RegistryValueNames @() `
+        -ShortcutExists $true -ShortcutTarget 'C:\owned\pr-sniper.exe' -ExpectedApp 'C:\owned\pr-sniper.exe' } 'Owned shortcut remains'
     $files = @(Get-ChildItem (Join-Path $repository 'scripts\windows-*.ps1')) +
         @(Get-ChildItem (Join-Path $repository 'packaging\chocolatey\*.ps1'))
     foreach ($file in $files) {
