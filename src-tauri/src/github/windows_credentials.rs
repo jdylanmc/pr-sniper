@@ -136,6 +136,8 @@ impl RecordBackend for WindowsCredentialBackend {
             ..Default::default()
         };
         if unsafe { CredWriteW(&credential, 0) } == 0 {
+            let code = unsafe { GetLastError() };
+            eprintln!("[credentials] stage=write outcome=native_failure win32_code={code}");
             Err(StoreError::Unavailable)
         } else {
             Ok(())
@@ -169,11 +171,12 @@ mod tests {
     struct Fixture {
         store: RotationSafeStore<WindowsCredentialStore>,
         keys: Vec<ProviderAccountId>,
+        records: Vec<String>,
     }
 
     impl Fixture {
-        fn new() -> Self {
-            Self {
+        fn run(records: &[&str], test: impl FnOnce(&Self)) {
+            let fixture = Self {
                 store: RotationSafeStore::new(WindowsCredentialStore::with_service(format!(
                     "com.jdylanmc.pr-sniper.tests.accounts-{}",
                     uuid::Uuid::new_v4()
@@ -183,35 +186,73 @@ mod tests {
                     ProviderAccountId::new(ProviderId::copilot(), "101").unwrap(),
                     ProviderAccountId::github("202"),
                 ],
+                records: records.iter().map(|record| (*record).to_string()).collect(),
+            };
+            for record in &fixture.records {
+                let target = fixture.store.inner().backend.target(record).unwrap();
+                let target = String::from_utf16(&target[..target.len() - 1]).unwrap();
+                eprintln!("[credential-fixture] stage=claim target={target}");
+                assert!(
+                    fixture
+                        .store
+                        .inner()
+                        .backend
+                        .load_record(record)
+                        .unwrap()
+                        .is_none(),
+                    "new fixture target must not already exist"
+                );
             }
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| test(&fixture)));
+            let failures = fixture.cleanup();
+            if !failures.is_empty() {
+                eprintln!(
+                    "[credential-fixture] stage=cleanup outcome=failed service={} {failures:?}",
+                    fixture.store.inner().backend.service
+                );
+            } else {
+                eprintln!(
+                    "[credential-fixture] stage=cleanup outcome=absent service={} records={}",
+                    fixture.store.inner().backend.service,
+                    fixture.records.len()
+                );
+            }
+            match outcome {
+                Ok(()) => assert!(
+                    failures.is_empty(),
+                    "owned credential cleanup failed: {failures:?}"
+                ),
+                Err(original) => std::panic::resume_unwind(original),
+            }
+        }
+
+        fn cleanup(&self) -> Vec<String> {
+            let reopened =
+                WindowsCredentialStore::with_service(&self.store.inner().backend.service);
+            let mut failures = Vec::new();
+            for record in &self.records {
+                if let Err(error) = reopened.backend.delete_record(record) {
+                    failures.push(format!("{record}: delete {error:?}"));
+                }
+                match reopened.backend.load_record(record) {
+                    Ok(None) => {}
+                    Ok(Some(_)) => failures.push(format!("{record}: still present")),
+                    Err(error) => failures.push(format!("{record}: readback {error:?}")),
+                }
+            }
+            failures
         }
     }
 
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            for key in &self.keys {
-                self.store
-                    .delete(key)
-                    .expect("delete owned synthetic credential");
-                assert!(self.store.load(key).unwrap().is_none());
-            }
-            self.store
-                .inner()
-                .backend
-                .delete_record("accounts:registry")
-                .expect("delete owned synthetic registry");
-            self.store
-                .inner()
-                .backend
-                .delete_record("github:active-account")
-                .expect("delete owned synthetic legacy marker");
-            assert!(self
-                .store
-                .inner()
-                .backend
-                .load_record("accounts:registry")
-                .unwrap()
-                .is_none());
+    fn near_capacity_registry() -> AccountRegistry {
+        AccountRegistry {
+            accounts: (1..=70)
+                .map(|index| {
+                    ActiveAccount::new((100_000_000 + index).to_string(), format!("user{index:05}"))
+                        .unwrap()
+                })
+                .collect(),
+            ..Default::default()
         }
     }
 
@@ -227,317 +268,363 @@ mod tests {
 
     #[test]
     fn native_pairs_restart_rotate_and_disconnect_without_an_active_account() {
-        let fixture = Fixture::new();
-        let account = ActiveAccount::new("101", "fixture").unwrap();
-        fixture
-            .store
-            .save_account(&account, &pair("first", "refresh-first"), false)
-            .unwrap();
-        fixture
-            .store
-            .rotate(&fixture.keys[0], |_| Ok(pair("next", "refresh-next")))
-            .unwrap();
-        let restarted = RotationSafeStore::new(WindowsCredentialStore::with_service(
-            &fixture.store.inner().backend.service,
-        ));
-        let restored = restarted
-            .restore_account(&fixture.keys[0])
-            .unwrap()
-            .unwrap();
-        assert_eq!(restored.account, account);
-        assert_eq!(restored.pair, pair("next", "refresh-next"));
-        assert_eq!(
-            restored.pair.access_expires_at(),
-            UNIX_EPOCH + Duration::from_secs(1060)
-        );
-        assert!(restarted.inner().load_registry().unwrap().active.is_none());
-        restarted.remove_account(&fixture.keys[0]).unwrap();
-        assert!(restarted.accounts().unwrap().is_empty());
-        assert!(restarted.load(&fixture.keys[0]).unwrap().is_none());
+        Fixture::run(&["accounts:registry", "account:github:101"], |fixture| {
+            let account = ActiveAccount::new("101", "fixture").unwrap();
+            fixture
+                .store
+                .save_account(&account, &pair("first", "refresh-first"), false)
+                .unwrap();
+            fixture
+                .store
+                .rotate(&fixture.keys[0], |_| Ok(pair("next", "refresh-next")))
+                .unwrap();
+            let restarted = RotationSafeStore::new(WindowsCredentialStore::with_service(
+                &fixture.store.inner().backend.service,
+            ));
+            let restored = restarted
+                .restore_account(&fixture.keys[0])
+                .unwrap()
+                .unwrap();
+            assert_eq!(restored.account, account);
+            assert_eq!(restored.pair, pair("next", "refresh-next"));
+            assert_eq!(
+                restored.pair.access_expires_at(),
+                UNIX_EPOCH + Duration::from_secs(1060)
+            );
+            assert!(restarted.inner().load_registry().unwrap().active.is_none());
+            restarted.remove_account(&fixture.keys[0]).unwrap();
+            assert!(restarted.accounts().unwrap().is_empty());
+            assert!(restarted.load(&fixture.keys[0]).unwrap().is_none());
+        });
     }
 
     #[test]
     fn role_and_service_namespaces_are_independent_and_disconnect_retains_ai_identity() {
-        let fixture = Fixture::new();
-        let other = Fixture::new();
-        for key in &fixture.keys[..2] {
-            let account =
-                ActiveAccount::for_provider(key.provider().clone(), "101", "fixture").unwrap();
-            fixture
-                .store
-                .save_account(&account, &pair(key.provider().as_str(), "refresh"), false)
-                .unwrap();
-        }
-        assert!(other.store.accounts().unwrap().is_empty());
-        assert!(other.store.load(&fixture.keys[0]).unwrap().is_none());
-        fixture
-            .store
-            .clear_account_credentials(&fixture.keys[1])
-            .unwrap();
-        assert!(fixture.store.load(&fixture.keys[1]).unwrap().is_none());
-        assert_eq!(
-            fixture
-                .store
-                .load(&fixture.keys[0])
-                .unwrap()
-                .unwrap()
-                .access_token(),
-            "github"
+        Fixture::run(
+            &[
+                "accounts:registry",
+                "account:github:101",
+                "account:copilot:101",
+            ],
+            |fixture| {
+                Fixture::run(&[], |other| {
+                    for key in &fixture.keys[..2] {
+                        let account =
+                            ActiveAccount::for_provider(key.provider().clone(), "101", "fixture")
+                                .unwrap();
+                        fixture
+                            .store
+                            .save_account(
+                                &account,
+                                &pair(key.provider().as_str(), "refresh"),
+                                false,
+                            )
+                            .unwrap();
+                    }
+                    assert!(other.store.accounts().unwrap().is_empty());
+                    assert!(other.store.load(&fixture.keys[0]).unwrap().is_none());
+                    fixture
+                        .store
+                        .clear_account_credentials(&fixture.keys[1])
+                        .unwrap();
+                    assert!(fixture.store.load(&fixture.keys[1]).unwrap().is_none());
+                    assert_eq!(
+                        fixture
+                            .store
+                            .load(&fixture.keys[0])
+                            .unwrap()
+                            .unwrap()
+                            .access_token(),
+                        "github"
+                    );
+                    assert_eq!(fixture.store.accounts().unwrap().len(), 2);
+                    assert!(fixture
+                        .store
+                        .inner()
+                        .load_registry()
+                        .unwrap()
+                        .active
+                        .is_none());
+                });
+            },
         );
-        assert_eq!(fixture.store.accounts().unwrap().len(), 2);
-        assert!(fixture
-            .store
-            .inner()
-            .load_registry()
-            .unwrap()
-            .active
-            .is_none());
     }
 
     #[test]
     fn oversize_rotation_is_visible_and_preserves_both_old_tokens() {
-        let fixture = Fixture::new();
-        let before = pair("before", "refresh-before");
-        fixture.store.save(&fixture.keys[0], &before).unwrap();
-        let result = fixture.store.rotate(&fixture.keys[0], |_| {
-            Ok(pair(
-                &"x".repeat(CRED_MAX_CREDENTIAL_BLOB_SIZE as usize),
-                "refresh-after",
-            ))
+        Fixture::run(&["account:github:101"], |fixture| {
+            let before = pair("before", "refresh-before");
+            fixture.store.save(&fixture.keys[0], &before).unwrap();
+            let result = fixture.store.rotate(&fixture.keys[0], |_| {
+                Ok(pair(
+                    &"x".repeat(CRED_MAX_CREDENTIAL_BLOB_SIZE as usize),
+                    "refresh-after",
+                ))
+            });
+            assert_eq!(result, Err(RotationError::Store(StoreError::TooLarge)));
+            assert_eq!(
+                fixture.store.load(&fixture.keys[0]).unwrap().unwrap(),
+                before
+            );
         });
-        assert_eq!(result, Err(RotationError::Store(StoreError::TooLarge)));
-        assert_eq!(
-            fixture.store.load(&fixture.keys[0]).unwrap().unwrap(),
-            before
-        );
     }
 
     #[test]
     fn oversize_registry_is_visible_and_does_not_commit_or_orphan_an_account() {
-        let fixture = Fixture::new();
-        let registry = AccountRegistry {
-            accounts: (0..80)
-                .map(|i| ActiveAccount::new(i.to_string(), "x".repeat(128)).unwrap())
-                .collect(),
-            ..Default::default()
-        };
-        assert_eq!(
-            fixture.store.inner().save_registry(&registry),
-            Err(StoreError::TooLarge)
-        );
-        assert!(fixture.store.accounts().unwrap().is_empty());
-        let account = ActiveAccount::new("101", "fixture").unwrap();
-        assert_eq!(
-            fixture.store.save_account(
-                &account,
-                &pair(
-                    &"x".repeat(CRED_MAX_CREDENTIAL_BLOB_SIZE as usize),
-                    "refresh"
+        Fixture::run(&["accounts:registry", "account:github:101"], |fixture| {
+            let registry = AccountRegistry {
+                accounts: (0..80)
+                    .map(|i| ActiveAccount::new(i.to_string(), "x".repeat(128)).unwrap())
+                    .collect(),
+                ..Default::default()
+            };
+            assert_eq!(
+                fixture.store.inner().save_registry(&registry),
+                Err(StoreError::TooLarge)
+            );
+            assert!(fixture.store.accounts().unwrap().is_empty());
+            let account = ActiveAccount::new("101", "fixture").unwrap();
+            assert_eq!(
+                fixture.store.save_account(
+                    &account,
+                    &pair(
+                        &"x".repeat(CRED_MAX_CREDENTIAL_BLOB_SIZE as usize),
+                        "refresh"
+                    ),
+                    false
                 ),
-                false
-            ),
-            Err(StoreError::TooLarge)
-        );
-        assert!(fixture.store.accounts().unwrap().is_empty());
-        assert!(fixture.store.load(&fixture.keys[0]).unwrap().is_none());
+                Err(StoreError::TooLarge)
+            );
+            assert!(fixture.store.accounts().unwrap().is_empty());
+            assert!(fixture.store.load(&fixture.keys[0]).unwrap().is_none());
+        });
     }
 
     #[test]
     fn windows_does_not_import_legacy_keychain_records_and_corruption_is_an_error() {
-        let fixture = Fixture::new();
-        fixture
-            .store
-            .inner()
-            .backend
-            .save_record("github:active-account", b"not a Windows registry")
-            .unwrap();
-        assert!(fixture.store.accounts().unwrap().is_empty());
-        fixture
-            .store
-            .inner()
-            .backend
-            .save_record("accounts:registry", b"malformed")
-            .unwrap();
-        assert_eq!(fixture.store.accounts(), Err(StoreError::InvalidData));
-        assert_eq!(
+        Fixture::run(&["accounts:registry", "github:active-account"], |fixture| {
             fixture
                 .store
                 .inner()
                 .backend
-                .load_record("accounts:registry")
-                .unwrap()
-                .unwrap()
-                .as_slice(),
-            b"malformed"
-        );
+                .save_record("github:active-account", b"not a Windows registry")
+                .unwrap();
+            assert!(fixture.store.accounts().unwrap().is_empty());
+            fixture
+                .store
+                .inner()
+                .backend
+                .save_record("accounts:registry", b"malformed")
+                .unwrap();
+            assert_eq!(fixture.store.accounts(), Err(StoreError::InvalidData));
+            assert_eq!(
+                fixture
+                    .store
+                    .inner()
+                    .backend
+                    .load_record("accounts:registry")
+                    .unwrap()
+                    .unwrap()
+                    .as_slice(),
+                b"malformed"
+            );
+        });
     }
 
     #[test]
     fn invalid_native_targets_fail_reads_writes_and_deletes_instead_of_aliasing() {
-        let fixture = Fixture::new();
-        let key = ProviderAccountId::github("101\0suffix");
-        assert_eq!(fixture.store.load(&key), Err(StoreError::InvalidData));
-        assert_eq!(
-            fixture.store.save(&key, &pair("access", "refresh")),
-            Err(StoreError::InvalidData)
-        );
-        assert_eq!(fixture.store.delete(&key), Err(StoreError::InvalidData));
-        assert!(fixture.store.load(&fixture.keys[0]).unwrap().is_none());
+        Fixture::run(&[], |fixture| {
+            let key = ProviderAccountId::github("101\0suffix");
+            assert_eq!(fixture.store.load(&key), Err(StoreError::InvalidData));
+            assert_eq!(
+                fixture.store.save(&key, &pair("access", "refresh")),
+                Err(StoreError::InvalidData)
+            );
+            assert_eq!(fixture.store.delete(&key), Err(StoreError::InvalidData));
+            assert!(fixture.store.load(&fixture.keys[0]).unwrap().is_none());
+        });
     }
 
     #[test]
     fn exact_native_blob_limit_roundtrips_but_one_more_byte_preserves_the_record() {
-        let fixture = Fixture::new();
-        // Established wire format: two 32-bit lengths and two 64-bit timestamps.
-        let access = "a".repeat(CRED_MAX_CREDENTIAL_BLOB_SIZE as usize - 24 - 1);
-        let before = pair(&access, "r");
-        fixture.store.save(&fixture.keys[0], &before).unwrap();
-        assert_eq!(
-            fixture.store.load(&fixture.keys[0]).unwrap().unwrap(),
-            before
-        );
-        assert_eq!(
-            fixture
-                .store
-                .save(&fixture.keys[0], &pair(&(access + "a"), "r")),
-            Err(StoreError::TooLarge)
-        );
-        assert_eq!(
-            fixture.store.load(&fixture.keys[0]).unwrap().unwrap(),
-            before
-        );
+        Fixture::run(&["account:github:101"], |fixture| {
+            // Established wire format: two 32-bit lengths and two 64-bit timestamps.
+            let access = "a".repeat(CRED_MAX_CREDENTIAL_BLOB_SIZE as usize - 24 - 1);
+            let before = pair(&access, "r");
+            fixture.store.save(&fixture.keys[0], &before).unwrap();
+            assert_eq!(
+                fixture.store.load(&fixture.keys[0]).unwrap().unwrap(),
+                before
+            );
+            assert_eq!(
+                fixture
+                    .store
+                    .save(&fixture.keys[0], &pair(&(access + "a"), "r")),
+                Err(StoreError::TooLarge)
+            );
+            assert_eq!(
+                fixture.store.load(&fixture.keys[0]).unwrap().unwrap(),
+                before
+            );
+        });
     }
 
     #[test]
     fn registry_capacity_failure_preserves_existing_accounts_and_has_no_new_secret() {
-        let mut fixture = Fixture::new();
-        let mut failed = false;
-        for index in 0..100 {
-            let account = ActiveAccount::new(format!("capacity-{index}"), "x".repeat(128)).unwrap();
-            let key = account.provider_account_id();
-            fixture.keys.push(key.clone());
-            let before = fixture.store.accounts().unwrap();
-            match fixture
-                .store
-                .save_account(&account, &pair("access", "refresh"), false)
-            {
-                Ok(()) => {}
-                Err(StoreError::TooLarge) => {
-                    assert!(!before.is_empty());
-                    assert_eq!(fixture.store.accounts().unwrap(), before);
-                    assert!(fixture.store.load(&key).unwrap().is_none());
-                    for existing in &before {
-                        assert_eq!(
-                            fixture
-                                .store
-                                .load(&existing.provider_account_id())
-                                .unwrap()
-                                .unwrap(),
-                            pair("access", "refresh")
-                        );
-                    }
-                    failed = true;
-                    break;
-                }
-                Err(error) => panic!("unexpected capacity result: {error:?}"),
-            }
-        }
-        assert!(failed, "registry must surface its native capacity limit");
+        Fixture::run(
+            &[
+                "accounts:registry",
+                "account:github:100000001",
+                "account:github:capacity-new",
+            ],
+            |fixture| {
+                let registry = near_capacity_registry();
+                fixture.store.inner().save_registry(&registry).unwrap();
+                let existing = registry.accounts[0].provider_account_id();
+                let before = pair("access", "refresh");
+                fixture.store.save(&existing, &before).unwrap();
+                let bytes = fixture
+                    .store
+                    .inner()
+                    .backend
+                    .load_record("accounts:registry")
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(bytes.len(), 2549);
+                let account = ActiveAccount::new("capacity-new", "x".repeat(128)).unwrap();
+
+                assert_eq!(
+                    fixture
+                        .store
+                        .save_account(&account, &pair("new-access", "new-refresh"), false),
+                    Err(StoreError::TooLarge)
+                );
+
+                let reopened = RotationSafeStore::new(WindowsCredentialStore::with_service(
+                    &fixture.store.inner().backend.service,
+                ));
+                assert_eq!(reopened.accounts().unwrap(), registry.accounts);
+                assert!(reopened
+                    .load(&account.provider_account_id())
+                    .unwrap()
+                    .is_none());
+                assert_eq!(reopened.load(&existing).unwrap().unwrap(), before);
+                assert_eq!(
+                    reopened
+                        .inner()
+                        .backend
+                        .load_record("accounts:registry")
+                        .unwrap()
+                        .unwrap(),
+                    bytes
+                );
+                assert!(reopened
+                    .load(&registry.accounts[1].provider_account_id())
+                    .unwrap()
+                    .is_none());
+            },
+        );
     }
 
     #[test]
     fn case_distinct_account_ids_never_alias_in_the_native_target_namespace() {
-        let mut fixture = Fixture::new();
-        let upper = ProviderAccountId::github("Case");
-        let lower = ProviderAccountId::github("case");
-        fixture.keys.extend([upper.clone(), lower.clone()]);
-        fixture
-            .store
-            .save(&upper, &pair("upper", "upper-refresh"))
-            .unwrap();
-        fixture
-            .store
-            .save(&lower, &pair("lower", "lower-refresh"))
-            .unwrap();
-        assert_eq!(
-            fixture.store.load(&upper).unwrap().unwrap().access_token(),
-            "upper"
-        );
-        assert_eq!(
-            fixture.store.load(&lower).unwrap().unwrap().access_token(),
-            "lower"
-        );
-        fixture.store.delete(&upper).unwrap();
-        assert!(fixture.store.load(&lower).unwrap().is_some());
+        Fixture::run(&["account:github:Case", "account:github:case"], |fixture| {
+            let upper = ProviderAccountId::github("Case");
+            let lower = ProviderAccountId::github("case");
+            fixture
+                .store
+                .save(&upper, &pair("upper", "upper-refresh"))
+                .unwrap();
+            fixture
+                .store
+                .save(&lower, &pair("lower", "lower-refresh"))
+                .unwrap();
+            assert_eq!(
+                fixture.store.load(&upper).unwrap().unwrap().access_token(),
+                "upper"
+            );
+            assert_eq!(
+                fixture.store.load(&lower).unwrap().unwrap().access_token(),
+                "lower"
+            );
+            fixture.store.delete(&upper).unwrap();
+            assert!(fixture.store.load(&lower).unwrap().is_some());
+        });
     }
 
     #[test]
     fn existing_account_reconnect_capacity_failure_preserves_pair_and_metadata_then_retries() {
-        let mut fixture = Fixture::new();
-        let accounts: Vec<_> = (1..=70)
-            .map(|index| {
-                ActiveAccount::new((100_000_000 + index).to_string(), format!("user{index:05}"))
+        Fixture::run(
+            &["accounts:registry", "account:github:100000001"],
+            |fixture| {
+                let registry = near_capacity_registry();
+                fixture.store.inner().save_registry(&registry).unwrap();
+                let accounts = registry.accounts;
+                let before = pair("before", "refresh-before");
+                fixture
+                    .store
+                    .save(&accounts[0].provider_account_id(), &before)
+                    .unwrap();
+                assert!(fixture
+                    .store
+                    .load(&accounts[1].provider_account_id())
                     .unwrap()
-            })
-            .collect();
-        let before = pair("before", "refresh-before");
-        for account in &accounts {
-            fixture.keys.push(account.provider_account_id());
-            fixture.store.save_account(account, &before, false).unwrap();
-        }
-        let original_registry = fixture
-            .store
-            .inner()
-            .backend
-            .load_record("accounts:registry")
-            .unwrap()
-            .unwrap();
-        assert_eq!(original_registry.len(), 2549);
-        let renamed = ActiveAccount::new(&accounts[0].account_id, "r".repeat(21)).unwrap();
-        assert_eq!(
-            original_registry.len() + renamed.login.len() - accounts[0].login.len(),
-            2561
-        );
-        let replacement = pair("replacement", "refresh-replacement");
+                    .is_none());
+                let original_registry = fixture
+                    .store
+                    .inner()
+                    .backend
+                    .load_record("accounts:registry")
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(original_registry.len(), 2549);
+                let renamed = ActiveAccount::new(&accounts[0].account_id, "r".repeat(21)).unwrap();
+                assert_eq!(
+                    original_registry.len() + renamed.login.len() - accounts[0].login.len(),
+                    2561
+                );
+                let replacement = pair("replacement", "refresh-replacement");
 
-        assert_eq!(
-            fixture.store.save_account(&renamed, &replacement, false),
-            Err(StoreError::TooLarge)
-        );
+                assert_eq!(
+                    fixture.store.save_account(&renamed, &replacement, false),
+                    Err(StoreError::TooLarge)
+                );
 
-        let reopened = RotationSafeStore::new(WindowsCredentialStore::with_service(
-            &fixture.store.inner().backend.service,
-        ));
-        assert_eq!(reopened.accounts().unwrap(), accounts);
-        assert_eq!(
-            reopened
-                .load(&renamed.provider_account_id())
-                .unwrap()
-                .unwrap(),
-            before
-        );
-        assert_eq!(
-            reopened
-                .inner()
-                .backend
-                .load_record("accounts:registry")
-                .unwrap()
-                .unwrap(),
-            original_registry
-        );
+                let reopened = RotationSafeStore::new(WindowsCredentialStore::with_service(
+                    &fixture.store.inner().backend.service,
+                ));
+                assert_eq!(reopened.accounts().unwrap(), accounts);
+                assert_eq!(
+                    reopened
+                        .load(&renamed.provider_account_id())
+                        .unwrap()
+                        .unwrap(),
+                    before
+                );
+                assert_eq!(
+                    reopened
+                        .inner()
+                        .backend
+                        .load_record("accounts:registry")
+                        .unwrap()
+                        .unwrap(),
+                    original_registry
+                );
 
-        reopened
-            .remove_account(&accounts[69].provider_account_id())
-            .unwrap();
-        reopened
-            .save_account(&renamed, &replacement, false)
-            .unwrap();
-        let restored = reopened
-            .restore_account(&renamed.provider_account_id())
-            .unwrap()
-            .unwrap();
-        assert_eq!(restored.account, renamed);
-        assert_eq!(restored.pair, replacement);
-        assert_eq!(reopened.accounts().unwrap().len(), 69);
+                reopened
+                    .remove_account(&accounts[69].provider_account_id())
+                    .unwrap();
+                reopened
+                    .save_account(&renamed, &replacement, false)
+                    .unwrap();
+                let restored = reopened
+                    .restore_account(&renamed.provider_account_id())
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(restored.account, renamed);
+                assert_eq!(restored.pair, replacement);
+                assert_eq!(reopened.accounts().unwrap().len(), 69);
+            },
+        );
     }
 }
