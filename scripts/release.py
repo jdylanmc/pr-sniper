@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -95,6 +96,8 @@ class Github:
             with urllib.request.build_opener(NoRedirect()).open(
                     urllib.request.Request(host + path, data=data, headers=headers, method=method),
                     timeout=90) as response:
+                if response.status == 204 and method == "POST" and path.endswith("/dispatches"):
+                    return None
                 return json.load(response)
         except urllib.error.HTTPError as error:
             if error.code == 404 and missing:
@@ -288,26 +291,13 @@ def publish(api, directory=ASSETS):
     verify_public(api, manifest, directory)
 
 
-def validate_cask(content):
-    require(os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
-            "Cask validation modifies only a disposable hosted runner's tap checkout.")
-    command(["brew", "tap", "jdylanmc/pr-sniper", f"https://github.com/{TAP}"], timeout=300)
-    tap_path = Path(command(["brew", "--repository", "jdylanmc/pr-sniper"]))
-    require(tap_path.is_absolute() and tap_path.name == "homebrew-pr-sniper", "Unexpected Homebrew tap path.")
-    folder = tap_path / "Casks"
-    folder.mkdir(exist_ok=True)
-    (folder / "pr-sniper.rb").write_text(content)
-    command(["brew", "style", "--cask", "jdylanmc/pr-sniper/pr-sniper"], timeout=300)
-    command(["brew", "audit", "--cask", "--online", "jdylanmc/pr-sniper/pr-sniper"], timeout=300)
-
-
 def tap_ready(api):
     repository = api.request(f"/repos/{TAP}")
     require(repository["full_name"] == TAP and repository["default_branch"] == "main"
             and not repository["private"] and repository.get("permissions", {}).get("push") is True,
             "The tap credential must have write access to the exact public tap's main branch.")
-    workflow = api.request(f"/repos/{TAP}/contents/.github/workflows/cask.yml?ref=main")
-    require(workflow.get("type") == "file", "Merge the tap validation bootstrap before releasing.")
+    workflow = api.request(f"/repos/{TAP}/contents/.github/workflows/publish.yml?ref=main")
+    require(workflow.get("type") == "file", "Merge the tap-owned publisher before releasing.")
 
 
 def tap_update(api, tap_api, directory=ASSETS):
@@ -316,7 +306,6 @@ def tap_update(api, tap_api, directory=ASSETS):
     path = f"/repos/{TAP}/contents/Casks/pr-sniper.rb"
     existing = tap_api.request(path + "?ref=main", missing=True)
     content = cask(manifest["version"], manifest["sha256"])
-    validate_cask(content)
     if existing:
         require(existing.get("type") == "file" and existing.get("encoding") == "base64", "Unexpected cask file.")
         old = base64.b64decode(existing["content"]).decode()
@@ -328,13 +317,23 @@ def tap_update(api, tap_api, directory=ASSETS):
         new_version = tuple(map(int, manifest["version"].split(".")))
         require(new_version > old_version, "Refusing a same-version checksum change or tap downgrade.")
     require(tag_sha(api, manifest["tag"]) == manifest["source_sha"], "Tag moved before tap update.")
-    body = {"message": f"chore(cask): release PR Sniper {manifest['version']}", "branch": "main",
-            "content": base64.b64encode(content.encode()).decode()}
-    if existing:
-        body["sha"] = existing["sha"]
-    tap_api.request(path, "PUT", body)
-    confirmed = tap_api.request(path + "?ref=main")
-    require(base64.b64decode(confirmed["content"]).decode() == content, "Tap update was not confirmed.")
+    tap_api.request(f"/repos/{TAP}/dispatches", "POST", {
+        "event_type": "pr-sniper-release",
+        "client_payload": {"tag": manifest["tag"], "source_sha": manifest["source_sha"],
+                           "sha256": manifest["sha256"]},
+    })
+    deadline = time.monotonic() + 600
+    while time.monotonic() < deadline:
+        confirmed = tap_api.request(path + "?ref=main", missing=True)
+        if confirmed is not None:
+            require(confirmed.get("type") == "file" and confirmed.get("encoding") == "base64",
+                    "Unexpected tap confirmation response.")
+            if base64.b64decode(confirmed["content"]).decode() == content:
+                require(tag_sha(api, manifest["tag"]) == manifest["source_sha"],
+                        "Tag moved before tap confirmation.")
+                return
+        time.sleep(20)
+    raise ReleaseError("Tap dispatch was accepted, but matching cask publication is unconfirmed. Inspect the tap publisher; no automatic redispatch.")
 
 
 def main():

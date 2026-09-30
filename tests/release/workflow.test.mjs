@@ -75,6 +75,8 @@ test("only explicit stable tag release events can enter the secret-bearing pipel
   assert.deepEqual(workflow.jobs.sign.needs, ["gate", "tap-ready"]);
   assert.equal(workflow.jobs["tap-ready"].needs, "gate");
   assert.equal(workflow.jobs["tap-ready"].environment, "pr-sniper-tap");
+  assert.equal(workflow.jobs.tap["runs-on"], "ubuntu-latest");
+  assert.ok(!JSON.stringify(workflow.jobs.tap).includes("brew "));
   assert.deepEqual(workflow.jobs.publish.needs, ["gate", "sign"]);
   assert.deepEqual(workflow.jobs.tap.needs, ["gate", "publish"]);
 });

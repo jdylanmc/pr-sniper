@@ -6,9 +6,12 @@ local-app foundation. Initial releases support **Apple Silicon and macOS 13.5+**
 Windows, Intel, App Store distribution and #14's in-app/dogfood updater are not
 part of this delivery.
 
-**Not released yet:** adding this workflow and configuring credentials does not
-create a release. Do not advertise the Homebrew command as working until the
-first real release and cask have passed the acceptance below.
+**Published:** [v0.1.1](https://github.com/jdylanmc/pr-sniper/releases/tag/v0.1.1)
+passed real Developer ID signing, notarization/stapling and public-byte
+verification. Its cask is on the dedicated tap's main branch. A disposable hosted
+CI installation passed version/signature/ticket/Gatekeeper verification and
+uninstallation. Full signed-in app operation and a later-version upgrade remain
+separate acceptance; no developer installation was overwritten.
 
 ## What a version tag does
 
@@ -26,7 +29,7 @@ The pipeline:
    commit must have completed successfully. PR checks for another SHA do not
    qualify. No release while required CI is pending or failed.
 2. Before any Apple upload, confirm the dedicated tap token can write the exact
-   public tap and that its cask-validation workflow is merged. Then build on the
+   public tap and that its publisher workflow is merged. Then build on the
    pinned Apple Silicon macOS runner using the normal credential-free
    build. Normal PR CI stays ad-hoc signed and never receives Apple/tap secrets.
 3. In an isolated temporary keychain, import the dedicated certificate and
@@ -44,10 +47,15 @@ The pipeline:
 5. Create a draft release at the immutable tag and commit. Upload only the final
    ZIP, `manifest.json` and `SHA256SUMS`; verify GitHub's asset digests before
    publishing, then download the public assets and verify every byte.
-6. Only after public verification, generate and Homebrew-audit the exact cask,
-   then update `Casks/pr-sniper.rb` on the dedicated tap's main branch.
-   Compare-and-swap file identity and version checks prevent overwriting a
-   concurrent edit, downgrading or changing the bytes for an existing version.
+6. Only after public verification, dispatch the version once to the dedicated
+   tap's main-branch publisher. The tap independently verifies the public
+   release, runs direct Homebrew online audits and an isolated CI install,
+   checks the installed version/signature/ticket/Gatekeeper, then uninstalls
+   the CI-owned app. Only afterward does it update `Casks/pr-sniper.rb` using
+   its own repository-scoped token. Compare-and-swap file identity and version
+   checks prevent concurrent overwrite, downgrade or same-version replacement.
+   The application job waits for exact matching cask bytes; a timeout is
+   unconfirmed, not success or an automatic redispatch.
 
 The existing `com.jdylanmc.pr-sniper` app identity is unchanged. Homebrew manages
 updates; there is no in-app updater and no `auto_updates` cask claim.
@@ -77,12 +85,12 @@ revoke Notch's certificate/key to make room without a separate decision.
    them into chat, source, workflow files or command-line `--body` arguments.
    A base64 P12 remains secret; base64 is not encryption.
 
-| Environment         | Secret                       | Format                                                                               |
-| ------------------- | ---------------------------- | ------------------------------------------------------------------------------------ |
-| `pr-sniper-release` | `APPLE_CERTIFICATE_P12`      | Base64 of the exported `.p12`                                                        |
-| `pr-sniper-release` | `APPLE_CERTIFICATE_PASSWORD` | Its export password, not the Apple account password                                  |
-| `pr-sniper-release` | `APPLE_NOTARY_KEY_P8`        | Raw downloaded PEM private-key text                                                  |
-| `pr-sniper-tap`     | `HOMEBREW_TAP_TOKEN`         | Fine-grained token scoped only to `jdylanmc/homebrew-pr-sniper`, Contents read/write |
+| Environment         | Secret                       | Format                                                                                                       |
+| ------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `pr-sniper-release` | `APPLE_CERTIFICATE_P12`      | Base64 of the exported `.p12`                                                                                |
+| `pr-sniper-release` | `APPLE_CERTIFICATE_PASSWORD` | Its export password, not the Apple account password                                                          |
+| `pr-sniper-release` | `APPLE_NOTARY_KEY_P8`        | Raw downloaded PEM private-key text                                                                          |
+| `pr-sniper-tap`     | `HOMEBREW_TAP_TOKEN`         | Fine-grained token scoped only to `jdylanmc/homebrew-pr-sniper`, Contents read/write for repository dispatch |
 
 The release environment also has **variables** (public metadata):
 `APPLE_TEAM_ID`, `APPLE_SIGNING_IDENTITY` (the exact uppercase 40-hex certificate
@@ -99,6 +107,11 @@ Record certificate/key/token expiration privately. Rotate by updating these
 environment entries and verifying the next authorized release; do not mutate an
 existing release or remove a previous working certificate first.
 
+The tap repository stores only the public expected `APPLE_TEAM_ID` variable.
+Its `Publish verified cask` workflow uses the standard scoped GitHub token for
+its own cask commit; it receives no Apple secrets. Its publisher workflow must
+be merged on tap `main` before the application's release preflight succeeds.
+
 ## Cut a release
 
 The human chooses the version and creates the tag. This delivery does not
@@ -114,7 +127,8 @@ authorize an agent to cut the first release merely because checks pass.
 4. Observe **Signed macOS release**. Missing credentials, Apple denial,
    identity mismatch, invalid notarization and failed byte verification stop
    publication. A tap failure does not roll back an already published valid
-   release; fix only the tap stage and rerun it.
+   release; recover using the tap repository's `Publish verified cask` workflow
+   on `main`, selecting the already-published tag. Do not rerun signing.
 
 Workflow dispatch is a recovery entry point: run it **on an existing version
 tag**, not `main`. The same tag/commit/CI/environment checks still apply.
