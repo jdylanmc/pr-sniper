@@ -69,12 +69,13 @@ shutdown and temporary cleanup. Node is needed only for synthetic transport
 fixtures; they use `node.exe` and native Windows child-exit checks. These are
 not application launch, real grant acceptance or GUI console-window evidence.
 
-The repository's `.gitattributes` keeps canonical doctrine Markdown and its
-manifest LF even when Windows Git uses `core.autocrlf=true`. Rust embeds those
-exact bytes and the doctrine helper verifies their SHA-256 hashes. The shared
-checkout regression exercises real Git checkout with CRLF conversion enabled;
-no CI-only setting or parser normalization is needed. Do not change the
-canonical doctrine files or their verified hashes to repair checkout conversion.
+The repository's `.gitattributes` keeps text sources LF even when Windows Git
+uses `core.autocrlf=true`, so the same formatter checks run on both platforms.
+Binary artwork remains binary. Rust embeds canonical doctrine bytes and the
+doctrine helper verifies their SHA-256 hashes. The shared checkout regression
+uses real Git checkout with CRLF conversion enabled and checks text, doctrine
+and binary samples. No CI-only formatting bypass is needed; do not change
+canonical doctrine contents or hashes to repair checkout conversion.
 
 ## Native proof boundaries
 
