@@ -431,6 +431,17 @@ pub fn restore(store: &Store) -> Result<(), String> {
     store.save_notifications(&ledger)
 }
 
+#[cfg(windows)]
+pub(crate) fn persisted_ledger(store: &Store) -> Result<Ledger, String> {
+    let bytes = store.read_state("notifications.json").map_err(|_| {
+        "Notification history is not persisted or cannot be read. Notifications remain unavailable."
+    })?;
+    let ledger: Ledger = serde_json::from_slice(&bytes)
+        .map_err(|_| "Notification history is invalid; no identity can be registered.")?;
+    ledger.validate()?;
+    Ok(ledger)
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Permission {
     pub authorization: String,

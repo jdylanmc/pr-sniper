@@ -2,10 +2,10 @@ use super::{windows_native as native, Adapter, Notice, Permission, SendError};
 use crate::{storage::Store, Host};
 use native::{ActivationServer, Apartment, Registration};
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Mutex,
+        Arc, Mutex,
     },
     time::Duration,
 };
@@ -18,34 +18,34 @@ use windows::{
 
 pub(super) struct Native {
     app: tauri::AppHandle,
-    pub(super) registration: Registration,
+    root: PathBuf,
+    identity: Mutex<Result<Registration, String>>,
     server: Mutex<Option<ActivationServer>>,
     stopped: AtomicBool,
 }
 
 impl Native {
     pub(super) fn new(app: &tauri::AppHandle, store: &Store, root: &Path) -> Result<Self, String> {
-        let registration = Registration {
-            version: 1,
-            profile: store.load_notifications()?.profile_id,
-            root: root
-                .canonicalize()
-                .map_err(|_| "Notification data root is unavailable.")?,
-            executable: std::env::current_exe()
-                .and_then(|p| p.canonicalize())
-                .map_err(|_| "Notification executable is unavailable.")?,
-            credential_service: std::env::var("PR_SNIPER_KEYCHAIN_SERVICE").ok(),
-        };
-        registration.validate()?;
+        let root = root
+            .canonicalize()
+            .map_err(|_| "Notification data root is unavailable.")?;
         Ok(Self {
             app: app.clone(),
-            registration,
+            identity: Mutex::new(saved_registration(store, &root)),
+            root,
             server: Mutex::new(None),
             stopped: AtomicBool::new(false),
         })
     }
 
-    fn start(&self) -> Result<(), String> {
+    pub(super) fn registration(&self) -> Result<Registration, String> {
+        self.identity
+            .lock()
+            .map_err(|_| "Notification identity unavailable.")?
+            .clone()
+    }
+
+    fn start(&self, registration: &Registration) -> Result<(), String> {
         let mut server = self
             .server
             .lock()
@@ -57,7 +57,7 @@ impl Native {
         }
         if server.is_none() {
             let app = self.app.clone();
-            let registration = self.registration.clone();
+            let registration = registration.clone();
             *server = Some(ActivationServer::start(
                 registration.clone(),
                 Arc::new(move |id| dispatch(&app, registration.clone(), id)),
@@ -68,8 +68,10 @@ impl Native {
 
     pub(super) fn ready(&self) -> Result<(), String> {
         let _apartment = Apartment::new()?;
-        if self.registration.registered()? {
-            self.start()?;
+        let registration = self.registration()?;
+        validate_saved(&registration, None)?;
+        if registration.registered()? {
+            self.start(&registration)?;
         }
         Ok(())
     }
@@ -97,23 +99,36 @@ fn permission(setting: NotificationSetting) -> Permission {
 impl Adapter for Native {
     fn permission(&self) -> Result<Permission, String> {
         let _apartment = Apartment::new()?;
-        if !self.registration.registered()? {
+        let registration = self.registration()?;
+        validate_saved(&registration, None)?;
+        if !registration.registered()? {
             return Ok(Permission {
                 authorization: "not_registered".into(),
                 alerts_enabled: None,
                 center_enabled: None,
             });
         }
-        native::permission(&self.registration).map(permission)
+        native::permission(&registration).map(permission)
     }
 
     fn request_permission(&self) -> Result<Permission, String> {
         let _apartment = Apartment::new()?;
+        let host = self.app.state::<Host>();
+        let store = host
+            .store
+            .lock()
+            .map_err(|_| "Notification storage unavailable.")?;
+        let mut identity = self
+            .identity
+            .lock()
+            .map_err(|_| "Notification identity unavailable.")?;
+        let registration = recover_identity(&mut identity, &store, &self.root)?;
+        validate_saved(&registration, None)?;
         // Windows has no desktop authorization prompt. Opt-in installs only our
         // owned identity, then reads the actual OS block; it changes no OS setting.
-        self.registration.install()?;
-        self.start()?;
-        native::permission(&self.registration).map(permission)
+        registration.install()?;
+        self.start(&registration)?;
+        native::permission(&registration).map(permission)
     }
 
     fn send(&self, notice: &Notice) -> Result<(), SendError> {
@@ -121,14 +136,20 @@ impl Adapter for Native {
             message,
             uncertain: false,
         })?;
-        if !self
-            .registration
-            .registered()
+        let registration = self
+            .registration()
+            .and_then(|registration| {
+                validate_saved(&registration, Some(&notice.id))?;
+                Ok(registration)
+            })
             .map_err(|message| SendError {
                 message,
                 uncertain: false,
-            })?
-        {
+            })?;
+        if !registration.registered().map_err(|message| SendError {
+            message,
+            uncertain: false,
+        })? {
             return Err(SendError {
                 message: "Notification registration is missing; opt in explicitly to set it up."
                     .into(),
@@ -136,13 +157,45 @@ impl Adapter for Native {
             });
         }
         native::send(
-            &self.registration,
+            &registration,
             &notice.id,
             notice.event.category.title(),
             notice.event.category.body(),
         )
         .map_err(|(message, uncertain)| SendError { message, uncertain })
     }
+}
+
+pub(super) fn saved_registration(store: &Store, root: &Path) -> Result<Registration, String> {
+    let registration = Registration {
+        version: 1,
+        profile: super::persisted_ledger(store)?.profile_id,
+        root: root.to_owned(),
+        executable: std::env::current_exe()
+            .and_then(|p| p.canonicalize())
+            .map_err(|_| "Notification executable is unavailable.")?,
+        credential_service: std::env::var("PR_SNIPER_KEYCHAIN_SERVICE").ok(),
+    };
+    registration.validate()?;
+    Ok(registration)
+}
+
+pub(super) fn recover_identity(
+    identity: &mut Result<Registration, String>,
+    store: &Store,
+    root: &Path,
+) -> Result<Registration, String> {
+    if identity.is_err() {
+        // Only explicit opt-in retries initialization. Failure leaves the adapter
+        // unusable; a new identity is cached only after persistence and readback.
+        super::restore(store)?;
+        *identity = saved_registration(store, root);
+    }
+    let registration = identity.as_ref().map_err(Clone::clone)?;
+    if super::persisted_ledger(store)?.profile_id != registration.profile {
+        return Err("Notification profile changed; restart PR Sniper before opting in. No registration was changed.".into());
+    }
+    Ok(registration.clone())
 }
 
 fn validate_saved(registration: &Registration, id: Option<&str>) -> Result<(), String> {
@@ -158,7 +211,7 @@ fn validate_saved(registration: &Registration, id: Option<&str>) -> Result<(), S
         return Err("Notification executable/profile moved; no alternate application or profile was opened.".into());
     }
     let store = Store::new(registration.root.clone());
-    let ledger = store.load_notifications()?;
+    let ledger = super::persisted_ledger(&store)?;
     if ledger.profile_id != registration.profile {
         return Err(
             "Notification profile is missing or was replaced; no alternate profile was opened."
@@ -208,21 +261,23 @@ pub(crate) fn show_error(error: &str) {
 
 // The single-instance plugin runs before Host setup. Store forwarded activation
 // without touching Host, then drain on the UI thread after manage.
-static PENDING: Mutex<Vec<(Registration, String)>> = Mutex::new(Vec::new());
+static PENDING: Mutex<native::StartupQueue> = Mutex::new(native::StartupQueue::new());
 
 pub(crate) fn forward(app: &tauri::AppHandle, args: &[String]) {
     match parse_open(args) {
         Ok(Some((registration, Some(id)))) => {
-            if app.try_state::<Host>().is_some() {
-                if let Err(error) = dispatch(app, registration, id) {
-                    show_error(&error);
+            let result = PENDING
+                .lock()
+                .map_err(|_| "Notification startup queue unavailable.".to_string())
+                .and_then(|mut pending| pending.forward((registration, id)));
+            match result {
+                Ok(Some((registration, id))) => {
+                    if let Err(error) = dispatch(app, registration, id) {
+                        show_error(&error);
+                    }
                 }
-            } else if let Ok(mut pending) = PENDING.lock() {
-                if pending.len() < 16 {
-                    pending.push((registration, id));
-                } else {
-                    show_error("Notification activation queue is full; retry after PR Sniper finishes starting.");
-                }
+                Ok(None) => {}
+                Err(error) => show_error(&error),
             }
         }
         Ok(_) => {}
@@ -238,13 +293,30 @@ pub(crate) fn ready(app: &tauri::AppHandle) {
         }
     });
     forward(app, &std::env::args().collect::<Vec<_>>());
-    if let Ok(mut pending) = PENDING.lock() {
-        for (registration, id) in pending.drain(..) {
-            if let Err(error) = dispatch(app, registration, id) {
-                show_error(&error);
+    let pending = PENDING
+        .lock()
+        .map_err(|_| "Notification startup queue unavailable.".to_string())
+        .and_then(|mut pending| pending.ready());
+    match pending {
+        Ok(pending) => {
+            for (registration, id) in pending {
+                if let Err(error) = dispatch(app, registration, id) {
+                    show_error(&error);
+                }
             }
         }
+        Err(error) => show_error(&error),
     }
+}
+
+pub(crate) fn shutdown(app: &tauri::AppHandle) {
+    let cancelled = PENDING.lock().map(|mut pending| pending.shutdown());
+    match cancelled {
+        Ok(pending) if pending.is_empty() => {}
+        Ok(_) => crate::report(app, "Notification startup navigation was cancelled during shutdown; retry the notification.".into()),
+        Err(_) => crate::report(app, "Notification startup queue could not be closed.".into()),
+    }
+    app.state::<Host>().notifications.shutdown();
 }
 
 fn parse_open(args: &[String]) -> Result<Option<(Registration, Option<String>)>, String> {
@@ -282,36 +354,22 @@ pub(crate) fn preflight() -> Result<bool, String> {
         validate_saved(&registration, None)?;
         // COM may start us while the GUI owner is still initializing. Receive
         // the callback before invoking the plugin that exits duplicate hosts.
-        let (tx, rx) = mpsc::sync_channel(1);
         let callback_registration = registration.clone();
-        let server = ActivationServer::start(
+        let handoff_registration = registration.clone();
+        native::run_relay(
             registration.clone(),
+            Arc::new(move |id| validate_saved(&callback_registration, Some(&id))),
             Arc::new(move |id| {
-                validate_saved(&callback_registration, Some(&id))?;
-                tx.try_send(id)
-                    .map_err(|_| "Notification activation is already being handled.".into())
-            }),
-        )?;
-        let received = rx.recv_timeout(Duration::from_secs(60));
-        match received {
-            Ok(id) => {
-                std::process::Command::new(&registration.executable)
-                    .args([native::OPEN_ARG, &registration.encode()?, &id])
+                std::process::Command::new(&handoff_registration.executable)
+                    .args([native::OPEN_ARG, &handoff_registration.encode()?, &id])
                     .env_remove("PR_SNIPER_DATA_DIR")
                     .env_remove("PR_SNIPER_KEYCHAIN_SERVICE")
                     .spawn()
                     .map_err(|_| "The exact notification application could not start.")?;
-            }
-            Err(_) => {
-                let released = server.wait_released();
-                server.stop()?;
-                released?;
-                return Err(
-                    "Windows did not supply a notification activation before timeout.".into(),
-                );
-            }
-        }
-        server.stop()?;
+                Ok(())
+            }),
+            Duration::from_secs(60),
+        )?;
         return Ok(false);
     }
     if let Some((registration, _)) = parse_open(&args)? {

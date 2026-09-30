@@ -13,6 +13,14 @@ registration and, when it matches, registers a **process-local** COM class facto
 Only the explicit notification opt-in operation creates persistent Windows
 identity. It does not change login/startup registration or any Windows setting.
 
+The adapter's identity must be read from an existing, validated notification
+ledger, never the synthetic default used by a missing-file read. If initial
+ledger persistence fails, only notifications become unavailable. Explicit opt-in
+can retry that persistence after the operator resolves the exact filesystem
+obstruction; it rebuilds the identity from the saved ledger before any Windows
+registration. Setup and the final opt-in save both recheck the persisted UUID.
+A replaced saved profile cannot silently reuse the prior runtime identity.
+
 Windows desktop notifications do not have a macOS-style authorization prompt.
 Opt-in creates this profile's owned Start Menu shortcut and current-user COM
 registration, then reads `ToastNotifier.Setting`. Application, user, group-policy
@@ -81,8 +89,17 @@ For a cold COM launch, preflight runs **before** plugins, accounts or default da
 root reads. A bounded, credential-free activation process receives the COM
 callback before starting the same executable with the exact profile and notice.
 This prevents the single-instance plugin from exiting the COM process before it
-receives the callback. The COM process waits for object/server-lock release,
-revokes its class object, and exits. It does not own a tray or provider operation.
+receives the callback. The relay admits one activation and closes admission
+before beginning its handoff. A second callback is rejected for retry, not
+acknowledged into an undrained queue. The first callback returns success only
+after its exact-profile GUI invocation was started successfully.
+
+On success, handoff failure or the 60-second handoff deadline, the relay closes
+new activation/object/server-lock admission and revokes its class object on the
+owning COM thread. It then keeps that apartment alive for at most five seconds
+while existing callback objects and server locks release. Release timeout is an
+explicit error, including alongside a handoff error. Only then does it finish
+the COM thread and exit. It does not own a tray or provider operation.
 
 The GUI invocation validates the unchanged executable, saved profile UUID, owned
 registration and saved notice before restoring the isolated environment. Isolated
@@ -92,8 +109,11 @@ to the actual current-user production data directory. Stale, missing or foreign
 profiles fail with a native error dialog rather than opening production state.
 
 The single-instance callback queues bounded activation requests received before
-`Host` is managed. After setup it drains requests through the same UI-thread
-navigation path. If a different profile is already running, the app reports that
+`Host` is managed. Readiness and queue mutation share one lock: setup atomically
+marks the queue ready and takes pending requests; later producers dispatch
+directly. Navigation and error UI run outside that lock. Shutdown closes
+admission and explicitly reports any cancelled startup navigation. If a
+different profile is already running, the app reports that
 conflict and asks the operator to quit it and retry; it does not open that
 profile's Settings or an unrelated pull request.
 
@@ -121,7 +141,9 @@ recovery. Do not remove another installation's entries or a broad product prefix
 
 The existing foundation test package imports the **actual native implementation**
 and runs identity/argument, native XML, aggregate permission mapping, real
-in-process COM callback/rejection and class-revocation tests. No replacement host,
+in-process COM callback/rejection and class-revocation tests, deterministic startup
+queue interleavings, held-handoff second activation, and retained callback/server
+lock handling on success, handoff error and timeout. No replacement host,
 notification domain or permission-success stub is introduced:
 
 ```powershell

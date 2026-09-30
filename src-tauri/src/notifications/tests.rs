@@ -78,6 +78,53 @@ impl Adapter for Wire {
     }
 }
 
+#[cfg(windows)]
+#[test]
+fn failed_initial_save_recovers_only_from_the_exact_persisted_profile() {
+    let root = tempfile::Builder::new()
+        .prefix("notification-save-obstruction-")
+        .tempdir_in(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target"))
+        .unwrap();
+    let store = Store::new(root.path().into());
+    store.save_queue_selection(None).unwrap();
+    let obstruction = root.path().join("state").join("notifications.json.tmp");
+    std::fs::write(&obstruction, b"owned obstruction").unwrap();
+    assert!(restore(&store).is_err());
+    let canonical = root.path().canonicalize().unwrap();
+    let mut identity = windows::saved_registration(&store, &canonical);
+    assert!(
+        identity.is_err(),
+        "Missing ledger must not supply a synthetic identity."
+    );
+    assert!(windows::recover_identity(&mut identity, &store, &canonical).is_err());
+    assert!(identity.is_err());
+    std::fs::remove_file(&obstruction).unwrap();
+    let registration = windows::recover_identity(&mut identity, &store, &canonical).unwrap();
+    let mut ledger = persisted_ledger(&store).unwrap();
+    assert_eq!(registration.profile, ledger.profile_id);
+    assert!(!ledger.enabled);
+    ledger.enabled = true;
+    let id = ledger.enqueue_test(Destination::Settings, 101).unwrap();
+    store.save_notifications(&ledger).unwrap();
+    let wire = Wire {
+        store: Store::new(root.path().into()),
+        calls: AtomicUsize::new(0),
+        failure: None,
+    };
+    let notice = prepare(&store, &[], &id, 102).unwrap();
+    registration.notice_id(&notice.id).unwrap();
+    assert_eq!(notice.id, id);
+    assert_eq!(submit(&wire, &notice), (Phase::AcceptedUnconfirmed, None));
+    assert_eq!(wire.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        persisted_ledger(&wire.store).unwrap().profile_id,
+        registration.profile
+    );
+    // A subsequent foreign saved identity cannot reuse or install this cache.
+    store.save_notifications(&Ledger::default()).unwrap();
+    assert!(windows::recover_identity(&mut identity, &store, &canonical).is_err());
+}
+
 #[test]
 fn windows_aggregate_permission_preserves_unknown_channels() {
     let permission = Permission {

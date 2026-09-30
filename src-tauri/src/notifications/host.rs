@@ -53,9 +53,11 @@ impl Coordinator {
         &self,
         registration: &super::windows_native::Registration,
     ) -> bool {
-        self.native
-            .as_ref()
-            .is_ok_and(|native| &native.registration == registration)
+        self.native.as_ref().is_ok_and(|native| {
+            native
+                .registration()
+                .is_ok_and(|saved| &saved == registration)
+        })
     }
 
     pub(crate) fn pump(app: &tauri::AppHandle) {
@@ -279,6 +281,15 @@ pub(crate) async fn set_notifications_enabled(
         }
         let store = host.store.lock().map_err(|_| "Notification storage unavailable.")?;
         let mut ledger = store.load_notifications()?;
+        #[cfg(windows)]
+        if enabled {
+            let registration = host.notifications.native.as_ref().map_err(Clone::clone)?.registration()?;
+            if persisted_ledger(&store)?.profile_id != registration.profile
+                || ledger.profile_id != registration.profile
+            {
+                return Err("Notification profile changed before opt-in was saved. Notifications were not enabled.".into());
+            }
+        }
         ledger.enabled = enabled;
         store.save_notifications(&ledger)
     }).await.map_err(|_| "Notification preference change failed.".to_string())?

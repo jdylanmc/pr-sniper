@@ -6,8 +6,8 @@ use std::{
     ffi::c_void,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicUsize, Ordering},
-        mpsc, Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, Mutex,
     },
     thread,
     time::Duration,
@@ -46,6 +46,57 @@ pub const SERVER_ARG: &str = "--pr-sniper-notification-server";
 pub const OPEN_ARG: &str = "--pr-sniper-notification-open";
 pub const CLEANUP_ARG: &str = "--pr-sniper-notification-unregister";
 const OWNER: &str = "PRSniperNotificationOwner";
+
+pub type ActivationRequest = (Registration, String);
+
+pub struct StartupQueue {
+    ready: bool,
+    stopped: bool,
+    pending: Vec<ActivationRequest>,
+}
+
+impl StartupQueue {
+    pub const fn new() -> Self {
+        Self {
+            ready: false,
+            stopped: false,
+            pending: Vec::new(),
+        }
+    }
+
+    pub fn forward(
+        &mut self,
+        request: ActivationRequest,
+    ) -> Result<Option<ActivationRequest>, String> {
+        if self.stopped {
+            return Err("PR Sniper is quitting; retry the notification after it exits.".into());
+        }
+        if self.ready {
+            return Ok(Some(request));
+        }
+        if self.pending.len() == 16 {
+            return Err(
+                "Notification activation queue is full; retry after PR Sniper finishes starting."
+                    .into(),
+            );
+        }
+        self.pending.push(request);
+        Ok(None)
+    }
+
+    pub fn ready(&mut self) -> Result<Vec<ActivationRequest>, String> {
+        if self.stopped {
+            return Err("Notification startup was cancelled because PR Sniper is quitting.".into());
+        }
+        self.ready = true;
+        Ok(std::mem::take(&mut self.pending))
+    }
+
+    pub fn shutdown(&mut self) -> Vec<ActivationRequest> {
+        self.stopped = true;
+        std::mem::take(&mut self.pending)
+    }
+}
 
 pub fn production_root() -> Result<PathBuf, String> {
     known_folder(&FOLDERID_LocalAppData).map(|p| p.join("com.jdylanmc.pr-sniper"))
@@ -662,15 +713,69 @@ pub fn send(
 
 type Callback = Arc<dyn Fn(String) -> Result<(), String> + Send + Sync>;
 
+pub fn run_relay(
+    registration: Registration,
+    validate: Callback,
+    handoff: Callback,
+    receive_timeout: Duration,
+) -> Result<(), String> {
+    let (tx, rx) = mpsc::sync_channel(1);
+    let admitting = Arc::new(AtomicBool::new(true));
+    let admission = admitting.clone();
+    let server = ActivationServer::start(
+        registration,
+        Arc::new(move |id| {
+            if admission
+                .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                return Err(
+                    "Notification activation is already being handled; retry this notification."
+                        .into(),
+                );
+            }
+            // A callback reports success only after forwarding, never for admission
+            // into a queue whose receiver may already be tearing down.
+            let result = validate(id.clone()).and_then(|()| handoff(id));
+            tx.send(result.clone())
+                .map_err(|_| "Notification handoff exceeded its lifetime.")?;
+            result
+        }),
+    )?;
+    let result = rx
+        .recv_timeout(receive_timeout)
+        .map_err(|_| "Windows did not complete a notification handoff before timeout.".to_string())
+        .and_then(|result| result);
+    admitting.store(false, Ordering::SeqCst);
+    combine(result, server.stop())
+}
+
+fn combine(operation: Result<(), String>, cleanup: Result<(), String>) -> Result<(), String> {
+    match (operation, cleanup) {
+        (Ok(()), result) | (result, Ok(())) => result,
+        (Err(operation), Err(cleanup)) => Err(format!("{operation} {cleanup}")),
+    }
+}
+
+#[derive(Default)]
+struct Lifetime {
+    closed: bool,
+    objects: usize,
+    locks: usize,
+}
+
 #[implement(INotificationActivationCallback)]
 struct Activation {
     registration: Registration,
     callback: Callback,
-    objects: Arc<AtomicUsize>,
+    lifetime: Arc<Mutex<Lifetime>>,
 }
 impl Drop for Activation {
     fn drop(&mut self) {
-        self.objects.fetch_sub(1, Ordering::SeqCst);
+        match self.lifetime.lock() {
+            Ok(mut lifetime) => lifetime.objects -= 1,
+            Err(_) => eprintln!("Windows notification object release accounting failed."),
+        }
     }
 }
 impl INotificationActivationCallback_Impl for Activation_Impl {
@@ -682,6 +787,14 @@ impl INotificationActivationCallback_Impl for Activation_Impl {
         count: u32,
     ) -> windows::core::Result<()> {
         if app.is_null() || args.is_null() || count != 0 {
+            return Err(E_INVALIDARG.into());
+        }
+        if self
+            .lifetime
+            .lock()
+            .map_err(|_| windows::core::Error::from(E_INVALIDARG))?
+            .closed
+        {
             return Err(E_INVALIDARG.into());
         }
         let (app, id) = unsafe { (app.to_string()?, args.to_string()?) };
@@ -696,8 +809,7 @@ impl INotificationActivationCallback_Impl for Activation_Impl {
 struct Factory {
     registration: Registration,
     callback: Callback,
-    objects: Arc<AtomicUsize>,
-    locks: Arc<AtomicUsize>,
+    lifetime: Arc<Mutex<Lifetime>>,
 }
 impl IClassFactory_Impl for Factory_Impl {
     fn CreateInstance(
@@ -715,41 +827,60 @@ impl IClassFactory_Impl for Factory_Impl {
         if !outer.is_null() {
             return Err(CLASS_E_NOAGGREGATION.into());
         }
-        self.objects.fetch_add(1, Ordering::SeqCst);
+        {
+            let mut lifetime = self
+                .lifetime
+                .lock()
+                .map_err(|_| windows::core::Error::from(E_INVALIDARG))?;
+            if lifetime.closed {
+                return Err(E_INVALIDARG.into());
+            }
+            lifetime.objects += 1;
+        }
         let activation: INotificationActivationCallback = Activation {
             registration: self.registration.clone(),
             callback: self.callback.clone(),
-            objects: self.objects.clone(),
+            lifetime: self.lifetime.clone(),
         }
         .into();
         unsafe { activation.query(iid, object).ok() }
     }
     fn LockServer(&self, lock: BOOL) -> windows::core::Result<()> {
+        let mut lifetime = self
+            .lifetime
+            .lock()
+            .map_err(|_| windows::core::Error::from(E_INVALIDARG))?;
         if lock.as_bool() {
-            self.locks.fetch_add(1, Ordering::SeqCst);
+            if lifetime.closed {
+                return Err(E_INVALIDARG.into());
+            }
+            lifetime.locks += 1;
         } else {
-            self.locks
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-                .map_err(|_| windows::core::Error::from(E_INVALIDARG))?;
+            lifetime.locks = lifetime
+                .locks
+                .checked_sub(1)
+                .ok_or_else(|| windows::core::Error::from(E_INVALIDARG))?;
         }
         Ok(())
     }
 }
 
+enum ServerCommand {
+    Revoke(mpsc::SyncSender<Result<(), String>>),
+    Finish,
+}
+
 pub struct ActivationServer {
-    stop: mpsc::Sender<()>,
+    commands: mpsc::Sender<ServerCommand>,
     thread: Option<thread::JoinHandle<Result<(), String>>>,
-    objects: Arc<AtomicUsize>,
-    locks: Arc<AtomicUsize>,
+    lifetime: Arc<Mutex<Lifetime>>,
 }
 impl ActivationServer {
     pub fn start(registration: Registration, callback: Callback) -> Result<Self, String> {
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let (stop, stopped) = mpsc::channel();
-        let objects = Arc::new(AtomicUsize::new(0));
-        let factory_objects = objects.clone();
-        let locks = Arc::new(AtomicUsize::new(0));
-        let factory_locks = locks.clone();
+        let (commands, received) = mpsc::channel();
+        let lifetime = Arc::new(Mutex::new(Lifetime::default()));
+        let factory_lifetime = lifetime.clone();
         let thread = thread::Builder::new()
             .name("notification-activation".into())
             .spawn(move || {
@@ -758,8 +889,7 @@ impl ActivationServer {
                     let factory: IClassFactory = Factory {
                         registration: registration.clone(),
                         callback,
-                        objects: factory_objects,
-                        locks: factory_locks,
+                        lifetime: factory_lifetime,
                     }
                     .into();
                     let cookie = unsafe {
@@ -780,9 +910,27 @@ impl ActivationServer {
                     }
                     Ok((_apartment, _factory, cookie)) => {
                         let _ = ready_tx.send(Ok(()));
-                        let _ = stopped.recv();
-                        unsafe { CoRevokeClassObject(cookie) }
-                            .map_err(|e| native_error("COM activation revocation", e))
+                        let mut cookie = Some(cookie);
+                        while let Ok(command) = received.recv() {
+                            match command {
+                                ServerCommand::Revoke(reply) => {
+                                    let result = match cookie.take() {
+                                        Some(cookie) => unsafe { CoRevokeClassObject(cookie) }
+                                            .map_err(|e| {
+                                                native_error("COM activation revocation", e)
+                                            }),
+                                        None => Ok(()),
+                                    };
+                                    let _ = reply.send(result);
+                                }
+                                ServerCommand::Finish => break,
+                            }
+                        }
+                        if let Some(cookie) = cookie {
+                            unsafe { CoRevokeClassObject(cookie) }
+                                .map_err(|e| native_error("COM activation revocation", e))?;
+                        }
+                        Ok(())
                     }
                 }
             })
@@ -793,19 +941,33 @@ impl ActivationServer {
             .map_err(|_| "Windows notification activation registration timed out.".to_string())
             .and_then(|v| v);
         if let Err(error) = result {
-            let _ = stop.send(());
+            let _ = commands.send(ServerCommand::Finish);
+            if !matches!(thread.join(), Ok(Ok(()))) {
+                return Err(format!(
+                    "{error} Notification activation startup teardown also failed."
+                ));
+            }
             return Err(error);
         }
         Ok(Self {
-            stop,
+            commands,
             thread: Some(thread),
-            objects,
-            locks,
+            lifetime,
         })
     }
     pub fn wait_released(&self) -> Result<(), String> {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while self.objects.load(Ordering::SeqCst) != 0 || self.locks.load(Ordering::SeqCst) != 0 {
+        loop {
+            let released = {
+                let lifetime = self
+                    .lifetime
+                    .lock()
+                    .map_err(|_| "Notification COM lifetime unavailable.")?;
+                lifetime.objects == 0 && lifetime.locks == 0
+            };
+            if released {
+                return Ok(());
+            }
             if std::time::Instant::now() >= deadline {
                 return Err(
                     "Windows retained the notification COM callback after its bounded handoff."
@@ -814,23 +976,46 @@ impl ActivationServer {
             }
             thread::sleep(Duration::from_millis(10));
         }
-        Ok(())
     }
     pub fn stop(mut self) -> Result<(), String> {
-        let _ = self.stop.send(());
-        self.thread
+        self.shutdown()
+    }
+
+    fn shutdown(&mut self) -> Result<(), String> {
+        let closed = self
+            .lifetime
+            .lock()
+            .map(|mut lifetime| lifetime.closed = true)
+            .map_err(|_| "Notification COM admission could not close.".to_string());
+        let (tx, rx) = mpsc::sync_channel(1);
+        let revoked = self
+            .commands
+            .send(ServerCommand::Revoke(tx))
+            .map_err(|_| "Notification activation thread is unavailable.".to_string())
+            .and_then(|()| {
+                rx.recv_timeout(Duration::from_secs(5))
+                    .map_err(|_| "Notification COM revocation timed out.".to_string())
+            })
+            .and_then(|result| result);
+        // Keep the MTA alive after revocation while clients release existing
+        // objects/locks. No new object, lock, or activation can enter this fence.
+        let released = self.wait_released();
+        let _ = self.commands.send(ServerCommand::Finish);
+        let joined = self
+            .thread
             .take()
             .unwrap()
             .join()
-            .map_err(|_| "Windows notification activation thread failed.")?
+            .map_err(|_| "Windows notification activation thread failed.".to_string())
+            .and_then(|result| result);
+        combine(combine(closed, revoked), combine(released, joined))
     }
 }
 impl Drop for ActivationServer {
     fn drop(&mut self) {
-        let _ = self.stop.send(());
-        if let Some(thread) = self.thread.take() {
-            if !matches!(thread.join(), Ok(Ok(()))) {
-                eprintln!("Windows notification activation teardown failed.");
+        if self.thread.is_some() {
+            if let Err(error) = self.shutdown() {
+                eprintln!("{error}");
             }
         }
     }

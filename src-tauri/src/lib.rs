@@ -2386,7 +2386,7 @@ pub fn run() {
     app.run(|app, event| {
         #[cfg(windows)]
         if let tauri::RunEvent::Exit = event {
-            app.state::<Host>().notifications.shutdown();
+            notifications::windows::shutdown(app);
         }
         if let tauri::RunEvent::ExitRequested { api, .. } = event {
             if !app.state::<Host>().quitting.load(Ordering::SeqCst) {
