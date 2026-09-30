@@ -64,6 +64,13 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Added
 
+- Add current-user Windows installer candidates and checksum-pinned Chocolatey
+  package tooling, with scoped rollback, removal checks and separate unsigned
+  test packages. Public distribution remains gated on trusted signing, publisher
+  setup and native lifecycle acceptance; the existing macOS release path stays
+  unchanged. See [#62](https://github.com/jdylanmc/pr-sniper/issues/62) and
+  [#63](https://github.com/jdylanmc/pr-sniper/issues/63).
+
 - Add the native Windows system-tray host, opt-in current-user startup
   registration and Windows notification activation, preserving the existing
   review interface and human-owned decisions. Windows CI now builds the full
