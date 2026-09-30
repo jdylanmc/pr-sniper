@@ -35,12 +35,14 @@ fn selection() -> Selection {
                 account_id: "33".into(),
             }),
             doctrine: Some("Correctness".into()),
+            doctrines: None,
             prompt: "Look for defects.".into(),
             signature: "machine".into(),
         },
         policy: Policy::default(),
         doctrine: Some("Trace behavior precisely.".into()),
         preset: None,
+        configuration: None,
     }
 }
 fn context(changed: bool) -> ReviewContext {

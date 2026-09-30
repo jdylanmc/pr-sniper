@@ -44,6 +44,7 @@ fn repository(enabled: bool) -> Repository {
         review_preset: None,
         watched_authors: Vec::new(),
         assignments: Vec::new(),
+        primary_assignment_id: None,
     }
 }
 
@@ -1541,6 +1542,7 @@ fn each_assignment_schedule_has_its_own_health_and_due_ticket() {
         model: "gpt-4o".into(),
         ai_account: None,
         doctrine: None,
+        doctrines: None,
         prompt: "review".into(),
         signature: "sig-a".into(),
     });
@@ -1550,6 +1552,7 @@ fn each_assignment_schedule_has_its_own_health_and_due_ticket() {
         model: "gpt-4o".into(),
         ai_account: None,
         doctrine: None,
+        doctrines: None,
         prompt: "review".into(),
         signature: "sig-b".into(),
     });
@@ -1563,6 +1566,7 @@ fn each_assignment_schedule_has_its_own_health_and_due_ticket() {
             },
             comment: false,
             approve: false,
+            actions: None,
         },
         Assignment {
             id: "00000000-0000-4000-8000-000000000011".into(),
@@ -1573,6 +1577,7 @@ fn each_assignment_schedule_has_its_own_health_and_due_ticket() {
             },
             comment: false,
             approve: false,
+            actions: None,
         },
     ];
     set_settings(&store, &settings);
@@ -2284,6 +2289,7 @@ fn schedule_reconciliation_uses_only_exact_legacy_or_assignment_keys() {
             model: "gpt-4o".into(),
             ai_account: None,
             doctrine: None,
+            doctrines: None,
             prompt: "review".into(),
             signature: "sig-a".into(),
         },
@@ -2293,6 +2299,7 @@ fn schedule_reconciliation_uses_only_exact_legacy_or_assignment_keys() {
             model: "gpt-4o".into(),
             ai_account: None,
             doctrine: None,
+            doctrines: None,
             prompt: "review".into(),
             signature: "sig-b".into(),
         },
@@ -2307,6 +2314,7 @@ fn schedule_reconciliation_uses_only_exact_legacy_or_assignment_keys() {
             },
             comment: false,
             approve: false,
+            actions: None,
         },
         Assignment {
             id: "00000000-0000-4000-8000-000000000011".into(),
@@ -2317,6 +2325,7 @@ fn schedule_reconciliation_uses_only_exact_legacy_or_assignment_keys() {
             },
             comment: false,
             approve: false,
+            actions: None,
         },
     ];
     set_settings(&store, &settings);
@@ -2361,6 +2370,7 @@ fn removed_inflight_schedule_keeps_exclusion_until_the_read_finishes() {
         model: "gpt-4o".into(),
         ai_account: None,
         doctrine: None,
+        doctrines: None,
         prompt: "review".into(),
         signature: "sig".into(),
     });
@@ -2373,6 +2383,7 @@ fn removed_inflight_schedule_keeps_exclusion_until_the_read_finishes() {
         },
         comment: false,
         approve: false,
+        actions: None,
     });
     set_settings(&store, &settings);
     let mut monitor = Monitor::restore(&store).unwrap();
@@ -2490,6 +2501,7 @@ fn one_manual_request_drains_every_account_and_assignment_for_a_shared_repositor
             model: "gpt-4o".into(),
             ai_account: None,
             doctrine: None,
+            doctrines: None,
             prompt: "review".into(),
             signature: "sig".into(),
         })
@@ -2504,6 +2516,7 @@ fn one_manual_request_drains_every_account_and_assignment_for_a_shared_repositor
             },
             comment: false,
             approve: false,
+            actions: None,
         },
         Assignment {
             id: "00000000-0000-4000-8000-000000000011".into(),
@@ -2514,6 +2527,7 @@ fn one_manual_request_drains_every_account_and_assignment_for_a_shared_repositor
             },
             comment: false,
             approve: false,
+            actions: None,
         },
     ];
     let mut second = repository(true);
@@ -2528,6 +2542,7 @@ fn one_manual_request_drains_every_account_and_assignment_for_a_shared_repositor
         },
         comment: false,
         approve: false,
+        actions: None,
     });
     settings.repositories.push(second);
     set_settings(&store, &settings);

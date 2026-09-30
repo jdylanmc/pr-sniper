@@ -173,7 +173,7 @@ for (const viewport of [
       .click();
     await modal.getByText("Repository and connection", { exact: true }).click();
     const last = modal.getByRole("button", {
-      name: "Remove repository",
+      name: "Cancel repository changes",
       exact: true,
     });
     await last.scrollIntoViewIfNeeded();
@@ -214,11 +214,14 @@ for (const viewport of [
     await expect(opener).toBeFocused();
 
     const save = page.getByRole("button", {
-      name: "Save changes",
+      name: "Reset changes",
       exact: true,
     });
     await save.focus();
     await expect(save).toBeFocused();
+    await expect(
+      page.getByRole("button", { name: "Save preferences", exact: true }),
+    ).toBeDisabled();
     const footer = await save.boundingBox();
     expect(footer.y).toBeGreaterThanOrEqual(0);
     expect(footer.y + footer.height).toBeLessThanOrEqual(viewport.height);

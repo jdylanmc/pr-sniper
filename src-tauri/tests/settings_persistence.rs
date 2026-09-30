@@ -205,8 +205,9 @@ fn ordinary_configuration_contains_only_nonsecret_settings() {
         serde_json::json!({
             "launch_at_login": true,
             "doctrines": [],
+            "capacity": 4,
             "defaults": {
-                "schedule": {"kind":"interval","minutes":15,"timezone":"UTC"},
+                "schedule": {"kind":"cron","expression":"*/15 * * * *","timezone":"UTC"},
                 "watched_authors": [],
                 "reviewer_assignment": true,
                 "adapter": "copilot",
@@ -298,6 +299,7 @@ fn the_same_provider_repository_persists_as_distinct_account_bindings() {
         review_preset: None,
         watched_authors: Vec::new(),
         assignments: Vec::new(),
+        primary_assignment_id: None,
     });
 
     store.save_settings(&settings).unwrap();
@@ -339,6 +341,7 @@ fn azure_devops_contract_persists_without_a_live_provider_implementation() {
         review_preset: None,
         watched_authors: Vec::new(),
         assignments: Vec::new(),
+        primary_assignment_id: None,
     });
 
     store.save_settings(&settings).unwrap();

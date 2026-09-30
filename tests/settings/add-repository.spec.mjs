@@ -26,7 +26,9 @@ test("adding a repository in Settings persists its canonical name after restart"
     await expect(
       page.getByText("octo/hello-world", { exact: true }),
     ).toBeVisible();
-    expect((await store("snapshot")).settings.repositories ?? []).toEqual([]);
+    expect((await store("snapshot")).settings.repositories).toMatchObject([
+      { name: "octo/hello-world", enabled: false },
+    ]);
     await saveChanges(page);
     await expect(page.getByRole("alert")).toBeHidden();
   });
@@ -38,7 +40,7 @@ test("adding a repository in Settings persists its canonical name after restart"
       expect.objectContaining({
         provider: "github",
         name: "octo/hello-world",
-        enabled: true,
+        enabled: false,
       }),
     ]);
   });

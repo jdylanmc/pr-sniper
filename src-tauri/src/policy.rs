@@ -70,8 +70,8 @@ pub struct Policy {
 impl Default for Policy {
     fn default() -> Self {
         Self {
-            schedule: Schedule::Interval {
-                minutes: 15,
+            schedule: Schedule::Cron {
+                expression: "*/15 * * * *".into(),
                 timezone: "UTC".into(),
             },
             watched_authors: Vec::new(),

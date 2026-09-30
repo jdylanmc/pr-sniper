@@ -3,16 +3,13 @@ import { join } from "node:path";
 import { expect, test } from "./fixtures.mjs";
 import { denyRead } from "./permissions.mjs";
 import {
-  assignment,
-  saveAssignment,
   seedAgent,
-  setAgentPrompt,
   editAgent,
-  setSchedule,
   startupPreference,
+  section,
 } from "./navigation.mjs";
 
-test("invalid assignment time zone reports an error without replacing valid settings", async ({
+test("invalid global time zone reports an error without replacing valid settings", async ({
   page,
   store,
   dataRoot,
@@ -22,14 +19,11 @@ test("invalid assignment time zone reports an error without replacing valid sett
   const path = join(dataRoot, "config/settings.json");
   const before = await readFile(path);
   await page.goto("/?view=settings");
-  const modal = await assignment(page, "fixture/project");
-  await setSchedule(modal, {
-    kind: "interval",
-    minutes: 15,
-    timezone: "Mars/Olympus_Mons",
-  });
-  await saveAssignment(page, modal);
-  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await section(page, "Preferences");
+  await page.locator("#global-timezone").fill("Mars/Olympus_Mons");
+  await page
+    .getByRole("button", { name: "Save preferences", exact: true })
+    .click();
   await expect(page.locator("#error")).toBeVisible();
   await expect(page.locator("#save-settings")).toBeEnabled();
   expect(await readFile(path)).toEqual(before);
@@ -81,11 +75,19 @@ test("a failed Agent write is visible and preserves the previous config bytes", 
   await seedAgent(store);
   const before = await readFile(join(dataRoot, "config/settings.json"));
   await page.goto("/?view=settings");
-  await setAgentPrompt(page, "New valid unsaved prompt.");
+  const modal = await editAgent(page);
+  await modal
+    .getByRole("textbox", { name: "Prompt", exact: true })
+    .fill("New valid unsaved prompt.");
   await mkdir(join(dataRoot, "config/settings.json.tmp"));
-  await page.locator("#save-settings").click();
-  await expect(page.locator("#error")).toBeVisible();
-  await expect(page.locator("#save-settings")).toBeEnabled();
+  await modal.getByRole("button", { name: "Save agent", exact: true }).click();
+  await expect(modal.getByRole("alert")).toBeVisible();
+  await expect(
+    modal.getByRole("button", { name: "Save agent", exact: true }),
+  ).toBeEnabled();
+  await expect(
+    modal.getByRole("textbox", { name: "Prompt", exact: true }),
+  ).toHaveValue("New valid unsaved prompt.");
   expect(await readFile(join(dataRoot, "config/settings.json"))).toEqual(
     before,
   );

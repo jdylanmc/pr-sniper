@@ -96,10 +96,12 @@ interface ReviewCandidate {
   job: Job;
   trust_required: boolean;
   blocked: string | null;
+  planned_selection?: import("./resources").ReviewSelection | null;
   run: {
     phase: string;
     error: string | null;
-    selection: { agent: { model: string; ai_account: { account_id: string } } };
+    selection: import("./resources").ReviewSelection;
+    job?: Job;
     operation: NonNullable<Health["operation"]>;
     result: {
       reviewed_base_sha?: string | null;
@@ -474,20 +476,79 @@ export function renderMonitoring(
       const row = document.createElement("article");
       row.className = "review-run";
       const heading = document.createElement("h3");
-      heading.textContent = `${candidate.job.repository_name} #${candidate.job.number} / ${candidate.agent_name}`;
+      const run = candidate.run;
+      const capturedJob = run?.job ?? candidate.job;
+      heading.textContent = `${capturedJob.repository_name} #${capturedJob.number} / ${run?.selection.agent.name ?? candidate.agent_name}`;
       const identity = document.createElement("p");
       identity.className = "hint";
-      identity.textContent = `GitHub: ${candidate.job.account_login} (${candidate.job.account_id}). Head ${candidate.job.head_sha}.`;
+      identity.textContent = `GitHub: ${capturedJob.account_login} (${capturedJob.account_id}). Head ${capturedJob.head_sha}.`;
       row.append(heading, identity);
-      const run = candidate.run;
       const state = document.createElement("p");
       state.textContent = run
-        ? `${run.phase}. State: ${run.operation.state}; attempt ${run.operation.attempt_count}; deadline ${time(run.operation.retry_deadline)}. Copilot account: ${run.selection.agent.ai_account.account_id}; model: ${run.selection.agent.model}.`
+        ? `${run.phase}. State: ${run.operation.state}; attempt ${run.operation.attempt_count}; deadline ${time(run.operation.retry_deadline)}. Copilot account: ${run.selection.agent.ai_account?.account_id ?? "not captured"}; model: ${run.selection.agent.model}.`
         : (candidate.blocked ??
           (candidate.trust_required
             ? "Trust confirmation required for this exact revision."
             : "Waiting for manual start or the automatic start gate."));
       row.append(state);
+      const configuration = (
+        label: string,
+        selection: import("./resources").ReviewSelection | null | undefined,
+      ) => {
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = label;
+        details.append(summary);
+        const text = (title: string, value: unknown) => {
+          const heading = document.createElement("h4");
+          heading.textContent = title;
+          const body = document.createElement("pre");
+          body.textContent =
+            typeof value === "string"
+              ? value
+              : (JSON.stringify(value, null, 2) ?? "Not captured");
+          details.append(heading, body);
+        };
+        if (!selection) {
+          text(
+            "Unavailable",
+            candidate.blocked ?? "No saved planned configuration is available.",
+          );
+        } else {
+          text("Agent", selection.agent);
+          text("Agent prompt", selection.agent.prompt);
+          text("Repository policy", selection.policy);
+          text("Review preset", selection.preset);
+          if (selection.configuration) {
+            text(
+              "Repository and assignments",
+              selection.configuration.repository,
+            );
+            text(
+              "Captured assignment authority (not a current provider grant)",
+              selection.configuration.authority,
+            );
+            if (!selection.configuration.doctrines.length)
+              text("Doctrines", "None selected");
+            for (const doctrine of selection.configuration.doctrines)
+              text(`Doctrine: ${doctrine.title}`, doctrine.body);
+          } else {
+            text(
+              "Legacy snapshot",
+              "Full doctrine and assignment configuration was not captured. Today's settings are not historical evidence.",
+            );
+            if (selection.doctrine)
+              text("Retained legacy doctrine text", selection.doctrine);
+          }
+        }
+        row.append(details);
+      };
+      if (run) configuration("Captured execution configuration", run.selection);
+      if (!run || ["queued", "interrupted"].includes(run.operation.state))
+        configuration(
+          "Planned configuration (revalidated at start; not execution evidence)",
+          candidate.planned_selection,
+        );
       if (run?.error) {
         const error = document.createElement("p");
         error.className = "review-failure";

@@ -5,7 +5,7 @@ use crate::{
     github::{metadata::PullRequest, ConnectionError},
     monitoring::{self, JobOperation, MonitoringError, OperationFailure, OperationState, QueueJob},
     policy::Policy,
-    storage::{Agent, Settings, Store},
+    storage::{Agent, AssignmentAuthority, Doctrine, Repository, Settings, Store},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -20,6 +20,18 @@ pub struct Selection {
     pub policy: Policy,
     pub doctrine: Option<String>,
     pub preset: Option<String>,
+    /// Missing on legacy executions; never filled from current settings on load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<ExecutionConfiguration>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionConfiguration {
+    pub repository: Repository,
+    pub authority: AssignmentAuthority,
+    /// In Agent-selected order, with the exact saved title and full body.
+    pub doctrines: Vec<Doctrine>,
 }
 
 impl Selection {
@@ -61,18 +73,28 @@ impl Selection {
                 "Choose a Copilot account and account-returned model for this Agent.".into(),
             );
         }
-        let doctrine = agent
-            .doctrine
-            .as_ref()
+        let doctrines = agent
+            .doctrine_titles()
+            .into_iter()
             .map(|title| {
                 settings
                     .doctrines
                     .iter()
                     .find(|d| d.title.trim().to_lowercase() == title.trim().to_lowercase())
-                    .map(|d| d.body.clone())
+                    .cloned()
                     .ok_or("The Agent's doctrine is unavailable.")
             })
-            .transpose()?;
+            .collect::<Result<Vec<_>, _>>()?;
+        let doctrine = match doctrines.as_slice() {
+            [] => None,
+            [single] => Some(single.body.clone()),
+            many => Some(
+                many.iter()
+                    .map(|d| format!("## {}\n\n{}", d.title, d.body))
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
+            ),
+        };
         let preset = repository
             .review_preset
             .as_ref()
@@ -91,6 +113,11 @@ impl Selection {
             policy,
             doctrine,
             preset,
+            configuration: Some(ExecutionConfiguration {
+                repository: repository.clone(),
+                authority: repository.assignment_authority(assignment),
+                doctrines,
+            }),
         })
     }
 }

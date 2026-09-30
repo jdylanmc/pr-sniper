@@ -127,7 +127,7 @@ test("activation saves filter drafts then scopes 1,800 matching pull requests ex
   await picker.getByRole("button", { name: "Add person" }).click();
   await repository.getByRole("button", { name: "Configure scope" }).click();
   await expect(repository.locator("[data-scope-status]")).toContainText(
-    "Save changes before previewing monitoring scope",
+    "Save repository before previewing monitoring scope",
   );
   expect(previewCalls).toBe(0);
   await closeDialog(page);

@@ -27,6 +27,7 @@ pub(crate) struct Candidate {
     pub job: QueueJob,
     pub trust_required: bool,
     pub blocked: Option<String>,
+    pub planned_selection: Option<Selection>,
     pub run: Option<ReviewRun>,
 }
 
@@ -59,11 +60,16 @@ pub(crate) fn candidates(store: &crate::storage::Store) -> Result<Vec<Candidate>
                 .find(|a| a.id == assignment.agent_id)
                 .map(|a| a.name.clone())
                 .unwrap_or_else(|| "Missing Agent".into());
+            let run = reviews.iter().rev().find(|r| r.key == key).cloned();
             result.push(Candidate {
-                run: reviews.iter().rev().find(|r| r.key == key).cloned(),
+                agent_name: run
+                    .as_ref()
+                    .map(|r| r.selection.agent.name.clone())
+                    .unwrap_or(agent_name),
+                planned_selection: selection.as_ref().ok().cloned(),
+                run,
                 key,
                 assignment_id: assignment.id.clone(),
-                agent_name,
                 trust_required: job.waiting == monitoring::WAITING_TRUST_CONFIRMATION,
                 blocked: selection.err(),
                 job: job.clone(),
@@ -82,6 +88,7 @@ pub(crate) fn candidates(store: &crate::storage::Store) -> Result<Vec<Candidate>
                     "Historical review; assignment or repository is no longer available.".into(),
                 ),
                 run: Some(run),
+                planned_selection: None,
             });
         }
     }

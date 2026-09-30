@@ -11,7 +11,6 @@ import {
   seedAgent,
   setAgentPrompt,
   editAgent,
-  setSchedule,
 } from "./navigation.mjs";
 
 test.beforeEach(async ({ page, store }) => {
@@ -23,7 +22,7 @@ test.beforeEach(async ({ page, store }) => {
 });
 
 for (const action of ["add", "disable"]) {
-  test(`unsaved Agent prompt survives an unrelated repository ${action}`, async ({
+  test(`saved Agent prompt survives an unrelated repository ${action}`, async ({
     page,
     store,
   }) => {
@@ -45,7 +44,13 @@ for (const action of ["add", "disable"]) {
       modal.getByRole("textbox", { name: "Prompt", exact: true }),
     ).toHaveValue(prompt);
     await closeDialog(page);
-    expect((await store("snapshot")).settings).toEqual(original);
+    expect((await store("snapshot")).settings.agents[0]).toEqual({
+      ...original.agents[0],
+      prompt,
+    });
+    expect((await store("snapshot")).settings.defaults).toEqual(
+      original.defaults,
+    );
     await saveChanges(page);
     const saved = (await store("snapshot")).settings;
     expect(saved.agents[0]).toEqual({ ...original.agents[0], prompt });
@@ -57,39 +62,39 @@ for (const action of ["add", "disable"]) {
 }
 
 for (const other of ["agent", "neighbor"]) {
-  test(`repository assignment draft survives editing ${other} until global Save with independent timers`, async ({
+  test(`saved repository assignment survives independently saving ${other}`, async ({
     page,
     store,
   }) => {
     const before = (await store("snapshot")).settings;
     let modal = await assignment(page, "octo/hello-world");
-    await setSchedule(modal, { kind: "interval", minutes: 7, timezone: "UTC" });
+    await modal.getByRole("checkbox", { name: /^Comment/ }).uncheck();
     await saveAssignment(page, modal);
     if (other === "agent")
       await setAgentPrompt(page, "Updated reusable Agent.");
     else {
       modal = await assignment(page, "neighbor/keep-me");
-      await setSchedule(modal, {
-        kind: "interval",
-        minutes: 25,
-        timezone: "Europe/London",
-      });
+      await modal.getByRole("checkbox", { name: /^Comment/ }).check();
       await saveAssignment(page, modal);
     }
-    expect((await store("snapshot")).settings).toEqual(before);
+    expect(
+      (await store("snapshot")).settings.repositories[0].assignments[0].comment,
+    ).toBe(false);
     modal = await assignment(page, "octo/hello-world", 0);
     await expect(
-      modal.getByLabel("Interval minutes", { exact: true }),
-    ).toHaveValue("7");
+      modal.getByRole("checkbox", { name: /^Comment/ }),
+    ).not.toBeChecked();
     await closeDialog(page);
     await closeDialog(page);
     await saveChanges(page);
     await page.reload();
     const saved = (await store("snapshot")).settings;
-    expect(saved.repositories[0].assignments[0].schedule.minutes).toBe(7);
+    expect(saved.repositories[0].assignments[0].schedule).toEqual(
+      before.defaults.schedule,
+    );
     if (other === "agent")
       expect(saved.agents[0].prompt).toBe("Updated reusable Agent.");
-    else expect(saved.repositories[1].assignments[0].schedule.minutes).toBe(25);
+    else expect(saved.repositories[1].assignments[0].comment).toBe(true);
     expect(saved.defaults).toEqual(before.defaults);
   });
 }
@@ -125,18 +130,30 @@ for (const target of ["agent", "assignment"]) {
     store,
     ipc,
   }) => {
+    const modal =
+      target === "agent"
+        ? await editAgent(page)
+        : await assignment(page, "octo/hello-world");
     if (target === "agent")
-      await setAgentPrompt(page, "Submitted before held reply.");
-    else await saveAssignment(page, await assignment(page, "octo/hello-world"));
-    const hold = ipc.holdNext("save_preferences");
+      await modal
+        .getByRole("textbox", { name: "Prompt", exact: true })
+        .fill("Submitted before held reply.");
+    const hold = ipc.holdNext("save_resource");
     try {
-      await page.locator("#save-settings").click();
+      await modal
+        .locator("form")
+        .getByRole("button", {
+          name: target === "agent" ? "Save agent" : "Assign agent",
+          exact: true,
+        })
+        .click();
       await hold.arrived;
       const controls = await page
         .locator(
           ".settings-window input,.settings-window textarea,.settings-window select,.settings-window button",
         )
         .all();
+      await expect(page.locator("#save-status")).toHaveText("Working...");
       expect(controls.length).toBeGreaterThan(0);
       for (const control of controls) await expect(control).toBeDisabled();
       hold.release();
@@ -145,6 +162,7 @@ for (const target of ["agent", "assignment"]) {
       if (target === "agent")
         expect(saved.agents[0].prompt).toBe("Submitted before held reply.");
       else expect(saved.repositories[0].assignments).toHaveLength(1);
+      if (target === "assignment") await closeDialog(page);
       await expect(
         page
           .getByRole("navigation", { name: "Settings sections" })
@@ -156,31 +174,31 @@ for (const target of ["agent", "assignment"]) {
   });
 }
 
-test("failed assignment save restores editable fields but keeps Approve disabled", async ({
+test("failed assignment save restores the draft and independent opt-in controls", async ({
   page,
   dataRoot,
 }) => {
   const before = await readFile(join(dataRoot, "config/settings.json"));
-  let modal = await assignment(page, "octo/hello-world");
-  await setSchedule(modal, { kind: "interval", minutes: 42, timezone: "UTC" });
-  await saveAssignment(page, modal);
+  const modal = await assignment(page, "octo/hello-world");
+  await modal.getByRole("checkbox", { name: /^Comment/ }).uncheck();
   await mkdir(join(dataRoot, "config/settings.json.tmp"));
-  await page.locator("#save-settings").click();
-  await expect(page.locator("#error")).toBeVisible();
-  await expect(page.locator("#save-settings")).toBeEnabled();
-  modal = await assignment(page, "octo/hello-world", 0);
+  await modal
+    .locator("form")
+    .getByRole("button", { name: "Assign agent", exact: true })
+    .click();
+  await expect(modal.getByRole("alert")).toBeVisible();
   await expect(
-    modal.getByRole("combobox", {
-      name: "Check for pull requests",
-      exact: true,
-    }),
+    modal
+      .locator("form")
+      .getByRole("button", { name: "Assign agent", exact: true }),
   ).toBeEnabled();
   await expect(
-    modal.getByLabel("Interval minutes", { exact: true }),
-  ).toHaveValue("42");
+    modal.getByRole("combobox", { name: "Agent", exact: true }),
+  ).toBeEnabled();
   await expect(
-    modal.getByRole("checkbox", { name: /^Approve/ }),
-  ).toBeDisabled();
+    modal.getByRole("checkbox", { name: /^Comment/ }),
+  ).not.toBeChecked();
+  await expect(modal.getByRole("checkbox", { name: /^Approve/ })).toBeEnabled();
   expect(await readFile(join(dataRoot, "config/settings.json"))).toEqual(
     before,
   );
