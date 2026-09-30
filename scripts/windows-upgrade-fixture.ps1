@@ -10,7 +10,13 @@ $version = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)"
 $destination = Join-Path $target 'windows-upgrade-fixture'
 New-Item -ItemType Directory $destination -ErrorAction Stop | Out-Null
 $configuration = Join-Path $destination 'test-version.json'
-@{ version = $version } | ConvertTo-Json | Set-Content $configuration -Encoding utf8
+$webviewFixture = 'Software\PRSniperInstallerTests\' + [guid]::NewGuid()
+$template = Join-Path $destination 'test-installer.nsi'
+$definitions = "!define PR_SNIPER_TEST_BUILD`n!define WEBVIEW_MACHINE_KEY `"$webviewFixture\machine-missing`"`n!define WEBVIEW_USER_KEY `"$webviewFixture`"`n"
+$definitions + (Get-Content (Join-Path $repository 'src-tauri\windows\installer.nsi') -Raw) |
+    Set-Content $template -Encoding utf8
+@{ version = $version; bundle = @{ windows = @{ nsis = @{ template = $template } } } } |
+    ConvertTo-Json -Depth 5 | Set-Content $configuration -Encoding utf8
 # No release manifest or tag changes: Tauri merges this disposable override.
 & npm exec tauri build -- --ci --no-sign --bundles nsis --config $configuration -- --locked
 if ($LASTEXITCODE -ne 0) { throw 'Test-only upgraded installer build failed.' }
@@ -30,4 +36,5 @@ Copy-Item $installer (Join-Path $destination 'upgrade-test-only.exe')
     version = $version
     sha256 = (Get-FileHash $installer).Hash.ToLowerInvariant()
     application_sha256 = (Get-FileHash $app).Hash.ToLowerInvariant()
+    webview_fixture = $webviewFixture
 } | ConvertTo-Json | Set-Content (Join-Path $destination 'fixture.json') -Encoding utf8

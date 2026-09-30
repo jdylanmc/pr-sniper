@@ -8,6 +8,7 @@ if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hoste
     throw 'Installation acceptance is forbidden outside this repository on a fresh GitHub-hosted Windows VM.'
 }
 $repository = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'windows-host-readiness.ps1')
 $directory = Join-Path $env:LOCALAPPDATA 'PR Sniper'
 $data = Join-Path $env:LOCALAPPDATA 'com.jdylanmc.pr-sniper'
 $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'PR Sniper.lnk'
@@ -70,11 +71,12 @@ function Assert-Installed($Metadata, [string] $Installer) {
         throw 'Installed bytes/version differ from this exact candidate.'
     }
     if (Get-Process -Name 'pr-sniper' -ErrorAction SilentlyContinue) { throw 'Installer silently launched the app.' }
+    $env:PR_SNIPER_DATA_DIR = Join-Path $workspace ('profile-' + [guid]::NewGuid())
     $script:ownedHost = Start-Process $app -WorkingDirectory $workspace -PassThru
-    Start-Sleep -Seconds 5
-    $script:ownedHost.Refresh()
-    if ($script:ownedHost.HasExited -or $script:ownedHost.MainWindowHandle -ne [IntPtr]::Zero) {
-        throw 'Installed tray-host smoke failed (exited or showed a startup window).'
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    while (-not (Test-PrSniperHostReady $script:ownedHost $env:PR_SNIPER_DATA_DIR)) {
+        if ([DateTime]::UtcNow -ge $deadline) { throw 'Installed host did not initialize its fresh owned profile.' }
+        Start-Sleep -Milliseconds 100
     }
     $blocked = Start-Process $Installer -ArgumentList '/S' -PassThru
     if (-not $blocked.WaitForExit(30000)) {
@@ -97,6 +99,13 @@ try {
         @{ metadata = $base; installer = (Join-Path $Candidate $base.filename) },
         @{ metadata = $next; installer = (Join-Path $Upgrade 'upgrade-test-only.exe') }
     )
+    if ($next.webview_fixture -notmatch '^Software\\PRSniperInstallerTests\\[a-fA-F0-9-]{36}$') {
+        throw 'Missing owned synthetic WebView2 lookup fixture.'
+    }
+    $webviewFixturePath = 'HKCU:\' + $next.webview_fixture
+    if (Test-Path $webviewFixturePath) { throw 'WebView2 fixture key already exists.' }
+    New-Item $webviewFixturePath -Force | Out-Null
+    New-ItemProperty $webviewFixturePath 'pv' -Value '120.0.0.0' -PropertyType String | Out-Null
     foreach ($package in $packages) {
         $metadata = $package.metadata
         $source = Join-Path $workspace $metadata.version
@@ -115,9 +124,12 @@ try {
     Invoke-Choco @('install', 'pr-sniper-localtest', "--version=$($base.version)-localtest", '--pre', "--source=$($feed.FullName)")
     Assert-Installed $base (Join-Path $Candidate $base.filename)
     Assert-Preserved
+    & (Join-Path $PSScriptRoot 'windows-installer-faults.ps1') -Phase Install `
+        -Installer (Join-Path $Upgrade 'upgrade-test-only.exe') -PreviousInstaller (Join-Path $Candidate $base.filename)
     Invoke-Choco @('upgrade', 'pr-sniper-localtest', "--version=$($next.version)-localtest", '--pre', "--source=$($feed.FullName)")
     Assert-Installed $next (Join-Path $Upgrade 'upgrade-test-only.exe')
     Assert-Preserved
+    & (Join-Path $PSScriptRoot 'windows-installer-faults.ps1') -Phase Uninstall
     # Prove the uninstaller preserves foreign contents, not merely a clean dir.
     $sentinel | Set-Content (Join-Path $directory 'foreign-file.txt')
     New-ItemProperty $uninstallKey 'ForeignFixture' -Value $sentinel | Out-Null
@@ -142,7 +154,7 @@ try {
         test_upgrade_version = $next.version
         test_upgrade_sha256 = $next.sha256
         result = 'local-feed-install-upgrade-uninstall-passed'
-        gui_acceptance = 'not-proven-by-host-process-smoke'
+        gui_acceptance = 'not-proven-by-live-host-and-owned-profile-readiness'
         public_distribution = $false
     } | ConvertTo-Json | Set-Content (Join-Path $workspace 'acceptance.json')
 } catch {
@@ -160,6 +172,10 @@ try {
         foreach ($name in @('com.jdylanmc.pr-sniper', 'PR Sniper')) {
             if ((Get-ItemPropertyValue $runKey $name -ErrorAction SilentlyContinue) -ceq $sentinel) {
                 Remove-ItemProperty $runKey $name
+            }
+            if ($webviewFixturePath -and (Test-Path $webviewFixturePath)) {
+                Remove-ItemProperty $webviewFixturePath 'pv'
+                Remove-Item $webviewFixturePath
             }
         }
     } catch {

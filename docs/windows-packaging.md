@@ -8,6 +8,30 @@ Chocolatey publisher/moderation remain external prerequisites.
 
 ## Installer contract
 
+Installer fixes serialize this current-user installation using a SID-scoped
+cross-session mutex, held across interactive pages and mutation. Owner/version
+and shortcut approvals are rechecked at the mutating section and after payload
+staging. A waiting old installer cannot downgrade a concurrently upgraded app.
+WebView2 machine-miss/zero-version fallback has its own handled error scope.
+
+Candidate application, uninstaller and shortcut are staged before replacement.
+Only exact old owned files are moved to backups; all ten owned registration
+values must match the finite typed schema before their prior version is saved.
+Writes/deletes check individual native return codes. Pre-commit failures restore
+those exact old files, shortcut and registration values; unknown values are not
+snapshotted or overwritten. A rollback or cleanup failure is nonzero and retains
+recovery evidence in `.pr-sniper-transaction` and the explicitly named shortcut
+backup. Do not remove these paths blindly: reconcile the exact recovery receipt
+and retained files before retrying. Process termination/power loss is not claimed
+to be a crash-atomic transaction.
+
+Uninstall likewise rolls back failed owned removals. Chocolatey independently
+checks app absence, no pending transaction, all ten owned registry values absent
+and no remaining owned/unresolved shortcut before removing the receipt-verified
+uninstaller. This cleanup holds the same lifecycle mutex after native exit.
+Foreign values/nonempty containers survive; in-place `_?=` self-deletion is
+intentionally deferred, not treated as a failed native removal.
+
 The pinned Tauri CLI 2.11.4 bundles the existing x64 GUI application using
 `tauri.windows.conf.json` and `src-tauri/windows/installer.nsi`. This small
 Tauri-supported NSIS template deliberately avoids the upstream template's
@@ -206,12 +230,22 @@ retargeted shortcut surviving removal. It never signs in or enables automation.
 Only the exact PID it launched is stopped; failure cleanup preserves the original
 failure status. The disposable VM is then retired by GitHub.
 
-`acceptance.json` is uploaded only after success. It distinguishes a five-second
-host/no-startup-window smoke from **actual interactive tray/menu acceptance**.
+`acceptance.json` is uploaded only after success. It distinguishes a live host
+with a fresh owned profile's notification identity and `session_started` record
+from **actual interactive tray/menu acceptance**. A nonzero `MainWindowHandle`
+may belong to Tauri's internal single-instance window and is not rejected.
 That smoke cannot prove tray icon visibility, menu actions, real logon or
 notification delivery. The real later-release upgrade and public-feed install
 remain separate. Until this exact commit's hosted job has actually run green,
 install/upgrade/uninstall are **implemented but unverified**, not passed locally.
+
+Hosted fault fixtures lock only the owned uninstaller/shortcut, deny writes on
+only the owned installer key and exercise test-only injected failures after file
+and registry transitions. They independently compare old hashes, typed registry
+values and the retained Chocolatey receipt, then release the obstruction and
+retry. Injection is compiled only into the disposable upgrade fixture, never the
+ordinary installer. Its WebView2 lookups use a unique synthetic key (machine
+miss/current-user hit); no real runtime keys, installation or policy are changed.
 
 Never run either installer or `choco install/upgrade/uninstall` as incidental
 validation on a shared machine with an existing app. Pack-only tests do not
