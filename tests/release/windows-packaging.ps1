@@ -6,9 +6,11 @@ New-Item -ItemType Directory $fixture | Out-Null
 $originalTemp = $env:TEMP
 $originalTmp = $env:TMP
 $originalActions = $env:GITHUB_ACTIONS
+$originalLocalConsent = $env:PR_SNIPER_UNSIGNED_LOCAL_TEST_SHA256
 $env:TEMP = $fixture
 $env:TMP = $fixture
 $env:GITHUB_ACTIONS = ''
+$env:PR_SNIPER_UNSIGNED_LOCAL_TEST_SHA256 = ''
 $script:count = 0
 function Check([bool] $Condition, [string] $Message) {
     if (-not $Condition) { throw $Message }
@@ -51,7 +53,25 @@ public class PackagingFixture { public static void Main() {} }
     Check ($nuspec.package.metadata.authors -ceq 'Dylan McCurry') 'Preserve actual authorship.'
     Check (-not $nuspec.package.metadata.licenseUrl) 'Do not invent a project license.'
     Check ((Get-FileHash (Join-Path $arguments.Destination 'tools\installer.exe')).Hash -ceq $hash) 'Pin exact local bytes.'
-    Reject { & (Join-Path $arguments.Destination 'tools\chocolateyinstall.ps1') } 'restricted to the disposable'
+    $installScript = Join-Path $arguments.Destination 'tools\chocolateyinstall.ps1'
+    Reject { & $installScript } 'explicit consent for this exact installer'
+    $env:PR_SNIPER_UNSIGNED_LOCAL_TEST_SHA256 = '0' * 64
+    Reject { & $installScript } 'explicit consent for this exact installer'
+    function Start-ChocolateyProcessAsAdmin { throw 'Fixture boundary reached; no executable started.' }
+    $env:PR_SNIPER_UNSIGNED_LOCAL_TEST_SHA256 = $hash
+    Reject { & $installScript } 'Fixture boundary reached'
+    $metadataPath = Join-Path $arguments.Destination 'tools\installer.json'
+    $originalMetadata = [IO.File]::ReadAllBytes($metadataPath)
+    $publicMetadata = Get-Content $metadataPath -Raw | ConvertFrom-Json
+    $publicMetadata.mode = 'Public'
+    $publicMetadata.url = 'https://github.com/jdylanmc/pr-sniper/releases/download/v0.1.1/pr-sniper-0.1.1-x64-setup.exe'
+    $publicMetadata.signer_thumbprint = 'A' * 40
+    $publicMetadata.signer_subject = 'CN=Fixture'
+    $publicMetadata | ConvertTo-Json | Set-Content $metadataPath -Encoding utf8
+    function Get-ChocolateyWebFile { }
+    Reject { & $installScript } 'Windows-trusted embedded Authenticode'
+    [IO.File]::WriteAllBytes($metadataPath, $originalMetadata)
+    $env:PR_SNIPER_UNSIGNED_LOCAL_TEST_SHA256 = ''
     $arguments.Destination = Join-Path $fixture 'duplicate'
     & $generator @arguments | Out-Null
     foreach ($file in Get-ChildItem (Join-Path $fixture 'package') -File -Recurse) {
@@ -112,5 +132,6 @@ public class PackagingFixture { public static void Main() {} }
     $env:TEMP = $originalTemp
     $env:TMP = $originalTmp
     $env:GITHUB_ACTIONS = $originalActions
+    $env:PR_SNIPER_UNSIGNED_LOCAL_TEST_SHA256 = $originalLocalConsent
     Remove-Item -LiteralPath $fixture -Recurse -Force
 }
