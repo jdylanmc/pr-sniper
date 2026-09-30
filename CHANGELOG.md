@@ -7,6 +7,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- Make the sidebar regression explicitly wait for notification state: disabled
+  while loading, enabled but opted out after loading. Stop treating the shipped
+  notification control as a retired placeholder.
+
 - Dispatch verified releases to the dedicated tap-owned publisher rather than
   running Homebrew under the application release wrapper. Confirm exact cask
   bytes before reporting success; retain an unconfirmed state on timeout.

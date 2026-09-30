@@ -18,6 +18,8 @@ test.use({ timezoneId: "America/New_York" });
 
 test("Settings exposes exactly four approved tabs and no prototype or retired controls", async ({
   page,
+  store,
+  ipc,
 }) => {
   await page.goto("/?view=settings");
   await expect(
@@ -49,11 +51,25 @@ test("Settings exposes exactly four approved tabs and no prototype or retired co
   await expect(
     page.getByLabel("Reviewer assignment", { exact: true }),
   ).toHaveCount(0);
+  const notificationState = ipc.holdNext("notification_snapshot");
   await section(page, "Preferences");
+  await notificationState.arrived;
   await expect(
     page.getByRole("switch", { name: /Open PR Sniper at login/ }),
   ).toBeDisabled();
-  await expect(page.getByRole("switch", { name: /Notify me/ })).toBeDisabled();
+  const notifications = page.getByRole("switch", { name: /Notify me/ });
+  await expect(notifications).toBeDisabled();
+  notificationState.release();
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(page.locator("#notification-permission")).toContainText(
+    "Off in PR Sniper.",
+  );
+  await expect(notifications).toBeEnabled();
+  await expect(notifications).not.toBeChecked();
+  await expect(
+    page.getByRole("button", { name: "Send test notification" }),
+  ).toBeDisabled();
+  expect((await store("notification_snapshot")).enabled).toBe(false);
   await expect(
     page.getByRole("button", {
       name: "Open redacted diagnostics",
