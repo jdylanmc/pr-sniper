@@ -42,6 +42,10 @@ name = "macos_keychain"
 path = "../tests/macos_keychain.rs"
 
 [[test]]
+name = "windows_credentials_process"
+path = "../tests/windows_credentials_process.rs"
+
+[[test]]
 name = "settings_persistence"
 path = "../tests/settings_persistence.rs"
 
