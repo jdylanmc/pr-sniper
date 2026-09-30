@@ -54,14 +54,16 @@ removal. Fresh reads protect immutable identity, the independent neighboring
 record, and the startup preference throughout. Both lifecycle commands call the
 same production Store operations as the native app.
 
-`policy-inheritance.spec.mjs` now exercises reusable Agents with multiple
-independent per-repository assignments, interval/cron/time-zone settings,
-comment permissions and removal/reset. It seeds nondefault legacy policies and
-presets and proves they remain unchanged by current UI saves. The old global
-defaults/override/preset editors are intentionally absent from the approved
-four-tab model, not hidden test prerequisites. `sidebar.spec.mjs` covers
+`policy-inheritance.spec.mjs` exercises reusable Agents with multiple
+independent per-repository assignments, comment permissions and removal/reset.
+It seeds nondefault legacy schedules, policies and presets and proves they
+remain unchanged by resource saves, without exposing scoped polling editors.
+`resources.spec.mjs` covers resource-scoped persistence, conflicting and failed
+writes with retained drafts, ordered doctrine selection, rename/deletion guards,
+global cron/time-zone/capacity controls, shared saved-resource readiness, primary
+selection and independent opt-in permissions. `sidebar.spec.mjs` covers
 per-repository People, inert doctrine authoring, retained Agent references,
-disabled Approve/notification controls and both desktop/mobile navigation.
+opted-out Approve/notification controls and both desktop/mobile navigation.
 
 The error tests require visible rejection of invalid time zones with the
 previous configuration bytes intact, preserve unsaved edits across focus,
@@ -81,21 +83,23 @@ and unique test-owned registry keys on Windows, never actual login registrations
 
 Review regressions exercise diagnostics failure after configuration has already
 committed. Repository add/enable/remove, Agent edits and assignment edits all
-use the current UI's shared `save_preferences` operation, including the native
+use the current UI's shared `save_resource` operation, including the native
 `SettingsSaved` diagnostics phase through `Store::finish_settings_save`.
 Tests require both authoritative visible saved state and an explicit warning.
 They separately preserve the no-commit contract for failed configuration writes.
 
 Draft-lifecycle tests keep unrelated Agent/repository edits across saves and
-ensure assignment timers stay independent of reusable Agent changes. A fixture can hold one
+ensure repository policy stays independent of reusable Agent changes. A fixture can hold one
 real Store reply at the IPC boundary, allowing deterministic focus/save races
 without sleeps or fake persistence. The submitting Settings controls must be disabled
 while its reply is pending; the implementation serializes Settings mutations by
-temporarily disabling the other controls too. Unsupported Approve remains
-disabled when a save fails. Corrections and production-CSS tests retain
+temporarily disabling the other controls too. Independent permissions retain
+their prior values when a save fails. Corrections and production-CSS tests retain
 keyboard trapping, nested-modal focus restoration, stale reply rejection and
 scroll/viewport evidence using the current repository, Agent and doctrine
-editors. Assignment selectors must immediately reflect advanced interval edits.
+editors. The global schedule helper must match the saved cron expression.
+Review fixtures distinguish captured, planned, interrupted and legacy missing
+configuration without using today's library as historical evidence.
 
 `platform.spec.mjs` checks the existing host and Settings wording for Windows
 and macOS without changing authorization or native policy. Browser presentation

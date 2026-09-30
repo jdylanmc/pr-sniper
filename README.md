@@ -187,11 +187,14 @@ scanned. Multiple clones of the same GitHub repository share one monitoring
 checkbox and saved identity; every discovered clone path remains searchable and
 available in the row's local-clone details.
 
-Changes across sections remain one draft until **Save changes**; **Reset
-changes** returns to the saved state. A conflicting external update is rejected,
-not overwritten. The draft remains intact until **Discard draft and reload**
-explicitly replaces it with the latest saved settings. Controls are disabled
-during saving and failed writes retain the draft. Startup registration is
+**Save agent**, **Save doctrine**, and **Save repository** persist only that
+resource immediately; assignment saves commit their owning repository.
+**Save preferences** saves global preferences without committing repository
+drafts. **Reset changes** discards remaining unsaved changes, not successful
+resource saves. Compare-and-save rejects conflicting edits to the same resource
+without rejecting unrelated saves. Failed writes retain the editor and last
+valid state; **Discard draft and reload** explicitly replaces the draft.
+Controls and dialog dismissal are locked during saves. Startup registration is
 separate and changes immediately on explicit choice in **Preferences**.
 AI and repository connections also save immediately, independently of the
 Settings draft. Closing a repository editor cancels its pending draft lookup;
@@ -205,11 +208,24 @@ its layout with unsupported viewport units and dialog APIs. The app requires
 macOS 13.5 or later; build targets do not polyfill runtime APIs, and these simulations
 are not native acceptance evidence.
 
-Repository **Settings** assigns reusable Agents with saved schedules and
-comment preferences, and resolves watched people using the repository's
+Repository **Settings** assigns reusable Agents with independent comment,
+Approve and Merge choices, and resolves watched people using the repository's
 explicit GitHub account. Existing global defaults and overrides remain
 preserved in storage. Review start and comment publication have separate
-automatic/manual gates; approval submission remains unavailable.
+automatic/manual gates. A sole assignment is primary automatically; multiple
+assignments permit one explicit primary or none. Primary selection never opts
+into actions. Legacy inert `approve` flags remain preserved but are not grants;
+new choices live in assignment `actions`. Merge is effective only for the
+primary, and no primary means no effective approval or merge. Provider-action
+execution remains a separate follow-up.
+
+**Preferences** exposes one global five-field cron expression, default
+`*/15 * * * *` in `UTC`, an expression helper, explicit IANA time-zone semantics,
+and saved AI capacity (default four). Legacy interval choices and scoped
+schedules remain readable, without scoped polling editors. An incompatible
+legacy global interval remains visible as a setup issue until explicitly
+replaced, never silently converted. These are configuration contracts; the
+global scheduler and shared-capacity engine are separate deliveries.
 
 **Doctrines** manages plain-text review principles. A fresh configuration
 persists all 23 bundled doctrines on first load, before any Settings tab is
@@ -222,10 +238,31 @@ libraries; subsequent saves record an explicit empty list.
 
 **Agents** selects a Copilot
 account and a real model returned by that account, alongside an optional
-doctrine, prompt and signature. Provider and model are distinct. Old Agents
+ordered list of zero or more doctrines, prompt and signature. Existing
+single-doctrine selections remain compatible; an explicit empty list means
+none. Multiple bodies compose in selected order, independent of library order.
+Renaming a doctrine updates references atomically; referenced doctrines and
+Agents cannot be deleted until their references are explicitly repaired.
+Provider and model are distinct. Old Agents
 without AI account bindings remain unconfigured until explicitly updated.
 Disconnecting an AI account preserves dependent Agents and assignments.
 Never put credentials in doctrines, prompts or other configuration fields.
+
+Review details expose planned configuration before execution and captured
+Agent/model/account, prompt, doctrine bodies, repository and assignment
+authority afterward. Captured authority is evidence, not a current grant.
+Library edits and restart never rewrite completed snapshots; legacy missing
+fields are labeled unavailable rather than reconstructed from current settings.
+Interrupted jobs retain their prior execution configuration and separately show
+the current plan, which is revalidated before retry.
+
+Settings and future setup flows share `saved_resources`, `validate_resource`
+and `save_resource` over the existing Store. `ResourceEdit` addresses one Agent,
+doctrine, repository or global-preference resource with its expected value;
+`value: null` deletes, and `expected: null` creates. Readiness describes saved
+configuration only: account verification, current model access, monitoring
+scope, trust and provider capability remain independent gates. No setup wizard
+or monitoring activation is added by this surface.
 
 Saving validates the effective policy on the Rust storage boundary, including
 positive whole-minute intervals, five-field cron syntax, IANA time zones,

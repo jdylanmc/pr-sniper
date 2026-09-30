@@ -1367,6 +1367,46 @@ fn save_preferences(
 }
 
 #[tauri::command]
+fn saved_resources(host: State<'_, Host>) -> Result<storage::SavedResources, String> {
+    host.store
+        .lock()
+        .map_err(|_| "Storage is unavailable.")?
+        .saved_resources()
+}
+
+#[tauri::command]
+fn validate_resource(
+    host: State<'_, Host>,
+    edit: storage::ResourceEdit,
+) -> Result<storage::ResourceReadiness, String> {
+    Ok(host
+        .store
+        .lock()
+        .map_err(|_| "Storage is unavailable.")?
+        .validate_resource(edit)?
+        .readiness())
+}
+
+#[tauri::command]
+fn save_resource(
+    host: State<'_, Host>,
+    edit: storage::ResourceEdit,
+) -> Result<SavedSettings, String> {
+    let saved = host
+        .store
+        .lock()
+        .map_err(|_| "Storage is unavailable.")?
+        .save_resource(edit)?;
+    Ok(finish_committed_settings(
+        &host.github_generations,
+        &host.github_auth,
+        &host.store,
+        &host.monitor,
+        saved,
+    ))
+}
+
+#[tauri::command]
 async fn choose_repository_folder(
     app: tauri::AppHandle,
 ) -> Result<Option<discovery::Discovery>, String> {
@@ -2138,6 +2178,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             snapshot,
             save_preferences,
+            saved_resources,
+            validate_resource,
+            save_resource,
             canonical_repository_name,
             choose_repository_folder,
             discover_repositories,
@@ -2524,6 +2567,7 @@ mod github_auth_tests {
                 login: "author".into(),
             }],
             assignments: Vec::new(),
+            primary_assignment_id: None,
         });
         store.save_settings(&settings).unwrap();
         let context = Monitor::activation_context(&settings, &settings.repositories[0].id).unwrap();

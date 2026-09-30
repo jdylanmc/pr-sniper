@@ -64,6 +64,17 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Added
 
+- Add resource-scoped Settings saves and validation over the existing Store,
+  with a shared saved-configuration readiness contract for future setup flows.
+  Preserve unrelated drafts, reject stale same-resource writes, guard referenced
+  resource deletion and update doctrine references atomically on rename.
+- Support ordered zero/one/many doctrines and immutable execution configuration
+  evidence, with explicitly planned jobs and honest legacy missing snapshots.
+- Save global cron/time-zone and capacity preferences, repository primary
+  selection and independent approval/merge opt-ins. Preserve legacy settings
+  without turning inert approval flags into grants. Global scheduling,
+  concurrency, provider actions and Genie UI remain separate deliveries.
+
 - Add the native Windows system-tray host, opt-in current-user startup
   registration and Windows notification activation, preserving the existing
   review interface and human-owned decisions. Windows CI now builds the full

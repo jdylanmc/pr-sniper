@@ -37,7 +37,7 @@ pub struct Diagnostic {
     pub event: DiagnosticEvent,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub launch_at_login: bool,
@@ -56,6 +56,28 @@ pub struct Settings {
     pub doctrines: Vec<Doctrine>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agents: Vec<Agent>,
+    #[serde(default = "default_capacity")]
+    pub capacity: u32,
+}
+
+fn default_capacity() -> u32 {
+    4
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            launch_at_login: false,
+            defaults: Policy::default(),
+            repositories: Vec::new(),
+            root_folder: None,
+            presets: Vec::new(),
+            default_review_preset: None,
+            doctrines: Vec::new(),
+            agents: Vec::new(),
+            capacity: default_capacity(),
+        }
+    }
 }
 
 /// A named review principle. `title` is both the display label and the
@@ -68,7 +90,7 @@ pub struct Doctrine {
     pub body: String,
 }
 
-/// A reusable review profile: model + optional doctrine + prompt +
+/// A reusable review profile: model + ordered doctrines + prompt +
 /// signature. Referenced by id from repository assignments.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -80,6 +102,9 @@ pub struct Agent {
     pub ai_account: Option<AiAccount>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doctrine: Option<String>,
+    /// When present, including an empty list, supersedes the legacy single selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doctrines: Option<Vec<String>>,
     pub prompt: String,
     pub signature: String,
 }
@@ -92,9 +117,7 @@ pub struct AiAccount {
     pub account_id: String,
 }
 
-/// One agent running on one repository: its own timer and permissions.
-/// `approve` is stored but never executed -- provider approval submission
-/// remains an explicit MVP non-goal.
+/// Permissions are scoped to this assignment, never to the reusable Agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Assignment {
@@ -104,6 +127,25 @@ pub struct Assignment {
     pub comment: bool,
     #[serde(default)]
     pub approve: bool,
+    /// Only explicit vNext opt-ins. The legacy `approve` flag is never a grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actions: Option<ActionPermissions>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActionPermissions {
+    pub approve: bool,
+    pub merge: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssignmentAuthority {
+    pub primary: bool,
+    pub comment: bool,
+    pub approve: bool,
+    pub merge: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,6 +160,65 @@ pub struct ReviewPreset {
 pub struct SavedSettings {
     pub settings: Settings,
     pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GlobalPreferences {
+    pub defaults: Policy,
+    pub capacity: u32,
+    pub root_folder: Option<String>,
+    pub presets: Vec<ReviewPreset>,
+    pub default_review_preset: Option<String>,
+}
+
+/// Compare-and-save only the addressed resource. None means create/delete,
+/// not an instruction to replace the rest of the Settings window.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ResourceEdit {
+    Agent {
+        id: String,
+        expected: Option<Agent>,
+        value: Option<Agent>,
+    },
+    Doctrine {
+        title: String,
+        expected: Option<Doctrine>,
+        value: Option<Doctrine>,
+    },
+    Repository {
+        id: String,
+        expected: Option<Box<Repository>>,
+        value: Option<Box<Repository>>,
+    },
+    Preferences {
+        expected: GlobalPreferences,
+        value: GlobalPreferences,
+    },
+}
+
+#[derive(Debug, Serialize)]
+pub struct RepositoryReadiness {
+    pub repository_id: String,
+    pub primary_assignment_id: Option<String>,
+    pub assignments: Vec<(String, AssignmentAuthority)>,
+    pub issues: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ResourceReadiness {
+    pub configuration_ready: bool,
+    pub issues: Vec<String>,
+    pub repositories: Vec<RepositoryReadiness>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SavedResources {
+    pub settings: Settings,
+    /// Saved configuration only; account verification, scope confirmation, trust
+    /// and provider capabilities remain separate execution gates.
+    pub readiness: ResourceReadiness,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -166,15 +267,114 @@ pub struct Repository {
     /// numeric id, no wildcards. Shared across this repository's assignments.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub watched_authors: Vec<WatchedIdentity>,
-    /// N agents, each with its own timer and permissions, running on this
-    /// repository.
+    /// Legacy assignment schedules remain readable but have no vNext editor.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assignments: Vec<Assignment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_assignment_id: Option<String>,
 }
 
 impl Settings {
-    fn validate(&self) -> Result<(), String> {
+    fn materialize_presets(&mut self) {
+        if let Some(id) = &self.default_review_preset {
+            self.defaults.prompt = self
+                .presets
+                .iter()
+                .find(|p| &p.id == id)
+                .unwrap()
+                .body
+                .clone();
+        }
+        for repository in &mut self.repositories {
+            if let Some(id) = &repository.review_preset {
+                repository.overrides.prompt = Some(
+                    self.presets
+                        .iter()
+                        .find(|p| &p.id == id)
+                        .unwrap()
+                        .body
+                        .clone(),
+                );
+            }
+        }
+    }
+
+    pub fn global_preferences(&self) -> GlobalPreferences {
+        GlobalPreferences {
+            defaults: self.defaults.clone(),
+            capacity: self.capacity,
+            root_folder: self.root_folder.clone(),
+            presets: self.presets.clone(),
+            default_review_preset: self.default_review_preset.clone(),
+        }
+    }
+
+    pub fn readiness(&self) -> ResourceReadiness {
+        let mut issues = Vec::new();
+        if !matches!(self.defaults.schedule, Schedule::Cron { .. }) {
+            issues.push("Choose a global five-field cron schedule; the saved legacy interval is retained until explicitly replaced.".into());
+        }
+        if !self.repositories.iter().any(|r| r.enabled) {
+            issues.push("Select at least one repository. Monitoring has not been enabled.".into());
+        }
+        let repositories: Vec<_> = self
+            .repositories
+            .iter()
+            .map(|repository| {
+                let mut issues = Vec::new();
+                if repository.provider != ProviderId::Github
+                    || repository.account_binding().is_none()
+                {
+                    issues.push("Bind a supported repository account.".into());
+                }
+                if repository.assignments.is_empty() {
+                    issues.push("Assign at least one saved Agent.".into());
+                }
+                for assignment in &repository.assignments {
+                    if self
+                        .agents
+                        .iter()
+                        .find(|a| a.id == assignment.agent_id)
+                        .is_none_or(|a| a.ai_account.is_none() || a.model.trim().is_empty())
+                    {
+                        issues.push(format!(
+                            "Assignment {} needs an explicit AI account and model.",
+                            assignment.id
+                        ));
+                    }
+                }
+                RepositoryReadiness {
+                    repository_id: repository.id.clone(),
+                    primary_assignment_id: repository.primary_assignment_id().map(str::to_string),
+                    assignments: repository
+                        .assignments
+                        .iter()
+                        .map(|a| (a.id.clone(), repository.assignment_authority(a)))
+                        .collect(),
+                    issues,
+                }
+            })
+            .collect();
+        let configuration_ready = issues.is_empty()
+            && repositories.iter().all(|r| {
+                !self
+                    .repositories
+                    .iter()
+                    .any(|item| item.id == r.repository_id && item.enabled)
+                    || r.issues.is_empty()
+            });
+        ResourceReadiness {
+            configuration_ready,
+            issues,
+            repositories,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
         self.defaults.validate()?;
+        if self.capacity == 0 {
+            return Err("AI capacity must be a positive whole number.".into());
+        }
         if self
             .root_folder
             .as_ref()
@@ -229,15 +429,12 @@ impl Settings {
                         .into(),
                 );
             }
-            if agent
-                .doctrine
-                .as_ref()
-                .is_some_and(|title| !doctrine_titles.contains(&title.trim().to_lowercase()))
-            {
-                return Err(
-                    "The selected doctrine no longer exists. Choose a local doctrine or none."
-                        .into(),
-                );
+            let mut selected = HashSet::new();
+            for title in agent.doctrine_titles() {
+                let key = title.trim().to_lowercase();
+                if !doctrine_titles.contains(&key) || !selected.insert(key) {
+                    return Err("Selected doctrines must exist and must not repeat. Repair the Agent's doctrine references before saving.".into());
+                }
             }
             crate::policy::validate_configuration_text(&agent.name)?;
             crate::policy::validate_configuration_text(&agent.model)?;
@@ -332,6 +529,13 @@ impl Settings {
                 }
                 assignment.schedule.validate()?;
             }
+            if repository
+                .primary_assignment_id
+                .as_ref()
+                .is_some_and(|id| !assignment_ids.contains(id))
+            {
+                return Err("The primary assignment no longer exists. Select a primary or clear the selection.".into());
+            }
         }
         Ok(())
     }
@@ -344,7 +548,38 @@ impl Settings {
     }
 }
 
+impl Agent {
+    pub fn doctrine_titles(&self) -> Vec<&str> {
+        match &self.doctrines {
+            Some(titles) => titles.iter().map(String::as_str).collect(),
+            None => self.doctrine.iter().map(String::as_str).collect(),
+        }
+    }
+}
+
 impl Repository {
+    pub fn primary_assignment_id(&self) -> Option<&str> {
+        if self.assignments.len() == 1 {
+            Some(&self.assignments[0].id)
+        } else {
+            self.primary_assignment_id.as_deref()
+        }
+    }
+
+    /// Configuration permission, not a provider capability or execution grant.
+    pub fn assignment_authority(&self, assignment: &Assignment) -> AssignmentAuthority {
+        let primary = self.primary_assignment_id() == Some(assignment.id.as_str());
+        let assigned = self.assignments.iter().any(|item| item == assignment);
+        AssignmentAuthority {
+            primary: primary && assigned,
+            comment: assigned && assignment.comment,
+            approve: assigned
+                && self.primary_assignment_id().is_some()
+                && assignment.actions.as_ref().is_some_and(|a| a.approve),
+            merge: assigned && primary && assignment.actions.as_ref().is_some_and(|a| a.merge),
+        }
+    }
+
     pub fn account_binding(&self) -> Option<RepositoryAccountBinding> {
         Some(RepositoryAccountBinding {
             account: ProviderAccountId {
@@ -475,6 +710,150 @@ impl Store {
         self.root.join("config/settings.json").exists()
     }
 
+    pub fn saved_resources(&self) -> Result<SavedResources, String> {
+        let settings = self.load_settings()?;
+        let readiness = settings.readiness();
+        Ok(SavedResources {
+            settings,
+            readiness,
+        })
+    }
+
+    pub fn validate_resource(&self, edit: ResourceEdit) -> Result<Settings, String> {
+        let mut settings = self.load_settings()?;
+        let conflict = "Resource changed in another window. Your draft has not been written; reload or explicitly repair it before saving.";
+        match edit {
+            ResourceEdit::Agent {
+                id,
+                expected,
+                value,
+            } => {
+                let current = settings.agents.iter().find(|a| a.id == id);
+                if current != expected.as_ref() {
+                    return Err(conflict.into());
+                }
+                if current.is_none() && value.is_none() {
+                    return Err("This Agent is not saved. Cancel its draft instead.".into());
+                }
+                if value.as_ref().is_some_and(|a| a.id != id) {
+                    return Err("An Agent's stable identity cannot be changed.".into());
+                }
+                if value.is_none()
+                    && settings
+                        .repositories
+                        .iter()
+                        .any(|r| r.assignments.iter().any(|a| a.agent_id == id))
+                {
+                    return Err("This Agent is assigned to a repository. Remove or replace its assignments explicitly before deleting it.".into());
+                }
+                if let Some(index) = settings.agents.iter().position(|a| a.id == id) {
+                    if let Some(value) = value {
+                        settings.agents[index] = value;
+                    } else {
+                        settings.agents.remove(index);
+                    }
+                } else if let Some(value) = value {
+                    settings.agents.push(value);
+                }
+            }
+            ResourceEdit::Doctrine {
+                title,
+                expected,
+                value,
+            } => {
+                let matches =
+                    |value: &str| value.trim().to_lowercase() == title.trim().to_lowercase();
+                let current = settings.doctrines.iter().find(|d| matches(&d.title));
+                if current != expected.as_ref() {
+                    return Err(conflict.into());
+                }
+                if current.is_none() && value.is_none() {
+                    return Err("This doctrine is not saved. Cancel its draft instead.".into());
+                }
+                let referenced = settings
+                    .agents
+                    .iter()
+                    .any(|a| a.doctrine_titles().iter().any(|title| matches(title)));
+                if value.is_none() && referenced {
+                    return Err("This doctrine is used by an Agent. Remove or replace its references explicitly before deleting it.".into());
+                }
+                if let Some(value) = &value {
+                    for agent in &mut settings.agents {
+                        if let Some(titles) = &mut agent.doctrines {
+                            for title in titles.iter_mut().filter(|title| matches(title)) {
+                                *title = value.title.clone();
+                            }
+                        }
+                        if agent.doctrine.as_ref().is_some_and(|title| matches(title)) {
+                            agent.doctrine = Some(value.title.clone());
+                        }
+                    }
+                }
+                if let Some(index) = settings.doctrines.iter().position(|d| matches(&d.title)) {
+                    if let Some(value) = value {
+                        settings.doctrines[index] = value;
+                    } else {
+                        settings.doctrines.remove(index);
+                    }
+                } else if let Some(value) = value {
+                    settings.doctrines.push(value);
+                }
+            }
+            ResourceEdit::Repository {
+                id,
+                expected,
+                value,
+            } => {
+                let current = settings.repositories.iter().find(|r| r.id == id);
+                if current != expected.as_deref() {
+                    return Err(conflict.into());
+                }
+                if current.is_none() && value.is_none() {
+                    return Err("This repository is not saved. Cancel its draft instead.".into());
+                }
+                if value.as_ref().is_some_and(|r| r.id != id) {
+                    return Err(
+                        "A repository configuration's stable identity cannot be changed.".into(),
+                    );
+                }
+                if let Some(index) = settings.repositories.iter().position(|r| r.id == id) {
+                    if let Some(value) = value {
+                        settings.repositories[index] = *value;
+                    } else {
+                        settings.repositories.remove(index);
+                    }
+                } else if let Some(value) = value {
+                    settings.repositories.push(*value);
+                }
+            }
+            ResourceEdit::Preferences { expected, value } => {
+                if settings.global_preferences() != expected {
+                    return Err(conflict.into());
+                }
+                if value.defaults.schedule != expected.defaults.schedule
+                    && !matches!(value.defaults.schedule, Schedule::Cron { .. })
+                {
+                    return Err("Choose one global five-field cron expression.".into());
+                }
+                settings.defaults = value.defaults;
+                settings.capacity = value.capacity;
+                settings.root_folder = value.root_folder;
+                settings.presets = value.presets;
+                settings.default_review_preset = value.default_review_preset;
+            }
+        }
+        settings.validate()?;
+        settings.materialize_presets();
+        Ok(settings)
+    }
+
+    pub fn save_resource(&self, edit: ResourceEdit) -> Result<Settings, String> {
+        let settings = self.validate_resource(edit)?;
+        // Callers hold the existing Host Store mutex across compare and commit.
+        self.save_settings(&settings)?;
+        Ok(settings)
+    }
+
     pub fn save_preferences(
         &self,
         mut settings: Settings,
@@ -488,28 +867,7 @@ impl Store {
             return Err("Change launch at login using the separate startup control.".into());
         }
         settings.validate()?;
-        if let Some(id) = &settings.default_review_preset {
-            settings.defaults.prompt = settings
-                .presets
-                .iter()
-                .find(|p| &p.id == id)
-                .unwrap()
-                .body
-                .clone();
-        }
-        for repository in &mut settings.repositories {
-            if let Some(id) = &repository.review_preset {
-                repository.overrides.prompt = Some(
-                    settings
-                        .presets
-                        .iter()
-                        .find(|p| &p.id == id)
-                        .unwrap()
-                        .body
-                        .clone(),
-                );
-            }
-        }
+        settings.materialize_presets();
         self.save_settings(&settings)?;
         Ok(settings)
     }
@@ -591,6 +949,7 @@ impl Store {
             review_preset: None,
             watched_authors: Vec::new(),
             assignments: Vec::new(),
+            primary_assignment_id: None,
         });
         self.save_settings(&settings)?;
         Ok(settings)

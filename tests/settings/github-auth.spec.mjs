@@ -1,5 +1,5 @@
 import { expect, test } from "./fixtures.mjs";
-import { closeDialog } from "./navigation.mjs";
+import { closeDialog, saveChanges } from "./navigation.mjs";
 
 const idle = (accounts = []) => ({ accounts, flow: { state: "idle" } });
 const connected = (accountId, login) => ({
@@ -337,7 +337,7 @@ test("overlapping repository access requires an explicit acting account choice",
   await expect(
     page.getByRole("article", { name: "jdylanmc/pr-sniper as hubot" }),
   ).toContainText("GitHub as hubot");
-  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await saveChanges(page);
   await page.evaluate(() => window.__settingsIdle());
   const snapshot = await store("snapshot");
   expect(snapshot.settings.repositories).toHaveLength(2);
@@ -439,9 +439,9 @@ test("manual account binding resolves an unaffiliated public repository for two 
     await modal
       .getByLabel("Acting GitHub account")
       .selectOption(account.account_id);
-    await modal.getByRole("button", { name: "Use repository" }).click();
+    await modal.getByRole("button", { name: "Save repository" }).click();
   }
-  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await saveChanges(page);
   await page.evaluate(() => window.__settingsIdle());
 
   expect(resolutions).toEqual([

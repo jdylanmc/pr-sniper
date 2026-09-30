@@ -136,6 +136,19 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
                 .map_err(|_| "Unsupported settings snapshot.")?;
             recorded_settings(store, store.save_preferences(settings, &expected)?)
         }
+        "saved_resources" => serde_json::to_value(store.saved_resources()?)
+            .map_err(|_| "Cannot encode saved resources.".into()),
+        "validate_resource" => {
+            let edit = serde_json::from_value(request.args["edit"].clone())
+                .map_err(|_| "Unsupported resource edit.")?;
+            serde_json::to_value(store.validate_resource(edit)?.readiness())
+                .map_err(|_| "Cannot encode resource readiness.".into())
+        }
+        "save_resource" => {
+            let edit = serde_json::from_value(request.args["edit"].clone())
+                .map_err(|_| "Unsupported resource edit.")?;
+            recorded_settings(store, store.save_resource(edit)?)
+        }
         "monitoring_activation_status" => {
             let repository_id = request.args["repositoryId"]
                 .as_str()
