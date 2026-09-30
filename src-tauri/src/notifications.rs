@@ -1,4 +1,5 @@
 pub(crate) mod host;
+#[cfg(target_os = "macos")]
 mod macos;
 pub use host::{view as snapshot, Snapshot};
 

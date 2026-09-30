@@ -144,7 +144,14 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
   assert.equal(python.with["python-version"], "3.13");
   assert.deepEqual(
     job.steps.filter((step) => step.run).map((step) => step.run),
-    ["npm ci", "npm run build", "npm run test:release:windows"],
+    [
+      "npm ci",
+      "npm run build",
+      "npm run test:release:windows",
+      "rustup show active-toolchain",
+      "cargo test --manifest-path src-tauri\\foundations\\Cargo.toml --locked",
+      "cargo clippy --manifest-path src-tauri\\foundations\\Cargo.toml --locked --all-targets -- -D warnings",
+    ],
   );
   assert.equal(scripts.build, "tsc --noEmit && vite build");
 });

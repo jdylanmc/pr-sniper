@@ -29,3 +29,9 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run test:release:windows
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Test production persistence and policy (not the full app)
+        run: cargo test --manifest-path src-tauri\foundations\Cargo.toml --locked
+      - name: Lint production foundations
+        run: cargo clippy --manifest-path src-tauri\foundations\Cargo.toml --locked --all-targets -- -D warnings

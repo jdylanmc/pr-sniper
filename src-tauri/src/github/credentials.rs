@@ -112,20 +112,9 @@ impl<R: ProcessRunner> GhCredentialSource<R> {
 impl GhCredentialSource<SystemRunner> {
     pub fn discover() -> Result<Self, ConnectionError> {
         let paths = std::env::var_os("PATH").unwrap_or_default();
-        let mut directories: Vec<_> = std::env::split_paths(&paths)
-            .filter(|path| path.is_absolute())
-            .collect();
-        directories.extend([
-            PathBuf::from("/opt/homebrew/bin"),
-            PathBuf::from("/usr/local/bin"),
-        ]);
-        for directory in directories {
-            let executable = directory.join("gh");
-            if executable.is_file() {
-                return Ok(Self::new(executable, SystemRunner));
-            }
-        }
-        Err(ConnectionError::MissingCli)
+        crate::process_path::executable("gh", &paths)
+            .map(|executable| Self::new(executable, SystemRunner))
+            .ok_or(ConnectionError::MissingCli)
     }
 }
 
