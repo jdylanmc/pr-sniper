@@ -1,0 +1,39 @@
+# PR Sniper vNext Experience
+
+- Spec ID: SPEC-PR-SNIPER-VNEXT
+- Source: docs/agent/discovery/pr-sniper-vnext.md
+- Source revision: fb869d7c9888691c3d3a7777220f542e82e694875c10bb1170c0336fa7b34cb7
+- Full specification: [Supporting requirements](./pr-sniper-vnext.full.md)
+
+## Intention
+
+Give PR Sniper users one compact tray experience that discovers work on a global
+schedule, coordinates independent Agent reviews, and lets a repository's primary
+Agent provide a final review before separately permitted approval or merge.
+This amendment governs vNext Experience #51; unchanged MVP requirements and
+separately approved platform/distribution work remain in force.
+
+## Acceptance Criteria
+
+- AC-001: Queue, Running, Reviewed and Settings remain inside one compact tray-anchored experience with the approved navy/orange/teal, system-sans visual language, supplied header artwork and crosshair identity. Closing hides the panel without stopping background work; explicit Quit stops it. Back navigation, exact notification destinations, drafts, keyboard focus and reduced-motion behavior remain usable.
+- AC-002: One user-configurable global five-field cron schedule scans enabled repositories, defaults to `*/15 * * * *`, and has an expression-builder helper. The saved schedule and explicit time-zone semantics persist; this MVP exposes no per-repository or per-Agent polling schedule and adds no special upgrade-confirmation workflow.
+- AC-003: Each global scan reconciles current repository assignments against the latest PR iteration. A newly assigned Agent receives a normal review pass on that iteration at the next scan; an Agent that already completed it does not repeat unchanged work. New revisions and reopening are reviewable iterations; retries, targeted replies and the primary's final review remain distinguishable from normal passes.
+- AC-004: Once admitted, a PR remains tracked despite removal of its watchlist match or reviewer request. Verified closure or merge stops its work; absence from an open-only poll is not proof of either. Reopening requires review as a new iteration even at the same commit. Repository disablement, account loss, trust and action permissions remain effective gates.
+- AC-005: A repository with exactly one assigned Agent treats it as primary automatically. With multiple assigned Agents, at most one is explicitly primary. Without a primary, normal review/comment work remains available but automatic approval and merge are unavailable. Primary designation is repository-scoped and does not enable either permission.
+- AC-006: Replies in PR Sniper-owned review threads route only to their owning Agent. Top-level comments mentioning the repository's acting GitHub account route to its primary automatically, not to every Agent or the separate AI identity. These triggers retain execution/trust gates, meaningful-response filtering and duplicate/loop prevention; unrelated conversation is not an automatic reply trigger.
+- AC-007: Earlier owned feedback remains available to subsequent reviews. Author commits or replies can prompt reassessment of open concerns, but Agents must not resurrect the same concern after a human closes it. Published feedback, local-only findings and concerns awaiting human judgment remain distinct.
+- AC-008: Users configure Approve and Merge independently from comment publication on repository assignments. Merge is available only to the primary. Auto-approval is the main outcome; merge is optional. No permission, primary selection or provider choice grants a policy bypass or silently changes another permission.
+- AC-009: Before either automatic approval or merge, the primary performs a final full re-review with awareness of the other assigned Agents, after their current passes and outstanding concerns are clear. A final review may serve both enabled actions only while its revision and relevant review, discussion, assignment and permission state remain valid; new findings or invalidated evidence prevent action.
+- AC-010: Draft PRs cannot be approved or merged. Provider capabilities and actual repository policies govern operations, with no invented reviewer quota or fixed provider-specific approve/merge split. Approval supplies the acting account's vote and need not wait for every other required approval; merge additionally requires an open, non-draft, merge-ready PR, green CI, satisfied policies and no unresolved blocking concerns. Azure DevOps Waiting on author blocks automatic merge when that provider is implemented.
+- AC-011: Every cleared, unmerged PR receives an explicit personal-review handoff in the human Queue, including PRs with recorded automatic approval; confirmed merged PRs move to terminal history instead. Human acknowledgment is not an extra gate on an explicitly permitted merge. Queue, job details, history and notifications distinguish machine clearance, final review, confirmed approval/merge, author-wait, human input, stale evidence and failures. Multiple Agents sharing an account are not independent provider votes, and automated actions never imply personal review. Read-only evidence and the complete file guide link to the provider, not an embedded human review editor.
+- AC-012: Full reviews, the primary's final review and targeted reply work share one machine-wide AI capacity limit, default four, independently of saved Agent/repository counts. New jobs join the tail; available capacity starts the oldest eligible work without waiting for another poll. Pause/resume, limit changes, cancellation and retry preserve truthful state, completed work and provider receipts.
+- AC-013: Settings and Genie use the same durable account, Agent, doctrine and repository resources with resource-scoped saves. Preserve explicit account/model selection, independent repository and AI identities, zero/one/many doctrines, edited libraries, unrelated drafts and safe references. Planned jobs show planned configuration; running/completed evidence retains its actual configuration rather than reconstructing it from later edits.
+- AC-014: Genie is available during onboarding and from Settings afterward. Completed shared-resource saves survive closing the flow; unsaved fields are handled explicitly. Final activation shows effective identities, assignments/permissions, scope, the global schedule and capacity and requires confirmation before monitoring starts. Fresh setup never fabricates accounts, repositories or PR work.
+- AC-015: Reviewed history is ordered by meaningful activity, supports incremental older entries, and distinguishes iterations and confirmed outcomes without inferring external human review. History/storage reports accurately scoped usage; confirmed purge preserves active tracking, feedback still needed by it and minimal duplicate-prevention/ownership receipts. Settings, accounts and Agent libraries are not purged.
+- AC-016: Existing account isolation, secure storage, explicit scope activation, read-only Agent execution, current-revision validation, signed machine output, bounded retries and uncertain-mutation reconciliation survive this amendment. Settings and history persist across upgrades without reset or silent permission expansion. Unavailable or rejected capabilities remain visible; no automated provider action is reported as confirmed without its receipt.
+
+## Non-goals
+
+- New repository or AI providers, an Azure DevOps implementation, a competing Windows port, a new database/policy engine, an embedded human review editor, fabricated progress, or changes to independent distribution work.
+- Per-repository/Agent polling controls in this MVP, a fixed peer-approval count, impersonating independent reviewers, bypassing branch policies, or treating prototype state as native/provider acceptance.
+- A new permission grant to the development agents editing this repository. Specification approval, implementation dispatch and live provider actions remain separate.
