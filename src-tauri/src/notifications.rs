@@ -1,6 +1,10 @@
 pub(crate) mod host;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(windows)]
+pub(crate) mod windows;
+#[cfg(windows)]
+mod windows_native;
 pub use host::{view as snapshot, Snapshot};
 
 use crate::{queue, storage::Store};
@@ -430,14 +434,15 @@ pub fn restore(store: &Store) -> Result<(), String> {
 #[derive(Debug, Clone, Serialize)]
 pub struct Permission {
     pub authorization: String,
-    pub alerts_enabled: bool,
-    pub center_enabled: bool,
+    pub alerts_enabled: Option<bool>,
+    pub center_enabled: Option<bool>,
 }
 
 impl Permission {
     pub fn allowed(&self) -> bool {
-        matches!(self.authorization.as_str(), "authorized" | "provisional")
-            && (self.alerts_enabled || self.center_enabled)
+        self.authorization == "authorized_aggregate"
+            || (matches!(self.authorization.as_str(), "authorized" | "provisional")
+                && (self.alerts_enabled == Some(true) || self.center_enabled == Some(true)))
     }
 }
 

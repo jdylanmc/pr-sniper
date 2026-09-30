@@ -2120,9 +2120,21 @@ fn github_keychain_stores(
 }
 
 pub fn run() {
+    #[cfg(windows)]
+    match notifications::windows::preflight() {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(error) => {
+            notifications::windows::show_error(&error);
+            return;
+        }
+    }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_single_instance::init(|_, _, _| {}))
+        .plugin(tauri_plugin_single_instance::init(|_app, _args, _| {
+            #[cfg(windows)]
+            notifications::windows::forward(_app, &_args);
+        }))
         .invoke_handler(tauri::generate_handler![
             snapshot,
             save_preferences,
@@ -2206,7 +2218,7 @@ pub fn run() {
             let github_auth =
                 GithubAuth::restore(&github_credentials, github_legacy_credentials.as_ref());
             let copilot = copilot::Integration::new(isolated)?;
-            let store = Store::new(root);
+            let store = Store::new(root.clone());
             review::restore(&store).map_err(std::io::Error::other)?;
             publication::restore(&store).map_err(std::io::Error::other)?;
             follow_up::restore(&store).map_err(std::io::Error::other)?;
@@ -2216,6 +2228,7 @@ pub fn run() {
             let executable = std::env::current_exe()?.canonicalize()?;
             #[cfg(windows)]
             let executable = std::env::current_exe()?;
+            let notifications = notifications::host::Coordinator::new(app.handle(), &store, &root);
             app.manage(Host {
                 store: Mutex::new(store),
                 monitor: Mutex::new(monitor),
@@ -2231,8 +2244,10 @@ pub fn run() {
                 reviews: review::Coordinator::default(),
                 publications: publication::host::Coordinator::default(),
                 follow_ups: follow_up::host::Coordinator::default(),
-                notifications: notifications::host::Coordinator::new(app.handle()),
+                notifications,
             });
+            #[cfg(windows)]
+            notifications::windows::ready(app.handle());
             if let Err(error) = notification_restore {
                 report(app.handle(), error);
             }
@@ -2369,6 +2384,10 @@ pub fn run() {
             std::process::exit(1);
         });
     app.run(|app, event| {
+        #[cfg(windows)]
+        if let tauri::RunEvent::Exit = event {
+            app.state::<Host>().notifications.shutdown();
+        }
         if let tauri::RunEvent::ExitRequested { api, .. } = event {
             if !app.state::<Host>().quitting.load(Ordering::SeqCst) {
                 api.prevent_exit();

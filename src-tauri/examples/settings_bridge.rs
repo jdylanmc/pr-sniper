@@ -76,8 +76,8 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             store,
             Ok(pr_sniper_lib::notifications::Permission {
                 authorization: "authorized".into(),
-                alerts_enabled: true,
-                center_enabled: true,
+                alerts_enabled: Some(true),
+                center_enabled: Some(true),
             }),
         )?)
         .map_err(|_| "Cannot encode notification test state.".into()),
