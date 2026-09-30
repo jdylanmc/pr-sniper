@@ -18,7 +18,7 @@
     "test:release:windows": "python -B -m unittest discover -s tests/release -p test_release.py && node --test tests/release/workflow.test.mjs",
     "test:settings": "npm run build && cargo build --manifest-path src-tauri/Cargo.toml --locked --example settings_bridge && playwright test --config tests/settings/playwright.config.mjs",
     "bundle": "tauri build --bundles app",
-    "build:windows": "tauri build --no-bundle"
+    "build:windows": "tauri build --no-bundle -- --locked"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1"

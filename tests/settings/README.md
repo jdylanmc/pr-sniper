@@ -13,7 +13,10 @@ override only their provider responses. Other unknown commands still fail.
 Initial host preferences
 are seeded through `Store::save_settings`; assertions read through a separate
 Store process and reload the UI. Persistence is not a JavaScript imitation.
-The fixture removes its own temporary data even when an assertion fails.
+The fixture drains accepted Store operations before removing its own temporary
+data, even when an assertion fails. Native bridge lookup honors `CARGO_TARGET_DIR`
+and the Windows `.exe` suffix; temporary profiles and browser output remain under
+that target. The default target is `src-tauri/target`.
 
 `doctrine-seeding.spec.mjs` covers the complete 23-document canonical catalog
 (exact titles and bodies, with only frontmatter/H1 removed), durable first load,
@@ -64,15 +67,17 @@ The error tests require visible rejection of invalid time zones with the
 previous configuration bytes intact, preserve unsaved edits across focus,
 and characterize malformed/unreadable data and failed atomic replacement.
 Filesystem faults affect only each test's temporary root; unreadable fixture
-permissions are restored before cleanup. The bridge mirrors the native
+permissions are restored before cleanup. Windows uses a real fixture-only DACL
+read denial with exact DACL restoration; Unix retains its mode-based fixture.
+The bridge mirrors the native
 snapshot's `settings: null` plus safe error on failed reads. A forty-repository
 fixture checks rendering and reload, not unlimited physical resource capacity.
 
 `src-tauri/tests/policy_validation.rs` covers semantic validation at both
 global and override save boundaries, supported schedules, strict unsupported
 shapes, synthetic credential rejection, sparse overrides and fresh effective
-policy reads. Startup regression tests use only fixture-owned plist and
-executable paths, never the user's actual login-item locations.
+policy reads. Startup regression tests use only fixture-owned plist/executable paths on macOS
+and unique test-owned registry keys on Windows, never actual login registrations.
 
 Review regressions exercise diagnostics failure after configuration has already
 committed. Repository add/enable/remove, Agent edits and assignment edits all
@@ -92,8 +97,12 @@ keyboard trapping, nested-modal focus restoration, stale reply rejection and
 scroll/viewport evidence using the current repository, Agent and doctrine
 editors. Assignment selectors must immediately reflect advanced interval edits.
 
+`platform.spec.mjs` checks the existing host and Settings wording for Windows
+and macOS without changing authorization or native policy. Browser presentation
+checks do not select a native credential backend.
+
 The tests do not exercise native Tauri command registration, macOS WebKit,
-menu-bar behavior, or login-item integration. It never launches the native
+Windows WebView2, tray behavior, or login-item integration. They never launch the native
 application or changes host login settings. Tests run serially. Port 1421 must
 be free, or select another port with `SETTINGS_TEST_PORT=1422 npm run test:settings`
 for a separate worktree. An existing server is never reused.
