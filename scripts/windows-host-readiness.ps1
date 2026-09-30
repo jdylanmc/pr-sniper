@@ -8,7 +8,9 @@ function Test-PrSniperHostReady($HostProcess, [string] $Profile) {
     $uuid = [guid]::Empty
     if (-not [guid]::TryParse($identity.profile_id, [ref]$uuid)) { throw 'Owned profile has invalid notification identity.' }
     # Read only complete appended records. A writer may still own the final line.
-    $lines = (Get-Content $diagnostics -Raw).Split("`n")
+    $contents = Get-Content $diagnostics -Raw
+    if ([string]::IsNullOrEmpty($contents)) { return $false }
+    $lines = $contents.Split("`n")
     for ($index = 0; $index -lt $lines.Length - 1; $index++) {
         if ($lines[$index].Trim() -and ($lines[$index] | ConvertFrom-Json).event -ceq 'session_started') {
             return $true

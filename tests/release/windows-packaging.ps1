@@ -30,6 +30,8 @@ try {
     $hostFixture | Add-Member ScriptMethod Refresh {}
     Check (-not (Test-PrSniperHostReady $hostFixture $profile)) 'A live helper window alone is not profile readiness.'
     [IO.File]::WriteAllText((Join-Path $profile 'state\notifications.json'), '{"profile_id":"beea9c15-e4ea-4af7-a4e5-687ff7290406","enabled":false}')
+    [IO.File]::WriteAllText((Join-Path $profile 'state\diagnostics.jsonl'), '')
+    Check (-not (Test-PrSniperHostReady $hostFixture $profile)) 'An empty newly created log is not ready yet.'
     [IO.File]::WriteAllText((Join-Path $profile 'state\diagnostics.jsonl'), "{`"event`":`"session_started`"}`n")
     Check (Test-PrSniperHostReady $hostFixture $profile) 'A nonzero internal HWND must not reject a ready owned host.'
     $hostFixture.HasExited = $true
