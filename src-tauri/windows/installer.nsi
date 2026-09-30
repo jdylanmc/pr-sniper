@@ -115,12 +115,18 @@ Var OriginalFailure
   ${OrIf} $1 != 1
     !insertmacro Fail "Unexpected installer value type: ${name}."
   ${EndIf}
+  StrLen $R8 "${value}"
+  IntOp $R8 $R8 + 1
+  IntOp $R8 $R8 * 2
+  ${If} $2 != $R8
+    !insertmacro Fail "Unexpected installer value byte length: ${name}."
+  ${EndIf}
   ClearErrors
   ReadRegStr $0 HKCU "${UNINSTKEY}" "${name}"
   ${If} ${Errors}
     !insertmacro Fail "Cannot read installer value: ${name}."
   ${EndIf}
-  ${If} $0 != "${value}"
+  ${If} $0 S!= "${value}"
     !insertmacro Fail "Unexpected installer value: ${name}."
   ${EndIf}
 !macroend
@@ -129,6 +135,7 @@ Var OriginalFailure
   System::Call 'advapi32::RegQueryValueExW(p $Registry, w "${name}", p 0, *i.r1, p 0, *i.r2) i.r0'
   ${If} $0 != 0
   ${OrIf} $1 != 4
+  ${OrIf} $2 != 4
     !insertmacro Fail "Unexpected installer value type: ${name}."
   ${EndIf}
   ClearErrors
