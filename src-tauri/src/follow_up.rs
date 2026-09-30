@@ -50,6 +50,12 @@ pub struct FollowUp {
     pub body: Option<String>,
     pub uncertain: bool,
     pub receipt: Option<String>,
+    #[serde(default)]
+    pub reply_ordinal: Option<u64>,
+    #[serde(default)]
+    pub enqueue_order: Option<u64>,
+    #[serde(default)]
+    pub enqueued_at: Option<i64>,
 }
 
 impl FollowUp {
@@ -94,6 +100,9 @@ impl FollowUp {
             body: None,
             uncertain: false,
             receipt: None,
+            reply_ordinal: None,
+            enqueue_order: None,
+            enqueued_at: None,
         })
     }
 
@@ -194,12 +203,56 @@ pub fn admit(
     origin: &Publication,
     thread: Thread,
 ) -> Result<bool, String> {
-    let run = FollowUp::new(origin, thread)?;
+    let mut run = FollowUp::new(origin, thread)?;
     if runs.iter().any(|previous| previous.key == run.key) {
         return Ok(false);
     }
+    run.reply_ordinal = Some(
+        runs.iter()
+            .filter(|previous| {
+                previous.review.job.account_id == run.review.job.account_id
+                    && previous.review.job.configuration_id == run.review.job.configuration_id
+                    && previous.review.job.repository_id == run.review.job.repository_id
+                    && previous.review.job.pull_request_id == run.review.job.pull_request_id
+                    && previous.review.selection.agent.id == run.review.selection.agent.id
+            })
+            .count() as u64
+            + 1,
+    );
     runs.push(run);
     Ok(true)
+}
+
+pub fn polling_origins(
+    store: &Store,
+    ticket: &crate::monitoring::PollTicket,
+    pulls: &[crate::github::metadata::PullRequest],
+) -> Result<Vec<Publication>, String> {
+    let settings = store.load_settings()?;
+    let jobs = store.load_queue()?;
+    Ok(store
+        .load_publications()?
+        .into_iter()
+        .filter(|origin| {
+            origin.review.job.configuration_id == ticket.repository_id
+                && ticket.assignments.iter().any(|a| {
+                    a.assignment_id == origin.review.assignment_id
+                        && a.agent_id == origin.review.selection.agent.id
+                })
+                && origin.review.job.account_id == ticket.provider_account_id
+                && origin.receipts.last().is_some_and(|r| {
+                    r.state == crate::publication::RemoteState::Commented
+                        && !r.comment_ids.is_empty()
+                })
+                && pulls.iter().any(|pull| {
+                    jobs.iter()
+                        .find(|j| origin.review.matches_job(j))
+                        .is_some_and(|job| {
+                            crate::monitoring::review_policy(&settings, job, Some(pull)).is_ok()
+                        })
+                })
+        })
+        .collect())
 }
 
 pub fn validate_analysis_commit(

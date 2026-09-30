@@ -224,8 +224,8 @@ execution remains a separate follow-up.
 and saved AI capacity (default four). Legacy interval choices and scoped
 schedules remain readable, without scoped polling editors. An incompatible
 legacy global interval remains visible as a setup issue until explicitly
-replaced, never silently converted. These are configuration contracts; the
-global scheduler and shared-capacity engine are separate deliveries.
+replaced, never silently converted. The global scheduler consumes this saved
+cron; the shared-capacity engine remains a separate delivery.
 
 **Doctrines** manages plain-text review principles. A fresh configuration
 persists all 23 bundled doctrines on first load, before any Settings tab is
@@ -377,15 +377,16 @@ OS delivery/click-through verification and its evidence limits.
 
 ### Polling and detection
 
-While the menu-bar process is active, each saved repository assignment uses its
-own interval or five-field cron schedule and explicit IANA time zone. When a
-repository has no assignments, its effective global/per-repository policy
-schedule is used for backward compatibility. Cron times
+While the menu-bar process is active, one global five-field cron schedule scans
+enabled, scope-confirmed repositories in the saved IANA time zone. Each scan
+captures its repository assignments. One read per account/repository binding
+fans out to individual Agent jobs; assignment timers are not used. Cron times
 skipped by a spring daylight-saving jump run at the first valid local time;
 repeated fall-back times run once at their first occurrence. Sleep or missed
 ticks cause one check, not a catch-up burst. **Check Now** coalesces one pending
-read for every eligible account and assignment, then drains them serially when
-multiple bindings address the same remote repository.
+global scan; repeated requests during a read coalesce. Bindings addressing the
+same remote repository drain serially. Check Now never bypasses Retry-After or
+an existing retry budget.
 
 Each repository poll persists its provider/account/repository/policy identity,
 attempt count and 15-minute retry deadline before the provider read begins.
@@ -412,8 +413,10 @@ durably admitted heads. Missing, stale or invalid activation blocks timer and
 
 Filter-only edits preserve the confirmed creation watermark, baseline heads,
 initial selection and admitted heads; every poll applies the current effective
-author/reviewer filter. An unchanged excluded old head remains excluded when a
-filter widens, while its later matching head qualifies. Preview/apply and
+author/reviewer filter for new admission. An unchanged excluded author-matched
+head remains excluded when a filter widens, while its later matching head
+qualifies. An explicit reviewer request can admit an older/unwatched PR despite
+that initial backlog boundary. Preview/apply and
 already-running polls still pin the filter they started with and reject stale
 results.
 
@@ -422,18 +425,31 @@ connected OAuth account. A populated watched-author filter or a request for the
 signed-in account as reviewer admits a non-draft revision. An empty effective
 watched-author filter matches all authors only after scope activation; it does
 not establish trust. Reviewer-only, all-author, fork and otherwise untrusted
-work waits for explicit confirmation. Repeat
-observations deduplicate by provider, account, stable repository, pull request,
-head revision, trigger policy and assignment; a new head can be queued independently.
-Successful open-pull-request scans and configuration changes retain earlier
-revision hashes as visibly non-actionable history instead of leaving obsolete
-detections ready to start. Absence from one paginated open-pull-request scan is
-nonterminal: it records "not seen" and is rechecked on the next scan rather than
-inventing a closed or merged state. Poll pages use stable creation order to
-reduce page reordering while scanning active repositories. Schedule health
-identifies the acting account, assignment and Agent, and persists pending,
-success and recoverable failure state. Unchanged old heads stay excluded, while
-a matching new head on an old pull request enters detection. Detection never
+work waits for explicit confirmation. Admission then remains sticky after
+watchlist/reviewer removal, without granting trust or bypassing current account,
+repository, start or publication gates. Repeated scans reuse each assignment's
+normal job for the same PR iteration, regardless of later filter changes. Adding
+an Agent creates its missing job at the next scan without repeating completed
+unchanged passes. A new head supersedes old work; verified reopening creates a
+new iteration even at the same head.
+
+The complete open listing is followed by explicit provider reads for active,
+admitted PRs absent from it. Only returned lifecycle
+fields establish closure/merge; absence, 404, failed or incomplete reads are not
+terminal evidence. Closed/merged iterations remain visible as provider-confirmed
+history while later open listings can discover reopening, without refetching
+every terminal PR's details. Poll pages use stable creation
+order. Schedule health identifies each account/repository read and retains
+pending, success and failure state.
+
+`state/queue.json` atomically stores tracked lifecycle, iterations, immutable
+normal-work identity/admission cause, queue order and per-Agent/PR pass ordinal.
+Legacy arrays remain readable. Review/publication keys, receipts and old queue
+destinations survive adoption; embedded originating reviews prevent replay when
+an older queue/review file is missing. Completed execution snapshots are never
+rewritten by scans. Reply work has its own ordinal and shares the durable queue
+order allocator; retries retain their separate operation attempt counts.
+Detection never
 clones a repository, starts an agent, executes repository code, mutates GitHub
 or publishes a review.
 
@@ -442,7 +458,7 @@ or publishes a review.
 Configure an Agent's Copilot account, returned model, prompt and optional
 doctrine, then assign it to a repository. **Review Queue > Agent reviews**
 shows each assignment's detected revisions. Existing pre-review detections
-remain history until that assignment polls again; opening the queue does not
+remain history until the next global scan; opening the queue does not
 silently start legacy work.
 
 **Start review** is explicit when automatic start is disabled. Enabling the
@@ -545,8 +561,8 @@ cleanup; deterministic provider fixtures do not claim a live publication pass.
 
 ## Owned-thread follow-ups
 
-Each assignment's scheduled poll also checks unresolved threads rooted in its
-confirmed PR Sniper inline comments. Ownership requires the saved review and
+Each repository read also checks all captured assignments' unresolved threads
+rooted in their confirmed PR Sniper inline comments. Ownership requires the saved review and
 comment receipts, repository/account identity, original commit and exact root
 body; a matching username alone is not sufficient. GitHub GraphQL supplies
 resolution state and complete paginated published conversations. Unpublished

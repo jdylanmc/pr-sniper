@@ -43,6 +43,16 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- Replace assignment timers with one durable global cron scan. Capture the scan's
+  assignments and read each account/repository binding once before fanning out
+  individual Agent jobs. Preserve retry budgets, manual-check coalescing and
+  existing owned-thread polling.
+- Keep PR admission after author/reviewer filters change; explicit reviewer
+  requests can admit older PRs. Persist iteration identity, FIFO metadata and
+  separate normal/reply ordinals. Verified closure/merge is terminal; reopening,
+  even at the same head, creates fresh work. Preserve historical review keys,
+  publication receipts and queue destinations without replaying completed passes.
+
 - Require macOS 13.5 or later for the application, matching the bundled Copilot
   runtime's minimum.
 

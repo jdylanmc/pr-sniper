@@ -25,6 +25,8 @@ pub enum State {
     AwaitingPublication,
     WaitingForAuthor,
     MachineSignedOff,
+    Closed,
+    Merged,
 }
 
 impl State {
@@ -36,6 +38,7 @@ impl State {
             Self::Reviewing | Self::Queued | Self::AwaitingPublication => 3,
             Self::WaitingForAuthor => 4,
             Self::Stale => 5,
+            Self::Closed | Self::Merged => 6,
         }
     }
 
@@ -52,6 +55,8 @@ impl State {
             Self::Blocked => "Current configuration or access prevents a completed handoff. Inspect evidence, schedule health and Settings.",
             Self::Stale => "This review no longer establishes readiness for the current PR or configuration. Check the latest revision; saved evidence remains available.",
             Self::StaleAfterPublication => "Comments were published, but the reviewed state is now stale. They do not establish readiness for the current PR.",
+            Self::Closed => "GitHub reports this PR closed. This iteration is terminal; saved evidence is retained.",
+            Self::Merged => "GitHub reports this PR merged. This is provider lifecycle evidence, not a claim that PR Sniper merged it.",
         }
     }
 }
@@ -59,6 +64,7 @@ impl State {
 #[derive(Serialize)]
 pub struct Item {
     pub id: String,
+    pub aliases: Vec<String>,
     pub job: QueueJob,
     pub state: State,
     pub summary: &'static str,
@@ -69,6 +75,8 @@ pub struct Item {
 
 #[derive(Serialize)]
 pub struct Snapshot {
+    pub global_scan: Option<monitoring::GlobalScan>,
+    pub tracked: Vec<monitoring::TrackedPullRequest>,
     pub health: Vec<ScheduleHealth>,
     pub jobs: Vec<QueueJob>,
     pub(crate) reviews: Vec<review::host::Candidate>,
@@ -78,6 +86,9 @@ pub struct Snapshot {
 }
 
 pub fn item_id(job: &QueueJob) -> String {
+    if let Some(work) = &job.work {
+        return work.item_id.clone();
+    }
     URL_SAFE_NO_PAD.encode(
         serde_json::json!([
             job.provider,
@@ -95,6 +106,8 @@ pub fn item_id(job: &QueueJob) -> String {
 pub fn snapshot(store: &Store, health: Vec<ScheduleHealth>) -> Result<Snapshot, String> {
     let settings = store.load_settings()?;
     let mut result = Snapshot {
+        global_scan: store.load_monitoring_state()?.global_scan,
+        tracked: store.load_queue_state()?.tracked,
         health,
         jobs: store.load_queue()?,
         reviews: review::host::candidates(store)?,
@@ -292,6 +305,7 @@ fn follow_up_state(candidate: &follow_up::host::Candidate) -> Option<State> {
 }
 
 fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
+    let current = |job| current_job(job, &snapshot.jobs);
     let mut groups = BTreeMap::new();
     for job in snapshot
         .jobs
@@ -299,7 +313,18 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
         .chain(snapshot.reviews.iter().map(|r| &r.job))
         .chain(snapshot.follow_ups.iter().map(|f| &f.run.review.job))
     {
-        groups.entry(item_id(job)).or_insert(job);
+        let job = current(job);
+        groups
+            .entry(item_id(job))
+            .and_modify(|previous: &mut &QueueJob| {
+                if previous.waiting == monitoring::WAITING_ASSIGNMENT_REMOVED
+                    && job.waiting != monitoring::WAITING_ASSIGNMENT_REMOVED
+                    || previous.work.is_none() && job.work.is_some()
+                {
+                    *previous = job;
+                }
+            })
+            .or_insert(job);
     }
     let mut items = Vec::new();
     for (id, job) in groups {
@@ -311,10 +336,11 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
         let follow_ups: Vec<_> = snapshot
             .follow_ups
             .iter()
-            .filter(|f| item_id(&f.run.review.job) == id)
+            .filter(|f| item_id(current(&f.run.review.job)) == id)
             .collect();
         let mut states: Vec<_> = reviews
             .iter()
+            .filter(|r| r.job.waiting != monitoring::WAITING_ASSIGNMENT_REMOVED)
             .map(|r| review_state(settings, r, &snapshot.publications))
             .collect();
         let mut warnings = BTreeSet::new();
@@ -362,7 +388,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             .publications
             .iter()
             .filter_map(|p| p.publication.as_ref())
-            .filter(|p| item_id(&p.review.job) == id)
+            .filter(|p| item_id(current(&p.review.job)) == id)
         {
             if let Some(error) = &publication.error {
                 warnings.insert(error.clone());
@@ -378,7 +404,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 .iter()
                 .filter_map(|p| p.publication.as_ref())
                 .any(|p| {
-                    item_id(&p.review.job) == id
+                    item_id(current(&p.review.job)) == id
                         && p.receipts
                             .last()
                             .is_some_and(|r| r.state == RemoteState::Commented)
@@ -416,8 +442,18 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 }
             }
         }
-        let state = states.into_iter().min().unwrap_or(State::Blocked);
+        let state = match job.waiting.as_str() {
+            monitoring::WAITING_CLOSED => State::Closed,
+            monitoring::WAITING_MERGED => State::Merged,
+            _ => states.into_iter().min().unwrap_or(State::Blocked),
+        };
         items.push(Item {
+            aliases: snapshot
+                .jobs
+                .iter()
+                .filter(|j| item_id(j) == id)
+                .filter_map(|j| j.work.as_ref()?.legacy_item_id.clone())
+                .collect(),
             id,
             job: job.clone(),
             state,
@@ -444,12 +480,24 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
     items
 }
 
+fn current_job<'a>(job: &'a QueueJob, jobs: &'a [QueueJob]) -> &'a QueueJob {
+    let Some(assignment_id) = &job.assignment_id else {
+        return job;
+    };
+    jobs.iter()
+        .find(|j| {
+            j.assignment_id == job.assignment_id
+                && review::key(j, assignment_id) == review::key(job, assignment_id)
+        })
+        .unwrap_or(job)
+}
+
 pub fn destination(store: &Store, id: &str, file: Option<&str>) -> Result<url::Url, String> {
     let snapshot = snapshot(store, vec![])?;
     let item = snapshot
         .items
         .iter()
-        .find(|item| item.id == id)
+        .find(|item| item.id == id || item.aliases.iter().any(|alias| alias == id))
         .ok_or("This exact queue item is no longer available; no other PR was opened.")?;
     if item.job.provider != "github" || item.job.number == 0 {
         return Err("This queue item's provider destination is unsupported.".into());

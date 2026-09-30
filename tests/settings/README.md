@@ -101,6 +101,18 @@ editors. The global schedule helper must match the saved cron expression.
 Review fixtures distinguish captured, planned, interrupted and legacy missing
 configuration without using today's library as historical evidence.
 
+`iterations.spec.mjs` passes the new queue envelope, tracking and global-scan
+fixtures through the native Store bridge. It verifies seven independent ordered
+jobs, immutable admission versus current matching, separate pass/attempt counts,
+provider-confirmed terminal history, same-head reopened iterations, retained
+destination aliases and tracking with no assignments. These are presentation
+fixtures, not live provider claims. `src-tauri/tests/iterations.rs` exercises
+the production Monitor, provider metadata reader and review/publication gates:
+scan-time assignment capture, sticky admission, explicit missing-PR reads,
+404/unavailable/incomplete responses, restart and write-failure recovery,
+legacy receipt deduplication and continued owned-thread polling. No capacity
+engine, new mention routing or provider action is exercised.
+
 `platform.spec.mjs` checks the existing host and Settings wording for Windows
 and macOS without changing authorization or native policy. Browser presentation
 checks do not select a native credential backend.

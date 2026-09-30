@@ -48,7 +48,19 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
                 .map_err(|_| "Invalid publication fixture.")?;
             let follow_ups: Vec<_> = serde_json::from_value(request.args["follow_ups"].clone())
                 .map_err(|_| "Invalid follow-up fixture.")?;
-            store.save_queue(&jobs)?;
+            let mut queue = store.load_queue_state()?;
+            queue.jobs = jobs;
+            if let Some(tracked) = request.args.get("tracked") {
+                queue.tracked = serde_json::from_value(tracked.clone())
+                    .map_err(|_| "Invalid tracked PR fixture.")?;
+            }
+            store.save_queue_state(&queue)?;
+            if let Some(monitoring) = request.args.get("monitoring") {
+                store.save_monitoring_state(
+                    &serde_json::from_value(monitoring.clone())
+                        .map_err(|_| "Invalid monitoring fixture.")?,
+                )?;
+            }
             store.save_reviews(&reviews)?;
             store.save_publications(&publications)?;
             store.save_follow_ups(&follow_ups)?;

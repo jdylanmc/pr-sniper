@@ -34,9 +34,9 @@ pub(crate) struct Candidate {
 pub(crate) fn candidates(store: &crate::storage::Store) -> Result<Vec<Candidate>, String> {
     let settings = store.load_settings()?;
     let jobs = store.load_queue()?;
-    let reviews = store.load_reviews()?;
+    let reviews = store.review_evidence()?;
     let mut result = Vec::new();
-    for job in jobs {
+    for job in &jobs {
         let Some(repository) = settings
             .repositories
             .iter()
@@ -46,14 +46,18 @@ pub(crate) fn candidates(store: &crate::storage::Store) -> Result<Vec<Candidate>
         };
         for assignment in &repository.assignments {
             if job
-                .assignment_id
-                .as_deref()
-                .is_some_and(|id| id != assignment.id)
+                .work
+                .as_ref()
+                .is_some_and(|w| w.agent_id != assignment.agent_id)
+                || job
+                    .assignment_id
+                    .as_deref()
+                    .is_some_and(|id| id != assignment.id)
             {
                 continue;
             }
-            let key = key(&job, &assignment.id);
-            let selection = Selection::resolve(&settings, &job, &assignment.id);
+            let key = key(job, &assignment.id);
+            let selection = Selection::resolve(&settings, job, &assignment.id);
             let agent_name = settings
                 .agents
                 .iter()
@@ -82,7 +86,11 @@ pub(crate) fn candidates(store: &crate::storage::Store) -> Result<Vec<Candidate>
                 key: run.key.clone(),
                 assignment_id: run.assignment_id.clone(),
                 agent_name: run.selection.agent.name.clone(),
-                job: run.job.clone(),
+                job: jobs
+                    .iter()
+                    .find(|j| run.matches_job(j))
+                    .cloned()
+                    .unwrap_or_else(|| run.job.clone()),
                 trust_required: false,
                 blocked: Some(
                     "Historical review; assignment or repository is no longer available.".into(),
@@ -92,6 +100,13 @@ pub(crate) fn candidates(store: &crate::storage::Store) -> Result<Vec<Candidate>
             });
         }
     }
+    result.sort_by_key(|c| {
+        (
+            c.job.work.as_ref().map(|w| w.enqueue_order).unwrap_or(0),
+            c.job.detected_at,
+            c.key.clone(),
+        )
+    });
     Ok(result)
 }
 
@@ -301,7 +316,7 @@ impl Coordinator {
                     }
                     auth.account_session_allowed(&run.job.account_id)
                         .map_err(Failure::from)?;
-                    validate_saved_selection(&store, &run)?;
+                    super::validate_execution_selection(&store, &run)?;
                     Ok(result)
                 });
                 let mut reviews = store.load_reviews()?;
@@ -369,24 +384,7 @@ fn local_gate(app: &tauri::AppHandle, run: &ReviewRun) -> Result<(), Failure> {
         .store
         .lock()
         .map_err(|_| Failure::permanent("Review storage is unavailable."))?;
-    validate_saved_selection(&store, run)
-}
-
-fn validate_saved_selection(store: &crate::storage::Store, run: &ReviewRun) -> Result<(), Failure> {
-    let settings = store.load_settings().map_err(Failure::permanent)?;
-    let jobs = store.load_queue().map_err(Failure::permanent)?;
-    let job = jobs
-        .iter()
-        .find(|j| run.matches_job(j))
-        .ok_or_else(|| Failure::permanent("Review detection is no longer available."))?;
-    let current =
-        Selection::resolve(&settings, job, &run.assignment_id).map_err(Failure::permanent)?;
-    if current != run.selection || (!current.policy.automatic_agent_start && !run.manual_start) {
-        return Err(Failure::permanent(
-            "Agent configuration or start gate changed; explicitly retry.",
-        ));
-    }
-    Ok(())
+    super::validate_execution_selection(&store, run)
 }
 
 fn remote_gate(
@@ -407,7 +405,7 @@ fn remote_gate(
         .map_err(|_| Failure::permanent("Review storage is unavailable."))?;
     let settings = store.load_settings().map_err(Failure::permanent)?;
     monitoring::review_policy(&settings, &run.job, Some(&pull)).map_err(Failure::permanent)?;
-    if super::requires_trust(&run.job, &pull) && !run.trust_confirmed {
+    if super::requires_trust(&settings, &run.job, &pull) && !run.trust_confirmed {
         return Err(Failure::permanent(
             "This fork or author requires explicit trust confirmation.",
         ));
