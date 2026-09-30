@@ -19,10 +19,11 @@ function Snapshot {
         values = $values
     } | ConvertTo-Json -Depth 5 -Compress
 }
-function Require-FailedAndPreserved {
-    $before = Snapshot
-    if ($Phase -eq 'Install') {
-        $process = Start-Process $Installer -ArgumentList '/S' -PassThru
+function Invoke-ExpectedFailure([switch] $Direct) {
+    if ($Phase -eq 'Install' -or $Direct) {
+        $path = if ($Direct) { Join-Path $directory 'uninstall.exe' } else { $Installer }
+        $arguments = if ($Direct) { "/S _?=$directory" } else { '/S' }
+        $process = Start-Process $path -ArgumentList $arguments -PassThru
         if (-not $process.WaitForExit(60000)) {
             Stop-Process -Id $process.Id
             throw 'Owned fault installer timed out.'
@@ -35,9 +36,22 @@ function Require-FailedAndPreserved {
             throw 'Failed uninstall discarded its recovery receipt.'
         }
     }
+}
+function Require-FailedAndPreserved {
+    $before = Snapshot
+    Invoke-ExpectedFailure
     if ((Snapshot) -cne $before -or (Test-Path (Join-Path $directory '.pr-sniper-transaction'))) {
         throw 'Fault rollback did not preserve exact prior files/value types/version/shortcut.'
     }
+}
+$before = Snapshot
+$exclusive = [IO.File]::Open($shortcut, 'Open', 'Read', 'None')
+try {
+    if ($Phase -eq 'Uninstall') { Invoke-ExpectedFailure -Direct }
+    Invoke-ExpectedFailure
+} finally { $exclusive.Dispose() }
+if ((Snapshot) -cne $before -or (Test-Path (Join-Path $directory '.pr-sniper-transaction'))) {
+    throw 'Unreadable shortcut changed the prior installation.'
 }
 if ($Phase -eq 'Install') {
     $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -76,15 +90,18 @@ foreach ($file in $lockedFiles) {
     $handle = [IO.File]::Open($file, 'Open', 'Read', 'Read')
     try { Require-FailedAndPreserved } finally { $handle.Dispose() }
 }
-$originalAcl = Get-Acl $keyPath
-try {
-    $denied = Get-Acl $keyPath
-    $rule = [Security.AccessControl.RegistryAccessRule]::new(
-        [Security.Principal.WindowsIdentity]::GetCurrent().User, 'SetValue', 'None', 'None', 'Deny')
-    $denied.AddAccessRule($rule)
-    Set-Acl $keyPath $denied
-    Require-FailedAndPreserved
-} finally { Set-Acl $keyPath $originalAcl }
+$denials = if ($Phase -eq 'Uninstall') { @('SetValue', 'Delete') } else { @('SetValue') }
+foreach ($right in $denials) {
+    $originalAcl = Get-Acl $keyPath
+    try {
+        $denied = Get-Acl $keyPath
+        $rule = [Security.AccessControl.RegistryAccessRule]::new(
+            [Security.Principal.WindowsIdentity]::GetCurrent().User, $right, 'None', 'None', 'Deny')
+        $denied.AddAccessRule($rule)
+        Set-Acl $keyPath $denied
+        Require-FailedAndPreserved
+    } finally { Set-Acl $keyPath $originalAcl }
+}
 foreach ($point in @("$($Phase.ToLowerInvariant())-files", "$($Phase.ToLowerInvariant())-registration")) {
     try {
         $env:PR_SNIPER_NSIS_TEST_FAIL = $point

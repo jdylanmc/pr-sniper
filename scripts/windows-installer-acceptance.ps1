@@ -130,20 +130,30 @@ try {
     Assert-Installed $next (Join-Path $Upgrade 'upgrade-test-only.exe')
     Assert-Preserved
     & (Join-Path $PSScriptRoot 'windows-installer-faults.ps1') -Phase Uninstall
+    # After clearing Delete-only denial, prove empty-key removal and reinstall,
+    # separately from the intentionally nonempty foreign-container case below.
+    Invoke-Choco @('uninstall', 'pr-sniper-localtest')
+    if (Test-Path $uninstallKey) { throw 'Clean uninstall retained its empty installer key.' }
+    Invoke-Choco @('install', 'pr-sniper-localtest', "--version=$($next.version)-localtest", '--pre', "--source=$($feed.FullName)")
+    Assert-Installed $next (Join-Path $Upgrade 'upgrade-test-only.exe')
+    Assert-Preserved
     # Prove the uninstaller preserves foreign contents, not merely a clean dir.
     $sentinel | Set-Content (Join-Path $directory 'foreign-file.txt')
     New-ItemProperty $uninstallKey 'ForeignFixture' -Value $sentinel | Out-Null
+    New-Item "$uninstallKey\ForeignFixtureChild" | Out-Null
+    New-ItemProperty "$uninstallKey\ForeignFixtureChild" 'marker' -Value $sentinel | Out-Null
     $shell = New-Object -ComObject WScript.Shell
     $link = $shell.CreateShortcut($shortcut)
     if ($link.TargetPath -ine (Join-Path $directory 'pr-sniper.exe')) { throw 'Installed shortcut target mismatch.' }
     $link.TargetPath = $env:ComSpec
     $link.Save()
-    Invoke-Choco @('uninstall', 'pr-sniper-localtest')
+    & (Join-Path $PSScriptRoot 'windows-removal-retry.ps1')
     Assert-Preserved
     if ((Test-Path (Join-Path $directory 'pr-sniper.exe')) -or
         (Test-Path (Join-Path $directory 'uninstall.exe')) -or
         (Get-ItemProperty $uninstallKey -Name DisplayName -ErrorAction SilentlyContinue) -or
         (Get-ItemPropertyValue $uninstallKey 'ForeignFixture') -cne $sentinel -or
+        (Get-ItemPropertyValue "$uninstallKey\ForeignFixtureChild" 'marker') -cne $sentinel -or
         (Get-Content (Join-Path $directory 'foreign-file.txt') -Raw).Trim() -cne $sentinel -or
         $shell.CreateShortcut($shortcut).TargetPath -ine $env:ComSpec) {
         throw 'Owned removal or foreign-content preservation failed.'

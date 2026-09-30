@@ -73,6 +73,7 @@ Var OperationFailed
 Var RollbackFailed
 Var FailureStage
 Var OriginalFailure
+Var ShortcutState
 
 !macro Fail message
   SetErrorLevel 2
@@ -236,6 +237,57 @@ Var OriginalFailure
 !macroend
 
 !macro LifecycleFunctions prefix
+Function ${prefix}InspectShortcut
+  StrCpy $ShortcutState "unreadable"
+  System::Call 'kernel32::GetFileAttributesW(w "$SMPROGRAMS\${PRODUCTNAME}.lnk") i.r0 ?e'
+  Pop $1
+  ${If} $0 = -1
+    ${If} $1 = 2
+    ${OrIf} $1 = 3
+      StrCpy $ShortcutState "absent"
+    ${EndIf}
+    Return
+  ${EndIf}
+  IntOp $1 $0 & 0x10
+  ${If} $1 != 0
+    Return
+  ${EndIf}
+  System::Call 'ole32::CoInitializeEx(p 0, i 2) i.r4'
+  ${If} $4 != 0
+  ${AndIf} $4 != 1
+    Return
+  ${EndIf}
+  StrCpy $0 0
+  StrCpy $1 0
+  !insertmacro ComHlpr_CreateInProcInstance ${CLSID_ShellLink} ${IID_IShellLink} r0 ".r3"
+  ${If} $3 = 0
+  ${AndIf} $0 P<> 0
+    ${IUnknown::QueryInterface} $0 '("${IID_IPersistFile}", .r1).r3'
+    ${If} $3 = 0
+    ${AndIf} $1 P<> 0
+      ${IPersistFile::Load} $1 '("$SMPROGRAMS\${PRODUCTNAME}.lnk", ${STGM_READ}).r3'
+      ${If} $3 = 0
+        StrCpy $2 ""
+        ${IShellLink::GetPath} $0 '(.r2, ${NSIS_MAX_STRLEN}, 0, ${SLGP_RAWPATH}).r3'
+        ${If} $3 = 0
+        ${AndIf} $2 != ""
+          StrCpy $ShortcutState "foreign"
+          ${If} $2 == "$INSTDIR\${MAINBINARYNAME}.exe"
+            StrCpy $ShortcutState "owned"
+          ${EndIf}
+        ${EndIf}
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+  ${If} $1 P<> 0
+    ${IUnknown::Release} $1 ""
+  ${EndIf}
+  ${If} $0 P<> 0
+    ${IUnknown::Release} $0 ""
+  ${EndIf}
+  System::Call 'ole32::CoUninitialize()'
+FunctionEnd
+
 Function ${prefix}ReleaseLifecycle
   ${If} $LifecycleMutex != 0
     System::Call 'kernel32::ReleaseMutex(p $LifecycleMutex)'
@@ -375,6 +427,41 @@ Function ${prefix}CloseRegistry
   ${EndIf}
 FunctionEnd
 
+Function ${prefix}RemoveEmptyRegistration
+  StrCpy $OperationFailed 0
+  System::Call 'advapi32::RegQueryInfoKeyW(p $Registry, p 0, p 0, p 0, *i.r1, p 0, p 0, *i.r2, p 0, p 0, p 0, p 0) i.r0'
+  ${If} $0 != 0
+    StrCpy $OperationFailed 1
+    StrCpy $FailureStage "inspect remaining installer container"
+    Return
+  ${EndIf}
+  ${If} $1 != 0
+  ${OrIf} $2 != 0
+    Return
+  ${EndIf}
+  Call ${prefix}CloseRegistry
+  ClearErrors
+  DeleteRegKey /ifempty HKCU "${UNINSTKEY}"
+  ; Read back the result instead of treating every /ifempty failure alike.
+  ; Reopen with rollback rights while the old files/schema are still available.
+  System::Call 'advapi32::RegOpenKeyExW(p 0x80000001, w "${UNINSTKEY}", i 0, i 0x103, *p.r0) i.r1'
+  ${If} $1 = 2
+    Return
+  ${EndIf}
+  ${If} $1 = 0
+    StrCpy $Registry $0
+    System::Call 'advapi32::RegQueryInfoKeyW(p $Registry, p 0, p 0, p 0, *i.r1, p 0, p 0, *i.r2, p 0, p 0, p 0, p 0) i.r0'
+    ${If} $0 = 0
+      ${If} $1 != 0
+      ${OrIf} $2 != 0
+        Return
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+  StrCpy $OperationFailed 1
+  StrCpy $FailureStage "remove empty owned installer key"
+FunctionEnd
+
 Function ${prefix}Rollback
   StrCpy $OriginalFailure "$FailureStage"
   StrCpy $RollbackFailed 0
@@ -396,11 +483,15 @@ Function ${prefix}Rollback
   !insertmacro RestoreFile "$Transaction\previous-app.exe" "$INSTDIR\${MAINBINARYNAME}.exe" $OldAppMoved
   !insertmacro RestoreFile "$Transaction\previous-uninstall.exe" "$INSTDIR\uninstall.exe" $OldUninstallerMoved
   !insertmacro RestoreFile "$ShortcutBackup" "$SMPROGRAMS\${PRODUCTNAME}.lnk" $OldShortcutMoved
-  Call ${prefix}CloseRegistry
   ${If} $RegistryCreated = 1
   ${AndIf} $RollbackFailed = 0
-    DeleteRegKey /ifempty HKCU "${UNINSTKEY}"
+    Call ${prefix}RemoveEmptyRegistration
+    ${If} $OperationFailed = 1
+      StrCpy $RollbackFailed 1
+      DetailPrint "Rollback failed: $FailureStage"
+    ${EndIf}
   ${EndIf}
+  Call ${prefix}CloseRegistry
   ${If} $RollbackFailed = 0
     Call ${prefix}CleanupTransaction
     DetailPrint "Rolled back: $OriginalFailure"
@@ -476,12 +567,11 @@ Function ValidateInstall
   ${Else}
     !insertmacro Fail "Cannot inspect existing installer ownership."
   ${EndIf}
-  ${If} ${FileExists} "$SMPROGRAMS\${PRODUCTNAME}.lnk"
-    !insertmacro IsShortcutTarget "$SMPROGRAMS\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
-    Pop $0
-    ${If} $0 != 1
-      !insertmacro Fail "The Start Menu shortcut belongs to another installation."
-    ${EndIf}
+  Call InspectShortcut
+  ${If} $ShortcutState == "unreadable"
+    !insertmacro Fail "Cannot read the Start Menu shortcut; ownership is unknown."
+  ${ElseIf} $ShortcutState == "foreign"
+    !insertmacro Fail "The Start Menu shortcut belongs to another installation."
   ${EndIf}
 FunctionEnd
 
@@ -559,7 +649,13 @@ Section Install
     !insertmacro MoveOwned "$INSTDIR\uninstall.exe" "$Transaction\previous-uninstall.exe" $OldUninstallerMoved install_rollback
     !insertmacro MoveOwned "$INSTDIR\${MAINBINARYNAME}.exe" "$Transaction\previous-app.exe" $OldAppMoved install_rollback
   ${EndIf}
-  ${If} ${FileExists} "$SMPROGRAMS\${PRODUCTNAME}.lnk"
+  Call InspectShortcut
+  ${If} $ShortcutState == "unreadable"
+  ${OrIf} $ShortcutState == "foreign"
+    StrCpy $FailureStage "revalidate shortcut ownership"
+    Goto install_rollback
+  ${EndIf}
+  ${If} $ShortcutState == "owned"
     !insertmacro MoveOwned "$SMPROGRAMS\${PRODUCTNAME}.lnk" "$ShortcutBackup" $OldShortcutMoved install_rollback
   ${EndIf}
   !insertmacro MoveOwned "$Transaction\new-app.exe" "$INSTDIR\${MAINBINARYNAME}.exe" $NewAppPlaced install_rollback
@@ -596,6 +692,10 @@ Function un.ValidateUninstall
     !insertmacro Fail "This uninstaller belongs to a different application version."
   ${EndIf}
   !insertmacro RequireStopped
+  Call un.InspectShortcut
+  ${If} $ShortcutState == "unreadable"
+    !insertmacro Fail "Cannot read the Start Menu shortcut; nothing was removed."
+  ${EndIf}
 FunctionEnd
 
 Function un.onInit
@@ -621,9 +721,12 @@ Section Uninstall
   ${If} ${FileExists} "$INSTDIR\${MAINBINARYNAME}.exe"
     !insertmacro MoveOwned "$INSTDIR\${MAINBINARYNAME}.exe" "$Transaction\previous-app.exe" $OldAppMoved uninstall_rollback
   ${EndIf}
-  !insertmacro IsShortcutTarget "$SMPROGRAMS\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
-  Pop $0
-  ${If} $0 = 1
+  Call un.InspectShortcut
+  ${If} $ShortcutState == "unreadable"
+    StrCpy $FailureStage "revalidate shortcut readability"
+    Goto uninstall_rollback
+  ${EndIf}
+  ${If} $ShortcutState == "owned"
     !insertmacro MoveOwned "$SMPROGRAMS\${PRODUCTNAME}.lnk" "$ShortcutBackup" $OldShortcutMoved uninstall_rollback
   ${EndIf}
   !insertmacro Fault "uninstall-files" uninstall_rollback
@@ -633,10 +736,13 @@ Section Uninstall
     Goto uninstall_rollback
   ${EndIf}
   !insertmacro Fault "uninstall-registration" uninstall_rollback
+  Call un.RemoveEmptyRegistration
+  ${If} $OperationFailed = 1
+    Goto uninstall_rollback
+  ${EndIf}
   Call un.CloseRegistry
   Call un.CleanupTransaction
-  ; Nonempty foreign keys/directories and the _?= self file are intentional.
-  DeleteRegKey /ifempty HKCU "${UNINSTKEY}"
+  ; Nonempty foreign directories and the _?= self file are intentional.
   RMDir "$INSTDIR"
   SetErrorLevel 0
   Goto uninstall_done

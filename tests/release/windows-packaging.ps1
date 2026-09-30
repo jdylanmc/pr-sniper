@@ -48,6 +48,23 @@ try {
         -ShortcutExists $false -ExpectedApp 'C:\owned\pr-sniper.exe' } 'transaction remains'
     Reject { Assert-PrSniperRemovalState -AppExists $false -TransactionExists $false -RegistryValueNames @() `
         -ShortcutExists $true -ShortcutTarget 'C:\owned\pr-sniper.exe' -ExpectedApp 'C:\owned\pr-sniper.exe' } 'Owned shortcut remains'
+    Reject { Assert-PrSniperRemovalState -RegistryKeyExists $true -RegistryValueNames $null `
+        -ExpectedApp 'C:\owned\pr-sniper.exe' } 'Empty owned installer key remains'
+    Assert-PrSniperRemovalState -RegistryKeyExists $true -RegistrySubKeyCount 1 -RegistryValueNames @() `
+        -ExpectedApp 'C:\owned\pr-sniper.exe'
+    $removalReceipt = [pscustomobject]@{ directory = 'C:\owned'; version = '0.1.1'; uninstaller_sha256 = ('a' * 64) }
+    $completion = [pscustomobject]@{
+        schema = 1; phase = 'native-removal-complete'; installation_receipt_sha256 = ('b' * 64)
+        directory = 'C:\owned'; version = '0.1.1'; uninstaller_sha256 = ('a' * 64)
+    }
+    Assert-PrSniperRemovalReceipt $completion $removalReceipt ('b' * 64)
+    Reject { Assert-PrSniperRemovalReceipt $null $removalReceipt ('b' * 64) } 'not evidenced'
+    foreach ($field in @('schema','phase','directory','version','uninstaller_sha256','installation_receipt_sha256')) {
+        $old = $completion.$field
+        $completion.$field = 'wrong-or-pending'
+        Reject { Assert-PrSniperRemovalReceipt $completion $removalReceipt ('b' * 64) } 'not evidenced'
+        $completion.$field = $old
+    }
     $files = @(Get-ChildItem (Join-Path $repository 'scripts\windows-*.ps1')) +
         @(Get-ChildItem (Join-Path $repository 'packaging\chocolatey\*.ps1'))
     foreach ($file in $files) {
