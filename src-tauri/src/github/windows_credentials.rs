@@ -2,7 +2,10 @@ use super::{
     credential_records::{RecordBackend, RecordStore},
     token_store::StoreError,
 };
-use std::ptr;
+use std::{
+    ptr,
+    sync::{Mutex, MutexGuard},
+};
 use windows_sys::Win32::{
     Foundation::{GetLastError, ERROR_NOT_FOUND},
     Security::Credentials::{
@@ -11,6 +14,15 @@ use windows_sys::Win32::{
     },
 };
 use zeroize::{Zeroize, Zeroizing};
+
+static CREDENTIAL_API_LOCK: Mutex<()> = Mutex::new(());
+
+fn native_api_lock() -> Result<MutexGuard<'static, ()>, StoreError> {
+    CREDENTIAL_API_LOCK.lock().map_err(|_| {
+        eprintln!("[credentials] stage=access outcome=native_lock_poisoned");
+        StoreError::Unavailable
+    })
+}
 
 pub struct WindowsCredentialBackend {
     service: String,
@@ -99,6 +111,8 @@ impl RecordBackend for WindowsCredentialBackend {
 
     fn load_record(&self, account: &str) -> Result<Option<Zeroizing<Vec<u8>>>, StoreError> {
         let target = self.target(account)?;
+        // Declared before the native allocation so CredFree also stays serialized.
+        let _native = native_api_lock()?;
         let mut credential = ptr::null_mut();
         if unsafe { CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut credential) } == 0 {
             return if unsafe { GetLastError() } == ERROR_NOT_FOUND {
@@ -135,6 +149,7 @@ impl RecordBackend for WindowsCredentialBackend {
             Persist: CRED_PERSIST_LOCAL_MACHINE,
             ..Default::default()
         };
+        let _native = native_api_lock()?;
         if unsafe { CredWriteW(&credential, 0) } == 0 {
             let code = unsafe { GetLastError() };
             eprintln!("[credentials] stage=write outcome=native_failure win32_code={code}");
@@ -146,6 +161,7 @@ impl RecordBackend for WindowsCredentialBackend {
 
     fn delete_record(&self, account: &str) -> Result<(), StoreError> {
         let target = self.target(account)?;
+        let _native = native_api_lock()?;
         if unsafe { CredDeleteW(target.as_ptr(), CRED_TYPE_GENERIC, 0) } != 0
             || unsafe { GetLastError() } == ERROR_NOT_FOUND
         {

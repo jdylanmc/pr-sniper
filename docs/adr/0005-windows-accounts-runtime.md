@@ -51,6 +51,34 @@ failures are reported without a panic in `Drop` masking an original failure.
 Failed native writes report only the fixed stage and numeric Win32 error code,
 not credential contents or real account identifiers.
 
+Windows serializes each native credential read, write and delete within this
+process, including release of returned native allocations. Registry and
+per-account semantic locks remain unchanged; the native mutex never spans
+provider/AI work, a refresh exchange or an await. This orders this application's
+native I/O, not other processes or Windows globally. A bounded host comparison
+found two exact residuals without this ordering and none among the serialized
+run's 18 targets when read by a fresh process; it does not establish OS causality
+or promise universal race freedom.
+
+A separate Windows integration test logs two exact owned targets before writes.
+Its producer exercises bounded parallel operations through the production store,
+then exits. Another process verifies exact-target absence with `CredReadW`
+before the controller's final exact-target cleanup. Verification failure remains
+a test failure even if cleanup succeeds. This is not a bulk/stress test or
+credential enumeration.
+
+The configured `cargo test` invocation
+[runs test executables serially](https://doc.rust-lang.org/cargo/commands/cargo-test.html#description).
+This integration executable has one ordinary controller test; its worker is
+ignored unless explicitly selected in a child process. Consequently unrelated
+native unit-test I/O has finished before the child scenario runs. The controller
+does its initial reads before spawning the producer, waits for each child to
+exit, and cleans up only after the verifier exits. No parent native critical
+section spans a child wait. Parallel producer calls still exercise in-process
+native ordering; the separate verifier checks only the exact fixture records'
+post-exit persistence. Other harnesses must preserve this executable isolation,
+not assume the process-local mutex coordinates concurrent executables.
+
 ## Windows Copilot process boundary
 
 The pinned SDK/runtime remains 1.0.14 / 1.0.85. Windows runs the actual bundled
