@@ -14,13 +14,14 @@ const bridge = fileURLToPath(
 
 function invokeStore(root, command, args = {}) {
   return new Promise((resolve, reject) => {
+    let inputError;
     const child = execFile(
       bridge,
       [root],
       { timeout: 10_000 },
       (error, stdout) => {
-        if (error) {
-          reject(error);
+        if (error || inputError) {
+          reject(error ?? inputError);
           return;
         }
         try {
@@ -34,9 +35,35 @@ function invokeStore(root, command, args = {}) {
         }
       },
     );
-    child.stdin.on("error", reject);
+    child.stdin.on("error", (error) => {
+      inputError = error;
+    });
     child.stdin.end(JSON.stringify({ command, args }));
   });
+}
+
+export function createStoreScope(invoke) {
+  const pending = new Set();
+  let closing = false;
+  return {
+    invoke(...args) {
+      if (closing)
+        return Promise.reject(new Error("Store fixture is shutting down."));
+      const request = Promise.resolve().then(() => invoke(...args));
+      pending.add(request);
+      void request.then(
+        () => pending.delete(request),
+        () => pending.delete(request),
+      );
+      return request;
+    },
+    async close() {
+      closing = true;
+      // Drain native operations, including calls whose browser already navigated
+      // away. Their errors still go to the original callers.
+      await Promise.allSettled([...pending]);
+    },
+  };
 }
 
 export const test = base.extend({
@@ -49,7 +76,14 @@ export const test = base.extend({
     }
   },
   store: async ({ dataRoot }, use) => {
-    await use((command, args) => invokeStore(dataRoot, command, args));
+    const scope = createStoreScope((command, args) =>
+      invokeStore(dataRoot, command, args),
+    );
+    try {
+      await use(scope.invoke);
+    } finally {
+      await scope.close();
+    }
   },
   ipc: async ({ store }, use) => {
     const next = new Map();
@@ -102,7 +136,13 @@ export const test = base.extend({
         while (pending.size) await Promise.allSettled([...pending]);
       };
     });
-    await use(page);
+    try {
+      await use(page);
+    } finally {
+      // Stop page timers before the dependent IPC/Store fixtures drain and the
+      // dataRoot fixture removes their files.
+      await page.close();
+    }
   },
 });
 
