@@ -1,6 +1,6 @@
 import { expect, test } from "./fixtures.mjs";
 import { mkdir, writeFile, readFile, realpath } from "node:fs/promises";
-import { join } from "node:path";
+import { join, toNamespacedPath } from "node:path";
 import {
   section,
   seedAgent,
@@ -24,7 +24,7 @@ test("Settings exposes exactly four approved tabs and no prototype or retired co
   await page.goto("/?view=settings");
   await expect(
     page.getByText(
-      "PR Sniper polls scope-confirmed configured repositories while the menu-bar app is active. Detection does not run reviews or publish comments.",
+      `PR Sniper polls scope-confirmed configured repositories while the ${process.platform === "win32" ? "system-tray" : "menu-bar"} app is active. Detection does not run reviews or publish comments.`,
       { exact: true },
     ),
   ).toBeVisible();
@@ -176,7 +176,7 @@ test("chosen-root discovery uses real metadata, searchable selection and stable 
   await monitored.check();
   await saveChanges(page);
   const persisted = (await store("snapshot")).settings;
-  expect(persisted.root_folder).toBe(await realpath(root));
+  expect(persisted.root_folder).toBe(toNamespacedPath(await realpath(root)));
   expect(persisted.repositories[0]).toMatchObject({
     name: "orbit-labs/atlas-desktop",
     enabled: true,

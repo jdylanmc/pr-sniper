@@ -8,7 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { parse } from "yaml";
 
@@ -23,6 +23,16 @@ test("canonical doctrine checkout preserves exact bytes with core.autocrlf=true"
     .filter((name) => name.endsWith(".md"))
     .map((name) => [name, readFileSync(join(directory, name))]);
   assert.ok(documents.some(([name]) => name === "manifest.md"));
+  const samples = [
+    "src/main.ts",
+    "src/style.css",
+    "index.html",
+    "package.json",
+    ".github/workflows/windows.yml",
+    "src-tauri/icons/icon.png",
+    "src-tauri/icons/icon.ico",
+    "src-tauri/icons/icon.icns",
+  ].map((path) => [path, readFileSync(path)]);
   const fixture = join(process.cwd(), `.pr-sniper-checkout-${randomUUID()}`);
   const git = (...args) =>
     execFileSync("git", ["-C", fixture, ...args], { stdio: "pipe" });
@@ -39,10 +49,23 @@ test("canonical doctrine checkout preserves exact bytes with core.autocrlf=true"
       );
       writeFileSync(join(fixture, directory, name), bytes);
     }
+    for (const [path, bytes] of samples) {
+      mkdirSync(dirname(join(fixture, path)), { recursive: true });
+      writeFileSync(join(fixture, path), bytes);
+    }
     git("init", "--quiet");
     git("config", "core.autocrlf", "true");
-    git("-c", "core.autocrlf=false", "add", "--", ".gitattributes", directory);
+    git(
+      "-c",
+      "core.autocrlf=false",
+      "add",
+      "--",
+      ".gitattributes",
+      directory,
+      ...samples.map(([path]) => path),
+    );
     rmSync(join(fixture, directory), { recursive: true });
+    for (const [path] of samples) rmSync(join(fixture, path));
 
     git("checkout-index", "--all", "--force");
 
@@ -56,6 +79,9 @@ test("canonical doctrine checkout preserves exact bytes with core.autocrlf=true"
         bytes,
         name,
       );
+    }
+    for (const [path, bytes] of samples) {
+      assert.deepEqual(readFileSync(join(fixture, path)), bytes, path);
     }
   } finally {
     rmSync(fixture, { recursive: true, force: true });
@@ -147,8 +173,8 @@ test("publication consumes only this run's verified artifact and contract tests 
   assert.ok(ci.jobs.macos.steps.some((s) => s.run === "npm run test:release"));
 });
 
-test("Windows frontend/shared checks run on every PR and main push with read-only access", () => {
-  assert.equal(windows.name, "Windows frontend and shared checks");
+test("Windows native application checks run on every PR and main push with read-only access", () => {
+  assert.equal(windows.name, "Windows native application");
   assert.deepEqual(windows.on, {
     pull_request: null,
     push: { branches: ["main"] },
@@ -183,7 +209,12 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
   const actions = job.steps.filter((step) => step.uses);
   assert.deepEqual(
     actions.map((step) => step.uses.split("@")[0]),
-    ["actions/checkout", "actions/setup-node", "actions/setup-python"],
+    [
+      "actions/checkout",
+      "actions/setup-node",
+      "actions/setup-python",
+      "actions/upload-artifact",
+    ],
   );
   for (const step of actions) {
     assert.match(step.uses, /^actions\/[a-z-]+@[a-f0-9]{40}$/);
@@ -205,13 +236,33 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       "npm run build",
       "npm run test:release:windows",
       "rustup show active-toolchain",
-      "cargo fmt --manifest-path src-tauri\\Cargo.toml --all --check",
-      "cargo test --manifest-path src-tauri\\foundations\\Cargo.toml --locked",
-      "cargo test --manifest-path src-tauri\\foundations\\Cargo.toml --locked --lib copilot::runtime::tests::bundled_runtime_handshakes_offline_without_credentials -- --exact --ignored --nocapture",
-      "cargo clippy --manifest-path src-tauri\\foundations\\Cargo.toml --locked --all-targets -- -D warnings",
+      "npm run format:check",
+      "cargo check --manifest-path src-tauri\\Cargo.toml --locked --all-targets",
+      "cargo test --manifest-path src-tauri\\Cargo.toml --locked --all-targets -- --nocapture",
+      "cargo test --manifest-path src-tauri\\Cargo.toml --locked --lib copilot::runtime::tests::bundled_runtime_handshakes_offline_without_credentials -- --exact --ignored --nocapture",
+      "cargo clippy --manifest-path src-tauri\\Cargo.toml --locked --all-targets -- -D warnings",
+      "npm exec playwright install chromium",
+      "npm run test:settings",
+      "npm run build:windows",
+      ".\\scripts\\windows-artifact.ps1",
     ],
   );
   assert.equal(scripts.build, "tsc --noEmit && vite build");
+});
+
+test("Windows artifact contains only the standalone app and exact-source provenance", () => {
+  const upload = windows.jobs.windows.steps.find((step) =>
+    step.uses?.startsWith("actions/upload-artifact@"),
+  );
+  assert.equal(upload.with.name, "pr-sniper-windows-x64-${{ github.sha }}");
+  assert.deepEqual(upload.with.path.trim().split("\n"), [
+    "src-tauri/target/windows-artifact/pr-sniper.exe",
+    "src-tauri/target/windows-artifact/build.json",
+    "src-tauri/target/windows-artifact/SHA256SUMS",
+  ]);
+  assert.equal(upload.with["if-no-files-found"], "error");
+  assert.equal(scripts["build:windows"], "tauri build --no-bundle -- --locked");
+  assert.equal(scripts.bundle, "tauri build --bundles app");
 });
 
 test("both repository release runners execute workflow contracts without weakening macOS coverage", () => {

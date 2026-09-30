@@ -118,6 +118,11 @@ fn options(root: &Path, scenario: &str) -> ClientOptions {
         options.env_remove.retain(|name| name != k);
         options.env.push((k.into(), v));
     }
+    if scenario == "waiting" {
+        options
+            .env
+            .push(("TEST_STARTUP_DELAY_MS".into(), "750".into()));
+    }
     options
 }
 fn receipt(root: &Path) -> Vec<Value> {
@@ -262,13 +267,16 @@ async fn cancellation_timeout_and_last_moment_gate_change_never_complete() {
         if scenario == "gate" {
             request.before_send = Arc::new(|| Err(Failure::permanent("Start gate changed.")));
         }
-        let mut operation = operation(8);
-        if scenario == "timeout" {
-            operation.deadline = Instant::now() + Duration::from_millis(400);
-        }
+        let operation = operation(8);
         let cancelled = operation.cancelled.clone();
         let trigger = async {
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            let method = if scenario == "gate" {
+                "session.tools.getCurrentMetadata"
+            } else {
+                "session.send"
+            };
+            crate::copilot::runtime::wait_for_fixture_method(root.path(), method).await;
+            assert!(Instant::now() < operation.deadline);
             if scenario == "cancel" {
                 cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
             }
@@ -277,23 +285,32 @@ async fn cancellation_timeout_and_last_moment_gate_change_never_complete() {
             id: "33".into(),
             login: "review-account".into(),
         };
-        let (result, ()) = tokio::join!(
-            execute(
-                options(root.path(), "waiting"),
-                &identity,
-                &operation,
-                request
-            ),
-            trigger
-        );
-        assert!(result.is_err());
+        let (result, ()) = tokio::time::timeout_at(
+            (operation.deadline + Duration::from_secs(2)).into(),
+            async {
+                tokio::join!(
+                    execute(
+                        options(root.path(), "waiting"),
+                        &identity,
+                        &operation,
+                        request
+                    ),
+                    trigger
+                )
+            },
+        )
+        .await
+        .expect("operation deadline must bound the review and cleanup");
+        let error = result.unwrap_err();
+        if scenario == "cancel" {
+            assert!(error.message.contains("cancelled"), "{error:?}");
+        }
         if scenario == "timeout" {
-            assert_eq!(
-                result.unwrap_err().kind,
-                crate::monitoring::OperationFailure::Timeout
-            );
+            assert_eq!(error.kind, crate::monitoring::OperationFailure::Timeout);
+            assert!(Instant::now() >= operation.deadline);
         }
         if scenario == "gate" {
+            assert_eq!(error.message, "Start gate changed.");
             assert!(!receipt(root.path())
                 .iter()
                 .any(|r| r["method"] == "session.send"));

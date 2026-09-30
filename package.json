@@ -10,14 +10,15 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "tauri": "tauri",
-    "format": "prettier --write src tests/settings tests/release/*.mjs index.html package.json tsconfig.json vite.config.ts src-tauri/tauri.conf.json .github/workflows/*.yml README.md docs/releases.md docs/windows-development.md docs/adr/0001-macos-foundation.md docs/adr/0004-windows-persistence-foundations.md CHANGELOG.md && cargo fmt --manifest-path src-tauri/Cargo.toml --all",
-    "format:check": "prettier --check src tests/settings tests/release/*.mjs index.html package.json tsconfig.json vite.config.ts src-tauri/tauri.conf.json .github/workflows/*.yml README.md docs/releases.md docs/windows-development.md docs/adr/0001-macos-foundation.md docs/adr/0004-windows-persistence-foundations.md CHANGELOG.md && cargo fmt --manifest-path src-tauri/Cargo.toml --all --check",
+    "format": "prettier --write src tests/settings tests/release/*.mjs index.html package.json tsconfig.json vite.config.ts src-tauri/tauri.conf.json src-tauri/tauri.windows.conf.json .github/workflows/*.yml README.md docs/releases.md docs/windows-development.md docs/adr/0001-macos-foundation.md docs/adr/0004-windows-persistence-foundations.md docs/adr/0006-windows-tray-startup.md CHANGELOG.md && cargo fmt --manifest-path src-tauri/Cargo.toml --all",
+    "format:check": "prettier --check src tests/settings tests/release/*.mjs index.html package.json tsconfig.json vite.config.ts src-tauri/tauri.conf.json src-tauri/tauri.windows.conf.json .github/workflows/*.yml README.md docs/releases.md docs/windows-development.md docs/adr/0001-macos-foundation.md docs/adr/0004-windows-persistence-foundations.md docs/adr/0006-windows-tray-startup.md CHANGELOG.md && cargo fmt --manifest-path src-tauri/Cargo.toml --all --check",
     "lint": "tsc --noEmit && cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings",
     "test": "cargo test --manifest-path src-tauri/Cargo.toml --locked",
     "test:release": "python3 -B -m unittest discover -s tests/release -p 'test_*.py' && node --test tests/release/workflow.test.mjs",
     "test:release:windows": "python -B -m unittest discover -s tests/release -p test_release.py && node --test tests/release/workflow.test.mjs",
     "test:settings": "npm run build && cargo build --manifest-path src-tauri/Cargo.toml --locked --example settings_bridge && playwright test --config tests/settings/playwright.config.mjs",
-    "bundle": "tauri build --bundles app"
+    "bundle": "tauri build --bundles app",
+    "build:windows": "tauri build --no-bundle -- --locked"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1"

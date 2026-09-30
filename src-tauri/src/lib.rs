@@ -10,7 +10,6 @@ mod process_path;
 pub mod publication;
 pub mod queue;
 pub mod review;
-#[cfg(target_os = "macos")]
 pub mod startup;
 pub mod storage;
 mod storage_state;
@@ -2121,9 +2120,21 @@ fn github_keychain_stores(
 }
 
 pub fn run() {
+    #[cfg(windows)]
+    match notifications::windows::preflight() {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(error) => {
+            notifications::windows::show_error(&error);
+            return;
+        }
+    }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_single_instance::init(|_, _, _| {}))
+        .plugin(tauri_plugin_single_instance::init(|_app, _args, _| {
+            #[cfg(windows)]
+            notifications::windows::forward(_app, &_args);
+        }))
         .invoke_handler(tauri::generate_handler![
             snapshot,
             save_preferences,
@@ -2180,6 +2191,7 @@ pub fn run() {
             apply_monitoring_activation
         ])
         .setup(|app| {
+            #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             let override_root =
                 std::env::var_os("PR_SNIPER_DATA_DIR").map(std::path::PathBuf::from);
@@ -2206,24 +2218,24 @@ pub fn run() {
             let github_auth =
                 GithubAuth::restore(&github_credentials, github_legacy_credentials.as_ref());
             let copilot = copilot::Integration::new(isolated)?;
-            let store = Store::new(root);
+            let store = Store::new(root.clone());
             review::restore(&store).map_err(std::io::Error::other)?;
             publication::restore(&store).map_err(std::io::Error::other)?;
             follow_up::restore(&store).map_err(std::io::Error::other)?;
             let monitor = monitoring::Monitor::restore(&store).map_err(std::io::Error::other)?;
             let notification_restore = notifications::restore(&store);
+            #[cfg(target_os = "macos")]
+            let executable = std::env::current_exe()?.canonicalize()?;
+            #[cfg(windows)]
+            let executable = std::env::current_exe()?;
+            let notifications = notifications::host::Coordinator::new(app.handle(), &store, &root);
             app.manage(Host {
                 store: Mutex::new(store),
                 monitor: Mutex::new(monitor),
                 error: Mutex::new(None),
                 isolated,
                 quitting: AtomicBool::new(false),
-                registration: LoginRegistration::new(
-                    app.path()
-                        .home_dir()?
-                        .join("Library/LaunchAgents/PR Sniper.plist"),
-                    std::env::current_exe()?.canonicalize()?,
-                ),
+                registration: LoginRegistration::for_app(app.path().home_dir()?, executable),
                 github_auth: Mutex::new(github_auth),
                 github_generations: Mutex::new(BTreeMap::new()),
                 github_credentials,
@@ -2232,8 +2244,10 @@ pub fn run() {
                 reviews: review::Coordinator::default(),
                 publications: publication::host::Coordinator::default(),
                 follow_ups: follow_up::host::Coordinator::default(),
-                notifications: notifications::host::Coordinator::new(app.handle()),
+                notifications,
             });
+            #[cfg(windows)]
+            notifications::windows::ready(app.handle());
             if let Err(error) = notification_restore {
                 report(app.handle(), error);
             }
@@ -2272,10 +2286,12 @@ pub fn run() {
                 &[&status, &queue, &check, &settings, &separator, &quit],
             )?;
             TrayIconBuilder::with_id("pr-sniper")
-                .icon(tauri::image::Image::from_bytes(include_bytes!(
-                    "../icons/tray.png"
-                ))?)
-                .icon_as_template(true)
+                .icon(tauri::image::Image::from_bytes(if cfg!(windows) {
+                    include_bytes!("../icons/icon.png")
+                } else {
+                    include_bytes!("../icons/tray.png")
+                })?)
+                .icon_as_template(cfg!(target_os = "macos"))
                 .tooltip("PR Sniper")
                 .menu(&menu)
                 .show_menu_on_left_click(true)
@@ -2290,9 +2306,11 @@ pub fn run() {
                         return;
                     }
                     if event.id.as_ref() == "quit" {
-                        record(app, DiagnosticEvent::QuitRequested);
                         let host = app.state::<Host>();
-                        host.quitting.store(true, Ordering::SeqCst);
+                        if host.quitting.swap(true, Ordering::SeqCst) {
+                            return;
+                        }
+                        record(app, DiagnosticEvent::QuitRequested);
                         host.copilot.request_shutdown();
                         host.reviews.cancel_all();
                         host.follow_ups.cancel_all();
@@ -2366,6 +2384,10 @@ pub fn run() {
             std::process::exit(1);
         });
     app.run(|app, event| {
+        #[cfg(windows)]
+        if let tauri::RunEvent::Exit = event {
+            notifications::windows::shutdown(app);
+        }
         if let tauri::RunEvent::ExitRequested { api, .. } = event {
             if !app.state::<Host>().quitting.load(Ordering::SeqCst) {
                 api.prevent_exit();

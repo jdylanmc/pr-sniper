@@ -1,6 +1,10 @@
 pub(crate) mod host;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(windows)]
+pub(crate) mod windows;
+#[cfg(windows)]
+mod windows_native;
 pub use host::{view as snapshot, Snapshot};
 
 use crate::{queue, storage::Store};
@@ -245,6 +249,9 @@ pub struct Ledger {
     pub notices: Vec<Notice>,
 }
 
+#[cfg(windows)]
+pub(crate) const WINDOWS_SETUP_SOURCE: &str = "windows-permission-setup";
+
 impl Default for Ledger {
     fn default() -> Self {
         Self {
@@ -321,10 +328,42 @@ impl Ledger {
         if !self.enabled {
             return Err("Enable notifications before sending a test.".into());
         }
+        Ok(self.push_test(destination, now, "test", Phase::Queued))
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn begin_permission_setup(&mut self, now: i64) -> Result<Notice, String> {
+        if self.enabled {
+            return Err(
+                "Turn notifications off before retrying Windows notification setup.".into(),
+            );
+        }
+        if self.notices.iter().any(|notice| {
+            notice.source == WINDOWS_SETUP_SOURCE
+                && !matches!(notice.phase, Phase::Failed | Phase::NotSent)
+        }) {
+            return Err("Windows notification setup already had a send attempt. Its outcome remains in history; it will not be resent.".into());
+        }
+        self.push_test(
+            Destination::Settings,
+            now,
+            WINDOWS_SETUP_SOURCE,
+            Phase::Submitting,
+        );
+        Ok(self.notices.last().unwrap().clone())
+    }
+
+    fn push_test(
+        &mut self,
+        destination: Destination,
+        now: i64,
+        source: &str,
+        phase: Phase,
+    ) -> String {
         let id = format!("pr-sniper:{}:{}", self.profile_id, uuid::Uuid::new_v4());
         self.notices.push(Notice {
             id: id.clone(),
-            source: "test".into(),
+            source: source.into(),
             fingerprint: id.clone(),
             episode: 1,
             event: Event {
@@ -333,13 +372,13 @@ impl Ledger {
                 cause: id.clone(),
                 group: self.profile_id.clone(),
             },
-            phase: Phase::Queued,
+            phase,
             created_at: now,
             error: None,
             opened_at: None,
             navigation_error: None,
         });
-        Ok(id)
+        id
     }
 
     pub fn next(&self) -> Option<&Notice> {
@@ -427,17 +466,29 @@ pub fn restore(store: &Store) -> Result<(), String> {
     store.save_notifications(&ledger)
 }
 
+#[cfg(windows)]
+pub(crate) fn persisted_ledger(store: &Store) -> Result<Ledger, String> {
+    let bytes = store.read_state("notifications.json").map_err(|_| {
+        "Notification history is not persisted or cannot be read. Notifications remain unavailable."
+    })?;
+    let ledger: Ledger = serde_json::from_slice(&bytes)
+        .map_err(|_| "Notification history is invalid; no identity can be registered.")?;
+    ledger.validate()?;
+    Ok(ledger)
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Permission {
     pub authorization: String,
-    pub alerts_enabled: bool,
-    pub center_enabled: bool,
+    pub alerts_enabled: Option<bool>,
+    pub center_enabled: Option<bool>,
 }
 
 impl Permission {
     pub fn allowed(&self) -> bool {
-        matches!(self.authorization.as_str(), "authorized" | "provisional")
-            && (self.alerts_enabled || self.center_enabled)
+        self.authorization == "authorized_aggregate"
+            || (matches!(self.authorization.as_str(), "authorized" | "provisional")
+                && (self.alerts_enabled == Some(true) || self.center_enabled == Some(true)))
     }
 }
 

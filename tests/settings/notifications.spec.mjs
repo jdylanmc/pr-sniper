@@ -117,11 +117,11 @@ test("history distinguishes OS acceptance, uncertainty and saved destinations wi
   const history = page.locator("#notification-history");
   await history.getByText("Notification history (3)", { exact: true }).click();
   await expect(history).toContainText(
-    "Accepted by macOS; banner visibility is unconfirmed",
+    "Accepted by the operating system; banner visibility is unconfirmed",
   );
   await expect(history).toContainText("Delivery outcome unknown");
   await expect(history).toContainText(
-    "macOS permission or alert settings prevent delivery",
+    "operating system permission or notification settings prevent delivery",
   );
   await expect(history.locator("img")).toHaveCount(0);
   await expect(history).not.toContainText("Destination opened");
@@ -137,6 +137,45 @@ test("history distinguishes OS acceptance, uncertainty and saved destinations wi
         destination: ledger.notices[2].event.destination,
       },
     ]);
+});
+
+test("Windows aggregate permission never invents banner or center authorization", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      const result = await original(command, args);
+      if (command === "notification_snapshot") {
+        result.platform = "windows";
+        result.permission = {
+          authorization: "authorized_aggregate",
+          alerts_enabled: null,
+          center_enabled: null,
+        };
+      }
+      return result;
+    };
+  });
+  await page.goto("/?view=settings");
+  await section(page, "Preferences");
+  const status = page.locator("#notification-permission");
+  await expect(status).toContainText(
+    "Windows permission: authorized aggregate",
+  );
+  await expect(status).toContainText(
+    "banners unknown (not exposed by the OS API)",
+  );
+  await expect(status).toContainText(
+    "Notification Center unknown (not exposed by the OS API)",
+  );
+  await expect(status).toContainText("Focus may suppress banners");
+  await expect(page.locator("#notification-guidance")).toContainText(
+    "Windows has no permission prompt here",
+  );
+  await expect(
+    page.getByRole("switch", { name: /^Notify me when my attention/ }),
+  ).not.toBeChecked();
 });
 
 test("a delayed permission refresh cannot overwrite a newly saved opt-in", async ({

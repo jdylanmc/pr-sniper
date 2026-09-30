@@ -193,7 +193,7 @@ export function renderMonitoring(
   root.innerHTML = `<div class="actions"><button id="check-now" type="button">Check Now</button><button id="queue-settings" type="button">Open Settings</button><button id="queue-diagnostics" type="button">Open Diagnostics</button></div>
     <h2>Your review inbox</h2><section id="handoff-queue"></section>
     <h2 id="evidence-heading" tabindex="-1">Review evidence and actions</h2>
-    <p>Monitoring and assigned reviews run while the menu-bar app is active. Copilot uses read-only tools. GitHub comments require a separate publication gate; machine sign-off is not approval.</p>
+    <p>Monitoring and assigned reviews run while the ${trayAdjective} app is active. Copilot uses read-only tools. GitHub comments require a separate publication gate; machine sign-off is not approval.</p>
     <p class="hint">Saved review evidence is tied to the head shown. GitHub links open the live PR or current diff in your browser's signed-in account; check its current revision and requirements before deciding to merge.</p>
     <h2>Agent reviews</h2><section id="agent-reviews"></section>
     <h2>Thread follow-ups</h2><section id="thread-follow-ups"></section>
@@ -243,7 +243,7 @@ export function renderMonitoring(
         await invoke(command);
       } catch {
         showError(
-          "Could not open the requested application window. Try the menu-bar menu.",
+          `Could not open the requested application window. Try the ${trayAdjective} menu.`,
         );
       }
     });
@@ -717,3 +717,4 @@ export function renderMonitoring(
     else void refresh();
   }, 5000);
 }
+import { trayAdjective } from "./platform";

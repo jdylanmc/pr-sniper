@@ -2,6 +2,12 @@
 import { appendFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 
+if (process.env.TEST_STARTUP_DELAY_MS) {
+  await new Promise((resolve) =>
+    setTimeout(resolve, Number(process.env.TEST_STARTUP_DELAY_MS)),
+  );
+}
+
 const scenario = process.env.REVIEW_SCENARIO;
 const receipt = (value) =>
   appendFileSync(process.env.TEST_RECEIPT, `${JSON.stringify(value)}\n`);

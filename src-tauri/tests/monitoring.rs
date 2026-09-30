@@ -1166,11 +1166,11 @@ fn activation_preview_cancel_stale_generation_and_write_failure_never_apply() {
 
 #[test]
 fn ordinary_settings_save_preserves_native_activation_and_restart_state() {
-    let (_root, store) = store();
+    let (root, store) = store();
     let before = store.load_monitoring_state().unwrap().activations;
     let expected = store.load_settings().unwrap();
     let mut changed = expected.clone();
-    changed.root_folder = Some("/fixture/root".into());
+    changed.root_folder = Some(root.path().to_str().unwrap().into());
     store.save_preferences(changed, &expected).unwrap();
     let restored = Monitor::restore(&store).unwrap();
     assert_eq!(store.load_monitoring_state().unwrap().activations, before);

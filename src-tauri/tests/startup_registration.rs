@@ -1,3 +1,5 @@
+#![cfg(target_os = "macos")]
+
 mod support;
 
 use pr_sniper_lib::startup::{LoginRegistration, RegistrationStatus};

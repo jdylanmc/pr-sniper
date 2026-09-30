@@ -111,8 +111,10 @@ fn permission(settings: &UNNotificationSettings) -> Permission {
     };
     Permission {
         authorization: authorization.into(),
-        alerts_enabled: settings.alertSetting() == UNNotificationSetting::Enabled,
-        center_enabled: settings.notificationCenterSetting() == UNNotificationSetting::Enabled,
+        alerts_enabled: Some(settings.alertSetting() == UNNotificationSetting::Enabled),
+        center_enabled: Some(
+            settings.notificationCenterSetting() == UNNotificationSetting::Enabled,
+        ),
     }
 }
 

@@ -2,6 +2,11 @@ use super::*;
 use crate::monitoring::QueueJob;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(windows)]
+#[allow(dead_code)]
+#[path = "../../tests/support/windows_permissions.rs"]
+mod windows_permissions;
+
 fn frame(category: Category, cause: &str) -> Frame {
     Frame {
         source: "queue:exact-revision".into(),
@@ -42,8 +47,8 @@ impl Adapter for Wire {
     fn permission(&self) -> Result<Permission, String> {
         Ok(Permission {
             authorization: "authorized".into(),
-            alerts_enabled: true,
-            center_enabled: true,
+            alerts_enabled: Some(true),
+            center_enabled: Some(true),
         })
     }
     fn request_permission(&self) -> Result<Permission, String> {
@@ -70,6 +75,80 @@ impl Adapter for Wire {
         } else {
             Ok(())
         }
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn failed_initial_save_recovers_only_from_the_exact_persisted_profile() {
+    let root = tempfile::Builder::new()
+        .prefix("notification-save-obstruction-")
+        .tempdir_in(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target"))
+        .unwrap();
+    let store = Store::new(root.path().into());
+    store.save_queue_selection(None).unwrap();
+    let obstruction = root.path().join("state").join("notifications.json.tmp");
+    std::fs::write(&obstruction, b"owned obstruction").unwrap();
+    assert!(restore(&store).is_err());
+    let canonical = root.path().canonicalize().unwrap();
+    let mut identity = windows::saved_registration(&store, &canonical);
+    assert!(
+        identity.is_err(),
+        "Missing ledger must not supply a synthetic identity."
+    );
+    assert!(windows::recover_identity(&mut identity, &store, &canonical).is_err());
+    assert!(identity.is_err());
+    std::fs::remove_file(&obstruction).unwrap();
+    let registration = windows::recover_identity(&mut identity, &store, &canonical).unwrap();
+    let mut ledger = persisted_ledger(&store).unwrap();
+    assert_eq!(registration.profile, ledger.profile_id);
+    assert!(!ledger.enabled);
+    ledger.enabled = true;
+    let id = ledger.enqueue_test(Destination::Settings, 101).unwrap();
+    store.save_notifications(&ledger).unwrap();
+    let wire = Wire {
+        store: Store::new(root.path().into()),
+        calls: AtomicUsize::new(0),
+        failure: None,
+    };
+    let notice = prepare(&store, &[], &id, 102).unwrap();
+    registration.notice_id(&notice.id).unwrap();
+    assert_eq!(notice.id, id);
+    assert_eq!(submit(&wire, &notice), (Phase::AcceptedUnconfirmed, None));
+    assert_eq!(wire.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        persisted_ledger(&wire.store).unwrap().profile_id,
+        registration.profile
+    );
+    // A subsequent foreign saved identity cannot reuse or install this cache.
+    store.save_notifications(&Ledger::default()).unwrap();
+    assert!(windows::recover_identity(&mut identity, &store, &canonical).is_err());
+}
+
+#[test]
+fn windows_aggregate_permission_preserves_unknown_channels() {
+    let permission = Permission {
+        authorization: "authorized_aggregate".into(),
+        alerts_enabled: None,
+        center_enabled: None,
+    };
+    assert!(permission.allowed());
+    let json = serde_json::to_value(&permission).unwrap();
+    assert!(json["alerts_enabled"].is_null());
+    assert!(json["center_enabled"].is_null());
+    for authorization in [
+        "denied",
+        "disabled_for_user",
+        "disabled_by_policy",
+        "disabled_by_manifest",
+        "unknown",
+        "not_registered",
+    ] {
+        assert!(!Permission {
+            authorization: authorization.into(),
+            ..permission.clone()
+        }
+        .allowed());
     }
 }
 
@@ -186,12 +265,17 @@ fn private_persistence_failure_prevents_native_request_and_corruption_is_not_emp
     let (root, store) = store();
     let frames = [frame(Category::Ready, "review")];
     let id = admit(&store, &frames);
-    use std::os::unix::fs::PermissionsExt;
     let path = root.path().join("state/notifications.json");
-    assert_eq!(
-        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    #[cfg(windows)]
+    windows_permissions::assert_private(&path, false);
     std::fs::write(&path, "invalid").unwrap();
     assert!(store.load_notifications().is_err());
     assert!(prepare(&store, &frames, &id, 100).is_err());
@@ -238,15 +322,15 @@ fn native_failures_and_permission_denial_remain_visible_without_acknowledgment()
     for authorization in ["denied", "not_determined", "unknown"] {
         assert!(!Permission {
             authorization: authorization.into(),
-            alerts_enabled: true,
-            center_enabled: true
+            alerts_enabled: Some(true),
+            center_enabled: Some(true)
         }
         .allowed());
     }
     assert!(!Permission {
         authorization: "authorized".into(),
-        alerts_enabled: false,
-        center_enabled: false
+        alerts_enabled: Some(false),
+        center_enabled: Some(false)
     }
     .allowed());
 }
