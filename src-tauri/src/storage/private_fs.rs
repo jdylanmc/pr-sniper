@@ -25,20 +25,24 @@ fn reject_link(metadata: &Metadata) -> io::Result<()> {
     Ok(())
 }
 
-pub(super) fn directory(path: &Path) -> io::Result<()> {
+pub(super) fn existing_directory(path: &Path) -> io::Result<()> {
     if !path.is_absolute() {
         return Err(io::Error::new(ErrorKind::InvalidInput, "relative storage"));
     }
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            reject_link(&metadata)?;
-            if !metadata.is_dir() {
-                return Err(io::Error::new(
-                    ErrorKind::NotADirectory,
-                    "storage directory",
-                ));
-            }
-        }
+    let metadata = fs::symlink_metadata(path)?;
+    reject_link(&metadata)?;
+    if !metadata.is_dir() {
+        return Err(io::Error::new(
+            ErrorKind::NotADirectory,
+            "storage directory",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn directory(path: &Path) -> io::Result<()> {
+    match existing_directory(path) {
+        Ok(()) => {}
         Err(error) if error.kind() == ErrorKind::NotFound => {
             let parent = path
                 .parent()
@@ -56,22 +60,9 @@ pub(super) fn directory(path: &Path) -> io::Result<()> {
         }
         Err(error) => return Err(error),
     }
-    protect(path, true)
-}
-
-fn protect(path: &Path, directory: bool) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(
-            path,
-            fs::Permissions::from_mode(if directory { 0o700 } else { 0o600 }),
-        )
-    }
     #[cfg(windows)]
-    {
-        windows::protect(path, directory)
-    }
+    windows::protect(path, true)?;
+    Ok(())
 }
 
 pub(super) fn existing_file(path: &Path) -> io::Result<()> {
@@ -80,7 +71,7 @@ pub(super) fn existing_file(path: &Path) -> io::Result<()> {
     if !metadata.is_file() {
         return Err(io::Error::new(ErrorKind::InvalidInput, "storage file"));
     }
-    protect(path, false)
+    Ok(())
 }
 
 pub(super) fn read(path: &Path) -> io::Result<Vec<u8>> {
@@ -102,8 +93,16 @@ pub(super) fn append(path: &Path) -> io::Result<File> {
         options.mode(0o600);
     }
     let file = options.open(path)?;
-    protect(path, false)?;
+    #[cfg(windows)]
+    windows::protect(path, false)?;
     Ok(file)
+}
+
+pub(super) fn rotate(path: &Path, previous: &Path) -> io::Result<()> {
+    existing_file(path)?;
+    #[cfg(windows)]
+    windows::protect(path, false)?;
+    fs::rename(path, previous)
 }
 
 pub(super) fn replace(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
@@ -125,9 +124,12 @@ pub(super) fn replace(path: &Path, bytes: &[u8], label: &str) -> Result<(), Stri
     let mut file = options
         .open(&temporary)
         .map_err(|_| format!("Cannot write {label}."))?;
-    let flushed = protect(&temporary, false)
-        .and_then(|_| file.write_all(bytes))
-        .and_then(|_| file.sync_all());
+    let flushed = (|| {
+        #[cfg(windows)]
+        windows::protect(&temporary, false)?;
+        file.write_all(bytes)?;
+        file.sync_all()
+    })();
     // Windows rename/replacement must not retain the staging handle.
     drop(file);
     let result = flushed
