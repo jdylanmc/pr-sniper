@@ -54,6 +54,13 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Added
 
+- Add Windows Credential Manager storage for independent repository and Copilot
+  accounts, preserving shared token-pair and registry behavior with explicit
+  native capacity errors. Port the constrained Copilot runtime environment and
+  verify native process-tree cleanup and the bundled offline handshake. Full
+  Windows application acceptance remains separate. See
+  [#58](https://github.com/jdylanmc/pr-sniper/issues/58).
+
 - Add Windows-native private persistence with current-user-only access controls,
   atomic file replacement and explicit permission/locking failures. Preserve
   denied-read errors without changing existing permissions; keep embedded
