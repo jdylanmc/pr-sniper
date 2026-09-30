@@ -24,7 +24,7 @@ test("Settings exposes exactly four approved tabs and no prototype or retired co
   await page.goto("/?view=settings");
   await expect(
     page.getByText(
-      "PR Sniper polls scope-confirmed configured repositories while the menu-bar app is active. Detection does not run reviews or publish comments.",
+      `PR Sniper polls scope-confirmed configured repositories while the ${process.platform === "win32" ? "system-tray" : "menu-bar"} app is active. Detection does not run reviews or publish comments.`,
       { exact: true },
     ),
   ).toBeVisible();

@@ -1,6 +1,12 @@
 use pr_sniper_lib::discovery::discover;
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::symlink;
+
+#[cfg(windows)]
+#[allow(dead_code)]
+#[path = "support/windows_permissions.rs"]
+mod windows_permissions;
 
 mod support;
 use support::Fixture;
@@ -41,19 +47,33 @@ fn discovery_never_follows_nested_symlinks_or_linked_git_metadata() {
         "secret",
         "[remote \"origin\"]\nurl = https://github.com/private/repository\n",
     );
+    #[cfg(unix)]
     symlink(outside.path(), inside.path().join("linked-folder")).unwrap();
+    #[cfg(windows)]
+    windows_permissions::junction(outside.path(), &inside.path().join("linked-folder"));
     fs::create_dir(inside.path().join("worktree")).unwrap();
     fs::write(
         inside.path().join("worktree/.git"),
         format!("gitdir: {}", outside.path().join("secret/.git").display()),
     )
     .unwrap();
-    fs::create_dir_all(inside.path().join("linked-config/.git")).unwrap();
-    symlink(
-        outside.path().join("secret/.git/config"),
-        inside.path().join("linked-config/.git/config"),
-    )
-    .unwrap();
+    #[cfg(unix)]
+    {
+        fs::create_dir_all(inside.path().join("linked-config/.git")).unwrap();
+        symlink(
+            outside.path().join("secret/.git/config"),
+            inside.path().join("linked-config/.git/config"),
+        )
+        .unwrap();
+    }
+    #[cfg(windows)]
+    {
+        fs::create_dir(inside.path().join("linked-config")).unwrap();
+        windows_permissions::junction(
+            &outside.path().join("secret/.git"),
+            &inside.path().join("linked-config/.git"),
+        );
+    }
     let result = discover(inside.path()).unwrap();
     assert_eq!(result.repositories.len(), 2);
     assert!(result

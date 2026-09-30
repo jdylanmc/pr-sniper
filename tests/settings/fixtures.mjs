@@ -1,16 +1,8 @@
 import { test as base, expect } from "@playwright/test";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const bridge = fileURLToPath(
-  new URL(
-    "../../src-tauri/target/debug/examples/settings_bridge",
-    import.meta.url,
-  ),
-);
+import { bridge, target } from "./paths.mjs";
 
 function invokeStore(root, command, args = {}) {
   return new Promise((resolve, reject) => {
@@ -68,7 +60,8 @@ export function createStoreScope(invoke) {
 
 export const test = base.extend({
   dataRoot: async ({}, use) => {
-    const root = await mkdtemp(join(tmpdir(), "pr-sniper-settings-"));
+    await mkdir(target, { recursive: true });
+    const root = await mkdtemp(join(target, "pr-sniper-settings-"));
     try {
       await use(root);
     } finally {
