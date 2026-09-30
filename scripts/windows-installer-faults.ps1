@@ -6,6 +6,13 @@ $directory = Join-Path $env:LOCALAPPDATA 'PR Sniper'
 $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'PR Sniper.lnk'
 $keyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\PR Sniper'
 function Snapshot {
+    foreach ($path in @(
+        (Join-Path $directory '.pr-sniper-transaction'),
+        (Join-Path ([Environment]::GetFolderPath('Programs')) 'PR Sniper.pr-sniper-stage.lnk'),
+        (Join-Path ([Environment]::GetFolderPath('Programs')) 'PR Sniper.pr-sniper-backup.lnk')
+    )) {
+        if (Test-Path -LiteralPath $path) { throw "Owned transaction/staging residue remains: $path" }
+    }
     $key = Get-Item $keyPath
     try {
         $values = @($key.GetValueNames() | Sort-Object | ForEach-Object {
@@ -54,6 +61,19 @@ if ((Snapshot) -cne $before -or (Test-Path (Join-Path $directory '.pr-sniper-tra
     throw 'Unreadable shortcut changed the prior installation.'
 }
 if ($Phase -eq 'Install') {
+    $before = Snapshot
+    $foreignStage = Join-Path ([Environment]::GetFolderPath('Programs')) 'PR Sniper.pr-sniper-stage.lnk'
+    $marker = [guid]::NewGuid().ToString()
+    New-Item -ItemType File -Path $foreignStage -Value $marker -ErrorAction Stop | Out-Null
+    try {
+        Invoke-ExpectedFailure
+        if ((Get-Content $foreignStage -Raw) -cne $marker) { throw 'Foreign staging was changed during refusal.' }
+    } finally {
+        if ((Test-Path $foreignStage) -and (Get-Content $foreignStage -Raw) -ceq $marker) {
+            Remove-Item -LiteralPath $foreignStage
+        }
+    }
+    if ((Snapshot) -cne $before) { throw 'Foreign-stage refusal changed the installed application.' }
     $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     foreach ($command in @(
         @{ path = $PreviousInstaller; arguments = '' },
@@ -102,7 +122,9 @@ foreach ($right in $denials) {
         Require-FailedAndPreserved
     } finally { Set-Acl $keyPath $originalAcl }
 }
-foreach ($point in @("$($Phase.ToLowerInvariant())-files", "$($Phase.ToLowerInvariant())-registration")) {
+$points = @("$($Phase.ToLowerInvariant())-files", "$($Phase.ToLowerInvariant())-registration")
+if ($Phase -eq 'Install') { $points += 'install-revalidation' }
+foreach ($point in $points) {
     try {
         $env:PR_SNIPER_NSIS_TEST_FAIL = $point
         Require-FailedAndPreserved

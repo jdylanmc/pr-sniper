@@ -75,6 +75,8 @@ try {
     }
     Reject { & (Join-Path $repository 'scripts\windows-installer-acceptance.ps1') -Candidate $fixture -Upgrade $fixture } 'forbidden outside'
     Reject { & (Join-Path $repository 'scripts\windows-upgrade-fixture.ps1') } 'only on a hosted'
+    Reject { & (Join-Path $repository 'scripts\windows-installer-faults.ps1') -Phase Install -Installer 'not-executed.exe' } 'require the owned hosted'
+    Reject { & (Join-Path $repository 'scripts\windows-removal-retry.ps1') } 'requires owned hosted'
     $executable = Join-Path $fixture 'never-execute.exe'
     Add-Type -OutputAssembly $executable -OutputType WindowsApplication -TypeDefinition @'
 using System.Reflection;
