@@ -153,6 +153,15 @@ Chocolatey package or successful launch receipt. WebView2 remains a runtime
 prerequisite. A remote green run and its downloaded artifact's interactive
 launch must be observed separately before closing #61 acceptance.
 
+The workflow also bundles an unsigned current-user NSIS candidate and performs
+installer/Chocolatey acceptance in a separate fresh hosted VM. Tauri bundling
+now precedes executable hash capture because it patches bundle-type metadata.
+This retains all native/browser checks and the existing executable artifact.
+See [Windows packaging](windows-packaging.md) for build/pack-only commands,
+per-user ownership, exact artifact provenance, hosted-only install/upgrade/
+uninstall checks and still-blocked trusted signing/publication. Never execute
+an installer on a shared developer machine as an incidental packaging test.
+
 ## Windows application acceptance
 
 These are required native observations, not assertions that an untested

@@ -1,0 +1,250 @@
+# Windows installer and Chocolatey candidates
+
+This is the bounded unsigned packaging portion of [#62](https://github.com/jdylanmc/pr-sniper/issues/62)
+and [#63](https://github.com/jdylanmc/pr-sniper/issues/63), **not a trusted public
+Windows release**. Signing ownership, approved distribution/license metadata,
+the first real version/tag and [#64](https://github.com/jdylanmc/pr-sniper/issues/64)'s
+Chocolatey publisher/moderation remain external prerequisites.
+
+## Installer contract
+
+The pinned Tauri CLI 2.11.4 bundles the existing x64 GUI application using
+`tauri.windows.conf.json` and `src-tauri/windows/installer.nsi`. This small
+Tauri-supported NSIS template deliberately avoids the upstream template's
+process-name termination, optional application-data deletion and unconditional
+product-name Run-value deletion. It is not an application updater.
+
+- Identity stays `com.jdylanmc.pr-sniper`, product `PR Sniper`. All checked-in
+  version fields still agree; this change does **not** select a new release.
+- One current-user location: `%LOCALAPPDATA%\PR Sniper`. No elevation request,
+  machine install, directory selection, desktop shortcut or second side-by-side
+  installation. `/D=` to another location is rejected.
+- Requires **Microsoft Edge WebView2 Evergreen Runtime**, already installed for
+  the machine or invoking user. Missing runtime fails before application files
+  are copied. No bootstrapper, unrelated dependency, trust root or Windows
+  security setting is installed/modified. Obtain WebView2 from
+  [Microsoft](https://developer.microsoft.com/microsoft-edge/webview2/).
+- Install: `pr-sniper-VERSION-x64-setup.exe /S`. Uninstall:
+  `"%LOCALAPPDATA%\PR Sniper\uninstall.exe" /S`. Switches are case-sensitive.
+  Success is **0 only**; cancellation/failed preconditions fail. Do not treat
+  MSI reboot codes as success for this NSIS contract. Quit through the app's
+  tray first; installers refuse a running host instead of terminating it.
+- Installation never launches the app or opts into startup, notifications,
+  review, publication or provider sign-in. Interactive installation likewise
+  has no automatic-launch finish checkbox.
+- Upgrade keeps the same path and requires this installer's matching marker,
+  location and uninstall command. A manually copied application or foreign
+  registration is not silently adopted. Downgrade/unknown version fails.
+- The current user's `Programs\PR Sniper.lnk` must be absent or target this
+  exact executable. Uninstall removes it only when that target still matches.
+  A stale uninstaller refuses a different installed version.
+- Only `pr-sniper.exe`, `uninstall.exe` and the template's enumerated values in
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\PR Sniper` are
+  installer-owned. Unknown files, values and subkeys survive; directory/key
+  removal is empty-only, never recursive. Resources/sidecars require an
+  explicit template review, not automatic broad deletion.
+
+**Settings, state, diagnostics and Windows Credential Manager records survive
+both upgrade and uninstall.** This includes `%LOCALAPPDATA%\com.jdylanmc.pr-sniper`
+and custom profiles. No credential enumeration or application-data purge occurs.
+The uninstaller deliberately does not alter **any** native startup/notification
+registration, including another installation's records.
+
+Before permanent removal, an operator who previously opted in should turn off
+**Launch at login** in the actual app's Settings, then Quit. If notification
+identity removal is wanted, use the exact existing owner-token unregister
+procedure in [Windows notifications](windows-notifications.md#explicit-removal-and-isolated-test-cleanup)
+while that exact executable is still present. Notification opt-out alone is not
+identity removal. No installer invents a token, reads credentials, scans/deletes
+CLSID trees or impersonates another installation. Without this explicit step,
+the registrations are retained (possibly pointing to an absent executable)
+for deliberate operator reconciliation or a same-path reinstall.
+
+## Build and stage without installing
+
+Use [Windows development prerequisites](windows-development.md). From a clean
+committed checkout, in PowerShell:
+
+```powershell
+npm ci
+npm run test:release:windows
+npm run test:packaging:windows
+npm run build:windows
+npm run bundle:windows
+.\scripts\windows-artifact.ps1
+.\scripts\windows-installer-artifact.ps1
+```
+
+Tauri patches bundle-type bytes into the executable, so **bundle before recording
+either artifact's hash**. Tauri uses `src-tauri\target\.tauri` for its
+checksum-verified vendor tools; `CARGO_TARGET_DIR` keeps worker build outputs
+separate. The unsigned installer is
+`src-tauri\target\release\bundle\nsis\PR Sniper_VERSION_x64-setup.exe`.
+
+The staging scripts refuse dirty source, mismatched CI commit, inconsistent
+versions, a changed application, wrong PE architecture/subsystem, unexpected
+installer identity/version or signed output in this unsigned lane. The installer
+artifact contains only `pr-sniper-VERSION-x64-setup.exe`, `installer.json` and
+`SHA256SUMS`. Metadata records the full commit, stable version, x64 target,
+installer and application SHA-256 hashes and explicit unsigned/non-release
+status. Existing artifact destinations are not overwritten.
+
+This is a reproducible **build procedure with pinned inputs and exact-byte
+provenance**, not a claim that independently linked or signed PE files are
+bit-for-bit identical. An unsigned candidate using today's checked-in version
+is not a new release or an addition to an existing public version.
+
+## Chocolatey package source and pack-only proof
+
+`scripts/windows-chocolatey.ps1` generates a nuspec, immutable metadata and the
+two minimal package scripts from `packaging/chocolatey`. There are no package
+dependencies and no embedded application binary in the public variant.
+It uses Chocolatey's download/process helpers; `-Elevated:$false` avoids requesting
+administrator rights. A globally installed Chocolatey CLI may itself require an
+elevated shell for its own package database. The app still belongs to the
+**invoking account**, never a guessed desktop user; do not install as SYSTEM or
+another account expecting this user's tray app.
+
+To produce and **pack, but not install**, a local test candidate:
+
+```powershell
+$directory = 'src-tauri\target\windows-installer-artifact'
+$metadata = Get-Content "$directory\installer.json" -Raw | ConvertFrom-Json
+.\scripts\windows-chocolatey.ps1 -Mode LocalTest `
+  -Installer "$directory\$($metadata.filename)" -Version $metadata.version `
+  -Sha256 $metadata.sha256 -Commit $metadata.commit `
+  -Destination src-tauri\target\chocolatey-localtest
+choco pack src-tauri\target\chocolatey-localtest\pr-sniper-localtest.nuspec `
+  --output-directory=src-tauri\target\chocolatey-localtest
+```
+
+The test ID is **`pr-sniper-localtest`**, version `VERSION-localtest`. It embeds
+the exact checksum-pinned unsigned installer, says **NEVER PUBLISH**, and refuses
+installation outside the hosted acceptance job's explicit environment. This is
+an accident guard, not a security boundary against someone modifying scripts
+or spoofing environment variables. There is no push/publishing command or
+workflow for these packages; **never upload the test nupkg to any public feed**.
+Generated installer executables have `.ignore` markers so Chocolatey does not
+make command shims.
+
+The public ID remains **`pr-sniper`**. An official-feed lookup on 2026-09-30
+returned no versions; that is not a reservation, ownership grant or promise of
+name availability. Authorship is Dylan McCurry; the project is
+`https://github.com/jdylanmc/pr-sniper`. No repository-wide license was declared
+at implementation time (GitHub reported `license: null`). Licenses inside agent
+tooling are **not** the application's license. The test package intentionally
+does not invent an OSS license. A human must approve actual distribution terms
+and their HTTPS license URL before public generation/moderation.
+
+`-Mode Public` requires that approved `-LicenseUrl`, `-ExpectedThumbprint`,
+`-ExpectedSubject` and this exact versioned URL:
+`https://github.com/jdylanmc/pr-sniper/releases/download/vVERSION/pr-sniper-VERSION-x64-setup.exe`.
+It rejects unsigned/untrusted/untimestamped or wrong-publisher bytes before
+emitting a package; independently checks SignTool policy; invokes the exact-tag
+release gate below; and downloads the public URL without credentials to recheck
+its SHA-256 and signature. It never treats a CI artifact URL or `latest` URL as
+an immutable release. The installing client rechecks SHA-256 even if Chocolatey's
+checksum feature was disabled, plus the expected Authenticode identity and
+timestamp using inbox PowerShell/Windows trust. No Windows SDK installation is
+required on client machines.
+
+Uninstall uses an install receipt with the exact uninstaller hash and version,
+and compares the exact current-user installer registration. NSIS's final
+`_?=DIRECTORY` argument keeps uninstall synchronous; the package removes the
+now-closed uninstaller only if its receipt hash still matches. It does not execute
+an arbitrary registry command or recursively delete a directory.
+
+## Hosted-only acceptance and evidence
+
+The existing Windows workflow retains **all** full native, offline runtime,
+browser, formatting and frontend checks. It adds the unsigned installer artifact
+after those checks, then builds an explicitly named **test-only** next-patch
+version with a disposable Tauri JSON override. No checked-in release version or
+tag changes; that artifact must never be released. Its PE version and hashes
+are independently checked. No installer executes in the build job.
+
+A separate `windows-installer-acceptance` job needs that successful native job
+and runs on a fresh **GitHub-hosted Windows 2022 VM**, never self-hosted. Before
+any installation, its script requires the hosted environment and absence of a
+running host, application directory, profile, installer keys, startup values
+and notification/Start Menu shortcuts. A different install path alone is not
+isolation: these registry and shortcut identities are shared per user.
+
+The job packs both local-test packages, installs from its private feed, verifies
+actual installed bytes/versions, starts the real installed executable with a
+unique profile/credential namespace, upgrades, verifies again and uninstalls.
+It tests data and one exact synthetic Credential Manager record surviving both
+operations, plus unrelated Run values, an unrelated file/registry value and a
+retargeted shortcut surviving removal. It never signs in or enables automation.
+Only the exact PID it launched is stopped; failure cleanup preserves the original
+failure status. The disposable VM is then retired by GitHub.
+
+`acceptance.json` is uploaded only after success. It distinguishes a five-second
+host/no-startup-window smoke from **actual interactive tray/menu acceptance**.
+That smoke cannot prove tray icon visibility, menu actions, real logon or
+notification delivery. The real later-release upgrade and public-feed install
+remain separate. Until this exact commit's hosted job has actually run green,
+install/upgrade/uninstall are **implemented but unverified**, not passed locally.
+
+Never run either installer or `choco install/upgrade/uninstall` as incidental
+validation on a shared machine with an existing app. Pack-only tests do not
+prove installed behavior. Source/helper tests never execute their synthetic PE
+fixture or touch native application registrations/credentials.
+
+## Trusted signing and publication: still blocked
+
+No provider/account has been selected or provisioned. Retain the requirement for
+**publicly trusted Windows Authenticode signing and a trusted timestamp**.
+There is no self-signed/ad-hoc fallback, borrowed unrelated certificate, trust-root
+installation or credential upload in this delivery.
+
+The human/external operator must:
+
+1. Select and own a publicly trusted code-signing identity/service for PR Sniper;
+   complete its identity validation and securely scoped CI access. Establish the
+   independently verified expected certificate thumbprint and exact subject,
+   timestamp service, rotation/expiry handling and any provider-specific signer.
+   This document does not choose a paid provider or claim an account exists.
+2. Add a **separate protected tag-only signing/publication route**, not secrets
+   to ordinary PR CI. Sign the application **before bundling**, configure Tauri's
+   real `bundle.windows.signCommand` for the chosen signer (including the generated
+   uninstaller), then sign the final installer. The ordinary `--no-sign` command
+   is never the release signing path. Do not insert a guessed command/credential.
+3. Verify all actual signed outputs with `Assert-TrustedWindowsSignature`
+   (`scripts/windows-signature.ps1`), the expected subject/thumbprint and
+   `-RequireSignTool`; check version/architecture and validate the extracted
+   installed app/uninstaller on the fresh runner as well. The helper requires
+   Windows `Valid` embedded Authenticode, a non-self-signed code-signing leaf,
+   a timestamp certificate and successful `signtool verify /pa /all /tw`.
+   Tests of this helper do not prove PR Sniper has been signed.
+4. Human chooses a real stable version/tag at the exact green main commit.
+   `python -B scripts/release.py check-windows-release` is a **read-only** future
+   preflight: use the same tag/repository/read-token environment as the macOS
+   gate. It adds the latest exact-commit **main-push** Windows run and both native
+   and installer-acceptance jobs to the existing macOS/version/ancestry/tag
+   checks. Pending, skipped, PR-only or other-commit checks never qualify.
+5. Implement immutable Windows asset publication without replacing macOS's
+   existing ZIP/manifest/checksum assets or invoking/rewriting the tap publisher.
+   Reconcile any draft/partial/uncertain publication; never move an existing tag
+   or replace signed bytes. The existing macOS release workflow and its exact
+   asset contract are unchanged; it does **not** currently publish Windows.
+6. Confirm Chocolatey maintainer identity, `pr-sniper` name ownership, approved
+   license/distribution metadata and scoped publisher API key. Independently
+   review and explicitly authorize the first submission. Record **submitted**,
+   **awaiting moderation**, **rejected** and **publicly approved** separately.
+   A successful push, local pack or local-feed install is not public availability.
+   Respond to moderation requirements, reconcile failed submissions, and verify
+   public-feed installation plus a subsequent approved release upgrade.
+
+No #62/#63/#64 completion is inferred from this bounded candidate.
+
+## Primary contracts checked
+
+- [Tauri Windows installer/configuration](https://v2.tauri.app/distribute/windows-installer/)
+- [Pinned Tauri NSIS template and utilities](https://github.com/tauri-apps/tauri/tree/8909f221d1515955fc843808032bdc5d62209c96/crates/tauri-bundler/src/bundle/windows/nsis)
+- [Pinned process plugin: FindProcessCurrentUser returns 1 for absent, not KillProcess's 2](https://github.com/tauri-apps/nsis-tauri-utils/blob/13d9edd27b69310e108d6fbd49f90992f8a05390/crates/nsis-process/src/lib.rs)
+- [Chocolatey pack CLI](https://docs.chocolatey.org/en-us/create/commands/pack/)
+- [Download/checksum helper](https://docs.chocolatey.org/en-us/create/functions/get-chocolateywebfile/)
+- [Process helper and explicit non-elevation](https://docs.chocolatey.org/en-us/create/functions/start-chocolateyprocessasadmin/)
+- [Community moderation/metadata requirements](https://docs.chocolatey.org/en-us/community-repository/moderation/)
+- [Official package-name lookup](<https://community.chocolatey.org/api/v2/FindPackagesById()?id=%27pr-sniper%27>)

@@ -180,7 +180,10 @@ test("Windows native application checks run on every PR and main push with read-
     push: { branches: ["main"] },
   });
   assert.deepEqual(windows.permissions, { contents: "read" });
-  assert.deepEqual(Object.keys(windows.jobs), ["windows"]);
+  assert.deepEqual(Object.keys(windows.jobs), [
+    "windows",
+    "windows-installer-acceptance",
+  ]);
   assert.equal(windows.jobs.windows["runs-on"], "windows-2022");
   assert.ok(windows.jobs.windows["timeout-minutes"] > 0);
 });
@@ -214,6 +217,8 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       "actions/setup-node",
       "actions/setup-python",
       "actions/upload-artifact",
+      "actions/upload-artifact",
+      "actions/upload-artifact",
     ],
   );
   for (const step of actions) {
@@ -235,6 +240,7 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       "npm ci",
       "npm run build",
       "npm run test:release:windows",
+      "npm run test:packaging:windows",
       "rustup show active-toolchain",
       "npm run format:check",
       "cargo check --manifest-path src-tauri\\Cargo.toml --locked --all-targets",
@@ -244,10 +250,77 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       "npm exec playwright install chromium",
       "npm run test:settings",
       "npm run build:windows",
+      "npm run bundle:windows",
       ".\\scripts\\windows-artifact.ps1",
+      ".\\scripts\\windows-installer-artifact.ps1",
+      ".\\scripts\\windows-upgrade-fixture.ps1",
     ],
   );
   assert.equal(scripts.build, "tsc --noEmit && vite build");
+});
+
+test("unsigned installers and disposable upgrade fixtures cannot become public release assets", () => {
+  assert.equal(
+    scripts["bundle:windows"],
+    "tauri bundle --ci --no-sign --bundles nsis",
+  );
+  const steps = windows.jobs.windows.steps;
+  assert.ok(
+    steps.findIndex((s) => s.run === "npm run bundle:windows") <
+      steps.findIndex((s) => s.run === ".\\scripts\\windows-artifact.ps1"),
+    "Tauri patches bundle-type bytes before recording the executable hash",
+  );
+  const uploads = steps.filter((s) =>
+    s.uses?.startsWith("actions/upload-artifact@"),
+  );
+  assert.equal(
+    uploads[1].with.name,
+    "pr-sniper-windows-unsigned-installer-${{ github.sha }}",
+  );
+  assert.equal(
+    uploads[1].with.path,
+    "src-tauri/target/windows-installer-artifact/",
+  );
+  assert.equal(
+    uploads[2].with.name,
+    "pr-sniper-windows-upgrade-test-only-${{ github.sha }}",
+  );
+  assert.doesNotMatch(JSON.stringify(workflow), /windows|chocolatey/i);
+});
+
+test("real installer acceptance depends on native checks and a fresh hosted VM", () => {
+  const job = windows.jobs["windows-installer-acceptance"];
+  assert.equal(job.needs, "windows");
+  assert.equal(job["runs-on"], "windows-2022");
+  assert.equal(job.environment, undefined);
+  assert.equal(job["continue-on-error"], undefined);
+  for (const step of job.steps) {
+    assert.equal(step.if, undefined);
+    assert.equal(step["continue-on-error"], undefined);
+    if (step.uses) assert.match(step.uses, /^actions\/[a-z-]+@[a-f0-9]{40}$/);
+    if (step.uses?.startsWith("actions/download-artifact@")) {
+      assert.match(step.with.name, /\$\{\{ github.sha \}\}$/);
+      assert.equal(step.with["run-id"], undefined);
+    }
+  }
+  const config = JSON.parse(
+    readFileSync("src-tauri/tauri.windows.conf.json", "utf8"),
+  );
+  assert.equal(config.bundle.windows.nsis.installMode, "currentUser");
+  assert.deepEqual(config.bundle.windows.webviewInstallMode, { type: "skip" });
+  assert.equal(config.bundle.useLocalToolsDir, true);
+  const template = readFileSync("src-tauri/windows/installer.nsi", "utf8");
+  assert.doesNotMatch(template, /KillProcess|ExecWait|ExecShell|RmDir\s+\/r/i);
+  assert.doesNotMatch(template, /DeleteRegKey\s+(?!\/ifempty)/i);
+  assert.doesNotMatch(
+    template,
+    /WriteReg\w+\s+HKLM|CurrentVersion\\Run|Software\\Classes/i,
+  );
+  assert.match(template, /RequestExecutionLevel user/);
+  assert.match(
+    template,
+    /Install Microsoft Edge WebView2 Evergreen Runtime first/,
+  );
 });
 
 test("Windows artifact contains only the standalone app and exact-source provenance", () => {
