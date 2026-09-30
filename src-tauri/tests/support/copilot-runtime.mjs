@@ -2,6 +2,12 @@
 import { appendFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 
+if (process.env.TEST_STARTUP_DELAY_MS) {
+  await new Promise((resolve) =>
+    setTimeout(resolve, Number(process.env.TEST_STARTUP_DELAY_MS)),
+  );
+}
+
 const args = process.argv.slice(2);
 const tokenIndex = args.indexOf("--auth-token-env");
 const selected = process.env[args[tokenIndex + 1]];
