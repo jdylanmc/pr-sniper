@@ -7,6 +7,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- Stop browser-test polling and drain accepted native Store calls before
+  deleting each isolated fixture directory, preventing late writes from racing
+  cleanup. Keep application behavior, assertions, retries and timeouts unchanged.
+
 - Add the owned CI signing keychain to the user search list before signing,
   verify the change and verify restoration afterward. Report native operation,
   exit code and fixed error category without echoing credentials or raw native
