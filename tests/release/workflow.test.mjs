@@ -368,6 +368,43 @@ test("native diagnostics retain the refusal without weakening operation status o
   );
 });
 
+test("registry string data and byte counts use paired System register sources", () => {
+  const template = readFileSync("src-tauri/windows/installer.nsi", "utf8");
+  const setter = template.match(
+    /!macro SetString name value([\s\S]*?)!macroend/,
+  )[1];
+  assert.match(
+    setter,
+    /Push \$R8\s+Push \$R9\s+StrCpy \$R9 "\$\{value\}"\s+StrLen \$R8 "\$R9"/,
+  );
+  assert.match(setter, /IntOp \$R8 \$R8 \+ 1\s+IntOp \$R8 \$R8 \* 2/);
+  assert.match(
+    setter,
+    /RegSetValueExW\(p \$Registry, w "\$\{name\}", i 0, i 1, w R9, i R8\) i\.r0/,
+  );
+  assert.doesNotMatch(setter, /System::Call[^\n]*\$\{value\}/);
+  assert.match(
+    setter,
+    /Pop \$R9\s+Pop \$R8\s+\$\{If\} \$0 != 0[\s\S]*StrCpy \$OperationFailed 1[\s\S]*Return/,
+  );
+  // These quoted payloads are data, not descriptor syntax. Cover all writers
+  // sharing SetString, including rollback's same registration-writing function.
+  for (const name of [
+    "DisplayIcon",
+    "UninstallString",
+    "QuietUninstallString",
+  ]) {
+    assert.match(
+      template,
+      new RegExp(`!insertmacro SetString "${name}" '\\$\\\\"`),
+    );
+  }
+  assert.match(
+    template,
+    /StrCpy \$Registry \$0\s+\$\{If\} \$1 = 1\s+StrCpy \$RegistryCreated 1\s+\$\{EndIf\}\s+!insertmacro Trace "install:registration-open"/,
+  );
+});
+
 test("Windows artifact contains only the standalone app and exact-source provenance", () => {
   const upload = windows.jobs.windows.steps.find((step) =>
     step.uses?.startsWith("actions/upload-artifact@"),
