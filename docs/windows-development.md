@@ -1,8 +1,9 @@
 # Windows native boundary development
 
 This is existing-application groundwork, not a runnable Windows release.
-No provider sign-in, real user data, startup registration or notification
-delivery is needed for the checks below.
+No provider sign-in, real user data, real startup registration or notification
+delivery is needed for the checks below. Startup tests own unique synthetic
+registry keys outside the Windows Run key.
 
 ## Prerequisites
 
@@ -46,6 +47,9 @@ that nested junctions are skipped and junction-linked Git metadata remains
 unavailable. These cases pass the existing implementation; no discovery bug or
 broader claim about every Windows reparse-point type is inferred.
 macOS retains its normal app tests, including the Unix mode assertions.
+The harness also runs the production Windows startup adapter's native tests,
+including exact-value ownership, registration status, rollback and access
+denial, without enabling the actual application at login.
 
 The harness also imports the real credential codec, account/rotation contracts,
 OAuth implementation, native secure store, Copilot catalog runtime and operation
@@ -78,17 +82,15 @@ Always retain the result of the unmodified application check separately:
 cargo check --manifest-path src-tauri\Cargo.toml --locked
 ```
 
-At this foundation boundary the actual check fails in `src-tauri/build.rs`:
-Tauri requires `icons/icon.ico`, which the macOS bundle does not supply.
-Windows bundle configuration/icon belongs to **#59**, not this harness.
+The #57/#58 foundation check originally failed for the missing Windows icon,
+startup import, macOS activation policy and native notification adapter.
+#59 supplies the icon/configuration and native startup boundary. Until #60's
+real notification adapter is integrated, the full-app check remains blocked:
 
-A diagnostic-only run with a disposable icon override (not committed or used
-by CI) exposed these additional errors. They are not a successful build:
-
-| Site                                  | Missing native boundary                                                   | Owner |
-| ------------------------------------- | ------------------------------------------------------------------------- | ----- |
-| `src-tauri/src/lib.rs`                | `startup` registration import; `ActivationPolicy`/`set_activation_policy` | #59   |
-| `src-tauri/src/notifications/host.rs` | macOS notification type/construction                                      | #60   |
+| Site                                   | Missing native boundary                     | Owner |
+| -------------------------------------- | ------------------------------------------- | ----- |
+| `src-tauri/src/notifications/host.rs`  | macOS notification type/construction        | #60   |
+| `src-tauri/src/notifications/tests.rs` | Unix permission assertion in full-app tests | #60   |
 
 The account/runtime code now uses a native credential alias, keeps legacy
 Keychain migration macOS-only, compares Windows environment keys
@@ -107,3 +109,73 @@ distribution remains separate. Green foundation checks prove none of those.
 
 For persistence permissions and failure semantics, see
 [ADR-0004](adr/0004-windows-persistence-foundations.md).
+
+## Standalone executable
+
+After native notification integration, build from PowerShell:
+
+```powershell
+cargo check --manifest-path src-tauri\Cargo.toml --locked --all-targets
+cargo test --manifest-path src-tauri\Cargo.toml --locked --all-targets
+cargo clippy --manifest-path src-tauri\Cargo.toml --locked --all-targets -- -D warnings
+npm run test:settings
+npm run build:windows
+```
+
+The last command embeds the production frontend; no Vite process is needed at
+runtime. The unsigned executable is `src-tauri\target\release\pr-sniper.exe`,
+or `<CARGO_TARGET_DIR>\release\pr-sniper.exe` when that variable is supplied.
+The browser Store bridge likewise resolves `CARGO_TARGET_DIR` and the Windows
+`.exe` suffix. Keep each worktree's build target separate. The existing
+`npm run bundle` command still creates the macOS `.app`; it is not a Windows
+build command. Windows icon regeneration, when artwork changes:
+`powershell -NoProfile -File scripts\windows-icon.ps1`.
+
+## Windows application acceptance
+
+These are required native observations, not assertions that an untested
+candidate works. Record exact commit, executable hash, current-user identity,
+Windows/WebView2 versions, process IDs and outcomes. Do not authenticate with
+real providers, enable review/publication automation or mutate existing user
+credentials for these checks.
+
+1. Ensure no existing PR Sniper host is running before the isolated test.
+   Ask its owner to Quit through the real menu; never kill processes by name.
+   Prepare a fresh absolute profile beneath this checkout, set
+   `PR_SNIPER_DATA_DIR` to it and set `PR_SNIPER_KEYCHAIN_SERVICE` to a unique
+   `com.jdylanmc.pr-sniper.tests.<uuid>` namespace. Do not use another profile's
+   namespace or enumerate credentials.
+2. Launch the production executable without Vite. Verify exactly one tray icon,
+   no startup main window and no console. Use the actual taskbar/overflow area,
+   including native UI Automation if appropriate, not a replacement test menu.
+3. Open **Status**, **Review Queue** and **Settings** from that tray. Check that
+   each is the actual application surface. **Check Now** on the unconfigured
+   profile must not cause provider actions. Close each window; verify its
+   native window hides while the owned host and tray remain.
+4. Launch the exact executable again with the same profile. Verify the second
+   process exits, one host/icon remains and no additional startup window
+   appears. Reopen a hidden window from the tray.
+5. In isolated Settings, verify Windows wording and disabled login mutation.
+   Record the actual Run value before/after if it already exists, without
+   replacing it. Read-only inspection is not proof of Windows startup launch.
+   Native automated startup fixtures cover enable/disable, reopen/status and
+   rollback on an exclusively owned test key; never point them at Run.
+6. Choose **Quit PR Sniper**. Observe the exact host PID exit, its tray icon
+   removal and owned work cancellation. No test Vite/fixture processes should
+   remain. GUI-parent Copilot checks stay synthetic/offline; do not infer the
+   absence of child console flashes from a terminal-run SDK test.
+7. Remove only this run's profile and exact synthetic credentials, if any
+   were created. Existing accounts/namespaces are not test cleanup targets.
+   The integration owner separately launches the normal app after isolated
+   proof and owns final readiness/leave-running.
+
+Actual launch-at-login acceptance requires an explicit normal-profile opt-in:
+compare the saved request with the one owned Run value, restart the app, then
+opt out and verify removal. Do not toggle a user's existing preference merely
+to gather evidence. `registered` does not mean effective: Windows **Startup
+Apps** can disable it independently. A fresh logon with that OS setting enabled
+is separate human-authorized proof; these automated tests neither log out the
+user nor change StartupApproved policy.
+
+See [ADR-0006](adr/0006-windows-tray-startup.md) for the host and registration
+contract. Notifications have their own #60 acceptance evidence.

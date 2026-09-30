@@ -1,0 +1,7 @@
+{
+  "bundle": {
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"],
+    "shortDescription": "Human-owned pull request review, from your system tray."
+  }
+}

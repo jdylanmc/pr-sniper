@@ -10,7 +10,6 @@ mod process_path;
 pub mod publication;
 pub mod queue;
 pub mod review;
-#[cfg(target_os = "macos")]
 pub mod startup;
 pub mod storage;
 mod storage_state;
@@ -2180,6 +2179,7 @@ pub fn run() {
             apply_monitoring_activation
         ])
         .setup(|app| {
+            #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             let override_root =
                 std::env::var_os("PR_SNIPER_DATA_DIR").map(std::path::PathBuf::from);
@@ -2212,18 +2212,17 @@ pub fn run() {
             follow_up::restore(&store).map_err(std::io::Error::other)?;
             let monitor = monitoring::Monitor::restore(&store).map_err(std::io::Error::other)?;
             let notification_restore = notifications::restore(&store);
+            #[cfg(target_os = "macos")]
+            let executable = std::env::current_exe()?.canonicalize()?;
+            #[cfg(windows)]
+            let executable = std::env::current_exe()?;
             app.manage(Host {
                 store: Mutex::new(store),
                 monitor: Mutex::new(monitor),
                 error: Mutex::new(None),
                 isolated,
                 quitting: AtomicBool::new(false),
-                registration: LoginRegistration::new(
-                    app.path()
-                        .home_dir()?
-                        .join("Library/LaunchAgents/PR Sniper.plist"),
-                    std::env::current_exe()?.canonicalize()?,
-                ),
+                registration: LoginRegistration::for_app(app.path().home_dir()?, executable),
                 github_auth: Mutex::new(github_auth),
                 github_generations: Mutex::new(BTreeMap::new()),
                 github_credentials,
@@ -2272,10 +2271,12 @@ pub fn run() {
                 &[&status, &queue, &check, &settings, &separator, &quit],
             )?;
             TrayIconBuilder::with_id("pr-sniper")
-                .icon(tauri::image::Image::from_bytes(include_bytes!(
-                    "../icons/tray.png"
-                ))?)
-                .icon_as_template(true)
+                .icon(tauri::image::Image::from_bytes(if cfg!(windows) {
+                    include_bytes!("../icons/icon.png")
+                } else {
+                    include_bytes!("../icons/tray.png")
+                })?)
+                .icon_as_template(cfg!(target_os = "macos"))
                 .tooltip("PR Sniper")
                 .menu(&menu)
                 .show_menu_on_left_click(true)
@@ -2290,9 +2291,11 @@ pub fn run() {
                         return;
                     }
                     if event.id.as_ref() == "quit" {
-                        record(app, DiagnosticEvent::QuitRequested);
                         let host = app.state::<Host>();
-                        host.quitting.store(true, Ordering::SeqCst);
+                        if host.quitting.swap(true, Ordering::SeqCst) {
+                            return;
+                        }
+                        record(app, DiagnosticEvent::QuitRequested);
                         host.copilot.request_shutdown();
                         host.reviews.cancel_all();
                         host.follow_ups.cancel_all();

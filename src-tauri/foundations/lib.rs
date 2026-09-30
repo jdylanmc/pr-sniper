@@ -11,5 +11,8 @@ pub mod github;
 pub mod policy;
 #[path = "../src/process_path.rs"]
 pub mod process_path;
+#[cfg(windows)]
+#[path = "../src/startup.rs"]
+pub mod startup;
 #[path = "../src/storage.rs"]
 pub mod storage;
