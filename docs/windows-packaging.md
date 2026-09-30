@@ -263,6 +263,23 @@ This checklist does not authorize publication or complete #63's native criteria.
 
 ## Hosted-only acceptance and evidence
 
+For native refusal diagnosis, hosted acceptance sets the process-only
+`PR_SNIPER_INSTALLER_DIAGNOSTICS` to a newly owned directory. The installer
+exclusively creates one UTF-16 trace per process there, recording fixed lifecycle
+stages and the original refusal/rollback text. It never replaces an existing log,
+captures credentials/environment dumps, or writes diagnostics into app data.
+Diagnostics do not change refusal codes or bypass ownership/runtime checks.
+An explicitly requested but unusable diagnostic destination fails before mutation.
+
+The separate `pr-sniper-windows-installer-diagnostics-COMMIT` artifact uploads
+even when acceptance fails; it contains only these traces and source/hash/failure
+context. The failure path also prints its own native traces into the job log,
+without replacing the original failure if collection fails. No complete Chocolatey
+log, application profile, credential data or whole target directory is uploaded.
+Missing traces are not success: the process may have failed before trace setup.
+The ordinary acceptance receipt remains success-only. A generic NSIS exit 2
+(`Setup was cancelled` in Chocolatey) alone does not identify which gate failed.
+
 The existing Windows workflow retains **all** full native, offline runtime,
 browser, formatting and frontend checks. It adds the unsigned installer artifact
 after those checks, then builds an explicitly named **test-only** next-patch

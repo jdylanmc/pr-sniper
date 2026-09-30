@@ -75,8 +75,31 @@ Var FailureStage
 Var OriginalFailure
 Var ShortcutState
 Var RevalidationFailureHandler
+Var DiagnosticHandle
+Var DiagnosticDirectory
+Var DiagnosticPath
+Var DiagnosticLine
+
+!macro Trace message
+  ${If} $DiagnosticHandle > 0
+    Push $0
+    Push $1
+    StrCpy $DiagnosticLine "${message}$\r$\n"
+    StrLen $0 "$DiagnosticLine"
+    IntOp $0 $0 * 2
+    ; Native I/O does not clear the installer's NSIS error flag or exit status.
+    System::Call 'kernel32::WriteFile(p $DiagnosticHandle, w "$DiagnosticLine", i r0, *i.r1, p 0) i.r0'
+    ${If} $0 = 0
+      DetailPrint "Installer diagnostic write failed; original operation status is unchanged."
+    ${EndIf}
+    System::Call 'kernel32::FlushFileBuffers(p $DiagnosticHandle)'
+    Pop $1
+    Pop $0
+  ${EndIf}
+!macroend
 
 !macro Fail message
+  !insertmacro Trace "refusal: ${message}"
   SetErrorLevel 2
   ${If} $RevalidationFailureHandler > 0
     StrCpy $FailureStage "${message}"
@@ -242,6 +265,34 @@ Var RevalidationFailureHandler
 !macroend
 
 !macro LifecycleFunctions prefix
+Function ${prefix}InitDiagnostics
+  StrCpy $DiagnosticHandle 0
+  ReadEnvStr $DiagnosticDirectory PR_SNIPER_INSTALLER_DIAGNOSTICS
+  ${If} $DiagnosticDirectory == ""
+    ClearErrors
+    Return
+  ${EndIf}
+  System::Call 'shlwapi::PathIsRelativeW(w "$DiagnosticDirectory") i.r0'
+  ${If} $0 != 0
+    !insertmacro Fail "Installer diagnostic directory must be absolute."
+  ${EndIf}
+  System::Call 'kernel32::GetCurrentProcessId() i.r0'
+  System::Call 'kernel32::GetTickCount() i.r1'
+  StrCpy $DiagnosticPath "$DiagnosticDirectory\nsis-$0-$1.txt"
+  ; Caller owns the existing directory; CREATE_NEW never replaces another log.
+  System::Call 'kernel32::CreateFileW(w "$DiagnosticPath", i 0x40000000, i 1, p 0, i 1, i 0x80, p 0) p.r0'
+  ${If} $0 = -1
+    !insertmacro Fail "Cannot exclusively create the requested installer diagnostic file."
+  ${EndIf}
+  StrCpy $DiagnosticHandle $0
+  System::Call 'kernel32::WriteFile(p $DiagnosticHandle, *i 0xFEFF, i 2, *i.r0, p 0) i.r1'
+  ${If} $1 = 0
+    !insertmacro Fail "Cannot initialize the requested installer diagnostic file."
+  ${EndIf}
+  !insertmacro Trace "PR Sniper NSIS version=${VERSION}"
+  ClearErrors
+FunctionEnd
+
 Function ${prefix}InspectShortcut
   StrCpy $ShortcutState "unreadable"
   System::Call 'kernel32::GetFileAttributesW(w "$SMPROGRAMS\${PRODUCTNAME}.lnk") i.r0 ?e'
@@ -298,6 +349,10 @@ Function ${prefix}ReleaseLifecycle
     System::Call 'kernel32::ReleaseMutex(p $LifecycleMutex)'
     System::Call 'kernel32::CloseHandle(p $LifecycleMutex)'
     StrCpy $LifecycleMutex 0
+  ${EndIf}
+  ${If} $DiagnosticHandle > 0
+    System::Call 'kernel32::CloseHandle(p $DiagnosticHandle)'
+    StrCpy $DiagnosticHandle 0
   ${EndIf}
 FunctionEnd
 
@@ -469,6 +524,7 @@ FunctionEnd
 
 Function ${prefix}Rollback
   StrCpy $OriginalFailure "$FailureStage"
+  !insertmacro Trace "rollback: $OriginalFailure"
   StrCpy $RollbackFailed 0
   ${If} $RegistryChanged = 1
     ${If} $PreviousVersion == ""
@@ -612,16 +668,24 @@ Function RequireWebView
 FunctionEnd
 
 Function .onInit
+  Call InitDiagnostics
+  !insertmacro Trace "install:init"
   !insertmacro Context
+  !insertmacro Trace "install:context-ok"
   Call AcquireLifecycle
+  !insertmacro Trace "install:lock-acquired"
   Call ValidateInstall
+  !insertmacro Trace "install:preconditions-ok"
   Call RequireWebView
+  !insertmacro Trace "install:webview-ok"
 FunctionEnd
 
 Section Install
+  !insertmacro Trace "install:begin"
   Call ValidateInstall
   Call RequireWebView
   Call PrepareTransaction
+  !insertmacro Trace "install:transaction-prepared"
   ClearErrors
   SetOutPath "$Transaction"
   ${If} ${Errors}
@@ -634,23 +698,27 @@ Section Install
     StrCpy $FailureStage "stage application"
     Goto install_rollback
   ${EndIf}
+  !insertmacro Trace "install:application-staged"
   ClearErrors
   WriteUninstaller "$Transaction\new-uninstall.exe"
   ${If} ${Errors}
     StrCpy $FailureStage "stage uninstaller"
     Goto install_rollback
   ${EndIf}
+  !insertmacro Trace "install:uninstaller-staged"
   ClearErrors
   CreateShortcut "$ShortcutStage" "$INSTDIR\${MAINBINARYNAME}.exe"
   ${If} ${Errors}
     StrCpy $FailureStage "stage shortcut"
     Goto install_rollback
   ${EndIf}
+  !insertmacro Trace "install:shortcut-staged"
   ; Extraction can take time. Revalidate after it, not just on the welcome page.
   ; Arm cleanup only for our successfully claimed and populated staging paths.
   GetFunctionAddress $RevalidationFailureHandler RollbackRevalidation
   Call ValidateInstall
   StrCpy $RevalidationFailureHandler 0
+  !insertmacro Trace "install:revalidation-ok"
   ClearErrors
   WriteINIStr "$Transaction\recovery.ini" "schema-v1" "previous-version" "$PreviousVersion"
   ${If} ${Errors}
@@ -665,6 +733,7 @@ Section Install
     Goto install_rollback
   ${EndIf}
   StrCpy $Registry $0
+  !insertmacro Trace "install:registration-open"
   ${If} $1 = 1
     StrCpy $RegistryCreated 1
   ${EndIf}
@@ -683,6 +752,7 @@ Section Install
   ${EndIf}
   !insertmacro MoveOwned "$Transaction\new-app.exe" "$INSTDIR\${MAINBINARYNAME}.exe" $NewAppPlaced install_rollback
   !insertmacro MoveOwned "$Transaction\new-uninstall.exe" "$INSTDIR\uninstall.exe" $NewUninstallerPlaced install_rollback
+  !insertmacro Trace "install:files-placed"
   !insertmacro Fault "install-files" install_rollback
   !insertmacro MoveOwned "$ShortcutStage" "$SMPROGRAMS\${PRODUCTNAME}.lnk" $NewShortcutPlaced install_rollback
   StrCpy $RegistryChanged 1
@@ -691,10 +761,12 @@ Section Install
   ${If} $OperationFailed = 1
     Goto install_rollback
   ${EndIf}
+  !insertmacro Trace "install:registration-written"
   !insertmacro Fault "install-registration" install_rollback
   Call CloseRegistry
   SetOutPath "$INSTDIR"
   Call CleanupTransaction
+  !insertmacro Trace "install:success"
   SetErrorLevel 0
   Goto install_done
   install_rollback:
@@ -722,12 +794,15 @@ Function un.ValidateUninstall
 FunctionEnd
 
 Function un.onInit
+  Call un.InitDiagnostics
+  !insertmacro Trace "uninstall:init"
   !insertmacro Context
   Call un.AcquireLifecycle
   Call un.ValidateUninstall
 FunctionEnd
 
 Section Uninstall
+  !insertmacro Trace "uninstall:begin"
   Call un.ValidateUninstall
   Call un.PrepareTransaction
   System::Call 'advapi32::RegOpenKeyExW(p 0x80000001, w "${UNINSTKEY}", i 0, i 0x103, *p.r0) i.r1'
@@ -767,6 +842,7 @@ Section Uninstall
   Call un.CleanupTransaction
   ; Nonempty foreign directories and the _?= self file are intentional.
   RMDir "$INSTDIR"
+  !insertmacro Trace "uninstall:success"
   SetErrorLevel 0
   Goto uninstall_done
   uninstall_rollback:

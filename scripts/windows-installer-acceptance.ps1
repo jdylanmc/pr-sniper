@@ -38,6 +38,16 @@ if ($base.commit -cne $env:GITHUB_SHA -or $next.commit -cne $base.commit -or
 $workspace = Join-Path $repository 'src-tauri\target\windows-acceptance'
 New-Item -ItemType Directory $workspace -ErrorAction Stop | Out-Null
 $feed = New-Item -ItemType Directory (Join-Path $workspace 'feed')
+$diagnostics = New-Item -ItemType Directory (Join-Path $workspace 'installer-diagnostics')
+$env:PR_SNIPER_INSTALLER_DIAGNOSTICS = $diagnostics.FullName
+[ordered]@{
+    commit = $base.commit
+    version = $base.version
+    installer_sha256 = $base.sha256
+    upgrade_version = $next.version
+    upgrade_sha256 = $next.sha256
+    purpose = 'unsigned-hosted-installer-diagnostics-not-acceptance'
+} | ConvertTo-Json | Set-Content (Join-Path $diagnostics.FullName 'context.json') -Encoding utf8
 $env:PR_SNIPER_PACKAGING_ACCEPTANCE = '1'
 $env:PR_SNIPER_DATA_DIR = Join-Path $workspace 'profile'
 $env:PR_SNIPER_KEYCHAIN_SERVICE = 'com.jdylanmc.pr-sniper.tests.' + [guid]::NewGuid()
@@ -169,6 +179,14 @@ try {
     } | ConvertTo-Json | Set-Content (Join-Path $workspace 'acceptance.json')
 } catch {
     $failure = $_
+    try {
+        [ordered]@{ status = 'failed'; commit = $base.commit; exception_type = $_.Exception.GetType().FullName } |
+            ConvertTo-Json | Set-Content (Join-Path $diagnostics.FullName 'result.json') -Encoding utf8
+        foreach ($trace in Get-ChildItem -LiteralPath $diagnostics.FullName -Filter 'nsis-*.txt' -File) {
+            Write-Host "Native installer trace: $($trace.Name)"
+            Get-Content -LiteralPath $trace.FullName -Encoding Unicode | ForEach-Object { Write-Host $_ }
+        }
+    } catch { Write-Warning 'Installer diagnostic collection failed; preserving original acceptance failure.' }
 } finally {
     try {
         if ($ownedHost -and -not $ownedHost.HasExited) {
