@@ -1,4 +1,4 @@
-name: Windows frontend and shared checks
+name: Windows native application
 
 on:
   pull_request:
@@ -11,7 +11,7 @@ permissions:
 jobs:
   windows:
     runs-on: windows-2022
-    timeout-minutes: 25
+    timeout-minutes: 45
     defaults:
       run:
         shell: pwsh
@@ -31,11 +31,26 @@ jobs:
       - run: npm run test:release:windows
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
-      - name: Check native source formatting
-        run: cargo fmt --manifest-path src-tauri\Cargo.toml --all --check
-      - name: Test production persistence, accounts, startup and runtime (not the full app)
-        run: cargo test --manifest-path src-tauri\foundations\Cargo.toml --locked
+      - run: npm run format:check
+      - name: Check all native application targets
+        run: cargo check --manifest-path src-tauri\Cargo.toml --locked --all-targets
+      - name: Test native application with exact owned fixture claims
+        run: cargo test --manifest-path src-tauri\Cargo.toml --locked --all-targets -- --nocapture
       - name: Handshake with bundled Windows runtime (offline, no credentials or inference)
-        run: cargo test --manifest-path src-tauri\foundations\Cargo.toml --locked --lib copilot::runtime::tests::bundled_runtime_handshakes_offline_without_credentials -- --exact --ignored --nocapture
-      - name: Lint production foundations
-        run: cargo clippy --manifest-path src-tauri\foundations\Cargo.toml --locked --all-targets -- -D warnings
+        run: cargo test --manifest-path src-tauri\Cargo.toml --locked --lib copilot::runtime::tests::bundled_runtime_handshakes_offline_without_credentials -- --exact --ignored --nocapture
+      - name: Lint all native application targets
+        run: cargo clippy --manifest-path src-tauri\Cargo.toml --locked --all-targets -- -D warnings
+      - run: npm exec playwright install chromium
+      - run: npm run test:settings
+      - name: Build standalone executable with embedded frontend
+        run: npm run build:windows
+      - name: Verify GUI executable and record artifact provenance
+        run: .\scripts\windows-artifact.ps1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pr-sniper-windows-x64-${{ github.sha }}
+          path: |
+            src-tauri/target/windows-artifact/pr-sniper.exe
+            src-tauri/target/windows-artifact/build.json
+            src-tauri/target/windows-artifact/SHA256SUMS
+          if-no-files-found: error

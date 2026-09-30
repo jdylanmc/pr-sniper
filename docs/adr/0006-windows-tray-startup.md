@@ -56,10 +56,10 @@ verify deletion of their exact keys. They cover persistence, quoted paths,
 invalid/missing/stale registration, preservation of unrelated values, native
 access denial and exact rollback on settings failure.
 
-The existing foundation harness imports this exact production adapter so
-Windows CI exercises usable startup tests even before notification integration
-unblocks the full application. It is not a replacement host or a notification
-stub. Full app checks, browser bridge tests and the real
+The existing foundation harness imports this exact production adapter for
+targeted checks. After notification integration, Windows CI runs the full
+application suite, including these tests, rather than a replacement host.
+Full app checks, browser bridge tests and the real
 [Windows acceptance procedure](../windows-development.md#windows-application-acceptance)
 remain convergence requirements. Unit/native tests do not prove taskbar
 interaction, Windows logon, notification delivery or absence of GUI-child
