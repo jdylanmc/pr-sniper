@@ -80,6 +80,20 @@ function Assert-Installed($Metadata, [string] $Installer) {
         (Get-ItemPropertyValue $uninstallKey 'DisplayVersion') -cne $Metadata.version) {
         throw 'Installed bytes/version differ from this exact candidate.'
     }
+    $quotedValues = [ordered]@{
+        DisplayIcon = "`"$app`""
+        UninstallString = "`"$directory\uninstall.exe`""
+        QuietUninstallString = "`"$directory\uninstall.exe`" /S"
+    }
+    $registration = Get-Item -LiteralPath $uninstallKey
+    try {
+        foreach ($name in $quotedValues.Keys) {
+            if ($registration.GetValueKind($name) -ne [Microsoft.Win32.RegistryValueKind]::String -or
+                $registration.GetValue($name) -cne $quotedValues[$name]) {
+                throw "Installed REG_SZ type or quoted value differs from the expected registration: $name."
+            }
+        }
+    } finally { $registration.Dispose() }
     if (Get-Process -Name 'pr-sniper' -ErrorAction SilentlyContinue) { throw 'Installer silently launched the app.' }
     $env:PR_SNIPER_DATA_DIR = Join-Path $workspace ('profile-' + [guid]::NewGuid())
     $script:ownedHost = Start-Process $app -WorkingDirectory $workspace -PassThru

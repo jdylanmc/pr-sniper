@@ -29,6 +29,12 @@ backup. Do not remove these paths blindly: reconcile the exact recovery receipt
 and retained files before retrying. Process termination/power loss is not claimed
 to be a crash-atomic transaction.
 
+Registry string payloads are passed to the NSIS System plug-in through a Unicode
+register source, with the UTF-16 byte count including its terminator computed
+from that same value. Literal quotes in `DisplayIcon` and uninstall commands must
+not be interpolated into the plug-in's call-description syntax. Hosted acceptance
+checks those three quoted `REG_SZ` values after installation and upgrade.
+
 Uninstall likewise rolls back failed owned removals. Chocolatey independently
 checks app absence, no pending transaction, all ten owned registry values absent
 and no remaining owned/unresolved shortcut before removing the receipt-verified

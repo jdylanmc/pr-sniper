@@ -176,10 +176,16 @@ Var DiagnosticLine
 !macroend
 
 !macro SetString name value
-  StrLen $R8 "${value}"
+  ; Quoted paths are data, not part of the System plug-in's call syntax.
+  Push $R8
+  Push $R9
+  StrCpy $R9 "${value}"
+  StrLen $R8 "$R9"
   IntOp $R8 $R8 + 1
   IntOp $R8 $R8 * 2
-  System::Call 'advapi32::RegSetValueExW(p $Registry, w "${name}", i 0, i 1, w "${value}", i $R8) i.r0'
+  System::Call 'advapi32::RegSetValueExW(p $Registry, w "${name}", i 0, i 1, w R9, i R8) i.r0'
+  Pop $R9
+  Pop $R8
   ${If} $0 != 0
     StrCpy $OperationFailed 1
     StrCpy $FailureStage "write registry value ${name}"
@@ -733,10 +739,10 @@ Section Install
     Goto install_rollback
   ${EndIf}
   StrCpy $Registry $0
-  !insertmacro Trace "install:registration-open"
   ${If} $1 = 1
     StrCpy $RegistryCreated 1
   ${EndIf}
+  !insertmacro Trace "install:registration-open"
   ${If} $PreviousVersion != ""
     !insertmacro MoveOwned "$INSTDIR\uninstall.exe" "$Transaction\previous-uninstall.exe" $OldUninstallerMoved install_rollback
     !insertmacro MoveOwned "$INSTDIR\${MAINBINARYNAME}.exe" "$Transaction\previous-app.exe" $OldAppMoved install_rollback
