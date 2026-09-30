@@ -249,6 +249,9 @@ pub struct Ledger {
     pub notices: Vec<Notice>,
 }
 
+#[cfg(windows)]
+pub(crate) const WINDOWS_SETUP_SOURCE: &str = "windows-permission-setup";
+
 impl Default for Ledger {
     fn default() -> Self {
         Self {
@@ -325,10 +328,42 @@ impl Ledger {
         if !self.enabled {
             return Err("Enable notifications before sending a test.".into());
         }
+        Ok(self.push_test(destination, now, "test", Phase::Queued))
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn begin_permission_setup(&mut self, now: i64) -> Result<Notice, String> {
+        if self.enabled {
+            return Err(
+                "Turn notifications off before retrying Windows notification setup.".into(),
+            );
+        }
+        if self.notices.iter().any(|notice| {
+            notice.source == WINDOWS_SETUP_SOURCE
+                && !matches!(notice.phase, Phase::Failed | Phase::NotSent)
+        }) {
+            return Err("Windows notification setup already had a send attempt. Its outcome remains in history; it will not be resent.".into());
+        }
+        self.push_test(
+            Destination::Settings,
+            now,
+            WINDOWS_SETUP_SOURCE,
+            Phase::Submitting,
+        );
+        Ok(self.notices.last().unwrap().clone())
+    }
+
+    fn push_test(
+        &mut self,
+        destination: Destination,
+        now: i64,
+        source: &str,
+        phase: Phase,
+    ) -> String {
         let id = format!("pr-sniper:{}:{}", self.profile_id, uuid::Uuid::new_v4());
         self.notices.push(Notice {
             id: id.clone(),
-            source: "test".into(),
+            source: source.into(),
             fingerprint: id.clone(),
             episode: 1,
             event: Event {
@@ -337,13 +372,13 @@ impl Ledger {
                 cause: id.clone(),
                 group: self.profile_id.clone(),
             },
-            phase: Phase::Queued,
+            phase,
             created_at: now,
             error: None,
             opened_at: None,
             navigation_error: None,
         });
-        Ok(id)
+        id
     }
 
     pub fn next(&self) -> Option<&Notice> {

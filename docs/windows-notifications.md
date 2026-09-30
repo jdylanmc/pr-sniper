@@ -28,6 +28,25 @@ and manifest blocks remain explicit; errors and unknown enum values fail closed.
 If Windows blocks delivery, the app preference remains off. The registration
 remains available for Windows Settings and a later explicit opt-in.
 
+For an identity-less desktop app, `Setting` can return `ERROR_NOT_FOUND` until
+the first submission initializes the notification platform. Microsoft's Windows
+Community Toolkit handles this by sending a popup-suppressed, expiring notice
+and removing it before reading the actual setting. PR Sniper performs that
+initialization **only during explicit opt-in**, only for this exact `Setting`
+error, and never during startup or status polling. Notifier creation errors
+and setting-read errors have distinct diagnostics.
+
+This is a real setup submission, not an invisible permission query. It uses the
+existing Test category and exact saved Settings destination, persists submitting
+intent while opt-in remains off, sets `SuppressPopup`, silent audio and a
+15-second expiry, and removes only its exact AUMID/tag/group. It can briefly
+appear in notification center. Send, cleanup and the real subsequent `Setting`
+result are recorded in notification history; no banner visibility is claimed.
+Denied/failed setup does not enable opt-in. Interrupted or uncertain attempts
+are never resubmitted; a later explicit opt-in may retry exact cleanup and
+re-read actual permission. Definite pre-submission failures may be retried
+explicitly. Ordinary test sending still requires opt-in.
+
 `Setting` is **aggregate**, not separate banner/notification-center
 authorization. Windows returns `null` for those two channel fields. The UI says
 they are unknown instead of claiming enabled or disabled. Focus, Do Not Disturb,
@@ -166,6 +185,24 @@ That test does not send a toast, modify production notification identities,
 touch credentials/startup entries or launch the GUI. It is not interactive
 delivery proof.
 
+The application also has a separate, deliberately ignored **real first-use
+submission probe**. It records a new test-owned profile/AUMID/CLSID/shortcut
+before installation and its saved notice/tag/group before `Show`. It reproduces
+the initial native `Setting` failure, invokes the production setup path, reads
+the actual resulting setting and exact history, then removes its notification,
+registration and temporary profile. It never uses a production identity or
+launches the GUI:
+
+```powershell
+cargo test --manifest-path src-tauri\Cargo.toml --locked --lib `
+  notifications::windows::tests::native_first_use_permission_probe `
+  -- --ignored --exact --nocapture
+```
+
+Run it only with explicit authority for one suppressed native setup submission.
+It proves the first-use API transition and cleanup, not a visible banner,
+interactive navigation or cold-start behavior.
+
 Full application convergence with #59 must separately prove native test delivery,
 running click, quit/cold click, exact queue destination, stale-profile rejection,
 permission-block guidance and restart deduplication. GUI screenshots/activation
@@ -174,6 +211,9 @@ this source-level adapter validation.
 
 ## Primary API references
 
+- [Toolkit first-use Setting contract](https://github.com/CommunityToolkit/WindowsCommunityToolkit/blob/41c9964cf90f53317e55218fb3a275a3ae98365c/Microsoft.Toolkit.Uwp.Notifications/Toasts/Compat/ToastNotifierCompat.cs)
+- [Toolkit identity-less initialization](https://github.com/CommunityToolkit/WindowsCommunityToolkit/blob/41c9964cf90f53317e55218fb3a275a3ae98365c/Microsoft.Toolkit.Uwp.Notifications/Toasts/Compat/ToastNotificationManagerCompat.cs)
+- [Popup suppression still permits notification center](https://learn.microsoft.com/en-us/uwp/api/windows.ui.notifications.toastnotification.suppresspopup)
 - [Desktop shortcut identity](https://learn.microsoft.com/en-us/windows/win32/shell/enable-desktop-toast-with-appusermodelid)
 - [Microsoft DesktopToasts COM activation sample](https://github.com/microsoft/Windows-classic-samples/blob/main/Samples/DesktopToasts/CPP/DesktopToastsSample.cpp)
 - [INotificationActivationCallback::Activate](https://learn.microsoft.com/en-us/windows/win32/api/notificationactivationcallback/nf-notificationactivationcallback-inotificationactivationcallback-activate)
