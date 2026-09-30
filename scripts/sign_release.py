@@ -20,22 +20,81 @@ import tempfile
 from release import ASSETS, BUNDLE_ID, REPOSITORY, ReleaseError, config_version, filename, require, version
 
 
+def operation(args):
+    tool = Path(args[0]).name
+    if tool == "codesign":
+        if "--sign" in args:
+            return "codesign/sign"
+        if "--verify" in args:
+            return "codesign/verify"
+        if "--entitlements" in args:
+            return "codesign/entitlements"
+        return "codesign/inspect"
+    if tool == "security" and len(args) > 1 and args[1] in {
+        "create-keychain", "set-keychain-settings", "unlock-keychain", "import",
+        "set-key-partition-list", "find-identity", "list-keychains", "delete-keychain",
+    }:
+        return "security/" + args[1]
+    if tool == "xcrun" and len(args) > 2 and (args[1], args[2]) in {
+        ("notarytool", "submit"), ("stapler", "staple"), ("stapler", "validate"),
+    }:
+        return "/".join(args[:3])
+    return tool if tool in {"git", "lipo", "ditto", "spctl"} else "native-tool"
+
+
+def diagnostic(output):
+    # Only fixed categories are emitted: native stderr/argv can contain secrets.
+    messages = output.lower()
+    for marker, category in (
+        (b"unable to build chain", "certificate-chain"),
+        (b"user interaction is not allowed", "keychain-access"),
+        (b"specified item could not be found in the keychain", "keychain-identity-lookup"),
+        (b"errsecinternalcomponent", "security-internal-component"),
+        (b"timestamp service is not available", "timestamp-service"),
+        (b"resource fork", "bundle-metadata"),
+        (b"sealed resource is missing or invalid", "bundle-seal"),
+        (b"not signed at all", "unsigned-code"),
+    ):
+        if marker in messages:
+            return category
+    return "unclassified"
+
+
 def run(args, timeout=120):
+    stage = operation(args)
+    print("Native stage: " + stage, flush=True)
     try:
         environment = {key: value for key, value in os.environ.items()
                        if not key.startswith("APPLE_") and key not in ("GITHUB_TOKEN", "HOMEBREW_TAP_TOKEN")}
         result = subprocess.run(args, capture_output=True, check=False, timeout=timeout, env=environment)
     except (OSError, subprocess.TimeoutExpired):
-        raise ReleaseError("Native release stage could not complete: " + str(args[0])) from None
-    require(result.returncode == 0, "Native release stage failed: " + str(args[0]))
+        raise ReleaseError("Native release stage could not complete: " + stage) from None
+    require(result.returncode == 0, f"Native release stage failed: {stage}; exit={result.returncode}; "
+            f"category={diagnostic(result.stdout + result.stderr)}")
     return result.stdout or result.stderr
+
+
+def keychain_search_list():
+    try:
+        paths = shlex.split(run(["security", "list-keychains", "-d", "user"]).decode())
+    except (ValueError, UnicodeError):
+        raise ReleaseError("Cannot parse the user keychain search list.") from None
+    require(all(Path(path).is_absolute() and not re.search(r"[\x00-\x1f]", path) for path in paths),
+            "Unexpected user keychain search-list entry.")
+    return paths
+
+
+def set_keychain_search_list(paths):
+    run(["security", "list-keychains", "-d", "user", "-s"] + paths)
+    require(keychain_search_list() == paths, "User keychain search-list update was not confirmed.")
 
 
 def configuration():
     values = {name: os.environ.get(name, "") for name in (
         "APPLE_CERTIFICATE_P12", "APPLE_CERTIFICATE_PASSWORD", "APPLE_NOTARY_KEY_P8",
         "APPLE_NOTARY_KEY_ID", "APPLE_NOTARY_ISSUER_ID", "APPLE_TEAM_ID", "APPLE_SIGNING_IDENTITY")}
-    require(all(values.values()), "Missing Apple signing/notarization configuration; inspect required secret/variable names.")
+    missing = [name for name, value in values.items() if not value]
+    require(not missing, "Missing Apple signing/notarization configuration: " + ", ".join(missing))
     require(re.fullmatch(r"[A-Z0-9]{10}", values["APPLE_TEAM_ID"]), "Invalid Apple Team ID.")
     require(re.fullmatch(r"[A-F0-9]{40}", values["APPLE_SIGNING_IDENTITY"]), "Signing identity must be the exact certificate SHA-1 fingerprint.")
     require(re.fullmatch(r"[A-Z0-9]{10}", values["APPLE_NOTARY_KEY_ID"]), "Invalid notarization Key ID.")
@@ -107,7 +166,7 @@ def sign():
     app = Path("src-tauri/target/release/bundle/macos/PR Sniper.app").resolve()
     verify_app(app, release_version)
     require(not ASSETS.exists(), "Release output already exists; do not overwrite earlier signed assets.")
-    previous_keychains = shlex.split(run(["security", "list-keychains", "-d", "user"]).decode())
+    previous_keychains = keychain_search_list()
     created_keychain = False
     cleanup_error = None
     with tempfile.TemporaryDirectory(prefix="pr-sniper-sign-", dir=os.environ["RUNNER_TEMP"]) as temporary:
@@ -129,6 +188,7 @@ def sign():
                  "-T", "/usr/bin/codesign"])
             run(["security", "set-key-partition-list", "-S", "apple-tool:,apple:,codesign:", "-s",
                  "-k", password, str(keychain)])
+            set_keychain_search_list([str(keychain)] + previous_keychains)
             identities = run(["security", "find-identity", "-v", "-p", "codesigning", str(keychain)]).decode()
             matching = re.findall(r'\b([A-F0-9]{40}) "([^"]+)"', identities)
             require(len(matching) == 1 and matching[0][0] == values["APPLE_SIGNING_IDENTITY"]
@@ -175,15 +235,15 @@ def sign():
             (ASSETS / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
             (ASSETS / "SHA256SUMS").write_text(f"{checksum}  {final_zip.name}\n")
         finally:
-            for args in (
-                ["security", "list-keychains", "-d", "user", "-s"] + previous_keychains,
-                ["security", "delete-keychain", str(keychain)] if created_keychain else None,
-            ):
-                if args is not None:
-                    try:
-                        run(args)
-                    except ReleaseError:
-                        cleanup_error = "Temporary release keychain cleanup failed; this job must not publish."
+            try:
+                set_keychain_search_list(previous_keychains)
+            except ReleaseError:
+                cleanup_error = "User keychain search-list restoration failed; this job must not publish."
+            if created_keychain:
+                try:
+                    run(["security", "delete-keychain", str(keychain)])
+                except ReleaseError:
+                    cleanup_error = "Temporary release keychain cleanup failed; this job must not publish."
             if cleanup_error:
                 raise ReleaseError(cleanup_error)
 

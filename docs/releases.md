@@ -31,6 +31,9 @@ The pipeline:
    build. Normal PR CI stays ad-hoc signed and never receives Apple/tap secrets.
 3. In an isolated temporary keychain, import the dedicated certificate and
    require its exact SHA-1 fingerprint, Developer ID Application type and team.
+   Prepend that owned keychain to the existing user search list and verify
+   readback before resolving/signing. Restore and verify the original list
+   before deleting the temporary keychain; do not change the default keychain.
    Sign the app with hardened runtime and a secure timestamp; verify identity,
    version, architecture, signature chain and absence of unexpected entitlements.
    No `--deep` signing, keychain default changes or ad-hoc fallback.
@@ -140,6 +143,19 @@ Forced runner loss can interrupt cleanup; GitHub-hosted disposable runners are
 required. This workflow is not designed for a shared persistent self-hosted
 signing machine. No release step modifies developer app data, login items,
 notification settings or GitHub/Copilot credentials.
+
+Native stage logs contain fixed operation labels, exit codes and allowlisted
+error categories, not raw stderr, command arguments or credentials. For example,
+`codesign/sign` is distinct from `codesign/verify` and `codesign/entitlements`;
+`security-internal-component` or `certificate-chain` remains a diagnostic hint,
+not permission to skip a signature check. Empty required configuration reports
+the missing names only.
+
+The initial `v0.1.0` attempts failed without publishing assets: first an empty
+certificate secret, then an opaque native `codesign` failure. The certificate
+upload was corrected. The `0.1.1` recovery adds the missing keychain search-list
+setup and bounded diagnostics; it does not prove live signing until its own
+authorized release runs. Keep `v0.1.0` unchanged rather than moving the tag.
 
 ## First-release acceptance
 
