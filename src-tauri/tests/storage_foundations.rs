@@ -238,3 +238,46 @@ fn unix_settings_state_and_diagnostics_remain_owner_only() {
         );
     }
 }
+
+#[cfg(windows)]
+#[test]
+fn windows_discovery_does_not_follow_nested_junctions() {
+    let inside = Fixture::new();
+    let outside = Fixture::new();
+    fs::create_dir(outside.path().join(".git")).unwrap();
+    fs::write(
+        outside.path().join(".git/config"),
+        "[remote \"origin\"]\nurl = https://github.com/private/outside\n",
+    )
+    .unwrap();
+    windows_permissions::junction(outside.path(), &inside.path().join("nested junction"));
+
+    let discovered = pr_sniper_lib::discovery::discover(inside.path()).unwrap();
+
+    assert!(discovered.repositories.is_empty());
+    assert!(discovered.warnings.is_empty());
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_discovery_does_not_follow_junction_git_metadata() {
+    let inside = Fixture::new();
+    let outside = Fixture::new();
+    fs::create_dir(outside.path().join(".git")).unwrap();
+    fs::write(
+        outside.path().join(".git/config"),
+        "[remote \"origin\"]\nurl = https://github.com/private/outside\n",
+    )
+    .unwrap();
+    windows_permissions::junction(&outside.path().join(".git"), &inside.path().join(".git"));
+
+    let discovered = pr_sniper_lib::discovery::discover(inside.path()).unwrap();
+
+    assert_eq!(discovered.repositories.len(), 1);
+    assert!(discovered.repositories[0].name.is_none());
+    assert!(discovered.repositories[0]
+        .unavailable
+        .as_deref()
+        .unwrap()
+        .contains("not followed"));
+}
