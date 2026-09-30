@@ -103,7 +103,7 @@ class ReleaseTests(unittest.TestCase):
                     "team_id": "ABCDEFGHIJ", "notarization_id": "12345678-1234-1234-1234-123456789012"}
         (self.directory / manifest["filename"]).write_bytes(archive)
         (self.directory / "manifest.json").write_text(json.dumps(manifest))
-        (self.directory / "SHA256SUMS").write_text(f"{manifest['sha256']}  {manifest['filename']}\n")
+        (self.directory / "SHA256SUMS").write_bytes(f"{manifest['sha256']}  {manifest['filename']}\n".encode())
         return manifest
 
     def test_versions_are_exact_and_all_checked_in_manifests_agree(self):

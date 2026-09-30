@@ -54,6 +54,12 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Added
 
+- Add credential-free Windows pull-request and main-push checks for the
+  production frontend and portable release/workflow contracts. Native app
+  validation and runnable artifacts remain separate follow-ups. See
+  [#65](https://github.com/jdylanmc/pr-sniper/issues/65) and
+  [#61](https://github.com/jdylanmc/pr-sniper/issues/61).
+
 - Add stable-tag macOS release automation for Developer ID signing,
   notarization/stapling, verified versioned archives and automatic dedicated
   Homebrew cask updates. Gate signing on exact-commit main CI; keep Apple and

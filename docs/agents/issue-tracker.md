@@ -20,6 +20,14 @@ not expand it. Windows release, Azure DevOps implementation, leaderboard,
 embedded diff review, hosted team service, native OAuth, production update
 feeds and provider approval submission remain outside this MVP.
 
+The human-approved 2026-09-29 Windows follow-up in the nano specification
+supersedes that historical Windows exclusion for #57-#65 under #12: existing
+app parity, Windows CI and signed installer/Chocolatey distribution. #65 is
+the first delivery, followed by the native port and full Windows CI. Use
+GitHub's native blocking dependencies and issue acceptance criteria together;
+direct human Ship assignments do not require automatic-dispatch labels.
+These issues do not expand review functionality or claim an available release.
+
 GitHub Issues anchors work and dependencies. Preserve the existing complete
 discovery/specification documents and link their exact acceptance criteria
 from tickets; do not move or replace those documents during setup.
