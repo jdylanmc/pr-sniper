@@ -20,6 +20,19 @@ not expand it. Windows release, Azure DevOps implementation, leaderboard,
 embedded diff review, hosted team service, native OAuth, production update
 feeds and provider approval submission remain outside this MVP.
 
+For #51's vNext work, the
+[`SPEC-PR-SNIPER-VNEXT` nano amendment](../agent/specs/pr-sniper-vnext.nano.md)
+supersedes the specifically mapped historical rules. Its
+[supporting document](../agent/specs/pr-sniper-vnext.full.md#explicit-supersession)
+identifies those changes: one global cron schedule, scan-time assignment
+reconciliation, sticky admission/reopen iterations, primary-Agent mention/final
+review, independent approval/merge permissions and shared compact configuration.
+For #51, this explicitly supersedes the historical provider-approval-submission
+exclusion above; it does not relax unrelated MVP or account/security obligations.
+Keep issue criteria aligned with that amendment; a documented product decision
+does not mark an issue ready, satisfy its dependencies or dispatch implementation.
+Azure DevOps policy vocabulary remains future-provider context, not a new port.
+
 The human-approved 2026-09-29 Windows follow-up in the nano specification
 supersedes that historical Windows exclusion for #57-#65 under #12: existing
 app parity, Windows CI and signed installer/Chocolatey distribution. #65 is
