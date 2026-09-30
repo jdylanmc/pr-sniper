@@ -461,7 +461,14 @@ impl Store {
     }
 
     pub(crate) fn read_state(&self, name: &str) -> std::io::Result<Vec<u8>> {
-        private_fs::read(&self.directory("state")?.join(name))
+        self.read_file("state", name)
+    }
+
+    fn read_file(&self, directory: &str, name: &str) -> std::io::Result<Vec<u8>> {
+        private_fs::existing_directory(&self.root)?;
+        let directory = self.root.join(directory);
+        private_fs::existing_directory(&directory)?;
+        private_fs::read(&directory.join(name))
     }
 
     pub fn has_saved_settings(&self) -> bool {
@@ -508,10 +515,7 @@ impl Store {
     }
 
     pub fn load_settings(&self) -> Result<Settings, String> {
-        let directory = self
-            .directory("config")
-            .map_err(|_| "Cannot create configuration directory.")?;
-        let bytes = match private_fs::read(&directory.join("settings.json")) {
+        let bytes = match self.read_file("config", "settings.json") {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == ErrorKind::NotFound => {
                 let settings = Settings {
@@ -688,7 +692,7 @@ impl Store {
         let path = directory.join("diagnostics.jsonl");
         match private_fs::existing_file(&path).and_then(|_| fs::metadata(&path)) {
             Ok(metadata) if metadata.len() + bytes.len() as u64 > MAX_DIAGNOSTICS_BYTES => {
-                fs::rename(&path, directory.join("diagnostics.previous.jsonl"))
+                private_fs::rotate(&path, &directory.join("diagnostics.previous.jsonl"))
                     .map_err(|_| "Cannot rotate diagnostics.".to_string())?;
             }
             Ok(_) => {}

@@ -18,18 +18,23 @@ absolute path and preserves the existing isolated-profile/login-mutation
 boundary. Full isolated native-account launch also needs #58's credential
 namespace implementation; a filesystem-only test is not a native app launch.
 
-Before accessing owned root/config/state directories or existing files,
-storage establishes private permissions and rejects symlinks/reparse points
-at those owned paths. Existing ancestor directories outside the owned root
-are not repermissioned. Only newly missing ancestors are created privately.
-The caller must choose a trusted current-user root, not a shared directory.
+Reads validate owned root/config/state directories and files, rejecting
+symlinks/reparse points and returning actual access errors. They never chmod,
+replace access-control lists, or create missing state directories. An unreadable
+saved configuration remains an error, not a repaired or empty profile. First
+settings load still initializes a genuinely missing configuration through the
+separate private write path. The caller must choose a trusted current-user root,
+not a shared directory.
 
-On macOS/Unix, directories remain `0700` and files `0600`. On Windows, the
+On macOS/Unix, new directories use `0700` and new files `0600`; existing
+permissions are preserved. On Windows, the
 native security APIs create directories with a protected discretionary access
 control list (DACL), granting only the current process user full control.
 Directory grants are inheritable to new files/subdirectories; owned files are
-then protected explicitly before writing. Existing owned paths are tightened
-before use. Windows readonly attributes are **not** a privacy boundary.
+then protected explicitly before writing. Windows write operations establish
+private owned paths; reads do not reset existing permissions or require permission
+administration rights. Existing ancestor directories outside the owned root are
+not repermissioned. Windows readonly attributes are **not** a privacy boundary.
 Failure to read the user identity or establish the DACL fails the operation
 visibly; there is no permissive fallback for a filesystem without ACL support.
 This is user isolation, not encryption or protection against the same user,

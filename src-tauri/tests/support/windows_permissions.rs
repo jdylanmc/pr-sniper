@@ -19,14 +19,22 @@ use windows_sys::Win32::{
 
 // Keep a pre-authorized handle so even a failed assertion can restore the
 // fixture's original ACL. This never changes the user's profile or host ACLs.
-pub struct DenyPermissionChanges {
+pub struct DeniedAccess {
     handle: File,
     original: *mut c_void,
     dacl: *mut ACL,
 }
 
-impl DenyPermissionChanges {
-    pub fn new(path: &Path) -> Self {
+impl DeniedAccess {
+    pub fn permission_changes(path: &Path) -> Self {
+        Self::new(path, "D:P(D;;WD;;;OW)(A;OICI;FA;;;OW)")
+    }
+
+    pub fn read_data(path: &Path) -> Self {
+        Self::new(path, "D:P(D;;0x1;;;OW)(A;OICI;FA;;;OW)")
+    }
+
+    fn new(path: &Path, sddl: &str) -> Self {
         let handle = OpenOptions::new()
             .access_mode(READ_CONTROL | WRITE_DAC)
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
@@ -53,7 +61,7 @@ impl DenyPermissionChanges {
                 original,
                 dacl,
             };
-            let sddl: Vec<_> = "D:P(D;;WD;;;OW)(A;OICI;FA;;;OW)\0".encode_utf16().collect();
+            let sddl: Vec<_> = sddl.encode_utf16().chain([0]).collect();
             let mut denied = null_mut();
             assert_ne!(
                 ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -87,7 +95,7 @@ impl DenyPermissionChanges {
     }
 }
 
-impl Drop for DenyPermissionChanges {
+impl Drop for DeniedAccess {
     fn drop(&mut self) {
         unsafe {
             let status = SetSecurityInfo(
