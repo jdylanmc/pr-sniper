@@ -43,6 +43,13 @@ Returned native blobs and temporary codec buffers are zeroized. OS credential
 protection is not a defense against code already running as the same user or
 a compromised host. Tests use only unique app-owned synthetic namespaces and
 make cleanup/deletion failures visible.
+Capacity fixtures seed the native registry with disconnected identities and
+only one real token pair, so byte-limit checks do not require bulk live
+credentials. Each fixture records its exact native targets before writes,
+cleans only those targets, and checks absence through a fresh store. Cleanup
+failures are reported without a panic in `Drop` masking an original failure.
+Failed native writes report only the fixed stage and numeric Win32 error code,
+not credential contents or real account identifiers.
 
 ## Windows Copilot process boundary
 
