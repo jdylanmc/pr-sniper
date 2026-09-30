@@ -11,7 +11,7 @@ permissions:
 jobs:
   windows:
     runs-on: windows-2022
-    timeout-minutes: 15
+    timeout-minutes: 25
     defaults:
       run:
         shell: pwsh
@@ -33,7 +33,9 @@ jobs:
         run: rustup show active-toolchain
       - name: Check native source formatting
         run: cargo fmt --manifest-path src-tauri\Cargo.toml --all --check
-      - name: Test production persistence and policy (not the full app)
+      - name: Test production persistence, accounts and runtime (not the full app)
         run: cargo test --manifest-path src-tauri\foundations\Cargo.toml --locked
+      - name: Handshake with bundled Windows runtime (offline, no credentials or inference)
+        run: cargo test --manifest-path src-tauri\foundations\Cargo.toml --locked --lib copilot::runtime::tests::bundled_runtime_handshakes_offline_without_credentials -- --exact --ignored --nocapture
       - name: Lint production foundations
         run: cargo clippy --manifest-path src-tauri\foundations\Cargo.toml --locked --all-targets -- -D warnings

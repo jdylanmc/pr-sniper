@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const MAX_DIAGNOSTICS_BYTES: u64 = 256 * 1024;
 
 #[path = "storage/private_fs.rs"]
-mod private_fs;
+pub(crate) mod private_fs;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

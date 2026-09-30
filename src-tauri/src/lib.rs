@@ -40,10 +40,9 @@ struct Host {
     registration: LoginRegistration,
     github_auth: Mutex<GithubAuth>,
     github_generations: Mutex<BTreeMap<String, u64>>,
-    github_credentials:
-        github::token_store::RotationSafeStore<github::macos_keychain::MacKeychainStore>,
+    github_credentials: github::token_store::RotationSafeStore<github::NativeCredentialStore>,
     github_legacy_credentials:
-        github::token_store::RotationSafeStore<github::macos_keychain::MacKeychainStore>,
+        Option<github::token_store::RotationSafeStore<github::NativeCredentialStore>>,
     copilot: Arc<copilot::Integration>,
     reviews: review::Coordinator,
     publications: publication::host::Coordinator,
@@ -499,7 +498,7 @@ impl GithubAuth {
     }
 
     fn restore_accounts(
-        store: &github::token_store::RotationSafeStore<github::macos_keychain::MacKeychainStore>,
+        store: &github::token_store::RotationSafeStore<github::NativeCredentialStore>,
         provider: github::token_store::ProviderId,
     ) -> Result<Self, github::token_store::StoreError> {
         use github::token_store::{ProviderAccountId, RotationError};
@@ -560,9 +559,9 @@ impl GithubAuth {
     }
 
     fn restore(
-        store: &github::token_store::RotationSafeStore<github::macos_keychain::MacKeychainStore>,
-        legacy_store: &github::token_store::RotationSafeStore<
-            github::macos_keychain::MacKeychainStore,
+        store: &github::token_store::RotationSafeStore<github::NativeCredentialStore>,
+        legacy_store: Option<
+            &github::token_store::RotationSafeStore<github::NativeCredentialStore>,
         >,
     ) -> Self {
         use github::token_store::ProviderAccountId;
@@ -574,6 +573,9 @@ impl GithubAuth {
                     Self::new()
                 }
             };
+        let Some(legacy_store) = legacy_store else {
+            return auth;
+        };
         match legacy_store.accounts() {
             Ok(legacy_accounts) => {
                 for account in legacy_accounts {
@@ -1702,7 +1704,10 @@ fn confirm_github_account(host: State<'_, Host>) -> Result<GithubAuthView, Strin
             },
             || {
                 host.github_legacy_credentials
-                    .remove_account(&ProviderAccountId::github(&identity.id))
+                    .as_ref()
+                    .map(|store| store.remove_account(&ProviderAccountId::github(&identity.id)))
+                    .transpose()
+                    .map(|_| ())
                     .map_err(|_| ())
             },
         )
@@ -1809,7 +1814,10 @@ async fn disconnect_github_auth(
             },
             || {
                 host.github_legacy_credentials
-                    .remove_account(&legacy_key)
+                    .as_ref()
+                    .map(|store| store.remove_account(&legacy_key))
+                    .transpose()
+                    .map(|_| ())
                     .map_err(|_| {
                         "Superseded GitHub credentials could not be deleted securely. Retry disconnect."
                             .into()
@@ -2054,16 +2062,22 @@ fn github_keychain_stores(
     override_service: Option<std::ffi::OsString>,
 ) -> Result<
     (
-        github::macos_keychain::MacKeychainStore,
-        github::macos_keychain::MacKeychainStore,
+        github::NativeCredentialStore,
+        Option<github::NativeCredentialStore>,
     ),
     std::io::Error,
 > {
     match (isolated, override_service) {
-        (false, None) => Ok((
-            github::macos_keychain::MacKeychainStore::production(),
-            github::macos_keychain::MacKeychainStore::legacy_production(),
-        )),
+        (false, None) => Ok((github::NativeCredentialStore::production(), {
+            #[cfg(target_os = "macos")]
+            {
+                Some(github::NativeCredentialStore::legacy_production())
+            }
+            #[cfg(windows)]
+            {
+                None
+            }
+        })),
         (true, Some(service)) => {
             let service = service.to_str().ok_or_else(|| {
                 std::io::Error::new(
@@ -2082,10 +2096,18 @@ fn github_keychain_stores(
                     "PR_SNIPER_KEYCHAIN_SERVICE must be a test-owned service beginning with com.jdylanmc.pr-sniper.tests.",
                 ));
             }
-            Ok((
-                github::macos_keychain::MacKeychainStore::with_service(service),
-                github::macos_keychain::MacKeychainStore::with_service(format!("{service}.legacy")),
-            ))
+            Ok((github::NativeCredentialStore::with_service(service), {
+                #[cfg(target_os = "macos")]
+                {
+                    Some(github::NativeCredentialStore::with_service(format!(
+                        "{service}.legacy"
+                    )))
+                }
+                #[cfg(windows)]
+                {
+                    None
+                }
+            }))
         }
         (true, None) => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -2180,8 +2202,9 @@ pub fn run() {
                 github_keychain_stores(isolated, std::env::var_os("PR_SNIPER_KEYCHAIN_SERVICE"))?;
             let github_credentials = github::token_store::RotationSafeStore::new(github_keychain);
             let github_legacy_credentials =
-                github::token_store::RotationSafeStore::new(legacy_github_keychain);
-            let github_auth = GithubAuth::restore(&github_credentials, &github_legacy_credentials);
+                legacy_github_keychain.map(github::token_store::RotationSafeStore::new);
+            let github_auth =
+                GithubAuth::restore(&github_credentials, github_legacy_credentials.as_ref());
             let copilot = copilot::Integration::new(isolated)?;
             let store = Store::new(root);
             review::restore(&store).map_err(std::io::Error::other)?;
@@ -3646,6 +3669,7 @@ mod github_auth_tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn legacy_github_app_credentials_require_reconnect_without_provider_use() {
         use crate::github::token_store::{ActiveAccount, ProviderAccountId, RotationSafeStore};
         let nonce = SystemTime::now()
@@ -3667,7 +3691,7 @@ mod github_auth_tests {
             .save_account(&account, &pair("legacy"), false)
             .unwrap();
 
-        let auth = GithubAuth::restore(&current, &legacy);
+        let auth = GithubAuth::restore(&current, Some(&legacy));
 
         assert!(matches!(
             auth.accounts.get("101"),
