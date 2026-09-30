@@ -6,6 +6,13 @@ Build the approved macOS-first, GitHub-first MVP. Product authority is
 specification artifacts in `docs/agent/`; workflow guidance lives in
 `docs/agents/`. Do not treat requirements as implemented behavior.
 
+The human-authorized 2026-09-29 Windows follow-up under #12 extends the
+platform scope to existing-app system-tray parity, Windows CI and Chocolatey
+distribution (#57-#65). Merge the honest CI bootstrap (#65) before native
+port deliveries; extend it to native checks as those paths become runnable.
+Preserve macOS behavior and all existing review/account/publication boundaries.
+This does not authorize vNext features or imply Windows/release acceptance.
+
 ## Agent skills
 
 ### Issue tracker
