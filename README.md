@@ -26,6 +26,20 @@ fresh-install demos, guided Genie setup, and mock review workflows. Open
 local checks, and limitations are documented alongside it. This is design
 evidence, not production application behavior.
 
+## Install on macOS
+
+For Apple Silicon Macs running macOS 13.5 or later:
+
+```sh
+brew install --cask jdylanmc/pr-sniper/pr-sniper
+```
+
+The [v0.1.1 release](https://github.com/jdylanmc/pr-sniper/releases/tag/v0.1.1)
+is Developer ID-signed, notarized and stapled. The published cask references its
+verified checksum. Quit PR Sniper before running `brew upgrade --cask pr-sniper`;
+ordinary upgrades/uninstall preserve saved application state and credentials.
+Homebrew owns updates; no in-app updater is enabled.
+
 ## Develop on macOS
 
 Requirements: macOS 13.5+, Xcode Command Line Tools (or full Xcode), Node
@@ -89,12 +103,10 @@ first. Local/CI bundles are ad-hoc signed with their bundle identity so macOS ca
 authorize notifications. This does not use a Developer ID certificate and is
 not a notarized distribution:
 Gatekeeper may require explicit approval under Privacy & Security for a
-downloaded CI artifact. Do not disable Gatekeeper globally. Production signing,
-Windows and in-app updates remain outside this delivery. The separate
+downloaded CI artifact. Do not disable Gatekeeper globally. The separate
 [macOS release workflow](docs/releases.md) adds Developer ID signing,
 notarization and a Homebrew cask for explicitly tagged Apple Silicon releases.
-The first published version is a separate human-authorized release step; a
-local/CI ad-hoc bundle is not the notarized distribution.
+A local/CI ad-hoc bundle is not the notarized distribution.
 
 ## Windows CI and persistence foundations
 
