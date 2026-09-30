@@ -732,7 +732,7 @@ export async function mountSettings(app: HTMLElement) {
       <div class="integration-group"><h2>Git repositories</h2><div class="github-auth"></div><div class="folder-card"><div class="folder-symbol">${icon("folder")}</div><div><strong>${escape(draft.root_folder ?? "Choose your repository folder")}</strong><p>${discovery ? `${discovery.repositories.length} local repositories discovered` : "Only a folder you choose is scanned."}</p></div><button id="choose-folder">Choose folder...</button></div>
       <div class="repository-toolbar"><input id="repo-search" type="search" aria-label="Find a repository" placeholder="Find a repository..." value="${escape(query)}" /><button id="select-visible">Select visible</button></div>
       <div class="list-label"><span>Repository</span><span id="selected-count"></span></div><div class="repository-list"></div>
-      <p class="settings-hint">PR Sniper polls scope-confirmed configured repositories while the menu-bar app is active. Detection does not run reviews or publish comments.</p>
+      <p class="settings-hint">PR Sniper polls scope-confirmed configured repositories while the ${trayAdjective} app is active. Detection does not run reviews or publish comments.</p>
       <div class="settings-actions"><button id="add-repository">Add repository manually...</button>${draft.root_folder ? '<button id="rescan">Scan chosen folder</button>' : ""}</div>
       ${discovery?.warnings.map((warning) => `<p class="settings-notice">${escape(warning)}</p>`).join("") ?? ""}</div>`;
     disposeCopilot = renderCopilotAuth(
@@ -888,6 +888,7 @@ export async function mountSettings(app: HTMLElement) {
               : "GitHub - account required";
         const row = document.createElement("article");
         row.className = "repository-row";
+        const localName = item.path.split(isWindows ? /[\\/]/ : "/").pop();
         const duplicateBinding =
           !!repository &&
           repositories().filter((candidate) => candidate.name === item.name)
@@ -896,13 +897,11 @@ export async function mountSettings(app: HTMLElement) {
           "aria-label",
           duplicateBinding
             ? `${item.name} as ${actingAccount?.login ?? repository.provider_account_id ?? repository.id}`
-            : (item.name ??
-                item.path.split("/").pop() ??
-                "Unavailable repository"),
+            : (item.name ?? localName ?? "Unavailable repository"),
         );
         const assignmentCount = repository?.assignments?.length ?? 0;
-        row.innerHTML = `<input type="checkbox" aria-label="Monitor ${escape(item.name ?? item.path.split("/").pop() ?? "repository")}" ${repository?.enabled ? "checked" : ""} ${!item.name ? "disabled" : ""} />
-          <span class="repo-symbol">${icon("integrations")}</span><div class="repository-info"><strong>${escape(item.name?.split("/")[1] ?? item.path.split("/").pop() ?? "")}</strong><p>${escape(item.name ?? item.unavailable ?? "Unavailable")}</p><p>${escape(providerLabel)}</p>${item.paths.length ? `<details class="clone-paths"><summary>${item.paths.length} local ${item.paths.length === 1 ? "clone" : "clones"}</summary><ul>${item.paths.map((path) => `<li>${escape(path)}</li>`).join("")}</ul></details>` : ""}</div>
+        row.innerHTML = `<input type="checkbox" aria-label="Monitor ${escape(item.name ?? localName ?? "repository")}" ${repository?.enabled ? "checked" : ""} ${!item.name ? "disabled" : ""} />
+          <span class="repo-symbol">${icon("integrations")}</span><div class="repository-info"><strong>${escape(item.name?.split("/")[1] ?? localName ?? "")}</strong><p>${escape(item.name ?? item.unavailable ?? "Unavailable")}</p><p>${escape(providerLabel)}</p>${item.paths.length ? `<details class="clone-paths"><summary>${item.paths.length} local ${item.paths.length === 1 ? "clone" : "clones"}</summary><ul>${item.paths.map((path) => `<li>${escape(path)}</li>`).join("")}</ul></details>` : ""}</div>
           ${item.name ? `<span class="repository-note">${assignmentCount ? `${assignmentCount} agent${assignmentCount === 1 ? "" : "s"} assigned` : "No agents assigned"}</span><button class="configure">Settings</button>` : ""}`;
         row.querySelector<HTMLInputElement>("input")!.onchange = (event) => {
           select(item, (event.target as HTMLInputElement).checked);
@@ -1569,11 +1568,11 @@ export async function mountSettings(app: HTMLElement) {
   // ------------------------------------------------------------- Preferences
 
   function renderPreferences() {
-    content.innerHTML = `<div class="settings-group"><fieldset aria-label="Startup"><legend>Startup</legend><label class="setting-row"><span>Open PR Sniper at login<small>${snapshot.isolated ? "Isolated development run: changing macOS login items is disabled." : `Saved request, not effective macOS state. Registration: ${snapshot.login_registration ?? "unavailable"}.`}</small></span><input id="login" type="checkbox" role="switch" ${draft.launch_at_login ? "checked" : ""} ${snapshot.isolated || snapshot.login_registration === null ? "disabled" : ""} /></label></fieldset></div>
+    content.innerHTML = `<div class="settings-group"><fieldset aria-label="Startup"><legend>Startup</legend><label class="setting-row"><span>Open PR Sniper at login<small>${snapshot.isolated ? `Isolated development run: changing ${isWindows ? "Windows startup apps" : "macOS login items"} is disabled.` : `Saved request, not effective ${platformName} state. Registration: ${snapshot.login_registration ?? "unavailable"}.${isWindows ? " Windows Startup Apps can disable a registered entry." : ""}`}</small></span><input id="login" type="checkbox" role="switch" ${draft.launch_at_login ? "checked" : ""} ${snapshot.isolated || snapshot.login_registration === null ? "disabled" : ""} /></label></fieldset></div>
       <div class="settings-group"><fieldset aria-label="Review execution"><legend>Review execution</legend><label class="setting-row"><span>Start eligible reviews automatically<small>Default for assigned repositories. Forks and untrusted authors still require confirmation; publication has its own gate.</small></span><input id="automatic-review-start" type="checkbox" role="switch" ${draft.defaults.automatic_agent_start ? "checked" : ""} /></label></fieldset></div>
       <div class="settings-group"><fieldset aria-label="Comment publication"><legend>Comment publication</legend><label class="setting-row"><span>Publish review comments automatically<small>Default for assigned repositories that allow Comment. Revalidates revision, trust and eligibility before publication. Never approves or merges.</small></span><input id="automatic-publication" type="checkbox" role="switch" ${draft.defaults.automatic_comment_publication ? "checked" : ""} /></label></fieldset></div>
       <div class="settings-group" id="notification-settings"></div>
-      <div class="settings-group"><fieldset aria-label="Diagnostics"><legend>Diagnostics</legend><p class="settings-hint">Settings and logs live in your macOS app-support folder. Open a redacted diagnostics view to check in on them without exposing tokens.</p><button id="diagnostics">Open redacted diagnostics</button></fieldset></div>`;
+      <div class="settings-group"><fieldset aria-label="Diagnostics"><legend>Diagnostics</legend><p class="settings-hint">Settings and logs live in your ${isWindows ? "Windows local application-data" : "macOS app-support"} folder. Open a redacted diagnostics view to check in on them without exposing tokens.</p><button id="diagnostics">Open redacted diagnostics</button></fieldset></div>`;
     mountNotificationSettings(
       content.querySelector<HTMLElement>("#notification-settings")!,
       notificationView,
@@ -1603,7 +1602,7 @@ export async function mountSettings(app: HTMLElement) {
         await invoke("save_login", { enabled: checkbox.checked });
       } catch {
         showError(
-          "Startup preference change could not complete. Check macOS Login Items and the saved request.",
+          `Startup preference change could not complete. Check ${startupSettingsName} and the saved request.`,
         );
       } finally {
         try {
@@ -1616,7 +1615,7 @@ export async function mountSettings(app: HTMLElement) {
           snapshot = fresh;
         } catch {
           showError(
-            "Could not reload startup registration. Check macOS Login Items.",
+            `Could not reload startup registration. Check ${startupSettingsName}.`,
           );
         }
         render();
@@ -1764,3 +1763,9 @@ export async function mountSettings(app: HTMLElement) {
   });
   await load();
 }
+import {
+  isWindows,
+  platformName,
+  startupSettingsName,
+  trayAdjective,
+} from "./platform";

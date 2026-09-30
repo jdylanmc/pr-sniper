@@ -108,14 +108,16 @@ downloaded CI artifact. Do not disable Gatekeeper globally. The separate
 notarization and a Homebrew cask for explicitly tagged Apple Silicon releases.
 A local/CI ad-hoc bundle is not the notarized distribution.
 
-## Windows CI and persistence foundations
+## Windows native convergence
 
-[Windows frontend and shared checks](.github/workflows/windows.yml) runs on
+[Windows native application checks](.github/workflows/windows.yml) runs on
 pull requests and `main` pushes using a GitHub-hosted Windows runner. It restores
 locked npm dependencies, runs the production TypeScript/Vite build and tests
 portable release logic plus both platforms' workflow contracts, then compiles
-and tests the real Rust persistence/policy foundation on Windows. It needs no
-signing, publishing or provider credentials and does not publish artifacts.
+and tests the full Rust application, offline Copilot runtime and production
+browser UI/Store bridge on Windows. It builds a standalone executable and uploads
+only that executable plus version/commit/hash metadata. It needs no signing,
+publishing or provider credentials.
 macOS CI and signed release gates remain unchanged.
 
 To reproduce these checks on Windows, install Node 24.20.0 (the version in
@@ -133,15 +135,14 @@ release suite, including the macOS-path signing tests and hosted native Keychain
 check. Release tests use fixtures and mocked provider/native operations, not
 real signing or publication.
 
-**This is not full Windows native app validation or a runnable release.**
-The Rust host still needs native credentials, runtime, tray/login, bundle icon
-and notification adapters. The native foundation harness uses the actual
-production storage/policy modules, not a replacement implementation.
+**CI is not interactive native acceptance or a signed release.**
+The real credential/runtime, tray/login and notification adapters are integrated.
+The normal Windows workflow checks the actual app; the focused foundation
+harness remains available for targeted adapter checks, not a replacement host.
 See [Windows prerequisites and checks](docs/windows-development.md) and
 [the persistence boundary](docs/adr/0004-windows-persistence-foundations.md)
 for MSVC/Rust/WebView2 setup, native test commands, permission behavior and
-remaining full-app compiler blockers under
-[#57](https://github.com/jdylanmc/pr-sniper/issues/57). Native portability
+native acceptance boundaries. Native portability
 ([#58](https://github.com/jdylanmc/pr-sniper/issues/58),
 [#59](https://github.com/jdylanmc/pr-sniper/issues/59),
 [#60](https://github.com/jdylanmc/pr-sniper/issues/60)) and full native checks
@@ -151,10 +152,21 @@ Rust/MSVC is required for native foundation checks, but not the three
 frontend/shared commands above. WebView2 is needed for eventual app launch;
 Chocolatey distribution is a separate follow-up.
 
+`npm run build:windows` builds
+`src-tauri\target\release\pr-sniper.exe` with embedded production assets and no
+Vite server. It leaves the macOS `npm run bundle` command unchanged.
+See the [Windows application acceptance procedure](docs/windows-development.md#windows-application-acceptance)
+before claiming tray/window/quit or login-launch proof, and the
+[artifact retrieval procedure](docs/windows-development.md#windows-ci-artifacts)
+for exact-commit metadata and SHA-256 verification. Windows startup uses
+only the application's named current-user Run value; registration does not
+override a disabled entry in Windows Startup Apps.
+
 ## Local data and diagnostics
 
 The default data root is
-`~/Library/Application Support/com.jdylanmc.pr-sniper/`.
+`~/Library/Application Support/com.jdylanmc.pr-sniper/` on macOS and
+`%LOCALAPPDATA%\com.jdylanmc.pr-sniper` on Windows.
 `config/settings.json` stores nonsecret repository configuration and the startup
 preference. Settings accepts `owner/repository` or an HTTPS `github.com` URL,
 normalizes case and clone suffixes, and prevents duplicates. Rename, disable,

@@ -1,8 +1,9 @@
-# Windows native boundary development
+# Windows application development
 
-This is existing-application groundwork, not a runnable Windows release.
-No provider sign-in, real user data, startup registration or notification
-delivery is needed for the checks below.
+This is the existing application, not a signed Windows release.
+No provider sign-in, real user data, real startup registration or notification
+delivery is needed for the checks below. Startup tests own unique synthetic
+registry keys outside the Windows Run key.
 
 ## Prerequisites
 
@@ -13,8 +14,7 @@ delivery is needed for the checks below.
 - Node **24.20.0** from `.node-version` (package compatibility permits Node
   24.20+ below 25), plus npm.
 - Python **3.13** for the existing portable release tests.
-- Microsoft Edge **WebView2 Evergreen Runtime** for eventual native app
-  launch. It is not needed to run the persistence/policy harness.
+- Microsoft Edge **WebView2 Evergreen Runtime** for native app launch.
 - Windows PowerShell 5.1 (inbox): native ACL tests use its .NET filesystem
   access-control reader as an independent oracle, not a storage substitute.
 
@@ -28,26 +28,32 @@ rustup show active-toolchain
 npm ci
 npm run build
 npm run test:release:windows
-cargo test --manifest-path src-tauri\foundations\Cargo.toml --locked
-cargo test --manifest-path src-tauri\foundations\Cargo.toml --locked --lib copilot::runtime::tests::bundled_runtime_handshakes_offline_without_credentials -- --exact --ignored --nocapture
-cargo clippy --manifest-path src-tauri\foundations\Cargo.toml --locked --all-targets -- -D warnings
-cargo fmt --manifest-path src-tauri\Cargo.toml --all --check
+npm run format:check
+cargo check --manifest-path src-tauri\Cargo.toml --locked --all-targets
+cargo test --manifest-path src-tauri\Cargo.toml --locked --all-targets -- --nocapture
+cargo test --manifest-path src-tauri\Cargo.toml --locked --lib copilot::runtime::tests::bundled_runtime_handshakes_offline_without_credentials -- --exact --ignored --nocapture
+cargo clippy --manifest-path src-tauri\Cargo.toml --locked --all-targets -- -D warnings
+npm run test:settings
+npm run build:windows
 ```
 
-`windows.yml` runs the frontend/shared tests and all four native boundary
-commands. The harness compiles production source, shares the app's lockfile,
-and uses disposable profiles beneath its working directory. It never opens
+`windows.yml` runs frontend/shared checks, full native application checks,
+the offline runtime handshake, browser regressions and the standalone build.
+Tests use disposable profiles and exact owned native fixtures. They never open
 the real application's data or credential stores. Tests cover settings/policy
 round trips, queue-selection state, invalid input, separate profiles and spaces
 in paths, occupied staging files, real Windows sharing-lock replacement
 failures/retry, protected current-user-only DACLs, and denied permission changes.
-The harness also exercises production discovery: native junction fixtures prove
+The suite also exercises production discovery: native junction fixtures prove
 that nested junctions are skipped and junction-linked Git metadata remains
 unavailable. These cases pass the existing implementation; no discovery bug or
 broader claim about every Windows reparse-point type is inferred.
 macOS retains its normal app tests, including the Unix mode assertions.
+The suite also runs the production Windows startup adapter's native tests,
+including exact-value ownership, registration status, rollback and access
+denial, without enabling the actual application at login.
 
-The harness also imports the real credential codec, account/rotation contracts,
+The suite exercises the real credential codec, account/rotation contracts,
 OAuth implementation, native secure store, Copilot catalog runtime and operation
 fences. Windows tests create unique `com.jdylanmc.pr-sniper.tests.*` namespaces
 in the current user's Credential Manager and delete their owned records,
@@ -63,47 +69,135 @@ shutdown and temporary cleanup. Node is needed only for synthetic transport
 fixtures; they use `node.exe` and native Windows child-exit checks. These are
 not application launch, real grant acceptance or GUI console-window evidence.
 
-The repository's `.gitattributes` keeps canonical doctrine Markdown and its
-manifest LF even when Windows Git uses `core.autocrlf=true`. Rust embeds those
-exact bytes and the doctrine helper verifies their SHA-256 hashes. The shared
-checkout regression exercises real Git checkout with CRLF conversion enabled;
-no CI-only setting or parser normalization is needed. Do not change the
-canonical doctrine files or their verified hashes to repair checkout conversion.
+The repository's `.gitattributes` keeps text sources LF even when Windows Git
+uses `core.autocrlf=true`, so the same formatter checks run on both platforms.
+Binary artwork remains binary. Rust embeds canonical doctrine bytes and the
+doctrine helper verifies their SHA-256 hashes. The shared checkout regression
+uses real Git checkout with CRLF conversion enabled and checks text, doctrine
+and binary samples. No CI-only formatting bypass is needed; do not change
+canonical doctrine contents or hashes to repair checkout conversion.
 
-## Full-app proof is still partial
+## Native proof boundaries
 
-Always retain the result of the unmodified application check separately:
-
-```powershell
-cargo check --manifest-path src-tauri\Cargo.toml --locked
-```
-
-At this foundation boundary the actual check fails in `src-tauri/build.rs`:
-Tauri requires `icons/icon.ico`, which the macOS bundle does not supply.
-Windows bundle configuration/icon belongs to **#59**, not this harness.
-
-A diagnostic-only run with a disposable icon override (not committed or used
-by CI) exposed these additional errors. They are not a successful build:
-
-| Site                                  | Missing native boundary                                                   | Owner |
-| ------------------------------------- | ------------------------------------------------------------------------- | ----- |
-| `src-tauri/src/lib.rs`                | `startup` registration import; `ActivationPolicy`/`set_activation_policy` | #59   |
-| `src-tauri/src/notifications/host.rs` | macOS notification type/construction                                      | #60   |
+The #57/#58 focused foundation harness remains available for small adapter
+checks. The normal Windows workflow now targets the actual application instead
+of substituting that harness. It includes review and Host regression fixtures,
+native startup and notification contracts, and the browser Store bridge.
+Do not run both full suites merely to repeat native credential tests.
 
 The account/runtime code now uses a native credential alias, keeps legacy
 Keychain migration macOS-only, compares Windows environment keys
 case-insensitively and supplies private profile/temp paths. Full review and
-host-level regression execution still needs the remaining adapters; the focused
-harness does not replace those tests. Login-registration and notification
-permission fixtures also remain platform work. Do not infer authenticated
+host-level regressions exercise the same constrained runtime helpers.
+Login-registration fixtures use native owned keys; genuine macOS-only
+integration tests remain macOS-only. Do not infer authenticated
 inference or actual GUI-parent console/cancellation acceptance from the offline
 runtime handshake.
 
-Before native-port convergence, the unmodified full-app check and native app
-tests must pass without unsupported-success stubs. #59 owns actual
+Before declaring convergence complete, exact-candidate checks, independent
+review and native application acceptance must pass. #59 owns actual
 tray/window/login launch acceptance, #60 owns native notification/click proof,
 and #61 owns complete Windows native CI/artifact acceptance. Signed Chocolatey
-distribution remains separate. Green foundation checks prove none of those.
+distribution remains separate. A successful compile or test run is not GUI,
+logon or notification-delivery proof.
 
 For persistence permissions and failure semantics, see
 [ADR-0004](adr/0004-windows-persistence-foundations.md).
+
+## Standalone executable
+
+Build from PowerShell:
+
+```powershell
+npm run build:windows
+# Optional standalone debug candidate:
+npm exec tauri build -- --debug --no-bundle -- --locked
+```
+
+Both commands embed the production frontend; no Vite process is needed at
+runtime. The unsigned executable is `src-tauri\target\release\pr-sniper.exe`,
+or `<CARGO_TARGET_DIR>\release\pr-sniper.exe` when that variable is supplied.
+The browser Store bridge likewise resolves `CARGO_TARGET_DIR` and the Windows
+`.exe` suffix. Keep each worktree's build target separate. The existing
+`npm run bundle` command still creates the macOS `.app`; it is not a Windows
+build command. Windows icon regeneration, when artwork changes:
+`powershell -NoProfile -File scripts\windows-icon.ps1`.
+
+## Windows CI artifacts
+
+The existing [Windows workflow](../.github/workflows/windows.yml) runs on pull
+requests and main pushes with read-only repository permission and no signing,
+publication or provider credentials. macOS workflow/release gates remain
+unchanged. Failures stop the job; stdout/stderr remains in the Actions logs.
+Native credential tests log only exact synthetic target claims and fixed
+outcomes, never token contents. No application profile, native credential store,
+browser state directory or entire build target is uploaded.
+
+After the release build, `scripts/windows-artifact.ps1` verifies the actual PE
+header is an x64 GUI executable, requires a clean tracked source tree and checks
+`GITHUB_SHA` against Git HEAD. It stages only `pr-sniper.exe`, `build.json`
+(version, commit, target, SHA-256 and unsigned status) and `SHA256SUMS`.
+The artifact is named `pr-sniper-windows-x64-<full-commit>`. Locally the script
+honors `CARGO_TARGET_DIR`; its `windows-artifact` destination must not already
+exist, avoiding accidental replacement of a prior candidate.
+
+In GitHub Actions, select the successful **Windows native application** run for
+the exact source commit and download that artifact. Extract the three files,
+compare `Get-FileHash .\pr-sniper.exe -Algorithm SHA256` with `SHA256SUMS` and the
+metadata, and record the downloaded executable's hash during the interactive
+acceptance below. On a pull request, `github.sha` identifies GitHub's tested
+merge candidate, not necessarily the head branch commit.
+
+An uploaded unsigned executable is not a public release, signed installer,
+Chocolatey package or successful launch receipt. WebView2 remains a runtime
+prerequisite. A remote green run and its downloaded artifact's interactive
+launch must be observed separately before closing #61 acceptance.
+
+## Windows application acceptance
+
+These are required native observations, not assertions that an untested
+candidate works. Record exact commit, executable hash, current-user identity,
+Windows/WebView2 versions, process IDs and outcomes. Do not authenticate with
+real providers, enable review/publication automation or mutate existing user
+credentials for these checks.
+
+1. Ensure no existing PR Sniper host is running before the isolated test.
+   Ask its owner to Quit through the real menu; never kill processes by name.
+   Prepare a fresh absolute profile beneath this checkout, set
+   `PR_SNIPER_DATA_DIR` to it and set `PR_SNIPER_KEYCHAIN_SERVICE` to a unique
+   `com.jdylanmc.pr-sniper.tests.<uuid>` namespace. Do not use another profile's
+   namespace or enumerate credentials.
+2. Launch the production executable without Vite. Verify exactly one tray icon,
+   no startup main window and no console. Use the actual taskbar/overflow area,
+   including native UI Automation if appropriate, not a replacement test menu.
+3. Open **Status**, **Review Queue** and **Settings** from that tray. Check that
+   each is the actual application surface. **Check Now** on the unconfigured
+   profile must not cause provider actions. Close each window; verify its
+   native window hides while the owned host and tray remain.
+4. Launch the exact executable again with the same profile. Verify the second
+   process exits, one host/icon remains and no additional startup window
+   appears. Reopen a hidden window from the tray.
+5. In isolated Settings, verify Windows wording and disabled login mutation.
+   Record the actual Run value before/after if it already exists, without
+   replacing it. Read-only inspection is not proof of Windows startup launch.
+   Native automated startup fixtures cover enable/disable, reopen/status and
+   rollback on an exclusively owned test key; never point them at Run.
+6. Choose **Quit PR Sniper**. Observe the exact host PID exit, its tray icon
+   removal and owned work cancellation. No test Vite/fixture processes should
+   remain. GUI-parent Copilot checks stay synthetic/offline; do not infer the
+   absence of child console flashes from a terminal-run SDK test.
+7. Remove only this run's profile and exact synthetic credentials, if any
+   were created. Existing accounts/namespaces are not test cleanup targets.
+   The integration owner separately launches the normal app after isolated
+   proof and owns final readiness/leave-running.
+
+Actual launch-at-login acceptance requires an explicit normal-profile opt-in:
+compare the saved request with the one owned Run value, restart the app, then
+opt out and verify removal. Do not toggle a user's existing preference merely
+to gather evidence. `registered` does not mean effective: Windows **Startup
+Apps** can disable it independently. A fresh logon with that OS setting enabled
+is separate human-authorized proof; these automated tests neither log out the
+user nor change StartupApproved policy.
+
+See [ADR-0006](adr/0006-windows-tray-startup.md) for the host and registration
+contract. Notifications have their own #60 acceptance evidence.

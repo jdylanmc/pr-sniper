@@ -3,6 +3,7 @@ import crosshair from "./crosshair.svg";
 import "./style.css";
 import { renderMonitoring } from "./monitoring";
 import { mountSettings } from "./settings";
+import { isWindows, trayAdjective, trayLocation } from "./platform";
 
 interface Snapshot {
   settings: {
@@ -34,7 +35,7 @@ app.innerHTML = `
   </div></header>
   <p id="error" role="alert" hidden></p>
   <section id="content"></section>
-  <footer>Final review stays human. Closing this window keeps PR Sniper in the menu bar.</footer>`;
+  <footer>Final review stays human. Closing this window keeps PR Sniper in the ${trayLocation}.</footer>`;
 app.querySelector("h1")!.textContent = titles[view] ?? "Status";
 const content = app.querySelector<HTMLElement>("#content")!;
 const error = app.querySelector<HTMLElement>("#error")!;
@@ -70,7 +71,7 @@ async function load() {
     } else if (view === "queue") {
       renderMonitoring(content, showError);
     } else {
-      content.innerHTML = `<h2>Menu-bar host is running</h2><p>Scheduled GitHub checks, assigned reviews and separately gated comments run while PR Sniper is active. Open Review Queue from the menu-bar menu for PRs ready for your final review, author follow-ups, confirmation requests and recovery actions.</p><p id="version"></p>`;
+      content.innerHTML = `<h2>${isWindows ? "System-tray" : "Menu-bar"} host is running</h2><p>Scheduled GitHub checks, assigned reviews and separately gated comments run while PR Sniper is active. Open Review Queue from the ${trayAdjective} menu for PRs ready for your final review, author follow-ups, confirmation requests and recovery actions.</p><p id="version"></p>`;
       content.querySelector("#version")!.textContent =
         `PR Sniper ${state.version}`;
     }
