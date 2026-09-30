@@ -651,10 +651,95 @@ fn remove_key_values(path: &str, names: &[&str]) -> Result<(), String> {
         .map_err(|e| native_error("registration key cleanup", e))
 }
 
-pub fn permission(registration: &Registration) -> Result<NotificationSetting, String> {
+#[derive(Debug)]
+pub struct PermissionError {
+    pub message: String,
+    pub needs_initialization: bool,
+}
+
+pub fn permission(registration: &Registration) -> Result<NotificationSetting, PermissionError> {
     ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(registration.aumid()))
-        .and_then(|notifier| notifier.Setting())
-        .map_err(|e| native_error("permission read", e))
+        .map_err(|e| PermissionError {
+            message: native_error("permission notifier creation", e),
+            needs_initialization: false,
+        })?
+        .Setting()
+        .map_err(|e| PermissionError {
+            needs_initialization: e.code().0 as u32 == 0x80070490,
+            message: native_error("permission Setting read", e),
+        })
+}
+
+pub const SETUP_GROUP: &str = "permission-setup";
+
+pub fn setup_tag(id: &str) -> String {
+    format!("{:x}", Sha256::digest(id.as_bytes()))[..16].into()
+}
+
+pub fn remove_setup(registration: &Registration, id: &str) -> Result<(), String> {
+    registration.notice_id(id)?;
+    ToastNotificationManager::History()
+        .and_then(|history| {
+            history.RemoveGroupedTagWithId(
+                &HSTRING::from(setup_tag(id)),
+                &HSTRING::from(SETUP_GROUP),
+                &HSTRING::from(registration.aumid()),
+            )
+        })
+        .map_err(|e| native_error("exact setup notification cleanup (outcome unknown)", e))
+}
+
+pub fn setup_toast(id: &str, title: &str, body: &str) -> Result<ToastNotification, String> {
+    let xml = XmlDocument::new()
+        .and_then(|xml| {
+            xml.LoadXml(&HSTRING::from(toast_xml(id, title, body)))?;
+            Ok(xml)
+        })
+        .map_err(|e| native_error("setup XML", e))?;
+    let toast = ToastNotification::CreateToastNotification(&xml)
+        .map_err(|e| native_error("setup request creation", e))?;
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "Notification setup clock is unavailable.")?
+        .as_secs();
+    let ticks = seconds
+        .checked_add(15)
+        .and_then(|s| s.checked_mul(10_000_000))
+        .and_then(|t| t.checked_add(116_444_736_000_000_000))
+        .and_then(|t| i64::try_from(t).ok())
+        .ok_or("Notification setup expiration is unavailable.")?;
+    let expiration: windows::Foundation::IReference<windows::Foundation::DateTime> =
+        windows::Foundation::PropertyValue::CreateDateTime(windows::Foundation::DateTime {
+            UniversalTime: ticks,
+        })
+        .and_then(|value| value.cast())
+        .map_err(|e| native_error("setup expiration", e))?;
+    toast
+        .SetSuppressPopup(true)
+        .and_then(|()| toast.SetTag(&HSTRING::from(setup_tag(id))))
+        .and_then(|()| toast.SetGroup(&HSTRING::from(SETUP_GROUP)))
+        .and_then(|()| toast.SetExpirationTime(&expiration))
+        .map_err(|e| native_error("setup suppression/expiry", e))?;
+    Ok(toast)
+}
+
+pub fn submit_setup(
+    registration: &Registration,
+    id: &str,
+    title: &str,
+    body: &str,
+) -> Result<(), (String, bool)> {
+    registration.notice_id(id).map_err(|e| (e, false))?;
+    let toast = setup_toast(id, title, body).map_err(|e| (e, false))?;
+    let notifier =
+        ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(registration.aumid()))
+            .map_err(|e| (native_error("setup notifier creation", e), false))?;
+    notifier.Show(&toast).map_err(|e| {
+        (
+            native_error("setup submission (outcome unknown; will not resend)", e),
+            true,
+        )
+    })
 }
 
 pub fn authorization(setting: NotificationSetting) -> &'static str {

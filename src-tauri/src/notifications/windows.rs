@@ -108,7 +108,9 @@ impl Adapter for Native {
                 center_enabled: None,
             });
         }
-        native::permission(&registration).map(permission)
+        native::permission(&registration)
+            .map(permission)
+            .map_err(|e| e.message)
     }
 
     fn request_permission(&self) -> Result<Permission, String> {
@@ -118,17 +120,33 @@ impl Adapter for Native {
             .store
             .lock()
             .map_err(|_| "Notification storage unavailable.")?;
-        let mut identity = self
-            .identity
-            .lock()
-            .map_err(|_| "Notification identity unavailable.")?;
-        let registration = recover_identity(&mut identity, &store, &self.root)?;
+        let registration = {
+            let mut identity = self
+                .identity
+                .lock()
+                .map_err(|_| "Notification identity unavailable.")?;
+            recover_identity(&mut identity, &store, &self.root)?
+        };
         validate_saved(&registration, None)?;
         // Windows has no desktop authorization prompt. Opt-in installs only our
         // owned identity, then reads the actual OS block; it changes no OS setting.
         registration.install()?;
         self.start(&registration)?;
-        native::permission(&registration).map(permission)
+        request_saved_permission(
+            &store,
+            &registration,
+            || native::permission(&registration),
+            |notice| {
+                native::submit_setup(
+                    &registration,
+                    &notice.id,
+                    notice.event.category.title(),
+                    notice.event.category.body(),
+                )
+            },
+            |id| native::remove_setup(&registration, id),
+        )
+        .map(permission)
     }
 
     fn send(&self, notice: &Notice) -> Result<(), SendError> {
@@ -164,6 +182,109 @@ impl Adapter for Native {
         )
         .map_err(|(message, uncertain)| SendError { message, uncertain })
     }
+}
+
+fn request_saved_permission(
+    store: &Store,
+    registration: &Registration,
+    mut read: impl FnMut() -> Result<NotificationSetting, native::PermissionError>,
+    submit: impl FnOnce(&Notice) -> Result<(), (String, bool)>,
+    mut cleanup: impl FnMut(&str) -> Result<(), String>,
+) -> Result<NotificationSetting, String> {
+    let mut ledger = super::persisted_ledger(store)?;
+    if ledger.profile_id != registration.profile {
+        return Err(
+            "Notification profile changed before Windows setup; nothing was submitted.".into(),
+        );
+    }
+    // A crash may have interrupted exact cleanup after Show. Only explicit
+    // opt-in reaches this retry, and it never resubmits an uncertain notice.
+    let mut cleanup_recorded = false;
+    for notice in ledger.notices.iter_mut().filter(|n| {
+        n.source == super::WINDOWS_SETUP_SOURCE
+            && !matches!(n.phase, super::Phase::Failed | super::Phase::NotSent)
+    }) {
+        registration.notice_id(&notice.id)?;
+        if let Err(error) = cleanup(&notice.id) {
+            notice.phase = super::Phase::OutcomeUnknown;
+            notice.error = Some(match &notice.error {
+                Some(previous) if !previous.contains(&error) => format!("{previous} {error}"),
+                Some(previous) => previous.clone(),
+                None => error.clone(),
+            });
+            store.save_notifications(&ledger)?;
+            return Err(error);
+        }
+        if matches!(
+            notice.phase,
+            super::Phase::Submitting | super::Phase::OutcomeUnknown
+        ) {
+            notice.phase = super::Phase::OutcomeUnknown;
+            let receipt = "Exact setup cleanup succeeded on explicit retry; prior delivery outcome is unchanged.";
+            if !notice
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains(receipt))
+            {
+                notice.error = Some(match &notice.error {
+                    Some(previous) => format!("{previous} {receipt}"),
+                    None => receipt.into(),
+                });
+                cleanup_recorded = true;
+            }
+        }
+    }
+    if cleanup_recorded {
+        store.save_notifications(&ledger)?;
+    }
+    match read() {
+        Ok(setting) => return Ok(setting),
+        Err(error) if !error.needs_initialization => return Err(error.message),
+        Err(_) => {}
+    }
+    let notice = ledger.begin_permission_setup(crate::now_seconds()?)?;
+    registration.notice_id(&notice.id)?;
+    store.save_notifications(&ledger)?;
+    let sent = submit(&notice);
+    let removed = if !matches!(sent, Err((_, false))) {
+        cleanup(&notice.id)
+    } else {
+        Ok(())
+    };
+    let setting = read();
+    let phase = if removed.is_err() || matches!(sent, Err((_, true))) {
+        super::Phase::OutcomeUnknown
+    } else if sent.is_err() {
+        super::Phase::Failed
+    } else {
+        super::Phase::AcceptedUnconfirmed
+    };
+    let mut errors = Vec::new();
+    if let Err((message, _)) = &sent {
+        errors.push(message.clone());
+    }
+    if let Err(message) = &removed {
+        errors.push(message.clone());
+    }
+    if let Err(error) = &setting {
+        errors.push(error.message.clone());
+    }
+    let message = if errors.is_empty() {
+        format!("Explicit Windows permission setup submitted with popup suppression and short expiry; its exact notification was removed. OS setting: {}. No visible delivery is claimed.",
+                native::authorization(*setting.as_ref().unwrap()))
+    } else {
+        errors.join(" ")
+    };
+    let mut saved = super::persisted_ledger(store)?;
+    if saved.profile_id != registration.profile {
+        return Err("Notification profile changed after Windows setup; send/cleanup outcome could not be saved. No further submission was made.".into());
+    }
+    saved.finish(&notice.id, phase, Some(message.clone()))?;
+    store.save_notifications(&saved)?;
+    if sent.is_err() || removed.is_err() {
+        return Err(message);
+    }
+    setting.map_err(|error| error.message)
 }
 
 pub(super) fn saved_registration(store: &Store, root: &Path) -> Result<Registration, String> {
@@ -467,5 +588,397 @@ mod tests {
         assert!(parse_open(&args).unwrap().is_some());
         assert!(parse_open(&args[..2]).is_err());
         assert!(parse_open(&[args.clone(), vec!["merge".into()]].concat()).is_err());
+    }
+
+    fn missing_setting() -> native::PermissionError {
+        native::PermissionError {
+            message: "Windows notification permission Setting read failed (0x80070490).".into(),
+            needs_initialization: true,
+        }
+    }
+
+    #[test]
+    fn explicit_setup_persists_private_intent_and_uses_real_rechecked_status() {
+        let (_root, registration, store) = profile();
+        let reads = std::cell::Cell::new(0);
+        let sent = std::cell::RefCell::new(None);
+        let result = request_saved_permission(
+            &store,
+            &registration,
+            || {
+                reads.set(reads.get() + 1);
+                if reads.get() == 1 {
+                    Err(missing_setting())
+                } else {
+                    Ok(NotificationSetting::DisabledForApplication)
+                }
+            },
+            |notice| {
+                let saved = super::super::persisted_ledger(&store).unwrap();
+                assert!(!saved.enabled);
+                assert_eq!(saved.profile_id, registration.profile);
+                assert_eq!(saved.notices[0].id, notice.id);
+                assert_eq!(saved.notices[0].phase, super::super::Phase::Submitting);
+                assert_eq!(notice.event.category, super::super::Category::Test);
+                assert_eq!(
+                    notice.event.destination,
+                    super::super::Destination::Settings
+                );
+                registration.notice_id(&notice.id).unwrap();
+                *sent.borrow_mut() = Some(notice.id.clone());
+                Ok(())
+            },
+            |id| {
+                assert_eq!(sent.borrow().as_deref(), Some(id));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(result, NotificationSetting::DisabledForApplication);
+        assert!(!permission(result).allowed());
+        let saved = super::super::persisted_ledger(&store).unwrap();
+        assert!(!saved.enabled);
+        assert_eq!(
+            saved.notices[0].phase,
+            super::super::Phase::AcceptedUnconfirmed
+        );
+        assert!(saved.notices[0]
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("denied"));
+    }
+
+    #[test]
+    fn setup_send_and_cleanup_uncertainty_are_persisted_without_resubmission() {
+        let (_root, registration, store) = profile();
+        let result = request_saved_permission(
+            &store,
+            &registration,
+            || Err(missing_setting()),
+            |_| Err(("Native Show outcome unknown.".into(), true)),
+            |_| Err("Exact cleanup outcome unknown.".into()),
+        );
+        let error = result.unwrap_err();
+        assert!(error.contains("Show outcome unknown"));
+        assert!(error.contains("cleanup outcome unknown"));
+        let saved = super::super::persisted_ledger(&store).unwrap();
+        assert!(!saved.enabled);
+        assert_eq!(saved.notices[0].phase, super::super::Phase::OutcomeUnknown);
+        super::super::restore(&store).unwrap();
+        assert!(request_saved_permission(
+            &store,
+            &registration,
+            || Err(missing_setting()),
+            |_| panic!("Uncertain setup must not resend"),
+            |id| {
+                assert_eq!(id, saved.notices[0].id);
+                Ok(())
+            }
+        )
+        .is_err());
+        assert_eq!(
+            super::super::persisted_ledger(&store)
+                .unwrap()
+                .notices
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn setup_requires_persisted_intent_and_exact_identity_before_native_effects() {
+        let (root, mut registration, store) = profile();
+        registration.profile = uuid::Uuid::new_v4().to_string();
+        assert!(request_saved_permission(
+            &store,
+            &registration,
+            || panic!("Foreign profile must not read native status"),
+            |_| panic!("Foreign profile must not submit"),
+            |_| panic!("Foreign profile must not remove")
+        )
+        .is_err());
+        registration.profile = super::super::persisted_ledger(&store).unwrap().profile_id;
+        let obstruction = root.path().join("state").join("notifications.json.tmp");
+        std::fs::write(&obstruction, b"owned setup obstruction").unwrap();
+        assert!(request_saved_permission(
+            &store,
+            &registration,
+            || Err(missing_setting()),
+            |_| panic!("Failed intent save must not submit"),
+            |_| panic!("Failed intent save must not remove")
+        )
+        .is_err());
+        std::fs::remove_file(obstruction).unwrap();
+        assert!(super::super::persisted_ledger(&store)
+            .unwrap()
+            .notices
+            .is_empty());
+    }
+
+    #[test]
+    fn available_or_failed_notifier_status_never_triggers_setup_submission() {
+        let (_root, registration, store) = profile();
+        assert_eq!(
+            request_saved_permission(
+                &store,
+                &registration,
+                || Ok(NotificationSetting::Enabled),
+                |_| panic!("Already available"),
+                |_| panic!("No setup notice exists")
+            )
+            .unwrap(),
+            NotificationSetting::Enabled
+        );
+        assert!(request_saved_permission(
+            &store,
+            &registration,
+            || Err(native::PermissionError {
+                message: "notifier creation failed".into(),
+                needs_initialization: false
+            }),
+            |_| panic!("Notifier creation error is not first-use Setting error"),
+            |_| panic!("No setup notice exists")
+        )
+        .is_err());
+        assert!(super::super::persisted_ledger(&store)
+            .unwrap()
+            .notices
+            .is_empty());
+    }
+
+    #[test]
+    fn definite_setup_failure_can_retry_but_interrupted_completion_cannot_resend() {
+        let (root, registration, store) = profile();
+        assert!(request_saved_permission(
+            &store,
+            &registration,
+            || Err(missing_setting()),
+            |_| Err(("Definite request preparation failure.".into(), false)),
+            |_| panic!("Nothing reached Show")
+        )
+        .is_err());
+        assert_eq!(
+            super::super::persisted_ledger(&store).unwrap().notices[0].phase,
+            super::super::Phase::Failed
+        );
+        let obstruction = root.path().join("state").join("notifications.json.tmp");
+        let reads = std::cell::Cell::new(0);
+        assert!(request_saved_permission(
+            &store,
+            &registration,
+            || {
+                reads.set(reads.get() + 1);
+                if reads.get() == 1 {
+                    Err(missing_setting())
+                } else {
+                    Ok(NotificationSetting::Enabled)
+                }
+            },
+            |_| {
+                std::fs::write(&obstruction, b"owned completion obstruction").unwrap();
+                Ok(())
+            },
+            |_| Ok(())
+        )
+        .is_err());
+        let saved = super::super::persisted_ledger(&store).unwrap();
+        assert!(!saved.enabled);
+        assert_eq!(saved.notices.len(), 2);
+        assert_eq!(saved.notices[1].phase, super::super::Phase::Submitting);
+        std::fs::remove_file(obstruction).unwrap();
+        super::super::restore(&store).unwrap();
+        assert_eq!(
+            request_saved_permission(
+                &store,
+                &registration,
+                || Ok(NotificationSetting::Enabled),
+                |_| panic!("Interrupted send must not repeat"),
+                |_| Ok(())
+            )
+            .unwrap(),
+            NotificationSetting::Enabled
+        );
+        let saved = super::super::persisted_ledger(&store).unwrap();
+        assert_eq!(saved.notices.len(), 2);
+        assert_eq!(saved.notices[1].phase, super::super::Phase::OutcomeUnknown);
+        assert!(saved.notices[1]
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("cleanup succeeded"));
+        assert!(!saved.enabled);
+    }
+
+    #[test]
+    fn setup_native_properties_suppress_popup_and_bound_expiration() {
+        let _apartment = Apartment::new().unwrap();
+        let id =
+            "pr-sniper:5335c011-9951-48b9-a976-f1f824adbc11:91403d6f-f547-46a9-a744-c217c81ff30a";
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let toast = native::setup_toast(
+            id,
+            super::super::Category::Test.title(),
+            super::super::Category::Test.body(),
+        )
+        .unwrap();
+        let after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(toast.SuppressPopup().unwrap());
+        let tag = toast.Tag().unwrap().to_string();
+        assert_eq!(tag.len(), 16);
+        assert!(tag.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_eq!(toast.Group().unwrap(), "permission-setup");
+        let expiry = toast
+            .ExpirationTime()
+            .unwrap()
+            .Value()
+            .unwrap()
+            .UniversalTime as u64;
+        assert!(expiry >= (before + 15 + 11_644_473_600) * 10_000_000);
+        assert!(expiry <= (after + 15 + 11_644_473_600) * 10_000_000);
+        let xml = toast.Content().unwrap().GetXml().unwrap().to_string();
+        assert!(xml.contains(id));
+        assert!(xml.contains("silent=\"true\""));
+    }
+
+    #[test]
+    #[ignore = "Explicit owned native probe: installs one unique notification identity, submits one suppressed setup toast, reads real Setting, removes exact notification and registration."]
+    fn native_first_use_permission_probe() {
+        use windows::UI::Notifications::ToastNotificationManager;
+        let _apartment = Apartment::new().unwrap();
+        let (root, mut registration, store) = profile();
+        registration.credential_service = Some(format!(
+            "com.jdylanmc.pr-sniper.tests.setup-{}",
+            registration.profile
+        ));
+        println!(
+            "OWNED BEFORE NATIVE WRITES profile={} aumid={} HKCU\\{} shortcut={} root={} exe={}",
+            registration.profile,
+            registration.aumid(),
+            registration.key(),
+            registration.shortcut().unwrap().display(),
+            registration.root.display(),
+            registration.executable.display()
+        );
+        let mut server = None;
+        let result = (|| -> Result<(), String> {
+            if registration.registered()? {
+                return Err("Probe identity unexpectedly exists.".into());
+            }
+            registration.install()?;
+            server = Some(ActivationServer::start(
+                registration.clone(),
+                Arc::new(|_| Err("Owned probe never opens UI.".into())),
+            )?);
+            let before = match native::permission(&registration) {
+                Err(error) => error,
+                Ok(_) => {
+                    return Err(
+                        "New probe identity did not reproduce first-use Setting failure.".into(),
+                    )
+                }
+            };
+            println!(
+                "BEFORE Setting={} initialization_required={}",
+                before.message, before.needs_initialization
+            );
+            if !before.needs_initialization {
+                return Err(before.message);
+            }
+            let setting = request_saved_permission(
+                &store,
+                &registration,
+                || native::permission(&registration),
+                |notice| {
+                    println!(
+                        "BEFORE SHOW id={} tag={} group={} destination=Settings phase=Submitting",
+                        notice.id,
+                        native::setup_tag(&notice.id),
+                        native::SETUP_GROUP
+                    );
+                    let saved = super::super::persisted_ledger(&store).map_err(|e| (e, false))?;
+                    if saved.profile_id != registration.profile
+                        || saved.notices[0].phase != super::super::Phase::Submitting
+                    {
+                        return Err(("Probe intent was not persisted.".into(), false));
+                    }
+                    native::submit_setup(
+                        &registration,
+                        &notice.id,
+                        notice.event.category.title(),
+                        notice.event.category.body(),
+                    )
+                },
+                |id| native::remove_setup(&registration, id),
+            )?;
+            println!(
+                "AFTER Setting={} actual_enum={}",
+                native::authorization(setting),
+                setting.0
+            );
+            let saved = super::super::persisted_ledger(&store)?;
+            if saved.enabled
+                || saved.notices.len() != 1
+                || saved.notices[0].phase != super::super::Phase::AcceptedUnconfirmed
+            {
+                return Err("Probe ledger outcome was not the expected opt-in-off receipt.".into());
+            }
+            println!("LEDGER {}", serde_json::to_string(&saved).unwrap());
+            let history = ToastNotificationManager::History()
+                .and_then(|h| h.GetHistoryWithId(&HSTRING::from(registration.aumid())))
+                .map_err(|e| native::native_error("probe exact history read", e))?;
+            for i in 0..history
+                .Size()
+                .map_err(|e| native::native_error("probe history count", e))?
+            {
+                let toast = history
+                    .GetAt(i)
+                    .map_err(|e| native::native_error("probe history entry", e))?;
+                if toast
+                    .Tag()
+                    .map_err(|e| native::native_error("probe history tag", e))?
+                    == native::setup_tag(&saved.notices[0].id)
+                    && toast
+                        .Group()
+                        .map_err(|e| native::native_error("probe history group", e))?
+                        == native::SETUP_GROUP
+                {
+                    return Err("Exact setup notification remains after removal.".into());
+                }
+            }
+            Ok(())
+        })();
+        let cleanup = (|| -> Result<(), String> {
+            for notice in super::super::persisted_ledger(&store)?.notices {
+                native::remove_setup(&registration, &notice.id)?;
+            }
+            registration.uninstall()?;
+            if registration.registered()?
+                || registration
+                    .shortcut()?
+                    .try_exists()
+                    .map_err(|_| "Probe shortcut absence unreadable.")?
+            {
+                return Err("Probe registration cleanup did not remove exact owned paths.".into());
+            }
+            Ok(())
+        })();
+        let stopped = server.map(ActivationServer::stop).transpose();
+        println!("PROBE result={result:?} exact_cleanup={cleanup:?}");
+        if cleanup.is_err() {
+            println!("PRESERVED root={}", root.keep().display());
+        } else {
+            root.close().unwrap();
+            println!("CLEANED exact class/shortcut/history/profile; native registration absence verified.");
+        }
+        assert!(cleanup.is_ok(), "{cleanup:?}");
+        assert!(stopped.is_ok(), "{stopped:?}");
+        assert!(result.is_ok(), "{result:?}");
     }
 }

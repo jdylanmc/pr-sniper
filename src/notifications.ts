@@ -112,7 +112,7 @@ export function mountNotificationSettings(
       status.textContent = permissionText(next);
       root.querySelector<HTMLElement>("#notification-guidance")!.textContent =
         next.platform === "windows"
-          ? "Opting in explicitly creates this profile's Start Menu notification shortcut and current-user COM activation registration for this executable. Windows has no permission prompt here. For blocked alerts, open Windows Settings > System > Notifications > PR Sniper. Separate banner and notification center settings remain unknown to this app. Turning off stops new sends; saved notifications can still navigate."
+          ? "Opting in explicitly creates this profile's Start Menu notification shortcut and current-user COM activation registration for this executable. First use may submit a short-lived, popup-suppressed test notice to initialize Windows status, then remove that exact notice; it can briefly appear in notification center. Windows has no permission prompt here. For blocked alerts, open Windows Settings > System > Notifications > PR Sniper. Separate banner and notification center settings remain unknown to this app. Turning off stops new sends; saved notifications can still navigate."
           : "For blocked alerts, open System Settings > Notifications > PR Sniper. Review Queue retains notification history, even when a banner is missed.";
       error.textContent = [actionError, next.error].filter(Boolean).join("\n");
       error.hidden = !error.textContent;
