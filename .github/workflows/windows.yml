@@ -31,6 +31,8 @@ jobs:
       - run: npm run test:release:windows
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
+      - name: Check native source formatting
+        run: cargo fmt --manifest-path src-tauri\Cargo.toml --all --check
       - name: Test production persistence and policy (not the full app)
         run: cargo test --manifest-path src-tauri\foundations\Cargo.toml --locked
       - name: Lint production foundations

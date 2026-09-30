@@ -60,8 +60,9 @@ current-directory or ambient-credential fallback.
 
 `src-tauri/foundations` is a small, non-published test harness in the existing
 Cargo workspace. It imports **the exact production** storage, private
-filesystem, policy, doctrine seeding and executable-lookup source files and
-runs the existing relevant integration tests plus native filesystem failures.
+filesystem, discovery, policy, doctrine seeding and executable-lookup source
+files and runs the existing relevant integration tests plus native filesystem
+failures.
 Only the typed queue/review/publication/notification state methods move to a
 separate `Store` implementation; their common reader/writer stays in production
 storage and is exercised by real saved queue-selection state. No replacement
@@ -69,7 +70,7 @@ domain types or duplicated storage implementation are used.
 
 There is one lockfile. The app remains the default workspace member, so existing
 macOS application checks/tests are not replaced by the harness. Windows CI
-runs the harness's native tests and strict Clippy checks in addition to the
-existing frontend/shared checks. This does not build, package or launch the
-Windows app. See [Windows development](../windows-development.md) for commands,
+runs native source formatting, the harness's native tests and strict Clippy
+checks in addition to the existing frontend/shared checks. This does not build,
+package or launch the Windows app. See [Windows development](../windows-development.md) for commands,
 remaining blockers and convergence acceptance.

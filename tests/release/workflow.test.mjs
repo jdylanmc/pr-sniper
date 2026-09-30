@@ -149,6 +149,7 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       "npm run build",
       "npm run test:release:windows",
       "rustup show active-toolchain",
+      "cargo fmt --manifest-path src-tauri\\Cargo.toml --all --check",
       "cargo test --manifest-path src-tauri\\foundations\\Cargo.toml --locked",
       "cargo clippy --manifest-path src-tauri\\foundations\\Cargo.toml --locked --all-targets -- -D warnings",
     ],

@@ -33,13 +33,17 @@ cargo clippy --manifest-path src-tauri\foundations\Cargo.toml --locked --all-tar
 cargo fmt --manifest-path src-tauri\Cargo.toml --all --check
 ```
 
-`windows.yml` runs the frontend/shared tests and the two native foundation
+`windows.yml` runs the frontend/shared tests and the three native foundation
 commands. The harness compiles production source, shares the app's lockfile,
 and uses disposable profiles beneath its working directory. It never opens
 the real application's data or credential stores. Tests cover settings/policy
 round trips, queue-selection state, invalid input, separate profiles and spaces
 in paths, occupied staging files, real Windows sharing-lock replacement
 failures/retry, protected current-user-only DACLs, and denied permission changes.
+The harness also exercises production discovery: native junction fixtures prove
+that nested junctions are skipped and junction-linked Git metadata remains
+unavailable. These cases pass the existing implementation; no discovery bug or
+broader claim about every Windows reparse-point type is inferred.
 macOS retains its normal app tests, including the Unix mode assertions.
 
 Keep doctrine source checkouts LF, including on Windows. If preparing a
