@@ -154,8 +154,9 @@ prerequisite. A remote green run and its downloaded artifact's interactive
 launch must be observed separately before closing #61 acceptance.
 
 The workflow also bundles an unsigned current-user NSIS candidate and performs
-installer/Chocolatey acceptance in a separate fresh hosted VM. Tauri bundling
-now precedes executable hash capture because it patches bundle-type metadata.
+installer/Chocolatey acceptance in a separate fresh hosted VM. The bundler patches bundle-type metadata for the installer, then restores the
+standalone binary. Installer provenance hashes the extracted NSIS payload
+separately from that restored standalone artifact.
 This retains all native/browser checks and the existing executable artifact.
 See [Windows packaging](windows-packaging.md) for build/pack-only commands,
 per-user ownership, exact artifact provenance, hosted-only install/upgrade/

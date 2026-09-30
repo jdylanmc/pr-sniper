@@ -75,10 +75,26 @@ function Assert-Preserved {
 }
 function Assert-Installed($Metadata, [string] $Installer) {
     $app = Join-Path $directory 'pr-sniper.exe'
-    if ((Get-FileHash $app).Hash -ine $Metadata.application_sha256 -or
-        [Diagnostics.FileVersionInfo]::GetVersionInfo($app).ProductVersion -cne $Metadata.version -or
-        (Get-ItemPropertyValue $uninstallKey 'DisplayVersion') -cne $Metadata.version) {
-        throw 'Installed bytes/version differ from this exact candidate.'
+    $observedHash = (Get-FileHash $app -Algorithm SHA256).Hash.ToLowerInvariant()
+    $observedVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($app).ProductVersion
+    $registeredVersion = Get-ItemPropertyValue $uninstallKey 'DisplayVersion'
+    $mismatch = $observedHash -ine $Metadata.application_sha256 -or
+        $observedVersion -cne $Metadata.version -or $registeredVersion -cne $Metadata.version
+    try {
+        [ordered]@{
+            commit = $Metadata.commit
+            expected_sha256 = $Metadata.application_sha256
+            observed_sha256 = $observedHash
+            expected_version = $Metadata.version
+            observed_pe_version = $observedVersion
+            observed_registration_version = $registeredVersion
+        } | ConvertTo-Json | Set-Content (Join-Path $diagnostics.FullName ("installed-" + [guid]::NewGuid() + '.json')) -Encoding utf8
+    } catch {
+        if (-not $mismatch) { throw }
+        Write-Warning 'Installed-state diagnostics could not be saved; preserving the candidate mismatch.'
+    }
+    if ($mismatch) {
+        throw "Installed candidate mismatch: expected SHA256=$($Metadata.application_sha256), observed SHA256=$observedHash; expected version=$($Metadata.version), PE version=$observedVersion, registered version=$registeredVersion."
     }
     $quotedValues = [ordered]@{
         DisplayIcon = "`"$app`""

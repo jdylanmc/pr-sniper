@@ -268,7 +268,7 @@ test("unsigned installers and disposable upgrade fixtures cannot become public r
   assert.ok(
     steps.findIndex((s) => s.run === "npm run bundle:windows") <
       steps.findIndex((s) => s.run === ".\\scripts\\windows-artifact.ps1"),
-    "Tauri patches bundle-type bytes before recording the executable hash",
+    "Create the installer before recording separate standalone and payload provenance",
   );
   const uploads = steps.filter((s) =>
     s.uses?.startsWith("actions/upload-artifact@"),
@@ -286,6 +286,44 @@ test("unsigned installers and disposable upgrade fixtures cannot become public r
     "pr-sniper-windows-upgrade-test-only-${{ github.sha }}",
   );
   assert.doesNotMatch(JSON.stringify(workflow), /windows|chocolatey/i);
+});
+
+test("base and upgrade metadata hash the extracted payload, not Tauri's restored standalone executable", () => {
+  for (const path of [
+    "scripts/windows-installer-artifact.ps1",
+    "scripts/windows-upgrade-fixture.ps1",
+  ]) {
+    const source = readFileSync(path, "utf8");
+    assert.match(
+      source,
+      /Get-PrSniperInstallerPayload -Installer \$installer -Version \$version/,
+    );
+    assert.match(source, /application_sha256 = \$payload\.sha256/);
+    assert.match(source, /standalone_application_sha256 = /);
+    assert.doesNotMatch(
+      source,
+      /(?<!standalone_)application_sha256 = \(Get-FileHash \$app\)/,
+    );
+  }
+  const reader = readFileSync("scripts/windows-installer-payload.ps1", "utf8");
+  assert.match(reader, /Get-FileHash -LiteralPath \$path -Algorithm SHA256/);
+  assert.doesNotMatch(
+    reader,
+    /__TAURI_BUNDLE_TYPE_VAR_|WriteAllBytes|Set-Content|Start-Process/,
+  );
+  const acceptance = readFileSync(
+    "scripts/windows-installer-acceptance.ps1",
+    "utf8",
+  );
+  assert.match(
+    acceptance,
+    /\$observedHash -ine \$Metadata\.application_sha256/,
+  );
+  assert.match(acceptance, /observed_pe_version = \$observedVersion/);
+  assert.match(
+    acceptance,
+    /observed_registration_version = \$registeredVersion/,
+  );
 });
 
 test("real installer acceptance depends on native checks and a fresh hosted VM", () => {
