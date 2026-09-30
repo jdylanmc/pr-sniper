@@ -46,10 +46,12 @@ unavailable. These cases pass the existing implementation; no discovery bug or
 broader claim about every Windows reparse-point type is inferred.
 macOS retains its normal app tests, including the Unix mode assertions.
 
-Keep doctrine source checkouts LF, including on Windows. If preparing a
-worktree or staging with Git's CRLF conversion enabled, use per-command
-`git -c core.autocrlf=false ...`; do not change the canonical doctrine files
-or their verified hashes.
+The repository's `.gitattributes` keeps canonical doctrine Markdown and its
+manifest LF even when Windows Git uses `core.autocrlf=true`. Rust embeds those
+exact bytes and the doctrine helper verifies their SHA-256 hashes. The shared
+checkout regression exercises real Git checkout with CRLF conversion enabled;
+no CI-only setting or parser normalization is needed. Do not change the
+canonical doctrine files or their verified hashes to repair checkout conversion.
 
 ## Full-app proof is still partial
 

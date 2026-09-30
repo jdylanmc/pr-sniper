@@ -1,0 +1,2 @@
+# Canonical doctrine bytes are embedded by Rust and verified against SHA-256.
+/.agents/skills/doctrine/doctrines/*.md text eol=lf
