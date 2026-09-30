@@ -49,6 +49,11 @@ directory and uninstaller hash. If subsequent mutex acquisition or executable
 deletion fails, retrying the same package uses this completion receipt under the
 SID mutex, rechecks the exact remaining executable and **all** removal
 postconditions, and finishes only that cleanup without rerunning native uninstall.
+If executable deletion succeeded but Chocolatey's outer package cleanup failed,
+the same bound receipts also permit an already-absent uninstaller: revalidate
+both receipts, current absence and live removal postconditions under the SID
+mutex, then finish without launching or deleting a nonexistent file. A present
+file still requires its original hash; absence without completion evidence fails.
 Absent registration alone never admits resume. Missing/corrupt completion
 evidence, changed hashes, a new installation, an empty leftover key or pending
 transaction fail closed; do not manufacture a receipt. Persistence failure or

@@ -66,28 +66,41 @@ public sealed class PrSniperCleanupLock : IDisposable {
 $completionPath = Join-Path $tools 'native-removal.json'
 $completionHash = (Get-FileHash $completionPath).Hash
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$hold = [PrSniperCleanupLock]::new("Global\com.jdylanmc.pr-sniper.installer.$sid")
-$failure = $null
-try {
-    $rejected = $false
-    try { & (Join-Path $tools 'chocolateyuninstall.ps1') }
-    catch {
-        if ($_.Exception.Message -notmatch 'Another installer owns post-uninstall cleanup') { throw }
-        $rejected = $true
+function Assert-BusyCleanupRefusal([bool] $UninstallerPresent) {
+    $hold = [PrSniperCleanupLock]::new("Global\com.jdylanmc.pr-sniper.installer.$sid")
+    $failure = $null
+    try {
+        $rejected = $false
+        try { & (Join-Path $tools 'chocolateyuninstall.ps1') }
+        catch {
+            if ($_.Exception.Message -notmatch 'Another installer owns post-uninstall cleanup') { throw }
+            $rejected = $true
+        }
+        if (-not $rejected -or (Get-FileHash $completionPath).Hash -cne $completionHash -or
+            (Test-Path -LiteralPath $uninstaller) -ne $UninstallerPresent -or
+            ($UninstallerPresent -and (Get-FileHash $uninstaller).Hash -ine $receipt.uninstaller_sha256)) {
+            throw 'Busy-mutex resume did not fail with its exact completion evidence retained.'
+        }
+    } catch { $failure = $_ }
+    finally {
+        try { $hold.Dispose() }
+        catch {
+            if ($failure) { Write-Warning 'Additional lock-fixture cleanup failure; preserving original error.' }
+            else { $failure = $_ }
+        }
     }
-    if (-not $rejected -or (Get-FileHash $completionPath).Hash -cne $completionHash -or
-        (Get-FileHash $uninstaller).Hash -ine $receipt.uninstaller_sha256) {
-        throw 'Busy-mutex resume did not fail with its exact completion evidence retained.'
-    }
-} catch { $failure = $_ }
-finally {
-    try { $hold.Dispose() }
-    catch {
-        if ($failure) { Write-Warning 'Additional lock-fixture cleanup failure; preserving original error.' }
-        else { $failure = $_ }
-    }
+    if ($failure) { throw $failure }
 }
-if ($failure) { throw $failure }
+Assert-BusyCleanupRefusal $true
+# Complete the package script without Chocolatey's outer cleanup, reproducing
+# retained package/receipts after successful native removal and executable deletion.
+& (Join-Path $tools 'chocolateyuninstall.ps1')
+if ((Test-Path -LiteralPath $uninstaller) -or
+    -not (Test-Path (Join-Path $tools 'installation.json')) -or
+    (Get-FileHash $completionPath).Hash -cne $completionHash) {
+    throw 'Absent-uninstaller fixture did not retain the exact package completion evidence.'
+}
+Assert-BusyCleanupRefusal $false
 & choco uninstall pr-sniper-localtest --yes --limit-output --no-progress --execution-timeout=180
 if ($LASTEXITCODE -ne 0 -or (Test-Path $uninstaller)) { throw 'Completed-removal retry did not finish.' }
-'Hosted post-native deletion failure, busy-mutex rejection and same-package retry passed.'
+'Hosted deletion failure, present/absent mutex rejection and retained-package retry passed.'

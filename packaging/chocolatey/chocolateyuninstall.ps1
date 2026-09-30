@@ -8,14 +8,16 @@ $receiptHash = (Get-FileHash $receiptPath -Algorithm SHA256).Hash
 $receipt = Get-Content $receiptPath -Raw | ConvertFrom-Json
 $directory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'PR Sniper'
 $uninstaller = Join-Path $directory 'uninstall.exe'
-if ($receipt.directory -cne $directory -or
-    (Get-FileHash $uninstaller -Algorithm SHA256).Hash -ine $receipt.uninstaller_sha256) {
-    throw 'The exact package-owned uninstaller is unavailable or has changed.'
+if ($receipt.directory -cne $directory) {
+    throw 'Installation receipt does not name this exact application directory.'
 }
 if (Test-Path -LiteralPath $completionPath) {
     # Missing registration alone never admits cleanup or execution of a leftover.
     Assert-PrSniperRemovalReceipt (Get-Content $completionPath -Raw | ConvertFrom-Json) $receipt $receiptHash
 } else {
+    if ((Get-FileHash $uninstaller -Algorithm SHA256).Hash -ine $receipt.uninstaller_sha256) {
+        throw 'The exact package-owned uninstaller is unavailable or has changed.'
+    }
     $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('CurrentUser', 'Registry64')
     $key = $base.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Uninstall\PR Sniper')
     try {
@@ -58,10 +60,8 @@ try {
     if ((Get-FileHash $receiptPath -Algorithm SHA256).Hash -ine $receiptHash) {
         throw 'Installation receipt changed before cleanup.'
     }
-    Assert-PrSniperRemovalReceipt (Get-Content $completionPath -Raw | ConvertFrom-Json) $receipt $receiptHash
-    if ((Get-FileHash $uninstaller -Algorithm SHA256).Hash -ine $receipt.uninstaller_sha256) {
-        throw 'Uninstaller changed before cleanup.'
-    }
+    $completion = Get-Content $completionPath -Raw | ConvertFrom-Json
+    Assert-PrSniperRemovalReceipt $completion $receipt $receiptHash
     $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('CurrentUser', 'Registry64')
     $key = $base.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Uninstall\PR Sniper')
     try {
@@ -79,7 +79,10 @@ try {
         -TransactionExists (Test-Path (Join-Path $directory '.pr-sniper-transaction')) `
         -RegistryKeyExists $keyExists -RegistrySubKeyCount $subKeys -RegistryValueNames $values `
         -ShortcutExists $shortcutExists -ShortcutTarget $shortcutTarget -ExpectedApp (Join-Path $directory 'pr-sniper.exe')
-    Remove-Item -LiteralPath $uninstaller
+    $fileState = Get-PrSniperUninstallerFileState $uninstaller
+    if (Test-PrSniperUninstallerCleanupRequired $completion $receipt $receiptHash $fileState.exists $fileState.sha256) {
+        Remove-Item -LiteralPath $uninstaller
+    }
     # Empty directory removal is optional. Do not introduce a second fallible
     # cleanup after deleting the last executable; Chocolatey removes its receipts.
 } finally {
