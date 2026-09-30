@@ -130,7 +130,7 @@ def tag_sha(api, tag):
     raise ReleaseError("Too many nested annotated tags.")
 
 
-def gate(api, tag, root=Path(".")):
+def gate(api, tag, root=Path("."), *, require_windows=False):
     expected = version(tag)
     require(config_version(root) == expected, "Tag does not match checked-in versions.")
     sha = command(["git", "rev-parse", "HEAD"])
@@ -151,6 +151,21 @@ def gate(api, tag, root=Path(".")):
     jobs = api.pages(f"/repos/{REPOSITORY}/actions/runs/{latest['id']}/jobs", "jobs")
     require(any(job.get("name") == "macos" and job.get("conclusion") == "success" for job in jobs),
             "Required macOS CI job was not observed green.")
+    if require_windows:
+        windows_workflow = urllib.parse.quote(".github/workflows/windows.yml", safe="")
+        windows_runs = api.pages(
+            f"/repos/{REPOSITORY}/actions/workflows/{windows_workflow}/runs?head_sha={sha}&event=push&branch=main",
+            "workflow_runs")
+        eligible_windows = [run for run in windows_runs if run.get("head_sha") == sha
+                            and run.get("head_branch") == "main" and run.get("event") == "push"]
+        require(eligible_windows, "No exact-commit Windows main-push CI exists.")
+        latest_windows = max(eligible_windows, key=lambda run: (run["id"], run.get("run_attempt", 1)))
+        require(latest_windows.get("status") == "completed" and latest_windows.get("conclusion") == "success",
+                "The latest exact-commit Windows main CI must be complete and green.")
+        windows_jobs = api.pages(f"/repos/{REPOSITORY}/actions/runs/{latest_windows['id']}/jobs", "jobs")
+        require(all(any(job.get("name") == name and job.get("conclusion") == "success"
+                        for job in windows_jobs) for name in ("windows", "windows-installer-acceptance")),
+                "Native Windows checks and installer acceptance must both be green.")
     require(tag_sha(api, tag) == sha, "Tag moved during eligibility checks.")
     newer_release_guard(api, expected)
     return {"sha": sha, "version": expected, "tag": tag}
@@ -350,6 +365,8 @@ def main():
         result = gate(api, tag)
         with open(os.environ["GITHUB_OUTPUT"], "a") as output:
             output.write("sha=" + result["sha"] + "\nversion=" + result["version"] + "\n")
+    elif action == "check-windows-release":
+        print(json.dumps(gate(api, tag, require_windows=True)))
     elif action == "tap-ready":
         tap_ready(Github(os.environ.get("HOMEBREW_TAP_TOKEN")))
     elif action == "publish":
@@ -357,7 +374,7 @@ def main():
     elif action == "tap":
         tap_update(api, Github(os.environ.get("HOMEBREW_TAP_TOKEN")))
     else:
-        raise ReleaseError("Expected check, gate, tap-ready, publish or tap.")
+        raise ReleaseError("Expected check, gate, check-windows-release, tap-ready, publish or tap.")
 
 
 if __name__ == "__main__":

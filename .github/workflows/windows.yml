@@ -11,7 +11,7 @@ permissions:
 jobs:
   windows:
     runs-on: windows-2022
-    timeout-minutes: 45
+    timeout-minutes: 60
     defaults:
       run:
         shell: pwsh
@@ -29,6 +29,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run test:release:windows
+      - run: npm run test:packaging:windows
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - run: npm run format:check
@@ -44,6 +45,8 @@ jobs:
       - run: npm run test:settings
       - name: Build standalone executable with embedded frontend
         run: npm run build:windows
+      - name: Bundle unsigned current-user installer (never a public release)
+        run: npm run bundle:windows
       - name: Verify GUI executable and record artifact provenance
         run: .\scripts\windows-artifact.ps1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -53,4 +56,46 @@ jobs:
             src-tauri/target/windows-artifact/pr-sniper.exe
             src-tauri/target/windows-artifact/build.json
             src-tauri/target/windows-artifact/SHA256SUMS
+          if-no-files-found: error
+      - name: Verify installer and record exact-source provenance
+        run: .\scripts\windows-installer-artifact.ps1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pr-sniper-windows-unsigned-installer-${{ github.sha }}
+          path: src-tauri/target/windows-installer-artifact/
+          if-no-files-found: error
+      - name: Build disposable upgrade fixture without changing release versions
+        run: .\scripts\windows-upgrade-fixture.ps1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pr-sniper-windows-upgrade-test-only-${{ github.sha }}
+          path: |
+            src-tauri/target/windows-upgrade-fixture/upgrade-test-only.exe
+            src-tauri/target/windows-upgrade-fixture/fixture.json
+          if-no-files-found: error
+  windows-installer-acceptance:
+    needs: windows
+    runs-on: windows-2022
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: pr-sniper-windows-unsigned-installer-${{ github.sha }}
+          path: src-tauri/target/candidate
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: pr-sniper-windows-upgrade-test-only-${{ github.sha }}
+          path: src-tauri/target/upgrade-fixture
+      - name: Install, launch, upgrade and uninstall only on this fresh hosted VM
+        run: .\scripts\windows-installer-acceptance.ps1 -Candidate src-tauri\target\candidate -Upgrade src-tauri\target\upgrade-fixture
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pr-sniper-windows-installer-acceptance-${{ github.sha }}
+          path: src-tauri/target/windows-acceptance/acceptance.json
           if-no-files-found: error
