@@ -14,6 +14,9 @@ const REGISTRY_RECORD_VERSION: &[u8; 8] = b"PRSNREG1";
 const ACTIVE_RECORD_VERSION: &[u8; 8] = b"PRSNAUTH";
 pub trait RecordBackend {
     const MIGRATE_LEGACY_KEYCHAIN: bool = false;
+    fn validate_record(&self, _account: &str, secret: &[u8]) -> Result<(), StoreError> {
+        checked_length(secret).map(|_| ())
+    }
     fn load_record(&self, account: &str) -> Result<Option<Zeroizing<Vec<u8>>>, StoreError>;
     fn save_record(&self, account: &str, secret: &[u8]) -> Result<(), StoreError>;
     fn delete_record(&self, account: &str) -> Result<(), StoreError>;
@@ -70,7 +73,6 @@ impl<B: RecordBackend> ActiveCredentialStore for RecordStore<B> {
 
     fn save_active_credentials(&self, credentials: &RestoredCredentials) -> Result<(), StoreError> {
         let id = credentials.account.provider_account_id();
-        self.save(&id, &credentials.pair)?;
         let mut registry = self.load_registry()?;
         if let Some(account) = registry
             .accounts
@@ -81,7 +83,9 @@ impl<B: RecordBackend> ActiveCredentialStore for RecordStore<B> {
         } else {
             registry.accounts.push(credentials.account.clone());
         }
-        registry.active = Some(id);
+        registry.active = Some(id.clone());
+        self.validate_registry(&registry)?;
+        self.save(&id, &credentials.pair)?;
         self.save_registry(&registry)
     }
 
@@ -124,7 +128,19 @@ impl<B: RecordBackend> AccountRegistryStore for RecordStore<B> {
             .map(Option::unwrap_or_default)
     }
 
+    fn validate_registry(&self, registry: &AccountRegistry) -> Result<(), StoreError> {
+        self.backend
+            .validate_record(ACCOUNT_REGISTRY, &self.registry_bytes(registry)?)
+    }
+
     fn save_registry(&self, registry: &AccountRegistry) -> Result<(), StoreError> {
+        self.backend
+            .save_record(ACCOUNT_REGISTRY, &self.registry_bytes(registry)?)
+    }
+}
+
+impl<B: RecordBackend> RecordStore<B> {
+    fn registry_bytes(&self, registry: &AccountRegistry) -> Result<Zeroizing<Vec<u8>>, StoreError> {
         registry.validate()?;
         let legacy_cleanup = self
             .backend
@@ -136,13 +152,10 @@ impl<B: RecordBackend> AccountRegistryStore for RecordStore<B> {
         if !B::MIGRATE_LEGACY_KEYCHAIN && !legacy_cleanup.is_empty() {
             return Err(StoreError::InvalidData);
         }
-        self.backend.save_record(
-            ACCOUNT_REGISTRY,
-            &encode_stored_registry(&StoredRegistry {
-                registry: registry.clone(),
-                legacy_cleanup,
-            })?,
-        )
+        encode_stored_registry(&StoredRegistry {
+            registry: registry.clone(),
+            legacy_cleanup,
+        })
     }
 }
 
