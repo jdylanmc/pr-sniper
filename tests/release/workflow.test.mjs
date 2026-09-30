@@ -5,6 +5,8 @@ import { parse } from "yaml";
 
 const workflow = parse(readFileSync(".github/workflows/release.yml", "utf8"));
 const ci = parse(readFileSync(".github/workflows/macos.yml", "utf8"));
+const windows = parse(readFileSync(".github/workflows/windows.yml", "utf8"));
+const { scripts } = JSON.parse(readFileSync("package.json", "utf8"));
 
 test("only explicit stable tag release events can enter the secret-bearing pipeline", () => {
   assert.deepEqual(Object.keys(workflow.on).sort(), [
@@ -87,4 +89,73 @@ test("publication consumes only this run's verified artifact and contract tests 
     );
   }
   assert.ok(ci.jobs.macos.steps.some((s) => s.run === "npm run test:release"));
+});
+
+test("Windows frontend/shared checks run on every PR and main push with read-only access", () => {
+  assert.equal(windows.name, "Windows frontend and shared checks");
+  assert.deepEqual(windows.on, {
+    pull_request: null,
+    push: { branches: ["main"] },
+  });
+  assert.deepEqual(windows.permissions, { contents: "read" });
+  assert.deepEqual(Object.keys(windows.jobs), ["windows"]);
+  assert.equal(windows.jobs.windows["runs-on"], "windows-2022");
+  assert.ok(windows.jobs.windows["timeout-minutes"] > 0);
+});
+
+test("Windows checks have no release credentials, privileged environment or failure bypass", () => {
+  const job = windows.jobs.windows;
+  assert.doesNotMatch(JSON.stringify(windows), /secrets\.|github\.token/);
+  assert.equal(windows.env, undefined);
+  assert.equal(job.env, undefined);
+  assert.equal(job.environment, undefined);
+  assert.equal(job.permissions, undefined);
+  for (const scope of [job, ...job.steps]) {
+    assert.equal(scope.if, undefined);
+    assert.equal(scope["continue-on-error"], undefined);
+    assert.equal(scope.env, undefined);
+  }
+  const checkout = job.steps.find((step) =>
+    step.uses?.startsWith("actions/checkout@"),
+  );
+  assert.equal(checkout.with["persist-credentials"], false);
+});
+
+test("Windows uses pinned Node and real fail-fast frontend and portable release checks", () => {
+  const job = windows.jobs.windows;
+  assert.equal(job.defaults.run.shell, "pwsh");
+  const actions = job.steps.filter((step) => step.uses);
+  assert.deepEqual(
+    actions.map((step) => step.uses.split("@")[0]),
+    ["actions/checkout", "actions/setup-node", "actions/setup-python"],
+  );
+  for (const step of actions) {
+    assert.match(step.uses, /^actions\/[a-z-]+@[a-f0-9]{40}$/);
+  }
+  const node = job.steps.find((step) =>
+    step.uses?.startsWith("actions/setup-node@"),
+  );
+  assert.equal(node.with["node-version-file"], ".node-version");
+  assert.equal(node.with["node-version"], undefined);
+  assert.equal(node.with.cache, "npm");
+  const python = job.steps.find((step) =>
+    step.uses?.startsWith("actions/setup-python@"),
+  );
+  assert.equal(python.with["python-version"], "3.13");
+  assert.deepEqual(
+    job.steps.filter((step) => step.run).map((step) => step.run),
+    ["npm ci", "npm run build", "npm run test:release:windows"],
+  );
+  assert.equal(scripts.build, "tsc --noEmit && vite build");
+});
+
+test("both repository release runners execute workflow contracts without weakening macOS coverage", () => {
+  assert.equal(
+    scripts["test:release"],
+    "python3 -B -m unittest discover -s tests/release -p 'test_*.py' && node --test tests/release/workflow.test.mjs",
+  );
+  assert.equal(
+    scripts["test:release:windows"],
+    "python -B -m unittest discover -s tests/release -p test_release.py && node --test tests/release/workflow.test.mjs",
+  );
 });

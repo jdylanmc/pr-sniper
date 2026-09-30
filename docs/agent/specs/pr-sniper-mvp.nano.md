@@ -10,6 +10,16 @@
 
 ## Intention
 
+The human-approved 2026-09-29 Windows follow-up under #12 supersedes the
+Windows exclusion below only for porting the existing application to the
+Windows system tray, Windows build/test CI and signed installer/Chocolatey
+distribution (#57-#65). It adds no review features or vNext design changes.
+The Windows CI bootstrap (#65) lands first; frontend checks are not native
+app proof. Windows-native and public-distribution acceptance remain separate,
+including secure accounts, lifecycle, notifications, install/upgrade/uninstall
+and exact-commit CI evidence. Signing credentials, publisher ownership and
+first-release authorization must be established, not inferred from this scope.
+
 PR Sniper is a macOS-first menu-bar utility that watches configured GitHub repositories for selected teammates' pull requests or pull requests requesting the signed-in user as a reviewer, runs a configured local review agent against each eligible revision, publishes clearly machine-authored review comments, and puts machine-cleared pull requests in front of the human for final review.
 
 The human-approved 2026-09-25 Copilot Settings amendment selects app-owned
