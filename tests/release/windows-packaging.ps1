@@ -52,12 +52,30 @@ try {
         -ExpectedApp 'C:\owned\pr-sniper.exe' } 'Empty owned installer key remains'
     Assert-PrSniperRemovalState -RegistryKeyExists $true -RegistrySubKeyCount 1 -RegistryValueNames @() `
         -ExpectedApp 'C:\owned\pr-sniper.exe'
+    Assert-PrSniperRemovalState -RegistryKeyExists $true -RegistryValueNames @('') `
+        -ExpectedApp 'C:\owned\pr-sniper.exe'
+    Check $true 'The unnamed default registry value is foreign nonempty content.'
     $removalReceipt = [pscustomobject]@{ directory = 'C:\owned'; version = '0.1.1'; uninstaller_sha256 = ('a' * 64) }
     $completion = [pscustomobject]@{
         schema = 1; phase = 'native-removal-complete'; installation_receipt_sha256 = ('b' * 64)
         directory = 'C:\owned'; version = '0.1.1'; uninstaller_sha256 = ('a' * 64)
     }
     Assert-PrSniperRemovalReceipt $completion $removalReceipt ('b' * 64)
+    Check (-not (Test-PrSniperUninstallerCleanupRequired $completion $removalReceipt ('b' * 64) $false '')) `
+        'Valid native completion permits already-absent uninstaller cleanup without deletion.'
+    Check (Test-PrSniperUninstallerCleanupRequired $completion $removalReceipt ('b' * 64) $true ('a' * 64)) `
+        'An exact remaining uninstaller still requires owned deletion.'
+    Reject { Test-PrSniperUninstallerCleanupRequired $null $removalReceipt ('b' * 64) $false '' } 'not evidenced'
+    Reject { Test-PrSniperUninstallerCleanupRequired $completion $removalReceipt ('c' * 64) $false '' } 'not evidenced'
+    Reject { Test-PrSniperUninstallerCleanupRequired $completion $removalReceipt ('b' * 64) $true ('c' * 64) } 'Uninstaller changed'
+    $completion.uninstaller_sha256 = ''
+    $removalReceipt.uninstaller_sha256 = ''
+    Reject { Test-PrSniperUninstallerCleanupRequired $completion $removalReceipt ('b' * 64) $false '' } 'not evidenced'
+    $completion.uninstaller_sha256 = 'a' * 64
+    $removalReceipt.uninstaller_sha256 = 'a' * 64
+    $missingUninstaller = Get-PrSniperUninstallerFileState (Join-Path $fixture 'absent-uninstaller.exe')
+    Check (-not $missingUninstaller.exists -and $missingUninstaller.sha256 -ceq '') 'Only actual file absence produces absent evidence.'
+    Reject { Get-PrSniperUninstallerFileState $fixture } 'not a regular file'
     Reject { Assert-PrSniperRemovalReceipt $null $removalReceipt ('b' * 64) } 'not evidenced'
     foreach ($field in @('schema','phase','directory','version','uninstaller_sha256','installation_receipt_sha256')) {
         $old = $completion.$field
@@ -86,6 +104,8 @@ using System.Reflection;
 public class PackagingFixture { public static void Main() {} }
 '@
     $hash = (Get-FileHash $executable).Hash
+    $presentUninstaller = Get-PrSniperUninstallerFileState $executable
+    Check ($presentUninstaller.exists -and $presentUninstaller.sha256 -ceq $hash) 'Present-file observation includes its actual SHA256.'
     $arguments = @{
         Mode = 'LocalTest'; Installer = $executable; Version = '0.1.1'
         Sha256 = $hash; Commit = ('a' * 40); Destination = (Join-Path $fixture 'package')
