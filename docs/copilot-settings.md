@@ -3,10 +3,10 @@
 Settings has four tabs: **Integrations**, **Doctrines**, **Agents**, and
 **Preferences**. There are two independent connection roles:
 
-| Connection                | Purpose                                                                   |
-| ------------------------- | ------------------------------------------------------------------------- |
+| Connection                | Purpose                                                                 |
+| ------------------------- | ----------------------------------------------------------------------- |
 | GitHub repository account | Repository access and the acting identity for gated comment publication |
-| Copilot AI account        | AI credentials and that account's returned model catalog                  |
+| Copilot AI account        | AI credentials and that account's returned model catalog                |
 
 All accounts are user-selected. The same GitHub identity can be connected to
 either or both roles; connecting one never connects the other. Settings does
@@ -76,6 +76,14 @@ AI credentials use the separate Keychain service
 `com.jdylanmc.pr-sniper.copilot.oauth-app.v1`, keyed by provider and stable
 account ID. No global active account is used. Settings stores only
 `ai_account: { provider, account_id }` and the returned model ID.
+
+The Windows native boundary uses the equivalent independent service namespace
+in Credential Manager, sharing the existing record/rotation contracts rather
+than importing macOS Keychain data. Serialized records have an explicit
+2,560-byte native limit; secure-save failures never fall back to plaintext.
+Windows account/runtime checks are available before full app acceptance; see
+[Windows development](windows-development.md) and
+[ADR-0005](adr/0005-windows-accounts-runtime.md).
 
 The pinned official Rust SDK `github-copilot-sdk` **1.0.14** embeds its native
 Copilot CLI payload at build time. Building therefore downloads the SDK's

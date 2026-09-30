@@ -186,6 +186,7 @@ impl AccountRegistry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreError {
     InvalidData,
+    TooLarge,
     Unavailable,
 }
 
@@ -197,6 +198,9 @@ pub trait CredentialStore {
 
 pub trait AccountRegistryStore {
     fn load_registry(&self) -> Result<AccountRegistry, StoreError>;
+    fn validate_registry(&self, registry: &AccountRegistry) -> Result<(), StoreError> {
+        registry.validate()
+    }
     fn save_registry(&self, registry: &AccountRegistry) -> Result<(), StoreError>;
 }
 
@@ -336,8 +340,13 @@ impl<S: AccountRegistryStore + CredentialStore> RotationSafeStore<S> {
             .iter_mut()
             .find(|stored| stored.provider_account_id() == id)
         {
-            self.inner.save(&id, pair)?;
             *stored = account.clone();
+            if make_active {
+                registry.active = Some(id.clone());
+            }
+            self.inner.validate_registry(&registry)?;
+            self.inner.save(&id, pair)?;
+            return self.inner.save_registry(&registry);
         } else {
             registry.pending_account_additions.push(account.clone());
             registry.validate()?;
