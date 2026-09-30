@@ -301,6 +301,26 @@ pub(crate) fn fixture_program(name: &str) -> (PathBuf, PathBuf) {
 }
 
 #[cfg(test)]
+pub(crate) async fn wait_for_fixture_method(root: &Path, method: &str) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(text) = std::fs::read_to_string(root.join("receipt.jsonl")) {
+                if text
+                    .lines()
+                    .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                    .any(|event| event["method"] == method)
+                {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("fixture did not reach {method}"));
+}
+
+#[cfg(test)]
 pub(crate) fn assert_process_stopped(pid: u32) {
     #[cfg(windows)]
     unsafe {
@@ -478,6 +498,12 @@ mod tests {
         config
             .env
             .push(("TEST_RECEIPT".into(), root.join("receipt.jsonl").into()));
+        if matches!(token, "waiting" | "waiting-start" | "bad-start") {
+            // A cold fixture must not be mistaken for a started SDK stage.
+            config
+                .env
+                .push(("TEST_STARTUP_DELAY_MS".into(), "750".into()));
+        }
         config
     }
 
@@ -573,7 +599,7 @@ mod tests {
         let root = private_directory("pr-sniper-cancel-test-").unwrap();
         let cancel = AtomicBool::new(false);
         let trigger = async {
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            wait_for_fixture_method(root.path(), "models.list").await;
             cancel.store(true, Ordering::SeqCst);
         };
         let (result, ()) = tokio::join!(
@@ -593,15 +619,24 @@ mod tests {
             let root = tempfile::tempdir().unwrap();
             let cancel = AtomicBool::new(false);
             let trigger = async {
-                tokio::time::sleep(Duration::from_millis(250)).await;
-                cancel.store(true, Ordering::SeqCst);
+                wait_for_fixture_method(root.path(), "connect").await;
+                if token == "waiting-start" {
+                    cancel.store(true, Ordering::SeqCst);
+                }
             };
             let (result, ()) = tokio::join!(
                 query(fixture_options(root.path(), token), token, &cancel),
                 trigger
             );
-            assert!(result.is_err());
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            let error = result.unwrap_err();
+            assert!(
+                error.contains(if token == "waiting-start" {
+                    "cancelled"
+                } else {
+                    "could not start"
+                }),
+                "{error}"
+            );
             assert_stopped_and_catalog_only(root.path());
         }
     }
@@ -631,31 +666,12 @@ mod tests {
             }
             let cancel = AtomicBool::new(false);
             let trigger = async {
-                tokio::time::timeout(Duration::from_secs(3), async {
-                    loop {
-                        if let Ok(text) =
-                            std::fs::read_to_string(receipts.path().join("receipt.jsonl"))
-                        {
-                            let method = if token == "waiting" {
-                                "models.list"
-                            } else {
-                                "connect"
-                            };
-                            if text
-                                .lines()
-                                .filter_map(|line| {
-                                    serde_json::from_str::<serde_json::Value>(line).ok()
-                                })
-                                .any(|event| event["method"] == method)
-                            {
-                                break;
-                            }
-                        }
-                        tokio::time::sleep(Duration::from_millis(10)).await;
-                    }
-                })
-                .await
-                .expect("fixture reached cancellable stage");
+                let method = if token == "waiting" {
+                    "models.list"
+                } else {
+                    "connect"
+                };
+                wait_for_fixture_method(receipts.path(), method).await;
                 if token != "bad-start" {
                     cancel.store(true, Ordering::SeqCst);
                 }
@@ -716,15 +732,33 @@ mod tests {
     async fn inherited_whole_lookup_deadline_limits_the_sdk_stage() {
         let root = tempfile::tempdir().unwrap();
         let started = Instant::now();
-        let result = query_with_deadline(
-            fixture_options(root.path(), "waiting"),
-            "waiting",
-            &AtomicBool::new(false),
-            started + Duration::from_millis(500),
-        )
-        .await;
-        assert!(result.unwrap_err().contains("timed out"));
-        assert!(started.elapsed() < Duration::from_secs(2));
+        // The inherited budget includes cold startup. Observe pending catalog
+        // work before expiry; neither SDK stage may reset this deadline.
+        let deadline = started + Duration::from_secs(8);
+        let cancel = AtomicBool::new(false);
+        let pending = async {
+            wait_for_fixture_method(root.path(), "models.list").await;
+            assert!(Instant::now() < deadline);
+        };
+        let (result, ()) =
+            tokio::time::timeout_at((deadline + Duration::from_secs(2)).into(), async {
+                tokio::join!(
+                    query_with_deadline(
+                        fixture_options(root.path(), "waiting"),
+                        "waiting",
+                        &cancel,
+                        deadline,
+                    ),
+                    pending
+                )
+            })
+            .await
+            .expect("inherited deadline must bound the SDK and cleanup");
+        assert_eq!(
+            result.unwrap_err(),
+            "Copilot model listing timed out. Retry."
+        );
+        assert!(Instant::now() >= deadline);
         assert_stopped_and_catalog_only(root.path());
         assert!(receipt(root.path())
             .iter()
