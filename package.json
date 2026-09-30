@@ -15,6 +15,7 @@
     "lint": "tsc --noEmit && cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings",
     "test": "cargo test --manifest-path src-tauri/Cargo.toml --locked",
     "test:release": "python3 -B -m unittest discover -s tests/release -p 'test_*.py' && node --test tests/release/workflow.test.mjs",
+    "test:release:windows": "python -B -m unittest discover -s tests/release -p test_release.py && node --test tests/release/workflow.test.mjs",
     "test:settings": "npm run build && cargo build --manifest-path src-tauri/Cargo.toml --locked --example settings_bridge && playwright test --config tests/settings/playwright.config.mjs",
     "bundle": "tauri build --bundles app"
   },
