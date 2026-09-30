@@ -111,6 +111,57 @@ pub(crate) fn private_directory(prefix: &str) -> Result<tempfile::TempDir, Strin
     Ok(directory)
 }
 
+pub(crate) async fn with_directory<T>(
+    directory: tempfile::TempDir,
+    work: impl std::future::Future<Output = T>,
+) -> Result<T, String> {
+    let result = work.await;
+    #[cfg(windows)]
+    {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            match std::fs::remove_dir_all(directory.path()) {
+                Ok(()) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                // The SDK requests asynchronous Job termination, including on
+                // aborted startup. CWD/file locks can outlive that request.
+                Err(error)
+                    if matches!(error.raw_os_error(), Some(5 | 32 | 145))
+                        && tokio::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep_until(
+                        (tokio::time::Instant::now() + Duration::from_millis(10)).min(deadline),
+                    )
+                    .await;
+                }
+                Err(_) => {
+                    return Err(
+                        "Copilot stopped, but private runtime state could not be cleaned up."
+                            .into(),
+                    )
+                }
+            }
+        }
+        // Removal succeeded; disarm TempDir rather than trying to delete twice.
+        let _ = directory.keep();
+    }
+    #[cfg(not(windows))]
+    directory
+        .close()
+        .map_err(|_| "Copilot stopped, but private runtime state could not be cleaned up.")?;
+    Ok(result)
+}
+
+pub(crate) async fn shutdown(client: &Client) {
+    if !matches!(
+        tokio::time::timeout(Duration::from_secs(5), client.stop()).await,
+        Ok(Ok(()))
+    ) {
+        client.force_stop();
+        eprintln!("[copilot] stage=runtime_cleanup outcome=forced_stop");
+    }
+}
+
 pub(crate) fn runtime_program() -> Result<PathBuf, String> {
     #[cfg(target_os = "macos")]
     {
@@ -153,17 +204,11 @@ pub(crate) fn models(
             directory.path(),
             pair.access_token(),
             std::env::vars_os().map(|(k, _)| k),
-        )?;
-        runtime.block_on(query_with_deadline(
-            options,
-            &identity.login,
-            cancelled,
-            deadline,
-        ))
+        );
+        runtime.block_on(with_directory(directory, async {
+            query_with_deadline(options?, &identity.login, cancelled, deadline).await
+        }))?
     });
-    directory
-        .close()
-        .map_err(|_| "Copilot stopped, but private runtime state could not be cleaned up.")?;
     result
 }
 
@@ -232,13 +277,7 @@ async fn query_with_deadline(
             Ok(models)
         }) => result.unwrap_or_else(|_| Err("Copilot model listing timed out. Retry.".into())),
     };
-    match tokio::time::timeout(Duration::from_secs(5), client.stop()).await {
-        Ok(Ok(())) => {}
-        _ => {
-            client.force_stop();
-            eprintln!("[copilot] stage=runtime_cleanup outcome=forced_stop");
-        }
-    }
+    shutdown(&client).await;
     outcome
 }
 
@@ -570,29 +609,107 @@ mod tests {
     #[tokio::test]
     #[cfg(windows)]
     async fn windows_cancellation_terminates_owned_descendants_even_if_shutdown_stalls() {
-        for stall in [false, true] {
+        for (token, stall) in [
+            ("waiting", true),
+            ("waiting", false),
+            ("waiting-start", false),
+            ("bad-start", false),
+        ] {
             let root = private_directory("pr-sniper-process-tree-test-").unwrap();
-            let mut options = fixture_options(root.path(), "waiting");
+            let path = root.path().to_path_buf();
+            let receipts = tempfile::tempdir().unwrap();
+            let mut options = fixture_options(root.path(), token);
+            options
+                .env
+                .iter_mut()
+                .find(|(key, _)| key == "TEST_RECEIPT")
+                .unwrap()
+                .1 = receipts.path().join("receipt.jsonl").into_os_string();
             options.env.push(("TEST_SPAWN_CHILD".into(), "1".into()));
             if stall {
                 options.env.push(("TEST_HANG_SHUTDOWN".into(), "1".into()));
             }
             let cancel = AtomicBool::new(false);
             let trigger = async {
-                tokio::time::sleep(Duration::from_millis(250)).await;
-                cancel.store(true, Ordering::SeqCst);
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    loop {
+                        if let Ok(text) =
+                            std::fs::read_to_string(receipts.path().join("receipt.jsonl"))
+                        {
+                            let method = if token == "waiting" {
+                                "models.list"
+                            } else {
+                                "connect"
+                            };
+                            if text
+                                .lines()
+                                .filter_map(|line| {
+                                    serde_json::from_str::<serde_json::Value>(line).ok()
+                                })
+                                .any(|event| event["method"] == method)
+                            {
+                                break;
+                            }
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("fixture reached cancellable stage");
+                if token != "bad-start" {
+                    cancel.store(true, Ordering::SeqCst);
+                }
             };
             let started = Instant::now();
-            let (result, ()) = tokio::join!(query(options, "waiting", &cancel), trigger);
-            assert!(result.unwrap_err().contains("cancelled"));
-            assert!(started.elapsed() < Duration::from_secs(8));
-            assert!(receipt(root.path())[0]["childPid"].as_u64().is_some());
-            assert_stopped_and_catalog_only(root.path());
-            assert!(started.elapsed() < Duration::from_secs(8));
-            let path = root.path().to_path_buf();
-            root.close().expect("cleanup owned process-tree runtime");
+            let (result, ()) = tokio::join!(
+                with_directory(root, query(options, token, &cancel)),
+                trigger
+            );
+            let outcome = result.expect("production lifecycle cleaned its private CWD");
+            let error = outcome.unwrap_err();
+            assert!(
+                error.contains(if token == "bad-start" {
+                    "could not start"
+                } else {
+                    "cancelled"
+                }),
+                "{error}"
+            );
             assert!(!path.exists());
+            assert!(receipt(receipts.path())[0]["childPid"].as_u64().is_some());
+            // Process observations happen only after production cleanup, never
+            // between shutdown and directory removal.
+            let events = receipt(receipts.path());
+            assert_process_stopped(events[0]["pid"].as_u64().unwrap() as u32);
+            assert_process_stopped(events[0]["childPid"].as_u64().unwrap() as u32);
+            assert!(started.elapsed() < Duration::from_secs(8));
         }
+    }
+
+    #[tokio::test]
+    #[cfg(windows)]
+    async fn production_cleanup_deadline_keeps_a_persistent_lock_failure_visible() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = private_directory("pr-sniper-locked-cleanup-test-").unwrap();
+        let path = root.path().to_path_buf();
+        let held = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .share_mode(0)
+            .open(path.join("held"))
+            .unwrap();
+        let started = Instant::now();
+
+        let result = with_directory(root, async { "completed operation" }).await;
+
+        let elapsed = started.elapsed();
+        let retained = path.exists();
+        drop(held);
+        std::fs::remove_dir_all(&path).expect("remove only the owned lock fixture");
+        assert!(result.unwrap_err().contains("could not be cleaned up"));
+        assert!(retained);
+        assert!(elapsed >= Duration::from_secs(1));
+        assert!(elapsed < Duration::from_secs(2));
     }
 
     #[tokio::test]
@@ -643,22 +760,28 @@ mod tests {
                 .retain(|name| !environment_key_eq(name, std::ffi::OsStr::new(key)));
             config.env.push((key.into(), value.into()));
         }
-        let client = tokio::time::timeout(Duration::from_secs(30), Client::start(config))
-            .await
-            .unwrap()
-            .unwrap();
-        let pid = client.pid().expect("owned bundled runtime process");
-        let outcome = tokio::time::timeout(Duration::from_secs(10), async {
-            let status = client.get_status().await.unwrap();
-            let auth = client.get_auth_status().await.unwrap();
-            let models = client.list_models().await;
-            (status, auth, models)
+        let path = root.path().to_path_buf();
+        let (outcome, cleanup, pid) = with_directory(root, async {
+            let client = tokio::time::timeout(Duration::from_secs(30), Client::start(config))
+                .await
+                .unwrap()
+                .unwrap();
+            let pid = client.pid().expect("owned bundled runtime process");
+            let outcome = tokio::time::timeout(Duration::from_secs(10), async {
+                let status = client.get_status().await.unwrap();
+                let auth = client.get_auth_status().await.unwrap();
+                let models = client.list_models().await;
+                (status, auth, models)
+            })
+            .await;
+            let cleanup = tokio::time::timeout(Duration::from_secs(5), client.stop()).await;
+            if !matches!(&cleanup, Ok(Ok(()))) {
+                client.force_stop();
+            }
+            (outcome, cleanup, pid)
         })
-        .await;
-        let cleanup = tokio::time::timeout(Duration::from_secs(5), client.stop()).await;
-        if !matches!(&cleanup, Ok(Ok(()))) {
-            client.force_stop();
-        }
+        .await
+        .expect("production cleanup of owned offline runtime");
         let (status, auth, models) = outcome.unwrap();
         assert!(!auth.is_authenticated);
         assert!(models.is_err());
@@ -667,8 +790,6 @@ mod tests {
         );
         assert!(matches!(cleanup, Ok(Ok(()))));
         assert_process_stopped(pid);
-        let path = root.path().to_path_buf();
-        root.close().expect("remove owned offline runtime state");
         assert!(!path.exists());
         eprintln!("offline bundled runtime: version={}, unauthenticated, model rejection, no provider requests, clean shutdown", status.version);
     }

@@ -32,6 +32,11 @@ partial token-pair write, or ambient credential fallback is permitted. Account
 capacity depends on ID/login lengths; the application does not promise an
 unbounded number of accounts. Registry-capacity and failed-rotation tests
 verify preservation of prior records and absence of newly orphaned secrets.
+For an existing account reconnect, the complete prospective registry is
+serialized and validated against the native capacity before replacing its
+token pair. A longer login cannot commit new credentials and then fail the
+metadata capacity check. This preflight changes neither the established wire
+format nor the pair-before-registry write order or new-account journal.
 
 Native read/delete errors remain errors except for an actually missing item.
 Returned native blobs and temporary codec buffers are zeroized. OS credential
@@ -60,9 +65,18 @@ fences and bounded shutdown remain unchanged. Catalog and review code share
 the environment and private-directory helpers. Cleanup errors remain visible.
 No speculative SDK wrapper or console-window patch is introduced.
 The checksum-verified pinned SDK already uses a Windows Job Object for child
-tree ownership. Native fixtures verify both cooperative and forced shutdown of
-a spawned descendant, using bounded native exit-signal waits because Windows
-job termination is asynchronous.
+tree ownership. Its termination request is asynchronous. Catalog and review
+execution share the production directory lifecycle: after cooperative/forced
+shutdown or aborted startup, Windows retries only native lock/access/not-empty
+cleanup errors for at most one second, in bounded 10 ms intervals. This lets
+root/descendant CWD and file handles release before removal. Persistent locks
+still return the explicit cleanup failure; macOS retains its single close.
+The five-second graceful SDK shutdown budget is unchanged.
+
+Native fixtures invoke that same shutdown-plus-cleanup boundary with owned
+descendants, including stalled shutdown and cancelled/failed startup. Receipts
+live outside the operation root so directory absence and child exit are
+checked after production cleanup, without an intervening test-only wait.
 
 ## Evidence boundary
 

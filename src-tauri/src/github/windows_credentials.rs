@@ -88,6 +88,15 @@ impl Drop for Credential {
 }
 
 impl RecordBackend for WindowsCredentialBackend {
+    fn validate_record(&self, account: &str, secret: &[u8]) -> Result<(), StoreError> {
+        self.target(account)?;
+        if secret.len() > CRED_MAX_CREDENTIAL_BLOB_SIZE as usize {
+            eprintln!("[credentials] stage=write outcome=record_too_large");
+            return Err(StoreError::TooLarge);
+        }
+        Ok(())
+    }
+
     fn load_record(&self, account: &str) -> Result<Option<Zeroizing<Vec<u8>>>, StoreError> {
         let target = self.target(account)?;
         let mut credential = ptr::null_mut();
@@ -113,13 +122,10 @@ impl RecordBackend for WindowsCredentialBackend {
     }
 
     fn save_record(&self, account: &str, secret: &[u8]) -> Result<(), StoreError> {
+        self.validate_record(account, secret)?;
         let mut target = self.target(account)?;
         // Registry and token-pair records are single atomic native replacements.
         // Never truncate, split a pair, or spill an oversized record to plaintext.
-        if secret.len() > CRED_MAX_CREDENTIAL_BLOB_SIZE as usize {
-            eprintln!("[credentials] stage=write outcome=record_too_large");
-            return Err(StoreError::TooLarge);
-        }
         let mut secret = Zeroizing::new(secret.to_vec());
         let credential = CREDENTIALW {
             Type: CRED_TYPE_GENERIC,
@@ -463,5 +469,75 @@ mod tests {
         );
         fixture.store.delete(&upper).unwrap();
         assert!(fixture.store.load(&lower).unwrap().is_some());
+    }
+
+    #[test]
+    fn existing_account_reconnect_capacity_failure_preserves_pair_and_metadata_then_retries() {
+        let mut fixture = Fixture::new();
+        let accounts: Vec<_> = (1..=70)
+            .map(|index| {
+                ActiveAccount::new((100_000_000 + index).to_string(), format!("user{index:05}"))
+                    .unwrap()
+            })
+            .collect();
+        let before = pair("before", "refresh-before");
+        for account in &accounts {
+            fixture.keys.push(account.provider_account_id());
+            fixture.store.save_account(account, &before, false).unwrap();
+        }
+        let original_registry = fixture
+            .store
+            .inner()
+            .backend
+            .load_record("accounts:registry")
+            .unwrap()
+            .unwrap();
+        assert_eq!(original_registry.len(), 2549);
+        let renamed = ActiveAccount::new(&accounts[0].account_id, "r".repeat(21)).unwrap();
+        assert_eq!(
+            original_registry.len() + renamed.login.len() - accounts[0].login.len(),
+            2561
+        );
+        let replacement = pair("replacement", "refresh-replacement");
+
+        assert_eq!(
+            fixture.store.save_account(&renamed, &replacement, false),
+            Err(StoreError::TooLarge)
+        );
+
+        let reopened = RotationSafeStore::new(WindowsCredentialStore::with_service(
+            &fixture.store.inner().backend.service,
+        ));
+        assert_eq!(reopened.accounts().unwrap(), accounts);
+        assert_eq!(
+            reopened
+                .load(&renamed.provider_account_id())
+                .unwrap()
+                .unwrap(),
+            before
+        );
+        assert_eq!(
+            reopened
+                .inner()
+                .backend
+                .load_record("accounts:registry")
+                .unwrap()
+                .unwrap(),
+            original_registry
+        );
+
+        reopened
+            .remove_account(&accounts[69].provider_account_id())
+            .unwrap();
+        reopened
+            .save_account(&renamed, &replacement, false)
+            .unwrap();
+        let restored = reopened
+            .restore_account(&renamed.provider_account_id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.account, renamed);
+        assert_eq!(restored.pair, replacement);
+        assert_eq!(reopened.accounts().unwrap().len(), 69);
     }
 }

@@ -340,12 +340,13 @@ pub(crate) fn run<T: Transport + Send + Sync + 'static, K: Task>(
             pair.access_token(),
             std::env::vars_os().map(|(k, _)| k),
         )
-        .map_err(Failure::permanent)?;
-        runtime.block_on(execute(options, identity, operation, request))
+        .map_err(Failure::permanent);
+        runtime
+            .block_on(crate::copilot::runtime::with_directory(directory, async {
+                execute(options?, identity, operation, request).await
+            }))
+            .map_err(Failure::permanent)?
     });
-    directory
-        .close()
-        .map_err(|_| Failure::permanent("Review stopped, but private runtime cleanup failed."))?;
     result
 }
 
@@ -520,13 +521,7 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
         }
     };
     let result = tokio::select! { biased; error = monitor => Err(error), result = run => result };
-    match tokio::time::timeout(Duration::from_secs(5), client.stop()).await {
-        Ok(Ok(())) => {}
-        _ => {
-            client.force_stop();
-            eprintln!("[review] stage=cleanup outcome=forced_stop");
-        }
-    }
+    crate::copilot::runtime::shutdown(&client).await;
     result
 }
 
