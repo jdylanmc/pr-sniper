@@ -3,6 +3,7 @@ if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hoste
     throw 'The disposable version fixture is built only on a hosted CI runner.'
 }
 $repository = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'windows-installer-payload.ps1')
 $target = Join-Path $repository 'src-tauri\target'
 $base = Get-Content (Join-Path $target 'windows-installer-artifact\installer.json') -Raw | ConvertFrom-Json
 $parts = $base.version.Split('.')
@@ -28,6 +29,7 @@ if ([Diagnostics.FileVersionInfo]::GetVersionInfo($app).ProductVersion -cne $ver
 }
 $installer = Join-Path $target "release\bundle\nsis\PR Sniper_${version}_x64-setup.exe"
 if ((Get-AuthenticodeSignature $installer).Status -ne 'NotSigned') { throw 'Expected unsigned fixture.' }
+$payload = Get-PrSniperInstallerPayload -Installer $installer -Version $version -Destination (Join-Path $destination 'payload')
 Copy-Item $installer (Join-Path $destination 'upgrade-test-only.exe')
 [ordered]@{
     distribution = 'disposable-upgrade-fixture-never-release'
@@ -35,6 +37,7 @@ Copy-Item $installer (Join-Path $destination 'upgrade-test-only.exe')
     base_version = $base.version
     version = $version
     sha256 = (Get-FileHash $installer).Hash.ToLowerInvariant()
-    application_sha256 = (Get-FileHash $app).Hash.ToLowerInvariant()
+    application_sha256 = $payload.sha256
+    standalone_application_sha256 = (Get-FileHash $app).Hash.ToLowerInvariant()
     webview_fixture = $webviewFixture
 } | ConvertTo-Json | Set-Content (Join-Path $destination 'fixture.json') -Encoding utf8

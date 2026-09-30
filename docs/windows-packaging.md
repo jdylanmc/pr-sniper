@@ -134,8 +134,24 @@ npm run bundle:windows
 .\scripts\windows-installer-artifact.ps1
 ```
 
-Tauri patches bundle-type bytes into the executable, so **bundle before recording
-either artifact's hash**. Tauri uses `src-tauri\target\.tauri` for its
+The pinned Tauri bundler patches bundle-type bytes **while building the installer,
+then restores the standalone executable**. Therefore the standalone hash is not
+the installed payload hash, even after bundling. Installer metadata uses
+`scripts/windows-installer-payload.ps1` to non-executingly extract the single
+`new-app.exe` from the actual NSIS archive, verify its x64 GUI PE/identity/version
+and unsigned state, and hash those complete unmodified bytes. The helper uses an
+existing `7z.exe` on PATH or Chocolatey's bundled `tools\7z.exe`; it never installs
+a dependency. Missing/ambiguous extraction fails rather than substituting a hash.
+
+`application_sha256` identifies the bundled payload;
+`standalone_application_sha256` separately identifies the restored build output.
+The disposable upgrade fixture uses the same extraction/verification path.
+Installed acceptance still requires exact full-file SHA-256 and both version
+checks, recording expected/observed values in failure-retained diagnostics.
+It does not normalize/ignore the bundle marker or accept a version-only match.
+See the [pinned bundler patch/restore contract](https://github.com/tauri-apps/tauri/blob/8909f221d1515955fc843808032bdc5d62209c96/crates/tauri-bundler/src/bundle.rs).
+
+Tauri uses `src-tauri\target\.tauri` for its
 checksum-verified vendor tools; `CARGO_TARGET_DIR` keeps worker build outputs
 separate. The unsigned installer is
 `src-tauri\target\release\bundle\nsis\PR Sniper_VERSION_x64-setup.exe`.

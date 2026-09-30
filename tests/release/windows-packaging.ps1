@@ -24,6 +24,11 @@ function Reject([scriptblock] $Operation, [string] $Pattern) {
 try {
     . (Join-Path $repository 'scripts\windows-host-readiness.ps1')
     . (Join-Path $repository 'packaging\chocolatey\removal-state.ps1')
+    . (Join-Path $repository 'scripts\windows-installer-payload.ps1')
+    Check ((Get-PrSniperPayloadEntry @('Path = installer.exe', 'Path = $_41_\new-app.exe', 'Path = $_41_\new-uninstall.exe')) -ceq '$_41_\new-app.exe') `
+        'Select the exact application entry, not the installer or uninstaller.'
+    Reject { Get-PrSniperPayloadEntry @('Path = new-uninstall.exe') } 'exactly one'
+    Reject { Get-PrSniperPayloadEntry @('Path = $_41_\new-app.exe', 'Path = other\new-app.exe') } 'exactly one'
     $profile = Join-Path $fixture 'owned-profile'
     New-Item -ItemType Directory (Join-Path $profile 'state') | Out-Null
     $hostFixture = [pscustomobject]@{ HasExited = $false; MainWindowHandle = [IntPtr]123 }

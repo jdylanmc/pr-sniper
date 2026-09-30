@@ -1,5 +1,6 @@
 param([string] $Destination)
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'windows-installer-payload.ps1')
 $repository = Split-Path -Parent $PSScriptRoot
 $target = if ($env:CARGO_TARGET_DIR) {
     if ([IO.Path]::IsPathRooted($env:CARGO_TARGET_DIR)) { [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR) }
@@ -35,6 +36,7 @@ if ((Get-AuthenticodeSignature $installer).Status -ne 'NotSigned') {
 }
 $filename = "pr-sniper-$version-x64-setup.exe"
 $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+$payload = Get-PrSniperInstallerPayload -Installer $installer -Version $version -Destination "$Destination-payload"
 New-Item -ItemType Directory $Destination -ErrorAction Stop | Out-Null
 Copy-Item -LiteralPath $installer -Destination (Join-Path $Destination $filename)
 if ((Get-FileHash (Join-Path $Destination $filename)).Hash -ine $hash) { throw 'Staged installer changed.' }
@@ -45,7 +47,8 @@ if ((Get-FileHash (Join-Path $Destination $filename)).Hash -ine $hash) { throw '
     target = $source.target
     filename = $filename
     sha256 = $hash
-    application_sha256 = $source.sha256
+    application_sha256 = $payload.sha256
+    standalone_application_sha256 = $source.sha256
     bundle_id = 'com.jdylanmc.pr-sniper'
     distribution = 'unsigned-ci-candidate-not-a-public-release'
     signed = $false
