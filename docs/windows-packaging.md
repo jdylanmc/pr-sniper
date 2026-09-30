@@ -32,6 +32,26 @@ uninstaller. This cleanup holds the same lifecycle mutex after native exit.
 Foreign values/nonempty containers survive; in-place `_?=` self-deletion is
 intentionally deferred, not treated as a failed native removal.
 
+Shortcut inspection distinguishes absent, readable-owned, readable-foreign and
+unreadable/unresolved. COM load/path failures are not foreign ownership: native
+uninstall checks before destruction and again before moving the shortcut, and
+aborts or rolls back on an unreadable result. An empty owned uninstall key must
+actually disappear before backups are discarded; a Delete-only denial restores
+the prior registration/files. A nonempty foreign key is retained instead.
+
+After native uninstall returns zero, Chocolatey exclusively writes and flushes
+`native-removal.json`, bound to the exact installation receipt bytes, version,
+directory and uninstaller hash. If subsequent mutex acquisition or executable
+deletion fails, retrying the same package uses this completion receipt under the
+SID mutex, rechecks the exact remaining executable and **all** removal
+postconditions, and finishes only that cleanup without rerunning native uninstall.
+Absent registration alone never admits resume. Missing/corrupt completion
+evidence, changed hashes, a new installation, an empty leftover key or pending
+transaction fail closed; do not manufacture a receipt. Persistence failure or
+interruption with uncertain phase still requires exact-state reconciliation.
+The now-empty application directory may remain; no extra fallible directory
+cleanup follows deletion of the last recovery executable.
+
 The pinned Tauri CLI 2.11.4 bundles the existing x64 GUI application using
 `tauri.windows.conf.json` and `src-tauri/windows/installer.nsi`. This small
 Tauri-supported NSIS template deliberately avoids the upstream template's
@@ -273,6 +293,10 @@ values and the retained Chocolatey receipt, then release the obstruction and
 retry. Injection is compiled only into the disposable upgrade fixture, never the
 ordinary installer. Its WebView2 lookups use a unique synthetic key (machine
 miss/current-user hit); no real runtime keys, installation or policy are changed.
+They also deny shortcut reads for direct/package removal, deny only registry
+Delete, and exercise a read-only post-native uninstaller plus a deterministic
+other-thread cleanup mutex conflict before retrying the same package. Unknown
+values, subkeys and a readable retargeted shortcut must survive.
 
 Never run either installer or `choco install/upgrade/uninstall` as incidental
 validation on a shared machine with an existing app. Pack-only tests do not
