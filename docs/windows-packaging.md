@@ -13,6 +13,10 @@ cross-session mutex, held across interactive pages and mutation. Owner/version
 and shortcut approvals are rechecked at the mutating section and after payload
 staging. A waiting old installer cannot downgrade a concurrently upgraded app.
 WebView2 machine-miss/zero-version fallback has its own handled error scope.
+Post-staging validation refusals (including the old app starting during extraction)
+enter the existing rollback and remove only this operation's claimed stages.
+The original refusal is retained even if cleanup also fails. Pre-existing foreign
+staging paths still cause an untouched refusal before that cleanup route is armed.
 
 Candidate application, uninstaller and shortcut are staged before replacement.
 Only exact old owned files are moved to backups; all ten owned registration

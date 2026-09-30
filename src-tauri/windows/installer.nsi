@@ -74,9 +74,14 @@ Var RollbackFailed
 Var FailureStage
 Var OriginalFailure
 Var ShortcutState
+Var RevalidationFailureHandler
 
 !macro Fail message
   SetErrorLevel 2
+  ${If} $RevalidationFailureHandler > 0
+    StrCpy $FailureStage "${message}"
+    Call $RevalidationFailureHandler
+  ${EndIf}
   Abort "${message}"
 !macroend
 
@@ -493,6 +498,7 @@ Function ${prefix}Rollback
   ${EndIf}
   Call ${prefix}CloseRegistry
   ${If} $RollbackFailed = 0
+    DetailPrint "Original failure: $OriginalFailure"
     Call ${prefix}CleanupTransaction
     DetailPrint "Rolled back: $OriginalFailure"
     !insertmacro Fail "Operation failed ($OriginalFailure). Previous owned state was restored."
@@ -540,7 +546,21 @@ Function un.onUninstSuccess
   Call un.ReleaseLifecycle
 FunctionEnd
 
+Function RollbackRevalidation
+  StrCpy $RevalidationFailureHandler 0
+  SetOutPath "$INSTDIR"
+  Call Rollback
+FunctionEnd
+
 Function ValidateInstall
+!ifdef PR_SNIPER_TEST_BUILD
+  ${If} $RevalidationFailureHandler > 0
+    ReadEnvStr $0 PR_SNIPER_NSIS_TEST_FAIL
+    ${If} $0 == "install-revalidation"
+      !insertmacro Fail "injected post-staging validation refusal"
+    ${EndIf}
+  ${EndIf}
+!endif
   !insertmacro RequireStopped
   ; Distinguish an absent installer key from foreign or unreadable state.
   StrCpy $PreviousVersion ""
@@ -627,7 +647,10 @@ Section Install
     Goto install_rollback
   ${EndIf}
   ; Extraction can take time. Revalidate after it, not just on the welcome page.
+  ; Arm cleanup only for our successfully claimed and populated staging paths.
+  GetFunctionAddress $RevalidationFailureHandler RollbackRevalidation
   Call ValidateInstall
+  StrCpy $RevalidationFailureHandler 0
   ClearErrors
   WriteINIStr "$Transaction\recovery.ini" "schema-v1" "previous-version" "$PreviousVersion"
   ${If} ${Errors}
