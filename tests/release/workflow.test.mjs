@@ -294,8 +294,18 @@ test("real installer acceptance depends on native checks and a fresh hosted VM",
   assert.equal(job["runs-on"], "windows-2022");
   assert.equal(job.environment, undefined);
   assert.equal(job["continue-on-error"], undefined);
+  const diagnostics = job.steps.find(
+    (step) => step.name === "Retain native installer diagnostics",
+  );
+  assert.ok(diagnostics);
+  assert.equal(diagnostics.if, "${{ always() }}");
+  assert.equal(
+    diagnostics.with.path,
+    "src-tauri/target/windows-acceptance/installer-diagnostics/",
+  );
+  assert.equal(diagnostics.with["if-no-files-found"], "warn");
   for (const step of job.steps) {
-    assert.equal(step.if, undefined);
+    assert.equal(step.if, step === diagnostics ? "${{ always() }}" : undefined);
     assert.equal(step["continue-on-error"], undefined);
     if (step.uses) assert.match(step.uses, /^actions\/[a-z-]+@[a-f0-9]{40}$/);
     if (step.uses?.startsWith("actions/download-artifact@")) {
@@ -320,6 +330,41 @@ test("real installer acceptance depends on native checks and a fresh hosted VM",
   assert.match(
     template,
     /Install Microsoft Edge WebView2 Evergreen Runtime first/,
+  );
+});
+
+test("native diagnostics retain the refusal without weakening operation status or exposing app data", () => {
+  const template = readFileSync("src-tauri/windows/installer.nsi", "utf8");
+  const trace = template.match(/!macro Trace message([\s\S]*?)!macroend/)[1];
+  assert.doesNotMatch(
+    trace,
+    /ClearErrors|SetErrorLevel|Abort|ReadReg|ReadEnvStr/,
+  );
+  assert.match(trace, /Push \$0[\s\S]*Push \$1[\s\S]*Pop \$1[\s\S]*Pop \$0/);
+  assert.match(
+    template,
+    /!macro Fail message\s+!insertmacro Trace "refusal: \$\{message\}"\s+SetErrorLevel 2/,
+  );
+  assert.match(
+    template,
+    /CreateFileW\(w "\$DiagnosticPath", i 0x40000000, i 1, p 0, i 1,/,
+  );
+  assert.match(
+    template,
+    /ReadEnvStr \$DiagnosticDirectory PR_SNIPER_INSTALLER_DIAGNOSTICS/,
+  );
+  const acceptance = readFileSync(
+    "scripts/windows-installer-acceptance.ps1",
+    "utf8",
+  );
+  assert.match(
+    acceptance,
+    /\$failure = \$_[\s\S]*preserving original acceptance failure/,
+  );
+  assert.match(acceptance, /-Filter 'nsis-\*\.txt' -File/);
+  assert.doesNotMatch(
+    acceptance,
+    /chocolatey\.log|Start-Transcript|Get-ChildItem Env:/,
   );
 });
 

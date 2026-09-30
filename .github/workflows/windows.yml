@@ -94,6 +94,13 @@ jobs:
           path: src-tauri/target/upgrade-fixture
       - name: Install, launch, upgrade and uninstall only on this fresh hosted VM
         run: .\scripts\windows-installer-acceptance.ps1 -Candidate src-tauri\target\candidate -Upgrade src-tauri\target\upgrade-fixture
+      - name: Retain native installer diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pr-sniper-windows-installer-diagnostics-${{ github.sha }}
+          path: src-tauri/target/windows-acceptance/installer-diagnostics/
+          if-no-files-found: warn
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pr-sniper-windows-installer-acceptance-${{ github.sha }}
