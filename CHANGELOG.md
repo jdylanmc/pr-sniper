@@ -7,6 +7,12 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- Dispatch verified releases to the dedicated tap-owned publisher rather than
+  running Homebrew under the application release wrapper. Confirm exact cask
+  bytes before reporting success; retain an unconfirmed state on timeout.
+  Tap CI audits and verifies a disposable install without accessing Apple
+  signing credentials or replacing published release assets.
+
 - Stop browser-test polling and drain accepted native Store calls before
   deleting each isolated fixture directory, preventing late writes from racing
   cleanup. Keep application behavior, assertions, retries and timeouts unchanged.

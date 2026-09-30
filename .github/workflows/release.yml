@@ -46,7 +46,7 @@ jobs:
         with:
           ref: ${{ needs.gate.outputs.sha }}
           persist-credentials: false
-      - name: Require scoped tap write access and merged cask validation
+      - name: Require scoped tap dispatch access and merged publisher
         env:
           GITHUB_TOKEN: ${{ github.token }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -117,14 +117,12 @@ jobs:
 
   tap:
     needs: [gate, publish]
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     environment: pr-sniper-tap
     permissions:
       contents: read
     env:
       SOURCE_SHA: ${{ needs.gate.outputs.sha }}
-      HOMEBREW_NO_AUTO_UPDATE: "1"
-      HOMEBREW_DEVELOPER: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -134,7 +132,7 @@ jobs:
         with:
           name: notarized-macos-release
           path: ${{ runner.temp }}/pr-sniper-release-assets
-      - name: Verify published bytes and update the exact cask
+      - name: Verify public bytes, dispatch tap publisher and confirm exact cask
         env:
           GITHUB_TOKEN: ${{ github.token }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
