@@ -96,12 +96,13 @@ notarization and a Homebrew cask for explicitly tagged Apple Silicon releases.
 The first published version is a separate human-authorized release step; a
 local/CI ad-hoc bundle is not the notarized distribution.
 
-## Windows CI baseline
+## Windows CI and persistence foundations
 
 [Windows frontend and shared checks](.github/workflows/windows.yml) runs on
 pull requests and `main` pushes using a GitHub-hosted Windows runner. It restores
 locked npm dependencies, runs the production TypeScript/Vite build and tests
-portable release logic plus both platforms' workflow contracts. It needs no
+portable release logic plus both platforms' workflow contracts, then compiles
+and tests the real Rust persistence/policy foundation on Windows. It needs no
 signing, publishing or provider credentials and does not publish artifacts.
 macOS CI and signed release gates remain unchanged.
 
@@ -120,18 +121,23 @@ release suite, including the macOS-path signing tests and hosted native Keychain
 check. Release tests use fixtures and mocked provider/native operations, not
 real signing or publication.
 
-**This is not Windows native app validation or a runnable Windows release.**
-The Rust host still depends on macOS Keychain, notifications, launch-at-login
-and Unix filesystem APIs. The frontend build does not compile that host.
-Native work follows this baseline's merge: platform prerequisites
-([#57](https://github.com/jdylanmc/pr-sniper/issues/57)), native portability
+**This is not full Windows native app validation or a runnable release.**
+The Rust host still needs native credentials, runtime, tray/login, bundle icon
+and notification adapters. The native foundation harness uses the actual
+production storage/policy modules, not a replacement implementation.
+See [Windows prerequisites and checks](docs/windows-development.md) and
+[the persistence boundary](docs/adr/0004-windows-persistence-foundations.md)
+for MSVC/Rust/WebView2 setup, native test commands, permission behavior and
+remaining full-app compiler blockers under
+[#57](https://github.com/jdylanmc/pr-sniper/issues/57). Native portability
 ([#58](https://github.com/jdylanmc/pr-sniper/issues/58),
 [#59](https://github.com/jdylanmc/pr-sniper/issues/59),
 [#60](https://github.com/jdylanmc/pr-sniper/issues/60)) and full native checks
 with a launch-verified Windows artifact
-([#61](https://github.com/jdylanmc/pr-sniper/issues/61)). Rust/MSVC and WebView2
-are not required for this frontend/shared-check baseline; native setup and
-Chocolatey distribution are separate follow-ups.
+([#61](https://github.com/jdylanmc/pr-sniper/issues/61)) remain separate.
+Rust/MSVC is required for native foundation checks, but not the three
+frontend/shared commands above. WebView2 is needed for eventual app launch;
+Chocolatey distribution is a separate follow-up.
 
 ## Local data and diagnostics
 

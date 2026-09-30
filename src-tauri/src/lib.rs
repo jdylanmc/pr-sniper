@@ -6,11 +6,14 @@ pub mod github;
 pub mod monitoring;
 pub mod notifications;
 pub mod policy;
+mod process_path;
 pub mod publication;
 pub mod queue;
 pub mod review;
+#[cfg(target_os = "macos")]
 pub mod startup;
 pub mod storage;
+mod storage_state;
 
 use github::{metadata::PullRequest, provider::Connection, ConnectionError};
 use serde::Serialize;
@@ -2162,7 +2165,16 @@ pub fn run() {
             let root = match override_root {
                 Some(root) if root.is_absolute() => root,
                 Some(_) => return Err("PR_SNIPER_DATA_DIR must be an absolute path.".into()),
-                None => app.path().app_data_dir()?,
+                None => {
+                    #[cfg(windows)]
+                    {
+                        app.path().app_local_data_dir()?
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        app.path().app_data_dir()?
+                    }
+                }
             };
             let (github_keychain, legacy_github_keychain) =
                 github_keychain_stores(isolated, std::env::var_os("PR_SNIPER_KEYCHAIN_SERVICE"))?;
