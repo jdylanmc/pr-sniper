@@ -888,6 +888,7 @@ export async function mountSettings(app: HTMLElement) {
               : "GitHub - account required";
         const row = document.createElement("article");
         row.className = "repository-row";
+        const localName = item.path.split(isWindows ? /[\\/]/ : "/").pop();
         const duplicateBinding =
           !!repository &&
           repositories().filter((candidate) => candidate.name === item.name)
@@ -896,13 +897,11 @@ export async function mountSettings(app: HTMLElement) {
           "aria-label",
           duplicateBinding
             ? `${item.name} as ${actingAccount?.login ?? repository.provider_account_id ?? repository.id}`
-            : (item.name ??
-                item.path.split("/").pop() ??
-                "Unavailable repository"),
+            : (item.name ?? localName ?? "Unavailable repository"),
         );
         const assignmentCount = repository?.assignments?.length ?? 0;
-        row.innerHTML = `<input type="checkbox" aria-label="Monitor ${escape(item.name ?? item.path.split("/").pop() ?? "repository")}" ${repository?.enabled ? "checked" : ""} ${!item.name ? "disabled" : ""} />
-          <span class="repo-symbol">${icon("integrations")}</span><div class="repository-info"><strong>${escape(item.name?.split("/")[1] ?? item.path.split("/").pop() ?? "")}</strong><p>${escape(item.name ?? item.unavailable ?? "Unavailable")}</p><p>${escape(providerLabel)}</p>${item.paths.length ? `<details class="clone-paths"><summary>${item.paths.length} local ${item.paths.length === 1 ? "clone" : "clones"}</summary><ul>${item.paths.map((path) => `<li>${escape(path)}</li>`).join("")}</ul></details>` : ""}</div>
+        row.innerHTML = `<input type="checkbox" aria-label="Monitor ${escape(item.name ?? localName ?? "repository")}" ${repository?.enabled ? "checked" : ""} ${!item.name ? "disabled" : ""} />
+          <span class="repo-symbol">${icon("integrations")}</span><div class="repository-info"><strong>${escape(item.name?.split("/")[1] ?? localName ?? "")}</strong><p>${escape(item.name ?? item.unavailable ?? "Unavailable")}</p><p>${escape(providerLabel)}</p>${item.paths.length ? `<details class="clone-paths"><summary>${item.paths.length} local ${item.paths.length === 1 ? "clone" : "clones"}</summary><ul>${item.paths.map((path) => `<li>${escape(path)}</li>`).join("")}</ul></details>` : ""}</div>
           ${item.name ? `<span class="repository-note">${assignmentCount ? `${assignmentCount} agent${assignmentCount === 1 ? "" : "s"} assigned` : "No agents assigned"}</span><button class="configure">Settings</button>` : ""}`;
         row.querySelector<HTMLInputElement>("input")!.onchange = (event) => {
           select(item, (event.target as HTMLInputElement).checked);
