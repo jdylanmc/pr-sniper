@@ -277,12 +277,19 @@ pub fn evaluate_review_gate(
         stop = Some("Monitoring scope is no longer active.".into());
     }
     if stop.is_none() {
-        stop = crate::monitoring::review_policy(settings, &review.job, Some(pull)).err();
+        stop = crate::monitoring::review_policy(
+            settings,
+            current_job.unwrap_or(&review.job),
+            Some(pull),
+        )
+        .err();
     }
     if stop.is_none() && stale {
         stop = Some("The reviewed diff changed; this output is stale.".into());
     }
-    if stop.is_none() && crate::review::requires_trust(&review.job, pull) && !review.trust_confirmed
+    if stop.is_none()
+        && crate::review::requires_trust(settings, current_job.unwrap_or(&review.job), pull)
+        && !review.trust_confirmed
     {
         stop = Some("Trust confirmation for this exact revision is required.".into());
     }

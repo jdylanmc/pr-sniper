@@ -9,7 +9,7 @@ use crate::{
     },
     monitoring::{self, PollTicket},
     now_seconds,
-    publication::{self, GatePermissions, RemoteState, WriteFailure},
+    publication::{self, GatePermissions, WriteFailure},
     review::{runtime, Selection},
     Host,
 };
@@ -35,25 +35,8 @@ pub(crate) fn scan(
             .store
             .lock()
             .map_err(|_| github::ConnectionError::Configuration)?;
-        let settings = store
-            .load_settings()
-            .map_err(|_| github::ConnectionError::Configuration)?;
-        store
-            .load_publications()
+        super::polling_origins(&store, ticket, pulls)
             .map_err(|_| github::ConnectionError::Configuration)?
-            .into_iter()
-            .filter(|origin| {
-                origin.review.job.configuration_id == ticket.repository_id
-                    && origin.review.job.assignment_id == ticket.assignment_id
-                    && origin.review.job.account_id == ticket.provider_account_id
-                    && origin.receipts.last().is_some_and(|r| {
-                        r.state == RemoteState::Commented && !r.comment_ids.is_empty()
-                    })
-                    && pulls.iter().any(|pull| {
-                        monitoring::review_policy(&settings, &origin.review.job, Some(pull)).is_ok()
-                    })
-            })
-            .collect::<Vec<_>>()
     };
     if origins.is_empty() {
         return Ok(vec![]);
@@ -90,10 +73,7 @@ pub(crate) fn scan(
             .snapshot();
         let operation = health
             .iter()
-            .find(|h| {
-                h.repository_id == guard_ticket.repository_id
-                    && h.assignment_id == guard_ticket.assignment_id
-            })
+            .find(|h| h.repository_id == guard_ticket.repository_id)
             .and_then(|h| h.operation.as_ref())
             .ok_or(github::ConnectionError::Configuration)?;
         if now_seconds().map_err(|_| github::ConnectionError::Configuration)?
@@ -162,8 +142,13 @@ pub(crate) fn admit(
         let run = FollowUp::new(&observation.origin, observation.thread)?;
         if jobs.iter().any(|job| {
             run.review.matches_job(job) && monitoring::review_policy(&settings, job, None).is_ok()
-        }) {
-            super::admit(&mut runs, &observation.origin, run.thread)?;
+        }) && super::admit(&mut runs, &observation.origin, run.thread)?
+        {
+            let work = runs
+                .last_mut()
+                .ok_or("The admitted follow-up was not retained.")?;
+            work.enqueue_order = Some(store.allocate_enqueue_order()?);
+            work.enqueued_at = Some(now_seconds()?);
         }
     }
     if runs.len() != before {

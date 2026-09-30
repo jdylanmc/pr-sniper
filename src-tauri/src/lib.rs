@@ -1095,7 +1095,8 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                 if connection.repository.id != ticket_for_poll.provider_repository_id {
                     return Err(ConnectionError::RepositoryChanged);
                 }
-                let pull_requests = client.poll_pull_requests(&connection.repository)?;
+                let pull_requests = client
+                    .poll_tracked_pull_requests(&connection.repository, &ticket_for_poll.tracked)?;
                 follow_ups = follow_up::host::scan(&app, &ticket_for_poll, &pull_requests)?;
                 Ok(monitoring::PollResult {
                     connection,
@@ -2569,6 +2570,21 @@ mod github_auth_tests {
             assignments: Vec::new(),
             primary_assignment_id: None,
         });
+        settings.agents.push(
+            serde_json::from_value(serde_json::json!({
+                "id":"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1","name":"Polling fixture",
+                "model":"fixture-model","ai_account":{"provider":"copilot","account_id":"33"},
+                "prompt":"Review safely.","signature":"fixture"
+            }))
+            .unwrap(),
+        );
+        settings.repositories[0].assignments.push(
+            serde_json::from_value(serde_json::json!({
+                "id":"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee2","agent_id":settings.agents[0].id,
+                "schedule":{"kind":"interval","minutes":15,"timezone":"UTC"},"comment":false
+            }))
+            .unwrap(),
+        );
         store.save_settings(&settings).unwrap();
         let context = Monitor::activation_context(&settings, &settings.repositories[0].id).unwrap();
         let mut state = store.load_monitoring_state().unwrap();

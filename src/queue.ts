@@ -1,8 +1,32 @@
 import { invoke } from "@tauri-apps/api/core";
 
+export interface NormalWork {
+  id: string;
+  item_id: string;
+  iteration_id: string;
+  iteration: number;
+  agent_id: string;
+  enqueue_order: number;
+  pass_ordinal: number;
+  trigger:
+    | "admission"
+    | "new_revision"
+    | "reopened"
+    | "assignment_added"
+    | "legacy_admission";
+  admission: {
+    watched_author: boolean;
+    all_authors: boolean;
+    requested_reviewer: boolean;
+  };
+  legacy_item_id?: string;
+}
+
 export interface QueueItem {
   id: string;
+  aliases?: string[];
   job: {
+    work?: NormalWork;
     repository_name: string;
     number: number;
     title: string;
@@ -22,7 +46,9 @@ export interface QueueItem {
     | "failed"
     | "blocked"
     | "stale"
-    | "stale_after_publication";
+    | "stale_after_publication"
+    | "closed"
+    | "merged";
   summary: string;
   warnings: string[];
   review_keys: string[];
@@ -41,6 +67,8 @@ const labels: Record<QueueItem["state"], string> = {
   blocked: "Blocked",
   stale: "Stale review",
   stale_after_publication: "Stale after publication",
+  closed: "Closed on GitHub",
+  merged: "Merged on GitHub",
 };
 
 export async function openDestination(
@@ -121,6 +149,8 @@ export function renderQueue(
   function draw(focus: boolean) {
     if (!loaded) return;
     signature = JSON.stringify([items, selected]);
+    const matches = (item: QueueItem) =>
+      item.id === selected || !!item.aliases?.includes(selected ?? "");
     root.replaceChildren();
     const intro = document.createElement("p");
     intro.className = "hint";
@@ -137,7 +167,7 @@ export function renderQueue(
       const row = document.createElement("article");
       row.className = "queue-item";
       row.dataset.state = item.state;
-      row.dataset.selected = String(selected === item.id);
+      row.dataset.selected = String(matches(item));
       row.setAttribute(
         "aria-label",
         `${item.job.repository_name} #${item.job.number}`,
@@ -150,6 +180,10 @@ export function renderQueue(
       const context = document.createElement("p");
       context.className = "hint";
       context.textContent = `PR author: ${item.job.author_login ?? "unavailable"}. Acting GitHub account: ${item.job.account_login} (${item.job.account_id}). Reviewed / detected head: ${item.job.head_sha}.`;
+      if (item.job.work)
+        context.append(
+          ` Iteration ${item.job.work.iteration} (${item.job.work.iteration_id}).`,
+        );
       const summary = document.createElement("p");
       summary.textContent = item.summary;
       row.append(state, heading, context, summary);
@@ -164,7 +198,7 @@ export function renderQueue(
       const evidence = document.createElement("button");
       evidence.type = "button";
       evidence.textContent = "Evidence and actions";
-      evidence.setAttribute("aria-pressed", String(selected === item.id));
+      evidence.setAttribute("aria-pressed", String(matches(item)));
       evidence.onclick = () => choose(item.id, true);
       const github = document.createElement("button");
       github.type = "button";
@@ -181,7 +215,7 @@ export function renderQueue(
     if (initialized && selected !== null) {
       const navigation = document.createElement("p");
       navigation.setAttribute("role", "status");
-      navigation.textContent = items.some((item) => item.id === selected)
+      navigation.textContent = items.some(matches)
         ? "Showing evidence and actions for the selected account, repository and revision."
         : "The exact saved queue destination is no longer available. No different PR or revision was selected.";
       const clear = document.createElement("button");
@@ -191,11 +225,7 @@ export function renderQueue(
       root.append(navigation);
     }
     select(
-      !initialized
-        ? undefined
-        : selected === null
-          ? null
-          : items.find((item) => item.id === selected),
+      !initialized ? undefined : selected === null ? null : items.find(matches),
       focus,
     );
   }

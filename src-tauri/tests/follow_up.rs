@@ -147,6 +147,42 @@ fn prepared(origin: &Publication) -> FollowUp {
     run
 }
 
+#[test]
+fn reply_work_ordinals_and_fifo_metadata_are_independent_of_retry_attempts() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let origin = origin();
+    let mut runs = Vec::new();
+    assert!(follow_up::admit(&mut runs, &origin, thread()).unwrap());
+    runs[0].enqueue_order = Some(store.allocate_enqueue_order().unwrap());
+    runs[0].enqueued_at = Some(100);
+    let mut operation = runs[0].operation("thread_analysis", 100);
+    operation.begin_attempt(100).unwrap();
+    operation.fail(&Failure::timeout().monitoring(), 101);
+    operation
+        .begin_attempt(operation.next_attempt_at.unwrap())
+        .unwrap();
+    runs[0].analysis = Some(operation);
+    store.save_follow_ups(&runs).unwrap();
+    let mut runs = store.load_follow_ups().unwrap();
+    assert_eq!(runs[0].reply_ordinal, Some(1));
+    assert_eq!(runs[0].enqueue_order, Some(1));
+    assert_eq!(runs[0].analysis.as_ref().unwrap().attempt_count, 2);
+    assert!(!follow_up::admit(&mut runs, &origin, thread()).unwrap());
+    let mut next = thread();
+    let mut reply = comment("102", "Here is new context.", Some("100"));
+    reply.published_at = "2026-09-27T00:01:00Z".into();
+    next.comments.push(reply);
+    assert!(follow_up::admit(&mut runs, &origin, next).unwrap());
+    runs[1].enqueue_order = Some(store.allocate_enqueue_order().unwrap());
+    assert_eq!(runs[1].reply_ordinal, Some(2));
+    assert_eq!(runs[1].enqueue_order, Some(2));
+    assert_eq!(runs[1].analysis, None);
+    store.save_follow_ups(&runs).unwrap();
+    std::fs::remove_file(root.path().join("state/queue.json")).unwrap();
+    assert_eq!(store.allocate_enqueue_order().unwrap(), 3);
+}
+
 #[derive(Clone, Copy)]
 enum Fault {
     Before,

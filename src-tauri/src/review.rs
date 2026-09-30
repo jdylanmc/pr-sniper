@@ -123,6 +123,11 @@ impl Selection {
 }
 
 pub fn key(job: &QueueJob, assignment_id: &str) -> String {
+    if let Some(work) = &job.work {
+        if job.assignment_id.as_deref() == Some(assignment_id) {
+            return work.id.clone();
+        }
+    }
     // Tuple encoding is collision-free even when user configuration IDs contain delimiters.
     serde_json::json!([
         job.provider,
@@ -156,7 +161,30 @@ impl ReviewRun {
     pub fn matches_job(&self, job: &QueueJob) -> bool {
         job.assignment_id.as_deref() == Some(&self.assignment_id)
             && key(job, &self.assignment_id) == self.key
+            && job.account_id == self.job.account_id
+            && (job.configuration_id == self.job.configuration_id
+                || self.job.configuration_id.is_empty())
+            && job.repository_id == self.job.repository_id
+            && job.pull_request_id == self.job.pull_request_id
+            && job.head_sha == self.job.head_sha
     }
+}
+
+pub fn validate_execution_selection(store: &Store, run: &ReviewRun) -> Result<(), Failure> {
+    let settings = store.load_settings().map_err(Failure::permanent)?;
+    let jobs = store.load_queue().map_err(Failure::permanent)?;
+    let job = jobs
+        .iter()
+        .find(|j| run.matches_job(j))
+        .ok_or_else(|| Failure::permanent("Review detection is no longer available."))?;
+    let current =
+        Selection::resolve(&settings, job, &run.assignment_id).map_err(Failure::permanent)?;
+    if current != run.selection || (!current.policy.automatic_agent_start && !run.manual_start) {
+        return Err(Failure::permanent(
+            "Agent configuration or start gate changed; explicitly retry.",
+        ));
+    }
+    Ok(())
 }
 
 pub fn restore(store: &Store) -> Result<(), String> {
@@ -176,8 +204,13 @@ pub fn restore(store: &Store) -> Result<(), String> {
     Ok(())
 }
 
-pub fn requires_trust(job: &QueueJob, pull: &PullRequest) -> bool {
-    !job.watched_author || pull.head_repository_id.as_deref() != Some(&job.repository_id)
+pub fn requires_trust(settings: &Settings, job: &QueueJob, pull: &PullRequest) -> bool {
+    let watched = if job.work.is_some() {
+        monitoring::currently_watched(settings, job, pull.author.as_ref().map(|a| a.id.as_str()))
+    } else {
+        job.watched_author
+    };
+    !watched || pull.head_repository_id.as_deref() != Some(&job.repository_id)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

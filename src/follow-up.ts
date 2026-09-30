@@ -12,6 +12,8 @@ export interface FollowUpCandidate {
   automatic_publication: boolean;
   human_gate: boolean;
   run: {
+    reply_ordinal?: number | null;
+    enqueue_order?: number | null;
     id: string;
     phase: string;
     trigger_id: string;
@@ -115,6 +117,11 @@ export function renderFollowUps(
       const state = document.createElement("p");
       state.textContent = `Follow-up: ${run.phase.replaceAll("_", " ")}. Start: ${candidate.automatic_start ? "automatic" : "manual"}; reply publication: ${candidate.automatic_publication ? "automatic" : "confirmation required"}.`;
       row.append(heading, identity, state);
+      if (run.reply_ordinal != null) {
+        const order = document.createElement("p");
+        order.textContent = `Reply work ${run.reply_ordinal}; queue order ${run.enqueue_order ?? "not recorded"}. Retry attempts are separate.`;
+        row.append(order);
+      }
       for (const [label, operation] of [
         ["Analysis", run.analysis],
         ["Publication", run.publication],

@@ -237,13 +237,13 @@ fn invocation_revalidates_head_lifecycle_trigger_and_trust() {
         }
         assert!(pr_sniper_lib::monitoring::review_policy(&settings, &job, Some(&changed)).is_err());
     }
-    assert!(!review::requires_trust(&job, &pull));
+    assert!(!review::requires_trust(&settings, &job, &pull));
     let mut fork = pull.clone();
     fork.head_repository_id = Some("200".into());
-    assert!(review::requires_trust(&job, &fork));
+    assert!(review::requires_trust(&settings, &job, &fork));
     let mut all_authors = job;
     all_authors.watched_author = false;
-    assert!(review::requires_trust(&all_authors, &pull));
+    assert!(review::requires_trust(&settings, &all_authors, &pull));
 }
 
 #[test]

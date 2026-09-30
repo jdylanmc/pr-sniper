@@ -26,7 +26,7 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
     let settings = store.load_settings()?;
     let jobs = store.load_queue()?;
     let publications = store.load_publications()?;
-    let reviews = store.load_reviews()?;
+    let reviews = store.review_evidence()?;
     let latest: std::collections::BTreeMap<_, _> = reviews
         .iter()
         .map(|review| (&review.key, &review.operation.id))

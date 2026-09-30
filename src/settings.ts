@@ -1331,7 +1331,7 @@ export async function mountSettings(app: HTMLElement) {
       const scope = dialog(
         `Monitoring scope for ${repository.name}`,
         `<p>Found <strong data-matching-count>${preview.candidates.length}</strong> matching open, non-draft pull request${preview.candidates.length === 1 ? "" : "s"} through ${escape(preview.account_login)} (${escape(preview.account_id)}).</p>
-        <p class="settings-hint">Choose what can enter detection now. New head revisions are evaluated later against the current author/reviewer filter. All-author matching does not establish trust.</p>
+        <p class="settings-hint">Choose the initial author-matched backlog. Explicit reviewer requests can admit older PRs. Once admitted, a PR stays tracked until verified closure or merge; trust and execution gates still apply. All-author matching does not establish trust.</p>
         <fieldset class="activation-choice"><legend>Initial scope</legend>
           <label><input type="radio" name="scope-mode" value="new_only" checked />New pull requests only</label>
           <label><input type="radio" name="scope-mode" value="selected_existing" />Selected existing pull requests plus new pull requests</label>
@@ -1683,7 +1683,7 @@ export async function mountSettings(app: HTMLElement) {
       <label>Cron expression<input id="global-cron" value="${escape(schedule.kind === "cron" ? schedule.expression : "")}" placeholder="*/15 * * * *" /></label>
       <label>Schedule helper<select id="cron-helper"><option value="">Custom five-field expression</option><option value="*/15 * * * *">Every 15 minutes</option><option value="0 * * * *">Every hour</option><option value="0 9 * * MON-FRI">Weekdays at 09:00</option></select></label>
       <label>Time zone<input id="global-timezone" value="${escape(schedule.timezone)}" /></label>
-      <p class="settings-hint">Five fields: minute, hour, day, month, weekday. Evaluated in this IANA time zone, including its daylight-saving rules. This is the saved vNext policy; the global scheduling and capacity engines are separate follow-ups.${schedule.kind === "interval" ? ` Saved legacy interval: ${schedule.minutes} minutes. Retained until you explicitly choose a cron expression; no automatic conversion.` : ""}</p>
+      <p class="settings-hint">Five fields: minute, hour, day, month, weekday. Evaluated in this IANA time zone, including its daylight-saving rules. One global scan covers enabled, scope-confirmed repositories. The shared-capacity engine remains a separate follow-up.${schedule.kind === "interval" ? ` Saved legacy interval: ${schedule.minutes} minutes. Polling is blocked until you explicitly choose a cron expression; no automatic conversion.` : ""}</p>
       <label>AI capacity<input id="global-capacity" type="number" min="1" max="4294967295" step="1" value="${draft.capacity}" /></label>
       <p class="settings-hint" data-readiness role="status">Reading saved-resource readiness...</p></fieldset></div>
       <div class="settings-group"><fieldset aria-label="Review execution"><legend>Review execution</legend><label class="setting-row"><span>Start eligible reviews automatically<small>Default for assigned repositories. Forks and untrusted authors still require confirmation; publication has its own gate.</small></span><input id="automatic-review-start" type="checkbox" role="switch" ${draft.defaults.automatic_agent_start ? "checked" : ""} /></label></fieldset></div>

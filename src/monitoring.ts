@@ -1,6 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { renderFollowUps, type FollowUpCandidate } from "./follow-up";
-import { openDestination, renderQueue, type QueueItem } from "./queue";
+import {
+  openDestination,
+  renderQueue,
+  type QueueItem,
+  type NormalWork,
+} from "./queue";
 import { renderNotificationHistory } from "./notifications";
 
 interface Health {
@@ -38,6 +43,7 @@ interface Health {
 }
 
 interface Job {
+  work?: NormalWork;
   account_id: string;
   account_login: string;
   repository_name: string;
@@ -53,6 +59,15 @@ interface Job {
 }
 
 interface MonitoringSnapshot {
+  global_scan?: {
+    schedule_key: string;
+    next_run: number;
+    pending: string[];
+  } | null;
+  tracked?: {
+    pull_request_id: string;
+    lifecycle: "open" | "closed" | "merged";
+  }[];
   items?: QueueItem[];
   health: Health[];
   jobs: Job[];
@@ -137,6 +152,7 @@ const blockingFailures = new Set([
   "account_disconnected",
   "configuration",
   "invalid_schedule",
+  "invalid_global_cron",
   "provider_unavailable",
   "scope_confirmation_required",
   "settings_unavailable",
@@ -183,6 +199,12 @@ function waitingLabel(waiting: string) {
       return "Not seen in the latest open-PR scan; rechecked next scan. This is not a terminal closed or merged state.";
     case "scope_excluded":
       return "Not actionable: this unchanged existing revision was excluded by the confirmed monitoring scope.";
+    case "closed":
+      return "GitHub confirmed this PR closed. This iteration is terminal.";
+    case "merged":
+      return "GitHub confirmed this PR merged. This iteration is terminal.";
+    case "assignment_removed":
+      return "Not actionable: this Agent assignment was removed or replaced.";
     default:
       return `Not actionable: unrecognized queue state (${waiting}).`;
   }
@@ -483,6 +505,12 @@ export function renderMonitoring(
       identity.className = "hint";
       identity.textContent = `GitHub: ${capturedJob.account_login} (${capturedJob.account_id}). Head ${capturedJob.head_sha}.`;
       row.append(heading, identity);
+      if (candidate.job.work) {
+        const work = candidate.job.work;
+        const provenance = document.createElement("p");
+        provenance.textContent = `Normal pass ${work.pass_ordinal}; iteration ${work.iteration} (${work.iteration_id}); queue order ${work.enqueue_order}; work ID ${work.id}; cause: ${work.trigger.replaceAll("_", " ")}. Retry attempts are separate.`;
+        row.append(provenance);
+      }
       const state = document.createElement("p");
       state.textContent = run
         ? `${run.phase}. State: ${run.operation.state}; attempt ${run.operation.attempt_count}; deadline ${time(run.operation.retry_deadline)}. Copilot account: ${run.selection.agent.ai_account?.account_id ?? "not captured"}; model: ${run.selection.agent.model}.`
@@ -672,6 +700,11 @@ export function renderMonitoring(
       renderEvidence();
       health.replaceChildren();
       jobs.replaceChildren();
+      if (snapshot.global_scan) {
+        const scan = document.createElement("p");
+        scan.textContent = `Global scan: ${snapshot.global_scan.schedule_key}. Next scan: ${snapshot.global_scan.next_run > 0 ? time(snapshot.global_scan.next_run) : "Unavailable; choose a global cron schedule in Settings"}. Pending repositories: ${snapshot.global_scan.pending.length}.`;
+        health.append(scan);
+      }
       if (!snapshot.health.length) {
         health.textContent =
           "No configured repositories. Add and bind a GitHub repository in Settings.";
@@ -691,7 +724,9 @@ export function renderMonitoring(
           : "unbound";
         const assignment = item.assignment_id
           ? `${item.agent_name ?? "Missing agent"} (${item.agent_id ?? "unknown agent ID"}), assignment ${item.assignment_id}`
-          : "legacy repository schedule";
+          : snapshot.global_scan
+            ? "repository read; fans out to the scan's assignments"
+            : "legacy repository schedule";
         row.textContent = `${item.name}: ${state}. Acting account: ${account}. Assignment: ${assignment}. Schedule: ${item.schedule_key || "Unavailable"}. Last attempt: ${time(item.last_attempt)}. Last success: ${time(item.last_success)}. Next run: ${next}. Last failure: ${item.last_failure ?? "None"}.`;
         if (item.operation) {
           row.append(
@@ -728,7 +763,9 @@ export function renderMonitoring(
         health.append(row);
       }
       if (!snapshot.jobs.length)
-        jobs.textContent = "No eligible revisions detected.";
+        jobs.textContent = snapshot.tracked?.length
+          ? `${snapshot.tracked.length} pull requests tracked; no Agent jobs yet. Assign an Agent; its first normal pass is created by the next global scan.`
+          : "No eligible revisions detected.";
       for (const job of snapshot.jobs) {
         const row = document.createElement("article");
         const title = document.createElement("h3");
@@ -737,15 +774,20 @@ export function renderMonitoring(
           job.author_login && job.author_id
             ? `${job.author_login} (${job.author_id})`
             : "deleted or unavailable";
+        const admission = job.work?.admission ?? job;
         const reasons = [
-          job.watched_author ? "watched author" : "",
-          job.all_authors ? "all-author monitoring scope" : "",
-          job.requested_reviewer ? "requested reviewer" : "",
+          admission.watched_author ? "watched author" : "",
+          admission.all_authors ? "all-author monitoring scope" : "",
+          admission.requested_reviewer ? "requested reviewer" : "",
         ]
           .filter(Boolean)
           .join(" and ");
         const details = document.createElement("p");
         details.textContent = `Acting account: ${job.account_login} (${job.account_id}). Author: ${author}. Trigger: ${reasons || "historical detection"}. Head ${job.head_sha}. ${waitingLabel(job.waiting)}`;
+        if (job.work)
+          details.append(
+            ` Normal pass ${job.work.pass_ordinal}; iteration ${job.work.iteration}; queue order ${job.work.enqueue_order}; cause ${job.work.trigger.replaceAll("_", " ")}.`,
+          );
         row.append(title, details);
         jobs.append(row);
       }

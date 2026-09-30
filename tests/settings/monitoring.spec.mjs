@@ -40,6 +40,12 @@ const waitingStates = [
     "scope_excluded",
     "Not actionable: this unchanged existing revision was excluded by the confirmed monitoring scope.",
   ],
+  ["closed", "GitHub confirmed this PR closed. This iteration is terminal."],
+  ["merged", "GitHub confirmed this PR merged. This iteration is terminal."],
+  [
+    "assignment_removed",
+    "Not actionable: this Agent assignment was removed or replaced.",
+  ],
 ];
 
 test("Review Queue renders acting schedule identity and every persisted detection state", async ({
