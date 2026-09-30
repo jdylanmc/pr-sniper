@@ -1,6 +1,7 @@
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, test } from "./fixtures.mjs";
+import { denyRead } from "./permissions.mjs";
 import {
   assignment,
   saveAssignment,
@@ -48,7 +49,7 @@ for (const failure of ["malformed", "unreadable"]) {
     const path = join(dataRoot, "config/settings.json");
     if (failure === "malformed") await writeFile(path, "{broken configuration");
     const before = await readFile(path);
-    if (failure === "unreadable") await chmod(path, 0o000);
+    const restore = failure === "unreadable" ? await denyRead(path) : null;
     try {
       await page.goto("/?view=settings");
       await expect(
@@ -66,7 +67,7 @@ for (const failure of ["malformed", "unreadable"]) {
       ).toHaveCount(0);
       await expect(page.locator("#login")).toHaveCount(0);
     } finally {
-      if (failure === "unreadable") await chmod(path, 0o600);
+      if (restore) await restore();
     }
     expect(await readFile(path)).toEqual(before);
   });

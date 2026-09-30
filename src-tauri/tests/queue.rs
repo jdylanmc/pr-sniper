@@ -427,11 +427,16 @@ fn queue_selection_is_profile_scoped_and_read_write_failures_are_visible() {
         None
     );
     let path = first.path().join("state/queue-selection.json");
-    use std::os::unix::fs::PermissionsExt;
-    assert_eq!(
-        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    #[cfg(windows)]
+    windows_permissions::assert_private(&path, false);
     std::fs::write(&path, "invalid").unwrap();
     assert!(store.load_queue_selection().is_err());
     queue::select(&store, None).unwrap();
@@ -440,3 +445,7 @@ fn queue_selection_is_profile_scoped_and_read_write_failures_are_visible() {
     std::fs::create_dir(&path).unwrap();
     assert!(queue::select(&store, Some(&id)).is_err());
 }
+#[cfg(windows)]
+#[allow(dead_code)]
+#[path = "support/windows_permissions.rs"]
+mod windows_permissions;

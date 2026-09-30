@@ -136,7 +136,7 @@ test("browser OAuth confirms two accounts without exposing credentials", async (
   await expect(card).toContainText("hubot (84)");
 });
 
-test("Keychain confirmation failure stays visible and retryable", async ({
+test("secure-store confirmation failure stays visible and retryable", async ({
   page,
 }) => {
   let state = {

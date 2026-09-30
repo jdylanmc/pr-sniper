@@ -1,5 +1,7 @@
 import { defineConfig } from "@playwright/test";
 import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { target } from "./paths.mjs";
 
 const port = process.env.SETTINGS_TEST_PORT ?? "1421";
 if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) {
@@ -14,9 +16,7 @@ export default defineConfig({
   workers: 1,
   retries: 0,
   reporter: [["list", { printSteps: true }]],
-  outputDir: fileURLToPath(
-    new URL("../../src-tauri/target/settings-browser", import.meta.url),
-  ),
+  outputDir: join(target, "settings-browser"),
   use: {
     baseURL,
     browserName: "chromium",

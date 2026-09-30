@@ -58,18 +58,37 @@ impl ProcessRunner for &FakeCli {
 struct CliFixture(std::path::PathBuf);
 
 impl CliFixture {
-    fn script(body: &str) -> Self {
-        use std::os::unix::fs::PermissionsExt;
-        let root = std::env::temp_dir().join(format!("pr-sniper-cli-{}", uuid::Uuid::new_v4()));
+    fn new(scenario: &str) -> Self {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join(format!(".pr-sniper-cli-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
-        let path = root.join("gh");
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
-        Self(root)
+        let fixture = Self(root);
+        let output = std::process::Command::new("rustc")
+            .arg("--edition=2021")
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/support/credential_cli.rs"),
+            )
+            .arg("-o")
+            .arg(fixture.executable())
+            .output()
+            .expect("compile native test-only credential CLI");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::fs::write(fixture.0.join("scenario"), scenario).unwrap();
+        fixture
+    }
+
+    fn executable(&self) -> std::path::PathBuf {
+        self.0.join(format!("gh{}", std::env::consts::EXE_SUFFIX))
     }
 
     fn source(&self) -> GhCredentialSource<SystemRunner> {
-        GhCredentialSource::new(self.0.join("gh"), SystemRunner)
+        GhCredentialSource::new(self.executable(), SystemRunner)
     }
 }
 
@@ -79,11 +98,9 @@ impl Drop for CliFixture {
     }
 }
 
-const HEALTHY_VERSION: &str = "if [ \"$1\" = '--version' ]; then printf 'gh version 2.101.0\\nhttps://github.com/cli/cli/releases/tag/v2.101.0\\n'; exit 0; fi";
-
 #[test]
 fn real_cli_shim_cannot_pass_by_merely_existing() {
-    let cli = CliFixture::script("printf 'please install gh\\n'");
+    let cli = CliFixture::new("shim");
     assert_eq!(
         cli.source().acquire().unwrap_err(),
         ConnectionError::BrokenCli
@@ -92,9 +109,7 @@ fn real_cli_shim_cannot_pass_by_merely_existing() {
 
 #[test]
 fn real_signed_out_cli_does_not_echo_secret_like_stderr() {
-    let cli = CliFixture::script(&format!(
-        "{HEALTHY_VERSION}\nprintf 'gho_secret_error_fixture' >&2\nexit 1"
-    ));
+    let cli = CliFixture::new("signed-out");
     let error = cli.source().acquire().unwrap_err();
     assert_eq!(error, ConnectionError::SignedOut);
     assert!(!format!("{error:?}").contains("secret"));
@@ -102,16 +117,14 @@ fn real_signed_out_cli_does_not_echo_secret_like_stderr() {
 
 #[test]
 fn real_cli_success_returns_only_an_opaque_credential() {
-    let cli = CliFixture::script(&format!(
-        "{HEALTHY_VERSION}\nprintf 'gho_fixture_not_a_real_token\\n'"
-    ));
+    let cli = CliFixture::new("success");
     let credential = cli.source().acquire().unwrap();
     assert_eq!(format!("{credential:?}"), "Credential([REDACTED])");
 }
 
 #[test]
 fn real_broken_cli_exit_is_distinct_from_signed_out() {
-    let cli = CliFixture::script("exit 42");
+    let cli = CliFixture::new("broken");
     assert_eq!(
         cli.source().acquire().unwrap_err(),
         ConnectionError::BrokenCli
@@ -120,7 +133,7 @@ fn real_broken_cli_exit_is_distinct_from_signed_out() {
 
 #[test]
 fn real_cli_capture_is_bounded() {
-    let cli = CliFixture::script("exec /usr/bin/yes x");
+    let cli = CliFixture::new("overflow");
     assert_eq!(
         cli.source().acquire().unwrap_err(),
         ConnectionError::BrokenCli
@@ -129,7 +142,7 @@ fn real_cli_capture_is_bounded() {
 
 #[test]
 fn stalled_cli_is_bounded_and_terminated() {
-    let cli = CliFixture::script("exec /bin/sleep 30");
+    let cli = CliFixture::new("stalled");
     let start = std::time::Instant::now();
     assert_eq!(
         cli.source().acquire().unwrap_err(),
