@@ -54,6 +54,15 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Added
 
+- Add Windows-native private persistence with current-user-only access controls,
+  atomic file replacement and explicit permission/locking failures. Preserve
+  denied-read errors without changing existing permissions; keep embedded
+  doctrine bytes canonical across Windows checkouts. Windows CI now exercises
+  the production persistence, policy and discovery foundations;
+  the native application still requires its account, tray and notification
+  adapters. See [#57](https://github.com/jdylanmc/pr-sniper/issues/57) and
+  [Windows development](docs/windows-development.md).
+
 - Add credential-free Windows pull-request and main-push checks for the
   production frontend and portable release/workflow contracts. Native app
   validation and runnable artifacts remain separate follow-ups. See

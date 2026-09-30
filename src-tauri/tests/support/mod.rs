@@ -9,8 +9,8 @@ pub struct Fixture(PathBuf);
 
 impl Fixture {
     pub fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "pr-sniper-storage-test-{}-{}",
+        let path = std::env::current_dir().unwrap().join(format!(
+            ".pr-sniper-storage-test-{}-{}",
             std::process::id(),
             NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
         ));

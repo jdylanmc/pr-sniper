@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import {
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 import { parse } from "yaml";
 
@@ -7,6 +16,51 @@ const workflow = parse(readFileSync(".github/workflows/release.yml", "utf8"));
 const ci = parse(readFileSync(".github/workflows/macos.yml", "utf8"));
 const windows = parse(readFileSync(".github/workflows/windows.yml", "utf8"));
 const { scripts } = JSON.parse(readFileSync("package.json", "utf8"));
+
+test("canonical doctrine checkout preserves exact bytes with core.autocrlf=true", () => {
+  const directory = join(".agents", "skills", "doctrine", "doctrines");
+  const documents = readdirSync(directory)
+    .filter((name) => name.endsWith(".md"))
+    .map((name) => [name, readFileSync(join(directory, name))]);
+  assert.ok(documents.some(([name]) => name === "manifest.md"));
+  const fixture = join(process.cwd(), `.pr-sniper-checkout-${randomUUID()}`);
+  const git = (...args) =>
+    execFileSync("git", ["-C", fixture, ...args], { stdio: "pipe" });
+  mkdirSync(join(fixture, directory), { recursive: true });
+  try {
+    writeFileSync(
+      join(fixture, ".gitattributes"),
+      readFileSync(".gitattributes"),
+    );
+    for (const [name, bytes] of documents) {
+      assert.ok(
+        !bytes.includes(13),
+        `${name} must be canonical LF in the source checkout`,
+      );
+      writeFileSync(join(fixture, directory, name), bytes);
+    }
+    git("init", "--quiet");
+    git("config", "core.autocrlf", "true");
+    git("-c", "core.autocrlf=false", "add", "--", ".gitattributes", directory);
+    rmSync(join(fixture, directory), { recursive: true });
+
+    git("checkout-index", "--all", "--force");
+
+    assert.equal(
+      git("config", "--get", "core.autocrlf").toString().trim(),
+      "true",
+    );
+    for (const [name, bytes] of documents) {
+      assert.deepEqual(
+        readFileSync(join(fixture, directory, name)),
+        bytes,
+        name,
+      );
+    }
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
 
 test("only explicit stable tag release events can enter the secret-bearing pipeline", () => {
   assert.deepEqual(Object.keys(workflow.on).sort(), [
@@ -144,7 +198,15 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
   assert.equal(python.with["python-version"], "3.13");
   assert.deepEqual(
     job.steps.filter((step) => step.run).map((step) => step.run),
-    ["npm ci", "npm run build", "npm run test:release:windows"],
+    [
+      "npm ci",
+      "npm run build",
+      "npm run test:release:windows",
+      "rustup show active-toolchain",
+      "cargo fmt --manifest-path src-tauri\\Cargo.toml --all --check",
+      "cargo test --manifest-path src-tauri\\foundations\\Cargo.toml --locked",
+      "cargo clippy --manifest-path src-tauri\\foundations\\Cargo.toml --locked --all-targets -- -D warnings",
+    ],
   );
   assert.equal(scripts.build, "tsc --noEmit && vite build");
 });

@@ -1,13 +1,15 @@
 use crate::policy::{Policy, PolicyOverrides, Schedule, WatchedIdentity};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{ErrorKind, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_DIAGNOSTICS_BYTES: u64 = 256 * 1024;
+
+#[path = "storage/private_fs.rs"]
+mod private_fs;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -422,21 +424,8 @@ impl Store {
         Self { root }
     }
 
-    pub fn load_queue(&self) -> Result<Vec<crate::monitoring::QueueJob>, String> {
-        match fs::read(self.root.join("state/queue.json")) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|_| "Review queue is invalid; no polling result was saved.".into()),
-            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
-            Err(_) => Err("Cannot read the review queue. Check local file permissions.".into()),
-        }
-    }
-
-    pub fn save_queue(&self, jobs: &[crate::monitoring::QueueJob]) -> Result<(), String> {
-        self.write_state("queue.json", jobs)
-    }
-
     pub fn load_queue_selection(&self) -> Result<Option<String>, String> {
-        match fs::read(self.root.join("state/queue-selection.json")) {
+        match self.read_state("queue-selection.json") {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
                 "The saved queue destination is invalid; select an item explicitly.".into()
             }),
@@ -447,116 +436,39 @@ impl Store {
         }
     }
 
-    pub fn load_notifications(&self) -> Result<crate::notifications::Ledger, String> {
-        let ledger = match fs::read(self.root.join("state/notifications.json")) {
-            Ok(bytes) => serde_json::from_slice::<crate::notifications::Ledger>(&bytes)
-                .map_err(|_| "Notification history is invalid; no notices can be sent.")?,
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                crate::notifications::Ledger::default()
-            }
-            Err(_) => {
-                return Err(
-                    "Cannot read notification history. Check local storage permissions.".into(),
-                )
-            }
-        };
-        ledger.validate()?;
-        Ok(ledger)
-    }
-
-    pub fn save_notifications(&self, ledger: &crate::notifications::Ledger) -> Result<(), String> {
-        ledger.validate()?;
-        self.write_state("notifications.json", ledger)
-    }
-
     pub fn save_queue_selection(&self, id: Option<&str>) -> Result<(), String> {
         self.write_state("queue-selection.json", &id)
     }
 
-    pub fn load_reviews(&self) -> Result<Vec<crate::review::ReviewRun>, String> {
-        match fs::read(self.root.join("state/reviews.json")) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|_| "Review state is invalid; execution cannot resume.".into()),
-            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
-            Err(_) => Err("Cannot read review state. Check local storage permissions.".into()),
-        }
-    }
-
-    pub fn save_reviews(&self, reviews: &[crate::review::ReviewRun]) -> Result<(), String> {
-        self.write_state("reviews.json", reviews)
-    }
-
-    pub fn load_publications(&self) -> Result<Vec<crate::publication::Publication>, String> {
-        match fs::read(self.root.join("state/publications.json")) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|_| "Publication state is invalid; no GitHub mutation is allowed.".into()),
-            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
-            Err(_) => Err("Cannot read publication state. Check local storage permissions.".into()),
-        }
-    }
-
-    pub fn save_publications(
+    pub(crate) fn write_state<T: Serialize + ?Sized>(
         &self,
-        publications: &[crate::publication::Publication],
+        name: &str,
+        value: &T,
     ) -> Result<(), String> {
-        self.write_state("publications.json", publications)
-    }
-
-    pub fn load_follow_ups(&self) -> Result<Vec<crate::follow_up::FollowUp>, String> {
-        match fs::read(self.root.join("state/follow-ups.json")) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|_| "Thread follow-up state is invalid; automation is blocked.".into()),
-            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
-            Err(_) => {
-                Err("Cannot read thread follow-up state. Check local storage permissions.".into())
-            }
-        }
-    }
-
-    pub fn save_follow_ups(&self, runs: &[crate::follow_up::FollowUp]) -> Result<(), String> {
-        self.write_state("follow-ups.json", runs)
-    }
-
-    pub fn load_monitoring_state(&self) -> Result<crate::monitoring::MonitoringState, String> {
-        match fs::read(self.root.join("state/monitoring.json")) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|_| "Monitoring state is invalid; polling cannot resume.".into()),
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                Ok(crate::monitoring::MonitoringState::default())
-            }
-            Err(_) => Err("Cannot read monitoring state. Check local file permissions.".into()),
-        }
-    }
-
-    pub fn save_monitoring_state(
-        &self,
-        state: &crate::monitoring::MonitoringState,
-    ) -> Result<(), String> {
-        self.write_state("monitoring.json", state)
-    }
-
-    fn write_state<T: Serialize + ?Sized>(&self, name: &str, value: &T) -> Result<(), String> {
-        let directory = self.root.join("state");
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&directory)
+        let directory = self
+            .directory("state")
             .map_err(|_| "Cannot create monitoring state directory.".to_string())?;
         let bytes =
             serde_json::to_vec_pretty(value).map_err(|_| "Cannot encode monitoring state.")?;
-        let temporary = directory.join(format!("{name}.tmp"));
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&temporary)
-            .map_err(|_| "Cannot write monitoring state.")?;
-        file.write_all(&bytes)
-            .and_then(|_| file.sync_all())
-            .map_err(|_| "Cannot flush monitoring state.")?;
-        fs::rename(temporary, directory.join(name))
-            .map_err(|_| "Cannot replace monitoring state.".into())
+        private_fs::replace(&directory.join(name), &bytes, "monitoring state")
+    }
+
+    fn directory(&self, name: &str) -> std::io::Result<PathBuf> {
+        private_fs::directory(&self.root)?;
+        let directory = self.root.join(name);
+        private_fs::directory(&directory)?;
+        Ok(directory)
+    }
+
+    pub(crate) fn read_state(&self, name: &str) -> std::io::Result<Vec<u8>> {
+        self.read_file("state", name)
+    }
+
+    fn read_file(&self, directory: &str, name: &str) -> std::io::Result<Vec<u8>> {
+        private_fs::existing_directory(&self.root)?;
+        let directory = self.root.join(directory);
+        private_fs::existing_directory(&directory)?;
+        private_fs::read(&directory.join(name))
     }
 
     pub fn has_saved_settings(&self) -> bool {
@@ -603,8 +515,7 @@ impl Store {
     }
 
     pub fn load_settings(&self) -> Result<Settings, String> {
-        let path = self.root.join("config/settings.json");
-        let bytes = match fs::read(path) {
+        let bytes = match self.read_file("config", "settings.json") {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == ErrorKind::NotFound => {
                 let settings = Settings {
@@ -650,28 +561,12 @@ impl Store {
     }
 
     fn write_settings(&self, settings: &Settings) -> Result<(), String> {
-        let directory = self.root.join("config");
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&directory)
+        let directory = self
+            .directory("config")
             .map_err(|_| "Cannot create configuration directory.".to_string())?;
         let bytes = serde_json::to_vec_pretty(settings)
             .map_err(|_| "Cannot encode settings.".to_string())?;
-        let temporary = directory.join("settings.json.tmp");
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&temporary)
-            .map_err(|_| "Cannot write settings.".to_string())?;
-        file.write_all(&bytes)
-            .and_then(|_| file.sync_all())
-            .map_err(|_| "Cannot flush settings.".to_string())?;
-        fs::rename(temporary, directory.join("settings.json"))
-            .map_err(|_| "Cannot replace settings.".to_string())?;
-        Ok(())
+        private_fs::replace(&directory.join("settings.json"), &bytes, "settings")
     }
 
     pub fn add_repository(&self, repository: &str) -> Result<Settings, String> {
@@ -781,11 +676,8 @@ impl Store {
     }
 
     pub fn record(&self, event: DiagnosticEvent) -> Result<(), String> {
-        let directory = self.root.join("state");
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&directory)
+        let directory = self
+            .directory("state")
             .map_err(|_| "Cannot create diagnostics directory.".to_string())?;
         let diagnostic = Diagnostic {
             timestamp_secs: SystemTime::now()
@@ -798,28 +690,23 @@ impl Store {
             .map_err(|_| "Cannot encode diagnostics.".to_string())?;
         bytes.push(b'\n');
         let path = directory.join("diagnostics.jsonl");
-        match fs::metadata(&path) {
+        match private_fs::existing_file(&path).and_then(|_| fs::metadata(&path)) {
             Ok(metadata) if metadata.len() + bytes.len() as u64 > MAX_DIAGNOSTICS_BYTES => {
-                fs::rename(&path, directory.join("diagnostics.previous.jsonl"))
+                private_fs::rotate(&path, &directory.join("diagnostics.previous.jsonl"))
                     .map_err(|_| "Cannot rotate diagnostics.".to_string())?;
             }
             Ok(_) => {}
             Err(error) if error.kind() == ErrorKind::NotFound => {}
             Err(_) => return Err("Cannot inspect diagnostics.".into()),
         }
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(path)
+        private_fs::append(&path)
             .and_then(|mut file| file.write_all(&bytes).and_then(|_| file.sync_data()))
             .map_err(|_| "Cannot write diagnostics.".into())
     }
 
     pub fn diagnostics(&self) -> Result<Vec<Diagnostic>, String> {
-        let path = self.root.join("state/diagnostics.jsonl");
-        let contents = match fs::read_to_string(path) {
-            Ok(contents) => contents,
+        let contents = match self.read_state("diagnostics.jsonl") {
+            Ok(contents) => String::from_utf8(contents).map_err(|_| "Cannot read diagnostics.")?,
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
             Err(_) => return Err("Cannot read diagnostics.".into()),
         };
