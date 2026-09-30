@@ -6,9 +6,12 @@ local-app foundation. Initial releases support **Apple Silicon and macOS 13.5+**
 Windows, Intel, App Store distribution and #14's in-app/dogfood updater are not
 part of this delivery.
 
-**Not released yet:** adding this workflow and configuring credentials does not
-create a release. Do not advertise the Homebrew command as working until the
-first real release and cask have passed the acceptance below.
+**Published:** [v0.1.1](https://github.com/jdylanmc/pr-sniper/releases/tag/v0.1.1)
+passed real Developer ID signing, notarization/stapling and public-byte
+verification. Its cask is on the dedicated tap's main branch. A disposable hosted
+CI installation passed version/signature/ticket/Gatekeeper verification and
+uninstallation. Full signed-in app operation and a later-version upgrade remain
+separate acceptance; no developer installation was overwritten.
 
 ## What a version tag does
 
@@ -26,7 +29,7 @@ The pipeline:
    commit must have completed successfully. PR checks for another SHA do not
    qualify. No release while required CI is pending or failed.
 2. Before any Apple upload, confirm the dedicated tap token can write the exact
-   public tap and that its cask-validation workflow is merged. Then build on the
+   public tap and that its publisher workflow is merged. Then build on the
    pinned Apple Silicon macOS runner using the normal credential-free
    build. Normal PR CI stays ad-hoc signed and never receives Apple/tap secrets.
 3. In an isolated temporary keychain, import the dedicated certificate and
