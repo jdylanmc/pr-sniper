@@ -3084,10 +3084,20 @@ version = "0.0.0"
 dependencies = [
  "chrono-tz",
  "croner",
+ "github-copilot-sdk",
+ "oauth2",
+ "objc2-foundation",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
  "uuid",
+ "webbrowser",
  "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]

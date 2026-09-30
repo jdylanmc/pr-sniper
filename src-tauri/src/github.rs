@@ -1,6 +1,13 @@
+pub mod credential_records;
 pub mod http;
 #[cfg(target_os = "macos")]
 pub mod macos_keychain;
+#[cfg(windows)]
+pub mod windows_credentials;
+#[cfg(target_os = "macos")]
+pub use macos_keychain::MacKeychainStore as NativeCredentialStore;
+#[cfg(windows)]
+pub use windows_credentials::WindowsCredentialStore as NativeCredentialStore;
 pub mod metadata;
 pub mod oauth;
 pub mod provider;
@@ -12,12 +19,8 @@ pub mod token_store;
 use serde::Serialize;
 use serde_json::Value;
 pub mod credentials;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Identity {
-    pub id: String,
-    pub login: String,
-}
+mod identity;
+pub use identity::Identity;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]

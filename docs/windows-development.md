@@ -1,4 +1,4 @@
-# Windows foundation development
+# Windows native boundary development
 
 This is existing-application groundwork, not a runnable Windows release.
 No provider sign-in, real user data, startup registration or notification
@@ -29,11 +29,12 @@ npm ci
 npm run build
 npm run test:release:windows
 cargo test --manifest-path src-tauri\foundations\Cargo.toml --locked
+cargo test --manifest-path src-tauri\foundations\Cargo.toml --locked --lib copilot::runtime::tests::bundled_runtime_handshakes_offline_without_credentials -- --exact --ignored --nocapture
 cargo clippy --manifest-path src-tauri\foundations\Cargo.toml --locked --all-targets -- -D warnings
 cargo fmt --manifest-path src-tauri\Cargo.toml --all --check
 ```
 
-`windows.yml` runs the frontend/shared tests and the three native foundation
+`windows.yml` runs the frontend/shared tests and all four native boundary
 commands. The harness compiles production source, shares the app's lockfile,
 and uses disposable profiles beneath its working directory. It never opens
 the real application's data or credential stores. Tests cover settings/policy
@@ -45,6 +46,22 @@ that nested junctions are skipped and junction-linked Git metadata remains
 unavailable. These cases pass the existing implementation; no discovery bug or
 broader claim about every Windows reparse-point type is inferred.
 macOS retains its normal app tests, including the Unix mode assertions.
+
+The harness also imports the real credential codec, account/rotation contracts,
+OAuth implementation, native secure store, Copilot catalog runtime and operation
+fences. Windows tests create unique `com.jdylanmc.pr-sniper.tests.*` namespaces
+in the current user's Credential Manager and delete their owned records,
+including registries. They never enumerate/read existing user credentials.
+Capacity failures are explicit: each serialized record is limited to 2,560
+bytes, including codec overhead. Oversized records do not spill to files or
+replace prior credentials. See [ADR-0005](adr/0005-windows-accounts-runtime.md).
+
+The explicit ignored smoke runs the bundled SDK 1.0.14 / CLI 1.0.85 without
+credentials or inference, with offline mode and a rejecting loopback provider.
+It checks unauthenticated status/model rejection, no provider requests, clean
+shutdown and temporary cleanup. Node is needed only for synthetic transport
+fixtures; they use `node.exe` and native Windows child-exit checks. These are
+not application launch, real grant acceptance or GUI console-window evidence.
 
 The repository's `.gitattributes` keeps canonical doctrine Markdown and its
 manifest LF even when Windows Git uses `core.autocrlf=true`. Rust embeds those
@@ -68,19 +85,19 @@ Windows bundle configuration/icon belongs to **#59**, not this harness.
 A diagnostic-only run with a disposable icon override (not committed or used
 by CI) exposed these additional errors. They are not a successful build:
 
-| Site                                                       | Missing native boundary                                                   | Owner |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------- | ----- |
-| `src-tauri/src/copilot/backend.rs`, `src-tauri/src/lib.rs` | Direct `MacKeychainStore` imports, fields and construction                | #58   |
-| `src-tauri/src/copilot/runtime.rs`                         | `NSProcessInfo` runtime eligibility check                                 | #58   |
-| `src-tauri/src/lib.rs`                                     | `startup` registration import; `ActivationPolicy`/`set_activation_policy` | #59   |
-| `src-tauri/src/notifications/host.rs`                      | macOS notification type/construction                                      | #60   |
+| Site                                  | Missing native boundary                                                   | Owner |
+| ------------------------------------- | ------------------------------------------------------------------------- | ----- |
+| `src-tauri/src/lib.rs`                | `startup` registration import; `ActivationPolicy`/`set_activation_policy` | #59   |
+| `src-tauri/src/notifications/host.rs` | macOS notification type/construction                                      | #60   |
 
-Other known adapter work (not proven by this compile probe) includes Windows
-Copilot environment isolation and process cleanup, Unix-only credential/process
-fixtures, login-registration fixtures and notification permission fixtures.
-Windows environment-key filtering must be case-insensitive; preserving the
-required Windows process environment belongs to #58. Do not silently remove
-`SystemRoot` or infer authenticated inference from an offline runtime handshake.
+The account/runtime code now uses a native credential alias, keeps legacy
+Keychain migration macOS-only, compares Windows environment keys
+case-insensitively and supplies private profile/temp paths. Full review and
+host-level regression execution still needs the remaining adapters; the focused
+harness does not replace those tests. Login-registration and notification
+permission fixtures also remain platform work. Do not infer authenticated
+inference or actual GUI-parent console/cancellation acceptance from the offline
+runtime handshake.
 
 Before native-port convergence, the unmodified full-app check and native app
 tests must pass without unsupported-success stubs. #59 owns actual

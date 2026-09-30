@@ -1,5 +1,6 @@
 // Synthetic SDK transport, never an authentication or Copilot service substitute.
 import { appendFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 
 const args = process.argv.slice(2);
 const tokenIndex = args.indexOf("--auth-token-env");
@@ -7,8 +8,16 @@ const selected = process.env[args[tokenIndex + 1]];
 const allowed = new Set(["account-a", "account-b", "blocked", "waiting"]);
 const receipt = (value) =>
   appendFileSync(process.env.TEST_RECEIPT, `${JSON.stringify(value)}\n`);
+const descendant =
+  process.env.TEST_SPAWN_CHILD === "1"
+    ? spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+        stdio: "ignore",
+        windowsHide: true,
+      })
+    : undefined;
 receipt({
   pid: process.pid,
+  childPid: descendant?.pid,
   args,
   home: process.env.HOME,
   copilotHome: process.env.COPILOT_HOME,
@@ -94,6 +103,7 @@ process.stdin.on("data", (chunk) => {
           });
         break;
       case "runtime.shutdown":
+        if (process.env.TEST_HANG_SHUTDOWN === "1") break;
         respond(request.id, {});
         break;
       default:

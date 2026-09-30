@@ -324,30 +324,29 @@ pub(crate) fn run<T: Transport + Send + Sync + 'static, K: Task>(
     request: Request<T, K>,
 ) -> Result<ReviewResult<K::Output>, Failure> {
     operation.check().map_err(Failure::operation)?;
-    let program = github_copilot_sdk::install_bundled_cli()
-        .ok_or_else(|| Failure::permanent("Bundled Copilot executable is unavailable."))?;
-    let directory = tempfile::Builder::new()
-        .prefix("pr-sniper-review-")
-        .tempdir()
-        .map_err(|_| Failure::permanent("Cannot create private review runtime state."))?;
-    let options = crate::copilot::runtime::options(
-        program,
-        directory.path(),
-        pair.access_token(),
-        std::env::vars_os().map(|(k, _)| k),
-    );
+    let program = crate::copilot::runtime::runtime_program().map_err(Failure::permanent)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
         .map_err(|_| Failure::permanent("Cannot start review runtime."))?;
+    let directory = crate::copilot::runtime::private_directory("pr-sniper-review-")
+        .map_err(Failure::permanent)?;
     let dispatch = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
     let result = tracing::dispatcher::with_default(&dispatch, || {
-        runtime.block_on(execute(options, identity, operation, request))
+        let options = crate::copilot::runtime::options(
+            program,
+            directory.path(),
+            pair.access_token(),
+            std::env::vars_os().map(|(k, _)| k),
+        )
+        .map_err(Failure::permanent);
+        runtime
+            .block_on(crate::copilot::runtime::with_directory(directory, async {
+                execute(options?, identity, operation, request).await
+            }))
+            .map_err(Failure::permanent)?
     });
-    directory
-        .close()
-        .map_err(|_| Failure::permanent("Review stopped, but private runtime cleanup failed."))?;
     result
 }
 
@@ -522,13 +521,7 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
         }
     };
     let result = tokio::select! { biased; error = monitor => Err(error), result = run => result };
-    match tokio::time::timeout(Duration::from_secs(5), client.stop()).await {
-        Ok(Ok(())) => {}
-        _ => {
-            client.force_stop();
-            eprintln!("[review] stage=cleanup outcome=forced_stop");
-        }
-    }
+    crate::copilot::runtime::shutdown(&client).await;
     result
 }
 

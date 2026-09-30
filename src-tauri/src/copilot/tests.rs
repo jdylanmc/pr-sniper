@@ -1,7 +1,7 @@
 use super::*;
 use crate::github::{
-    macos_keychain::MacKeychainStore,
     token_store::{CredentialStore, RotationSafeStore},
+    NativeCredentialStore,
 };
 use std::time::Duration;
 
@@ -11,8 +11,12 @@ fn disconnected_identity_survives_native_keychain_restart_without_touching_repos
         "com.jdylanmc.pr-sniper.tests.copilot-{}",
         uuid::Uuid::new_v4()
     );
-    let repo = RotationSafeStore::new(MacKeychainStore::with_service(format!("{namespace}.repo")));
-    let ai = RotationSafeStore::new(MacKeychainStore::with_service(format!("{namespace}.ai")));
+    let repo = RotationSafeStore::new(NativeCredentialStore::with_service(format!(
+        "{namespace}.repo"
+    )));
+    let ai = RotationSafeStore::new(NativeCredentialStore::with_service(format!(
+        "{namespace}.ai"
+    )));
     let repo_account = ActiveAccount::new("101", "fixture-login").unwrap();
     let ai_account =
         ActiveAccount::for_provider(ProviderId::copilot(), "101", "fixture-login").unwrap();
@@ -26,8 +30,9 @@ fn disconnected_identity_survives_native_keychain_restart_without_touching_repos
     ai.save_account(&ai_account, &pair, false).unwrap();
     ai.clear_account_credentials(&ai_account.provider_account_id())
         .unwrap();
-    let restarted =
-        RotationSafeStore::new(MacKeychainStore::with_service(format!("{namespace}.ai")));
+    let restarted = RotationSafeStore::new(NativeCredentialStore::with_service(format!(
+        "{namespace}.ai"
+    )));
     let state = GithubAuth::restore_accounts(&restarted, ProviderId::copilot()).unwrap();
     let view = serde_json::to_value(state.copilot_view()).unwrap();
     let repository_pair = repo
