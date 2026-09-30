@@ -69,7 +69,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   review interface and human-owned decisions. Windows CI now builds the full
   application, exercises native/browser checks and publishes unsigned,
   commit-identified executable artifacts. Public signing and Chocolatey
-  distribution remain separate. See
+  distribution remain separate. Explicit notification opt-in initializes
+  Windows' first-use status with a persisted, suppressed setup notice and
+  exact cleanup. Runtime lifecycle checks wait for observed fixture stages
+  without changing application deadlines. See
   [#59](https://github.com/jdylanmc/pr-sniper/issues/59),
   [#60](https://github.com/jdylanmc/pr-sniper/issues/60) and
   [#61](https://github.com/jdylanmc/pr-sniper/issues/61).
