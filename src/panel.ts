@@ -106,6 +106,7 @@ export async function mountPanel(app: HTMLElement) {
   let navigationOrigin: string | undefined;
   let utilityRevision = 0;
   let lastVisible = false;
+  let focusRevision = 0;
   const positions = new Map<string, Position>();
   const listSignatures = new Map<PanelTab, string>();
   const key = (value: PanelRoute) => JSON.stringify(value);
@@ -143,6 +144,7 @@ export async function mountPanel(app: HTMLElement) {
     });
   };
   content.addEventListener("focusin", () => remember());
+  app.addEventListener("focusin", () => focusRevision++);
   function restorePosition(focus: boolean) {
     const saved = positions.get(key(route));
     content.scrollTop = saved?.scroll ?? 0;
@@ -502,6 +504,9 @@ export async function mountPanel(app: HTMLElement) {
   async function apply(state: PanelSnapshot) {
     if (state.revision < revision) return;
     const changed = key(state.route) !== key(route);
+    const restore = state.visible && (changed || !lastVisible);
+    const focusAtStart = focusRevision;
+    lastVisible = state.visible;
     if (changed || !state.visible) remember();
     if (changed && state.route.detail && !route.detail) returnTo = route;
     if (
@@ -552,14 +557,27 @@ export async function mountPanel(app: HTMLElement) {
     if (visible === "settings" && !settingsMounted) {
       settingsMounted = true;
       await mountSettings(views.settings, { embedded: true });
-      if (state.revision < revision) return;
+      if (state.revision !== revision) return;
     }
     if (visible === "monitor") monitor.detail(route.detail, state.missing);
     if (utilityDetail && (changed || !views.utility.children.length))
       void utility(route.detail!.type as "status" | "diagnostics");
-    if (changed || (state.visible && !lastVisible))
-      requestAnimationFrame(() => restorePosition(true));
-    lastVisible = state.visible;
+    if (restore && focusAtStart === focusRevision) {
+      // Commit route focus now, before a subsequent explicit focus can win.
+      // Only layout positioning waits for a frame; it cannot own newer input.
+      restorePosition(true);
+      const focused = focusRevision;
+      const destination = key(route);
+      requestAnimationFrame(() => {
+        if (
+          state.revision === revision &&
+          destination === key(route) &&
+          lastVisible &&
+          focused === focusRevision
+        )
+          restorePosition(false);
+      });
+    }
   }
   function navigate(next: PanelRoute, opener?: HTMLElement) {
     // Capture activation before a queue redraw detaches the actual row button.

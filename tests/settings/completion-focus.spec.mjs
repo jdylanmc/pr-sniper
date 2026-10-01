@@ -1,5 +1,6 @@
 import { test, expect } from "./fixtures.mjs";
 import { fixtureAgent, section } from "./navigation.mjs";
+import { holdFocusFrames } from "./focus-frames.mjs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -547,78 +548,96 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
 
 for (const focusTarget of ["Running", "Settings"]) {
   for (const resource of ["repository", "agent", "doctrine", "assignment"]) {
-    test(`late ${resource} save completes without stealing focus from the ${focusTarget} navigation control`, async ({
-      page,
-      store,
-      ipc,
-    }) => {
-      await seed(page, store, true);
-      await openSettings(page, "panel");
-      let modal;
-      if (resource === "agent") {
-        await section(page, "Agents");
-        await agentCard(page)
-          .getByRole("button", { name: "Edit", exact: true })
-          .click();
-        modal = dialog(page, "Edit agent");
-        await modal
-          .getByLabel("Name", { exact: true })
-          .fill("Background reviewer");
-      } else if (resource === "doctrine") {
-        await section(page, "Doctrines");
-        await doctrineCard(page, "Target doctrine")
-          .getByRole("button", { name: "Edit", exact: true })
-          .click();
-        modal = dialog(page, "Edit doctrine");
-        await modal
-          .getByLabel("Title", { exact: true })
-          .fill("Background doctrine");
-      } else {
-        await repoOpener(page).click();
-        modal = dialog(page, "Settings for fixture/target");
-        if (resource === "assignment") {
-          await modal
-            .locator(".assignment-row")
-            .nth(1)
+    for (const timing of focusTarget === "Running"
+      ? ["normal", "frame before save", "frame after save"]
+      : ["normal"]) {
+      test(`late ${resource} save completes without stealing focus from the ${focusTarget} navigation control${timing === "normal" ? "" : ` (${timing})`}`, async ({
+        page,
+        store,
+        ipc,
+      }, testInfo) => {
+        await seed(page, store, true);
+        await openSettings(page, "panel");
+        let modal;
+        if (resource === "agent") {
+          await section(page, "Agents");
+          await agentCard(page)
             .getByRole("button", { name: "Edit", exact: true })
             .click();
-          modal = dialog(page, "Edit assignment");
-          await modal.getByRole("checkbox", { name: /^Comment/ }).uncheck();
-        } else {
+          modal = dialog(page, "Edit agent");
           await modal
-            .getByLabel("Review start", { exact: true })
-            .selectOption("automatic");
+            .getByLabel("Name", { exact: true })
+            .fill("Background reviewer");
+        } else if (resource === "doctrine") {
+          await section(page, "Doctrines");
+          await doctrineCard(page, "Target doctrine")
+            .getByRole("button", { name: "Edit", exact: true })
+            .click();
+          modal = dialog(page, "Edit doctrine");
+          await modal
+            .getByLabel("Title", { exact: true })
+            .fill("Background doctrine");
+        } else {
+          await repoOpener(page).click();
+          modal = dialog(page, "Settings for fixture/target");
+          if (resource === "assignment") {
+            await modal
+              .locator(".assignment-row")
+              .nth(1)
+              .getByRole("button", { name: "Edit", exact: true })
+              .click();
+            modal = dialog(page, "Edit assignment");
+            await modal.getByRole("checkbox", { name: /^Comment/ }).uncheck();
+          } else {
+            await modal
+              .getByLabel("Review start", { exact: true })
+              .selectOption("automatic");
+          }
         }
-      }
-      const hold = ipc.holdNext("save_resource");
-      await modal
-        .getByRole("button", { name: `Save ${resource}`, exact: true })
-        .click();
-      await hold.arrived;
-      if (focusTarget === "Running") await tab(page, "Running").click();
-      const heading = focusTarget === "Running" ? "Work queue" : "Settings";
-      await expect(page.locator("[data-panel-heading]")).toHaveText(heading);
-      await tab(page, focusTarget).focus();
-      hold.release();
-      await settled(page);
-      await expect(tab(page, focusTarget)).toBeFocused();
-      await expect(page.locator("[data-panel-heading]")).toHaveText(heading);
-      const saved = (await store("snapshot")).settings;
-      if (resource === "agent")
-        expect(saved.agents[1].name).toBe("Background reviewer");
-      else if (resource === "doctrine")
-        expect(saved.doctrines[1].title).toBe("Background doctrine");
-      else if (resource === "assignment")
-        expect(saved.repositories[1].assignments[1].comment).toBe(false);
-      else
-        expect(saved.repositories[1].overrides.automatic_agent_start).toBe(
-          true,
-        );
-      await tab(page, "Settings").click();
-      await expect(modal).toHaveCount(0);
-      if (resource === "assignment")
-        await expect(dialog(page, "Settings for fixture/target")).toBeVisible();
-    });
+        const hold = ipc.holdNext("save_resource");
+        await modal
+          .getByRole("button", { name: `Save ${resource}`, exact: true })
+          .click();
+        await hold.arrived;
+        const frames = timing === "normal" ? null : await holdFocusFrames(page);
+        if (focusTarget === "Running") await tab(page, "Running").click();
+        const heading = focusTarget === "Running" ? "Work queue" : "Settings";
+        await expect(page.locator("[data-panel-heading]")).toHaveText(heading);
+        if (frames) await frames.waitForCount(1);
+        await tab(page, focusTarget).focus();
+        await frames?.mark("newer-navigation-focus");
+        if (timing === "frame before save") await frames.release();
+        hold.release();
+        if (frames) {
+          await page.evaluate(() => window.__settingsIdle());
+          await expect(modal).toHaveCount(0);
+          await frames.mark("save-completed");
+          if (timing === "frame after save") await frames.release();
+          await frames.resume();
+          await frames.attach(testInfo);
+        }
+        await settled(page);
+        await expect(tab(page, focusTarget)).toBeFocused();
+        await expect(page.locator("[data-panel-heading]")).toHaveText(heading);
+        const saved = (await store("snapshot")).settings;
+        if (resource === "agent")
+          expect(saved.agents[1].name).toBe("Background reviewer");
+        else if (resource === "doctrine")
+          expect(saved.doctrines[1].title).toBe("Background doctrine");
+        else if (resource === "assignment")
+          expect(saved.repositories[1].assignments[1].comment).toBe(false);
+        else
+          expect(saved.repositories[1].overrides.automatic_agent_start).toBe(
+            true,
+          );
+        await tab(page, "Settings").click();
+        await expect(modal).toHaveCount(0);
+        if (resource === "assignment")
+          await expect(
+            dialog(page, "Settings for fixture/target"),
+          ).toBeVisible();
+      });
+    }
   }
 }
 

@@ -33,6 +33,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   focus and configuration disclosures through the selected job's own updates.
 - Restore actual row and Settings dialog openers on WebKit pointer activation,
   including nested, replacement and asynchronously opened editors.
+- Prevent delayed navigation frames from taking newer keyboard focus after
+  Settings saves; retain initial route focus, exact Back positioning and
+  hide/reopen drafts while rejecting stale route and focus ownership.
 
 ## 0.1.2 - 2026-10-01
 
