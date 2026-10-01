@@ -278,7 +278,7 @@ export function renderMonitoring(
     panel?: boolean;
     navigate?: (detail: PanelDetail) => void;
     onSnapshot?: (snapshot: MonitoringSnapshot) => void;
-    onAutomation?: (snapshot: AutomationSnapshot) => void;
+    onAutomation?: (snapshot: AutomationSnapshot | undefined) => void;
   } = {},
 ) {
   root.innerHTML = `<div data-monitor-overview><div class="actions"><button id="check-now" type="button">Check Now</button><button id="queue-settings" type="button">Open Settings</button><button id="queue-diagnostics" type="button">Open Diagnostics</button></div>
@@ -304,6 +304,7 @@ export function renderMonitoring(
   const refreshAutomation = mountAutomation(
     automationRoot,
     options.onAutomation,
+    { compact: options.panel, onError: options.panel ? showError : undefined },
   );
   const health = root.querySelector<HTMLElement>("#schedule-health")!;
   const jobs = root.querySelector<HTMLElement>("#review-jobs")!;

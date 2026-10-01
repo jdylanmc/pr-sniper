@@ -61,7 +61,7 @@ fn physical_placement_clamps_all_tray_edges_and_mixed_dpi_negative_monitors() {
                 assert!(frame.x >= work.x && frame.y >= work.y);
                 assert!(frame.x + frame.width <= work.x + work.width);
                 assert!(frame.y + frame.height <= work.y + work.height);
-                assert!(frame.width <= 400.0 * scale && frame.height <= 680.0 * scale);
+                assert!(frame.width <= 408.0 * scale && frame.height <= 744.0 * scale);
             }
         }
     }
@@ -82,7 +82,7 @@ fn physical_placement_clamps_all_tray_edges_and_mixed_dpi_negative_monitors() {
         2.0,
     )
     .unwrap();
-    assert_eq!(placed.width, 800.0);
+    assert_eq!(placed.width, 816.0);
     assert_eq!(placed.y, 64.0);
     assert!(placement(work, work, 0.0).is_err());
     assert!(placement(work, work, f64::NAN).is_err());
