@@ -34,10 +34,22 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
     Ok(reviews.iter()
         .filter(|review| review.operation.state == OperationState::Completed && review.result.is_some())
         .map(|review| {
+            let publication = publications.iter().find(|p| p.review.operation.id == review.operation.id);
+            let completed = publication.is_some_and(|p|
+                p.phase == Phase::Published
+                    && p.operation.state == OperationState::Completed
+                    && !p.uncertain
+                    && p.error.is_none()
+                    && p.receipts.last().is_some_and(|r| r.state == RemoteState::Commented));
             let mut policy = jobs.iter().find(|job| review.matches_job(job))
                 .ok_or("Review detection is no longer available.".to_string())
                 .and_then(|job| automatic_policy(&settings, review, job))
-                .and_then(|automatic| { crate::feedback::publication_gate(store, review)?; Ok(automatic) })
+                .and_then(|automatic| {
+                    // Freshness authorizes new mutations, not an immutable confirmed receipt.
+                    // Queue readiness separately aggregates current feedback and pending work.
+                    if !completed { crate::feedback::publication_gate(store, review)?; }
+                    Ok(automatic)
+                })
                 .and_then(|automatic| {
                     if review.result.as_ref().and_then(|r| r.reviewed_base_sha.as_ref()).is_none() {
                         Err("This older result has no reviewed base. Run a new review before publication.".into())
@@ -52,7 +64,7 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
             Candidate {
                 automatic: policy.as_ref().copied().unwrap_or(false),
                 blocked: policy.err(),
-                publication: publications.iter().find(|p| p.review.operation.id == review.operation.id).cloned(),
+                publication: publication.cloned(),
                 review_operation_id: review.operation.id.clone(),
             }
         }).collect())

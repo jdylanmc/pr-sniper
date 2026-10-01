@@ -314,6 +314,662 @@ fn output_for(
     }
 }
 
+struct ReviewPublication<'a> {
+    store: &'a Store,
+    now: i64,
+    remote: Option<Receipt>,
+}
+
+impl publication::Environment for ReviewPublication<'_> {
+    fn now(&self) -> Result<i64, Failure> {
+        Ok(self.now)
+    }
+    fn save(&mut self, run: &mut Publication) -> Result<(), Failure> {
+        let mut publications = self.store.load_publications().unwrap();
+        publications.retain(|p| p.id != run.id);
+        publications.push(run.clone());
+        self.store
+            .save_publications(&publications)
+            .map_err(Failure::permanent)
+    }
+    fn inspect(&mut self, run: &Publication) -> Result<publication::Gate, Failure> {
+        crate::feedback::publication_gate(self.store, &run.review).map_err(Failure::permanent)?;
+        let settings = self.store.load_settings().unwrap();
+        let jobs = self.store.load_queue().unwrap();
+        Ok(publication::evaluate_gate(
+            &settings,
+            run,
+            jobs.iter().find(|j| run.review.matches_job(j)),
+            &pull(run.review.job.head_sha.chars().next().unwrap()),
+            true,
+            true,
+            false,
+        ))
+    }
+    fn prepare(&mut self, run: &Publication) -> Result<Batch, Failure> {
+        let mut context = source_context(run.review.job.head_sha.chars().next().unwrap());
+        context.files[0].patch = Some("@@ -1 +1 @@\n-return 0;\n+return 42;".into());
+        Batch::prepare(run, &context)
+    }
+    fn reconcile(&mut self, _: &Publication) -> Result<Option<Receipt>, Failure> {
+        Ok(self.remote.clone())
+    }
+    fn mutate(
+        &mut self,
+        run: &Publication,
+        mutation: publication::Mutation,
+    ) -> Result<Receipt, WriteFailure> {
+        assert!(self.inspect(run).unwrap().stop.is_none());
+        let receipt = Receipt {
+            review_id: format!("review-{}", run.id),
+            state: match mutation {
+                publication::Mutation::Create => RemoteState::Pending,
+                publication::Mutation::Submit => RemoteState::Commented,
+                publication::Mutation::Discard => panic!("Unexpected discard"),
+            },
+            comment_ids: run
+                .batch
+                .as_ref()
+                .unwrap()
+                .comments
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("{}-{i}", run.id))
+                .collect(),
+        };
+        self.remote = Some(receipt.clone());
+        Ok(receipt)
+    }
+    fn requeue(&mut self, _: &Publication) -> Result<(), Failure> {
+        panic!("Unexpected revision change")
+    }
+}
+
+fn review_and_publish(store: &Store, output: Value, now: i64) -> Publication {
+    let capacity = Capacity::default();
+    let mut batch = capacity.dispatch(store, now).unwrap();
+    assert!(batch.errors.is_empty(), "{:?}", batch.errors);
+    assert_eq!(batch.dispatched.len(), 1);
+    let work = batch.dispatched.remove(0);
+    let key = work.key();
+    let Dispatch::Review(run, _) = work else {
+        panic!("Normal review expected")
+    };
+    let task = FullReview {
+        feedback: run.feedback_context.clone().unwrap(),
+        owner_agent_id: run.selection.agent.id.clone(),
+    };
+    let output = task
+        .validate(
+            &output.to_string(),
+            &source_context(run.job.head_sha.chars().next().unwrap()),
+            &GithubClient::new(Source),
+            "example/repo",
+        )
+        .unwrap();
+    crate::review::validate_execution_selection(store, &run).unwrap();
+    crate::review::host::complete(
+        store,
+        &run.operation.id,
+        Ok(crate::review::ReviewResult {
+            reviewed_base_sha: Some("b".repeat(40)),
+            output,
+            session_id: "fixture".into(),
+            model: "model".into(),
+            runtime_version: "fixture".into(),
+            input_tokens: 1,
+            output_tokens: 1,
+            tool_calls: 1,
+        }),
+        now + 1,
+    )
+    .unwrap();
+    capacity.release(&key, &run.operation.id).unwrap();
+    let review = store
+        .load_reviews()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.operation.id == run.operation.id)
+        .unwrap();
+    let candidate = publication::host::candidates(store)
+        .unwrap()
+        .into_iter()
+        .find(|c| c.review_operation_id == review.operation.id)
+        .unwrap();
+    assert!(candidate.blocked.is_none(), "{:?}", candidate.blocked);
+    let mut publication = Publication::new(review, false, true, now + 2).unwrap();
+    publication::execute(
+        &mut ReviewPublication {
+            store,
+            now: now + 3,
+            remote: None,
+        },
+        &mut publication,
+    )
+    .unwrap();
+    assert_eq!(publication.operation.state, OperationState::Completed);
+    assert_eq!(publication.phase, publication::Phase::Published);
+    assert!(publication.operation.confirmed_receipt.is_some());
+    publication
+}
+
+fn two_published_iterations(
+    new_concern: bool,
+) -> (tempfile::TempDir, Store, Publication, Thread, Publication) {
+    let (root, store, old, mut thread) = fixture(1);
+    store.save_reviews(&[]).unwrap();
+    store.save_publications(&[]).unwrap();
+    let origin = review_and_publish(
+        &store,
+        serde_json::to_value(old.review.result.unwrap().output).unwrap(),
+        NOW + 5,
+    );
+    thread.comments[0].id = origin.receipts.last().unwrap().comment_ids[0].clone();
+    thread.comments[0].review_id = Some(origin.receipts.last().unwrap().review_id.clone());
+    thread.comments[0].body = origin.batch.as_ref().unwrap().comments[0].body.clone();
+    observe(&store, &origin, &thread, 'c', vec![], NOW + 10);
+    let feedback = store.load_feedback().unwrap().records[0].context.clone();
+    let next = review_and_publish(
+        &store,
+        json!({
+            "synopsis":"Current revision reviewed.", "files":[{"path":"source.rs","explanation":"Source.","order":1}],
+            "findings":if new_concern { json!([{"path":"source.rs","side":"head","line":1,"severity":"high",
+                "title":"Another concern","explanation":"A distinct issue.","confidence":90}]) } else { json!([]) },
+            "decision":if new_concern { "human_input_required" } else { "machine_sign_off" },
+            "feedback_assessments":[assessment(&feedback.id, Disposition::Open)]
+        }),
+        NOW + 20,
+    );
+    assert_eq!(
+        next.review.feedback_context.as_ref().unwrap(),
+        &vec![feedback]
+    );
+    assert_ne!(
+        origin.review.job.work.as_ref().unwrap().iteration_id,
+        next.review.job.work.as_ref().unwrap().iteration_id
+    );
+    if !new_concern {
+        assert_eq!(current_state(&store), crate::queue::State::WaitingForAuthor);
+    }
+    (root, store, origin, thread, next)
+}
+
+fn current_state(store: &Store) -> crate::queue::State {
+    let snapshot =
+        crate::queue::snapshot(store, Monitor::restore(store).unwrap().snapshot()).unwrap();
+    snapshot
+        .items
+        .iter()
+        .find(|i| {
+            !matches!(
+                i.job.waiting.as_str(),
+                monitoring::WAITING_SUPERSEDED | monitoring::WAITING_NO_LONGER_CURRENT
+            )
+        })
+        .unwrap()
+        .state
+}
+
+#[test]
+fn r73_completed_second_publication_allows_later_human_closure_without_rewriting_archive() {
+    let (root, store, origin, mut thread, next) = two_published_iterations(false);
+    let archive = std::fs::read(root.path().join("state/publications.json")).unwrap();
+    let reviews = std::fs::read(root.path().join("state/reviews.json")).unwrap();
+    thread.resolved = true;
+    observe(&store, &origin, &thread, 'c', vec![], NOW + 30);
+    assert!(crate::feedback::publication_gate(&store, &next.review).is_err());
+    assert_eq!(current_state(&store), crate::queue::State::MachineSignedOff);
+    assert_eq!(
+        std::fs::read(root.path().join("state/publications.json")).unwrap(),
+        archive
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("state/reviews.json")).unwrap(),
+        reviews
+    );
+}
+
+#[test]
+fn r73_completed_receipt_does_not_relax_pending_new_mutation_or_current_configuration_gates() {
+    let (_root, store, origin, mut thread, next) = two_published_iterations(false);
+    thread.resolved = true;
+    observe(&store, &origin, &thread, 'c', vec![], NOW + 30);
+    let saved = store.load_publications().unwrap();
+    for state in [
+        OperationState::Queued,
+        OperationState::Running,
+        OperationState::Interrupted,
+        OperationState::ManualRetry,
+    ] {
+        let mut publications = saved.clone();
+        let current = publications.iter_mut().find(|p| p.id == next.id).unwrap();
+        current.operation.state = state;
+        current.phase = publication::Phase::Pending;
+        current.receipts.last_mut().unwrap().state = RemoteState::Pending;
+        store.save_publications(&publications).unwrap();
+        let candidate = publication::host::candidates(&store)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.review_operation_id == next.review.operation.id)
+            .unwrap();
+        assert!(candidate
+            .blocked
+            .as_deref()
+            .unwrap()
+            .contains("Prior feedback changed"));
+        assert_ne!(current_state(&store), crate::queue::State::MachineSignedOff);
+    }
+    let mut uncertain = saved.clone();
+    uncertain
+        .iter_mut()
+        .find(|p| p.id == next.id)
+        .unwrap()
+        .uncertain = true;
+    store.save_publications(&uncertain).unwrap();
+    assert_eq!(current_state(&store), crate::queue::State::Failed);
+
+    store.save_publications(&[origin]).unwrap();
+    let candidate = publication::host::candidates(&store)
+        .unwrap()
+        .into_iter()
+        .find(|c| c.review_operation_id == next.review.operation.id)
+        .unwrap();
+    assert!(candidate.publication.is_none());
+    assert!(candidate
+        .blocked
+        .as_deref()
+        .unwrap()
+        .contains("Prior feedback changed"));
+    assert_ne!(current_state(&store), crate::queue::State::MachineSignedOff);
+
+    store.save_publications(&saved).unwrap();
+    let settings = store.load_settings().unwrap();
+    for change in ["assignment", "account", "lens", "disabled"] {
+        let mut changed = settings.clone();
+        match change {
+            "assignment" => changed.repositories[0].assignments.clear(),
+            "account" => changed.repositories[0].provider_account_id = Some("44".into()),
+            "lens" => changed.agents[0].prompt.push_str(" Different lens."),
+            "disabled" => changed.repositories[0].enabled = false,
+            _ => unreachable!(),
+        }
+        store.save_settings(&changed).unwrap();
+        assert_ne!(
+            current_state(&store),
+            crate::queue::State::MachineSignedOff,
+            "{change}"
+        );
+    }
+    store.save_settings(&settings).unwrap();
+    let mut jobs = store.load_queue().unwrap();
+    for job in jobs
+        .iter_mut()
+        .filter(|j| j.head_sha == next.review.job.head_sha)
+    {
+        job.observed_base_sha = Some("d".repeat(40));
+    }
+    store.save_queue(&jobs).unwrap();
+    assert_eq!(
+        current_state(&store),
+        crate::queue::State::StaleAfterPublication
+    );
+}
+
+#[test]
+fn r73_closing_earlier_root_does_not_clear_new_second_iteration_concern() {
+    let (_root, store, origin, mut thread, next) = two_published_iterations(true);
+    let mut current_thread = thread.clone();
+    current_thread.id = "second-thread".into();
+    current_thread.comments[0].id = next.receipts.last().unwrap().comment_ids[0].clone();
+    current_thread.comments[0].review_id = Some(next.receipts.last().unwrap().review_id.clone());
+    current_thread.comments[0].original_commit = Some(next.review.job.head_sha.clone());
+    current_thread.comments[0].body = next.batch.as_ref().unwrap().comments[0].body.clone();
+    observe(&store, &next, &current_thread, 'c', vec![], NOW + 30);
+    thread.resolved = true;
+    observe(&store, &origin, &thread, 'c', vec![], NOW + 40);
+    assert_eq!(current_state(&store), crate::queue::State::WaitingForAuthor);
+    current_thread.resolved = true;
+    observe(&store, &next, &current_thread, 'c', vec![], NOW + 50);
+    assert_eq!(current_state(&store), crate::queue::State::MachineSignedOff);
+}
+
+#[test]
+fn r73_completed_second_publication_allows_validated_same_head_reply_clearance() {
+    for disposition in [
+        Disposition::Open,
+        Disposition::Cleared,
+        Disposition::HumanInputRequired,
+    ] {
+        let (root, store, origin, mut thread, next) = two_published_iterations(false);
+        let archive = std::fs::read(root.path().join("state/publications.json")).unwrap();
+        explanation(&mut thread, "22");
+        thread.comments[1].reply_to = Some(thread.comments[0].id.clone());
+        thread.comments[1].review_id = thread.comments[0].review_id.clone();
+        observe(&store, &origin, &thread, 'c', vec![], NOW + 30);
+        assert_ne!(current_state(&store), crate::queue::State::MachineSignedOff);
+        let capacity = Capacity::default();
+        let Dispatch::Reply(mut run, _) = capacity
+            .dispatch(&store, NOW + 40)
+            .unwrap()
+            .dispatched
+            .remove(0)
+        else {
+            panic!("Owner reply expected");
+        };
+        let result = output_for(
+            &run,
+            ReplyDecision::Quiet,
+            vec![assessment(&run.context.feedback[0].id, disposition.clone())],
+        );
+        complete_analysis(&store, &mut run, Ok(result), true, NOW + 41).unwrap();
+        assert!(crate::feedback::publication_gate(&store, &next.review).is_err());
+        assert_eq!(
+            current_state(&store),
+            match disposition {
+                Disposition::Open => crate::queue::State::WaitingForAuthor,
+                Disposition::Cleared => crate::queue::State::MachineSignedOff,
+                Disposition::HumanInputRequired => crate::queue::State::WaitingForHuman,
+            }
+        );
+        let ledger = store.load_feedback().unwrap();
+        assert!(!ledger.records[0].context.closed);
+        assert!(!ledger.records[0].context.thread.as_ref().unwrap().resolved);
+        assert_eq!(
+            std::fs::read(root.path().join("state/publications.json")).unwrap(),
+            archive
+        );
+    }
+}
+
+fn mention_scan(comments: Vec<TopComment>) -> Scan {
+    Scan {
+        feedback: vec![],
+        mentions: vec![(
+            MentionBinding {
+                configuration_id: REPO.into(),
+                account_id: "22".into(),
+                account_login: "actor".into(),
+                repository_id: "100".into(),
+                repository_name: "example/repo".into(),
+                pull_request_id: "9".into(),
+                number: 1,
+            },
+            comments,
+        )],
+    }
+}
+
+fn finish_scan(store: Store, observations: Scan, now: i64) -> (Store, Result<(), String>) {
+    let mut monitor = Monitor::restore(&store).unwrap();
+    if let Some(operation) = monitor.snapshot()[0].operation.as_ref().filter(|o| {
+        matches!(
+            o.state,
+            OperationState::Failed | OperationState::ManualRetry
+        )
+    }) {
+        let id = operation.id.clone();
+        monitor.manual_retry_operation(&store, &id, now).unwrap();
+        assert!(monitor.snapshot()[0].conversation_admission_pending);
+        assert_ne!(current_state(&store), crate::queue::State::MachineSignedOff);
+    }
+    let ticket = monitor.prepare_checks(&store, now, true).unwrap().remove(0);
+    let mut auth = crate::GithubAuth::new();
+    auth.accounts.insert(
+        "22".into(),
+        crate::GithubAccountState::Connected(Identity {
+            id: "22".into(),
+            login: "actor".into(),
+        }),
+    );
+    let store = Mutex::new(store);
+    let result = crate::finish_monitored_ticket(
+        &Mutex::new(BTreeMap::new()),
+        &Mutex::new(auth),
+        &store,
+        &Mutex::new(monitor),
+        ticket,
+        Ok((
+            PollResult {
+                connection: Connection {
+                    identity: Identity {
+                        id: "22".into(),
+                        login: "actor".into(),
+                    },
+                    repository: RemoteRepository {
+                        id: "100".into(),
+                        name: "example/repo".into(),
+                    },
+                    capabilities: Capabilities {
+                        read: true,
+                        comment: CommentCapability::Available,
+                    },
+                },
+                pull_requests: vec![pull('a')],
+            },
+            observations,
+        )),
+        now + 1,
+    )
+    .map_err(|e| e.message().to_string());
+    let store = store.into_inner().unwrap();
+    (store, result)
+}
+
+fn cleared_fixture() -> (tempfile::TempDir, Store, Publication, Thread) {
+    let (root, store, origin, mut thread) = fixture(1);
+    thread.resolved = true;
+    observe(&store, &origin, &thread, 'a', vec![], NOW + 10);
+    assert_eq!(current_state(&store), crate::queue::State::MachineSignedOff);
+    (root, store, origin, thread)
+}
+
+#[test]
+fn r73_follow_up_write_failure_retains_mention_intent_and_recovers_without_rediscovery() {
+    let (root, store, _, _) = cleared_fixture();
+    let order = store.load_queue_state().unwrap().next_enqueue_order + 1;
+    store.fail_state_write("follow-ups.json", 1);
+    let (store, result) = finish_scan(
+        store,
+        mention_scan(vec![mention("501", "@actor explain")]),
+        NOW + 20,
+    );
+    assert!(result.is_err());
+    drop(store);
+    let store = Store::new(root.path().into());
+    let ledger = store.load_feedback().unwrap();
+    assert_eq!(
+        ledger.mentions.len(),
+        1,
+        "Observed mention was lost at follow-up persistence"
+    );
+    let intent = &ledger.mentions[0];
+    assert_eq!(intent.enqueue_order, order);
+    assert_eq!(intent.enqueued_at, NOW + 21);
+    assert!(uuid::Uuid::parse_str(&intent.work_id).is_ok());
+    assert!(intent.follow_up_id.is_none());
+    assert!(store.load_follow_ups().unwrap().is_empty());
+    let health = Monitor::restore(&store).unwrap().snapshot().remove(0);
+    assert_eq!(health.last_success, Some(NOW + 11));
+    assert_eq!(
+        health.last_failure.as_deref(),
+        Some("conversation_admission")
+    );
+    assert!(health.conversation_admission_pending);
+    assert_ne!(current_state(&store), crate::queue::State::MachineSignedOff);
+    assert!(Capacity::default()
+        .snapshot(&store, NOW + 22)
+        .unwrap()
+        .work
+        .iter()
+        .any(|w| w.key.id == intent.work_id && w.enqueue_order == order && w.state == "blocked"));
+    let (store, result) = finish_scan(store, Scan::default(), NOW + 30);
+    result.unwrap();
+    let runs = store.load_follow_ups().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].id, intent.work_id);
+    assert_eq!(runs[0].enqueue_order, Some(order));
+    assert_eq!(runs[0].enqueued_at, Some(intent.enqueued_at));
+    assert_eq!(
+        store.load_feedback().unwrap().mentions[0]
+            .follow_up_id
+            .as_deref(),
+        Some(intent.work_id.as_str())
+    );
+    let capacity = Capacity::default();
+    let mut dispatched = capacity.dispatch(&store, NOW + 32).unwrap();
+    assert!(dispatched.errors.is_empty(), "{:?}", dispatched.errors);
+    assert_eq!(dispatched.dispatched.len(), 1);
+    let work = dispatched.dispatched.remove(0);
+    let key = work.key();
+    assert_eq!(key.kind, Kind::Mention);
+    assert_eq!(key.id, intent.work_id);
+    let Dispatch::Reply(mut run, _) = work else {
+        panic!("Recovered mention expected");
+    };
+    let result = output_for(&run, ReplyDecision::Quiet, vec![]);
+    complete_analysis(&store, &mut run, Ok(result), true, NOW + 33).unwrap();
+    capacity
+        .release(&key, &run.analysis.as_ref().unwrap().id)
+        .unwrap();
+    assert_eq!(current_state(&store), crate::queue::State::MachineSignedOff);
+    let runs = store.load_follow_ups().unwrap();
+    let (store, result) = finish_scan(
+        Store::new(root.path().into()),
+        mention_scan(vec![mention("501", "@actor explain")]),
+        NOW + 40,
+    );
+    result.unwrap();
+    assert_eq!(store.load_follow_ups().unwrap(), runs);
+    assert!(Capacity::default()
+        .dispatch(&store, NOW + 42)
+        .unwrap()
+        .dispatched
+        .is_empty());
+}
+
+#[test]
+fn r73_final_ledger_link_failure_recovers_exact_committed_execution() {
+    let (root, store, _, _) = cleared_fixture();
+    store.fail_state_write("feedback.json", 3);
+    let (store, result) = finish_scan(
+        store,
+        mention_scan(vec![mention("501", "@actor explain")]),
+        NOW + 20,
+    );
+    assert!(result.is_err());
+    let runs = store.load_follow_ups().unwrap();
+    assert_eq!(runs.len(), 1);
+    let ledger = store.load_feedback().unwrap();
+    assert_eq!(ledger.mentions.len(), 1);
+    assert!(ledger.mentions[0].follow_up_id.is_none());
+    assert_eq!(ledger.mentions[0].work_id, runs[0].id);
+    let health = Monitor::restore(&store).unwrap().snapshot().remove(0);
+    assert_eq!(health.last_success, Some(NOW + 11));
+    assert_eq!(
+        health.last_failure.as_deref(),
+        Some("conversation_admission")
+    );
+    assert!(health.conversation_admission_pending);
+    assert_ne!(current_state(&store), crate::queue::State::MachineSignedOff);
+    assert_eq!(
+        Capacity::default()
+            .snapshot(&store, NOW + 22)
+            .unwrap()
+            .work
+            .iter()
+            .filter(|w| w.key.id == runs[0].id)
+            .count(),
+        1,
+        "Unlinked intent is not a second capacity job"
+    );
+    let (store, result) = finish_scan(Store::new(root.path().into()), Scan::default(), NOW + 30);
+    result.unwrap();
+    assert_eq!(store.load_follow_ups().unwrap(), runs);
+    assert_eq!(
+        store.load_feedback().unwrap().mentions[0]
+            .follow_up_id
+            .as_deref(),
+        Some(runs[0].id.as_str())
+    );
+}
+
+#[test]
+fn r73_mention_recovery_never_replaces_linked_or_uncertain_execution() {
+    let (_root, store, _, _) = cleared_fixture();
+    store.fail_state_write("feedback.json", 3);
+    let (store, result) = finish_scan(
+        store,
+        mention_scan(vec![mention("501", "@actor explain")]),
+        NOW + 20,
+    );
+    assert!(result.is_err());
+    let mut runs = store.load_follow_ups().unwrap();
+    runs[0].publication = Some(runs[0].operation("mention_reply", NOW + 22));
+    runs[0].publication.as_mut().unwrap().attempted_mutation = Some("mention_reply".into());
+    runs[0].uncertain = true;
+    runs[0].phase = Phase::Unresolved;
+    runs[0].body = Some("Exact signed body awaiting reconciliation.".into());
+    store.save_follow_ups(&runs).unwrap();
+    let (store, result) = finish_scan(store, Scan::default(), NOW + 30);
+    result.unwrap();
+    assert_eq!(store.load_follow_ups().unwrap(), runs);
+    assert_eq!(current_state(&store), crate::queue::State::Failed);
+    store.save_follow_ups(&[]).unwrap();
+    let (store, result) = finish_scan(
+        store,
+        mention_scan(vec![mention("501", "@actor explain")]),
+        NOW + 40,
+    );
+    result.unwrap();
+    assert!(store.load_follow_ups().unwrap().is_empty());
+    let mention = store.load_feedback().unwrap().mentions.remove(0);
+    assert_eq!(mention.follow_up_id.as_deref(), Some(runs[0].id.as_str()));
+    assert!(mention.blocked.unwrap().contains("no replacement"));
+    assert_eq!(current_state(&store), crate::queue::State::Blocked);
+}
+
+#[test]
+fn r73_initial_intent_and_prior_feedback_failures_cannot_commit_monitor_success() {
+    for failure in ["intent_write", "feedback_write", "feedback_observation"] {
+        let (root, store, origin, mut thread) = cleared_fixture();
+        let success = Monitor::restore(&store).unwrap().snapshot()[0].last_success;
+        match failure {
+            "intent_write" => store.fail_state_write("feedback.json", 2),
+            "feedback_write" => store.fail_state_write("feedback.json", 1),
+            "feedback_observation" => thread.comments[0].body = "Unverified altered root.".into(),
+            _ => unreachable!(),
+        }
+        let mut scan = mention_scan(vec![mention("501", "@actor explain")]);
+        if failure != "intent_write" {
+            scan.mentions.clear();
+            scan.feedback.push(Observed {
+                origin,
+                head: "a".repeat(40),
+                threads: vec![thread],
+            });
+        }
+        let (store, result) = finish_scan(store, scan, NOW + 20);
+        assert!(result.is_err());
+        assert!(store.load_follow_ups().unwrap().is_empty());
+        drop(store);
+        let store = Store::new(root.path().into());
+        let health = Monitor::restore(&store).unwrap().snapshot().remove(0);
+        assert_eq!(
+            health.last_success, success,
+            "Admission failure was hidden by monitor success"
+        );
+        assert!(health.last_failure.is_some());
+        assert!(health.conversation_admission_pending);
+        assert_ne!(health.operation.unwrap().state, OperationState::Completed);
+        assert_ne!(current_state(&store), crate::queue::State::MachineSignedOff);
+        assert_ne!(
+            crate::queue::snapshot(&store, vec![]).unwrap().items[0].state,
+            crate::queue::State::MachineSignedOff,
+            "Projection cannot omit the durable admission blocker"
+        );
+    }
+}
+
 #[test]
 fn current_iteration_owner_reply_keeps_original_review_root_and_receipts() {
     let (root, store, origin, mut thread) = fixture(2);

@@ -108,10 +108,16 @@ pub fn item_id(job: &QueueJob) -> String {
 
 pub fn snapshot(store: &Store, health: Vec<ScheduleHealth>) -> Result<Snapshot, String> {
     let settings = store.load_settings()?;
+    let monitoring = store.load_monitoring_state()?;
+    let health = if health.is_empty() {
+        monitoring.health.into_values().collect()
+    } else {
+        health
+    };
     let mut result = Snapshot {
         feedback: BTreeMap::new(),
         mentions: store.load_feedback()?.mentions,
-        global_scan: store.load_monitoring_state()?.global_scan,
+        global_scan: monitoring.global_scan,
         tracked: store.load_queue_state()?.tracked,
         health,
         jobs: store.load_queue()?,
@@ -489,6 +495,10 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             }
         }
         for mention in snapshot.mentions.iter().filter(|m| m.binding.matches(job)) {
+            if mention.follow_up_id.is_none() {
+                states.push(State::Blocked);
+                warnings.insert("Observed mention is awaiting durable execution admission.".into());
+            }
             if let Some(reason) = &mention.blocked {
                 states.push(State::Blocked);
                 warnings.insert(reason.clone());
@@ -557,6 +567,10 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 h.repository_id == job.configuration_id
                     && h.provider_account_id.as_deref() == Some(&job.account_id)
             }) {
+                if health.conversation_admission_pending {
+                    states.push(State::Blocked);
+                    warnings.insert("Conversation observations are not fully admitted; retry the repository check before relying on readiness.".into());
+                }
                 if let Some(failure) = &health.last_failure {
                     states.push(State::Failed);
                     warnings.insert(format!("Monitoring failure: {failure}. Check schedule health before relying on this saved revision."));

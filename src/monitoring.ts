@@ -29,6 +29,7 @@ interface Health {
   schedule_available: boolean;
   last_failure: string | null;
   in_flight: boolean;
+  conversation_admission_pending?: boolean;
   manual_pending: boolean;
   operation: {
     id: string;
@@ -183,6 +184,8 @@ function healthLabel(item: Health) {
   if (item.operation?.state === "interrupted") return "Interrupted";
   if (item.operation?.state === "queued") return "Retry queued";
   if (item.in_flight) return "Checking";
+  if (item.conversation_admission_pending)
+    return "Conversation admission pending";
   if (item.last_failure && blockingFailures.has(item.last_failure))
     return "Blocked";
   if (!item.schedule_available) return "Unavailable";

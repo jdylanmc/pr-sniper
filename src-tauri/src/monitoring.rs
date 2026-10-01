@@ -119,6 +119,8 @@ pub struct ScheduleHealth {
     pub last_failure: Option<String>,
     pub in_flight: bool,
     #[serde(default)]
+    pub conversation_admission_pending: bool,
+    #[serde(default)]
     pub manual_pending: bool,
     #[serde(default)]
     pub operation: Option<JobOperation>,
@@ -462,6 +464,7 @@ pub enum MonitoringError {
 impl MonitoringError {
     pub fn requires_host_report(&self) -> bool {
         matches!(self, Self::Storage(_))
+            || matches!(self, Self::Recoverable { code, .. } if code == "conversation_admission")
     }
 
     pub fn message(&self) -> &str {
@@ -522,6 +525,7 @@ impl Monitor {
             health.manual_pending = false;
             if health.in_flight {
                 health.in_flight = false;
+                health.conversation_admission_pending = true;
                 health.last_failure = Some("interrupted".into());
                 health.next_run = 0;
                 if let Some(operation) = health.operation.as_mut() {
@@ -1161,6 +1165,7 @@ impl Monitor {
                     schedule_available: false,
                     last_failure: None,
                     in_flight: false,
+                    conversation_admission_pending: false,
                     manual_pending: false,
                     operation: None,
                     scan_assignments: Vec::new(),
@@ -1596,6 +1601,18 @@ impl Monitor {
         result: Result<PollResult, ConnectionError>,
         now: i64,
     ) -> Result<(), MonitoringError> {
+        self.finish_with_admission(store, accounts, ticket, result, now, |_, _| Ok(()))
+    }
+
+    pub(crate) fn finish_with_admission(
+        &mut self,
+        store: &Store,
+        accounts: &BTreeMap<String, AccountAvailability>,
+        ticket: PollTicket,
+        result: Result<PollResult, ConnectionError>,
+        now: i64,
+        admit: impl FnOnce(&Store, &PollTicket) -> Result<(), String>,
+    ) -> Result<(), MonitoringError> {
         if let Some(health) = self.state.health.get_mut(&ticket.health_key) {
             health.in_flight = false;
         }
@@ -1614,7 +1631,20 @@ impl Monitor {
         let configured = configured_schedules(&settings);
         let outcome = match self.synchronize_jobs(store, &configured, accounts) {
             Ok(()) => match result {
-                Ok(result) => self.commit_success(store, &configured, &ticket, result, now),
+                Ok(result) => self
+                    .commit_success(store, &configured, &ticket, result, now)
+                    .and_then(|login| {
+                        if let Some(health) = self.state.health.get_mut(&ticket.health_key) {
+                            health.conversation_admission_pending = true;
+                        }
+                        admit(store, &ticket).map_err(|message| MonitoringError::Recoverable {
+                            code: "conversation_admission".into(),
+                            message,
+                            failure: OperationFailure::Permanent,
+                            retry_after_seconds: None,
+                        })?;
+                        Ok(login)
+                    }),
                 Err(error) => Err(check_error(error)),
             },
             Err(error) => Err(MonitoringError::Storage(error)),
@@ -1632,6 +1662,7 @@ impl Monitor {
                         health.account_login = Some(login.clone());
                         health.last_success = Some(now);
                         health.last_failure = None;
+                        health.conversation_admission_pending = false;
                         if let Some(operation) = health.operation.as_mut() {
                             operation.state = OperationState::Completed;
                             operation.next_attempt_at = None;

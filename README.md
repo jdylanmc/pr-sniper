@@ -698,6 +698,14 @@ Pending conversations, human-input decisions, unavailable owners and unresolved
 mutation outcomes prevent false machine clearance. Original published receipts
 and local-only findings remain distinct.
 
+Once a publication is confirmed complete, later feedback changes affect current
+readiness, not the immutable publication's mutation-freshness check. Closure or
+source-validated same-head owner reassessment can therefore restore readiness
+after a later iteration publishes. Current assignment/account/revision gates,
+open concerns, human-input decisions and pending or uncertain mutations still
+block. New and pending publications retain their captured-feedback freshness
+checks; local clearance never resolves a GitHub thread.
+
 ### Primary acting-account mentions
 
 For already tracked open PRs, scans read bounded, complete top-level issue-comment
@@ -716,6 +724,14 @@ Top-level responses link the original comment and reuse the constrained reply
 schema, shared `Kind::Mention` AI capacity, explicit trust/start/comment gates,
 serial reply publication, pause handling and no-blind-repost recovery. No fake
 review or publication is created for a mention.
+
+Admission first saves feedback observations, then saves mention identity and FIFO
+intent before writing its follow-up execution, and only then saves the committed
+execution link. Monitoring records success only after all admission writes
+succeed. Failure leaves a durable conversation-admission blocker across restart
+and manual retry until a successful check. Saved unlinked intents recover on the
+next check without requiring remote rediscovery; a committed execution is linked,
+not replaced. Missing linked history and uncertain replies never authorize replay.
 
 Legacy follow-up records load into the typed target/context shape without
 writing history during reads. When the original publication is available, its

@@ -112,12 +112,13 @@ fn due(operation: &JobOperation, now: i64) -> bool {
 
 pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
     let mut result = Vec::new();
-    for mention in store
-        .load_feedback()?
-        .mentions
-        .into_iter()
-        .filter(|m| m.follow_up_id.is_none())
-    {
+    let follow_ups = follow_up::host::candidates(store)?;
+    for mention in store.load_feedback()?.mentions.into_iter().filter(|m| {
+        m.follow_up_id.is_none()
+            && !follow_ups
+                .iter()
+                .any(|f| f.run.id == m.work_id && f.run.key == m.key)
+    }) {
         result.push(Work {
             key: WorkId {
                 kind: Kind::Mention,
@@ -210,7 +211,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
             reason,
         });
     }
-    for candidate in follow_up::host::candidates(store)? {
+    for candidate in follow_ups {
         let run = candidate.run;
         if run.result.is_some() || run.publication.is_some() {
             continue;

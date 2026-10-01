@@ -151,38 +151,6 @@ pub(crate) fn scan(
     Ok(result)
 }
 
-pub(crate) fn admit(
-    app: &tauri::AppHandle,
-    ticket: &PollTicket,
-    observations: Scan,
-) -> Result<(), String> {
-    let host = app.state::<Host>();
-    let generations = host
-        .github_generations
-        .lock()
-        .map_err(|_| "GitHub coordination unavailable.")?;
-    if generations
-        .get(&ticket.provider_account_id)
-        .copied()
-        .unwrap_or(0)
-        != ticket.account_generation
-    {
-        return Err(
-            "Thread observations were discarded because the GitHub connection changed.".into(),
-        );
-    }
-    host.github_auth
-        .lock()
-        .map_err(|_| "GitHub account unavailable.")?
-        .account_session_allowed(&ticket.provider_account_id)
-        .map_err(|_| "Thread account is no longer available.")?;
-    let store = host
-        .store
-        .lock()
-        .map_err(|_| "Thread storage unavailable.")?;
-    admit_scan(&store, ticket, observations, now_seconds()?)
-}
-
 pub(crate) fn admit_scan(
     store: &Store,
     ticket: &PollTicket,
@@ -253,112 +221,132 @@ pub(crate) fn admit_scan(
                 continue;
             }
             let key = binding.key(&comment.id);
-            let index = if let Some(index) = ledger.mentions.iter().position(|m| m.key == key) {
-                index
+            if ledger.mentions.iter().any(|m| m.key == key) {
+                continue;
+            }
+            let existing = runs.iter().find(|run| run.key == key);
+            let (work_id, enqueue_order, enqueued_at) = if let Some(run) = existing {
+                (
+                    run.id.clone(),
+                    run.enqueue_order
+                        .ok_or("Retained mention order is unavailable.")?,
+                    run.enqueued_at
+                        .ok_or("Retained mention enqueue time is unavailable.")?,
+                )
             } else {
-                let existing = runs.iter().find(|run| run.key == key);
-                let (work_id, enqueue_order, enqueued_at) = if let Some(run) = existing {
-                    (
-                        run.id.clone(),
-                        run.enqueue_order
-                            .ok_or("Retained mention order is unavailable.")?,
-                        run.enqueued_at
-                            .ok_or("Retained mention enqueue time is unavailable.")?,
-                    )
-                } else {
-                    (
-                        uuid::Uuid::new_v4().to_string(),
-                        store.allocate_enqueue_order()?,
-                        now,
-                    )
-                };
-                ledger.mentions.push(crate::feedback::Mention {
-                    key: key.clone(),
-                    work_id,
-                    enqueue_order,
-                    enqueued_at,
-                    binding: binding.clone(),
-                    comment: comment.clone(),
-                    follow_up_id: None,
-                    blocked: None,
-                });
-                ledger.mentions.len() - 1
+                (
+                    uuid::Uuid::new_v4().to_string(),
+                    store.allocate_enqueue_order()?,
+                    now,
+                )
             };
-            let mention = &mut ledger.mentions[index];
-            if let Some(run) = runs.iter().find(|r| r.key == key) {
-                mention.follow_up_id = Some(run.id.clone());
+            ledger.mentions.push(crate::feedback::Mention {
+                key,
+                work_id,
+                enqueue_order,
+                enqueued_at,
+                binding: binding.clone(),
+                comment,
+                follow_up_id: None,
+                blocked: Some("Mention observed; execution admission is pending.".into()),
+            });
+        }
+    }
+    // Commit observation identity/order before materializing any mention execution or linkage.
+    store.save_feedback(&ledger)?;
+    // Recover saved intent even when this poll does not rediscover the remote comment.
+    for mention in ledger.mentions.iter_mut().filter(|m| {
+        m.binding.configuration_id == ticket.repository_id
+            && m.binding.account_id == ticket.provider_account_id
+            && m.binding.repository_id == ticket.provider_repository_id
+    }) {
+        let binding = &mention.binding;
+        if let Some(run) = runs
+            .iter()
+            .find(|r| r.key == mention.key || r.id == mention.work_id)
+        {
+            if run.key != mention.key
+                || run.id != mention.work_id
+                || run.enqueue_order != Some(mention.enqueue_order)
+                || run.enqueued_at != Some(mention.enqueued_at)
+                || mention
+                    .follow_up_id
+                    .as_ref()
+                    .is_some_and(|id| id != &run.id)
+            {
+                return Err("Mention execution identity or order conflicts with its saved intent; no replacement was created.".into());
+            }
+            mention.follow_up_id = Some(run.id.clone());
+            mention.blocked = None;
+            continue;
+        }
+        if mention.follow_up_id.is_some() {
+            mention.blocked =
+                Some("Mention history is unavailable; no replacement response is created.".into());
+            continue;
+        }
+        let route = (|| -> Result<FollowUp, String> {
+            let repository = settings
+                .repositories
+                .iter()
+                .find(|r| r.id == binding.configuration_id)
+                .ok_or("Repository removed.")?;
+            let primary = repository
+                .primary_assignment_id()
+                .ok_or("No primary assigned; mention retained without fallback.")?;
+            let assigned = repository
+                .assignments
+                .iter()
+                .find(|a| a.id == primary)
+                .ok_or("Primary assignment unavailable.")?;
+            if !ticket
+                .assignments
+                .iter()
+                .any(|a| a.assignment_id == primary && a.agent_id == assigned.agent_id)
+            {
+                return Err(
+                    "Primary was not captured by this scan; waiting for the next global scan."
+                        .into(),
+                );
+            }
+            let job = jobs
+                .iter()
+                .rev()
+                .find(|j| {
+                    binding.matches(j)
+                        && j.assignment_id.as_deref() == Some(primary)
+                        && monitoring::review_policy(&settings, j, None).is_ok()
+                })
+                .ok_or("The primary's current iteration is unavailable.")?;
+            let selection = Selection::resolve(&settings, job, primary)?;
+            let feedback = crate::feedback::contexts(store, job, &selection.agent.id)
+                .map_err(|e| e.message)?;
+            let mut run = FollowUp::mention(
+                mention.comment.clone(),
+                ConversationContext {
+                    assignment_id: primary.into(),
+                    job: job.clone(),
+                    selection,
+                    trust_confirmed: false,
+                    feedback,
+                    feedback_checked: true,
+                },
+            );
+            run.id = mention.work_id.clone();
+            Ok(run)
+        })();
+        match route {
+            Ok(run) => {
+                let id = run.id.clone();
+                if super::admit_run(&mut runs, run)? {
+                    let work = runs.last_mut().ok_or("Mention admission disappeared.")?;
+                    work.enqueue_order = Some(mention.enqueue_order);
+                    work.enqueued_at = Some(mention.enqueued_at);
+                }
+                mention.follow_up_id = Some(id);
                 mention.blocked = None;
-                continue;
             }
-            if mention.follow_up_id.is_some() {
-                mention.blocked = Some(
-                    "Mention history is unavailable; no replacement response is created.".into(),
-                );
-                continue;
-            }
-            let route = (|| -> Result<FollowUp, String> {
-                let repository = settings
-                    .repositories
-                    .iter()
-                    .find(|r| r.id == binding.configuration_id)
-                    .ok_or("Repository removed.")?;
-                let primary = repository
-                    .primary_assignment_id()
-                    .ok_or("No primary assigned; mention retained without fallback.")?;
-                let assigned = repository
-                    .assignments
-                    .iter()
-                    .find(|a| a.id == primary)
-                    .ok_or("Primary assignment unavailable.")?;
-                if !ticket
-                    .assignments
-                    .iter()
-                    .any(|a| a.assignment_id == primary && a.agent_id == assigned.agent_id)
-                {
-                    return Err(
-                        "Primary was not captured by this scan; waiting for the next global scan."
-                            .into(),
-                    );
-                }
-                let job = jobs
-                    .iter()
-                    .rev()
-                    .find(|j| {
-                        binding.matches(j)
-                            && j.assignment_id.as_deref() == Some(primary)
-                            && monitoring::review_policy(&settings, j, None).is_ok()
-                    })
-                    .ok_or("The primary's current iteration is unavailable.")?;
-                let selection = Selection::resolve(&settings, job, primary)?;
-                let feedback = crate::feedback::contexts(store, job, &selection.agent.id)
-                    .map_err(|e| e.message)?;
-                let mut run = FollowUp::mention(
-                    mention.comment.clone(),
-                    ConversationContext {
-                        assignment_id: primary.into(),
-                        job: job.clone(),
-                        selection,
-                        trust_confirmed: false,
-                        feedback,
-                        feedback_checked: true,
-                    },
-                );
-                run.id = mention.work_id.clone();
-                Ok(run)
-            })();
-            match route {
-                Ok(run) => {
-                    let id = run.id.clone();
-                    if super::admit_run(&mut runs, run)? {
-                        let work = runs.last_mut().ok_or("Mention admission disappeared.")?;
-                        work.enqueue_order = Some(mention.enqueue_order);
-                        work.enqueued_at = Some(mention.enqueued_at);
-                    }
-                    mention.follow_up_id = Some(id);
-                    mention.blocked = None;
-                }
-                Err(reason) => mention.blocked = Some(reason),
-            }
+            Err(reason) => mention.blocked = Some(reason),
         }
     }
     if runs.len() != before {
