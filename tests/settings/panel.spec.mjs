@@ -71,7 +71,7 @@ test("legacy viewport and dialog fallback preserves compact editor keyboard acce
     modal.getByRole("button", { name: "Save doctrine", exact: true }),
   ).toBeInViewport();
   await tab(page, "Running").click();
-  await expect(heading(page)).toHaveText("Running");
+  await expect(heading(page)).toHaveText("Work queue");
   await tab(page, "Settings").click();
   await expect(modal.getByLabel("Title", { exact: true })).toHaveValue(
     "Legacy retained draft",
@@ -103,7 +103,11 @@ test("one retained panel shares four destinations, editor drafts and hide-only d
   });
   for (const name of ["Queue", "Running", "Reviewed"]) {
     await tab(page, name).click();
-    await expect(heading(page)).toHaveText(name);
+    await expect(heading(page)).toHaveText(
+      { Queue: "Your queue", Running: "Work queue", Reviewed: "Reviewed" }[
+        name
+      ],
+    );
     await expect(modal).toBeHidden();
   }
   await expect(
@@ -460,10 +464,58 @@ test("compact and small-monitor panels keep navigation and editor controls reach
       ),
     ).toBe(true);
     await tab(page, "Queue").click();
-    await expect(heading(page)).toHaveText("Queue");
+    await expect(heading(page)).toHaveText("Your queue");
     await tab(page, "Settings").click();
     await expect(
       modal.getByRole("textbox", { name: "Principles", exact: true }),
     ).toHaveValue("Small monitor draft");
   }
+});
+
+test("approved shell keeps bottom destinations, authoritative pause and unavailable occupancy", async ({
+  page,
+  store,
+}) => {
+  await page.setViewportSize({ width: 408, height: 744 });
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__failAutomation = false;
+    window.__TAURI_INTERNALS__.invoke = (command, args) => {
+      if (command === "automation_snapshot" && window.__failAutomation)
+        return Promise.reject("Synthetic automation read failure");
+      return original(command, args);
+    };
+  });
+  await page.goto("/");
+  const toggle = page.locator(".panel-header [data-toggle-automation]");
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("[data-running-count]")).toHaveText("0");
+  const navigation = page.getByRole("navigation", {
+    name: "Application destinations",
+  });
+  await expect(navigation.getByRole("button")).toHaveCount(4);
+  expect((await navigation.boundingBox()).y).toBeGreaterThan(600);
+  await expect(page.locator(".panel-art")).toBeVisible();
+  await expect(page.locator("[data-ai-work]")).toHaveCount(0);
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-label", "Resume automation");
+  expect((await store("automation_snapshot")).paused).toBe(true);
+  await page.getByRole("button", { name: "Hide PR Sniper panel" }).click();
+  expect((await store("automation_snapshot")).paused).toBe(true);
+  await invoke(page, "fixture_show_panel");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-label", "Pause automation");
+  await page.evaluate(() => {
+    window.__failAutomation = true;
+  });
+  await tab(page, "Running").click();
+  await expect(toggle).toBeDisabled();
+  await expect(toggle).toHaveAttribute("aria-label", "Monitoring unavailable");
+  await expect(page.locator("[data-running-count]")).toHaveText("?");
+  await expect(page.locator("[data-summary-main]")).toHaveText(
+    "Work state unavailable",
+  );
+  await expect(page.locator("[data-panel-error]")).toContainText(
+    "Synthetic automation read failure",
+  );
 });

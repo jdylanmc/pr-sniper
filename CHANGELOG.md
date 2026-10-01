@@ -5,6 +5,12 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+### Changed
+
+- Apply the approved compact navy/orange/teal shell, supplied header artwork
+  and persistent four-destination bottom navigation. Monitoring uses native
+  pause state; unavailable snapshots never retain a successful work badge.
+
 ## 0.1.2 - 2026-10-01
 
 ### Added

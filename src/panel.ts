@@ -4,6 +4,7 @@ import { mountSettings } from "./settings";
 import { renderMonitoring, type MonitoringSnapshot } from "./monitoring";
 import type { AutomationSnapshot } from "./automation";
 import crosshair from "./crosshair.svg";
+import sniperArt from "./sniper-mark.png";
 import "./panel.css";
 
 export type PanelTab = "queue" | "running" | "reviewed" | "settings";
@@ -37,26 +38,45 @@ interface Row {
   reason?: string | null;
 }
 
+const destinations = {
+  queue: {
+    title: "Your queue",
+    icon: "M4 4h16l2 14H2L4 4Zm-1 9h5l2 3h4l2-3h5M7 8h10",
+  },
+  running: { title: "Work queue", icon: "M2 12h4l3-9 5 18 3-9h5" },
+  reviewed: {
+    title: "Reviewed",
+    icon: "M7 3h10a2 2 0 0 1 2 2v15H5V5a2 2 0 0 1 2-2Zm1 9 3 3 5-6",
+  },
+  settings: {
+    title: "Settings",
+    icon: "M3 6h18M3 12h18M3 18h18M8 3v6M16 9v6M9 15v6",
+  },
+};
+const icon = (path: string) =>
+  `<svg class="panel-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="${path}"/></svg>`;
+
 export async function mountPanel(app: HTMLElement) {
   app.className = "panel-shell";
-  app.innerHTML = `<header class="panel-header"><img src="${crosshair}" alt="" /><strong>PR Sniper</strong><button type="button" data-panel-hide aria-label="Hide PR Sniper panel">Close</button></header>
+  app.innerHTML = `<header class="panel-header"><img src="${crosshair}" alt="" /><strong>PR Sniper</strong><div data-header-automation></div><button type="button" data-panel-hide aria-label="Hide PR Sniper panel" title="Close hides only; background work continues">${icon("m7 7 10 10M7 17 17 7")}</button></header>
+    <div class="panel-context"><button type="button" data-panel-back hidden>Back</button><h1 tabindex="-1" data-panel-heading>Your queue</h1><img class="panel-art" src="${sniperArt}" alt="" /></div>
+    <div class="panel-summary" data-panel-summary><strong data-summary-main>Reading queue...</strong><span data-summary-detail></span></div>
+    <p class="panel-error" role="alert" data-panel-error hidden></p>
+    <div class="panel-content">
+      <div data-panel-view="monitor"></div>
+      <section data-panel-view="running" hidden><div data-running-list></div></section>
+      <section data-panel-view="reviewed" hidden></section>
+      <div data-panel-view="settings" hidden></div>
+      <section data-panel-view="utility" hidden></section>
+    </div>
     <nav class="panel-tabs" data-panel-navigation aria-label="Application destinations">${(
       ["queue", "running", "reviewed", "settings"] as const
     )
       .map(
         (tab) =>
-          `<button type="button" data-panel-tab="${tab}" aria-label="${tab[0].toUpperCase() + tab.slice(1)}">${tab[0].toUpperCase() + tab.slice(1)}${tab === "running" ? '<span data-running-count aria-hidden="true"></span>' : ""}</button>`,
+          `<button type="button" data-panel-tab="${tab}" aria-label="${tab[0].toUpperCase() + tab.slice(1)}"><span class="nav-icon">${icon(destinations[tab].icon)}${tab === "running" ? '<span data-running-count aria-hidden="true">?</span>' : ""}</span><span>${tab[0].toUpperCase() + tab.slice(1)}</span></button>`,
       )
       .join("")}</nav>
-    <p class="panel-error" role="alert" data-panel-error hidden></p>
-    <div class="panel-context"><button type="button" data-panel-back hidden>Back</button><h1 tabindex="-1" data-panel-heading>Queue</h1></div>
-    <div class="panel-content">
-      <div data-panel-view="monitor"></div>
-      <section data-panel-view="running" hidden><div data-running-automation></div><div data-running-list></div></section>
-      <section data-panel-view="reviewed" hidden></section>
-      <div data-panel-view="settings" hidden></div>
-      <section data-panel-view="utility" hidden></section>
-    </div>
     <footer class="panel-footer"><button type="button" data-panel-status>Status</button><button type="button" data-panel-diagnostics>Diagnostics</button><span>Close hides only. Quit from the tray menu.</span></footer>`;
   const error = app.querySelector<HTMLElement>("[data-panel-error]")!;
   const heading = app.querySelector<HTMLElement>("[data-panel-heading]")!;
@@ -142,23 +162,52 @@ export async function mountPanel(app: HTMLElement) {
       }),
     onSnapshot: (value) => {
       snapshot = value;
+      drawSummary();
       drawLists();
     },
     onAutomation: (value) => {
       automation = value;
       app.querySelector<HTMLElement>("[data-running-count]")!.textContent =
-        ` (${value.active})`;
+        value ? String(value.active) : "?";
       app.querySelector<HTMLButtonElement>(
         '[data-panel-tab="running"]',
-      )!.title =
-        `${value.active} occupied AI slots, including ${value.stopping} stopping`;
+      )!.title = value
+        ? `${value.active} occupied AI slots, including ${value.stopping} stopping`
+        : "Active work unavailable";
+      drawSummary();
       drawLists();
     },
   });
   monitor.automation(
-    views.running.querySelector<HTMLElement>("[data-running-automation]")!,
+    app.querySelector<HTMLElement>("[data-header-automation]")!,
   );
 
+  function drawSummary() {
+    const summary = app.querySelector<HTMLElement>("[data-panel-summary]")!;
+    summary.hidden =
+      !!route.detail || ["settings", "reviewed"].includes(route.tab);
+    const main = summary.querySelector<HTMLElement>("[data-summary-main]")!;
+    const detail = summary.querySelector<HTMLElement>("[data-summary-detail]")!;
+    if (route.tab === "running") {
+      main.textContent = automation
+        ? `${automation.active - automation.stopping} / ${automation.capacity} running`
+        : "Work state unavailable";
+      detail.textContent = automation
+        ? `${automation.waiting} waiting${automation.blocked ? ` / ${automation.blocked} blocked` : ""}${automation.stopping ? ` / ${automation.stopping} stopping` : ""}`
+        : "Occupancy unknown";
+    } else {
+      const items = snapshot?.items ?? [];
+      const ready = items.filter(
+        (item) => item.state === "machine_signed_off",
+      ).length;
+      main.textContent = snapshot
+        ? `${items.length} for you`
+        : "Reading queue...";
+      detail.textContent = snapshot
+        ? `${ready} ready / ${items.length - ready} need attention`
+        : "";
+    }
+  }
   function metadata(
     kind: WorkKind,
     id: string,
@@ -389,7 +438,9 @@ export async function mountPanel(app: HTMLElement) {
         : route.detail.type === "diagnostics"
           ? "Diagnostics"
           : "Saved evidence"
-      : route.tab[0].toUpperCase() + route.tab.slice(1);
+      : destinations[route.tab].title;
+    app.dataset.detail = String(!!route.detail);
+    drawSummary();
     for (const button of app.querySelectorAll<HTMLButtonElement>(
       "[data-panel-tab]",
     )) {
@@ -419,10 +470,6 @@ export async function mountPanel(app: HTMLElement) {
     if (visible === "monitor") monitor.detail(route.detail, state.missing);
     if (utilityDetail && (changed || !views.utility.children.length))
       void utility(route.detail!.type as "status" | "diagnostics");
-    if (visible === "running")
-      monitor.automation(
-        views.running.querySelector<HTMLElement>("[data-running-automation]")!,
-      );
     if (changed || (state.visible && !lastVisible))
       requestAnimationFrame(() => restorePosition(true));
     lastVisible = state.visible;

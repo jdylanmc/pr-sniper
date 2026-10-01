@@ -76,7 +76,11 @@ another item. Existing profile-scoped PR selection survives a restart; unsaved
 editor drafts are in-process state, not restart persistence.
 
 Placement uses the tray's monitor work area and physical coordinates, clamping
-the approximately 400px-wide panel for small screens and mixed scaling. Native
+the approximately 408px-wide, 744px-tall panel for small screens and mixed scaling.
+The approved navy header and supplied artwork frame persistent bottom navigation.
+The Monitoring control uses the existing machine-wide pause gate; Close remains
+hide-only. Unknown automation state disables that control and clears the active
+work badge rather than retaining stale availability. Native
 folder selection holds focus dismissal until it returns. External browser
 sign-in may hide the panel; reopening retains the connecting flow and draft.
 Running shows the native shared-capacity jobs (including stopping work);
