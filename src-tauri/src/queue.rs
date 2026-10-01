@@ -672,7 +672,13 @@ pub fn destination(store: &Store, id: &str, file: Option<&str>) -> Result<url::U
             .filter(|r| item.review_keys.contains(&r.key))
             .filter_map(|r| r.run.as_ref())
             .filter_map(|r| r.result.as_ref())
-            .any(|r| r.output.files.iter().any(|f| f.path == file));
+            .any(|r| r.output.files.iter().any(|f| f.path == file))
+            || item
+                .action_status
+                .as_ref()
+                .and_then(|s| s.final_review.as_ref())
+                .and_then(|f| f.execution.result.as_ref())
+                .is_some_and(|r| r.output.files.iter().any(|f| f.path == file));
         if !present {
             return Err("This file is not in the exact review's complete guide.".into());
         }
