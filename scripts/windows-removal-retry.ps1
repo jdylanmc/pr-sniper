@@ -5,6 +5,9 @@ $directory = Join-Path $env:LOCALAPPDATA 'PR Sniper'
 $uninstaller = Join-Path $directory 'uninstall.exe'
 $tools = Join-Path $env:ChocolateyInstall 'lib\pr-sniper-localtest\tools'
 $receipt = Get-Content (Join-Path $tools 'installation.json') -Raw | ConvertFrom-Json
+. (Join-Path $tools 'removal-state.ps1')
+$receiptHash = (Get-FileHash (Join-Path $tools 'installation.json')).Hash
+if ((Get-PrSniperRemovalState $tools $receipt $receiptHash).completed) { throw 'Installed package was already marked removed.' }
 $attributes = [IO.File]::GetAttributes($uninstaller)
 $failure = $null
 try {
@@ -13,7 +16,7 @@ try {
     if ($LASTEXITCODE -eq 0) { throw 'Read-only post-native deletion incorrectly succeeded.' }
     if ((Test-Path (Join-Path $directory 'pr-sniper.exe')) -or
         (Get-FileHash $uninstaller).Hash -ine $receipt.uninstaller_sha256 -or
-        -not (Test-Path (Join-Path $tools 'native-removal.json'))) {
+        -not (Get-PrSniperRemovalState $tools $receipt $receiptHash).completed) {
         throw 'Post-native failure did not preserve the exact completion evidence.'
     }
 } catch { $failure = $_ }
@@ -103,4 +106,7 @@ if ((Test-Path -LiteralPath $uninstaller) -or
 Assert-BusyCleanupRefusal $false
 & choco uninstall pr-sniper-localtest --yes --limit-output --no-progress --execution-timeout=180
 if ($LASTEXITCODE -ne 0 -or (Test-Path $uninstaller)) { throw 'Completed-removal retry did not finish.' }
+if (Test-Path (Split-Path -Parent $tools)) { throw 'Outer package cleanup left tracked completion state or package files.' }
+$listed = @(& choco list pr-sniper-localtest --exact --limit-output)
+if ($LASTEXITCODE -ne 0 -or @($listed | Where-Object { $_.Trim() }).Count) { throw 'Final package list is not empty or could not be verified.' }
 'Hosted deletion failure, present/absent mutex rejection and retained-package retry passed.'

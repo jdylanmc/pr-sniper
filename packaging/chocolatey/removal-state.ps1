@@ -26,14 +26,84 @@ function Assert-PrSniperRemovalState {
 
 }
 
-function Assert-PrSniperRemovalReceipt($Completion, $Receipt, [string] $ReceiptHash) {
+function Assert-PrSniperRemovalBinding($Completion, $Receipt, [string] $ReceiptHash) {
     if ($Receipt.uninstaller_sha256 -notmatch '^[a-fA-F0-9]{64}$' -or
         [string]::IsNullOrEmpty($Receipt.version) -or
-        $Completion.schema -ne 1 -or $Completion.phase -cne 'native-removal-complete' -or
         $Completion.installation_receipt_sha256 -ine $ReceiptHash -or
         $Completion.directory -cne $Receipt.directory -or $Completion.version -cne $Receipt.version -or
         $Completion.uninstaller_sha256 -ine $Receipt.uninstaller_sha256) {
         throw 'Completed native removal is not evidenced by this exact installation receipt.'
+    }
+}
+
+function Assert-PrSniperRemovalReceipt($Completion, $Receipt, [string] $ReceiptHash) {
+    if ($Completion.schema -ne 1 -or $Completion.phase -cne 'native-removal-complete') {
+        throw 'Completed native removal is not evidenced by this exact installation receipt.'
+    }
+    Assert-PrSniperRemovalBinding $Completion $Receipt $ReceiptHash
+}
+
+function Initialize-PrSniperRemovalState([string] $Tools, $Receipt, [string] $ReceiptHash) {
+    $statePath = Join-Path $Tools 'native-removal.json'
+    $pendingPath = Join-Path $Tools 'native-removal.pending.json'
+    if ((Test-Path -LiteralPath $statePath) -or (Test-Path -LiteralPath $pendingPath)) {
+        throw 'Existing removal state requires exact reconciliation; nothing was overwritten.'
+    }
+    # Both immutable files exist before Chocolatey's install snapshot. Completion
+    # deletes only the pending marker; the state file's tracked checksum never changes.
+    foreach ($phase in @('native-removal-pending', 'native-removal-state')) {
+        $path = if ($phase -eq 'native-removal-pending') { $pendingPath } else { $statePath }
+        $record = [ordered]@{
+            schema = 2
+            phase = $phase
+            installation_receipt_sha256 = $ReceiptHash
+            directory = $Receipt.directory
+            version = $Receipt.version
+            uninstaller_sha256 = $Receipt.uninstaller_sha256
+        }
+        Assert-PrSniperRemovalBinding ([pscustomobject]$record) $Receipt $ReceiptHash
+        $bytes = [Text.Encoding]::UTF8.GetBytes(($record | ConvertTo-Json))
+        $stream = [IO.File]::Open($path, 'CreateNew', 'Write', 'None')
+        try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) }
+        finally { $stream.Dispose() }
+    }
+}
+
+function Get-PrSniperRemovalState([string] $Tools, $Receipt, [string] $ReceiptHash) {
+    $state = [IO.File]::ReadAllText((Join-Path $Tools 'native-removal.json')) | ConvertFrom-Json
+    if ($state.schema -ne 2 -or $state.phase -cne 'native-removal-state') {
+        throw 'Legacy/unrecognized removal state needs explicit reconciliation; it was not adopted.'
+    }
+    Assert-PrSniperRemovalBinding $state $Receipt $ReceiptHash
+    $pendingText = $null
+    try { $pendingText = [IO.File]::ReadAllText((Join-Path $Tools 'native-removal.pending.json')) }
+    catch [IO.FileNotFoundException] { }
+    if ($null -ne $pendingText) {
+        $pending = $pendingText | ConvertFrom-Json
+        if ($pending.schema -ne 2 -or $pending.phase -cne 'native-removal-pending') {
+            throw 'Invalid pending-removal marker; native completion is unknown.'
+        }
+        Assert-PrSniperRemovalBinding $pending $Receipt $ReceiptHash
+        return [pscustomobject]@{ completed = $false; receipt = $null }
+    }
+    # The validated installed state plus committed absence of its pending marker
+    # is completion evidence; neither registry absence nor a missing state file is.
+    $completion = [pscustomobject]@{
+        schema = 1; phase = 'native-removal-complete'
+        installation_receipt_sha256 = $state.installation_receipt_sha256
+        directory = $state.directory; version = $state.version
+        uninstaller_sha256 = $state.uninstaller_sha256
+    }
+    Assert-PrSniperRemovalReceipt $completion $Receipt $ReceiptHash
+    return [pscustomobject]@{ completed = $true; receipt = $completion }
+}
+
+function Complete-PrSniperNativeRemoval([string] $Tools, $Receipt, [string] $ReceiptHash) {
+    $state = Get-PrSniperRemovalState $Tools $Receipt $ReceiptHash
+    if ($state.completed) { throw 'Native removal was already committed; it must not be repeated.' }
+    Remove-Item -LiteralPath (Join-Path $Tools 'native-removal.pending.json') -ErrorAction Stop
+    if (-not (Get-PrSniperRemovalState $Tools $Receipt $ReceiptHash).completed) {
+        throw 'Native removal completion was not committed.'
     }
 }
 
