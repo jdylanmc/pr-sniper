@@ -146,6 +146,43 @@ class ReleaseTests(unittest.TestCase):
                 with self.assertRaises(release.ReleaseError):
                     release.gate(self.api, "v0.1.0", ROOT)
 
+    def test_windows_publication_adds_exact_native_and_installer_gates_without_changing_macos(self):
+        windows = {**self.api.ci, "id": 10}
+        jobs = [{"name": name, "conclusion": "success"}
+                for name in ("windows", "windows-installer-acceptance")]
+        original_pages = self.api.pages
+
+        def pages(path, field=None):
+            if "windows.yml" in path:
+                return [windows]
+            if "/runs/10/jobs" in path:
+                return jobs
+            return original_pages(path, field)
+
+        with patch.object(release, "command", return_value=COMMIT), \
+                patch.object(release, "config_version", return_value="0.1.0"), \
+                patch.object(self.api, "pages", side_effect=pages):
+            self.assertEqual(release.gate(self.api, "v0.1.0", ROOT, require_windows=True)["sha"], COMMIT)
+            for field, value in [("head_sha", "b" * 40), ("event", "pull_request"),
+                                 ("head_branch", "feature"), ("status", "in_progress"),
+                                 ("conclusion", "failure")]:
+                previous = windows[field]
+                windows[field] = value
+                with self.subTest(field=field), self.assertRaises(release.ReleaseError):
+                    release.gate(self.api, "v0.1.0", ROOT, require_windows=True)
+                self.assertEqual(release.gate(self.api, "v0.1.0", ROOT)["sha"], COMMIT)
+                windows[field] = previous
+            for job in jobs:
+                job["conclusion"] = "skipped"
+                with self.assertRaises(release.ReleaseError):
+                    release.gate(self.api, "v0.1.0", ROOT, require_windows=True)
+                job["conclusion"] = "success"
+            with patch.object(self.api, "pages", side_effect=lambda path, field=None:
+                              [windows, {**windows, "id": 11, "conclusion": "failure"}]
+                              if "windows.yml" in path else pages(path, field)):
+                with self.assertRaises(release.ReleaseError):
+                    release.gate(self.api, "v0.1.0", ROOT, require_windows=True)
+
     def test_manifest_is_bound_to_tag_commit_architecture_and_final_bytes(self):
         manifest = self.assets()
         self.assertEqual(release.metadata(self.directory), manifest)

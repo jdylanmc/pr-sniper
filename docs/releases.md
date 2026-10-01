@@ -6,6 +6,12 @@ local-app foundation. Initial releases support **Apple Silicon and macOS 13.5+**
 Windows, Intel, App Store distribution and #14's in-app/dogfood updater are not
 part of this delivery.
 
+The later authorized Windows follow-up has an
+[unsigned installer/Chocolatey candidate lane](windows-packaging.md).
+It does not change this macOS workflow, published asset set or tap ownership.
+Windows public signing, publication and Chocolatey moderation are still blocked
+on explicit external prerequisites; an unsigned CI artifact is not a release.
+
 **Published:** [v0.1.1](https://github.com/jdylanmc/pr-sniper/releases/tag/v0.1.1)
 passed real Developer ID signing, notarization/stapling and public-byte
 verification. Its cask is on the dedicated tap's main branch. A disposable hosted

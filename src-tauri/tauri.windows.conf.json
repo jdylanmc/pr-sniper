@@ -2,6 +2,16 @@
   "bundle": {
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
-    "shortDescription": "Human-owned pull request review, from your system tray."
+    "shortDescription": "Human-owned pull request review, from your system tray.",
+    "useLocalToolsDir": true,
+    "windows": {
+      "allowDowngrades": false,
+      "webviewInstallMode": { "type": "skip" },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["English"],
+        "template": "windows/installer.nsi"
+      }
+    }
   }
 }
