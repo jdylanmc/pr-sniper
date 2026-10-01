@@ -12,6 +12,64 @@ const tab = (page, name) =>
 const screenshots = join(target, "visual-77-79");
 test.use({ viewport: { width: 408, height: 744 } });
 
+for (const failUtility of [false, true]) {
+  test(`monitor polling survives detached recovery controls and delayed ${failUtility ? "failed" : "successful"} Diagnostics`, async ({
+    page,
+    store,
+    ipc,
+  }) => {
+    const fixture = await queueFixture(store);
+    await page.clock.install();
+    await page.addInitScript((failUtility) => {
+      const original = window.__TAURI_INTERNALS__.invoke;
+      window.__monitorReads = 0;
+      window.__TAURI_INTERNALS__.invoke = (command, args) => {
+        if (command === "monitoring_snapshot") window.__monitorReads++;
+        if (command === "diagnostics" && failUtility)
+          return Promise.reject("Synthetic utility read failure");
+        return original(command, args);
+      };
+    }, failUtility);
+    await page.goto("/");
+    await page.getByRole("button", { name: "Status", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Check Now" })).toBeVisible();
+    const held = ipc.holdNext("snapshot");
+    await page
+      .getByRole("button", { name: "Diagnostics", exact: true })
+      .click();
+    await held.arrived;
+    await expect(page.locator("#check-now")).toHaveCount(0);
+    await page.clock.runFor(5100);
+    held.release();
+    if (failUtility)
+      await expect(page.locator("[data-panel-error]")).toHaveText(
+        "Synthetic utility read failure",
+      );
+    else
+      await expect(page.locator('[data-panel-view="utility"]')).toContainText(
+        "No host events recorded",
+      );
+    await tab(page, "Queue").click();
+    await page.evaluate(() => window.__settingsIdle());
+    const before = await page.evaluate(() => window.__monitorReads);
+    for (const [index, title] of [
+      "First automatic update",
+      "Second automatic update",
+    ].entries()) {
+      fixture.state.jobs.find((job) => job.number === 9).title = title;
+      await store("seed_queue_state", fixture.state);
+      await page.clock.runFor(5100);
+      await expect(page.locator("#handoff-queue")).toContainText(title);
+      expect(await page.evaluate(() => window.__monitorReads)).toBe(
+        before + index + 1,
+      );
+      await expect(page.locator("[data-panel-heading]")).toHaveText(
+        "Your queue",
+      );
+    }
+  });
+}
+
 test("compact human cards retain all ordered files and exact external links", async ({
   page,
   store,
