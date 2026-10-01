@@ -5,6 +5,46 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+## 0.1.2 - 2026-10-01
+
+### Added
+
+- A single retained tray panel for Queue, Running, Reviewed and Settings, with
+  exact work-item navigation, preserved drafts and native hide/reopen behavior.
+- Shared AI capacity and durable pause/resume across normal reviews, targeted
+  conversations and the primary Agent's final full review.
+- Cross-iteration feedback, human-closed concern preservation and top-level
+  acting-account mentions routed to the repository's primary Agent.
+- Independent opt-in GitHub approval and primary-only merge after final review,
+  current repository gates and durable provider-intent reconciliation.
+- Resource-scoped Settings saves, multiple doctrines and immutable execution
+  configuration evidence.
+
+### Changed
+
+- Poll enabled repositories on one global cron schedule, then reconcile each
+  Agent's missing review work. Preserve sticky admission and distinct reopened
+  iterations, including reopening at the same commit.
+- Publish verified Homebrew cask updates through the dedicated tap-owned
+  publisher and its disposable installation checks.
+
+### Distribution
+
+- This release publishes signed, notarized **macOS Apple Silicon** binaries
+  for macOS 13.5+ through GitHub and Homebrew.
+- Windows platform and unsigned installer/Chocolatey candidate work is present
+  in source and CI, but this tag does **not** publish a public Windows package.
+- Quit PR Sniper before upgrading. Saved settings and credentials remain
+  preserved; existing inert approval flags do not become new permissions.
+- The broader visual overhaul, paged history/storage cleanup and Genie UI are
+  separate follow-ups, not part of this release.
+
+## Historical development log
+
+The entries below preserve incremental implementation history, including work
+released before 0.1.2. Their stage-specific limitations are historical; the
+versioned release section above defines the 0.1.2 distribution scope.
+
 ### Fixed
 
 - Make the sidebar regression explicitly wait for notification state: disabled
