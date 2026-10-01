@@ -69,20 +69,64 @@ window close, which the host intercepts without destroying the webview.
 **Quit PR Sniper** ends the process.
 Navigation, editor drafts, scroll and keyboard focus survive panel dismissal
 and destination changes. Back returns to the originating list and row; opening
-another PR/job replaces the single detail layer. Native notification and legacy
+another PR/job replaces the single detail layer. Route focus is restored as the
+destination is committed, not by a later animation frame. Deferred positioning
+and initial Settings loading yield to newer focus, routes or panel dismissal.
+Native notification and legacy
 Settings/Diagnostics entry points use retained routes, never a webview reload.
 Unavailable exact PR/iteration/job identities show a missing destination, not
 another item. Existing profile-scoped PR selection survives a restart; unsaved
 editor drafts are in-process state, not restart persistence.
 
 Placement uses the tray's monitor work area and physical coordinates, clamping
-the approximately 400px-wide panel for small screens and mixed scaling. Native
+the approximately 408px-wide, 744px-tall panel for small screens and mixed scaling.
+The approved navy header and supplied artwork frame persistent bottom navigation.
+The Monitoring control uses the existing machine-wide pause gate; Close remains
+hide-only. Unknown automation state disables that control and clears the active
+work badge rather than retaining stale availability. Native
 folder selection holds focus dismissal until it returns. External browser
 sign-in may hide the panel; reopening retains the connecting flow and draft.
 Running shows the native shared-capacity jobs (including stopping work);
 Reviewed exposes existing completed/terminal evidence in the current projection,
 not a new paged history or purge backend. Status retains schedule health,
 notification history and recovery; Diagnostics remains redacted.
+
+Queue contains human handoffs and actionable problems, not an Agent lane or a
+card per Agent. Each account/repository PR has one current handoff; active/waiting
+jobs belong in Running. Evidence retains every ordered changed file, exact
+provider links, local-only findings, distinct action receipts and original
+mutation recovery. Human comments and reviews stay on GitHub; confirmed approval
+does not imply personal review, and confirmed merged PRs are not actionable.
+Running counts jobs, not triggers: seven assigned Agents occupy four active
+slots and leave three waiting at the default capacity. Active rows lead one
+continuous list; waiting/blocked work retains arrival order and reasons.
+Only active work animates, with static labels under reduced motion. Each row
+opens one exact job, not a second PR drill-in. Its inspector distinguishes normal,
+primary-final, reply and mention purposes, immutable execution configuration
+versus current planned configuration, canonical iteration (including same-commit
+reopening), per-Agent work ordinals and retry attempts. Missing legacy evidence
+is labeled unavailable rather than reconstructed from current Settings.
+Job details show that job's own capacity/execution state above its facts and
+readable assigned configuration, never a sibling's activity or the PR-wide
+handoff as its state. Historical pass/reply ordinals stay with the selected job.
+Never-started failures retain planned configuration without claiming execution;
+full saved configuration and identifiers remain available in collapsed evidence.
+Status/Diagnostics navigation does not stop automatic evidence refresh.
+Conversation inspectors separate analysis, intentional cancellation and reply
+publication: failed/backoff analysis is not a user stop, and completed analysis
+is not confirmation of a reply. Unknown publication outcomes retain the original
+reconciliation controls and cannot display Done. Polls for unrelated jobs leave
+the selected inspector intact; its own updates retain focus and open
+configuration/provenance disclosures. Back and Settings dialog close restore
+the actual activating control, including WebKit pointer clicks that do not focus
+buttons and asynchronously opened nested dialogs.
+Settings saves and repository cancellation retain that logical opener through
+the final parent and account-refresh redraw, using stable resource identities
+even after renaming. Removed resources return focus to the visible section
+heading; removed assignments or watched people return to their respective Add
+control, never another row. Background completion does not move focus out of
+the current destination. Repository monitoring checkboxes explicitly retain
+activation focus on WebKit as well as Chromium.
 
 The [native acceptance procedure](tests/macos-acceptance.md) and compiled
 test-owned smoke harness cover the actual window boundary separately from

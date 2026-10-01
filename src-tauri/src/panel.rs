@@ -247,8 +247,8 @@ pub fn placement(work: Rect, tray: Rect, scale: f64) -> Result<Rect, String> {
         return Err("Monitor or tray geometry is invalid.".into());
     }
     let gap = (8.0 * scale).min(work.width / 4.0).min(work.height / 4.0);
-    let width = (400.0 * scale).min(work.width - 2.0 * gap).max(1.0);
-    let height = (680.0 * scale).min(work.height - 2.0 * gap).max(1.0);
+    let width = (408.0 * scale).min(work.width - 2.0 * gap).max(1.0);
+    let height = (744.0 * scale).min(work.height - 2.0 * gap).max(1.0);
     let center_x = tray.x + tray.width / 2.0;
     let center_y = tray.y + tray.height / 2.0;
     let (x, y) = if tray.x + tray.width <= work.x {
@@ -400,7 +400,7 @@ pub(crate) async fn show(app: &tauri::AppHandle, route: Option<Route>) -> Result
     } else {
         WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("index.html".into()))
             .title("PR Sniper")
-            .inner_size(400.0, 680.0)
+            .inner_size(408.0, 744.0)
             .decorations(false)
             .resizable(false)
             .skip_taskbar(true)

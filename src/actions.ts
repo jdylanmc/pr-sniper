@@ -1,4 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
+import { renderConfiguration } from "./work-presentation";
+import type { Job, ReviewCandidate } from "./monitoring";
+import { openDestination } from "./queue";
 
 export interface ActionStatus {
   item_id: string;
@@ -13,13 +16,9 @@ export interface ActionStatus {
     id: string;
     enqueue_order: number;
     cancelled: boolean;
-    execution: {
-      phase: string;
+    execution: NonNullable<ReviewCandidate["run"]> & {
       trust_confirmed: boolean;
-      job: { waiting: string };
-      operation: { state: string; id: string; attempt_count: number };
-      result: unknown;
-      error: string | null;
+      job: Job;
     };
   } | null;
   effects: {
@@ -44,6 +43,7 @@ export function renderActions(
   status: ActionStatus,
   showError: (value: string) => void,
   refresh: () => Promise<void>,
+  configuration = true,
 ) {
   const section = document.createElement("section");
   section.className = "review-run";
@@ -95,6 +95,35 @@ export function renderActions(
     const state = document.createElement("p");
     state.textContent = `Primary final full review: ${final.execution.phase}. State: ${final.execution.operation.state}; attempt ${final.execution.operation.attempt_count}; queue order ${final.enqueue_order}. This is separate from provider approval and personal review.`;
     section.append(state);
+    if (configuration)
+      renderConfiguration(
+        section,
+        final.execution.operation.attempt_count > 0
+          ? "Captured final execution configuration"
+          : "Planned final configuration (bound to this final request)",
+        final.execution.selection,
+      );
+    if (final.execution.result) {
+      const guide = document.createElement("details");
+      const summary = document.createElement("summary");
+      const files = final.execution.result.output.files;
+      summary.textContent = `Complete final file guide (${files.length} files)`;
+      const list = document.createElement("ol");
+      for (const file of [...files].sort((a, b) => a.order - b.order)) {
+        const entry = document.createElement("li");
+        const link = document.createElement("a");
+        link.href = "#";
+        link.textContent = file.path;
+        link.onclick = (event) => {
+          event.preventDefault();
+          void openDestination(status.item_id, file.path, showError);
+        };
+        entry.append(link, `: ${file.explanation}`);
+        list.append(entry);
+      }
+      guide.append(summary, list);
+      section.append(guide);
+    }
     const details = document.createElement("details");
     const title = document.createElement("summary");
     title.textContent = "Final review, peer and human context, complete guide";

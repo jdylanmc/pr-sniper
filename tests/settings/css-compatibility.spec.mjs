@@ -23,8 +23,8 @@ test("production CSS retains all five Settings and three panel viewport fallback
     [".settings-window", "height", "calc(100vh - 32px)"],
     [".settings-window", "height", "calc(100vh - 20px)"],
     [".panel-shell", "height", "100vh"],
-    [".panel-shell .dialog-body", "max-height", "calc(100vh - 230px)"],
-    [".panel-shell .dialog-body", "max-height", "calc(100vh - 180px)"],
+    [".panel-shell .dialog-body", "max-height", "calc(100vh - 300px)"],
+    [".panel-shell .dialog-body", "max-height", "calc(100vh - 185px)"],
   ];
   const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)];
   const retainedPairs = pairs.map(([selector, property, value]) =>

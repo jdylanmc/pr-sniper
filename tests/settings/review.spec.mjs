@@ -93,7 +93,7 @@ function run(state) {
   };
 }
 
-for (const mode of ["planned", "captured", "legacy", "queued"]) {
+for (const mode of ["planned", "captured", "legacy", "queued", "failed-zero"]) {
   test(`${mode} configuration distinguishes actual execution evidence from today's plan`, async ({
     page,
     store,
@@ -149,6 +149,11 @@ for (const mode of ["planned", "captured", "legacy", "queued"]) {
             },
     };
     if (mode === "legacy") delete review.run.selection.configuration;
+    if (mode === "failed-zero") {
+      review.run.operation.state = "failed";
+      review.run.operation.attempt_count = 0;
+      review.run.error = "Configuration changed before the first execution.";
+    }
     await page.addInitScript((review) => {
       const original = window.__TAURI_INTERNALS__.invoke;
       window.__TAURI_INTERNALS__.invoke = (command, args) =>
@@ -158,7 +163,7 @@ for (const mode of ["planned", "captured", "legacy", "queued"]) {
     }, review);
     await page.goto("/?view=queue");
     const panel = page.locator("#agent-reviews");
-    if (mode !== "planned") {
+    if (mode !== "planned" && mode !== "failed-zero") {
       await panel
         .getByText("Captured execution configuration", { exact: true })
         .click();
@@ -166,7 +171,7 @@ for (const mode of ["planned", "captured", "legacy", "queued"]) {
       expect(await page.evaluate(() => window.executed)).toBeUndefined();
       await expect(panel.locator("script")).toHaveCount(0);
     }
-    if (mode === "planned" || mode === "queued") {
+    if (mode === "planned" || mode === "queued" || mode === "failed-zero") {
       await panel
         .getByText(
           "Planned configuration (revalidated at start; not execution evidence)",
@@ -175,6 +180,14 @@ for (const mode of ["planned", "captured", "legacy", "queued"]) {
         .click();
       await expect(panel).toContainText("Today's planned prompt.");
       await expect(panel).toContainText("Today's doctrine body.");
+      if (mode === "failed-zero") {
+        await expect(
+          panel.getByText("Captured execution configuration", { exact: true }),
+        ).toHaveCount(0);
+        await expect(panel).toContainText(
+          "Configuration changed before the first execution.",
+        );
+      }
     } else {
       await expect(panel).not.toContainText("Today's planned prompt.");
       await expect(panel).not.toContainText("Today's doctrine body.");
@@ -185,7 +198,7 @@ for (const mode of ["planned", "captured", "legacy", "queued"]) {
       );
     if (mode === "captured")
       await expect(panel).toContainText(
-        "Captured assignment authority (not a current provider grant)",
+        "Saved assignment permissions are not a current provider grant.",
       );
   });
 }
@@ -247,6 +260,12 @@ test("running review exposes cancellation and safe visible failures", async ({
   await page.goto("/?view=queue");
   await expect(page.locator("#agent-reviews")).toContainText(
     "Copilot account: 33; model: configured-model",
+  );
+  await page
+    .getByText("Captured execution configuration", { exact: true })
+    .click();
+  await expect(page.locator("#agent-reviews")).toContainText(
+    "Repository policy not recorded in this snapshot.",
   );
   await page
     .getByRole("button", { name: "Cancel review", exact: true })

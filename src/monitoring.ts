@@ -13,8 +13,14 @@ import {
   type QueueItem,
   type NormalWork,
   renderItemEvidence,
+  humanQueue,
 } from "./queue";
 import { renderNotificationHistory } from "./notifications";
+import {
+  renderConfiguration,
+  renderWorkContext,
+  workPresentation,
+} from "./work-presentation";
 
 interface Health {
   repository_id: string;
@@ -51,7 +57,7 @@ interface Health {
   } | null;
 }
 
-interface Job {
+export type Job = QueueItem["job"] & {
   work?: NormalWork;
   account_id: string;
   account_login: string;
@@ -65,7 +71,7 @@ interface Job {
   all_authors: boolean;
   requested_reviewer: boolean;
   waiting: string;
-}
+};
 
 export interface MonitoringSnapshot {
   mentions?: MentionRouting[];
@@ -115,7 +121,7 @@ interface PublicationCandidate {
   } | null;
 }
 
-interface ReviewCandidate {
+export interface ReviewCandidate {
   key: string;
   assignment_id: string;
   agent_name: string;
@@ -276,18 +282,18 @@ export function renderMonitoring(
   showError: (message: string) => void,
   options: {
     panel?: boolean;
-    navigate?: (detail: PanelDetail) => void;
-    onSnapshot?: (snapshot: MonitoringSnapshot) => void;
-    onAutomation?: (snapshot: AutomationSnapshot) => void;
+    navigate?: (detail: PanelDetail, opener?: HTMLElement) => void;
+    onSnapshot?: (snapshot: MonitoringSnapshot | undefined) => void;
+    onAutomation?: (snapshot: AutomationSnapshot | undefined) => void;
   } = {},
 ) {
   root.innerHTML = `<div data-monitor-overview><div class="actions"><button id="check-now" type="button">Check Now</button><button id="queue-settings" type="button">Open Settings</button><button id="queue-diagnostics" type="button">Open Diagnostics</button></div>
     <section id="automation-controls"></section>
     <h2>Your review inbox</h2><section id="handoff-queue"></section></div>
     <div data-monitor-detail><section data-item-evidence></section>
-    <h2 id="evidence-heading" tabindex="-1">Review evidence and actions</h2>
+    <div data-evidence-guidance><h2 id="evidence-heading" tabindex="-1">Review evidence and actions</h2>
     <p>Monitoring and assigned reviews run while the ${trayAdjective} app is active. Copilot uses read-only tools. GitHub comments require a separate publication gate; machine sign-off is not approval.</p>
-    <p class="hint">Saved review evidence is tied to the head shown. GitHub links open the live PR or current diff in your browser's signed-in account; check its current revision and requirements before deciding to merge.</p>
+    <p class="hint">Saved review evidence is tied to the head shown. GitHub links open the live PR or current diff in your browser's signed-in account; check its current revision and requirements before deciding to merge.</p></div>
     <h2 data-normal-heading>Agent reviews</h2><section id="agent-reviews"></section>
     <h2 data-conversation-heading>Thread follow-ups</h2><section id="thread-follow-ups"></section></div>
     <div data-monitor-recovery>
@@ -301,9 +307,15 @@ export function renderMonitoring(
   const automationRoot = root.querySelector<HTMLElement>(
     "#automation-controls",
   )!;
+  let automation: AutomationSnapshot | undefined;
   const refreshAutomation = mountAutomation(
     automationRoot,
-    options.onAutomation,
+    (value) => {
+      automation = value;
+      options.onAutomation?.(value);
+      renderEvidence();
+    },
+    { compact: options.panel, onError: options.panel ? showError : undefined },
   );
   const health = root.querySelector<HTMLElement>("#schedule-health")!;
   const jobs = root.querySelector<HTMLElement>("#review-jobs")!;
@@ -318,6 +330,7 @@ export function renderMonitoring(
   let panelDetail: PanelDetail | undefined;
   let missingDetail: string | null = null;
   let detailSignature = "";
+  let evidenceTarget = "";
   let detailRevision = 0;
   let selection: QueueItem | null | undefined;
   const refreshNotifications = renderNotificationHistory(
@@ -332,10 +345,10 @@ export function renderMonitoring(
   const queue = renderQueue(
     root.querySelector<HTMLElement>("#handoff-queue")!,
     showError,
-    (item, focus) => {
+    (item, focus, opener) => {
       if (options.panel) {
         if (focus && item)
-          options.navigate?.({ type: "item", item_id: item.id });
+          options.navigate?.({ type: "item", item_id: item.id }, opener);
         return;
       }
       selection = item;
@@ -350,6 +363,11 @@ export function renderMonitoring(
     { compact: options.panel, externalSelection: options.panel },
   );
   if (options.panel) {
+    const overview = root.querySelector<HTMLElement>(
+      "[data-monitor-overview]",
+    )!;
+    recoveryRoot.prepend(overview.querySelector(".actions")!);
+    overview.querySelector("h2")!.remove();
     root.querySelector<HTMLElement>("[data-monitor-detail]")!.hidden = true;
     root.querySelector<HTMLElement>("[data-monitor-recovery]")!.hidden = true;
   }
@@ -381,6 +399,8 @@ export function renderMonitoring(
       if (!target) return;
       const job = target.type === "job" ? target : undefined;
       jobDetail = job;
+      root.querySelector<HTMLElement>("[data-evidence-guidance]")!.hidden =
+        !!job;
       const item =
         target.type === "item"
           ? current.items?.find(
@@ -430,29 +450,97 @@ export function renderMonitoring(
         return;
       }
       selection = item;
-      const next = JSON.stringify([target, item]);
+      const next = JSON.stringify([
+        target,
+        jobDetail
+          ? [
+              workPresentation(current, jobDetail.kind, jobDetail.id),
+              item?.id,
+              jobDetail.kind === "primary_final" && item?.action_status,
+            ]
+          : item,
+        jobDetail &&
+          automation?.work.find(
+            (entry) => entry.key.kind === job?.kind && entry.key.id === job.id,
+          ),
+        !!automation,
+      ]);
       if (next !== detailSignature) {
+        const sameJob =
+          !!jobDetail && evidenceTarget === JSON.stringify(target);
+        const disclosures = sameJob
+          ? [
+              ...evidence.querySelectorAll<HTMLDetailsElement>(
+                "[data-disclosure]",
+              ),
+            ].map(
+              (element) => [element.dataset.disclosure!, element.open] as const,
+            )
+          : [];
+        const focused = document.activeElement;
+        const focusSelector =
+          sameJob &&
+          focused instanceof HTMLElement &&
+          evidence.contains(focused)
+            ? focused.matches(".job-provider-link")
+              ? ".job-provider-link"
+              : focused.matches("summary") &&
+                  focused.parentElement?.dataset.disclosure
+                ? `[data-disclosure="${CSS.escape(focused.parentElement.dataset.disclosure)}"] > summary`
+                : undefined
+            : undefined;
+        const scroller = evidence.closest<HTMLElement>(".panel-content");
+        const scroll = scroller?.scrollTop;
         detailSignature = next;
+        evidenceTarget = JSON.stringify(target);
         evidence.replaceChildren();
         evidence.removeAttribute("role");
-        if (item) {
+        if (jobDetail) {
+          renderWorkContext(
+            evidence,
+            current,
+            jobDetail.kind,
+            jobDetail.id,
+            automation,
+            item
+              ? () => void openDestination(item.id, null, showError)
+              : undefined,
+          );
+          if (jobDetail.kind === "primary_final" && item?.action_status) {
+            const context = document.createElement("h2");
+            context.textContent = "PR-level provider evidence and recovery";
+            evidence.append(context);
+            renderActions(
+              evidence,
+              item.action_status,
+              showError,
+              refresh,
+              false,
+            );
+          }
+        } else if (item) {
+          const hero = document.createElement("section");
+          hero.className = "detail-hero";
           const title = document.createElement("h2");
           title.textContent = `${item.job.repository_name} #${item.job.number}: ${item.job.title}`;
           const summary = document.createElement("p");
           summary.textContent = item.summary;
-          evidence.append(title, summary);
-          if (target.type === "item")
-            renderItemEvidence(evidence, item, showError, refresh);
-          else if (jobDetail?.kind === "primary_final" && item.action_status)
-            renderActions(evidence, item.action_status, showError, refresh);
-        } else if (
-          jobDetail?.kind === "reply" ||
-          jobDetail?.kind === "mention"
-        ) {
-          evidence.textContent =
-            "Parent PR iteration context unavailable. No other iteration was selected; captured conversation follows.";
-          evidence.setAttribute("role", "status");
+          hero.append(title, summary);
+          evidence.append(hero);
+          renderItemEvidence(evidence, item, showError, refresh, true);
         }
+        for (const [id, open] of disclosures) {
+          const element = evidence.querySelector<HTMLDetailsElement>(
+            `[data-disclosure="${CSS.escape(id)}"]`,
+          );
+          if (element) element.open = open;
+        }
+        if (focusSelector)
+          evidence
+            .querySelector<HTMLElement>(focusSelector)
+            ?.focus({ preventScroll: true });
+        if (sameJob && scroller && scroll !== undefined)
+          scroller.scrollTop = scroll;
       }
     }
     if (selection === undefined && !options.panel) {
@@ -475,14 +563,25 @@ export function renderMonitoring(
           f.run.id === jobDetail.id
         : selection === null || !!selection?.follow_up_ids.includes(f.run.id),
     );
+    const publications = (snapshot.publications ?? []).filter((publication) =>
+      candidates.some(
+        (candidate) =>
+          candidate.run?.operation.id === publication.review_operation_id,
+      ),
+    );
     const signature = JSON.stringify([
       candidates,
-      snapshot.publications,
-      snapshot.items,
+      publications,
+      candidates.map(
+        (candidate) =>
+          current.items?.find((item) =>
+            item.review_keys.includes(candidate.key),
+          )?.id,
+      ),
       panelDetail,
     ]);
     if (signature !== reviewsSignature) {
-      renderReviews(candidates, snapshot.publications ?? []);
+      renderReviews(candidates, publications);
       reviewsSignature = signature;
     }
     const mentions = (snapshot.mentions ?? []).filter((m) =>
@@ -494,7 +593,7 @@ export function renderMonitoring(
             selection.job.account_id === m.binding.account_id &&
             selection.job.number === m.binding.number),
     );
-    followUps(replies, snapshot.follow_ups ?? [], mentions);
+    followUps(replies, snapshot.follow_ups ?? [], mentions, !jobDetail);
     if (options.panel) {
       root.querySelector<HTMLElement>("[data-normal-heading]")!.hidden =
         candidates.length === 0;
@@ -726,59 +825,13 @@ export function renderMonitoring(
             ? "Trust confirmation required for this exact revision."
             : "Waiting for manual start or the automatic start gate."));
       row.append(state);
-      const configuration = (
-        label: string,
-        selection: import("./resources").ReviewSelection | null | undefined,
-      ) => {
-        const details = document.createElement("details");
-        const summary = document.createElement("summary");
-        summary.textContent = label;
-        details.append(summary);
-        const text = (title: string, value: unknown) => {
-          const heading = document.createElement("h4");
-          heading.textContent = title;
-          const body = document.createElement("pre");
-          body.textContent =
-            typeof value === "string"
-              ? value
-              : (JSON.stringify(value, null, 2) ?? "Not captured");
-          details.append(heading, body);
-        };
-        if (!selection) {
-          text(
-            "Unavailable",
-            candidate.blocked ?? "No saved planned configuration is available.",
-          );
-        } else {
-          text("Agent", selection.agent);
-          text("Agent prompt", selection.agent.prompt);
-          text("Repository policy", selection.policy);
-          text("Review preset", selection.preset);
-          if (selection.configuration) {
-            text(
-              "Repository and assignments",
-              selection.configuration.repository,
-            );
-            text(
-              "Captured assignment authority (not a current provider grant)",
-              selection.configuration.authority,
-            );
-            if (!selection.configuration.doctrines.length)
-              text("Doctrines", "None selected");
-            for (const doctrine of selection.configuration.doctrines)
-              text(`Doctrine: ${doctrine.title}`, doctrine.body);
-          } else {
-            text(
-              "Legacy snapshot",
-              "Full doctrine and assignment configuration was not captured. Today's settings are not historical evidence.",
-            );
-            if (selection.doctrine)
-              text("Retained legacy doctrine text", selection.doctrine);
-          }
-        }
-        row.append(details);
-      };
-      if (run) configuration("Captured execution configuration", run.selection);
+      const singleJob = options.panel && panelDetail?.type === "job";
+      if (!singleJob && run && run.operation.attempt_count > 0)
+        renderConfiguration(
+          row,
+          "Captured execution configuration",
+          run.selection,
+        );
       if (run?.feedback_context) {
         const details = document.createElement("details");
         const summary = document.createElement("summary");
@@ -788,8 +841,14 @@ export function renderMonitoring(
         details.append(summary, body);
         row.append(details);
       }
-      if (!run || ["queued", "interrupted"].includes(run.operation.state))
-        configuration(
+      if (
+        (!singleJob && (!run || run.operation.attempt_count === 0)) ||
+        (run &&
+          run.operation.attempt_count > 0 &&
+          ["queued", "interrupted"].includes(run.operation.state))
+      )
+        renderConfiguration(
+          row,
           "Planned configuration (revalidated at start; not execution evidence)",
           candidate.planned_selection,
         );
@@ -844,7 +903,9 @@ export function renderMonitoring(
         const summary = document.createElement("summary");
         summary.textContent = `Complete file guide (${result.output.files.length} files)`;
         const list = document.createElement("ol");
-        for (const file of result.output.files) {
+        for (const file of [...result.output.files].sort(
+          (a, b) => a.order - b.order,
+        )) {
           const item = document.createElement("li");
           const path = document.createElement("strong");
           path.textContent = file.path;
@@ -934,20 +995,7 @@ export function renderMonitoring(
       options.onSnapshot?.(snapshot);
       void refreshAutomation();
       if (snapshot.items)
-        queue(
-          options.panel
-            ? snapshot.items.filter(
-                (i) =>
-                  ![
-                    "closed",
-                    "merged",
-                    "stale",
-                    "stale_after_publication",
-                    "waiting_for_author",
-                  ].includes(i.state),
-              )
-            : snapshot.items,
-        );
+        queue(options.panel ? humanQueue(snapshot.items) : snapshot.items);
       renderEvidence();
       health.replaceChildren();
       jobs.replaceChildren();
@@ -1043,11 +1091,25 @@ export function renderMonitoring(
         jobs.append(row);
       }
     } catch {
+      snapshot = undefined;
+      options.onSnapshot?.(undefined);
+      if (options.panel) {
+        queue.invalidate();
+        root.querySelector<HTMLElement>("#handoff-queue")!.textContent =
+          "Queue unavailable. Use Status or Diagnostics to inspect storage, then retry.";
+        root.querySelector<HTMLElement>("[data-item-evidence]")!.textContent =
+          "Evidence unavailable. Saved state could not be refreshed; no readiness or action is inferred.";
+        reviews.replaceChildren();
+        reviewsSignature = "";
+        detailSignature = "";
+        followUps([]);
+      }
       showError(
         "Could not read monitoring state. Check local storage and diagnostics; this is not an empty successful check.",
       );
     } finally {
       loading = false;
+      void refreshAutomation();
       void refreshNotifications();
     }
   }
@@ -1067,7 +1129,7 @@ export function renderMonitoring(
   });
   void refresh();
   const timer = window.setInterval(() => {
-    if (!check.isConnected) window.clearInterval(timer);
+    if (!root.isConnected) window.clearInterval(timer);
     else void refresh();
   }, 5000);
   return {

@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { QueueItem } from "./queue";
+import type { ReviewSelection } from "./resources";
+import { renderConfiguration } from "./work-presentation";
 
 interface Operation {
   state: string;
@@ -9,13 +11,7 @@ interface Operation {
 
 interface ConversationContext {
   job: QueueItem["job"];
-  selection: {
-    agent: {
-      name: string;
-      model: string;
-      ai_account?: { account_id: string } | null;
-    };
-  };
+  selection: ReviewSelection;
 }
 interface ConversationThread {
   id: string;
@@ -30,6 +26,7 @@ export interface MentionRouting {
 }
 
 export interface FollowUpCandidate {
+  planned_selection?: ReviewSelection | null;
   blocked: string | null;
   automatic_start: boolean;
   automatic_publication: boolean;
@@ -119,9 +116,10 @@ export function renderFollowUps(
     candidates: FollowUpCandidate[],
     all = candidates,
     mentions: MentionRouting[] = [],
+    configuration = true,
   ) => {
     const working = all.some(({ run }) => run.publication?.state === "running");
-    const next = JSON.stringify([candidates, working, mentions]);
+    const next = JSON.stringify([candidates, working, mentions, configuration]);
     if (next === signature) return;
     signature = next;
     root.replaceChildren();
@@ -166,6 +164,24 @@ export function renderFollowUps(
       const state = document.createElement("p");
       state.textContent = `Follow-up: ${run.phase.replaceAll("_", " ")}. Start: ${candidate.automatic_start ? "automatic" : "manual"}; reply publication: ${candidate.automatic_publication ? "automatic" : "confirmation required"}.`;
       row.append(heading, identity, state);
+      if (configuration && (run.analysis?.attempt_count || run.result))
+        renderConfiguration(
+          row,
+          "Captured conversation configuration",
+          execution.selection,
+        );
+      if (
+        (configuration && !run.analysis?.attempt_count && !run.result) ||
+        (run.analysis &&
+          run.analysis.attempt_count > 0 &&
+          ["queued", "interrupted"].includes(run.analysis.state))
+      )
+        renderConfiguration(
+          row,
+          "Planned conversation configuration (revalidated at start)",
+          candidate.planned_selection,
+          candidate.blocked ?? undefined,
+        );
       if (run.reply_ordinal != null) {
         const order = document.createElement("p");
         order.textContent = `Reply work ${run.reply_ordinal}; queue order ${run.enqueue_order ?? "not recorded"}. Retry attempts are separate.`;

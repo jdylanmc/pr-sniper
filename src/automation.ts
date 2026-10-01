@@ -17,9 +17,12 @@ export interface AutomationSnapshot {
 
 export function mountAutomation(
   root: HTMLElement,
-  onSnapshot?: (state: AutomationSnapshot) => void,
+  onSnapshot?: (state: AutomationSnapshot | undefined) => void,
+  options: { compact?: boolean; onError?: (message: string) => void } = {},
 ) {
-  root.innerHTML = `<h2>Shared AI capacity</h2><p role="status" data-automation-status>Reading automation state...</p>
+  root.innerHTML = options.compact
+    ? `<button type="button" class="monitoring-toggle" data-toggle-automation disabled aria-label="Monitoring unavailable"><span data-monitoring-label>Unavailable</span><span class="switch-track" aria-hidden="true"></span></button><span class="sr-only" role="status" data-automation-status>Reading automation state...</span><span class="sr-only" role="alert" data-automation-error hidden></span>`
+    : `<h2>Shared AI capacity</h2><p role="status" data-automation-status>Reading automation state...</p>
     <button type="button" data-toggle-automation disabled>Pause automation</button>
     <p class="hint">Pause stops new polling, AI work and provider writes. Stopping workers keep their slots until teardown. Already-started remote mutations may have succeeded and still require reconciliation. Capacity is saved in Settings > Preferences.</p>
     <p role="alert" data-automation-error hidden></p><ol data-ai-work></ol>`;
@@ -28,7 +31,7 @@ export function mountAutomation(
     "[data-toggle-automation]",
   )!;
   const error = root.querySelector<HTMLElement>("[data-automation-error]")!;
-  const list = root.querySelector<HTMLOListElement>("[data-ai-work]")!;
+  const list = root.querySelector<HTMLOListElement>("[data-ai-work]");
   let state: AutomationSnapshot | undefined;
   let busy = false;
   let revision = 0;
@@ -41,11 +44,16 @@ export function mountAutomation(
       state = next;
       onSnapshot?.(next);
       status.textContent = `${next.paused ? "Paused" : "Running"}; ${next.active} occupied / ${next.capacity} AI slots (${next.stopping} stopping); ${next.waiting} waiting; ${next.blocked} blocked.`;
-      button.textContent = next.paused
-        ? "Resume automation"
-        : "Pause automation";
+      const label = next.paused ? "Resume automation" : "Pause automation";
+      if (options.compact) {
+        button.setAttribute("aria-label", label);
+        button.setAttribute("aria-pressed", String(!next.paused));
+        button.querySelector("[data-monitoring-label]")!.textContent =
+          next.paused ? "Paused" : "Monitoring";
+        button.title = `${status.textContent} Pause is separate from repository monitoring settings.`;
+      } else button.textContent = label;
       button.disabled = false;
-      list.replaceChildren(
+      list?.replaceChildren(
         ...next.work.map((work) => {
           const row = document.createElement("li");
           row.dataset.workId = work.key.id;
@@ -55,12 +63,22 @@ export function mountAutomation(
       );
     } catch (cause) {
       if (!root.isConnected || request !== revision) return;
+      state = undefined;
+      onSnapshot?.(undefined);
       button.disabled = true;
+      if (options.compact) {
+        button.removeAttribute("aria-pressed");
+        button.setAttribute("aria-label", "Monitoring unavailable");
+        button.querySelector("[data-monitoring-label]")!.textContent =
+          "Unavailable";
+        button.title = "Automation state unavailable; occupancy is unknown.";
+      }
       status.textContent =
         "Automation state unavailable; occupancy is unknown.";
       error.textContent =
         typeof cause === "string" ? cause : "Cannot read automation state.";
       error.hidden = false;
+      options.onError?.(error.textContent);
     }
   }
   button.onclick = async () => {
@@ -77,6 +95,7 @@ export function mountAutomation(
           ? cause
           : "Automation change failed; inspect the current saved state.";
       error.hidden = false;
+      options.onError?.(error.textContent);
     } finally {
       busy = false;
       await refresh();

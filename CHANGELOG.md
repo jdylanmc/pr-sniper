@@ -5,6 +5,38 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+### Changed
+
+- Apply the approved compact navy/orange/teal shell, supplied header artwork
+  and persistent four-destination bottom navigation. Monitoring uses native
+  pause state; unavailable snapshots never retain a successful work badge.
+- Present human Queue as compact PR cards, separate from Agent work, with
+  complete ordered file guides, external personal-review links and retained
+  publication/provider recovery. Automatic approval remains a personal handoff,
+  not a claim of human review.
+- Show one continuous list of actual shared-capacity jobs: active work first,
+  waiting/blocked work in arrival order, static reduced-motion states and one
+  exact inspector for normal, final, reply and mention work. Preserve captured
+  configuration, canonical iteration, work ordinals and separate retry counts.
+
+### Fixed
+
+- Keep evidence polling alive across Status and Diagnostics, including delayed
+  or failed utility reads.
+- Match the approved Job details hero, facts and readable configuration cards;
+  separate the selected job's state from sibling activity and PR-wide outcomes.
+- Retain historical job ordinals after later same-commit work and show planned
+  configuration for failures before the first execution attempt.
+- Distinguish failed/retrying conversation analysis, intentional cancellation
+  and pending/unknown reply publication; analysis completion is not a receipt.
+- Keep selected job controls intact during unrelated polling and retain keyed
+  focus and configuration disclosures through the selected job's own updates.
+- Restore actual row and Settings dialog openers on WebKit pointer activation,
+  including nested, replacement and asynchronously opened editors.
+- Prevent delayed navigation frames from taking newer keyboard focus after
+  Settings saves; retain initial route focus, exact Back positioning and
+  hide/reopen drafts while rejecting stale route and focus ownership.
+
 ## 0.1.2 - 2026-10-01
 
 ### Added

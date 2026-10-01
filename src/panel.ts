@@ -4,6 +4,13 @@ import { mountSettings } from "./settings";
 import { renderMonitoring, type MonitoringSnapshot } from "./monitoring";
 import type { AutomationSnapshot } from "./automation";
 import crosshair from "./crosshair.svg";
+import sniperArt from "./sniper-mark.png";
+import { humanQueue } from "./queue";
+import {
+  workPresentation,
+  purposes,
+  type WorkPresentation,
+} from "./work-presentation";
 import "./panel.css";
 
 export type PanelTab = "queue" | "running" | "reviewed" | "settings";
@@ -35,28 +42,48 @@ interface Row {
   title: string;
   state: string;
   reason?: string | null;
+  work?: WorkPresentation;
 }
+
+const destinations = {
+  queue: {
+    title: "Your queue",
+    icon: "M4 4h16l2 14H2L4 4Zm-1 9h5l2 3h4l2-3h5M7 8h10",
+  },
+  running: { title: "Work queue", icon: "M2 12h4l3-9 5 18 3-9h5" },
+  reviewed: {
+    title: "Reviewed",
+    icon: "M7 3h10a2 2 0 0 1 2 2v15H5V5a2 2 0 0 1 2-2Zm1 9 3 3 5-6",
+  },
+  settings: {
+    title: "Settings",
+    icon: "M3 6h18M3 12h18M3 18h18M8 3v6M16 9v6M9 15v6",
+  },
+};
+const icon = (path: string) =>
+  `<svg class="panel-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="${path}"/></svg>`;
 
 export async function mountPanel(app: HTMLElement) {
   app.className = "panel-shell";
-  app.innerHTML = `<header class="panel-header"><img src="${crosshair}" alt="" /><strong>PR Sniper</strong><button type="button" data-panel-hide aria-label="Hide PR Sniper panel">Close</button></header>
+  app.innerHTML = `<header class="panel-header"><img src="${crosshair}" alt="" /><strong>PR Sniper</strong><div data-header-automation></div><button type="button" data-panel-hide aria-label="Hide PR Sniper panel" title="Close hides only; background work continues">${icon("m7 7 10 10M7 17 17 7")}</button></header>
+    <div class="panel-context"><button type="button" data-panel-back aria-label="Back" hidden>${icon("m14 6-6 6 6 6M8 12h12")}</button><h1 tabindex="-1" data-panel-heading>Your queue</h1><img class="panel-art" src="${sniperArt}" alt="" /></div>
+    <div class="panel-summary" data-panel-summary><strong data-summary-main>Reading queue...</strong><span data-summary-detail></span></div>
+    <p class="panel-error" role="alert" data-panel-error hidden></p>
+    <div class="panel-content">
+      <div data-panel-view="monitor"></div>
+      <section data-panel-view="running" hidden><div data-running-list></div></section>
+      <section data-panel-view="reviewed" hidden></section>
+      <div data-panel-view="settings" hidden></div>
+      <section data-panel-view="utility" hidden></section>
+    </div>
     <nav class="panel-tabs" data-panel-navigation aria-label="Application destinations">${(
       ["queue", "running", "reviewed", "settings"] as const
     )
       .map(
         (tab) =>
-          `<button type="button" data-panel-tab="${tab}" aria-label="${tab[0].toUpperCase() + tab.slice(1)}">${tab[0].toUpperCase() + tab.slice(1)}${tab === "running" ? '<span data-running-count aria-hidden="true"></span>' : ""}</button>`,
+          `<button type="button" data-panel-tab="${tab}" aria-label="${tab[0].toUpperCase() + tab.slice(1)}"><span class="nav-icon">${icon(destinations[tab].icon)}${tab === "running" ? '<span data-running-count aria-hidden="true">?</span>' : ""}</span><span>${tab[0].toUpperCase() + tab.slice(1)}</span></button>`,
       )
       .join("")}</nav>
-    <p class="panel-error" role="alert" data-panel-error hidden></p>
-    <div class="panel-context"><button type="button" data-panel-back hidden>Back</button><h1 tabindex="-1" data-panel-heading>Queue</h1></div>
-    <div class="panel-content">
-      <div data-panel-view="monitor"></div>
-      <section data-panel-view="running" hidden><div data-running-automation></div><div data-running-list></div></section>
-      <section data-panel-view="reviewed" hidden></section>
-      <div data-panel-view="settings" hidden></div>
-      <section data-panel-view="utility" hidden></section>
-    </div>
     <footer class="panel-footer"><button type="button" data-panel-status>Status</button><button type="button" data-panel-diagnostics>Diagnostics</button><span>Close hides only. Quit from the tray menu.</span></footer>`;
   const error = app.querySelector<HTMLElement>("[data-panel-error]")!;
   const heading = app.querySelector<HTMLElement>("[data-panel-heading]")!;
@@ -76,8 +103,10 @@ export async function mountPanel(app: HTMLElement) {
   let snapshot: MonitoringSnapshot | undefined;
   let automation: AutomationSnapshot | undefined;
   let navigating = Promise.resolve();
+  let navigationOrigin: string | undefined;
   let utilityRevision = 0;
   let lastVisible = false;
+  let focusRevision = 0;
   const positions = new Map<string, Position>();
   const listSignatures = new Map<PanelTab, string>();
   const key = (value: PanelRoute) => JSON.stringify(value);
@@ -85,13 +114,15 @@ export async function mountPanel(app: HTMLElement) {
     error.textContent = message;
     error.hidden = false;
   };
-  const remember = () => {
+  const remember = (opener?: HTMLElement) => {
+    if (!opener && navigationOrigin === key(route)) return;
     const previous = positions.get(key(route));
     const focus =
-      document.activeElement instanceof HTMLElement &&
+      opener ??
+      (document.activeElement instanceof HTMLElement &&
       content.contains(document.activeElement)
         ? document.activeElement
-        : (previous?.focus ?? null);
+        : (previous?.focus ?? null));
     const row = focus?.closest<HTMLElement>("[data-item-id],[data-job-id]");
     const nested = [...content.querySelectorAll<HTMLElement>("*")]
       .filter(
@@ -112,7 +143,8 @@ export async function mountPanel(app: HTMLElement) {
           : previous?.row,
     });
   };
-  content.addEventListener("focusin", remember);
+  content.addEventListener("focusin", () => remember());
+  app.addEventListener("focusin", () => focusRevision++);
   function restorePosition(focus: boolean) {
     const saved = positions.get(key(route));
     content.scrollTop = saved?.scroll ?? 0;
@@ -130,75 +162,79 @@ export async function mountPanel(app: HTMLElement) {
       (row?.querySelector<HTMLElement>("button") ?? heading).focus({
         preventScroll: true,
       });
-      row?.scrollIntoView({ block: "nearest" });
+      if (row) {
+        const bounds = row.getBoundingClientRect();
+        const viewport = content.getBoundingClientRect();
+        if (bounds.bottom <= viewport.top || bounds.top >= viewport.bottom)
+          row.scrollIntoView({ block: "nearest" });
+      }
     } else heading.focus({ preventScroll: true });
   }
   const monitor = renderMonitoring(views.monitor, showError, {
     panel: true,
-    navigate: (detail) =>
-      void navigate({
-        tab: route.tab === "settings" ? "queue" : route.tab,
-        detail,
-      }),
+    navigate: (detail, opener) =>
+      void navigate(
+        {
+          tab: route.tab === "settings" ? "queue" : route.tab,
+          detail,
+        },
+        opener,
+      ),
     onSnapshot: (value) => {
       snapshot = value;
+      drawSummary();
       drawLists();
     },
     onAutomation: (value) => {
       automation = value;
       app.querySelector<HTMLElement>("[data-running-count]")!.textContent =
-        ` (${value.active})`;
+        value ? String(value.active) : "?";
       app.querySelector<HTMLButtonElement>(
         '[data-panel-tab="running"]',
-      )!.title =
-        `${value.active} occupied AI slots, including ${value.stopping} stopping`;
+      )!.title = value
+        ? `${value.active} occupied AI slots, including ${value.stopping} stopping`
+        : "Active work unavailable";
+      drawSummary();
       drawLists();
     },
   });
   monitor.automation(
-    views.running.querySelector<HTMLElement>("[data-running-automation]")!,
+    app.querySelector<HTMLElement>("[data-header-automation]")!,
   );
 
+  function drawSummary() {
+    const summary = app.querySelector<HTMLElement>("[data-panel-summary]")!;
+    summary.hidden =
+      !!route.detail || ["settings", "reviewed"].includes(route.tab);
+    const main = summary.querySelector<HTMLElement>("[data-summary-main]")!;
+    const detail = summary.querySelector<HTMLElement>("[data-summary-detail]")!;
+    if (route.tab === "running") {
+      main.textContent = automation
+        ? `${automation.active - automation.stopping} / ${automation.capacity} running`
+        : "Work state unavailable";
+      detail.textContent = automation
+        ? `${automation.waiting} waiting${automation.blocked ? ` / ${automation.blocked} blocked` : ""}${automation.stopping ? ` / ${automation.stopping} stopping` : ""}`
+        : "Occupancy unknown";
+    } else {
+      const items = humanQueue(snapshot?.items ?? []);
+      const ready = items.filter(
+        (item) => item.state === "machine_signed_off",
+      ).length;
+      main.textContent = snapshot
+        ? `${items.length} for you`
+        : "Queue unavailable";
+      detail.textContent = snapshot
+        ? `${ready} ready / ${items.length - ready} need attention`
+        : "";
+    }
+  }
   function metadata(
     kind: WorkKind,
     id: string,
   ): { title: string; state: string } | undefined {
-    if (!snapshot) return undefined;
-    if (kind === "normal") {
-      const candidate = snapshot.reviews?.find((r) => r.key === id);
-      return candidate
-        ? {
-            title: `${candidate.job.repository_name} #${candidate.job.number} / ${candidate.agent_name}`,
-            state: candidate.run?.operation.state ?? "waiting",
-          }
-        : undefined;
-    }
-    if (kind === "primary_final") {
-      const item = snapshot.items?.find(
-        (i) => i.action_status?.final_review?.id === id,
-      );
-      return item
-        ? {
-            title: `${item.job.repository_name} #${item.job.number} / Primary final review`,
-            state: item.action_status!.final_review!.execution.operation.state,
-          }
-        : undefined;
-    }
-    const candidate = snapshot.follow_ups?.find((f) => f.run.id === id);
-    if (!candidate && kind === "mention") {
-      const mention = snapshot.mentions?.find((m) => m.work_id === id);
-      if (mention)
-        return {
-          title: `${mention.binding.repository_name} #${mention.binding.number} / Primary mention`,
-          state: "blocked",
-        };
-    }
-    const execution = candidate?.run.context ?? candidate?.run.review;
-    return execution && candidate
-      ? {
-          title: `${execution.job.repository_name} #${execution.job.number} / ${execution.selection.agent.name}`,
-          state: candidate.run.phase,
-        }
+    const work = snapshot && workPresentation(snapshot, kind, id);
+    return work
+      ? { title: `${work.reference} / ${work.agent}`, state: work.state }
       : undefined;
   }
   function draw(tab: "running" | "reviewed", rows: Row[]) {
@@ -218,9 +254,16 @@ export async function mountPanel(app: HTMLElement) {
     const hint = document.createElement("p");
     hint.textContent =
       tab === "running"
-        ? "One row per actual AI job. Stopping work retains its slot until teardown; blocked work keeps its reason and order."
+        ? "Running at the top. New work joins the bottom."
         : "Completed evidence available in the current native projection. This foundation does not add paged history or storage purge.";
     root.append(hint);
+    hint.className = "work-caption";
+    const list = document.createElement("ol");
+    if (tab === "running") {
+      list.className = "work-list";
+      list.setAttribute("aria-label", "Agent work queue");
+      root.append(list);
+    }
     if (!rows.length) {
       const empty = document.createElement("p");
       empty.textContent =
@@ -232,23 +275,88 @@ export async function mountPanel(app: HTMLElement) {
     for (const row of rows) {
       const article = document.createElement("article");
       article.dataset.jobId = `${row.kind}:${row.id}`;
+      article.dataset.workState = row.state;
       const title = document.createElement("h2");
       title.textContent = row.title;
       const status = document.createElement("p");
       status.textContent = `${row.kind.replaceAll("_", " ")}: ${row.state}. ${row.reason ?? ""}`;
       const button = document.createElement("button");
+      button.type = "button";
       button.textContent =
         row.kind === "item" ? "Open PR evidence" : "Open job";
       button.onclick = () =>
-        void navigate({
-          tab,
-          detail:
-            row.kind === "item"
-              ? { type: "item", item_id: row.id }
-              : { type: "job", kind: row.kind, id: row.id },
-        });
-      article.append(title, status, button);
-      root.append(article);
+        void navigate(
+          {
+            tab,
+            detail:
+              row.kind === "item"
+                ? { type: "item", item_id: row.id }
+                : { type: "job", kind: row.kind, id: row.id },
+          },
+          button,
+        );
+      if (tab === "running") {
+        const displayState =
+          row.state === "active"
+            ? "Running"
+            : row.state === "stopping"
+              ? "Stopping"
+              : row.work?.state === "superseded"
+                ? "Superseded"
+                : ["failed", "manual_retry"].includes(row.work?.state ?? "")
+                  ? "Failed"
+                  : row.state === "blocked"
+                    ? "Blocked"
+                    : "Queued";
+        button.className = "work-row";
+        button.setAttribute("aria-label", "Open job");
+        button.title = `${row.title}; ${displayState}`;
+        button.replaceChildren();
+        const marker = document.createElement("span");
+        marker.className = row.state === "active" ? "work-spin" : "work-marker";
+        marker.setAttribute("aria-hidden", "true");
+        if (row.state !== "active")
+          marker.innerHTML = icon(destinations.queue.icon);
+        const copy = document.createElement("span");
+        copy.className = "work-copy";
+        const top = document.createElement("span");
+        top.className = "work-heading";
+        const agent = document.createElement("strong");
+        agent.textContent = row.work?.agent ?? "Job evidence unavailable";
+        const state = document.createElement("span");
+        state.className = "work-state";
+        state.textContent = displayState;
+        top.append(agent, state);
+        const subject = document.createElement("span");
+        subject.className = "work-subject";
+        subject.textContent = row.work?.subject ?? row.title;
+        const reference = document.createElement("span");
+        reference.className = "work-reference";
+        reference.textContent = row.work?.reference ?? "Repository unavailable";
+        const purpose = document.createElement("span");
+        purpose.textContent =
+          row.work?.ordinal ??
+          (row.kind === "item" ? "PR" : purposes[row.kind]);
+        reference.append(purpose);
+        copy.append(top, subject, reference);
+        if (row.reason) {
+          const reason = document.createElement("span");
+          reason.className = "work-blocker";
+          reason.textContent = row.reason;
+          copy.append(reason);
+        }
+        const chevron = document.createElement("span");
+        chevron.className = "work-chevron";
+        chevron.setAttribute("aria-hidden", "true");
+        button.append(marker, copy, chevron);
+        article.append(button);
+        const entry = document.createElement("li");
+        entry.append(article);
+        list.append(entry);
+      } else {
+        article.append(title, status, button);
+        root.append(article);
+      }
       if (
         activeId === article.dataset.jobId &&
         route.tab === tab &&
@@ -261,19 +369,46 @@ export async function mountPanel(app: HTMLElement) {
     }
   }
   function drawLists() {
-    if (!snapshot || !automation) return;
-    draw(
-      "running",
-      automation.work.map((work) => ({
-        id: work.key.id,
-        kind: work.key.kind,
-        title:
-          metadata(work.key.kind, work.key.id)?.title ??
-          `Saved ${work.key.kind} job ${work.key.id}`,
-        state: work.state,
-        reason: work.reason,
-      })),
-    );
+    if (!automation) {
+      views.running.querySelector<HTMLElement>(
+        "[data-running-list]",
+      )!.textContent =
+        "Work state unavailable. No active or waiting jobs can be confirmed. Retry from Status or inspect Diagnostics.";
+      listSignatures.delete("running");
+    } else
+      draw(
+        "running",
+        [...automation.work]
+          .sort((a, b) => {
+            const rank = (state: string) =>
+              state === "active" ? 0 : state === "stopping" ? 1 : 2;
+            return (
+              rank(a.state) - rank(b.state) || a.enqueue_order - b.enqueue_order
+            );
+          })
+          .map((work) => ({
+            id: work.key.id,
+            kind: work.key.kind,
+            title:
+              metadata(work.key.kind, work.key.id)?.title ??
+              `Saved ${work.key.kind} job ${work.key.id}`,
+            state: work.state,
+            reason:
+              work.reason ??
+              (automation?.paused && work.state === "waiting"
+                ? "Monitoring paused."
+                : null),
+            work:
+              snapshot &&
+              workPresentation(snapshot, work.key.kind, work.key.id),
+          })),
+      );
+    if (!snapshot) {
+      views.reviewed.textContent =
+        "Saved evidence unavailable; no completed state is inferred.";
+      listSignatures.delete("reviewed");
+      return;
+    }
     const rows: Row[] = [];
     for (const review of snapshot.reviews ?? [])
       if (review.run?.operation.state === "completed") {
@@ -369,6 +504,9 @@ export async function mountPanel(app: HTMLElement) {
   async function apply(state: PanelSnapshot) {
     if (state.revision < revision) return;
     const changed = key(state.route) !== key(route);
+    const restore = state.visible && (changed || !lastVisible);
+    const focusAtStart = focusRevision;
+    lastVisible = state.visible;
     if (changed || !state.visible) remember();
     if (changed && state.route.detail && !route.detail) returnTo = route;
     if (
@@ -388,8 +526,13 @@ export async function mountPanel(app: HTMLElement) {
         ? "Status"
         : route.detail.type === "diagnostics"
           ? "Diagnostics"
-          : "Saved evidence"
-      : route.tab[0].toUpperCase() + route.tab.slice(1);
+          : route.detail.type === "job"
+            ? "Job details"
+            : "Saved evidence"
+      : destinations[route.tab].title;
+    app.dataset.detail = String(!!route.detail);
+    app.dataset.evidence = route.detail?.type ?? "";
+    drawSummary();
     for (const button of app.querySelectorAll<HTMLButtonElement>(
       "[data-panel-tab]",
     )) {
@@ -414,22 +557,33 @@ export async function mountPanel(app: HTMLElement) {
     if (visible === "settings" && !settingsMounted) {
       settingsMounted = true;
       await mountSettings(views.settings, { embedded: true });
-      if (state.revision < revision) return;
+      if (state.revision !== revision) return;
     }
     if (visible === "monitor") monitor.detail(route.detail, state.missing);
     if (utilityDetail && (changed || !views.utility.children.length))
       void utility(route.detail!.type as "status" | "diagnostics");
-    if (visible === "running")
-      monitor.automation(
-        views.running.querySelector<HTMLElement>("[data-running-automation]")!,
-      );
-    if (changed || (state.visible && !lastVisible))
-      requestAnimationFrame(() => restorePosition(true));
-    lastVisible = state.visible;
+    if (restore && focusAtStart === focusRevision) {
+      // Commit route focus now, before a subsequent explicit focus can win.
+      // Only layout positioning waits for a frame; it cannot own newer input.
+      restorePosition(true);
+      const focused = focusRevision;
+      const destination = key(route);
+      requestAnimationFrame(() => {
+        if (
+          state.revision === revision &&
+          destination === key(route) &&
+          lastVisible &&
+          focused === focusRevision
+        )
+          restorePosition(false);
+      });
+    }
   }
-  function navigate(next: PanelRoute) {
+  function navigate(next: PanelRoute, opener?: HTMLElement) {
+    // Capture activation before a queue redraw detaches the actual row button.
+    remember(opener);
     navigating = navigating.then(async () => {
-      remember();
+      navigationOrigin = key(route);
       error.hidden = true;
       try {
         await apply(
@@ -441,6 +595,8 @@ export async function mountPanel(app: HTMLElement) {
             ? cause
             : "Panel navigation failed; the current view was retained.",
         );
+      } finally {
+        navigationOrigin = undefined;
       }
     });
     return navigating;
@@ -479,7 +635,7 @@ export async function mountPanel(app: HTMLElement) {
     },
     true,
   );
-  window.addEventListener("blur", remember);
+  window.addEventListener("blur", () => remember());
   window.addEventListener("focus", () => restorePosition(true));
   try {
     await listen<PanelSnapshot>(

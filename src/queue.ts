@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { renderActions, type ActionStatus } from "./actions";
+import { renderFacts } from "./work-presentation";
 
 export interface NormalWork {
   id: string;
@@ -53,6 +54,7 @@ export interface QueueItem {
     account_id: string;
     account_login: string;
     author_login: string | null;
+    waiting?: string;
   };
   state:
     | "machine_signed_off"
@@ -90,6 +92,41 @@ const labels: Record<QueueItem["state"], string> = {
   merged: "Merged on GitHub",
 };
 
+export function humanQueue(items: QueueItem[]): QueueItem[] {
+  const current = new Map<string, QueueItem>();
+  for (const item of items) {
+    const job = item.job;
+    const key = JSON.stringify([
+      job.provider,
+      job.account_id,
+      job.configuration_id,
+      job.repository_id,
+      job.pull_request_id,
+    ]);
+    const previous = current.get(key);
+    const historical = (value: QueueItem) =>
+      ["stale", "stale_after_publication"].includes(value.state);
+    if (
+      !previous ||
+      (job.work && previous.job.work
+        ? job.work.iteration > previous.job.work.iteration
+        : historical(previous) && !historical(item))
+    )
+      current.set(key, item);
+  }
+  return [...current.values()].filter(
+    (item) =>
+      ![
+        "queued",
+        "reviewing",
+        "awaiting_publication",
+        "waiting_for_author",
+        "closed",
+        "merged",
+      ].includes(item.state),
+  );
+}
+
 export async function openDestination(
   itemId: string,
   file: string | null,
@@ -109,7 +146,11 @@ export async function openDestination(
 export function renderQueue(
   root: HTMLElement,
   showError: (message: string) => void,
-  select: (item: QueueItem | null | undefined, focus: boolean) => void,
+  select: (
+    item: QueueItem | null | undefined,
+    focus: boolean,
+    opener?: HTMLElement,
+  ) => void,
   refresh: () => Promise<void>,
   options: { compact?: boolean; externalSelection?: boolean } = {},
 ) {
@@ -160,7 +201,7 @@ export function renderQueue(
         draw(false);
       });
 
-  function choose(id: string | null, focus: boolean) {
+  function choose(id: string | null, focus: boolean, opener?: HTMLElement) {
     selectionRevision++;
     initialized = true;
     selected = id;
@@ -170,10 +211,10 @@ export function renderQueue(
       url.hash = id ? new URLSearchParams({ item: id }).toString() : "";
       history.replaceState(null, "", url);
     }
-    draw(focus);
+    draw(focus, opener);
   }
 
-  function draw(focus: boolean) {
+  function draw(focus: boolean, opener?: HTMLElement) {
     if (!loaded) return;
     const active =
       document.activeElement instanceof HTMLElement &&
@@ -192,11 +233,12 @@ export function renderQueue(
     intro.className = "hint";
     intro.textContent =
       "Ready PRs and work that needs your input come first. Published findings wait on the PR author. GitHub approval and merge status are not inferred.";
-    root.append(intro);
+    if (!options.compact) root.append(intro);
     if (!items.length) {
       const empty = document.createElement("p");
-      empty.textContent =
-        "No detected pull requests yet. Configure monitoring in Settings, then Check Now.";
+      empty.textContent = options.compact
+        ? "You're all caught up. Human handoffs and actionable problems appear here; Agent work is in Running. Configure monitoring in Settings, or use Status to Check Now."
+        : "No detected pull requests yet. Configure monitoring in Settings, then Check Now.";
       root.append(empty);
     }
     for (const item of items) {
@@ -213,7 +255,9 @@ export function renderQueue(
       state.className = "queue-state";
       state.textContent = labels[item.state];
       const heading = document.createElement("h3");
-      heading.textContent = `${item.job.repository_name} #${item.job.number}: ${item.job.title}`;
+      heading.textContent = options.compact
+        ? item.job.title
+        : `${item.job.repository_name} #${item.job.number}: ${item.job.title}`;
       const context = document.createElement("p");
       context.className = "hint";
       context.textContent = `PR author: ${item.job.author_login ?? "unavailable"}. Acting GitHub account: ${item.job.account_login} (${item.job.account_id}). Reviewed / detected head: ${item.job.head_sha}.`;
@@ -223,9 +267,55 @@ export function renderQueue(
         );
       const summary = document.createElement("p");
       summary.textContent = item.summary;
-      row.append(state, heading, context, summary);
+      if (options.compact) {
+        const top = document.createElement("div");
+        top.className = "queue-card-top";
+        const iteration = document.createElement("span");
+        iteration.textContent = item.job.work
+          ? `Iteration ${item.job.work.iteration}`
+          : "Legacy revision";
+        top.append(state, iteration);
+        const reference = document.createElement("p");
+        reference.className = "queue-reference";
+        reference.textContent = `${item.job.repository_name} #${item.job.number}`;
+        summary.className = "queue-summary-text";
+        summary.textContent =
+          item.state === "machine_signed_off"
+            ? `${item.review_keys.length}/${item.review_keys.length} Agents clear`
+            : item.state === "waiting_for_human"
+              ? "Read the saved findings and conversation."
+              : item.state === "confirmation_required"
+                ? "Review the exact work and its permissions."
+                : item.summary;
+        row.append(top, heading, reference, summary);
+        const receipts =
+          item.action_status?.effects.filter((effect) => effect.receipt) ?? [];
+        for (const effect of receipts) {
+          const receipt = document.createElement("p");
+          receipt.className = "queue-receipt";
+          receipt.textContent = `${effect.action === "approve" ? "Approval" : "Merge"} recorded; not personal review`;
+          row.append(receipt);
+        }
+        const footer = document.createElement("div");
+        footer.className = "queue-card-footer";
+        const avatar = document.createElement("span");
+        avatar.className = "queue-avatar";
+        avatar.setAttribute("aria-hidden", "true");
+        avatar.textContent = (item.job.author_login ?? "?").slice(0, 2);
+        const author = document.createElement("span");
+        author.textContent = item.job.author_login ?? "Author unavailable";
+        const trigger = document.createElement("span");
+        trigger.className = "queue-trigger";
+        trigger.textContent = item.job.work?.admission.requested_reviewer
+          ? "Requested reviewer"
+          : item.job.work?.admission.watched_author
+            ? "Watched author"
+            : "PR evidence";
+        footer.append(avatar, author, trigger);
+        row.append(footer);
+      } else row.append(state, heading, context, summary);
       if (!options.compact) renderItemEvidence(row, item, showError, refresh);
-      for (const warning of item.warnings) {
+      for (const warning of options.compact ? [] : item.warnings) {
         const text = document.createElement("p");
         text.className = "review-failure";
         text.textContent = warning;
@@ -241,8 +331,15 @@ export function renderQueue(
       const evidence = document.createElement("button");
       evidence.type = "button";
       evidence.textContent = "Evidence and actions";
+      if (options.compact) {
+        evidence.className = "queue-card-open";
+        const label = document.createElement("span");
+        label.className = "sr-only";
+        label.textContent = "Evidence and actions";
+        evidence.replaceChildren(label);
+      }
       evidence.setAttribute("aria-pressed", String(matches(item)));
-      evidence.onclick = () => choose(item.id, true);
+      evidence.onclick = () => choose(item.id, true, evidence);
       const github = document.createElement("button");
       github.type = "button";
       github.textContent = "Open PR on GitHub";
@@ -251,7 +348,8 @@ export function renderQueue(
         await openDestination(item.id, null, showError);
         github.disabled = false;
       };
-      actions.append(evidence, github);
+      actions.append(evidence);
+      if (!options.compact) actions.append(github);
       row.append(actions);
       root.append(row);
     }
@@ -270,6 +368,7 @@ export function renderQueue(
     select(
       !initialized ? undefined : selected === null ? null : items.find(matches),
       focus,
+      opener,
     );
     if (!focus && focusedItem && focusedLabel && !root.closest("[hidden]")) {
       const row = [
@@ -290,6 +389,9 @@ export function renderQueue(
     if (JSON.stringify([items, selected]) !== signature) draw(false);
   };
   return Object.assign(update, {
+    invalidate: () => {
+      signature = "";
+    },
     select: (id: string | null) => {
       selected = id;
       initialized = true;
@@ -303,7 +405,50 @@ export function renderItemEvidence(
   item: QueueItem,
   showError: (value: string) => void,
   refresh: () => Promise<void>,
+  handoff = false,
 ) {
+  if (handoff) {
+    const context = document.createElement("section");
+    context.className = "detail-section";
+    const title = document.createElement("h3");
+    title.textContent = "This pull request";
+    context.append(title);
+    renderFacts(context, [
+      ["Repository", item.job.repository_name],
+      ["PR author", item.job.author_login ?? "Unavailable"],
+      ["GitHub identity", `${item.job.account_login} (${item.job.account_id})`],
+      ["Iteration", String(item.job.work?.iteration ?? "Not recorded")],
+      ["Revision head", item.job.head_sha.slice(0, 7)],
+    ]);
+    const provenance = document.createElement("details");
+    const label = document.createElement("summary");
+    label.textContent = "PR identity and provenance";
+    provenance.append(label);
+    renderFacts(provenance, [
+      ["Item ID", item.id],
+      [
+        "Iteration ID",
+        item.job.work?.iteration_id ?? "Legacy iteration identity not recorded",
+      ],
+      ["Full revision head", item.job.head_sha],
+    ]);
+    const external = document.createElement("button");
+    external.textContent = "Open PR on GitHub";
+    external.className = "job-provider-link";
+    external.onclick = () => void openDestination(item.id, null, showError);
+    const guidance = document.createElement("p");
+    guidance.textContent =
+      "Personal review, comments and approval happen on GitHub. Machine clearance and recorded automation never mean you personally reviewed this PR. No acknowledgment is required to unlock a separately permitted merge.";
+    (root.querySelector(".detail-hero") ?? context).append(external);
+    context.append(guidance, provenance);
+    root.append(context);
+    for (const warning of item.warnings) {
+      const line = document.createElement("p");
+      line.className = "review-failure";
+      line.textContent = warning;
+      root.append(line);
+    }
+  }
   if (item.action_status)
     renderActions(root, item.action_status, showError, refresh);
   if (item.feedback?.length) {
