@@ -19,6 +19,15 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   exact inspector for normal, final, reply and mention work. Preserve captured
   configuration, canonical iteration, work ordinals and separate retry counts.
 
+### Fixed
+
+- Keep evidence polling alive across Status and Diagnostics, including delayed
+  or failed utility reads.
+- Match the approved Job details hero, facts and readable configuration cards;
+  separate the selected job's state from sibling activity and PR-wide outcomes.
+- Retain historical job ordinals after later same-commit work and show planned
+  configuration for failures before the first execution attempt.
+
 ## 0.1.2 - 2026-10-01
 
 ### Added

@@ -103,6 +103,12 @@ primary-final, reply and mention purposes, immutable execution configuration
 versus current planned configuration, canonical iteration (including same-commit
 reopening), per-Agent work ordinals and retry attempts. Missing legacy evidence
 is labeled unavailable rather than reconstructed from current Settings.
+Job details show that job's own capacity/execution state above its facts and
+readable assigned configuration, never a sibling's activity or the PR-wide
+handoff as its state. Historical pass/reply ordinals stay with the selected job.
+Never-started failures retain planned configuration without claiming execution;
+full saved configuration and identifiers remain available in collapsed evidence.
+Status/Diagnostics navigation does not stop automatic evidence refresh.
 
 The [native acceptance procedure](tests/macos-acceptance.md) and compiled
 test-owned smoke harness cover the actual window boundary separately from

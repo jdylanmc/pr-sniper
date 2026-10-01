@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { renderActions, type ActionStatus } from "./actions";
+import { renderFacts } from "./work-presentation";
 
 export interface NormalWork {
   id: string;
@@ -53,6 +54,7 @@ export interface QueueItem {
     account_id: string;
     account_login: string;
     author_login: string | null;
+    waiting?: string;
   };
   state:
     | "machine_signed_off"
@@ -401,16 +403,40 @@ export function renderItemEvidence(
   handoff = false,
 ) {
   if (handoff) {
-    const context = document.createElement("p");
-    context.className = "hint";
-    context.textContent = `PR author: ${item.job.author_login ?? "unavailable"}. Acting GitHub account: ${item.job.account_login} (${item.job.account_id}). Head ${item.job.head_sha}.${item.job.work ? ` Iteration ${item.job.work.iteration} (${item.job.work.iteration_id}).` : " Legacy iteration identity not recorded."}`;
+    const context = document.createElement("section");
+    context.className = "detail-section";
+    const title = document.createElement("h3");
+    title.textContent = "This pull request";
+    context.append(title);
+    renderFacts(context, [
+      ["Repository", item.job.repository_name],
+      ["PR author", item.job.author_login ?? "Unavailable"],
+      ["GitHub identity", `${item.job.account_login} (${item.job.account_id})`],
+      ["Iteration", String(item.job.work?.iteration ?? "Not recorded")],
+      ["Revision head", item.job.head_sha.slice(0, 7)],
+    ]);
+    const provenance = document.createElement("details");
+    const label = document.createElement("summary");
+    label.textContent = "PR identity and provenance";
+    provenance.append(label);
+    renderFacts(provenance, [
+      ["Item ID", item.id],
+      [
+        "Iteration ID",
+        item.job.work?.iteration_id ?? "Legacy iteration identity not recorded",
+      ],
+      ["Full revision head", item.job.head_sha],
+    ]);
     const external = document.createElement("button");
     external.textContent = "Open PR on GitHub";
+    external.className = "job-provider-link";
     external.onclick = () => void openDestination(item.id, null, showError);
     const guidance = document.createElement("p");
     guidance.textContent =
       "Personal review, comments and approval happen on GitHub. Machine clearance and recorded automation never mean you personally reviewed this PR. No acknowledgment is required to unlock a separately permitted merge.";
-    root.append(context, external, guidance);
+    (root.querySelector(".detail-hero") ?? context).append(external);
+    context.append(guidance, provenance);
+    root.append(context);
     for (const warning of item.warnings) {
       const line = document.createElement("p");
       line.className = "review-failure";

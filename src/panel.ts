@@ -66,7 +66,7 @@ const icon = (path: string) =>
 export async function mountPanel(app: HTMLElement) {
   app.className = "panel-shell";
   app.innerHTML = `<header class="panel-header"><img src="${crosshair}" alt="" /><strong>PR Sniper</strong><div data-header-automation></div><button type="button" data-panel-hide aria-label="Hide PR Sniper panel" title="Close hides only; background work continues">${icon("m7 7 10 10M7 17 17 7")}</button></header>
-    <div class="panel-context"><button type="button" data-panel-back hidden>Back</button><h1 tabindex="-1" data-panel-heading>Your queue</h1><img class="panel-art" src="${sniperArt}" alt="" /></div>
+    <div class="panel-context"><button type="button" data-panel-back aria-label="Back" hidden>${icon("m14 6-6 6 6 6M8 12h12")}</button><h1 tabindex="-1" data-panel-heading>Your queue</h1><img class="panel-art" src="${sniperArt}" alt="" /></div>
     <div class="panel-summary" data-panel-summary><strong data-summary-main>Reading queue...</strong><span data-summary-detail></span></div>
     <p class="panel-error" role="alert" data-panel-error hidden></p>
     <div class="panel-content">
@@ -512,9 +512,12 @@ export async function mountPanel(app: HTMLElement) {
         ? "Status"
         : route.detail.type === "diagnostics"
           ? "Diagnostics"
-          : "Saved evidence"
+          : route.detail.type === "job"
+            ? "Job details"
+            : "Saved evidence"
       : destinations[route.tab].title;
     app.dataset.detail = String(!!route.detail);
+    app.dataset.evidence = route.detail?.type ?? "";
     drawSummary();
     for (const button of app.querySelectorAll<HTMLButtonElement>(
       "[data-panel-tab]",

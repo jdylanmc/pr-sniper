@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { expect, test } from "./fixtures.mjs";
+import { captureInspector, nativeCapacity, expect, test } from "./fixtures.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
 import { target } from "./paths.mjs";
 
@@ -9,7 +9,7 @@ const tab = (page, name) =>
   page
     .getByRole("navigation", { name: "Application destinations" })
     .getByRole("button", { name, exact: true });
-const screenshots = join(target, "visual-77-79");
+const screenshots = join(target, "visual-correction-1");
 test.use({ viewport: { width: 408, height: 744 } });
 
 for (const failUtility of [false, true]) {
@@ -116,6 +116,7 @@ test("compact human cards retain all ordered files and exact external links", as
     "Personal review, comments and approval happen on GitHub",
   );
   await expect(evidence.getByRole("textbox")).toHaveCount(0);
+  await page.screenshot({ path: join(screenshots, "queue-detail.png") });
   await evidence.getByRole("button", { name: "Open PR on GitHub" }).click();
   const guide = page.locator("#agent-reviews details").filter({
     has: page.getByText("Complete file guide (301 files)", { exact: true }),
@@ -234,26 +235,6 @@ async function workFixture(store) {
   return { ...fixture, state, base };
 }
 
-async function nativeCapacity(page, activeIds) {
-  await page.addInitScript((activeIds) => {
-    const original = window.__TAURI_INTERNALS__.invoke;
-    window.__activeIds = activeIds;
-    window.__stoppingIds = [];
-    window.__capacityUnavailable = false;
-    window.__TAURI_INTERNALS__.invoke = (command, args) => {
-      if (command === "automation_snapshot") {
-        if (window.__capacityUnavailable)
-          return Promise.reject("Synthetic capacity failure");
-        return original("fixture_capacity_snapshot", {
-          activeIds: window.__activeIds,
-          stoppingIds: window.__stoppingIds,
-        });
-      }
-      return original(command, args);
-    };
-  }, activeIds);
-}
-
 test("seven assigned Agents use four actual reservations and three waiting rows, not one trigger or duplicate IDs", async ({
   page,
   store,
@@ -308,18 +289,20 @@ test("seven assigned Agents use four actual reservations and three waiting rows,
   await page.keyboard.press("Enter");
   await expect(page.locator("[data-work-context]")).toHaveCount(1);
   await expect(page.locator("[data-work-context]")).toContainText(
-    "Purpose: Normal pass",
+    "Normal pass",
   );
   await expect(page.locator("[data-work-context]")).toContainText(
-    "Captured role: Primary Agent",
+    "Captured rolePrimary Agent",
   );
   await expect(page.locator("#agent-reviews article")).toHaveCount(1);
   await expect(page.locator("[data-work-context]")).toContainText(
-    "normal pass ordinal 1",
+    "Review count1 for this Agent on this PR",
   );
   await expect(page.locator("[data-work-context]")).toContainText(
-    "Retry attempt for this job: 1",
+    "Retry attempt1",
   );
+  await expect(page.locator(".job-status strong")).toHaveText("Running");
+  await captureInspector(page, "normal-running");
   await page.getByRole("button", { name: "Back", exact: true }).click();
   await expect(
     rows.first().getByRole("button", { name: "Open job" }),
@@ -346,13 +329,67 @@ test("seven assigned Agents use four actual reservations and three waiting rows,
     "3 waiting / 1 stopping",
   );
   await expect(page.locator("[data-running-count]")).toHaveText("4");
-  await expect(page.locator(".work-spin")).toHaveCount(3);
+  await expect(rows.locator(".work-spin")).toHaveCount(3);
   await expect(
     page.locator('[data-job-id="normal:visual-work-1"] .work-state'),
   ).toHaveText("Stopping");
   await expect(
     page.locator('[data-job-id="normal:visual-work-1"] .work-spin'),
   ).toHaveCount(0);
+});
+
+test("normal inspector distinguishes waiting, running, stopping, failed, superseded and unknown capacity", async ({
+  page,
+  store,
+}) => {
+  const fixture = await workFixture(store);
+  await nativeCapacity(page, []);
+  const run = fixture.state.reviews[0];
+  for (const [state, label] of [
+    ["queued", "Waiting"],
+    ["running", "Running"],
+    ["stopping", "Stopping"],
+    ["failed", "Failed"],
+    ["superseded", "Superseded"],
+    ["unknown", "Activity unavailable"],
+  ]) {
+    run.operation.state = ["stopping", "unknown"].includes(state)
+      ? "running"
+      : state === "superseded"
+        ? "failed"
+        : state;
+    run.operation.attempt_count = state === "queued" ? 0 : 2;
+    fixture.state.jobs[0].waiting =
+      state === "superseded" ? "superseded" : "human_start";
+    await store("seed_queue_state", fixture.state);
+    await page.goto("/");
+    await page.evaluate(
+      ({ id, state }) => {
+        window.__activeIds = ["running", "stopping"].includes(state)
+          ? [id]
+          : [];
+        window.__stoppingIds = state === "stopping" ? [id] : [];
+        window.__capacityUnavailable = state === "unknown";
+      },
+      { id: run.key, state },
+    );
+    await page.evaluate(
+      (id) =>
+        window.__TAURI_INTERNALS__.invoke("panel_navigate", {
+          route: {
+            tab: "running",
+            detail: { type: "job", kind: "normal", id },
+          },
+        }),
+      run.key,
+    );
+    await expect(page.locator(".job-status strong")).toHaveText(label);
+    await expect(page.locator(".job-hero .work-spin")).toHaveCount(
+      state === "running" ? 1 : 0,
+    );
+    if (state === "superseded" || state === "queued")
+      await captureInspector(page, `normal-${state}`);
+  }
 });
 
 test("completion removes its row, capacity refills immediately and new blocked work appends at the tail", async ({
@@ -447,18 +484,17 @@ test("captured full configuration survives current Agent and doctrine edits with
   await expect(row).toContainText("Scout");
   await expect(row).not.toContainText("Today's changed Agent");
   await row.getByRole("button", { name: "Open job" }).click();
-  const captured = page.locator(".work-configuration").filter({
-    has: page.getByText("Captured execution configuration", {
-      exact: true,
-    }),
-  });
-  await captured.locator("summary").click();
+  const captured = page.locator("[data-work-context] > .work-configuration");
+  await expect(captured).toContainText("Captured for this execution.");
+  await expect(captured.locator("details")).not.toHaveAttribute("open");
   await expect(captured).toContainText("Review correctness.");
   await expect(captured).toContainText(
     "Captured doctrine: read every changed file.",
   );
-  await expect(captured).toContainText('"account_id": "33"');
-  await expect(captured).toContainText('"primary": true');
+  await expect(captured.locator("dl").first()).toContainText("AI account33");
+  await expect(captured.locator("dl").first()).toContainText(
+    "RolePrimary Agent",
+  );
   await expect(captured).not.toContainText("Today's changed");
   await page.locator(".panel-content").evaluate((e) => {
     e.scrollTop = 0;
@@ -466,6 +502,161 @@ test("captured full configuration survives current Agent and doctrine edits with
   await page.screenshot({
     path: join(screenshots, "captured-job-detail.png"),
   });
+});
+
+test("selected historical normal pass keeps its ordinal and retry attempt after same-head reopening", async ({
+  page,
+  store,
+}) => {
+  const fixture = await workFixture(store);
+  const original = fixture.state.reviews[0];
+  original.operation.state = "completed";
+  original.operation.attempt_count = 3;
+  original.result = fixture.base.result;
+  const later = structuredClone(original);
+  later.key = "reopened-normal";
+  later.operation.id = "reopened-operation";
+  later.job.work = {
+    ...later.job.work,
+    id: later.key,
+    item_id: "reopened-item",
+    iteration_id: "reopened-iteration",
+    iteration: 2,
+    pass_ordinal: 2,
+    enqueue_order: 8,
+    trigger: "reopened",
+  };
+  fixture.state.jobs.push(later.job);
+  fixture.state.reviews.push(later);
+  await store("seed_queue_state", fixture.state);
+  await store("panel_navigate", {
+    route: {
+      tab: "reviewed",
+      detail: { type: "job", kind: "normal", id: original.key },
+    },
+  });
+  await page.goto("/");
+  await expect(page.locator(".job-facts")).toContainText(
+    "Review count1 for this Agent on this PR",
+  );
+  await expect(page.locator(".job-facts")).toContainText("Retry attempt3");
+  await expect(page.locator(".job-facts")).toContainText("#9 / iteration 1");
+  await expect(page.locator(".job-facts")).not.toContainText(
+    "2 for this Agent",
+  );
+  await captureInspector(page, "normal-historical");
+});
+
+test("failed before first attempt retains readable planned configuration after queued edits, while executed jobs retain captured data", async ({
+  page,
+  store,
+}) => {
+  const fixture = await workFixture(store);
+  await nativeCapacity(
+    page,
+    fixture.state.jobs.slice(0, 4).map((job) => job.work.id),
+  );
+  await page.goto("/");
+  await tab(page, "Running").click();
+  await expect(page.locator("[data-summary-main]")).toHaveText("4 / 4 running");
+  await expect(
+    page.locator('[data-job-id="normal:visual-work-5"] .work-state'),
+  ).toHaveText("Queued");
+  fixture.settings.agents[4].prompt = "Changed while waiting; never executed.";
+  fixture.settings.agents[4].model = "changed-model";
+  fixture.settings.doctrines[0].body = "Updated planned doctrine.";
+  await store("seed_settings", fixture.settings);
+  const failed = fixture.state.reviews[4];
+  failed.operation.state = "failed";
+  failed.phase = "Failed before execution";
+  failed.error = "Configuration changed before dispatch.";
+  await store("seed_queue_state", fixture.state);
+  await page
+    .locator('[data-job-id="normal:visual-work-5"]')
+    .getByRole("button")
+    .click();
+  await expect(page.locator(".job-status strong")).toHaveText("Failed");
+  const planned = page.locator("[data-work-context] > .work-configuration");
+  await expect(planned).toContainText(
+    "Planned configuration; revalidated at start. No execution is claimed.",
+  );
+  await expect(planned).toContainText("Changed while waiting; never executed.");
+  await expect(planned).toContainText("Updated planned doctrine.");
+  await expect(planned).toContainText("changed-model");
+  await expect(planned).toContainText("AI account33");
+  await expect(planned).not.toContainText("Captured for this execution");
+  await expect(page.locator(".job-facts")).toContainText(
+    "Retry attemptNot started (0)",
+  );
+  await captureInspector(page, "normal-failed-zero");
+  await page.getByRole("button", { name: "Back", exact: true }).click();
+  await expect(
+    page.locator('[data-job-id="normal:visual-work-5"]').getByRole("button"),
+  ).toBeFocused();
+  await page
+    .locator('[data-job-id="normal:visual-work-1"]')
+    .getByRole("button")
+    .click();
+  await expect(planned).toContainText("Captured for this execution.");
+  await expect(planned).toContainText(
+    "Captured doctrine: read every changed file.",
+  );
+  await expect(planned).not.toContainText("Updated planned doctrine.");
+  fixture.state.reviews[0].operation.state = "completed";
+  fixture.state.reviews[0].result = fixture.base.result;
+  await store("seed_queue_state", fixture.state);
+  await page.evaluate(() => {
+    window.__activeIds = ["visual-work-2"];
+  });
+  await tab(page, "Queue").click();
+  await tab(page, "Reviewed").click();
+  await page
+    .locator(
+      '[data-panel-view="reviewed"] [data-job-id="normal:visual-work-1"]',
+    )
+    .getByRole("button")
+    .click();
+  await expect(page.locator(".job-status strong")).toHaveText("Done");
+  await expect(planned).toContainText(
+    "Captured doctrine: read every changed file.",
+  );
+  const snapshot = await store("monitoring_snapshot");
+  const parent = snapshot.items.find((item) =>
+    item.review_keys.includes("visual-work-1"),
+  );
+  await expect(page.locator("[data-work-context]")).not.toContainText(
+    parent.summary,
+  );
+  await captureInspector(page, "normal-done-active-sibling");
+});
+
+test("completed jobs do not adopt aggregate author-wait or ready-for-personal-review states", async ({
+  page,
+  store,
+}) => {
+  await queueFixture(store);
+  const snapshot = await store("monitoring_snapshot");
+  for (const number of [1, 9]) {
+    const item = snapshot.items.find((item) => item.job.number === number);
+    expect(item.state).toBe(
+      number === 1 ? "waiting_for_author" : "machine_signed_off",
+    );
+    await store("panel_navigate", {
+      route: {
+        tab: "reviewed",
+        detail: { type: "job", kind: "normal", id: item.review_keys[0] },
+      },
+    });
+    await page.goto("/");
+    await expect(page.locator(".job-status strong")).toHaveText("Done");
+    await expect(page.locator("[data-work-context]")).not.toContainText(
+      item.summary,
+    );
+    await expect(page.locator(".job-facts")).toContainText(
+      "Review countNot recorded",
+    );
+    await expect(page.locator(".job-facts")).toContainText("Retry attempt1");
+  }
 });
 
 test("seven failed Agents produce one human PR card; superseded and completed jobs stay distinct", async ({

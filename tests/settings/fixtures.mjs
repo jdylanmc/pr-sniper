@@ -190,3 +190,77 @@ export const test = base.extend({
 });
 
 export { expect };
+
+export async function nativeCapacity(page, activeIds) {
+  await page.addInitScript((activeIds) => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__activeIds = activeIds;
+    window.__stoppingIds = [];
+    window.__capacityUnavailable = false;
+    window.__TAURI_INTERNALS__.invoke = (command, args) => {
+      if (command === "automation_snapshot") {
+        if (window.__capacityUnavailable)
+          return Promise.reject("Synthetic capacity failure");
+        return original("fixture_capacity_snapshot", {
+          activeIds: window.__activeIds,
+          stoppingIds: window.__stoppingIds,
+        });
+      }
+      return original(command, args);
+    };
+  }, activeIds);
+}
+
+export async function captureInspector(page, name) {
+  const directory = join(target, "visual-correction-1");
+  await mkdir(directory, { recursive: true });
+  await page.setViewportSize({ width: 408, height: 744 });
+  await page.locator(".panel-content").evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  await expect(page.locator("[data-panel-heading]")).toHaveText("Job details");
+  await expect(page.locator(".panel-art")).toBeVisible();
+  await expect(page.locator("[data-monitor-detail]")).toHaveCount(1);
+  await expect(page.locator("[data-work-context]")).toHaveCount(1);
+  await expect(page.locator(".job-provider-link")).toBeVisible();
+  await page.screenshot({ path: join(directory, `${name}.png`) });
+  const configuration = page.locator(
+    "[data-work-context] > .work-configuration",
+  );
+  await configuration.evaluate((element) =>
+    element.scrollIntoView({ block: "start" }),
+  );
+  await page.screenshot({ path: join(directory, `${name}-configuration.png`) });
+  await page.locator(".panel-content").evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.setViewportSize({ width: 320, height: 300 });
+  await expect(page.locator(".job-hero")).toBeInViewport();
+  await expect(page.locator("[data-panel-navigation]")).toBeInViewport();
+  await expect(
+    page.getByRole("button", { name: "Back", exact: true }),
+  ).toBeInViewport();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  for (const spinner of await page.locator(".job-hero .work-spin").all())
+    expect(
+      await spinner.evaluate(
+        (element) => getComputedStyle(element).animationName,
+      ),
+    ).toBe("none");
+  await page.screenshot({
+    path: join(directory, `${name}-320x300-reduced.png`),
+  });
+  await page
+    .locator("[data-work-context] > .work-configuration summary")
+    .first()
+    .focus();
+  await expect(
+    page.locator("[data-work-context] > .work-configuration summary").first(),
+  ).toBeInViewport();
+  await page.setViewportSize({ width: 408, height: 744 });
+}

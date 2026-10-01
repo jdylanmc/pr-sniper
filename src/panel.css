@@ -130,14 +130,19 @@
   opacity: 0.8;
   pointer-events: none;
 }
-.panel-shell[data-detail="true"] .panel-art {
+.panel-shell[data-detail="true"]:not([data-evidence="job"]) .panel-art {
   display: none;
 }
-.panel-shell[data-detail="true"] .panel-context {
+.panel-shell[data-detail="true"]:not([data-evidence="job"]) .panel-context {
   padding-bottom: 18px;
 }
 .panel-shell [data-panel-back] {
-  padding: 5px 7px;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  padding: 5px;
   color: white;
   background: #ffffff12;
   font-size: 12px;
@@ -303,6 +308,134 @@
 }
 .panel-shell [data-monitor-detail] button {
   font-size: 12px;
+}
+.panel-shell[data-evidence="job"] .panel-content {
+  position: relative;
+  margin-top: -23px;
+}
+.panel-shell :is([data-work-context], [data-item-evidence]) {
+  margin-top: 0;
+}
+.panel-shell .detail-hero {
+  margin: 0;
+  padding: 18px;
+  border: 1px solid #e1e8ed;
+  border-radius: 14px;
+  background: white;
+}
+.panel-shell .detail-hero h2 {
+  margin: 13px 0 0;
+  font-size: 22px;
+  line-height: 1.25;
+  font-weight: 650;
+  letter-spacing: -0.55px;
+  overflow-wrap: anywhere;
+}
+.panel-shell .detail-hero > p {
+  margin: 12px 0 10px;
+  font-size: 11px;
+  color: var(--panel-muted);
+}
+.job-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--panel-muted);
+}
+.job-status > span:last-child {
+  margin-left: auto;
+  font-size: 10px;
+  text-align: right;
+}
+[data-job-state="running"] .job-status {
+  color: #94501f;
+}
+[data-job-state="done"] .job-status {
+  color: #22665e;
+}
+.job-marker {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border: 1.5px solid currentColor;
+  border-radius: 3px;
+}
+.panel-shell .job-provider-link {
+  display: block;
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: var(--panel-navy);
+  color: white;
+  font-weight: 650;
+}
+.job-provider-link::after {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 12px;
+  border-top: 1px solid currentColor;
+  border-right: 1px solid currentColor;
+  transform: rotate(45deg);
+}
+.panel-shell
+  :is(
+    .detail-section,
+    [data-work-context] > .work-configuration,
+    section.review-run
+  ) {
+  margin: 0 0 12px;
+  padding: 15px;
+  border: 1px solid #e3e9ee;
+  border-radius: 12px;
+  background: white;
+}
+.panel-shell .detail-section h3 {
+  margin: 0 0 11px;
+  font-size: 13px;
+}
+.context-list {
+  display: grid;
+  grid-template-columns: 1fr 1.15fr;
+  gap: 8px 10px;
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.5;
+}
+.context-list dt {
+  color: var(--panel-muted, #52647b);
+}
+.context-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.panel-shell :is(.detail-section, .work-configuration) p {
+  color: var(--panel-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.work-configuration > summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 650;
+}
+.work-configuration h4 {
+  margin: 14px 0 6px;
+  font-size: 12px;
+}
+.configuration-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.panel-shell [data-work-context] > details:not(.work-configuration) {
+  margin: 12px 0;
+  overflow-wrap: anywhere;
+}
+.panel-shell [hidden] .work-spin {
+  animation: none;
 }
 .work-caption {
   margin: 0 2px 10px;
@@ -612,7 +745,8 @@
     padding: 3px;
   }
   .panel-context,
-  .panel-shell[data-detail="true"] .panel-context {
+  .panel-shell[data-detail="true"] .panel-context,
+  .panel-shell[data-detail="true"]:not([data-evidence="job"]) .panel-context {
     padding: 4px 10px 8px;
   }
   .panel-context h1 {
@@ -620,6 +754,9 @@
   }
   .panel-art {
     display: none;
+  }
+  .panel-shell[data-evidence="job"] .panel-content {
+    margin-top: 0;
   }
   .panel-summary {
     margin: 0 10px 5px;

@@ -43,6 +43,7 @@ export function renderActions(
   status: ActionStatus,
   showError: (value: string) => void,
   refresh: () => Promise<void>,
+  configuration = true,
 ) {
   const section = document.createElement("section");
   section.className = "review-run";
@@ -94,13 +95,14 @@ export function renderActions(
     const state = document.createElement("p");
     state.textContent = `Primary final full review: ${final.execution.phase}. State: ${final.execution.operation.state}; attempt ${final.execution.operation.attempt_count}; queue order ${final.enqueue_order}. This is separate from provider approval and personal review.`;
     section.append(state);
-    renderConfiguration(
-      section,
-      final.execution.operation.attempt_count > 0
-        ? "Captured final execution configuration"
-        : "Planned final configuration (bound to this final request)",
-      final.execution.selection,
-    );
+    if (configuration)
+      renderConfiguration(
+        section,
+        final.execution.operation.attempt_count > 0
+          ? "Captured final execution configuration"
+          : "Planned final configuration (bound to this final request)",
+        final.execution.selection,
+      );
     if (final.execution.result) {
       const guide = document.createElement("details");
       const summary = document.createElement("summary");
