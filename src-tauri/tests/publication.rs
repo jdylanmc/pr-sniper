@@ -278,6 +278,7 @@ struct Fixture {
     fail_save_after_writes: Option<usize>,
     move_head_during_prepare: bool,
     fail_inspection: Option<usize>,
+    pause_after_mutation: Option<Mutation>,
 }
 
 impl Fixture {
@@ -300,6 +301,7 @@ impl Fixture {
             fail_save_after_writes: None,
             move_head_during_prepare: false,
             fail_inspection: None,
+            pause_after_mutation: None,
         }
     }
     fn run(&mut self, run: &mut Publication) -> Result<(), Failure> {
@@ -331,6 +333,12 @@ impl Fixture {
 }
 
 impl Environment for Fixture {
+    fn paused(&self) -> Result<bool, Failure> {
+        self.store
+            .load_automation()
+            .map(|s| s.paused)
+            .map_err(Failure::permanent)
+    }
     fn now(&self) -> Result<i64, Failure> {
         Ok(self.now)
     }
@@ -374,7 +382,7 @@ impl Environment for Fixture {
                 }
             }
         }
-        Ok(publication::evaluate_gate(
+        let mut gate = publication::evaluate_gate(
             &self.settings,
             run,
             Some(&self.job),
@@ -382,7 +390,11 @@ impl Environment for Fixture {
             self.active,
             self.can_comment,
             self.cancelled,
-        ))
+        );
+        if let Err(error) = pr_sniper_lib::capacity::publication_gate(&self.store) {
+            gate.stop = Some(error);
+        }
+        Ok(gate)
     }
     fn prepare(&mut self, run: &Publication) -> Result<Batch, Failure> {
         if self.move_head_during_prepare {
@@ -395,6 +407,10 @@ impl Environment for Fixture {
         GithubClient::new(self.wire.clone()).reconcile_publication(run)
     }
     fn mutate(&mut self, run: &Publication, mutation: Mutation) -> Result<Receipt, WriteFailure> {
+        pr_sniper_lib::capacity::publication_gate(&self.store).map_err(|error| WriteFailure {
+            failure: Failure::permanent(error),
+            uncertain: false,
+        })?;
         let gate = self.inspect(run).unwrap();
         if mutation != Mutation::Discard {
             if let Some(reason) = gate.stop {
@@ -404,12 +420,83 @@ impl Environment for Fixture {
                 });
             }
         }
-        GithubClient::new(self.wire.clone()).mutate_publication(run, mutation)
+        let result = GithubClient::new(self.wire.clone()).mutate_publication(run, mutation);
+        if self.pause_after_mutation == Some(mutation) {
+            self.store
+                .save_automation(&pr_sniper_lib::capacity::Automation { paused: true })
+                .unwrap();
+        }
+        result
     }
     fn requeue(&mut self, _run: &Publication) -> Result<(), Failure> {
         self.requeues += 1;
         Ok(())
     }
+}
+
+#[test]
+fn pausing_during_a_lost_submit_keeps_the_receipt_and_never_sends_a_replacement() {
+    let mut fixture = Fixture::new();
+    fixture.pause_after_mutation = Some(Mutation::Submit);
+    fixture.wire.0.lock().unwrap().fault = Some((Mutation::Submit, Fault::After));
+    let mut run = publication();
+    assert!(fixture.run(&mut run).is_err());
+    assert!(fixture.store.load_automation().unwrap().paused);
+    assert_eq!(fixture.visible(), 1);
+    assert_eq!(fixture.writes(), 2);
+    assert!(run.uncertain);
+    let id = run.id.clone();
+    fixture
+        .store
+        .save_automation(&pr_sniper_lib::capacity::Automation { paused: false })
+        .unwrap();
+    let mut restored = fixture.resume();
+    restored.retry(false, fixture.now).unwrap();
+    fixture.run(&mut restored).unwrap();
+    assert_eq!(restored.id, id);
+    assert_eq!(
+        restored.receipts.last().unwrap().state,
+        RemoteState::Commented
+    );
+    assert_eq!(fixture.writes(), 2);
+    assert_eq!(fixture.visible(), 1);
+}
+
+#[test]
+fn pause_after_creating_pending_comments_does_not_undo_or_replace_the_remote_batch() {
+    let mut fixture = Fixture::new();
+    fixture.pause_after_mutation = Some(Mutation::Create);
+    let mut run = publication();
+    fixture.run(&mut run).unwrap();
+    assert_eq!(run.operation.state, OperationState::Interrupted);
+    assert_eq!(fixture.writes(), 1);
+    assert_eq!(run.receipts.last().unwrap().state, RemoteState::Pending);
+    let receipt = run.receipts[0].review_id.clone();
+    fixture
+        .store
+        .save_automation(&pr_sniper_lib::capacity::Automation { paused: false })
+        .unwrap();
+    run.retry(false, 101).unwrap();
+    fixture.now = 101;
+    fixture.run(&mut run).unwrap();
+    assert_eq!(
+        run.operation.pending_review_id.as_deref(),
+        Some(receipt.as_str())
+    );
+    assert_eq!(
+        fixture
+            .wire
+            .0
+            .lock()
+            .unwrap()
+            .writes
+            .iter()
+            .filter(|(method, path, _)| method == "POST" && !path.ends_with("/events"))
+            .count(),
+        1
+    );
+    assert_eq!(run.receipts.last().unwrap().state, RemoteState::Commented);
+    assert_eq!(fixture.writes(), 2);
 }
 
 fn publication() -> Publication {

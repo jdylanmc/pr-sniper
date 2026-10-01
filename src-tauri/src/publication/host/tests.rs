@@ -73,6 +73,35 @@ fn newer_local_attempt_blocks_automatic_publication_of_the_older_result() {
 }
 
 #[test]
+fn paused_host_neither_launches_new_batches_nor_resets_pending_reconciliation() {
+    let (_root, store, review) = fixture();
+    let mut publication = Publication::new(review.clone(), true, false, 100).unwrap();
+    publication.uncertain = true;
+    publication.operation.attempt_count = 1;
+    publication.operation.next_attempt_at = Some(120);
+    store
+        .save_publications(std::slice::from_ref(&publication))
+        .unwrap();
+    store
+        .save_automation(&crate::capacity::Automation { paused: true })
+        .unwrap();
+    assert!(next_candidate(&store, 121).unwrap().is_none());
+    assert!(prepare_launch(&store, &review.operation.id, true, 121).is_err());
+    assert_eq!(
+        store.load_publications().unwrap(),
+        vec![publication.clone()]
+    );
+    store
+        .save_automation(&crate::capacity::Automation { paused: false })
+        .unwrap();
+    assert!(next_candidate(&store, 121).unwrap().is_some());
+    assert_eq!(
+        prepare_launch(&store, &review.operation.id, false, 121).unwrap(),
+        publication
+    );
+}
+
+#[test]
 fn uncertain_publication_reserves_revision_even_after_another_result_appears() {
     let (_root, store, review) = fixture();
     let mut publication = Publication::new(review.clone(), true, false, 100).unwrap();

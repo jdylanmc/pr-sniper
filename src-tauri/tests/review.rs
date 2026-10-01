@@ -286,6 +286,7 @@ fn durable_review_uses_shared_retry_budget_and_restores_without_new_identity() {
     let mut operation = JobOperation::review(&restored.job, 100);
     operation.begin_attempt(100).unwrap();
     let failure = Failure {
+        cancelled: false,
         kind: OperationFailure::RateLimited,
         message: "Rate limited".into(),
         retry_after_seconds: Some(900),
@@ -293,7 +294,11 @@ fn durable_review_uses_shared_retry_budget_and_restores_without_new_identity() {
     operation.fail(&failure.monitoring(), 100);
     assert_eq!(operation.state, OperationState::ManualRetry);
     let mut boundary = JobOperation::review(&restored.job, 100);
-    assert!(boundary.begin_attempt(1000).is_err());
+    boundary.begin_attempt(1000).unwrap();
+    assert_eq!(boundary.initial_attempt_at, 1000);
+    assert_eq!(boundary.retry_deadline, 1900);
+    boundary.fail(&Failure::timeout().monitoring(), 1001);
+    assert!(boundary.begin_attempt(1900).is_err());
     assert_eq!(boundary.state, OperationState::ManualRetry);
 }
 

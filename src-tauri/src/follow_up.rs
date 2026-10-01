@@ -303,6 +303,13 @@ pub fn restore(store: &Store) -> Result<(), String> {
             .flatten()
         {
             if operation.state == OperationState::Running {
+                if operation.interruption.is_some() {
+                    operation.requeue_intentional(0);
+                    run.result = None;
+                    run.phase = Phase::WaitingStart;
+                    changed = true;
+                    continue;
+                }
                 operation.state = OperationState::Interrupted;
                 operation.next_attempt_at = Some(0);
                 changed = true;
@@ -366,6 +373,7 @@ pub fn publish(env: &mut impl Environment, run: &mut FollowUp) -> Result<(), Fai
             env.save(run)?;
         } else if run.uncertain || run.receipt.is_some() {
             return Err(Failure {
+                cancelled: false,
                 kind: OperationFailure::Network,
                 message: "Reply outcome is unresolved; no replacement reply will be posted.".into(),
                 retry_after_seconds: None,

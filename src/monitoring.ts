@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { mountAutomation } from "./automation";
 import { renderFollowUps, type FollowUpCandidate } from "./follow-up";
 import {
   openDestination,
@@ -113,6 +114,7 @@ interface ReviewCandidate {
   blocked: string | null;
   planned_selection?: import("./resources").ReviewSelection | null;
   run: {
+    trust_confirmed?: boolean;
     phase: string;
     error: string | null;
     selection: import("./resources").ReviewSelection;
@@ -215,6 +217,7 @@ export function renderMonitoring(
   showError: (message: string) => void,
 ) {
   root.innerHTML = `<div class="actions"><button id="check-now" type="button">Check Now</button><button id="queue-settings" type="button">Open Settings</button><button id="queue-diagnostics" type="button">Open Diagnostics</button></div>
+    <section id="automation-controls"></section>
     <h2>Your review inbox</h2><section id="handoff-queue"></section>
     <h2 id="evidence-heading" tabindex="-1">Review evidence and actions</h2>
     <p>Monitoring and assigned reviews run while the ${trayAdjective} app is active. Copilot uses read-only tools. GitHub comments require a separate publication gate; machine sign-off is not approval.</p>
@@ -225,6 +228,9 @@ export function renderMonitoring(
     <h2>Schedule health</h2><section id="schedule-health"></section>
     <h2>Detected pull requests</h2><section id="review-jobs"></section>`;
   const check = root.querySelector<HTMLButtonElement>("#check-now")!;
+  const refreshAutomation = mountAutomation(
+    root.querySelector<HTMLElement>("#automation-controls")!,
+  );
   const health = root.querySelector<HTMLElement>("#schedule-health")!;
   const jobs = root.querySelector<HTMLElement>("#review-jobs")!;
   const reviews = root.querySelector<HTMLElement>("#agent-reviews")!;
@@ -491,9 +497,6 @@ export function renderMonitoring(
         "No assigned reviews. Configure an Agent with a Copilot account and model, assign it to a repository, then detect an eligible revision.";
       return;
     }
-    const running = (snapshot?.reviews ?? candidates).some(
-      (c) => c.run?.operation.state === "running",
-    );
     for (const candidate of candidates) {
       const row = document.createElement("article");
       row.className = "review-run";
@@ -513,7 +516,7 @@ export function renderMonitoring(
       }
       const state = document.createElement("p");
       state.textContent = run
-        ? `${run.phase}. State: ${run.operation.state}; attempt ${run.operation.attempt_count}; deadline ${time(run.operation.retry_deadline)}. Copilot account: ${run.selection.agent.ai_account?.account_id ?? "not captured"}; model: ${run.selection.agent.model}.`
+        ? `${run.phase}. State: ${run.operation.state}; attempt ${run.operation.attempt_count}; deadline ${run.operation.attempt_count === 0 ? "starts at first execution" : time(run.operation.retry_deadline)}. Copilot account: ${run.selection.agent.ai_account?.account_id ?? "not captured"}; model: ${run.selection.agent.model}.`
         : (candidate.blocked ??
           (candidate.trust_required
             ? "Trust confirmation required for this exact revision."
@@ -649,6 +652,8 @@ export function renderMonitoring(
         if (publication) renderPublication(row, candidate, publication);
       } else if (!candidate.blocked) {
         const isRunning = run?.operation.state === "running";
+        const isQueued =
+          !!run && ["queued", "interrupted"].includes(run.operation.state);
         let consent: HTMLInputElement | undefined;
         if (candidate.trust_required && !isRunning) {
           const label = document.createElement("label");
@@ -665,15 +670,19 @@ export function renderMonitoring(
         button.type = "button";
         button.textContent = isRunning
           ? "Cancel review"
-          : run
-            ? "Retry review"
-            : "Start review";
+          : isQueued
+            ? "Cancel queued review"
+            : run
+              ? "Retry review"
+              : "Start review";
         const updateDisabled = () => {
           button.disabled =
             pending.has(candidate.key) ||
             (!isRunning &&
-              (running ||
-                (candidate.trust_required && !trust.has(candidate.key))));
+              !isQueued &&
+              candidate.trust_required &&
+              !run?.trust_confirmed &&
+              !trust.has(candidate.key));
         };
         consent?.addEventListener("change", () => {
           if (consent.checked) trust.add(candidate.key);
@@ -683,7 +692,7 @@ export function renderMonitoring(
         updateDisabled();
         button.addEventListener("click", () => {
           button.disabled = true;
-          void act(candidate, isRunning);
+          void act(candidate, isRunning || isQueued);
         });
         row.append(button);
       }
@@ -696,6 +705,7 @@ export function renderMonitoring(
     loading = true;
     try {
       snapshot = await invoke<MonitoringSnapshot>("monitoring_snapshot");
+      void refreshAutomation();
       if (snapshot.items) queue(snapshot.items);
       renderEvidence();
       health.replaceChildren();

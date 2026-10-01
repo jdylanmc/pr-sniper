@@ -324,6 +324,7 @@ struct Fixture {
     now: i64,
     fail_save: bool,
     withdrawn: bool,
+    pause_after_reply: bool,
 }
 impl Fixture {
     fn new() -> Self {
@@ -335,6 +336,7 @@ impl Fixture {
             now: 100,
             fail_save: false,
             withdrawn: false,
+            pause_after_reply: false,
             wire: Wire(Arc::new(Mutex::new(Server {
                 threads: vec![thread()],
                 writes: 0,
@@ -383,6 +385,9 @@ impl Environment for Fixture {
             .ok_or_else(|| Failure::permanent("Thread missing."))
     }
     fn gate(&mut self, run: &FollowUp, current: &Thread) -> Result<Option<String>, Failure> {
+        if let Err(error) = pr_sniper_lib::capacity::publication_gate(&self.store) {
+            return Ok(Some(error));
+        }
         if !run.fresh_thread(current) {
             return Ok(Some("Thread changed or resolved.".into()));
         }
@@ -419,12 +424,40 @@ impl Environment for Fixture {
                 uncertain: false,
             });
         }
-        GithubClient::new(self.wire.clone()).reply_to_thread(
+        let result = GithubClient::new(self.wire.clone()).reply_to_thread(
             &self.origin,
             "100",
             run.body.as_deref().unwrap(),
-        )
+        );
+        if self.pause_after_reply {
+            self.store
+                .save_automation(&pr_sniper_lib::capacity::Automation { paused: true })
+                .unwrap();
+        }
+        result
     }
+}
+
+#[test]
+fn pause_during_lost_reply_response_retains_the_original_intent_and_reconciles_once() {
+    let mut fixture = Fixture::new();
+    let mut run = prepared(&fixture.origin);
+    fixture.pause_after_reply = true;
+    fixture.wire.0.lock().unwrap().fault = Some(Fault::After);
+    assert!(follow_up::publish(&mut fixture, &mut run).is_err());
+    assert!(run.uncertain);
+    assert_eq!(fixture.writes(), 1);
+    assert!(fixture.store.load_automation().unwrap().paused);
+    let id = run.id.clone();
+    fixture
+        .store
+        .save_automation(&pr_sniper_lib::capacity::Automation { paused: false })
+        .unwrap();
+    let mut restored = fixture.resume();
+    follow_up::publish(&mut fixture, &mut restored).unwrap();
+    assert_eq!(restored.id, id);
+    assert_eq!(restored.receipt.as_deref(), Some("200"));
+    assert_eq!(fixture.writes(), 1);
 }
 
 #[test]

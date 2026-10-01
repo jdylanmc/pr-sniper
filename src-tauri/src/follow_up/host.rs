@@ -238,6 +238,9 @@ impl Coordinator {
                 .lock()
                 .map_err(|_| "Thread storage unavailable.")?;
             let now = now_seconds()?;
+            if store.load_automation()?.paused {
+                return Ok(());
+            }
             candidates(&store)?.into_iter().find_map(|candidate| {
                 let run = &candidate.run;
                 let due = |op: &JobOperation| {
@@ -249,14 +252,8 @@ impl Coordinator {
                 if run.publication.as_ref().is_some_and(due) {
                     return Some((run.id.clone(), true));
                 }
-                if run.analysis.as_ref().is_some_and(due) {
-                    return Some((run.id.clone(), false));
-                }
                 if candidate.blocked.is_some() || run.cancelled {
                     return None;
-                }
-                if run.analysis.is_none() && candidate.automatic_start {
-                    return Some((run.id.clone(), false));
                 }
                 if run.phase == Phase::WaitingPublication
                     && run.publication.is_none()
@@ -278,6 +275,16 @@ impl Coordinator {
         if host.quitting.load(Ordering::SeqCst) {
             return Err("PR Sniper is quitting.".into());
         }
+        if !publish {
+            {
+                let store = host
+                    .store
+                    .lock()
+                    .map_err(|_| "Thread storage unavailable.")?;
+                request_analysis(&store, id, manual, now_seconds()?)?;
+            }
+            return crate::capacity::Coordinator::pump(app);
+        }
         let mut active = host
             .follow_ups
             .active
@@ -295,6 +302,9 @@ impl Coordinator {
                 .store
                 .lock()
                 .map_err(|_| "Thread storage unavailable.")?;
+            if store.load_automation()?.paused {
+                return Err("Automation is paused. Resume before starting publication; existing receipts are retained.".into());
+            }
             let candidate = candidates(&store)?
                 .into_iter()
                 .find(|c| c.run.id == id)
@@ -335,15 +345,6 @@ impl Coordinator {
                         run.body = Some(run.reply_body().map_err(|e| e.message)?);
                     }
                 }
-            } else {
-                prepare_analysis(
-                    &store,
-                    &mut run,
-                    candidate.blocked,
-                    candidate.automatic_start,
-                    manual,
-                    now,
-                )?;
             }
             if manual {
                 run.cancelled = false;
@@ -369,6 +370,7 @@ impl Coordinator {
                         app: worker,
                         generation,
                         cancelled,
+                        cancelled_read: Arc::new(AtomicBool::new(false)),
                     };
                     super::publish(&mut native, &mut run)
                 })
@@ -380,15 +382,6 @@ impl Coordinator {
                     }
                     _ => {}
                 }
-            } else {
-                let mut native = Native {
-                    app: app.clone(),
-                    generation,
-                    cancelled,
-                };
-                if let Err(error) = analyze(&mut native, &mut run).await {
-                    crate::report(&app, error.message);
-                }
             }
             match app.state::<Host>().follow_ups.active.lock() {
                 Ok(mut active) => *active = None,
@@ -399,7 +392,7 @@ impl Coordinator {
     }
 }
 
-fn prepare_analysis(
+pub(crate) fn prepare_analysis(
     store: &Store,
     run: &mut FollowUp,
     blocked: Option<String>,
@@ -416,7 +409,22 @@ fn prepare_analysis(
     if let Some(error) = blocked {
         return Err(error);
     }
-    if run.analysis.is_none() || manual {
+    if run
+        .analysis
+        .as_ref()
+        .is_some_and(|op| op.state == OperationState::Running)
+    {
+        return Err("This analysis is running or stopping; wait for teardown.".into());
+    }
+    if run.analysis.is_none()
+        || manual
+            && run.analysis.as_ref().is_some_and(|op| {
+                !matches!(
+                    op.state,
+                    OperationState::Queued | OperationState::Interrupted
+                )
+            })
+    {
         if !automatic_start && !manual {
             return Err("Explicit follow-up start is required.".into());
         }
@@ -436,7 +444,110 @@ fn prepare_analysis(
         run.analysis = Some(run.operation("thread_analysis", now));
         run.manual_start = manual;
     }
+    run.manual_start |= manual;
     Ok(())
+}
+
+pub(crate) fn request_analysis(
+    store: &Store,
+    id: &str,
+    manual: bool,
+    now: i64,
+) -> Result<FollowUp, String> {
+    let candidate = candidates(store)?
+        .into_iter()
+        .find(|c| c.run.id == id)
+        .ok_or("Thread follow-up disappeared.")?;
+    let mut run = candidate.run;
+    prepare_analysis(
+        store,
+        &mut run,
+        candidate.blocked,
+        candidate.automatic_start,
+        manual,
+        now,
+    )?;
+    if manual {
+        run.cancelled = false;
+    }
+    run.error = None;
+    save_to_store(store, &run)?;
+    Ok(run)
+}
+
+pub(crate) fn prepare_dispatch(store: &Store, id: &str, now: i64) -> Result<FollowUp, String> {
+    let mut run = request_analysis(store, id, false, now)?;
+    let result = run
+        .analysis
+        .as_mut()
+        .ok_or("Reply analysis missing.")?
+        .begin_ai_attempt(now);
+    if let Err(error) = result {
+        run.error = Some(error.clone());
+        save_to_store(store, &run)?;
+        return Err(error);
+    }
+    run.phase = Phase::Analyzing;
+    save_to_store(store, &run)?;
+    Ok(run)
+}
+
+pub(crate) fn launch_analysis_worker(
+    app: &tauri::AppHandle,
+    mut run: FollowUp,
+    cancelled: Arc<AtomicBool>,
+) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let outcome = async {
+            let generation = app
+                .state::<Host>()
+                .github_generations
+                .lock()
+                .map_err(|_| Failure::permanent("GitHub coordination unavailable."))?
+                .get(&run.review.job.account_id)
+                .copied()
+                .unwrap_or(0);
+            let mut native = Native {
+                app: app.clone(),
+                generation,
+                cancelled,
+                cancelled_read: Arc::new(AtomicBool::new(false)),
+            };
+            analyze(&mut native, &mut run).await
+        }
+        .await;
+        if let Err(error) = outcome {
+            crate::report(&app, error.message);
+        }
+        // Persistence failure leaves the reservation visibly owned, never replayed.
+        let saved = app
+            .state::<Host>()
+            .store
+            .lock()
+            .map_err(|_| "Thread storage unavailable.".to_string())
+            .and_then(|s| s.load_follow_ups())
+            .is_ok_and(|runs| {
+                runs.iter()
+                    .find(|r| r.id == run.id)
+                    .and_then(|r| r.analysis.as_ref())
+                    .is_some_and(|op| op.state != OperationState::Running)
+            });
+        if saved {
+            crate::capacity::refill(
+                &app,
+                &crate::capacity::WorkId {
+                    kind: crate::capacity::Kind::Reply,
+                    id: run.id,
+                },
+                &run.analysis.as_ref().expect("dispatched analysis").id,
+            );
+        } else if let Some(op) = &run.analysis {
+            if let Err(error) = app.state::<Host>().ai.persistence_failed(&op.id) {
+                crate::report(&app, error);
+            }
+        }
+    });
 }
 
 fn save_to_store(store: &Store, run: &FollowUp) -> Result<(), String> {
@@ -451,7 +562,7 @@ fn save_to_store(store: &Store, run: &FollowUp) -> Result<(), String> {
 
 fn connection_gate(host: &Host, account: &str, generation: u64) -> Result<(), Failure> {
     if host.quitting.load(Ordering::SeqCst) {
-        return Err(Failure::permanent("Thread work interrupted by shutdown."));
+        return Err(Failure::cancelled());
     }
     if host
         .github_generations
@@ -476,9 +587,19 @@ struct Native {
     app: tauri::AppHandle,
     generation: u64,
     cancelled: Arc<AtomicBool>,
+    cancelled_read: Arc<AtomicBool>,
 }
 
 impl Native {
+    fn read_failure(&self, error: github::ConnectionError) -> Failure {
+        if error == github::ConnectionError::Configuration
+            && self.cancelled_read.load(Ordering::SeqCst)
+        {
+            Failure::cancelled()
+        } else {
+            error.into()
+        }
+    }
     fn origin(&self, run: &FollowUp) -> Result<Publication, Failure> {
         self.app
             .state::<Host>()
@@ -514,6 +635,10 @@ impl Native {
                 native.generation,
             )
             .map_err(|_| github::ConnectionError::Configuration)?;
+            if snapshot.publication.is_none() && native.cancelled.load(Ordering::SeqCst) {
+                native.cancelled_read.store(true, Ordering::SeqCst);
+                return Err(github::ConnectionError::Configuration);
+            }
             let operation = snapshot
                 .publication
                 .as_ref()
@@ -534,7 +659,7 @@ impl Native {
             self.generation,
         )?;
         if self.cancelled.load(Ordering::SeqCst) {
-            return Err(Failure::permanent("Thread follow-up cancelled."));
+            return Err(Failure::cancelled());
         }
         let host = self.app.state::<Host>();
         let store = host
@@ -546,6 +671,9 @@ impl Native {
 }
 
 fn local_gate(store: &Store, run: &FollowUp) -> Result<(), Failure> {
+    if run.publication.is_some() {
+        crate::capacity::publication_gate(store).map_err(Failure::permanent)?;
+    }
     let current = store
         .load_follow_ups()
         .map_err(Failure::permanent)?
@@ -607,7 +735,7 @@ impl Environment for Native {
             .into_iter()
             .find(|r| r.id == run.id)
             .ok_or_else(|| Failure::permanent("Thread follow-up disappeared."))?;
-        let failure = if accepting_analysis {
+        if accepting_analysis {
             let allowed = !host.quitting.load(Ordering::SeqCst)
                 && !self.cancelled.load(Ordering::SeqCst)
                 && generations.as_ref().is_some_and(|g| {
@@ -617,10 +745,22 @@ impl Environment for Native {
                     a.account_session_allowed(&run.review.job.account_id)
                         .is_ok()
                 });
-            super::validate_analysis_commit(&store, run, allowed).err()
-        } else {
-            None
-        };
+            let result = run
+                .result
+                .take()
+                .ok_or_else(|| Failure::permanent("Analysis result unavailable."))?;
+            return complete_analysis(&store, run, Ok(result), allowed, self.now()?);
+        }
+        if run.publication.is_none()
+            && run
+                .analysis
+                .as_ref()
+                .is_some_and(|op| op.state == OperationState::Running)
+        {
+            if let (Some(operation), Some(saved)) = (&mut run.analysis, &current.analysis) {
+                operation.interruption = saved.interruption;
+            }
+        }
         if current.cancelled {
             run.cancelled = true;
             run.confirmed = false;
@@ -633,24 +773,12 @@ impl Environment for Native {
                 }
             }
         }
-        if let Some(error) = &failure {
-            run.result = None;
-            run.phase = Phase::Stopped;
-            run.error = Some(error.message.clone());
-            run.analysis
-                .as_mut()
-                .unwrap()
-                .fail(&error.monitoring(), self.now()?);
-        }
-        save_to_store(&store, run).map_err(Failure::permanent)?;
-        match failure {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
+        save_to_store(&store, run).map_err(Failure::permanent)
     }
     fn thread(&mut self, run: &FollowUp) -> Result<Thread, Failure> {
         self.read_client(run)?
-            .owned_thread(&self.origin(run)?, &run.thread.id)?
+            .owned_thread(&self.origin(run)?, &run.thread.id)
+            .map_err(|e| self.read_failure(e))?
             .ok_or_else(|| Failure::permanent("The owned review thread is no longer available."))
     }
     fn gate(&mut self, run: &FollowUp, thread: &Thread) -> Result<Option<String>, Failure> {
@@ -660,11 +788,15 @@ impl Environment for Native {
             id: job.repository_id.clone(),
             name: job.repository_name.clone(),
         };
-        let connection = client.connect(&repo.name, Some(&job.account_id))?;
+        let connection = client
+            .connect(&repo.name, Some(&job.account_id))
+            .map_err(|e| self.read_failure(e))?;
         if connection.repository.id != repo.id {
             return Err(Failure::permanent("Repository identity changed."));
         }
-        let pull = client.review_pull(&repo, job.number)?;
+        let pull = client
+            .review_pull(&repo, job.number)
+            .map_err(|e| self.read_failure(e))?;
         let local = self.local(run);
         let host = self.app.state::<Host>();
         let store = host
@@ -770,16 +902,6 @@ impl Native {
 }
 
 async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure> {
-    if let Err(error) = run
-        .analysis
-        .as_mut()
-        .ok_or_else(|| Failure::permanent("Follow-up start was not authorized."))?
-        .begin_attempt(native.now()?)
-    {
-        run.error = Some(error.clone());
-        native.save(run)?;
-        return Err(Failure::permanent(error));
-    }
     run.phase = Phase::Analyzing;
     native.save(run)?;
     let result = async {
@@ -801,17 +923,19 @@ async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure>
                 current.thread = thread.clone();
             }
             if let Some(reason) = worker.gate(&current, &thread)? {
-                return Err(Failure::permanent(reason));
+                return Err(analysis_gate_failure(reason));
             }
             let client = worker.read_client(&current)?;
-            let context = client.review_context(
-                &RemoteRepository {
-                    id: current.review.job.repository_id.clone(),
-                    name: current.review.job.repository_name.clone(),
-                },
-                current.review.job.number,
-                &current.review.job.head_sha,
-            )?;
+            let context = client
+                .review_context(
+                    &RemoteRepository {
+                        id: current.review.job.repository_id.clone(),
+                        name: current.review.job.repository_name.clone(),
+                    },
+                    current.review.job.number,
+                    &current.review.job.head_sha,
+                )
+                .map_err(|e| worker.read_failure(e))?;
             if current
                 .review
                 .result
@@ -847,7 +971,7 @@ async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure>
                 let mut native = before_native.clone();
                 let thread = native.thread(&before_run)?;
                 match native.gate(&before_run, &thread)? {
-                    Some(reason) => Err(Failure::permanent(reason)),
+                    Some(reason) => Err(analysis_gate_failure(reason)),
                     None => Ok(()),
                 }
             }),
@@ -871,7 +995,7 @@ async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure>
         tauri::async_runtime::spawn_blocking(move || {
             let thread = final_native.thread(&final_run)?;
             match final_native.gate(&final_run, &thread)? {
-                Some(reason) => Err(Failure::permanent(reason)),
+                Some(reason) => Err(analysis_gate_failure(reason)),
                 None => Ok(()),
             }
         })
@@ -900,16 +1024,90 @@ async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure>
             native.save(run)
         }
         Err(error) => {
-            run.analysis
+            let host = native.app.state::<Host>();
+            let store = host
+                .store
+                .lock()
+                .map_err(|_| Failure::permanent("Thread storage unavailable."))?;
+            complete_analysis(&store, run, Err(error), false, native.now()?)
+        }
+    }
+}
+
+pub(crate) fn complete_analysis(
+    store: &Store,
+    run: &mut FollowUp,
+    outcome: Result<crate::review::ReviewResult<ReplyOutput>, Failure>,
+    account_allowed: bool,
+    now: i64,
+) -> Result<(), Failure> {
+    let current = store
+        .load_follow_ups()
+        .map_err(Failure::permanent)?
+        .into_iter()
+        .find(|r| r.id == run.id)
+        .ok_or_else(|| Failure::permanent("Thread follow-up disappeared."))?;
+    if current.analysis.as_ref().map(|o| &o.id) != run.analysis.as_ref().map(|o| &o.id) {
+        return Err(Failure::permanent(
+            "A newer analysis attempt owns this follow-up.",
+        ));
+    }
+    run.analysis = current.analysis;
+    if !current.cancelled
+        && run
+            .analysis
+            .as_mut()
+            .is_some_and(|op| crate::capacity::interrupted(op, outcome.as_ref().err(), now))
+    {
+        run.result = None;
+        run.error = None;
+        run.phase = Phase::WaitingStart;
+        return save_to_store(store, run).map_err(Failure::permanent);
+    }
+    let outcome = outcome.and_then(|result| {
+        super::validate_analysis_commit(store, run, account_allowed)?;
+        Ok(result)
+    });
+    match outcome {
+        Ok(result) => {
+            run.phase = match result.output.decision {
+                ReplyDecision::Reply => Phase::WaitingPublication,
+                ReplyDecision::Quiet => Phase::Quiet,
+                ReplyDecision::HumanInputRequired => Phase::HumanInputRequired,
+            };
+            run.result = Some(result);
+            let op = run
+                .analysis
                 .as_mut()
-                .unwrap()
-                .fail(&error.monitoring(), native.now()?);
+                .ok_or_else(|| Failure::permanent("Analysis operation missing."))?;
+            op.state = OperationState::Completed;
+            op.next_attempt_at = None;
+            op.failure = None;
+            op.ai_attempt = None;
+            op.interruption = None;
+            run.error = None;
+            save_to_store(store, run).map_err(Failure::permanent)
+        }
+        Err(error) => {
+            run.cancelled |= current.cancelled;
+            run.result = None;
             run.phase = Phase::Stopped;
             run.error = Some(error.message.clone());
-            run.result = None;
-            native.save(run)?;
+            run.analysis
+                .as_mut()
+                .ok_or_else(|| Failure::permanent("Analysis operation missing."))?
+                .fail(&error.monitoring(), now);
+            save_to_store(store, run).map_err(Failure::permanent)?;
             Err(error)
         }
+    }
+}
+
+fn analysis_gate_failure(reason: String) -> Failure {
+    if reason == Failure::cancelled().message {
+        Failure::cancelled()
+    } else {
+        Failure::permanent(reason)
     }
 }
 
@@ -948,6 +1146,9 @@ pub(crate) async fn cancel_follow_up(app: tauri::AppHandle, id: String) -> Resul
         run.cancelled = true;
         run.confirmed = false;
         run.error = Some("Thread follow-up cancelled.".into());
+        if let Some(operation) = &run.analysis {
+            host.ai.cancel(&operation.id)?;
+        }
         if let Some((_, cancelled)) = active.as_ref().filter(|(active, _)| active == &id) {
             cancelled.store(true, Ordering::SeqCst);
         } else {

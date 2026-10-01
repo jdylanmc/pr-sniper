@@ -127,3 +127,14 @@ Windows WebView2, tray behavior, or login-item integration. They never launch th
 application or changes host login settings. Tests run serially. Port 1421 must
 be free, or select another port with `SETTINGS_TEST_PORT=1422 npm run test:settings`
 for a separate worktree. An existing server is never reused.
+
+`capacity.spec.mjs` covers durable pause across queue/Settings, resource-isolated
+capacity saves, failed writes, honest stopping counts and manual admission while
+another job runs. Occupancy rendering uses explicit synthetic snapshots, not
+live inference. Native `capacity::tests` exercises the production reservation,
+candidate, preparation and completion paths with controlled worker completions:
+limits 1/4/20, mixed FIFO, concurrent manual requests, long initial waits, restart,
+pause/reduction, rapid resume and real failures racing cancellation. Existing
+restricted-runtime tests still verify owned process teardown. Provider tests
+inject pause during pending creation and a lost submit response, preserving
+original receipts and proving no duplicate batch is posted.

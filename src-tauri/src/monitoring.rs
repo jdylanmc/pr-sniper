@@ -52,6 +52,10 @@ pub enum OperationFailure {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JobOperation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_attempt: Option<AttemptBudget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interruption: Option<crate::capacity::Interruption>,
     pub id: String,
     pub provider: String,
     pub account_id: String,
@@ -72,6 +76,15 @@ pub struct JobOperation {
     pub owned_thread_id: Option<String>,
     pub triggering_external_comment_id: Option<String>,
     pub confirmed_receipt: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttemptBudget {
+    pub attempt_count: u8,
+    pub initial_attempt_at: i64,
+    pub retry_deadline: i64,
+    pub failure: Option<OperationFailure>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -787,6 +800,9 @@ impl Monitor {
         now: i64,
         check_now: bool,
     ) -> Result<Vec<PollTicket>, String> {
+        if store.load_automation()?.paused {
+            return Ok(Vec::new());
+        }
         let settings = store.load_settings()?;
         let previous = self.state.clone();
         let previous_leases = self.leases.clone();
@@ -2301,6 +2317,8 @@ fn start_poll_operation(
         }
     }
     health.operation = Some(JobOperation {
+        ai_attempt: None,
+        interruption: None,
         id: uuid::Uuid::new_v4().to_string(),
         provider: "github".into(),
         account_id: configuration
@@ -2340,7 +2358,33 @@ fn finish_failed_operation(health: &mut ScheduleHealth, error: &MonitoringError,
 }
 
 impl JobOperation {
+    pub fn begin_ai_attempt(&mut self, now: i64) -> Result<(), String> {
+        let budget = AttemptBudget {
+            attempt_count: self.attempt_count,
+            initial_attempt_at: self.initial_attempt_at,
+            retry_deadline: self.retry_deadline,
+            failure: self.failure.clone(),
+        };
+        self.begin_attempt(now)?;
+        self.ai_attempt = Some(budget);
+        self.interruption = None;
+        Ok(())
+    }
+
+    pub fn requeue_intentional(&mut self, now: i64) {
+        if let Some(budget) = self.ai_attempt.take() {
+            self.attempt_count = budget.attempt_count;
+            self.initial_attempt_at = budget.initial_attempt_at;
+            self.retry_deadline = budget.retry_deadline;
+            self.failure = budget.failure;
+        }
+        self.state = OperationState::Queued;
+        self.next_attempt_at = Some(now);
+    }
+
     pub fn fail(&mut self, error: &MonitoringError, now: i64) {
+        self.ai_attempt = None;
+        self.interruption = None;
         let operation = self;
         let failure = retryable_failure(error);
         operation.failure = Some(failure.clone());
@@ -2373,6 +2417,21 @@ impl JobOperation {
     }
 
     pub fn begin_attempt(&mut self, now: i64) -> Result<(), String> {
+        // Waiting for the first execution is not part of an AI retry window.
+        if self.attempt_count == 0
+            && self.failure.is_none()
+            && matches!(
+                self.operation_type.as_str(),
+                "copilot_review" | "primary_final_review" | "thread_analysis" | "mention_analysis"
+            )
+            && matches!(
+                self.state,
+                OperationState::Queued | OperationState::Interrupted
+            )
+        {
+            self.initial_attempt_at = now;
+            self.retry_deadline = now + RETRY_WINDOW_SECONDS;
+        }
         if now >= self.retry_deadline || self.attempt_count > MAX_RETRIES {
             self.state = OperationState::ManualRetry;
             self.next_attempt_at = None;
@@ -2393,6 +2452,8 @@ impl JobOperation {
 
     pub fn review(job: &QueueJob, now: i64) -> Self {
         Self {
+            ai_attempt: None,
+            interruption: None,
             id: uuid::Uuid::new_v4().to_string(),
             provider: job.provider.clone(),
             account_id: job.account_id.clone(),

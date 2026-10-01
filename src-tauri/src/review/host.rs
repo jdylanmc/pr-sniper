@@ -8,16 +8,11 @@ use serde::Serialize;
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc,
     },
     time::{Duration, Instant},
 };
 use tauri::Manager;
-
-#[derive(Default)]
-pub(crate) struct Coordinator {
-    active: Mutex<Option<(String, Arc<AtomicBool>)>>,
-}
 
 #[derive(Serialize)]
 pub(crate) struct Candidate {
@@ -110,253 +105,203 @@ pub(crate) fn candidates(store: &crate::storage::Store) -> Result<Vec<Candidate>
     Ok(result)
 }
 
-impl Coordinator {
-    pub(crate) fn cancel_all(&self) {
-        if let Ok(active) = self.active.lock() {
-            if let Some((_, cancelled)) = active.as_ref() {
-                cancelled.store(true, Ordering::SeqCst);
-            }
-        }
+pub(crate) fn request(
+    store: &crate::storage::Store,
+    candidate_key: &str,
+    manual: bool,
+    confirm_trust: bool,
+    now: i64,
+) -> Result<ReviewRun, String> {
+    let settings = store.load_settings()?;
+    let candidate = candidates(store)?
+        .into_iter()
+        .find(|c| c.key == candidate_key)
+        .ok_or("This review candidate is no longer available.")?;
+    if let Some(error) = candidate.blocked {
+        return Err(error);
     }
-
-    pub(crate) fn finished(&self) -> bool {
-        self.active.lock().is_ok_and(|a| a.is_none())
+    let selection = Selection::resolve(&settings, &candidate.job, &candidate.assignment_id)?;
+    if !manual
+        && !selection.policy.automatic_agent_start
+        && candidate.run.as_ref().is_none_or(|r| !r.manual_start)
+    {
+        return Err("Automatic start is disabled; explicitly start this review.".into());
     }
-
-    pub(crate) fn pump(app: &tauri::AppHandle) -> Result<(), String> {
-        let host = app.state::<Host>();
-        if host.quitting.load(Ordering::SeqCst) || !host.reviews.finished() {
-            return Ok(());
-        }
-        let next = {
-            let active = host
-                .reviews
-                .active
-                .lock()
-                .map_err(|_| "Review execution is unavailable.")?;
-            if active.is_some() {
-                return Ok(());
-            }
-            let store = host
-                .store
-                .lock()
-                .map_err(|_| "Review storage is unavailable.")?;
-            super::restore(&store)?;
-            let settings = store.load_settings()?;
-            candidates(&store)?.into_iter().find(|candidate| {
-                if candidate.blocked.is_some() {
-                    return false;
-                }
-                let Ok(selection) =
-                    Selection::resolve(&settings, &candidate.job, &candidate.assignment_id)
-                else {
-                    return false;
-                };
-                match &candidate.run {
-                    None => selection.policy.automatic_agent_start && !candidate.trust_required,
-                    Some(run) => {
-                        matches!(
-                            run.operation.state,
-                            OperationState::Queued | OperationState::Interrupted
-                        ) && (selection.policy.automatic_agent_start || run.manual_start)
-                            && run
-                                .operation
-                                .next_attempt_at
-                                .is_some_and(|t| now_seconds().is_ok_and(|now| now >= t))
-                    }
-                }
-            })
-        };
-        if let Some(candidate) = next {
-            Self::launch(app, &candidate.key, false, false)?;
-        }
-        Ok(())
+    let mut reviews = store.load_reviews()?;
+    if candidate
+        .run
+        .as_ref()
+        .is_some_and(|r| r.operation.state == OperationState::Running)
+    {
+        return Err("This review is running or stopping; wait for teardown.".into());
     }
-
-    fn launch(
-        app: &tauri::AppHandle,
-        candidate_key: &str,
-        manual: bool,
-        confirm_trust: bool,
-    ) -> Result<(), String> {
-        let host = app.state::<Host>();
-        if host.quitting.load(Ordering::SeqCst) {
-            return Err("PR Sniper is quitting.".into());
+    if candidate
+        .run
+        .as_ref()
+        .is_some_and(|run| run.operation.state == OperationState::Completed)
+        && store.load_publications()?.iter().any(|publication| {
+            publication.review.key == candidate.key && publication.reserves_revision()
+        })
+    {
+        return Err("Reconcile the original publication before reviewing this revision again; a confirmed published batch cannot be replaced.".into());
+    }
+    let mut run = match candidate.run {
+        Some(run) if run.operation.state == OperationState::Completed && !manual => {
+            return Err("This Agent already reviewed this revision.".into())
         }
-        let mut active = host
-            .reviews
-            .active
-            .lock()
-            .map_err(|_| "Review execution is unavailable.")?;
-        if active.is_some() {
-            if !manual {
-                return Ok(());
-            }
-            return Err("A review is already running. Wait or cancel it first.".into());
-        }
-        let run = {
-            let store = host
-                .store
-                .lock()
-                .map_err(|_| "Review storage is unavailable.")?;
-            let settings = store.load_settings()?;
-            let candidate = candidates(&store)?
-                .into_iter()
-                .find(|c| c.key == candidate_key)
-                .ok_or("This review candidate is no longer available.")?;
-            if let Some(error) = candidate.blocked {
-                return Err(error);
-            }
-            let selection =
-                Selection::resolve(&settings, &candidate.job, &candidate.assignment_id)?;
-            if !manual
-                && !selection.policy.automatic_agent_start
-                && candidate.run.as_ref().is_none_or(|r| !r.manual_start)
-            {
-                return Err("Automatic start is disabled; explicitly start this review.".into());
-            }
-            let mut reviews = store.load_reviews()?;
-            if candidate
-                .run
-                .as_ref()
-                .is_some_and(|run| run.operation.state == OperationState::Completed)
-                && store.load_publications()?.iter().any(|publication| {
-                    publication.review.key == candidate.key && publication.reserves_revision()
-                })
-            {
-                return Err("Reconcile the original publication before reviewing this revision again; a confirmed published batch cannot be replaced.".into());
-            }
-            let now = now_seconds()?;
-            let mut run = match candidate.run {
-                Some(run) if run.operation.state == OperationState::Completed && !manual => {
-                    return Err("This Agent already reviewed this revision.".into())
-                }
-                Some(run)
-                    if matches!(
-                        run.operation.state,
-                        OperationState::Queued | OperationState::Interrupted
-                    ) =>
-                {
-                    run
-                }
-                Some(_) if !manual => return Err("Manual retry is required.".into()),
-                _ => ReviewRun {
-                    key: candidate.key,
-                    assignment_id: candidate.assignment_id,
-                    operation: monitoring::JobOperation::review(&candidate.job, now),
-                    job: candidate.job,
-                    selection: selection.clone(),
-                    manual_start: manual,
-                    trust_confirmed: confirm_trust,
-                    phase: "Preparing immutable review context".into(),
-                    error: None,
-                    result: None,
-                },
-            };
-            if !run.selection.same_execution(&selection) {
-                run.error = Some(
-                    "Review configuration changed. Explicitly retry with the new configuration."
-                        .into(),
-                );
-                run.operation.fail(
-                    &Failure::permanent(run.error.clone().unwrap()).monitoring(),
-                    now,
-                );
-                replace_run(&mut reviews, &run);
-                store.save_reviews(&reviews)?;
-                return Ok(());
-            }
-            run.manual_start |= manual;
-            run.trust_confirmed |= confirm_trust;
-            if candidate.trust_required && !run.trust_confirmed {
-                return Err("Confirm trust for this exact head revision before starting.".into());
-            }
-            if manual {
-                run.operation.next_attempt_at = Some(now);
-            }
-            if let Err(error) = run.operation.begin_attempt(now) {
-                run.error = Some(error);
-                replace_run(&mut reviews, &run);
-                store.save_reviews(&reviews)?;
-                return Ok(());
-            }
-            run.phase = "Preparing immutable review context".into();
-            run.error = None;
-            replace_run(&mut reviews, &run);
-            store.save_reviews(&reviews)?;
+        Some(run)
+            if matches!(
+                run.operation.state,
+                OperationState::Queued | OperationState::Interrupted
+            ) =>
+        {
             run
-        };
-        let cancelled = Arc::new(AtomicBool::new(false));
-        *active = Some((run.operation.id.clone(), cancelled.clone()));
-        drop(active);
-        let app = app.clone();
-        tauri::async_runtime::spawn(async move {
-            let outcome = execute(app.clone(), run.clone(), cancelled).await;
-            let host = app.state::<Host>();
-            let saved = (|| {
-                let generations = host
-                    .github_generations
-                    .lock()
-                    .map_err(|_| "GitHub coordination unavailable.")?;
-                let auth = host
-                    .github_auth
-                    .lock()
-                    .map_err(|_| "GitHub account state unavailable.")?;
-                let store = host
-                    .store
-                    .lock()
-                    .map_err(|_| "Review storage is unavailable.")?;
-                let outcome = outcome.and_then(|(result, generation)| {
-                    if host.quitting.load(Ordering::SeqCst)
-                        || generations.get(&run.job.account_id).copied().unwrap_or(0) != generation
-                    {
-                        return Err(Failure::permanent(
-                            "Review cancelled or GitHub account connection changed.",
-                        ));
-                    }
-                    auth.account_session_allowed(&run.job.account_id)
-                        .map_err(Failure::from)?;
-                    super::validate_execution_selection(&store, &run)?;
-                    Ok(result)
-                });
-                let mut reviews = store.load_reviews()?;
-                let current = reviews
-                    .iter_mut()
-                    .find(|r| r.operation.id == run.operation.id)
-                    .ok_or("Review operation disappeared.")?;
-                if current.operation.state != OperationState::Running {
-                    return Ok::<_, String>(());
+        }
+        Some(_) if !manual => return Err("Manual retry is required.".into()),
+        _ => ReviewRun {
+            key: candidate.key,
+            assignment_id: candidate.assignment_id,
+            operation: monitoring::JobOperation::review(&candidate.job, now),
+            job: candidate.job,
+            selection: selection.clone(),
+            manual_start: manual,
+            trust_confirmed: confirm_trust,
+            phase: "Waiting for shared AI capacity".into(),
+            error: None,
+            result: None,
+        },
+    };
+    if !run.selection.same_execution(&selection) {
+        run.error = Some(
+            "Review configuration changed. Explicitly retry with the new configuration.".into(),
+        );
+        run.operation.fail(
+            &Failure::permanent(run.error.clone().unwrap()).monitoring(),
+            now,
+        );
+        replace_run(&mut reviews, &run);
+        store.save_reviews(&reviews)?;
+        return Err(run.error.unwrap());
+    }
+    run.manual_start |= manual;
+    run.trust_confirmed |= confirm_trust;
+    if candidate.trust_required && !run.trust_confirmed {
+        return Err("Confirm trust for this exact head revision before starting.".into());
+    }
+    replace_run(&mut reviews, &run);
+    store.save_reviews(&reviews)?;
+    Ok(run)
+}
+
+pub(crate) fn prepare_dispatch(
+    store: &crate::storage::Store,
+    key: &str,
+    now: i64,
+) -> Result<ReviewRun, String> {
+    let mut run = request(store, key, false, false, now)?;
+    let mut reviews = store.load_reviews()?;
+    if let Err(error) = run.operation.begin_ai_attempt(now) {
+        run.error = Some(error.clone());
+        replace_run(&mut reviews, &run);
+        store.save_reviews(&reviews)?;
+        return Err(error);
+    }
+    run.phase = "Preparing immutable review context".into();
+    run.error = None;
+    replace_run(&mut reviews, &run);
+    store.save_reviews(&reviews)?;
+    Ok(run)
+}
+
+pub(crate) fn launch_worker(app: &tauri::AppHandle, run: ReviewRun, cancelled: Arc<AtomicBool>) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let outcome = execute(app.clone(), run.clone(), cancelled).await;
+        let host = app.state::<Host>();
+        let saved = (|| {
+            let generations = host
+                .github_generations
+                .lock()
+                .map_err(|_| "GitHub coordination unavailable.")?;
+            let auth = host
+                .github_auth
+                .lock()
+                .map_err(|_| "GitHub account state unavailable.")?;
+            let store = host
+                .store
+                .lock()
+                .map_err(|_| "Review storage is unavailable.")?;
+            let outcome = outcome.and_then(|(result, generation)| {
+                if generations.get(&run.job.account_id).copied().unwrap_or(0) != generation {
+                    return Err(Failure::permanent(
+                        "Review cancelled or GitHub account connection changed.",
+                    ));
                 }
-                match outcome {
-                    Ok(result) => {
-                        current.operation.state = OperationState::Completed;
-                        current.operation.failure = None;
-                        current.operation.next_attempt_at = None;
-                        current.phase =
-                            "Automated review complete; final human review required".into();
-                        current.result = Some(result);
-                        current.error = None;
-                    }
-                    Err(error) => {
-                        current.operation.fail(&error.monitoring(), now_seconds()?);
-                        current.phase = "Review stopped".into();
-                        current.error = Some(error.message);
-                    }
+                if host.quitting.load(Ordering::SeqCst) {
+                    return Err(Failure::cancelled());
                 }
-                store.save_reviews(&reviews)
-            })();
-            if let Err(error) = saved {
+                auth.account_session_allowed(&run.job.account_id)
+                    .map_err(Failure::from)?;
+                super::validate_execution_selection(&store, &run)?;
+                Ok(result)
+            });
+            complete(&store, &run.operation.id, outcome, now_seconds()?)
+        })();
+        if let Err(error) = saved {
+            crate::report(&app, error);
+            if let Err(error) = host.ai.persistence_failed(&run.operation.id) {
                 crate::report(&app, error);
             }
-            match host.reviews.active.lock() {
-                Ok(mut active) => {
-                    *active = None;
-                }
-                Err(_) => crate::report(&app, "Review execution state is unavailable.".into()),
-            };
-        });
-        Ok(())
+            return;
+        }
+        crate::capacity::refill(
+            &app,
+            &crate::capacity::WorkId {
+                kind: crate::capacity::Kind::Normal,
+                id: run.key,
+            },
+            &run.operation.id,
+        );
+    });
+}
+
+pub(crate) fn complete(
+    store: &crate::storage::Store,
+    id: &str,
+    outcome: Result<super::ReviewResult, Failure>,
+    now: i64,
+) -> Result<(), String> {
+    let mut reviews = store.load_reviews()?;
+    let current = reviews
+        .iter_mut()
+        .find(|r| r.operation.id == id)
+        .ok_or("Review operation disappeared.")?;
+    if current.operation.state != OperationState::Running {
+        return Ok(());
     }
+    if crate::capacity::interrupted(&mut current.operation, outcome.as_ref().err(), now) {
+        current.result = None;
+        current.phase = "Waiting after intentional interruption".into();
+        current.error = None;
+    } else {
+        match outcome {
+            Ok(result) => {
+                current.operation.ai_attempt = None;
+                current.operation.state = OperationState::Completed;
+                current.operation.failure = None;
+                current.operation.next_attempt_at = None;
+                current.phase = "Automated review complete; final human review required".into();
+                current.result = Some(result);
+                current.error = None;
+            }
+            Err(error) => {
+                current.operation.fail(&error.monitoring(), now);
+                current.phase = "Review stopped".into();
+                current.error = Some(error.message);
+            }
+        }
+    }
+    store.save_reviews(&reviews)
 }
 
 fn replace_run(reviews: &mut Vec<ReviewRun>, run: &ReviewRun) {
@@ -373,7 +318,7 @@ fn replace_run(reviews: &mut Vec<ReviewRun>, run: &ReviewRun) {
 fn local_gate(app: &tauri::AppHandle, run: &ReviewRun) -> Result<(), Failure> {
     let host = app.state::<Host>();
     if host.quitting.load(Ordering::SeqCst) {
-        return Err(Failure::permanent("PR Sniper is quitting."));
+        return Err(Failure::cancelled());
     }
     host.github_auth
         .lock()
@@ -442,7 +387,7 @@ async fn execute(
             return Err(Failure::timeout());
         }
         if gate_cancelled.load(Ordering::SeqCst) {
-            return Err(Failure::permanent("Review cancelled."));
+            return Err(Failure::cancelled());
         }
         let host = gate_app.state::<Host>();
         if host
@@ -470,8 +415,13 @@ async fn execute(
         let host = preparation_app.state::<Host>();
         let (_, client) =
             crate::github_session(&host, &preparation_run.job.account_id).map_err(Failure::from)?;
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let saw_interruption = interrupted.clone();
         let client = client.guarded(Arc::new(move || {
             preparation_gate().map_err(|error| {
+                if error.cancelled {
+                    saw_interruption.store(true, Ordering::SeqCst);
+                }
                 if error.kind == monitoring::OperationFailure::Timeout {
                     crate::github::ConnectionError::Timeout
                 } else {
@@ -483,20 +433,30 @@ async fn execute(
             id: preparation_run.job.repository_id.clone(),
             name: preparation_run.job.repository_name.clone(),
         };
-        let context = client.review_context(
-            &repo,
-            preparation_run.job.number,
-            &preparation_run.job.head_sha,
-        )?;
+        let context = client
+            .review_context(
+                &repo,
+                preparation_run.job.number,
+                &preparation_run.job.head_sha,
+            )
+            .map_err(|error| {
+                if error == crate::github::ConnectionError::Configuration
+                    && interrupted.load(Ordering::SeqCst)
+                {
+                    Failure::cancelled()
+                } else {
+                    Failure::from(error)
+                }
+            })?;
         Ok::<_, Failure>((context, Arc::new(client)))
     });
-    let (context, client) = tokio::time::timeout_at(deadline.into(), prepared)
+    // Join blocking preparation before releasing its capacity/workspace ownership.
+    let (context, client) = prepared
         .await
-        .map_err(|_| Failure::timeout())?
         .map_err(|_| Failure::permanent("Review preparation could not finish."))??;
     gate()?;
     if cancelled.load(Ordering::SeqCst) {
-        return Err(Failure::permanent("Review cancelled."));
+        return Err(Failure::cancelled());
     }
     {
         let host = app.state::<Host>();
@@ -559,7 +519,18 @@ pub(crate) async fn start_review(
     confirm_trust: bool,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        Coordinator::launch(&app, &candidate_key, true, confirm_trust)
+        let host = app.state::<Host>();
+        if host.quitting.load(Ordering::SeqCst) {
+            return Err("PR Sniper is quitting.".into());
+        }
+        {
+            let store = host
+                .store
+                .lock()
+                .map_err(|_| "Review storage unavailable.")?;
+            request(&store, &candidate_key, true, confirm_trust, now_seconds()?)?;
+        }
+        crate::capacity::Coordinator::pump(&app)
     })
     .await
     .map_err(|_| "Review start could not finish.".to_string())?
@@ -572,16 +543,6 @@ pub(crate) async fn cancel_review(
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let host = app.state::<Host>();
-        let active = host
-            .reviews
-            .active
-            .lock()
-            .map_err(|_| "Review execution is unavailable.")?;
-        let (_, cancelled) = active
-            .as_ref()
-            .filter(|(id, _)| id == &operation_id)
-            .ok_or("This review is not running.")?;
-        cancelled.store(true, Ordering::SeqCst);
         let store = host
             .store
             .lock()
@@ -591,13 +552,20 @@ pub(crate) async fn cancel_review(
             .iter_mut()
             .find(|r| r.operation.id == operation_id)
             .ok_or("Review operation disappeared.")?;
+        if !matches!(
+            run.operation.state,
+            OperationState::Running | OperationState::Queued | OperationState::Interrupted
+        ) {
+            return Err("This review is not running or waiting.".into());
+        }
         run.operation.fail(
             &Failure::permanent("Review cancelled by user.").monitoring(),
             now_seconds()?,
         );
         run.error = Some("Review cancelled by user.".into());
         run.phase = "Cancelled".into();
-        store.save_reviews(&reviews)
+        store.save_reviews(&reviews)?;
+        host.ai.cancel(&operation_id)
     })
     .await
     .map_err(|_| "Review cancellation could not finish.".to_string())?

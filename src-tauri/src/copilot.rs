@@ -67,7 +67,7 @@ impl Integration {
         let mut operation = self.operation(&id, deadline).map_err(Failure::permanent)?;
         operation.cancelled = cancelled;
         operation
-            .wait(self.restore())
+            .wait_result(self.restore())
             .await
             .map_err(Failure::operation)?
             .map_err(Failure::permanent)?;
@@ -81,8 +81,10 @@ impl Integration {
         })
         .await
         .map_err(|_| Failure::permanent("Review worker could not finish."))?;
-        final_operation.check().map_err(Failure::operation)?;
-        result
+        result.and_then(|value| {
+            final_operation.check().map_err(Failure::operation)?;
+            Ok(value)
+        })
     }
 }
 
@@ -242,7 +244,10 @@ impl<B: Backend> Integration<B> {
         self.require_credential_connection(id)?;
         let key = account_key(id)?;
         let result = async {
-            let mut pair = match operation.wait(self.backend.load(key.clone())).await? {
+            let mut pair = match operation
+                .wait_result(self.backend.load(key.clone()))
+                .await?
+            {
                 Ok(Some(pair)) => pair,
                 Ok(None) => return Ok(Err(GithubAuthFailure::Expired)),
                 Err(_) => return Ok(Err(GithubAuthFailure::CredentialsUnavailable)),
@@ -272,7 +277,7 @@ impl<B: Backend> Integration<B> {
                 }
                 operation.check()?;
             }
-            let identity = match operation.wait(self.backend.identity(&pair)).await? {
+            let identity = match operation.wait_result(self.backend.identity(&pair)).await? {
                 Ok(identity) => identity,
                 Err(reason) => return Ok(Err(reason)),
             };
@@ -284,7 +289,18 @@ impl<B: Backend> Integration<B> {
         .await;
         match result {
             Ok(result) => {
-                self.publish_verification(id, operation, &result)?;
+                if let Err(error) = self.publish_verification(id, operation, &result) {
+                    if result.is_err()
+                        && matches!(
+                            error.as_str(),
+                            "Copilot operation cancelled."
+                                | "Copilot operation cancelled or account connection changed."
+                        )
+                    {
+                        return result.map_err(verification_error);
+                    }
+                    return Err(error);
+                }
                 result.map_err(verification_error)
             }
             Err(error) => {

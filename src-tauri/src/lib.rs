@@ -1,3 +1,4 @@
+pub mod capacity;
 mod copilot;
 pub mod discovery;
 mod doctrine_seeds;
@@ -43,7 +44,7 @@ struct Host {
     github_legacy_credentials:
         Option<github::token_store::RotationSafeStore<github::NativeCredentialStore>>,
     copilot: Arc<copilot::Integration>,
-    reviews: review::Coordinator,
+    ai: capacity::Coordinator,
     publications: publication::host::Coordinator,
     follow_ups: follow_up::host::Coordinator,
     notifications: notifications::host::Coordinator,
@@ -1390,21 +1391,32 @@ fn validate_resource(
 
 #[tauri::command]
 fn save_resource(
+    app: tauri::AppHandle,
     host: State<'_, Host>,
     edit: storage::ResourceEdit,
 ) -> Result<SavedSettings, String> {
-    let saved = host
-        .store
-        .lock()
-        .map_err(|_| "Storage is unavailable.")?
-        .save_resource(edit)?;
-    Ok(finish_committed_settings(
+    let (saved, dispatched) = {
+        let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+        let saved = store.save_resource(edit)?;
+        let dispatched = now_seconds().and_then(|now| host.ai.dispatch(&store, now));
+        (saved, dispatched)
+    };
+    let mut result = finish_committed_settings(
         &host.github_generations,
         &host.github_auth,
         &host.store,
         &host.monitor,
         saved,
-    ))
+    );
+    match dispatched {
+        Ok(batch) => capacity::launch_batch(&app, batch),
+        Err(error) => {
+            result.warning = Some(format!(
+                "Settings saved; AI coordination requires attention: {error}"
+            ))
+        }
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -2182,6 +2194,8 @@ pub fn run() {
             saved_resources,
             validate_resource,
             save_resource,
+            capacity::set_automation_paused,
+            capacity::automation_snapshot,
             canonical_repository_name,
             choose_repository_folder,
             discover_repositories,
@@ -2285,7 +2299,7 @@ pub fn run() {
                 github_credentials,
                 github_legacy_credentials,
                 copilot,
-                reviews: review::Coordinator::default(),
+                ai: capacity::Coordinator::default(),
                 publications: publication::host::Coordinator::default(),
                 follow_ups: follow_up::host::Coordinator::default(),
                 notifications,
@@ -2307,7 +2321,7 @@ pub fn run() {
                     if let Err(error) = start_checks(&scheduler_app, false) {
                         report(&scheduler_app, error);
                     }
-                    if let Err(error) = review::Coordinator::pump(&scheduler_app) {
+                    if let Err(error) = capacity::Coordinator::pump(&scheduler_app) {
                         report(&scheduler_app, error);
                     }
                     if let Err(error) = publication::host::Coordinator::pump(&scheduler_app) {
@@ -2356,7 +2370,11 @@ pub fn run() {
                         }
                         record(app, DiagnosticEvent::QuitRequested);
                         host.copilot.request_shutdown();
-                        host.reviews.cancel_all();
+                        if let Ok(store) = host.store.lock() {
+                            if let Err(error) = host.ai.shutdown(&store) {
+                                report(app, error);
+                            }
+                        }
                         host.follow_ups.cancel_all();
                         let shutdown_app = app.clone();
                         tauri::async_runtime::spawn(async move {
@@ -2385,7 +2403,7 @@ pub fn run() {
                             let deadline =
                                 tokio::time::Instant::now() + std::time::Duration::from_secs(7);
                             while (!shutdown_app.state::<Host>().copilot.lookups_finished()
-                                || !shutdown_app.state::<Host>().reviews.finished()
+                                || !shutdown_app.state::<Host>().ai.finished()
                                 || !shutdown_app.state::<Host>().publications.finished()
                                 || !shutdown_app.state::<Host>().follow_ups.finished())
                                 && tokio::time::Instant::now() < deadline
