@@ -55,11 +55,11 @@ impl Operation {
     }
 
     fn check_current(&self, generation: u64) -> Result<(), String> {
-        if self.cancelled.load(Ordering::SeqCst)
-            || self.quitting.load(Ordering::SeqCst)
-            || generation != self.generation
-        {
+        if generation != self.generation {
             return Err("Copilot operation cancelled or account connection changed.".into());
+        }
+        if self.cancelled.load(Ordering::SeqCst) || self.quitting.load(Ordering::SeqCst) {
+            return Err("Copilot operation cancelled.".into());
         }
         Ok(())
     }
@@ -140,6 +140,22 @@ impl Operation {
             }
         }
     }
+    pub async fn wait_result<T, E>(
+        &self,
+        work: impl Future<Output = Result<T, E>>,
+    ) -> Result<Result<T, E>, String> {
+        self.check()?;
+        tokio::select! {
+                biased;
+                value = work => {
+                    // A completed failure is not converted into a refundable cancellation.
+                    if value.is_ok() { self.check()?; }
+                    Ok(value)
+                }
+                reason = self.stopped() => Err(reason),
+                _ = tokio::time::sleep_until(self.deadline.into()) => Err("Copilot operation timed out. Retry.".into()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -153,6 +169,27 @@ mod tests {
             Instant::now() + OPERATION_LIMIT,
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn completed_failure_wins_cancellation_but_success_still_requires_a_current_operation() {
+        let failed = operation();
+        let result = failed
+            .wait_result(async {
+                failed.cancelled.store(true, Ordering::SeqCst);
+                Err::<(), _>("genuine failure")
+            })
+            .await
+            .unwrap();
+        assert_eq!(result, Err("genuine failure"));
+        let success = operation();
+        assert!(success
+            .wait_result(async {
+                success.cancelled.store(true, Ordering::SeqCst);
+                Ok::<_, ()>(())
+            })
+            .await
+            .is_err());
     }
 
     #[tokio::test]

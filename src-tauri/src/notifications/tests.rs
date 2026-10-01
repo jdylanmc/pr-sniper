@@ -397,15 +397,24 @@ fn only_operator_attention_maps_to_alerts_and_routine_author_waits_do_not() {
         (queue::State::Reviewing, None),
         (queue::State::Queued, None),
         (queue::State::Stale, None),
+        (queue::State::Closed, None),
+        (queue::State::Merged, None),
     ];
     for (state, category) in states {
         let snapshot = queue::Snapshot {
+            feedback: Default::default(),
+            mentions: vec![],
+            global_scan: None,
+            tracked: vec![],
             health: vec![],
             jobs: vec![],
             reviews: vec![],
             publications: vec![],
             follow_ups: vec![],
             items: vec![queue::Item {
+                action_status: None,
+                feedback: vec![],
+                aliases: vec![],
                 id: queue::item_id(&job()),
                 job: job(),
                 state,
@@ -432,6 +441,10 @@ fn authentication_or_schedule_failure_without_a_pr_opens_settings() {
         "next_run":0,"schedule_available":false,"last_failure":"account_disconnected","in_flight":false
     })).unwrap();
     let snapshot = queue::Snapshot {
+        feedback: Default::default(),
+        mentions: vec![],
+        global_scan: None,
+        tracked: vec![],
         health: vec![health],
         jobs: vec![],
         reviews: vec![],

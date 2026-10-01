@@ -5,13 +5,11 @@ use crate::{
     github::{metadata::PullRequest, ConnectionError},
     monitoring::{self, JobOperation, MonitoringError, OperationFailure, OperationState, QueueJob},
     policy::Policy,
-    storage::{Agent, Settings, Store},
+    storage::{Agent, AssignmentAuthority, Doctrine, Repository, Settings, Store},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
-
-pub(crate) use host::Coordinator;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -20,9 +18,52 @@ pub struct Selection {
     pub policy: Policy,
     pub doctrine: Option<String>,
     pub preset: Option<String>,
+    /// Missing on legacy executions; never filled from current settings on load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<ExecutionConfiguration>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionConfiguration {
+    pub repository: Repository,
+    pub authority: AssignmentAuthority,
+    /// In Agent-selected order, with the exact saved title and full body.
+    pub doctrines: Vec<Doctrine>,
 }
 
 impl Selection {
+    /// Compare execution inputs and effective authority, not sibling assignment archives.
+    /// Callers must still revalidate the job, account and trust gates.
+    pub fn same_execution(&self, other: &Self) -> bool {
+        self.agent == other.agent
+            && self.policy == other.policy
+            && self.doctrine == other.doctrine
+            && self.preset == other.preset
+            && match (&self.configuration, &other.configuration) {
+                (Some(left), Some(right)) => {
+                    let a = &left.repository;
+                    let b = &right.repository;
+                    // Assignment records and raw primary designation are archival;
+                    // the selected Agent and effective authority carry their inputs.
+                    left.authority == right.authority
+                        && left.doctrines == right.doctrines
+                        && a.id == b.id
+                        && a.provider == b.provider
+                        && a.name == b.name
+                        && a.enabled == b.enabled
+                        && a.provider_account_id == b.provider_account_id
+                        && a.legacy_installation_id == b.legacy_installation_id
+                        && a.provider_repository_id == b.provider_repository_id
+                        && a.overrides == b.overrides
+                        && a.review_preset == b.review_preset
+                        && a.watched_authors == b.watched_authors
+                }
+                (None, None) => true,
+                _ => false,
+            }
+    }
+
     pub fn resolve(
         settings: &Settings,
         job: &QueueJob,
@@ -61,18 +102,28 @@ impl Selection {
                 "Choose a Copilot account and account-returned model for this Agent.".into(),
             );
         }
-        let doctrine = agent
-            .doctrine
-            .as_ref()
+        let doctrines = agent
+            .doctrine_titles()
+            .into_iter()
             .map(|title| {
                 settings
                     .doctrines
                     .iter()
                     .find(|d| d.title.trim().to_lowercase() == title.trim().to_lowercase())
-                    .map(|d| d.body.clone())
+                    .cloned()
                     .ok_or("The Agent's doctrine is unavailable.")
             })
-            .transpose()?;
+            .collect::<Result<Vec<_>, _>>()?;
+        let doctrine = match doctrines.as_slice() {
+            [] => None,
+            [single] => Some(single.body.clone()),
+            many => Some(
+                many.iter()
+                    .map(|d| format!("## {}\n\n{}", d.title, d.body))
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
+            ),
+        };
         let preset = repository
             .review_preset
             .as_ref()
@@ -91,11 +142,21 @@ impl Selection {
             policy,
             doctrine,
             preset,
+            configuration: Some(ExecutionConfiguration {
+                repository: repository.clone(),
+                authority: repository.assignment_authority(assignment),
+                doctrines,
+            }),
         })
     }
 }
 
 pub fn key(job: &QueueJob, assignment_id: &str) -> String {
+    if let Some(work) = &job.work {
+        if job.assignment_id.as_deref() == Some(assignment_id) {
+            return work.id.clone();
+        }
+    }
     // Tuple encoding is collision-free even when user configuration IDs contain delimiters.
     serde_json::json!([
         job.provider,
@@ -113,6 +174,8 @@ pub fn key(job: &QueueJob, assignment_id: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewRun {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feedback_context: Option<Vec<crate::feedback::Context>>,
     pub key: String,
     pub assignment_id: String,
     pub job: QueueJob,
@@ -129,7 +192,35 @@ impl ReviewRun {
     pub fn matches_job(&self, job: &QueueJob) -> bool {
         job.assignment_id.as_deref() == Some(&self.assignment_id)
             && key(job, &self.assignment_id) == self.key
+            && job.account_id == self.job.account_id
+            && (job.configuration_id == self.job.configuration_id
+                || self.job.configuration_id.is_empty())
+            && job.repository_id == self.job.repository_id
+            && job.pull_request_id == self.job.pull_request_id
+            && job.head_sha == self.job.head_sha
     }
+}
+
+pub fn validate_execution_selection(store: &Store, run: &ReviewRun) -> Result<(), Failure> {
+    let settings = store.load_settings().map_err(Failure::permanent)?;
+    let jobs = store.load_queue().map_err(Failure::permanent)?;
+    let job = jobs
+        .iter()
+        .find(|j| run.matches_job(j))
+        .ok_or_else(|| Failure::permanent("Review detection is no longer available."))?;
+    let current =
+        Selection::resolve(&settings, job, &run.assignment_id).map_err(Failure::permanent)?;
+    if !current.same_execution(&run.selection)
+        || (!current.policy.automatic_agent_start && !run.manual_start)
+    {
+        return Err(Failure::permanent(
+            "Agent configuration or start gate changed; explicitly retry.",
+        ));
+    }
+    if let Some(context) = &run.feedback_context {
+        crate::feedback::validate_context(store, job, &run.selection.agent.id, context)?;
+    }
+    Ok(())
 }
 
 pub fn restore(store: &Store) -> Result<(), String> {
@@ -137,6 +228,13 @@ pub fn restore(store: &Store) -> Result<(), String> {
     let mut changed = false;
     for review in &mut reviews {
         if review.operation.state == OperationState::Running {
+            if review.operation.interruption.is_some() {
+                review.operation.requeue_intentional(0);
+                review.result = None;
+                review.phase = "Waiting after intentional interruption".into();
+                changed = true;
+                continue;
+            }
             review.operation.state = OperationState::Interrupted;
             review.operation.next_attempt_at = Some(0);
             review.phase = "Interrupted; revalidating before retry".into();
@@ -149,8 +247,13 @@ pub fn restore(store: &Store) -> Result<(), String> {
     Ok(())
 }
 
-pub fn requires_trust(job: &QueueJob, pull: &PullRequest) -> bool {
-    !job.watched_author || pull.head_repository_id.as_deref() != Some(&job.repository_id)
+pub fn requires_trust(settings: &Settings, job: &QueueJob, pull: &PullRequest) -> bool {
+    let watched = if job.work.is_some() {
+        monitoring::currently_watched(settings, job, pull.author.as_ref().map(|a| a.id.as_str()))
+    } else {
+        job.watched_author
+    };
+    !watched || pull.head_repository_id.as_deref() != Some(&job.repository_id)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,6 +283,8 @@ pub enum Severity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Finding {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feedback_id: Option<String>,
     pub path: String,
     pub side: String,
     pub line: u64,
@@ -192,6 +297,12 @@ pub struct Finding {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewOutput {
+    #[serde(default)]
+    pub feedback_conflict: bool,
+    #[serde(default)]
+    pub held_findings: Vec<Finding>,
+    #[serde(default)]
+    pub feedback_assessments: Vec<crate::feedback::Assessment>,
     pub synopsis: String,
     pub files: Vec<FileGuide>,
     pub findings: Vec<Finding>,
@@ -226,6 +337,11 @@ pub fn validate_output(text: &str, paths: &[String]) -> Result<ReviewOutput, Fai
             "Copilot's final response does not match the required review JSON schema.",
         )
     })?;
+    if output.feedback_conflict || !output.held_findings.is_empty() {
+        return Err(Failure::permanent(
+            "Model output cannot set host-owned feedback dispositions.",
+        ));
+    }
     let synopsis = output.synopsis.trim();
     let sentences = synopsis
         .char_indices()
@@ -284,14 +400,22 @@ pub fn validate_output(text: &str, paths: &[String]) -> Result<ReviewOutput, Fai
 
 #[derive(Debug, Clone)]
 pub struct Failure {
+    pub cancelled: bool,
     pub kind: OperationFailure,
     pub message: String,
     pub retry_after_seconds: Option<i64>,
 }
 
 impl Failure {
+    pub fn cancelled() -> Self {
+        Self {
+            cancelled: true,
+            ..Self::permanent("AI work cancelled intentionally.")
+        }
+    }
     pub fn permanent(message: impl Into<String>) -> Self {
         Self {
+            cancelled: false,
             kind: OperationFailure::Permanent,
             message: message.into(),
             retry_after_seconds: None,
@@ -299,6 +423,7 @@ impl Failure {
     }
     pub fn timeout() -> Self {
         Self {
+            cancelled: false,
             kind: OperationFailure::Timeout,
             message: "Copilot review timed out.".into(),
             retry_after_seconds: None,
@@ -308,6 +433,9 @@ impl Failure {
         Self::permanent("Copilot returned invalid or incomplete review output.")
     }
     pub fn operation(message: String) -> Self {
+        if message == "Copilot operation cancelled." {
+            return Self::cancelled();
+        }
         if message == "Copilot operation timed out. Retry." {
             Self::timeout()
         } else {
@@ -321,6 +449,7 @@ impl Failure {
                 _ => OperationFailure::Permanent,
             };
             Self {
+                cancelled: false,
                 kind,
                 message,
                 retry_after_seconds: None,
@@ -335,7 +464,7 @@ impl Failure {
             | ErrorKind::Session(SessionErrorKind::Timeout(_)) => OperationFailure::Timeout,
             _ => OperationFailure::Permanent,
         };
-        Self { kind, message: "Copilot runtime request failed; check account, model, and runtime availability before retrying.".into(), retry_after_seconds: None }
+        Self { cancelled: false, kind, message: "Copilot runtime request failed; check account, model, and runtime availability before retrying.".into(), retry_after_seconds: None }
     }
     fn event(data: &Value) -> Self {
         let kind = match data["statusCode"].as_u64() {
@@ -350,6 +479,7 @@ impl Failure {
         };
         let retry_after_seconds = data["retryAfterSeconds"].as_i64().filter(|n| *n >= 0);
         Self {
+            cancelled: false,
             kind,
             message: "Copilot reported an execution failure; no review result was accepted.".into(),
             retry_after_seconds,
@@ -374,6 +504,7 @@ impl From<ConnectionError> for Failure {
                 retry_after_seconds,
                 ..
             } => Self {
+                cancelled: false,
                 kind: failure,
                 message,
                 retry_after_seconds,

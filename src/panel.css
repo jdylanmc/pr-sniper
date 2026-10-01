@@ -1,0 +1,201 @@
+.panel-shell {
+  --panel-navy: #11282f;
+  --panel-teal: #145967;
+  --panel-accent: #d47516;
+  --panel-paper: #f4f7f7;
+  --panel-ink: #dcebed;
+  --panel-rule: #80979d;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  font:
+    14px/1.45 -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+}
+.panel-shell * {
+  box-sizing: border-box;
+}
+.panel-header {
+  flex: none;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--panel-navy);
+  color: var(--panel-ink);
+}
+.panel-header img {
+  width: 26px;
+  height: 26px;
+  filter: invert(1);
+}
+.panel-header strong {
+  flex: 1;
+  font-size: 16px;
+}
+.panel-tabs {
+  display: flex;
+  flex: none;
+  gap: 4px;
+  padding: 6px;
+  background: var(--panel-navy);
+}
+.panel-tabs button {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 3px;
+  font-size: 13px;
+}
+.panel-tabs button[aria-current] {
+  box-shadow: inset 0 -3px var(--panel-accent);
+}
+.panel-context {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  flex: none;
+}
+.panel-context h1 {
+  font-size: 18px;
+  line-height: 1.2;
+}
+.panel-content {
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+.panel-content > [data-panel-view] {
+  margin: 0;
+  padding: 0 12px 14px;
+  min-width: 0;
+}
+.panel-content > [data-panel-view="settings"] {
+  padding: 0;
+}
+.panel-shell section {
+  margin-top: 12px;
+}
+.panel-shell article {
+  margin-top: 10px;
+  padding: 12px;
+}
+.panel-shell h2 {
+  font-size: 16px;
+}
+.panel-shell p {
+  max-width: 72ch;
+}
+.panel-shell button {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.panel-shell
+  :is(button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 3px solid var(--panel-accent);
+  outline-offset: 2px;
+}
+.panel-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 10px;
+  margin: 0;
+  flex: none;
+  font-size: 11px;
+}
+.panel-footer button {
+  font-size: 12px;
+  padding: 4px 7px;
+}
+.panel-footer span {
+  flex: 1;
+}
+.panel-error {
+  flex: none;
+  margin: 0;
+  padding: 8px 12px;
+  max-height: 90px;
+  overflow: auto;
+  color: #7d1e12;
+  background: #ffeae5;
+}
+.panel-shell .settings-window {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  margin: 0;
+  position: relative;
+}
+.panel-shell .settings-window h1 {
+  font:
+    600 18px/1.2 -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+}
+.panel-shell .settings-heading {
+  padding: 12px;
+}
+.panel-shell .settings-main {
+  min-height: 0;
+  min-width: 0;
+}
+.panel-shell .settings-savebar {
+  flex-wrap: wrap;
+  padding: 8px;
+  gap: 5px;
+}
+.panel-shell .settings-savebar #save-status {
+  flex-basis: 100%;
+}
+.panel-shell .dialog-fallback {
+  position: absolute;
+  inset: 0;
+  align-items: start;
+  padding: 4px;
+  overflow: auto;
+}
+.panel-shell .settings-dialog {
+  width: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  margin: 0;
+}
+.panel-shell .dialog-body {
+  max-height: calc(100vh - 230px);
+  max-height: calc(100dvh - 230px);
+  overflow: auto;
+}
+.panel-shell [data-panel-view="running"] > #automation-controls {
+  margin-top: 0;
+}
+@media (max-height: 440px) {
+  .panel-header {
+    padding: 5px 10px;
+  }
+  .panel-tabs {
+    padding: 3px;
+  }
+  .panel-context {
+    padding: 4px 10px;
+  }
+  .panel-footer span {
+    display: none;
+  }
+  .panel-shell .dialog-body {
+    max-height: calc(100vh - 180px);
+    max-height: calc(100dvh - 180px);
+  }
+}

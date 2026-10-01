@@ -115,11 +115,61 @@ export const test = base.extend({
     await page.exposeFunction("__settingsInvoke", ipc.invoke);
     await page.addInitScript(() => {
       const pending = new Set();
+      const callbacks = new Map();
+      const listeners = new Map();
+      let callbackId = 0;
+      window.__panelEvent = (payload) => {
+        for (const [id, { event, handler }] of listeners) {
+          if (event === "pr-sniper:panel")
+            callbacks.get(handler)?.({ event, id, payload });
+        }
+      };
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+        unregisterListener: (_event, id) => listeners.delete(id),
+      };
       window.__TAURI_INTERNALS__ = {
+        transformCallback: (handler) => {
+          const id = ++callbackId;
+          callbacks.set(id, handler);
+          return id;
+        },
         invoke: (command, args) => {
+          if (command === "plugin:event|listen") {
+            const id = ++callbackId;
+            listeners.set(id, args);
+            return Promise.resolve(id);
+          }
+          if (command === "plugin:event|unlisten") {
+            listeners.delete(args.eventId);
+            return Promise.resolve();
+          }
           if (["github_auth_state", "copilot_auth_state"].includes(command))
             return Promise.resolve({ accounts: [], flow: { state: "idle" } });
-          const request = window.__settingsInvoke(command, args);
+          const request = window
+            .__settingsInvoke(command, args)
+            .then((value) => {
+              if (
+                [
+                  "panel_navigate",
+                  "hide_panel",
+                  "open_settings",
+                  "open_diagnostics",
+                  "open_queue_item",
+                  "fixture_show_panel",
+                ].includes(command)
+              )
+                window.__panelEvent(value);
+              return value;
+            })
+            .catch(async (error) => {
+              if (command === "open_queue_item") {
+                // Native routing emits the unavailable destination before returning its error.
+                window.__panelEvent(
+                  await window.__settingsInvoke("panel_snapshot", {}),
+                );
+              }
+              throw error;
+            });
           const settled = request.finally(() => pending.delete(settled));
           pending.add(settled);
           return settled;

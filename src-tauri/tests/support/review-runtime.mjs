@@ -1,5 +1,5 @@
 // Synthetic transport: verifies the adapter, not live Copilot acceptance.
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 
 if (process.env.TEST_STARTUP_DELAY_MS) {
@@ -116,19 +116,39 @@ process.stdin.on("data", (chunk) => {
         break;
       case "session.send":
         respond(request.id, { messageId: randomUUID() });
+        if (scenario === "final-full-review") {
+          event("tool.execution_start", { toolName: "read_changes" });
+          event("external_tool.requested", {
+            sessionId,
+            requestId: "final-read",
+            toolCallId: "final-read",
+            toolName: "read_changes",
+            arguments: { paths: ["source.rs"] },
+          });
+          break;
+        }
         if (scenario === "waiting") break;
         setTimeout(() => {
+          if (scenario === "failure-held-abort") {
+            event("session.error", { statusCode: 503, retryAfterSeconds: 7 });
+            return;
+          }
           event("assistant.usage", { inputTokens: 20, outputTokens: 10 });
           event("assistant.message", {
-            content:
-              scenario === "malformed"
-                ? "not JSON"
-                : scenario.startsWith("follow-up-")
-                  ? JSON.stringify({
-                      decision: scenario === "follow-up-human" ? "human_input_required" : "quiet",
-                      body: "", new_information: "", evidence: [],
-                      reason: "A human decision is required or no new evidence exists.",
-                    })
+            content: scenario.startsWith("malformed")
+              ? "not JSON"
+              : scenario.startsWith("follow-up-")
+                ? JSON.stringify({
+                    decision:
+                      scenario === "follow-up-human"
+                        ? "human_input_required"
+                        : "quiet",
+                    body: "",
+                    new_information: "",
+                    evidence: [],
+                    reason:
+                      "A human decision is required or no new evidence exists.",
+                  })
                 : JSON.stringify({
                     synopsis: "The empty synthetic change has no findings.",
                     files: [],
@@ -139,7 +159,46 @@ process.stdin.on("data", (chunk) => {
           event("session.idle", {});
         }, 10);
         break;
+      case "session.tools.handlePendingToolCall":
+        receipt({ method: "fixture.finalRead", result: request.params.result });
+        respond(request.id, {});
+        if (
+          scenario !== "final-full-review" ||
+          request.params.requestId !== "final-read" ||
+          !JSON.stringify(request.params.result ?? null).includes("answer")
+        ) {
+          event("session.error", { statusCode: 500 });
+        } else {
+          event("assistant.usage", { inputTokens: 20, outputTokens: 10 });
+          event("assistant.message", {
+            content: JSON.stringify({
+              synopsis: "The synthetic source was reviewed completely.",
+              files: [
+                {
+                  path: "source.rs",
+                  explanation: "The full changed source was read.",
+                  order: 1,
+                },
+              ],
+              findings: [],
+              decision: "machine_sign_off",
+            }),
+          });
+          event("session.idle", {});
+        }
+        break;
       case "session.abort":
+        if (scenario.endsWith("-held-abort")) {
+          const held = setInterval(() => {
+            if (!existsSync(process.env.TEST_ABORT_RELEASE)) return;
+            clearInterval(held);
+            receipt({ method: "fixture.abortReleased" });
+            respond(request.id, {});
+          }, 10);
+          break;
+        }
+        respond(request.id, {});
+        break;
       case "session.destroy":
       case "session.detach":
       case "runtime.shutdown":

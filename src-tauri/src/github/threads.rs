@@ -90,7 +90,7 @@ impl Thread {
 }
 
 impl<T: QueryTransport> GithubClient<T> {
-    fn graph(&self, query: &str, variables: Value) -> Result<Value, ConnectionError> {
+    pub(super) fn graph(&self, query: &str, variables: Value) -> Result<Value, ConnectionError> {
         let (value, response) = parse_response(self.transport.query(query, variables)?)?;
         if let Some(errors) = value.get("errors").filter(|errors| !errors.is_null()) {
             let errors = errors.as_array().ok_or(ConnectionError::InvalidResponse)?;
@@ -116,6 +116,14 @@ impl<T: QueryTransport> GithubClient<T> {
     }
 
     pub fn owned_threads(&self, publication: &Publication) -> Result<Vec<Thread>, ConnectionError> {
+        self.owned_threads_at(publication, &publication.review.job.head_sha)
+    }
+
+    pub fn owned_threads_at(
+        &self,
+        publication: &Publication,
+        current_head: &str,
+    ) -> Result<Vec<Thread>, ConnectionError> {
         let name = crate::storage::canonical_repository(&publication.review.job.repository_name)
             .map_err(|_| ConnectionError::InvalidRepository)?;
         let (owner, name) = name
@@ -149,7 +157,7 @@ impl<T: QueryTransport> GithubClient<T> {
             {
                 return Err(ConnectionError::RepositoryChanged);
             }
-            if pull["headRefOid"].as_str() != Some(&publication.review.job.head_sha) {
+            if pull["headRefOid"].as_str() != Some(current_head) {
                 return Err(ConnectionError::RevisionChanged);
             }
             let connection = &pull["reviewThreads"];
@@ -177,9 +185,10 @@ impl<T: QueryTransport> GithubClient<T> {
                     continue;
                 }
                 let thread = self.complete_thread(node)?;
-                if thread.owned_by(publication) {
-                    result.push(thread);
+                if !thread.owned_by(publication) {
+                    return Err(ConnectionError::InvalidResponse);
                 }
+                result.push(thread);
             }
             cursor = next(connection, &mut seen)?;
             if cursor.is_none() {

@@ -8,30 +8,26 @@ import {
   type CopilotAuth,
   type CopilotModel,
 } from "./copilot";
-import type {
-  Agent,
-  Doctrine,
-  Policy,
-  Assignment,
-  Schedule,
-  WatchedIdentity,
-} from "./policy";
-import type { Repository } from "./repositories";
+import type { Agent, Doctrine, Assignment, WatchedIdentity } from "./policy";
+import { type Repository, primaryAssignmentId } from "./repositories";
+import { doctrineTitles } from "./policy";
+import {
+  type Settings,
+  type ResourceEdit,
+  acceptResource,
+  globalPreferences,
+  savedResources,
+  saveResource,
+  sameResource,
+} from "./resources";
 import "./settings.css";
 import { createDialogs } from "./dialogs";
 import { mountNotificationSettings } from "./notifications";
+import { mountAutomation } from "./automation";
 
 interface ConfiguredRepository extends Repository {
   watched_authors?: WatchedIdentity[];
   assignments?: Assignment[];
-}
-interface Settings {
-  launch_at_login: boolean;
-  defaults: Policy;
-  repositories?: ConfiguredRepository[];
-  root_folder?: string;
-  doctrines?: Doctrine[];
-  agents?: Agent[];
 }
 interface Snapshot {
   settings: Settings | null;
@@ -100,7 +96,7 @@ const sections: Record<Section, [string, string]> = {
   ],
   agents: [
     "Agents",
-    "A model, a doctrine, a prompt and a signature, bundled up and ready to work.",
+    "A model, shared doctrines, a prompt and a signature, ready to assign.",
   ],
   preferences: [
     "Preferences",
@@ -144,15 +140,10 @@ function newIdentity() {
   ).join("");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
-const localZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 const option = (value: string, label: string, selected: string) =>
   `<option value="${escape(value)}" ${value === selected ? "selected" : ""}>${escape(label)}</option>`;
 const words = (text: string) =>
   text.trim() ? text.trim().split(/\s+/).length : 0;
-const scheduleSummary = (schedule: Schedule) =>
-  schedule.kind === "interval"
-    ? `Every ${schedule.minutes} minutes`
-    : `Cron ${schedule.expression}`;
 const reason = (error: unknown) => {
   const errors: Record<string, string> = {
     signed_out:
@@ -172,9 +163,15 @@ const reason = (error: unknown) => {
     : "This action failed. Check local access and try again.";
 };
 
-export async function mountSettings(app: HTMLElement) {
-  document.body.classList.add("settings-page");
-  app.className = "settings-window";
+export async function mountSettings(
+  app: HTMLElement,
+  options: { embedded?: boolean } = {},
+) {
+  if (options.embedded) app.className = "settings-window settings-page";
+  else {
+    document.body.classList.add("settings-page");
+    app.className = "settings-window";
+  }
   app.innerHTML = `<aside class="settings-sidebar"><div class="settings-brand"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><circle cx="16" cy="16" r="9" stroke="currentColor" stroke-width="1.7"/><path d="M16 2v8m0 12v8M2 16h8m12 0h8" stroke="currentColor" stroke-width="1.7"/><circle cx="16" cy="16" r="2.5" fill="currentColor"/></svg>PR Sniper</div><p class="settings-caption">Preferences</p>
     <nav aria-label="Settings sections">${Object.entries(sections)
       .map(
@@ -189,7 +186,7 @@ export async function mountSettings(app: HTMLElement) {
       .join("")}</select></label></aside>
     <div class="settings-main"><header class="settings-heading"><h1 tabindex="-1">Integrations</h1><p>Sign in to an AI subscription, then connect the repositories it should watch.</p></header>
     <p id="error" role="alert" hidden></p><section id="content"></section>
-    <footer class="settings-savebar"><span role="status" id="save-status">Loading settings...</span><button id="reload-settings" hidden>Discard draft and reload</button><button id="reset-settings" disabled>Reset changes</button><button class="primary" id="save-settings" disabled>Save changes</button></footer></div>`;
+    <footer class="settings-savebar"><span role="status" id="save-status">Loading settings...</span><button id="reload-settings" hidden>Discard draft and reload</button><button id="reset-settings" disabled>Reset changes</button><button class="primary" id="save-settings" disabled>Save preferences</button></footer></div>`;
   const content = app.querySelector<HTMLElement>("#content")!;
   const error = app.querySelector<HTMLElement>("#error")!;
   const status = app.querySelector<HTMLElement>("#save-status")!;
@@ -198,7 +195,6 @@ export async function mountSettings(app: HTMLElement) {
   const reload = app.querySelector<HTMLButtonElement>("#reload-settings")!;
   let snapshot: Snapshot;
   let saved: Settings;
-  let persisted: Settings;
   let draft: Settings;
   let section: Section = "integrations";
   let discovery: Discovery | null = null;
@@ -213,8 +209,10 @@ export async function mountSettings(app: HTMLElement) {
   let refreshAgentAccounts: (() => void) | undefined;
   const dialogs = createDialogs(content, () => revision++);
   const notificationView = { target: "" };
-  const dirty = () =>
-    !!draft && JSON.stringify(draft) !== JSON.stringify(saved);
+  const dirty = () => !!draft && !sameResource(draft, saved);
+  const preferencesDirty = () =>
+    !!draft &&
+    !sameResource(globalPreferences(draft), globalPreferences(saved));
   const showError = (message: string) => {
     error.textContent = message;
     error.hidden = false;
@@ -228,12 +226,60 @@ export async function mountSettings(app: HTMLElement) {
   const agents = () => draft.agents ?? [];
   function changed() {
     revision++;
-    status.textContent = dirty() ? "Unsaved changes" : "All changes saved";
-    save.disabled = !dirty() || busy;
+    status.textContent = busy
+      ? "Working..."
+      : dirty()
+        ? "Unsaved changes"
+        : "All changes saved";
+    save.disabled = !preferencesDirty() || busy;
     reset.disabled = !dirty() || busy;
     reload.hidden = !conflict;
     reload.disabled = busy;
   }
+
+  async function commitResource(edit: ResourceEdit, modal?: HTMLDialogElement) {
+    if (busy) throw "Another resource save is in progress. Try again.";
+    busy = true;
+    changed();
+    if (modal) modal.dataset.closeLocked = "true";
+    const controls = [
+      ...app.querySelectorAll<
+        | HTMLInputElement
+        | HTMLButtonElement
+        | HTMLSelectElement
+        | HTMLTextAreaElement
+      >("input,button,select,textarea"),
+    ].map((control) => ({ control, disabled: control.disabled }));
+    controls.forEach(({ control }) => (control.disabled = true));
+    try {
+      const result = await saveResource(edit);
+      for (const settings of [saved, draft])
+        acceptResource(settings, clone(result.settings), edit);
+      if (result.warning) showError(result.warning);
+    } catch (cause) {
+      if (reason(cause).startsWith("Resource changed")) conflict = true;
+      throw cause;
+    } finally {
+      controls.forEach(
+        ({ control, disabled }) => (control.disabled = disabled),
+      );
+      if (modal) delete modal.dataset.closeLocked;
+      busy = false;
+      changed();
+    }
+  }
+
+  const repositoryEdit = (
+    repository: Repository,
+    value: Repository | null = repository,
+  ): ResourceEdit => ({
+    kind: "repository",
+    id: repository.id,
+    expected: clone(
+      saved.repositories?.find((r) => r.id === repository.id) ?? null,
+    ),
+    value: clone(value),
+  });
 
   function dialog(title: string, body: string) {
     const modal = document.createElement("dialog");
@@ -307,7 +353,7 @@ export async function mountSettings(app: HTMLElement) {
   // ---------------------------------------------------------------- Doctrines
 
   function renderDoctrines() {
-    content.innerHTML = `<div class="section-actions"><h2>Your doctrines</h2><button class="primary" id="new-doctrine">New doctrine</button></div><p class="settings-hint">Doctrines are plain-text principles -- not commands. Attach one to an agent and it colors every review that agent does. Around 500 words is a friendly length, never a limit.</p><div class="doctrine-list"></div>`;
+    content.innerHTML = `<div class="section-actions"><h2>Your doctrines</h2><button class="primary" id="new-doctrine">New doctrine</button></div><p class="settings-hint">Doctrines are plain-text principles -- not commands. Select zero or more per Agent, composed in selection order. Around 500 words is a friendly length, never a limit.</p><div class="doctrine-list"></div>`;
     const list = content.querySelector(".doctrine-list")!;
     if (!doctrines().length)
       list.innerHTML =
@@ -320,19 +366,40 @@ export async function mountSettings(app: HTMLElement) {
         editDoctrine(doctrine);
       row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick =
         async () => {
-          const usedBy = agents().filter((a) => a.doctrine === doctrine.title);
+          const usedBy = agents().filter((a) =>
+            doctrineTitles(a).some(
+              (title) =>
+                title.trim().toLowerCase() ===
+                doctrine.title.trim().toLowerCase(),
+            ),
+          );
+          if (usedBy.length) {
+            showError(
+              "This doctrine is used by an Agent. Remove or replace its references and save the Agent before deleting it.",
+            );
+            return;
+          }
           if (
             !(await confirmDialog(
               "Delete this doctrine?",
-              `Delete "${escape(doctrine.title)}"? ${usedBy.length ? `${usedBy.length} agent${usedBy.length === 1 ? "" : "s"} using it will fall back to no doctrine.` : "Nothing is removed until you save changes."}`,
+              `Delete "${escape(doctrine.title)}" from the saved library? Completed review evidence is retained.`,
               "Delete doctrine",
             ))
           )
             return;
-          draft.doctrines = doctrines().filter((d) => d !== doctrine);
-          for (const a of agents())
-            if (a.doctrine === doctrine.title) delete a.doctrine;
-          render();
+          try {
+            await commitResource({
+              kind: "doctrine",
+              title: doctrine.title,
+              expected:
+                saved.doctrines?.find((d) => d.title === doctrine.title) ??
+                null,
+              value: null,
+            });
+            render();
+          } catch (cause) {
+            showError(reason(cause));
+          }
         };
       list.append(row);
     }
@@ -350,7 +417,7 @@ export async function mountSettings(app: HTMLElement) {
     body.oninput = () => {
       count.textContent = `${words(body.value)} words`;
     };
-    modal.querySelector("form")!.onsubmit = (event) => {
+    modal.querySelector("form")!.onsubmit = async (event) => {
       event.preventDefault();
       const alert = modal.querySelector<HTMLElement>("[role=alert]")!;
       const title = modal
@@ -366,12 +433,16 @@ export async function mountSettings(app: HTMLElement) {
           )
         )
           throw "Choose a unique doctrine title.";
-        if (existing) {
-          for (const a of agents())
-            if (a.doctrine === existing.title) a.doctrine = title;
-          existing.title = title;
-          existing.body = body.value;
-        } else (draft.doctrines ??= []).push({ title, body: body.value });
+        await commitResource(
+          {
+            kind: "doctrine",
+            title: existing?.title ?? title,
+            expected:
+              saved.doctrines?.find((d) => d.title === existing?.title) ?? null,
+            value: { title, body: body.value },
+          },
+          modal,
+        );
         modal.close();
         render();
       } catch (cause) {
@@ -395,7 +466,13 @@ export async function mountSettings(app: HTMLElement) {
       );
       const row = document.createElement("article");
       row.className = "agent-card";
-      row.innerHTML = `<div><h3>${escape(agent.name)}</h3><p>${escape(agent.prompt)}</p><p data-account-state>${escape(agent.ai_account ? `Copilot: ${account?.login ?? agent.ai_account.account_id}. ${account?.state === "connected" ? "Sign-in verified; model access checked in Edit." : "Reconnect required; Agent blocked."}` : "Unconfigured. Choose an AI account and an actual model; the legacy selection is retained.")}</p><div class="chip-row"><span class="chip">${escape(agent.model)}</span>${agent.doctrine ? `<span class="chip">${escape(agent.doctrine)}</span>` : ""}<span class="chip">${escape(agent.signature)}</span></div></div><div class="card-actions"><button data-edit>Edit</button><button data-remove>Delete</button></div>`;
+      row.innerHTML = `<div><h3>${escape(agent.name)}</h3><p>${escape(agent.prompt)}</p><p data-account-state>${escape(agent.ai_account ? `Copilot: ${account?.login ?? agent.ai_account.account_id}. ${account?.state === "connected" ? "Sign-in verified; model access checked in Edit." : "Reconnect required; Agent blocked."}` : "Unconfigured. Choose an AI account and an actual model; the legacy selection is retained.")}</p><div class="chip-row"><span class="chip">${escape(agent.model)}</span>${doctrineTitles(
+        agent,
+      )
+        .map((title) => `<span class="chip">${escape(title)}</span>`)
+        .join(
+          "",
+        )}<span class="chip">${escape(agent.signature)}</span></div></div><div class="card-actions"><button data-edit>Edit</button><button data-remove>Delete</button></div>`;
       row.dataset.agentId = agent.id;
       row.querySelector<HTMLButtonElement>("[data-edit]")!.onclick = () =>
         editAgent(agent);
@@ -404,20 +481,31 @@ export async function mountSettings(app: HTMLElement) {
           const assigned = repositories().filter((r) =>
             (r.assignments ?? []).some((a) => a.agent_id === agent.id),
           );
+          if (assigned.length) {
+            showError(
+              "This Agent is assigned to a repository. Remove or replace its assignments and save the repository before deleting it.",
+            );
+            return;
+          }
           if (
             !(await confirmDialog(
               "Delete this agent?",
-              `Delete "${escape(agent.name)}"? ${assigned.length ? `It is assigned to ${assigned.length} repositor${assigned.length === 1 ? "y" : "ies"}; those assignments will be removed too.` : "Nothing is removed until you save changes."}`,
+              `Delete "${escape(agent.name)}" from saved Agents? Completed review evidence is retained.`,
               "Delete agent",
             ))
           )
             return;
-          draft.agents = agents().filter((a) => a !== agent);
-          for (const repository of repositories())
-            repository.assignments = (repository.assignments ?? []).filter(
-              (a) => a.agent_id !== agent.id,
-            );
-          render();
+          try {
+            await commitResource({
+              kind: "agent",
+              id: agent.id,
+              expected: saved.agents?.find((a) => a.id === agent.id) ?? null,
+              value: null,
+            });
+            render();
+          } catch (cause) {
+            showError(reason(cause));
+          }
         };
       list.append(row);
     }
@@ -475,9 +563,12 @@ export async function mountSettings(app: HTMLElement) {
         <label>AI account<select name="ai-account" aria-label="AI account"><option value="">Choose a Copilot account</option>${copilotAccounts.map((a) => `<option value="${escape(a.account_id)}" ${a.account_id === existing?.ai_account?.account_id ? "selected" : ""} ${a.state === "connected" ? "" : "disabled"}>${escape(a.login)} (${escape(a.account_id)})${a.state === "connected" ? "" : " - reconnect required"}</option>`).join("")}${existing?.ai_account && !copilotAccounts.some((a) => a.account_id === existing.ai_account?.account_id) ? `<option selected disabled value="${escape(existing.ai_account.account_id)}">Copilot ${escape(existing.ai_account.account_id)} - reconnect required</option>` : ""}</select></label>
         <label>Model<select name="model" aria-label="Model" disabled><option value="${escape(existing?.model ?? "")}">${escape(existing?.model ?? "Choose an account first")}</option></select></label>
         <p class="settings-hint" data-model-status role="status"></p><button type="button" data-retry-models>Retry model list</button><button type="button" data-cancel-models hidden>Cancel model lookup</button>
-        <label>Doctrine<select name="doctrine">${option("", "None", existing?.doctrine ?? "")}${doctrines()
-          .map((d) => option(d.title, d.title, existing?.doctrine ?? ""))
-          .join("")}</select></label>
+        <fieldset><legend>Doctrines</legend><p class="settings-hint">Select zero or more. Existing order is retained; newly selected doctrines append in library order.</p>${doctrines()
+          .map(
+            (d) =>
+              `<label><input type="checkbox" name="doctrine" value="${escape(d.title)}" ${existing && doctrineTitles(existing).some((t) => t.trim().toLowerCase() === d.title.trim().toLowerCase()) ? "checked" : ""} />${escape(d.title)}</label>`,
+          )
+          .join("")}</fieldset>
         <label>Prompt<textarea name="prompt" rows="4" required>${escape(existing?.prompt ?? "Review this pull request for correctness, risk, and readability.")}</textarea></label>
         <label>Signature<input name="signature" required maxlength="80" value="${escape(existing?.signature ?? "PR Sniper \u{1F3AF}")}" /></label>
         <p class="settings-hint">Custom signature is saved for the signature-customization follow-up. Current publication uses the canonical PR Sniper signature.</p>
@@ -632,7 +723,7 @@ export async function mountSettings(app: HTMLElement) {
       selectedWasConnected = connected;
     };
     void loadModels();
-    modal.querySelector("form")!.onsubmit = (event) => {
+    modal.querySelector("form")!.onsubmit = async (event) => {
       event.preventDefault();
       const alert = modal.querySelector<HTMLElement>("[role=alert]")!;
       const name = modal
@@ -640,8 +731,20 @@ export async function mountSettings(app: HTMLElement) {
         .value.trim();
       const model =
         modal.querySelector<HTMLSelectElement>("[name=model]")!.value;
-      const doctrine =
-        modal.querySelector<HTMLSelectElement>("[name=doctrine]")!.value;
+      const selectedDoctrines = [
+        ...modal.querySelectorAll<HTMLInputElement>("[name=doctrine]:checked"),
+      ].map((input) => input.value);
+      const previousTitles = existing ? doctrineTitles(existing) : [];
+      const sameTitle = (a: string, b: string) =>
+        a.trim().toLowerCase() === b.trim().toLowerCase();
+      const selectedTitles = [
+        ...previousTitles.filter((title) =>
+          selectedDoctrines.some((d) => sameTitle(d, title)),
+        ),
+        ...selectedDoctrines.filter(
+          (title) => !previousTitles.some((d) => sameTitle(d, title)),
+        ),
+      ];
       const prompt =
         modal.querySelector<HTMLTextAreaElement>("[name=prompt]")!.value;
       const signature = modal
@@ -682,12 +785,23 @@ export async function mountSettings(app: HTMLElement) {
             : {}),
           prompt,
           signature,
-          ...(doctrine ? { doctrine } : {}),
+          ...(existing &&
+          existing.doctrines === undefined &&
+          JSON.stringify(selectedTitles) === JSON.stringify(previousTitles)
+            ? existing.doctrine
+              ? { doctrine: existing.doctrine }
+              : {}
+            : { doctrines: selectedTitles }),
         };
-        if (existing) {
-          Object.assign(existing, values);
-          if (!doctrine) delete existing.doctrine;
-        } else (draft.agents ??= []).push(values);
+        await commitResource(
+          {
+            kind: "agent",
+            id: values.id,
+            expected: saved.agents?.find((a) => a.id === values.id) ?? null,
+            value: values,
+          },
+          modal,
+        );
         modal.close();
         render();
       } catch (cause) {
@@ -846,20 +960,23 @@ export async function mountSettings(app: HTMLElement) {
       item: Discovered & { repositoryId?: string },
       enabled: boolean,
     ) {
-      const existing = item.repositoryId
+      let existing = item.repositoryId
         ? repositories().find((r) => r.id === item.repositoryId)
         : repositories().find(
             (r) => r.name === item.name && !r.provider_account_id,
           );
       if (existing) existing.enabled = enabled;
-      else if (enabled && item.name)
-        (draft.repositories ??= []).push({
+      else if (enabled && item.name) {
+        existing = {
           id: newIdentity(),
           name: item.name,
           enabled,
           provider: "github",
-        });
+        };
+        (draft.repositories ??= []).push(existing);
+      }
       changed();
+      return existing;
     }
     function rows() {
       const list = content.querySelector<HTMLElement>(".repository-list")!;
@@ -888,6 +1005,16 @@ export async function mountSettings(app: HTMLElement) {
               : "GitHub - account required";
         const row = document.createElement("article");
         row.className = "repository-row";
+        const markDraft = (current = repository) => {
+          row.dataset.dirty = String(
+            !!current &&
+              !sameResource(
+                current,
+                saved.repositories?.find((r) => r.id === current.id),
+              ),
+          );
+        };
+        markDraft();
         const localName = item.path.split(isWindows ? /[\\/]/ : "/").pop();
         const duplicateBinding =
           !!repository &&
@@ -904,7 +1031,7 @@ export async function mountSettings(app: HTMLElement) {
           <span class="repo-symbol">${icon("integrations")}</span><div class="repository-info"><strong>${escape(item.name?.split("/")[1] ?? localName ?? "")}</strong><p>${escape(item.name ?? item.unavailable ?? "Unavailable")}</p><p>${escape(providerLabel)}</p>${item.paths.length ? `<details class="clone-paths"><summary>${item.paths.length} local ${item.paths.length === 1 ? "clone" : "clones"}</summary><ul>${item.paths.map((path) => `<li>${escape(path)}</li>`).join("")}</ul></details>` : ""}</div>
           ${item.name ? `<span class="repository-note">${assignmentCount ? `${assignmentCount} agent${assignmentCount === 1 ? "" : "s"} assigned` : "No agents assigned"}</span><button class="configure">Settings</button>` : ""}`;
         row.querySelector<HTMLInputElement>("input")!.onchange = (event) => {
-          select(item, (event.target as HTMLInputElement).checked);
+          markDraft(select(item, (event.target as HTMLInputElement).checked));
           content.querySelector("#selected-count")!.textContent =
             `${repositories().filter((r) => r.enabled).length} selected`;
         };
@@ -939,7 +1066,7 @@ export async function mountSettings(app: HTMLElement) {
       repository?.provider_account_id ?? githubAccounts[0]?.account_id ?? "";
     const modal = dialog(
       repository ? "Edit repository" : "Add repository",
-      `<form><label>GitHub repository<input name="repository" required value="${escape(repository?.name ?? "")}" placeholder="owner/repository or https://github.com/owner/repository" /></label>${githubAccounts.length ? `<label>Acting GitHub account<select name="account" required>${githubAccounts.map((account) => option(account.account_id, `${account.login} (${account.account_id})`, selectedAccount)).join("")}</select></label>` : ""}<p class="settings-hint">${githubAccounts.length ? "PR Sniper validates this repository with the selected account before binding its stable identity." : "Connect a GitHub account to validate and bind this repository. Until then it remains explicitly unbound."} Adding is a draft until you save changes. It does not start reviews.</p><p role="alert" hidden></p><button class="primary">Use repository</button></form>`,
+      `<form><label>GitHub repository<input name="repository" required value="${escape(repository?.name ?? "")}" placeholder="owner/repository or https://github.com/owner/repository" /></label>${githubAccounts.length ? `<label>Acting GitHub account<select name="account" required>${githubAccounts.map((account) => option(account.account_id, `${account.login} (${account.account_id})`, selectedAccount)).join("")}</select></label>` : ""}<p class="settings-hint">${githubAccounts.length ? "PR Sniper validates this repository with the selected account before binding its stable identity." : "Connect a GitHub account to validate and bind this repository. Until then it remains explicitly unbound."} Save persists this repository only. Monitoring scope still requires separate confirmation.</p><p role="alert" hidden></p><button class="primary">Save repository</button></form>`,
     );
     let submitting = false;
     const originDraft = draft;
@@ -986,23 +1113,20 @@ export async function mountSettings(app: HTMLElement) {
           )
         )
           throw "This GitHub repository is already configured.";
-        if (repository) {
-          repository.name = canonical;
-          repository.provider_account_id = resolved?.identity.id;
-          repository.provider_repository_id = resolved?.repository.id;
-        } else
-          (draft.repositories ??= []).push({
-            id: newIdentity(),
-            name: canonical,
-            provider: "github",
-            enabled: true,
-            provider_account_id: resolved?.identity.id,
-            provider_repository_id: resolved?.repository.id,
-          });
+        const value: Repository = {
+          ...(repository ?? {}),
+          id: repository?.id ?? newIdentity(),
+          name: canonical,
+          provider: "github",
+          enabled: repository?.enabled ?? false,
+          provider_account_id: resolved?.identity.id,
+          provider_repository_id: resolved?.repository.id,
+        };
+        await commitResource(repositoryEdit(value), modal);
         modal.close();
         render();
       } catch (cause) {
-        if (!current()) return;
+        if (!active()) return;
         const alert = modal.querySelector<HTMLElement>("[role=alert]")!;
         alert.textContent = reason(cause);
         alert.hidden = false;
@@ -1020,8 +1144,8 @@ export async function mountSettings(app: HTMLElement) {
         <div class="section-actions"><h2>Monitoring scope</h2><button data-configure-scope ${repository.provider_account_id && repository.provider_repository_id ? "" : "disabled"}>Configure scope</button></div>
         <p class="settings-hint" data-scope-status>Reading monitoring scope...</p>
         <label for="repository-review-start">Review start</label><select id="repository-review-start" data-review-start><option value="inherit">Use default (${draft.defaults.automatic_agent_start ? "automatic" : "manual"})</option><option value="automatic">Start automatically when trusted and eligible</option><option value="manual">Require manual start</option></select>
-        <p class="settings-hint">Saved with your draft. Forks and untrusted authors always require confirmation. Review start does not enable publication.</p>
-        <label for="repository-publication">Comment publication</label><select id="repository-publication" data-publication><option value="inherit">Use default (${draft.defaults.automatic_comment_publication ? "automatic" : "confirmation required"})</option><option value="automatic">Publish automatically after revalidation</option><option value="manual">Require confirmation for each review</option></select>
+        <p class="settings-hint">Save repository commits this resource only. Forks and untrusted authors always require confirmation. Review start does not enable publication.</p>
+        <label for="repository-publication">Comment publication</label><select id="repository-publication" data-publication><option value="inherit">Use default (${draft.defaults.automatic_comment_publication ? "automatic" : "local-only"})</option><option value="automatic">Publish automatically after revalidation</option><option value="manual">Off: retain normal findings locally</option></select>
         <p class="settings-hint">The assignment must also allow Comment. Uses the repository's GitHub account, never the Copilot account. This cannot approve or merge a pull request.</p>
         <div class="section-actions"><h2>Agents on this repository</h2><button class="primary" data-assign-agent ${agents().length ? "" : "disabled"}>Assign agent</button></div>
         <div class="assignment-list"></div>
@@ -1029,8 +1153,30 @@ export async function mountSettings(app: HTMLElement) {
         <div class="section-actions"><h2>People you watch</h2><button data-add-people>Add people</button></div>
         <div class="watchlist"></div>
         <p class="settings-hint">Optional. A nonempty effective watched-author filter qualifies those authors. An empty effective author filter means all authors only after scope confirmation and never establishes trust. Pull requests requesting the signed-in account also qualify when the effective inherited reviewer-assignment trigger is enabled. Exact GitHub login, no wildcards.</p>
-        <details><summary>Repository and connection</summary><div class="settings-actions"><button id="rename-repository">Edit repository</button><button id="remove-repository">Remove repository</button></div><div class="connection"></div></details>`,
+        <details><summary>Repository and connection</summary><div class="settings-actions"><button id="rename-repository">Edit repository</button><button id="remove-repository">Remove repository</button></div><div class="connection"></div></details>
+        <p role="alert" data-resource-error hidden></p><div class="settings-actions"><button class="primary" data-save-repository>Save repository</button><button data-cancel-repository>Cancel repository changes</button></div>`,
     );
+    modal.querySelector<HTMLButtonElement>("[data-save-repository]")!.onclick =
+      async () => {
+        try {
+          await commitResource(repositoryEdit(repository), modal);
+          modal.close();
+          render();
+        } catch (cause) {
+          const alert = modal.querySelector<HTMLElement>(
+            "[data-resource-error]",
+          )!;
+          alert.textContent = reason(cause);
+          alert.hidden = false;
+        }
+      };
+    modal.querySelector<HTMLButtonElement>(
+      "[data-cancel-repository]",
+    )!.onclick = () => {
+      acceptResource(draft, clone(saved), repositoryEdit(repository));
+      modal.close();
+      render();
+    };
     renderAssignments();
     renderWatchlist();
     const reviewStart = modal.querySelector<HTMLSelectElement>(
@@ -1110,16 +1256,20 @@ export async function mountSettings(app: HTMLElement) {
       () => {
         const confirm = dialog(
           "Remove repository?",
-          `<p>Remove ${escape(repository.name)} and its assignments from your draft? Nothing is removed until Save changes.</p><button class="primary" id="confirm-remove">Remove from settings</button>`,
+          `<p>Remove ${escape(repository.name)} and its assignments from saved settings? Completed evidence is retained.</p><p role="alert" hidden></p><button class="primary" id="confirm-remove">Remove from settings</button>`,
         );
         confirm.querySelector<HTMLButtonElement>("#confirm-remove")!.onclick =
-          () => {
-            draft.repositories = repositories().filter(
-              (r) => r.id !== repository.id,
-            );
-            confirm.close();
-            modal.close();
-            render();
+          async () => {
+            try {
+              await commitResource(repositoryEdit(repository, null), confirm);
+              confirm.close();
+              modal.close();
+              render();
+            } catch (cause) {
+              const alert = confirm.querySelector<HTMLElement>("[role=alert]")!;
+              alert.textContent = reason(cause);
+              alert.hidden = false;
+            }
           };
       };
 
@@ -1152,9 +1302,14 @@ export async function mountSettings(app: HTMLElement) {
     }
 
     async function configureMonitoringScope() {
-      if (dirty()) {
+      if (
+        !sameResource(
+          repository,
+          saved.repositories?.find((r) => r.id === repository.id),
+        )
+      ) {
         scopeStatus.textContent =
-          "Save changes before previewing monitoring scope. Your draft has not been changed.";
+          "Save repository before previewing monitoring scope. Your draft has not been changed.";
         return;
       }
       configureScope.disabled = true;
@@ -1183,7 +1338,7 @@ export async function mountSettings(app: HTMLElement) {
       const scope = dialog(
         `Monitoring scope for ${repository.name}`,
         `<p>Found <strong data-matching-count>${preview.candidates.length}</strong> matching open, non-draft pull request${preview.candidates.length === 1 ? "" : "s"} through ${escape(preview.account_login)} (${escape(preview.account_id)}).</p>
-        <p class="settings-hint">Choose what can enter detection now. New head revisions are evaluated later against the current author/reviewer filter. All-author matching does not establish trust.</p>
+        <p class="settings-hint">Choose the initial author-matched backlog. Explicit reviewer requests can admit older PRs. Once admitted, a PR stays tracked until verified closure or merge; trust and execution gates still apply. All-author matching does not establish trust.</p>
         <fieldset class="activation-choice"><legend>Initial scope</legend>
           <label><input type="radio" name="scope-mode" value="new_only" checked />New pull requests only</label>
           <label><input type="radio" name="scope-mode" value="selected_existing" />Selected existing pull requests plus new pull requests</label>
@@ -1359,11 +1514,13 @@ export async function mountSettings(app: HTMLElement) {
         const agent = agents().find((a) => a.id === assignment.agent_id);
         const row = document.createElement("div");
         row.className = "assignment-row";
-        row.innerHTML = `<div><strong>${escape(agent?.name ?? "Deleted agent")}</strong><p>${escape(scheduleSummary(assignment.schedule))} \u00b7 ${assignment.comment ? "Comments" : "Silent"}${assignment.approve ? " \u00b7 Approve (coming soon)" : ""}</p></div><button data-edit>Edit</button><button data-remove>Remove</button>`;
+        row.innerHTML = `<div><strong>${escape(agent?.name ?? "Deleted agent")}</strong><p>${primaryAssignmentId(repository) === assignment.id ? "Primary \u00b7 " : ""}${assignment.comment ? "Comments" : "Silent"}${assignment.actions?.approve ? " \u00b7 Approve opted in" : ""}${assignment.actions?.merge ? " \u00b7 Merge opted in (primary only)" : ""}</p></div><button data-edit>Edit</button><button data-remove>Remove</button>`;
         row.querySelector<HTMLButtonElement>("[data-edit]")!.onclick = () =>
           assignAgentDialog(repository, () => renderAssignments(), assignment);
         row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick = () => {
           repository.assignments = assignments.filter((a) => a !== assignment);
+          if (repository.primary_assignment_id === assignment.id)
+            delete repository.primary_assignment_id;
           changed();
           renderAssignments();
         };
@@ -1398,11 +1555,10 @@ export async function mountSettings(app: HTMLElement) {
     onSaved: () => void,
     existing?: Assignment,
   ) {
-    const schedule = existing?.schedule ?? {
-      kind: "interval" as const,
-      minutes: 15,
-      timezone: localZone(),
-    };
+    const assignmentId = existing?.id ?? newIdentity();
+    const sole =
+      (repository.assignments?.length ?? 0) + (existing ? 0 : 1) === 1;
+    const isPrimary = sole || primaryAssignmentId(repository) === assignmentId;
     const modal = dialog(
       existing ? "Edit assignment" : "Assign agent",
       `<form><label>Agent<select name="agent" required>${agents()
@@ -1410,54 +1566,16 @@ export async function mountSettings(app: HTMLElement) {
           option(a.id, a.name, existing?.agent_id ?? agents()[0]?.id ?? ""),
         )
         .join("")}</select></label>
-        <label>Check for pull requests<select name="frequency">${[
-          5,
-          15,
-          30,
-          60,
-          ...(schedule.kind === "interval" ? [schedule.minutes] : []),
-        ]
-          .filter((n, i, a) => a.indexOf(n) === i)
-          .map((n) =>
-            option(
-              String(n),
-              `Every ${n} minutes`,
-              schedule.kind === "interval" ? String(schedule.minutes) : "cron",
-            ),
-          )
-          .join(
-            "",
-          )}${option("cron", "Custom schedule (cron)", schedule.kind === "cron" ? "cron" : "")}</select></label>
-        <details ${schedule.kind === "cron" ? "open" : ""}><summary>Advanced scheduling</summary><label>Interval minutes<input name="minutes" type="number" min="1" step="1" value="${schedule.kind === "interval" ? schedule.minutes : 15}" /></label><label>Cron expression<input name="cron" value="${escape(schedule.kind === "cron" ? schedule.expression : "0 9 * * MON-FRI")}" /></label><label>Time zone<input name="timezone" value="${escape(schedule.timezone)}" /></label></details>
-        <div class="permission-row"><label><input type="checkbox" name="comment" ${(existing?.comment ?? true) ? "checked" : ""} />Comment<small>Allow publication through the repository's automatic or confirmation gate.</small></label><label><input type="checkbox" name="approve" disabled ${existing?.approve ? "checked" : ""} />Approve<small>Coming soon -- once we trust the aim.</small></label></div>
-        <p class="settings-hint">Each assignment runs on its own timer, independent of any other agent on this repository.</p><p role="alert" hidden></p><button class="primary">${existing ? "Save assignment" : "Assign agent"}</button></form>`,
+        <label><input type="checkbox" name="primary" ${isPrimary ? "checked" : ""} ${sole ? "disabled" : ""} />Primary<small>${sole ? "The sole assignment is primary automatically." : "At most one explicit primary per repository. Uncheck to leave none."}</small></label>
+        <div class="permission-row"><label><input type="checkbox" name="comment" ${(existing?.comment ?? true) ? "checked" : ""} />Comment<small>Allow comment publication, independently of approval and merge.</small></label><label><input type="checkbox" name="approve" ${existing?.actions?.approve ? "checked" : ""} />Approve<small>Opt in to the acting GitHub account's approval after current Agent clearance and a primary final full review. Never self-approval or policy bypass.</small></label><label><input type="checkbox" name="merge" ${existing?.actions?.merge ? "checked" : ""} ${isPrimary ? "" : "disabled"} />Merge<small>Independent opt-in; primary only, after final review, green CI and verified provider policies. Does not require Approve or personal acknowledgment.</small></label></div>
+        <p class="settings-hint">Primary selection never enables permissions. Polling is configured globally in Preferences. Saving commits this repository, not unrelated drafts.</p><p role="alert" hidden></p><button class="primary">${existing ? "Save assignment" : "Assign agent"}</button></form>`,
     );
-    const frequency =
-      modal.querySelector<HTMLSelectElement>("[name=frequency]")!;
-    const minutes = modal.querySelector<HTMLInputElement>("[name=minutes]")!;
-    const cron = modal.querySelector<HTMLInputElement>("[name=cron]")!;
-    minutes.disabled = schedule.kind === "cron";
-    cron.disabled = schedule.kind !== "cron";
-    frequency.onchange = () => {
-      if (frequency.value !== "cron") minutes.value = frequency.value;
-      else modal.querySelector("details")!.open = true;
-      minutes.disabled = frequency.value === "cron";
-      cron.disabled = frequency.value !== "cron";
+    const primary = modal.querySelector<HTMLInputElement>("[name=primary]")!;
+    const merge = modal.querySelector<HTMLInputElement>("[name=merge]")!;
+    primary.onchange = () => {
+      merge.disabled = !primary.checked;
     };
-    minutes.oninput = () => {
-      if (
-        frequency.value === "cron" ||
-        !minutes.validity.valid ||
-        !minutes.value
-      )
-        return;
-      if (![...frequency.options].some((item) => item.value === minutes.value))
-        frequency.add(
-          new Option(`Every ${minutes.value} minutes`, minutes.value),
-        );
-      frequency.value = minutes.value;
-    };
-    modal.querySelector("form")!.onsubmit = (event) => {
+    modal.querySelector("form")!.onsubmit = async (event) => {
       event.preventDefault();
       const alert = modal.querySelector<HTMLElement>("[role=alert]")!;
       try {
@@ -1465,31 +1583,29 @@ export async function mountSettings(app: HTMLElement) {
           modal.querySelector<HTMLSelectElement>("[name=agent]")!.value;
         if (!agentId) throw "Choose an agent.";
         const value: Assignment = {
-          id: existing?.id ?? newIdentity(),
+          id: assignmentId,
           agent_id: agentId,
-          schedule:
-            frequency.value === "cron"
-              ? {
-                  kind: "cron",
-                  expression: cron.value,
-                  timezone:
-                    modal.querySelector<HTMLInputElement>("[name=timezone]")!
-                      .value,
-                }
-              : {
-                  kind: "interval",
-                  minutes: Number(minutes.value),
-                  timezone:
-                    modal.querySelector<HTMLInputElement>("[name=timezone]")!
-                      .value,
-                },
+          schedule: existing?.schedule ?? clone(saved.defaults.schedule),
           comment:
             modal.querySelector<HTMLInputElement>("[name=comment]")!.checked,
-          approve: false,
+          approve: existing?.approve ?? false,
+          actions: {
+            approve:
+              modal.querySelector<HTMLInputElement>("[name=approve]")!.checked,
+            merge: merge.checked,
+          },
         };
-        if (existing) Object.assign(existing, value);
-        else (repository.assignments ??= []).push(value);
-        changed();
+        const next = clone(repository);
+        if (existing)
+          next.assignments = (next.assignments ?? []).map((a) =>
+            a.id === value.id ? value : a,
+          );
+        else (next.assignments ??= []).push(value);
+        if (primary.checked && !sole) next.primary_assignment_id = value.id;
+        else if (!primary.checked && next.primary_assignment_id === value.id)
+          delete next.primary_assignment_id;
+        await commitResource(repositoryEdit(repository, next), modal);
+        Object.assign(repository, next);
         modal.close();
         onSaved();
       } catch (cause) {
@@ -1568,14 +1684,72 @@ export async function mountSettings(app: HTMLElement) {
   // ------------------------------------------------------------- Preferences
 
   function renderPreferences() {
+    const schedule = draft.defaults.schedule;
     content.innerHTML = `<div class="settings-group"><fieldset aria-label="Startup"><legend>Startup</legend><label class="setting-row"><span>Open PR Sniper at login<small>${snapshot.isolated ? `Isolated development run: changing ${isWindows ? "Windows startup apps" : "macOS login items"} is disabled.` : `Saved request, not effective ${platformName} state. Registration: ${snapshot.login_registration ?? "unavailable"}.${isWindows ? " Windows Startup Apps can disable a registered entry." : ""}`}</small></span><input id="login" type="checkbox" role="switch" ${draft.launch_at_login ? "checked" : ""} ${snapshot.isolated || snapshot.login_registration === null ? "disabled" : ""} /></label></fieldset></div>
+      <div class="settings-group"><fieldset aria-label="Global polling and capacity"><legend>Global polling and capacity</legend>
+      <label>Cron expression<input id="global-cron" value="${escape(schedule.kind === "cron" ? schedule.expression : "")}" placeholder="*/15 * * * *" /></label>
+      <label>Schedule helper<select id="cron-helper"><option value="">Custom five-field expression</option><option value="*/15 * * * *">Every 15 minutes</option><option value="0 * * * *">Every hour</option><option value="0 9 * * MON-FRI">Weekdays at 09:00</option></select></label>
+      <label>Time zone<input id="global-timezone" value="${escape(schedule.timezone)}" /></label>
+      <p class="settings-hint">Five fields: minute, hour, day, month, weekday. Evaluated in this IANA time zone, including its daylight-saving rules. One global scan covers enabled, scope-confirmed repositories. Shared AI capacity drains admitted work independently of polling.${schedule.kind === "interval" ? ` Saved legacy interval: ${schedule.minutes} minutes. Polling is blocked until you explicitly choose a cron expression; no automatic conversion.` : ""}</p>
+      <label>AI capacity<input id="global-capacity" type="number" min="1" max="4294967295" step="1" value="${draft.capacity}" /></label>
+      <p class="settings-hint" data-readiness role="status">Reading saved-resource readiness...</p></fieldset></div>
       <div class="settings-group"><fieldset aria-label="Review execution"><legend>Review execution</legend><label class="setting-row"><span>Start eligible reviews automatically<small>Default for assigned repositories. Forks and untrusted authors still require confirmation; publication has its own gate.</small></span><input id="automatic-review-start" type="checkbox" role="switch" ${draft.defaults.automatic_agent_start ? "checked" : ""} /></label></fieldset></div>
       <div class="settings-group"><fieldset aria-label="Comment publication"><legend>Comment publication</legend><label class="setting-row"><span>Publish review comments automatically<small>Default for assigned repositories that allow Comment. Revalidates revision, trust and eligibility before publication. Never approves or merges.</small></span><input id="automatic-publication" type="checkbox" role="switch" ${draft.defaults.automatic_comment_publication ? "checked" : ""} /></label></fieldset></div>
+      <div class="settings-group" id="automation-settings"></div>
       <div class="settings-group" id="notification-settings"></div>
       <div class="settings-group"><fieldset aria-label="Diagnostics"><legend>Diagnostics</legend><p class="settings-hint">Settings and logs live in your ${isWindows ? "Windows local application-data" : "macOS app-support"} folder. Open a redacted diagnostics view to check in on them without exposing tokens.</p><button id="diagnostics">Open redacted diagnostics</button></fieldset></div>`;
+    const cron = content.querySelector<HTMLInputElement>("#global-cron")!;
+    const timezone =
+      content.querySelector<HTMLInputElement>("#global-timezone")!;
+    const updateSchedule = () => {
+      draft.defaults.schedule = {
+        kind: "cron",
+        expression: cron.value,
+        timezone: timezone.value,
+      };
+      changed();
+    };
+    cron.oninput = updateSchedule;
+    timezone.oninput = () => {
+      draft.defaults.schedule.timezone = timezone.value;
+      changed();
+    };
+    content.querySelector<HTMLSelectElement>("#cron-helper")!.onchange = (
+      event,
+    ) => {
+      const expression = (event.target as HTMLSelectElement).value;
+      if (expression) {
+        cron.value = expression;
+        updateSchedule();
+      }
+    };
+    content.querySelector<HTMLInputElement>("#global-capacity")!.oninput = (
+      event,
+    ) => {
+      draft.capacity = Number((event.target as HTMLInputElement).value);
+      changed();
+    };
+    const readiness = content.querySelector<HTMLElement>("[data-readiness]")!;
+    void savedResources().then(
+      ({ readiness: state }) => {
+        if (!readiness.isConnected) return;
+        const issues = [
+          ...state.issues,
+          ...state.repositories.flatMap((r) => r.issues),
+        ];
+        readiness.textContent = `${state.configuration_ready ? "Saved configuration is complete." : `Saved setup incomplete: ${issues.join(" ")}`} Account verification, model access and monitoring-scope confirmation remain separate gates. Unsaved fields do not affect readiness.`;
+      },
+      (cause) => {
+        if (readiness.isConnected)
+          readiness.textContent = `Saved-resource readiness unavailable: ${reason(cause)}`;
+      },
+    );
     mountNotificationSettings(
       content.querySelector<HTMLElement>("#notification-settings")!,
       notificationView,
+    );
+    mountAutomation(
+      content.querySelector<HTMLElement>("#automation-settings")!,
     );
     content.querySelector<HTMLInputElement>(
       "#automatic-review-start",
@@ -1610,7 +1784,6 @@ export async function mountSettings(app: HTMLElement) {
           if (fresh.settings) {
             draft.launch_at_login = fresh.settings.launch_at_login;
             saved.launch_at_login = fresh.settings.launch_at_login;
-            persisted.launch_at_login = fresh.settings.launch_at_login;
           }
           snapshot = fresh;
         } catch {
@@ -1632,35 +1805,19 @@ export async function mountSettings(app: HTMLElement) {
   }
 
   save.onclick = async () => {
-    if (busy || !dirty()) return;
+    if (busy || !preferencesDirty()) return;
     dialogs.closeAll();
     clearError();
-    busy = true;
-    changed();
-    const controls = [
-      ...app.querySelectorAll<
-        | HTMLInputElement
-        | HTMLButtonElement
-        | HTMLSelectElement
-        | HTMLTextAreaElement
-      >("input,button,select,textarea"),
-    ].map((control) => ({ control, disabled: control.disabled }));
-    controls.forEach(({ control }) => {
-      control.disabled = true;
-    });
     try {
-      const result = await invoke<{
-        settings: Settings;
-        warning: string | null;
-      }>("save_preferences", { settings: draft, expected: persisted });
-      persisted = clone(result.settings);
-      saved = clone(result.settings);
-      draft = clone(result.settings);
+      await commitResource({
+        kind: "preferences",
+        expected: clone(globalPreferences(saved)),
+        value: clone(globalPreferences(draft)),
+      });
       conflict = false;
-      if (result.warning) showError(result.warning);
     } catch (cause) {
       const message = reason(cause);
-      if (message.startsWith("Settings changed in another window")) {
+      if (message.startsWith("Resource changed in another window")) {
         conflict = true;
         showError(
           `${message} Your unsaved changes are still here. Discard the draft and reload only when you are ready to replace them with the latest saved settings.`,
@@ -1669,10 +1826,6 @@ export async function mountSettings(app: HTMLElement) {
         showError(message);
       }
     } finally {
-      controls.forEach(({ control, disabled }) => {
-        control.disabled = disabled;
-      });
-      busy = false;
       render();
     }
   };
@@ -1703,7 +1856,6 @@ export async function mountSettings(app: HTMLElement) {
         return;
       }
       snapshot = state;
-      persisted = clone(state.settings);
       saved = clone(state.settings);
       draft = clone(saved);
       discovery = null;
@@ -1743,7 +1895,6 @@ export async function mountSettings(app: HTMLElement) {
         );
         return;
       }
-      persisted = clone(state.settings);
       saved = clone(state.settings);
       draft = clone(saved);
       conflict = false;

@@ -18,6 +18,19 @@ data, even when an assertion fails. Native bridge lookup honors `CARGO_TARGET_DI
 and the Windows `.exe` suffix; temporary profiles and browser output remain under
 that target. The default target is `src-tauri/target`.
 
+`panel.spec.mjs` exercises the production root panel (not the explicit
+`?view=settings` / `?view=queue` component harnesses): all four destinations,
+one detail layer, exact Back row/scroll/focus, retained unsaved editors,
+Escape/close/hide/reopen, native route revisions, notification destinations,
+missing/escaped identities, external-auth and folder-dialog fixture returns,
+and 400px/small-monitor layout. Final and conversation suites also exercise
+their exact panel job routes. The bridge serializes the production native
+`panel::Session` only to carry it between fixture processes; the real host
+retains that session in memory. Only the Tauri event delivery and window
+visibility boundary are mocked. Tests do not prove OS focus/dismissal or
+notification activation; the isolated native harness and platform procedures
+remain required.
+
 `doctrine-seeding.spec.mjs` covers the complete 23-document canonical catalog
 (exact titles and bodies, with only frontmatter/H1 removed), durable first load,
 Agent choices before visiting Doctrines, and saving Integrations first. It
@@ -54,14 +67,18 @@ removal. Fresh reads protect immutable identity, the independent neighboring
 record, and the startup preference throughout. Both lifecycle commands call the
 same production Store operations as the native app.
 
-`policy-inheritance.spec.mjs` now exercises reusable Agents with multiple
-independent per-repository assignments, interval/cron/time-zone settings,
-comment permissions and removal/reset. It seeds nondefault legacy policies and
-presets and proves they remain unchanged by current UI saves. The old global
-defaults/override/preset editors are intentionally absent from the approved
-four-tab model, not hidden test prerequisites. `sidebar.spec.mjs` covers
+`policy-inheritance.spec.mjs` exercises reusable Agents with multiple
+independent per-repository assignments, comment permissions and removal/reset.
+It seeds nondefault legacy schedules, policies and presets and proves they
+remain unchanged by resource saves, without exposing scoped polling editors.
+`resources.spec.mjs` covers resource-scoped persistence, conflicting and failed
+writes with retained drafts, ordered doctrine selection, rename/deletion guards,
+global cron/time-zone/capacity controls, shared saved-resource readiness, primary
+selection and independent opt-in permissions. New assignments retain the saved
+global schedule even with invalid or different unsaved Preferences; existing
+assignment schedules and unrelated drafts remain untouched. `sidebar.spec.mjs` covers
 per-repository People, inert doctrine authoring, retained Agent references,
-disabled Approve/notification controls and both desktop/mobile navigation.
+opted-out Approve/notification controls and both desktop/mobile navigation.
 
 The error tests require visible rejection of invalid time zones with the
 previous configuration bytes intact, preserve unsaved edits across focus,
@@ -81,21 +98,38 @@ and unique test-owned registry keys on Windows, never actual login registrations
 
 Review regressions exercise diagnostics failure after configuration has already
 committed. Repository add/enable/remove, Agent edits and assignment edits all
-use the current UI's shared `save_preferences` operation, including the native
+use the current UI's shared `save_resource` operation, including the native
 `SettingsSaved` diagnostics phase through `Store::finish_settings_save`.
 Tests require both authoritative visible saved state and an explicit warning.
 They separately preserve the no-commit contract for failed configuration writes.
 
 Draft-lifecycle tests keep unrelated Agent/repository edits across saves and
-ensure assignment timers stay independent of reusable Agent changes. A fixture can hold one
+ensure repository policy stays independent of reusable Agent changes. A fixture can hold one
 real Store reply at the IPC boundary, allowing deterministic focus/save races
 without sleeps or fake persistence. The submitting Settings controls must be disabled
 while its reply is pending; the implementation serializes Settings mutations by
-temporarily disabling the other controls too. Unsupported Approve remains
-disabled when a save fails. Corrections and production-CSS tests retain
+temporarily disabling the other controls too. Independent permissions retain
+their prior values when a save fails. Corrections and production-CSS tests retain
 keyboard trapping, nested-modal focus restoration, stale reply rejection and
 scroll/viewport evidence using the current repository, Agent and doctrine
-editors. Assignment selectors must immediately reflect advanced interval edits.
+editors. The global schedule helper must match the saved cron expression.
+Review fixtures distinguish captured, planned, interrupted and legacy missing
+configuration without using today's library as historical evidence.
+
+`iterations.spec.mjs` passes the new queue envelope, tracking and global-scan
+fixtures through the native Store bridge. It verifies seven independent ordered
+jobs, immutable admission versus current matching, separate pass/attempt counts,
+provider-confirmed terminal history, same-head reopened iterations, retained
+destination aliases and tracking with no assignments. These are presentation
+fixtures, not live provider claims. `src-tauri/tests/iterations.rs` exercises
+the production Monitor, provider metadata reader and review/publication gates:
+scan-time assignment capture, sticky admission, explicit missing-PR reads,
+404/unavailable/incomplete responses, restart and write-failure recovery,
+legacy receipt deduplication and continued owned-thread polling. No capacity
+engine, new mention routing or provider action is exercised.
+Normal-review execution and resume checks ignore sibling assignment archives
+while preserving the original snapshot and rejecting changes to the selected
+Agent's inputs, effective authority and repository gates.
 
 `platform.spec.mjs` checks the existing host and Settings wording for Windows
 and macOS without changing authorization or native policy. Browser presentation
@@ -106,3 +140,33 @@ Windows WebView2, tray behavior, or login-item integration. They never launch th
 application or changes host login settings. Tests run serially. Port 1421 must
 be free, or select another port with `SETTINGS_TEST_PORT=1422 npm run test:settings`
 for a separate worktree. An existing server is never reused.
+
+`capacity.spec.mjs` covers durable pause across queue/Settings, resource-isolated
+capacity saves, failed writes, honest stopping counts and manual admission while
+another job runs. Occupancy rendering uses explicit synthetic snapshots, not
+live inference. Native `capacity::tests` exercises the production reservation,
+candidate, preparation and completion paths with controlled worker completions:
+limits 1/4/20, mixed FIFO, concurrent manual requests, long initial waits, restart,
+pause/reduction, rapid resume and real failures racing cancellation. Existing
+restricted-runtime tests still verify owned process teardown. Provider tests
+inject pause during pending creation and a lost submit response, preserving
+original receipts and proving no duplicate batch is posted.
+
+`conversations.spec.mjs` exercises typed conversation targets/current contexts
+through the Store bridge, explicit versus absent feedback assessments, retained
+provider-closed tombstones, unavailable observations and missing-primary
+presentation. Native conversation tests exercise production scan admission,
+normal/reply/mention FIFO dispatch, provider comment pagination, scoped mention
+matching, current-head observation with immutable root provenance, exact
+reconciliation after lost responses/primary changes and human-judgment gates.
+Owned and mention runtime fixtures share the same restricted tool contract.
+Provider responses are deterministic fixtures, never live action acceptance.
+
+`actions.spec.mjs` drives native Store-backed final-observation fixtures, durable
+manual final requests, approval-versus-personal-review handoff, terminal merge
+receipts, unknown original-effect reconciliation and local-only publication.
+Native `actions::tests` exercises real aggregate/basis capture, shared-capacity
+dispatch, preparation/intent/receipt/reconciliation helpers and the GitHub
+transport adapter with deterministic responses. The restricted-runtime fixture
+answers an actual external-tool request for a changed file before emitting a
+final full-review result. No test approves or merges a live PR.

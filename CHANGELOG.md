@@ -43,6 +43,26 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- Replace separate native Queue/Settings/Status/Diagnostics windows with one
+  hidden-at-start tray panel. Four retained destinations, one exact job-detail
+  layer and Back preserve drafts, row/scroll/focus context and current evidence
+  without reloading. Native notifications route to the saved identity or an
+  explicit missing state, never another PR.
+- Anchor the compact panel to the actual tray monitor/work area with DPI-aware
+  clamping. Outside/Escape/close hide without stopping background work; native
+  pickers retain focus ownership and tray toggles avoid the dismissal/reopen
+  race. Secondary-menu recovery and explicit Quit remain available. Reviewed
+  uses the existing evidence projection, without adding history storage/purge.
+- Replace assignment timers with one durable global cron scan. Capture the scan's
+  assignments and read each account/repository binding once before fanning out
+  individual Agent jobs. Preserve retry budgets, manual-check coalescing and
+  existing owned-thread polling.
+- Keep PR admission after author/reviewer filters change; explicit reviewer
+  requests can admit older PRs. Persist iteration identity, FIFO metadata and
+  separate normal/reply ordinals. Verified closure/merge is terminal; reopening,
+  even at the same head, creates fresh work. Preserve historical review keys,
+  publication receipts and queue destinations without replaying completed passes.
+
 - Require macOS 13.5 or later for the application, matching the bundled Copilot
   runtime's minimum.
 
@@ -63,6 +83,48 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   See the [approved Settings design](docs/agent/design/settings-default.md).
 
 ### Added
+
+- Add primary final full reviews through shared AI capacity after current
+  aggregate Agent/feedback clearance. Capture peer and human context, validate
+  full-file coverage, and preserve separate final evidence and attempt history.
+- Execute independent opt-in GitHub approval and primary-only exact-head merge
+  through native capability/policy gates and one serialized mutation owner.
+  Retain frozen intents, definitive receipts and bounded no-resend reconciliation;
+  preserve personal-review handoff after approval and terminal merge history.
+- Present publication-off normal findings as local-only evidence, without
+  manufacturing author-wait or manual-publication tasks. Retain real pending
+  publication recovery and distinguish action outcomes in notifications.
+
+- Retain verified owned feedback across PR iterations, including closure
+  tombstones and explicit evidence-backed reassessment. Keep immutable original
+  publication/root provenance separate from current conversation analysis;
+  missing or unavailable ownership never becomes clearance.
+- Route top-level acting-account mentions to one repository primary through the
+  existing constrained conversation engine and shared AI capacity. Preserve
+  same-account human replies, stable deduplication, independent publication gates
+  and exact lost-response reconciliation without replacement posts.
+- Show current feedback disposition, blocked mention routing, captured context
+  and held-local ambiguous findings in existing read-only evidence surfaces.
+
+- Share AI capacity across normal reviews and owned-thread analysis, default
+  four, with oldest-eligible ordering and completion-driven refill. Persist
+  manual requests before capacity waiting and start the first AI retry window
+  at actual execution.
+- Add durable global pause/resume and real occupied/stopping/waiting/blocked
+  controls. Pause and capacity reduction discard partial AI work without
+  consuming failure retries, retain stopping reservations through teardown,
+  preserve genuine failures and reconcile existing provider effects.
+
+- Add resource-scoped Settings saves and validation over the existing Store,
+  with a shared saved-configuration readiness contract for future setup flows.
+  Preserve unrelated drafts, reject stale same-resource writes, guard referenced
+  resource deletion and update doctrine references atomically on rename.
+- Support ordered zero/one/many doctrines and immutable execution configuration
+  evidence, with explicitly planned jobs and honest legacy missing snapshots.
+- Save global cron/time-zone and capacity preferences, repository primary
+  selection and independent approval/merge opt-ins. Preserve legacy settings
+  without turning inert approval flags into grants. Global scheduling,
+  concurrency, provider actions and Genie UI remain separate deliveries.
 
 - Add current-user Windows installer candidates and checksum-pinned Chocolatey
   package tooling, with scoped rollback, removal checks and separate unsigned

@@ -237,13 +237,13 @@ fn invocation_revalidates_head_lifecycle_trigger_and_trust() {
         }
         assert!(pr_sniper_lib::monitoring::review_policy(&settings, &job, Some(&changed)).is_err());
     }
-    assert!(!review::requires_trust(&job, &pull));
+    assert!(!review::requires_trust(&settings, &job, &pull));
     let mut fork = pull.clone();
     fork.head_repository_id = Some("200".into());
-    assert!(review::requires_trust(&job, &fork));
+    assert!(review::requires_trust(&settings, &job, &fork));
     let mut all_authors = job;
     all_authors.watched_author = false;
-    assert!(review::requires_trust(&all_authors, &pull));
+    assert!(review::requires_trust(&settings, &all_authors, &pull));
 }
 
 #[test]
@@ -252,6 +252,7 @@ fn durable_review_uses_shared_retry_budget_and_restores_without_new_identity() {
     let store = Store::new(root.path().into());
     let job = job();
     let mut run = ReviewRun {
+        feedback_context: None,
         key: review::key(&job, "assignment"),
         assignment_id: "assignment".into(),
         selection: Selection::resolve(&settings(), &job, "assignment").unwrap(),
@@ -286,6 +287,7 @@ fn durable_review_uses_shared_retry_budget_and_restores_without_new_identity() {
     let mut operation = JobOperation::review(&restored.job, 100);
     operation.begin_attempt(100).unwrap();
     let failure = Failure {
+        cancelled: false,
         kind: OperationFailure::RateLimited,
         message: "Rate limited".into(),
         retry_after_seconds: Some(900),
@@ -293,7 +295,11 @@ fn durable_review_uses_shared_retry_budget_and_restores_without_new_identity() {
     operation.fail(&failure.monitoring(), 100);
     assert_eq!(operation.state, OperationState::ManualRetry);
     let mut boundary = JobOperation::review(&restored.job, 100);
-    assert!(boundary.begin_attempt(1000).is_err());
+    boundary.begin_attempt(1000).unwrap();
+    assert_eq!(boundary.initial_attempt_at, 1000);
+    assert_eq!(boundary.retry_deadline, 1900);
+    boundary.fail(&Failure::timeout().monitoring(), 1001);
+    assert!(boundary.begin_attempt(1900).is_err());
     assert_eq!(boundary.state, OperationState::ManualRetry);
 }
 

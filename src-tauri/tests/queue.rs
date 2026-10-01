@@ -34,6 +34,7 @@ fn review(number: u64) -> ReviewRun {
     let mut operation = JobOperation::review(&job, 100);
     operation.state = OperationState::Completed;
     ReviewRun {
+        feedback_context: None,
         key: review::key(&job, ASSIGNMENT),
         selection: Selection::resolve(&settings(), &job, ASSIGNMENT).unwrap(),
         job, assignment_id: ASSIGNMENT.into(), operation,
@@ -85,7 +86,9 @@ fn publication_is_a_separate_fact_and_the_author_is_not_the_operator() {
     let store = Store::new(root.path().into());
     let mut run = review(1);
     seed(&store, &[run.clone()], &[]);
-    assert_eq!(state(&store), State::ConfirmationRequired);
+    assert_eq!(state(&store), State::MachineSignedOff);
+    let snapshot = serde_json::to_value(queue::snapshot(&store, vec![]).unwrap()).unwrap();
+    assert_eq!(snapshot["publications"][0]["local_only"], true);
     let mut receipt = published(&run);
     store.save_publications(&[receipt.clone()]).unwrap();
     assert_eq!(state(&store), State::MachineSignedOff);
@@ -298,13 +301,13 @@ fn thread_judgment_and_reply_failures_remain_operator_work_not_author_waits() {
         std::slice::from_ref(&run),
         std::slice::from_ref(&origin),
     );
-    let mut follow: FollowUp = serde_json::from_value(json!({
+    let mut follow: FollowUp = follow_up::decode_runs(&serde_json::to_vec(&json!([{
         "id":"follow-1","key":"key","publication_id":origin.id,"review":run,
         "thread":{"id":"thread-1","resolved":false,"can_reply":true,"comments":[]},
         "trigger_id":"99","phase":"human_input_required","analysis":null,"publication":null,"history":[],
         "manual_start":true,"confirmed":false,"automatic_publication":false,"cancelled":false,
         "error":null,"result":null,"body":null,"uncertain":false,"receipt":null
-    })).unwrap();
+    }])).unwrap()).unwrap().remove(0);
     store.save_follow_ups(&[follow.clone()]).unwrap();
     assert_eq!(state(&store), State::WaitingForHuman);
     follow.phase = follow_up::Phase::Unresolved;

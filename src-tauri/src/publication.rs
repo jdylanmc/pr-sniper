@@ -277,12 +277,19 @@ pub fn evaluate_review_gate(
         stop = Some("Monitoring scope is no longer active.".into());
     }
     if stop.is_none() {
-        stop = crate::monitoring::review_policy(settings, &review.job, Some(pull)).err();
+        stop = crate::monitoring::review_policy(
+            settings,
+            current_job.unwrap_or(&review.job),
+            Some(pull),
+        )
+        .err();
     }
     if stop.is_none() && stale {
         stop = Some("The reviewed diff changed; this output is stale.".into());
     }
-    if stop.is_none() && crate::review::requires_trust(&review.job, pull) && !review.trust_confirmed
+    if stop.is_none()
+        && crate::review::requires_trust(settings, current_job.unwrap_or(&review.job), pull)
+        && !review.trust_confirmed
     {
         stop = Some("Trust confirmation for this exact revision is required.".into());
     }
@@ -325,6 +332,9 @@ pub struct WriteFailure {
 
 // The host owns credentials and live gates; the state machine owns effect ordering.
 pub trait Environment {
+    fn paused(&self) -> Result<bool, Failure> {
+        Ok(false)
+    }
     fn now(&self) -> Result<i64, Failure>;
     fn save(&mut self, publication: &mut Publication) -> Result<(), Failure>;
     fn inspect(&mut self, publication: &Publication) -> Result<Gate, Failure>;
@@ -370,6 +380,9 @@ pub fn execute(
 }
 
 fn drive(env: &mut impl Environment, run: &mut Publication) -> Result<(), Failure> {
+    if defer_paused(env, run)? {
+        return Ok(());
+    }
     let gate = env.inspect(run)?;
     if run.batch.is_none() {
         if gate.stop.is_some() {
@@ -425,6 +438,9 @@ fn drive(env: &mut impl Environment, run: &mut Publication) -> Result<(), Failur
     }
     if run.operation.pending_review_id.is_none() {
         effect(env, run, Mutation::Create)?;
+        if defer_paused(env, run)? {
+            return Ok(());
+        }
         let gate = env.inspect(run)?;
         if gate.stop.is_some() {
             return stop(env, run, gate);
@@ -446,8 +462,23 @@ fn drive(env: &mut impl Environment, run: &mut Publication) -> Result<(), Failur
         return stop(env, run, gate);
     }
     effect(env, run, Mutation::Submit)?;
+    if defer_paused(env, run)? {
+        return Ok(());
+    }
     let gate = env.inspect(run)?;
     complete(env, run, gate)
+}
+
+fn defer_paused(env: &mut impl Environment, run: &mut Publication) -> Result<bool, Failure> {
+    if !env.paused()? {
+        return Ok(false);
+    }
+    run.operation.state = OperationState::Interrupted;
+    run.operation.next_attempt_at = Some(env.now()?);
+    run.error =
+        Some("Automation paused; original provider state will be reconciled after resume.".into());
+    env.save(run)?;
+    Ok(true)
 }
 
 fn effect(
@@ -498,6 +529,9 @@ fn effect(
 }
 
 fn stop(env: &mut impl Environment, run: &mut Publication, gate: Gate) -> Result<(), Failure> {
+    if defer_paused(env, run)? {
+        return Ok(());
+    }
     if run
         .receipts
         .last()
@@ -506,6 +540,9 @@ fn stop(env: &mut impl Environment, run: &mut Publication, gate: Gate) -> Result
     {
         // Cleanup is not a grant to publish: only this exact owned pending review can be deleted.
         env.inspect(run)?;
+        if defer_paused(env, run)? {
+            return Ok(());
+        }
         effect(env, run, Mutation::Discard)?;
         env.inspect(run)?;
         if run
@@ -560,6 +597,7 @@ fn complete(env: &mut impl Environment, run: &mut Publication, gate: Gate) -> Re
 
 fn unresolved() -> Failure {
     Failure {
+        cancelled: false,
         message: "GitHub mutation outcome is unresolved. Reconcile the original review; no replacement batch will be created.".into(),
         kind: OperationFailure::Network,
         retry_after_seconds: None,

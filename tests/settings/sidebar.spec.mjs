@@ -78,7 +78,7 @@ test("Settings exposes exactly four approved tabs and no prototype or retired co
   ).toBeVisible();
 });
 
-test("new assignments use local time while seeded settings never opt into startup or automation", async ({
+test("new assignments use the global policy while cancelled drafts never opt into startup or automation", async ({
   page,
   store,
   dataRoot,
@@ -96,38 +96,25 @@ test("new assignments use local time while seeded settings never opt into startu
   );
   expect(zone).toBe("America/New_York");
   let modal = await assignment(page, "fixture/local-time");
-  await expect(modal.getByLabel("Time zone", { exact: true })).toHaveValue(
-    zone,
-  );
-  await modal
-    .getByRole("combobox", { name: "Check for pull requests", exact: true })
-    .selectOption("30");
-  await saveAssignment(page, modal);
+  await expect(modal.getByLabel("Time zone", { exact: true })).toHaveCount(0);
+  await modal.getByRole("checkbox", { name: /^Comment/ }).uncheck();
+  await closeDialog(page);
+  await closeDialog(page);
   expect((await store("snapshot")).settings).toEqual(initial);
-  await page.locator("#reset-settings").click();
   modal = await assignment(page, "fixture/local-time");
-  await expect(
-    modal.getByRole("combobox", {
-      name: "Check for pull requests",
-      exact: true,
-    }),
-  ).toHaveValue("15");
-  await expect(modal.getByLabel("Time zone", { exact: true })).toHaveValue(
-    zone,
-  );
-  await modal
-    .getByRole("combobox", { name: "Check for pull requests", exact: true })
-    .selectOption("30");
+  await expect(modal.getByRole("checkbox", { name: /^Comment/ })).toBeChecked();
+  await modal.getByRole("checkbox", { name: /^Comment/ }).uncheck();
   await saveAssignment(page, modal);
   await saveChanges(page);
   const saved = JSON.parse(
     await readFile(join(dataRoot, "config/settings.json"), "utf8"),
   );
   expect(saved.repositories[0].assignments[0].schedule).toEqual({
-    kind: "interval",
-    minutes: 30,
-    timezone: zone,
+    kind: "cron",
+    expression: "*/15 * * * *",
+    timezone: "UTC",
   });
+  expect(saved.repositories[0].assignments[0].comment).toBe(false);
   expect(saved.defaults).toEqual(initial.defaults);
   expect(saved.launch_at_login).toBe(false);
 });
@@ -174,6 +161,7 @@ test("chosen-root discovery uses real metadata, searchable selection and stable 
     exact: true,
   });
   await monitored.check();
+  await expect(monitored).toBeFocused();
   await saveChanges(page);
   const persisted = (await store("snapshot")).settings;
   expect(persisted.root_folder).toBe(toNamespacedPath(await realpath(root)));
@@ -309,8 +297,8 @@ test("doctrine authoring stays inert and rejects unknown schema and credentials 
   await newDoctrine(page, "api-review", body);
   let modal = await editAgent(page);
   await modal
-    .getByRole("combobox", { name: "Doctrine", exact: true })
-    .selectOption("api-review");
+    .getByRole("checkbox", { name: "api-review", exact: true })
+    .check();
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
   await saveChanges(page);
   await section(page, "Doctrines");
@@ -325,7 +313,10 @@ test("doctrine authoring stays inert and rejects unknown schema and credentials 
     .click();
   await saveChanges(page);
   const saved = (await store("snapshot")).settings;
-  expect(saved.agents[0]).toEqual({ ...fixtureAgent, doctrine: "api-renamed" });
+  expect(saved.agents[0]).toEqual({
+    ...fixtureAgent,
+    doctrines: ["api-renamed"],
+  });
   expect(saved.presets).toEqual(settings.presets);
   expect(await page.evaluate(() => window.doctrineExecuted)).toBeUndefined();
   await expect(page.locator(".doctrine-list script")).toHaveCount(0);
@@ -341,8 +332,11 @@ test("doctrine authoring stays inert and rejects unknown schema and credentials 
   ).rejects.toBeTruthy();
   expect(await readFile(path)).toEqual(bytes);
   await newDoctrine(page, "unsafe-input", "ghp_synthetic-secret");
-  await page.locator("#save-settings").click();
-  await expect(page.locator("#error")).toBeVisible();
+  await expect(
+    page
+      .getByRole("dialog", { name: "New doctrine", exact: true })
+      .getByRole("alert"),
+  ).toBeVisible();
   expect(await readFile(path)).toEqual(bytes);
   await page.reload();
   expect((await store("snapshot")).settings).toEqual(saved);
@@ -404,7 +398,7 @@ for (const viewport of [
   });
 }
 
-test("assignment comment choice stays independent of disabled Approve and preserves legacy automation", async ({
+test("assignment comment choice stays independent of opt-in Approve and preserves legacy automation", async ({
   page,
   store,
 }) => {
@@ -423,9 +417,7 @@ test("assignment comment choice stays independent of disabled Approve and preser
   await page.goto("/?view=settings");
   let modal = await assignment(page, "fixture/project");
   await modal.getByRole("checkbox", { name: /^Comment/ }).uncheck();
-  await expect(
-    modal.getByRole("checkbox", { name: /^Approve/ }),
-  ).toBeDisabled();
+  await expect(modal.getByRole("checkbox", { name: /^Approve/ })).toBeEnabled();
   await expect(
     modal.getByRole("checkbox", { name: /^Approve/ }),
   ).not.toBeChecked();
@@ -444,10 +436,18 @@ test("assignment comment choice stays independent of disabled Approve and preser
   ).not.toBeChecked();
   await modal.getByRole("checkbox", { name: /^Comment/ }).check();
   await saveAssignment(page, modal);
-  await page.locator("#reset-settings").click();
+  await expect(page.locator("#reset-settings")).toBeDisabled();
   modal = await assignment(page, "fixture/project", 0);
-  await expect(
-    modal.getByRole("checkbox", { name: /^Comment/ }),
-  ).not.toBeChecked();
-  expect((await store("snapshot")).settings).toEqual(saved);
+  await expect(modal.getByRole("checkbox", { name: /^Comment/ })).toBeChecked();
+  expect((await store("snapshot")).settings).toEqual({
+    ...saved,
+    repositories: [
+      {
+        ...saved.repositories[0],
+        assignments: [
+          { ...saved.repositories[0].assignments[0], comment: true },
+        ],
+      },
+    ],
+  });
 });

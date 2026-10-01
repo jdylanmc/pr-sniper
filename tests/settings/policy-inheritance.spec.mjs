@@ -4,7 +4,6 @@ import {
   assignment,
   saveAssignment,
   saveChanges,
-  setSchedule,
   setAgentPrompt,
   repositorySettings,
   closeDialog,
@@ -56,11 +55,6 @@ test("reusable Agents keep independent repository assignments and preserve legac
   ];
   await store("seed_settings", initial);
   await page.goto("/?view=settings");
-  const schedules = [
-    { kind: "interval", minutes: 7, timezone: "UTC" },
-    { kind: "cron", expression: "0 8 * * MON-FRI", timezone: "Europe/London" },
-    { kind: "interval", minutes: 45, timezone: "America/New_York" },
-  ];
   for (const [index, repository] of [
     "octo/hello-world",
     "octo/hello-world",
@@ -70,22 +64,31 @@ test("reusable Agents keep independent repository assignments and preserve legac
     await modal
       .getByRole("combobox", { name: "Agent", exact: true })
       .selectOption(initial.agents[index === 1 ? 1 : 0].id);
-    await setSchedule(modal, schedules[index]);
+    await expect(
+      modal.locator("[name=frequency],[name=cron],[name=timezone]"),
+    ).toHaveCount(0);
     await modal
       .getByRole("checkbox", { name: /^Comment/ })
       .setChecked(index === 1);
     await expect(
       modal.getByRole("checkbox", { name: /^Approve/ }),
-    ).toBeDisabled();
+    ).toBeEnabled();
+    await expect(
+      modal.getByRole("checkbox", { name: /^Approve/ }),
+    ).not.toBeChecked();
     await saveAssignment(page, modal);
   }
-  expect((await store("snapshot")).settings).toEqual(initial);
+  expect(
+    (await store("snapshot")).settings.repositories[0].assignments,
+  ).toHaveLength(2);
   await saveChanges(page);
   let saved = (await store("snapshot")).settings;
   expect(
     saved.repositories[0].assignments.map(({ schedule }) => schedule),
-  ).toEqual(schedules.slice(0, 2));
-  expect(saved.repositories[1].assignments[0].schedule).toEqual(schedules[2]);
+  ).toEqual([initial.defaults.schedule, initial.defaults.schedule]);
+  expect(saved.repositories[1].assignments[0].schedule).toEqual(
+    initial.defaults.schedule,
+  );
   const assignments = saved.repositories.map(({ assignments }) => assignments);
   await setAgentPrompt(page, "Updated shared Agent instructions.");
   await saveChanges(page);

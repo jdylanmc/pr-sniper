@@ -1,8 +1,10 @@
 # PR Sniper
 
 A macOS menu-bar application for human-owned pull request review. Built with
-Tauri 2, Rust and vanilla TypeScript. The tray exposes **Status**, **Review
-Queue**, **Settings** and **Quit PR Sniper**.
+Tauri 2, Rust and vanilla TypeScript. Left-click the tray crosshair for one
+retained panel with **Queue**, **Running**, **Reviewed** and **Settings**.
+The secondary/right-click menu retains **Status**, **Review Queue**,
+**Check Now**, **Settings**, **Diagnostics** and **Quit PR Sniper**.
 
 Settings can explicitly verify a configured GitHub connection and read complete
 pull-request metadata. The active tray process also polls enabled, account-bound
@@ -61,7 +63,30 @@ installed toolchain's `bin` directory to your current shell. Do not confuse
 missing shell shims with a missing Rust installation.
 
 No main window opens at startup. Click the crosshair in the macOS menu bar.
-Closing any window leaves the tray running; **Quit PR Sniper** ends the process.
+Outside click, Escape, the panel's Close button and the tray's **Close Panel**
+hide the same panel; background work continues. **Close Panel** requests native
+window close, which the host intercepts without destroying the webview.
+**Quit PR Sniper** ends the process.
+Navigation, editor drafts, scroll and keyboard focus survive panel dismissal
+and destination changes. Back returns to the originating list and row; opening
+another PR/job replaces the single detail layer. Native notification and legacy
+Settings/Diagnostics entry points use retained routes, never a webview reload.
+Unavailable exact PR/iteration/job identities show a missing destination, not
+another item. Existing profile-scoped PR selection survives a restart; unsaved
+editor drafts are in-process state, not restart persistence.
+
+Placement uses the tray's monitor work area and physical coordinates, clamping
+the approximately 400px-wide panel for small screens and mixed scaling. Native
+folder selection holds focus dismissal until it returns. External browser
+sign-in may hide the panel; reopening retains the connecting flow and draft.
+Running shows the native shared-capacity jobs (including stopping work);
+Reviewed exposes existing completed/terminal evidence in the current projection,
+not a new paged history or purge backend. Status retains schedule health,
+notification history and recovery; Diagnostics remains redacted.
+
+The [native acceptance procedure](tests/macos-acceptance.md) and compiled
+test-owned smoke harness cover the actual window boundary separately from
+browser/geometry tests. Bundle compilation alone is not native acceptance.
 The local frontend server is only for development; terminate the development
 command too when finished.
 
@@ -187,11 +212,14 @@ scanned. Multiple clones of the same GitHub repository share one monitoring
 checkbox and saved identity; every discovered clone path remains searchable and
 available in the row's local-clone details.
 
-Changes across sections remain one draft until **Save changes**; **Reset
-changes** returns to the saved state. A conflicting external update is rejected,
-not overwritten. The draft remains intact until **Discard draft and reload**
-explicitly replaces it with the latest saved settings. Controls are disabled
-during saving and failed writes retain the draft. Startup registration is
+**Save agent**, **Save doctrine**, and **Save repository** persist only that
+resource immediately; assignment saves commit their owning repository.
+**Save preferences** saves global preferences without committing repository
+drafts. **Reset changes** discards remaining unsaved changes, not successful
+resource saves. Compare-and-save rejects conflicting edits to the same resource
+without rejecting unrelated saves. Failed writes retain the editor and last
+valid state; **Discard draft and reload** explicitly replaces the draft.
+Controls and dialog dismissal are locked during saves. Startup registration is
 separate and changes immediately on explicit choice in **Preferences**.
 AI and repository connections also save immediately, independently of the
 Settings draft. Closing a repository editor cancels its pending draft lookup;
@@ -205,11 +233,24 @@ its layout with unsupported viewport units and dialog APIs. The app requires
 macOS 13.5 or later; build targets do not polyfill runtime APIs, and these simulations
 are not native acceptance evidence.
 
-Repository **Settings** assigns reusable Agents with saved schedules and
-comment preferences, and resolves watched people using the repository's
+Repository **Settings** assigns reusable Agents with independent comment,
+Approve and Merge choices, and resolves watched people using the repository's
 explicit GitHub account. Existing global defaults and overrides remain
 preserved in storage. Review start and comment publication have separate
-automatic/manual gates; approval submission remains unavailable.
+automatic/manual gates. A sole assignment is primary automatically; multiple
+assignments permit one explicit primary or none. Primary selection never opts
+into actions. Legacy inert `approve` flags remain preserved but are not grants;
+new choices live in assignment `actions`. Merge is effective only for the
+primary, and no primary means no effective approval or merge. Opted-in provider
+actions require aggregate clearance and the primary final-review path below.
+
+**Preferences** exposes one global five-field cron expression, default
+`*/15 * * * *` in `UTC`, an expression helper, explicit IANA time-zone semantics,
+and saved AI capacity (default four). Legacy interval choices and scoped
+schedules remain readable, without scoped polling editors. An incompatible
+legacy global interval remains visible as a setup issue until explicitly
+replaced, never silently converted. The global scheduler consumes this saved
+cron; the shared AI dispatcher consumes the positive capacity independently.
 
 **Doctrines** manages plain-text review principles. A fresh configuration
 persists all 23 bundled doctrines on first load, before any Settings tab is
@@ -222,10 +263,31 @@ libraries; subsequent saves record an explicit empty list.
 
 **Agents** selects a Copilot
 account and a real model returned by that account, alongside an optional
-doctrine, prompt and signature. Provider and model are distinct. Old Agents
+ordered list of zero or more doctrines, prompt and signature. Existing
+single-doctrine selections remain compatible; an explicit empty list means
+none. Multiple bodies compose in selected order, independent of library order.
+Renaming a doctrine updates references atomically; referenced doctrines and
+Agents cannot be deleted until their references are explicitly repaired.
+Provider and model are distinct. Old Agents
 without AI account bindings remain unconfigured until explicitly updated.
 Disconnecting an AI account preserves dependent Agents and assignments.
 Never put credentials in doctrines, prompts or other configuration fields.
+
+Review details expose planned configuration before execution and captured
+Agent/model/account, prompt, doctrine bodies, repository and assignment
+authority afterward. Captured authority is evidence, not a current grant.
+Library edits and restart never rewrite completed snapshots; legacy missing
+fields are labeled unavailable rather than reconstructed from current settings.
+Interrupted jobs retain their prior execution configuration and separately show
+the current plan, which is revalidated before retry.
+
+Settings and future setup flows share `saved_resources`, `validate_resource`
+and `save_resource` over the existing Store. `ResourceEdit` addresses one Agent,
+doctrine, repository or global-preference resource with its expected value;
+`value: null` deletes, and `expected: null` creates. Readiness describes saved
+configuration only: account verification, current model access, monitoring
+scope, trust and provider capability remain independent gates. No setup wizard
+or monitoring activation is added by this surface.
 
 Saving validates the effective policy on the Rust storage boundary, including
 positive whole-minute intervals, five-field cron syntax, IANA time zones,
@@ -340,15 +402,16 @@ OS delivery/click-through verification and its evidence limits.
 
 ### Polling and detection
 
-While the menu-bar process is active, each saved repository assignment uses its
-own interval or five-field cron schedule and explicit IANA time zone. When a
-repository has no assignments, its effective global/per-repository policy
-schedule is used for backward compatibility. Cron times
+While the menu-bar process is active, one global five-field cron schedule scans
+enabled, scope-confirmed repositories in the saved IANA time zone. Each scan
+captures its repository assignments. One read per account/repository binding
+fans out to individual Agent jobs; assignment timers are not used. Cron times
 skipped by a spring daylight-saving jump run at the first valid local time;
 repeated fall-back times run once at their first occurrence. Sleep or missed
 ticks cause one check, not a catch-up burst. **Check Now** coalesces one pending
-read for every eligible account and assignment, then drains them serially when
-multiple bindings address the same remote repository.
+global scan; repeated requests during a read coalesce. Bindings addressing the
+same remote repository drain serially. Check Now never bypasses Retry-After or
+an existing retry budget.
 
 Each repository poll persists its provider/account/repository/policy identity,
 attempt count and 15-minute retry deadline before the provider read begins.
@@ -375,8 +438,10 @@ durably admitted heads. Missing, stale or invalid activation blocks timer and
 
 Filter-only edits preserve the confirmed creation watermark, baseline heads,
 initial selection and admitted heads; every poll applies the current effective
-author/reviewer filter. An unchanged excluded old head remains excluded when a
-filter widens, while its later matching head qualifies. Preview/apply and
+author/reviewer filter for new admission. An unchanged excluded author-matched
+head remains excluded when a filter widens, while its later matching head
+qualifies. An explicit reviewer request can admit an older/unwatched PR despite
+that initial backlog boundary. Preview/apply and
 already-running polls still pin the filter they started with and reject stale
 results.
 
@@ -385,18 +450,31 @@ connected OAuth account. A populated watched-author filter or a request for the
 signed-in account as reviewer admits a non-draft revision. An empty effective
 watched-author filter matches all authors only after scope activation; it does
 not establish trust. Reviewer-only, all-author, fork and otherwise untrusted
-work waits for explicit confirmation. Repeat
-observations deduplicate by provider, account, stable repository, pull request,
-head revision, trigger policy and assignment; a new head can be queued independently.
-Successful open-pull-request scans and configuration changes retain earlier
-revision hashes as visibly non-actionable history instead of leaving obsolete
-detections ready to start. Absence from one paginated open-pull-request scan is
-nonterminal: it records "not seen" and is rechecked on the next scan rather than
-inventing a closed or merged state. Poll pages use stable creation order to
-reduce page reordering while scanning active repositories. Schedule health
-identifies the acting account, assignment and Agent, and persists pending,
-success and recoverable failure state. Unchanged old heads stay excluded, while
-a matching new head on an old pull request enters detection. Detection never
+work waits for explicit confirmation. Admission then remains sticky after
+watchlist/reviewer removal, without granting trust or bypassing current account,
+repository, start or publication gates. Repeated scans reuse each assignment's
+normal job for the same PR iteration, regardless of later filter changes. Adding
+an Agent creates its missing job at the next scan without repeating completed
+unchanged passes. A new head supersedes old work; verified reopening creates a
+new iteration even at the same head.
+
+The complete open listing is followed by explicit provider reads for active,
+admitted PRs absent from it. Only returned lifecycle
+fields establish closure/merge; absence, 404, failed or incomplete reads are not
+terminal evidence. Closed/merged iterations remain visible as provider-confirmed
+history while later open listings can discover reopening, without refetching
+every terminal PR's details. Poll pages use stable creation
+order. Schedule health identifies each account/repository read and retains
+pending, success and failure state.
+
+`state/queue.json` atomically stores tracked lifecycle, iterations, immutable
+normal-work identity/admission cause, queue order and per-Agent/PR pass ordinal.
+Legacy arrays remain readable. Review/publication keys, receipts and old queue
+destinations survive adoption; embedded originating reviews prevent replay when
+an older queue/review file is missing. Completed execution snapshots are never
+rewritten by scans. Reply work has its own ordinal and shares the durable queue
+order allocator; retries retain their separate operation attempt counts.
+Detection never
 clones a repository, starts an agent, executes repository code, mutates GitHub
 or publishes a review.
 
@@ -405,13 +483,13 @@ or publishes a review.
 Configure an Agent's Copilot account, returned model, prompt and optional
 doctrine, then assign it to a repository. **Review Queue > Agent reviews**
 shows each assignment's detected revisions. Existing pre-review detections
-remain history until that assignment polls again; opening the queue does not
+remain history until the next global scan; opening the queue does not
 silently start legacy work.
 
 **Start review** is explicit when automatic start is disabled. Enabling the
 **Preferences > Start eligible reviews automatically** default (or **Review
 start** in a repository's Settings) admits trusted, eligible assignment detections
-to the serial review runner. Forks and authors outside the trusted watchlist
+to the shared-capacity review runner. Forks and authors outside the trusted watchlist
 always require a checkbox confirmation for that exact revision. All-author
 monitoring is not trust. **Cancel review** stops inference and requires an
 explicit retry; changing the account, Agent, prompt, doctrine, repository or
@@ -435,8 +513,10 @@ token metadata. Every changed file must actually have been read. Missing,
 duplicate or invalid file entries fail validation; only invalid ordering falls
 back to bytewise ascending paths. Machine-cleared never means human approval.
 
-Review state is persisted before work. Restart preserves operation identity,
-attempt count, confirmations and the original 15-minute budget, with at most
+Review requests persist before waiting for capacity. The first 15-minute AI
+budget begins when the worker actually starts, not when the request joins the
+queue. Restart preserves operation identity, attempt count, confirmations and
+an already-started budget, with at most
 three retries for recognized transient failures. Expired budgets and permanent
 failures require **Retry review**, which creates a new operation without
 deleting history. Results remain local until the separate publication gate
@@ -449,14 +529,140 @@ connection copies terminal credentials. A green Copilot check verifies sign-in
 only, not a subscription, seat or inference request.
 See the [bounded architecture decision](docs/adr/0001-macos-foundation.md).
 
+### Shared AI capacity and pause
+
+Normal reviews and owned-thread analysis share one machine-wide capacity,
+default **4**, configured in **Settings > Preferences**. Values such as **1**
+and **20** are independent of saved Agent/repository counts. Work retains its
+canonical FIFO order across retries and pauses. Blocked older work keeps its
+reason and order without blocking eligible waiters; completion immediately
+fills free slots across both kinds without another repository poll.
+
+**Pause automation**, available in the queue and Settings, persists separately
+in `state/automation.json`. It blocks new polling, AI admission and provider
+writes without changing repository enablement or permissions. Active AI workers
+are signalled to stop; their slots remain occupied and visibly **stopping**
+until runtime and blocking work have ended. Rapid resume cannot reuse a slot or
+operation while teardown is pending. Reducing capacity stops the newest excess
+workers and keeps the oldest permitted workers running.
+
+Partial AI output is discarded after pause/reduction. Durable interruption
+metadata restores the pre-attempt retry budget only for intentional cancellation
+or discarded successful output; a real failure racing pause remains a failure.
+Once inference reports a failure, abort and runtime teardown cannot replace it
+with a refundable cancellation; the slot stays occupied until cleanup finishes.
+Prior failure counts/deadlines are not reset or extended by resume. Initial
+unexecuted requests may wait beyond 15 minutes and still receive their first
+budget. Individual cancellation withdraws work until explicit retry. Completed
+reviews, pass/reply ordinals, execution snapshots and provider receipts remain
+unchanged.
+
+Owner replies and primary mentions fence every analysis-worker save by operation
+identity. A manual retry accepted while the cancelled worker is stopping keeps
+its new operation, history and manual-start intent; stale progress/completion
+cannot overwrite it. The old worker releases only its own reservation after
+teardown, then the accepted retry can start.
+
+Higher AI capacity does not increase provider-write concurrency: the existing
+serial publication and reply-publication coordinators remain separate from AI
+slots. Pause cannot undo an already-started remote request. Its original
+mutation intent and receipts are retained for reconciliation; a pending batch
+is not deleted merely because automation paused. Storage failures are visible;
+a worker whose final outcome cannot be saved retains a blocked stopping slot
+until storage is repaired and the application restarted.
+
+Native `automation_snapshot` returns saved pause/capacity plus actual occupied,
+stopping, waiting and blocked work. `set_automation_paused` persists the gate and
+signals current workers. Normal, primary-final, owned-reply and mention adapters
+join the same candidate order and `capacity::Coordinator::reserve` path.
+
+## Primary final review and provider actions
+
+The existing queue projection supplies current normal-pass/feedback clearance.
+Every current assignment must have its own completed pass for the tracked
+iteration; adding/replacing an assignment cannot authorize an action from old
+evidence. Pending conversations, held findings, human-input decisions, incomplete
+conversation admission and unknown mutations block the action path.
+
+When Approve or Merge is explicitly opted in, the primary receives a distinct
+**full** constrained review after clearance and fresh provider observations.
+It reads every changed file and sees the peer results, owned feedback, complete
+bounded human discussion/review evidence and actual policy observations.
+`state/actions.json` retains its own immutable basis, FIFO identity, operation,
+attempt history and result without replacing normal review history.
+It uses shared AI capacity, start/trust gates, pause accounting and worker
+teardown. Findings or human judgment stop actions; they require human handling
+or a new iteration rather than repeated same-iteration AI attempts to obtain a
+different answer.
+
+A cancelled final worker keeps its capacity reservation until teardown. If an
+explicit retry is saved before teardown finishes, the old callback leaves that
+retry's identity, intent and history untouched and releases only its own
+reservation before refilling capacity. A real outcome-persistence failure still
+retains a visible stopping slot; it is not treated as a superseded attempt.
+
+Approval and merge are independent native operations, never Agent tools.
+Approval is one acting-account vote, not one vote per configured Agent. It can
+contribute before the provider has collected its other required approvals, but
+cannot self-approve a GitHub PR or replace an existing account vote. Merge is
+primary-only and additionally requires current-head green checks, satisfied
+provider reviews/rules, conflict-free **CLEAN** readiness, no unresolved threads
+(even outdated ones), no required/active merge queue, and a provider-selected
+enabled merge method. Admin-bypass capability is neither queried nor used.
+Absent, partial, unsupported or inaccessible policy/check evidence blocks merge
+explicitly; it is not assumed green.
+
+Each effect freezes action/account/head/attribution and persists intent before
+its external request. Approval pins `commit_id`; merge pins `expectedHeadOid`
+and an explicit provider-selected method. Head/base, role, scope, permissions,
+feedback and human context are rechecked around work. A valid final can serve
+both actions; its own exact confirmed approval receipt does not invalidate it.
+Other relevant changes require fresh final evidence.
+
+Lost responses and crashes reconcile the **original** effect, never a blind
+replacement. Approval reconciliation requires its exact signed body, actor,
+commit and review receipt. A later read proving merge after a lost response
+establishes terminal provider state, **not attribution** to PR Sniper.
+Automatic reconciliation is bounded to three observations within the original
+window; **Reconcile original action (no resend)** requests another read.
+Definitively rejected/stale/cancelled effects are not automatically replaced.
+All comment, reply, approval and merge writers share one native mutation owner,
+independently of AI capacity. Pause/cancel cannot undo an accepted remote write.
+
+Every cleared unmerged PR retains a personal-review handoff, including after
+confirmed automatic approval. Merge does not require a handoff acknowledgment.
+Confirmed merged PRs become terminal history. Notifications and read-only queue
+details distinguish normal clearance, final review, provider approval/merge,
+unknown outcomes and personal review; automation never asserts personal review.
+
+An action-evidence read failure remains visible after Approve and Merge are
+turned off, but does not suppress an otherwise valid personal-review handoff
+when no provider effect needs resolution. Pending or uncertain effects, current
+review/feedback blockers and stale revisions still block clearance. **Refresh /
+retry provider evidence** uses the native pump's eligibility and is disabled
+with a reason when no work can consume the request, during backoff or while
+paused. Original-effect reconciliation remains separate from admitting a new
+action, including in the retained panel detail.
+
+Provider limits remain explicit: final observations fail closed beyond 100
+threads/comments per GraphQL connection or 100 check contexts; REST review and
+discussion reads are bounded. `HAS_HOOKS`, unavailable merge rules, merge queues
+and absent green-CI evidence do not take a direct-merge fallback. GitHub exposes
+an atomic expected-head merge condition, not an expected-base condition; base
+movement is detected by fresh pre/post observations, and confirmed effects are
+retained rather than falsely undone. These offline-tested paths are not live
+approval/merge acceptance evidence.
+
 ## Revision-safe comment publication
 
 An assignment must allow **Comment**. The **Preferences > Publish review
 comments automatically** default and each repository's **Comment publication**
-override independently choose automatic publication or explicit confirmation.
+override choose automatic normal publication or **off/local-only** evidence.
 Review Queue shows the acting repository GitHub account, exact head, local
-findings, publication state and confirmed provider receipts. **Publish review**
-requires a checked confirmation for that review. Copilot credentials never
+findings, publication state and confirmed provider receipts. Off does not create
+an author-wait state or an invented manual-publication task. Genuine historical
+pending batches retain their checked reconciliation/withdrawal controls.
+Copilot credentials never
 publish to GitHub, and the read-only agent adapter has no mutation tools.
 
 The host freezes the validated output, maps findings only to verified diff
@@ -466,8 +672,9 @@ the summary reports their count rather than silently dropping them or posting
 them at guessed locations. Summaries and machine sign-off end with the canonical
 ` PR Sniper` and explicitly request final human review. The existing saved
 custom Agent signature is not applied by this slice; signature customization
-and its revised default remain separate #30 work. No `APPROVE` or merging is
-implemented. Owned-thread replies use the separate follow-up workflow below.
+and its revised default remain separate #30 work. This comment-only publisher
+does not approve or merge; those independent operations use the final-review
+path above. Owned-thread replies use the conversation workflow below.
 
 Before and after mutations the host rechecks account/repository identity, head
 and reviewed target base, open/non-draft lifecycle, eligibility, active monitoring
@@ -508,8 +715,8 @@ cleanup; deterministic provider fixtures do not claim a live publication pass.
 
 ## Owned-thread follow-ups
 
-Each assignment's scheduled poll also checks unresolved threads rooted in its
-confirmed PR Sniper inline comments. Ownership requires the saved review and
+Each repository read also checks all captured assignments' unresolved threads
+rooted in their confirmed PR Sniper inline comments. Ownership requires the saved review and
 comment receipts, repository/account identity, original commit and exact root
 body; a matching username alone is not sufficient. GitHub GraphQL supplies
 resolution state and complete paginated published conversations. Unpublished
@@ -517,11 +724,12 @@ pending comments are excluded, so private drafts cannot trigger public replies.
 Comment discovery failures use the existing poll operation's retry budget.
 
 The latest published external comment creates a durable key containing provider,
-account, configuration, owned-thread ID, comment ID and reviewed head. Multiple
+account, configuration, owned-thread ID, comment ID and original reviewed head. Multiple
 new comments between polls are coalesced into that latest trigger while the full
 published conversation remains context. PR Sniper's own signed replies cannot
 trigger themselves; an actual human comment through the same account can.
-Repeated polling/restart does not create another job for the same key.
+Repeated polling/restart does not create another job for the same key. A push
+does not replay the same comment through a new owner.
 
 **Review Queue > Thread follow-ups** shows the conversation, acting account,
 revision, draft/evidence and separate analysis/publication states. Existing
@@ -544,9 +752,12 @@ Human-judgment questions enter **human input required** with no publishable
 body. That state pauses automatic follow-ups for the thread; a later external
 comment can be started explicitly after the human decision. Quiet and human-input
 results have no publication action. Resolved, changed, superseded or stale
-threads stop rather than responding to an outdated conversation. Follow-ups
-remain bound to the originating reviewed head/base; a push must go through
-normal new-revision review, not silently retarget an old reply.
+threads stop rather than responding to an outdated conversation. Each follow-up
+stores an immutable `target` (original publication/review/root) separately from
+its `context` (current iteration, captured selection and trust). A new author
+reply may analyze a later admitted iteration through the same original Agent;
+it never rewrites the old review/head or transfers ownership to a replacement.
+Normal passes on that iteration still fan out independently.
 
 Replies are posted only to the verified root comment, end with ` PR Sniper`,
 and never resolve a thread, approve a PR or merge. Before and after the mutation,
@@ -563,6 +774,73 @@ must be reconciled against the full remote thread before any further effect.
 An absent uncertain reply never authorizes another POST, even after manual
 retry. Live mutation acceptance still requires a separately approved disposable
 PR; provider fixtures do not claim a live reply pass.
+
+### Owned feedback across iterations
+
+`state/feedback.json` records verified owned roots, the original owner and
+publication, current-head observations, missing-root errors and durable closure
+tombstones. Observing earlier roots is independent of authorizing their current
+owner: removing an assignment retains unresolved feedback and visibly blocks
+clearance. Only actual provider closure settles a discussion; no Agent
+resolve/reopen mutation exists. Missing, tampered, failed or incomplete
+observations never mean resolved.
+
+New full reviews receive earlier open and closed feedback as untrusted context.
+They must reassess every earlier open concern owned by their Agent using stable
+feedback IDs. Reply analysis may reassess only its own concern; an explicit
+clearance requires rationale and exact verified source evidence. An explanation
+can therefore clear a concern without a push or another full review. Merely
+analyzing, replying, or choosing quiet never clears it. Local reassessment is
+displayed separately from provider thread closure.
+
+Existing feedback cannot be emitted again as a new finding. Closed identities
+remain tombstoned across reopening/new heads. As a conservative ambiguity gate,
+new findings on the same or renamed file as a closed concern are retained as
+**held locally** for human judgment, not republished; no finding is discarded
+as if it never existed. Semantic interpretation still requires human review.
+Pending conversations, human-input decisions, unavailable owners and unresolved
+mutation outcomes prevent false machine clearance. Original published receipts
+and local-only findings remain distinct.
+
+Once a publication is confirmed complete, later feedback changes affect current
+readiness, not the immutable publication's mutation-freshness check. Closure or
+source-validated same-head owner reassessment can therefore restore readiness
+after a later iteration publishes. Current assignment/account/revision gates,
+open concerns, human-input decisions and pending or uncertain mutations still
+block. New and pending publications retain their captured-feedback freshness
+checks; local clearance never resolves a GitHub thread.
+
+### Primary acting-account mentions
+
+For already tracked open PRs, scans read bounded, complete top-level issue-comment
+pages (up to 1,000 comments and 1 MiB of bodies). A standalone `@login` matching
+the live repository acting GitHub identity routes one response to the current
+primary; it never addresses the separate Copilot identity or all Agents.
+No primary, unavailable model/account selection or missing current iteration is
+visible blocked work with retained FIFO order. Mentions do not admit new PRs.
+
+Mention intent is keyed by provider/account/repository/PR/comment identity, not
+primary identity. Once assigned, it is not replayed through a later primary.
+Signed machine output cannot loop; legitimate same-account human comments remain
+eligible. Edited/deleted triggers block new replies, but an existing uncertain
+reply can still reconcile its exact signed body and acting-account receipt.
+Top-level responses link the original comment and reuse the constrained reply
+schema, shared `Kind::Mention` AI capacity, explicit trust/start/comment gates,
+serial reply publication, pause handling and no-blind-repost recovery. No fake
+review or publication is created for a mention.
+
+Admission first saves feedback observations, then saves mention identity and FIFO
+intent before writing its follow-up execution, and only then saves the committed
+execution link. Monitoring records success only after all admission writes
+succeed. Failure leaves a durable conversation-admission blocker across restart
+and manual retry until a successful check. Saved unlinked intents recover on the
+next check without requiring remote rediscovery; a committed execution is linked,
+not replaced. Missing linked history and uncertain replies never authorize replay.
+
+Legacy follow-up records load into the typed target/context shape without
+writing history during reads. When the original publication is available, its
+retained review supplies immutable provenance; the legacy captured selection
+remains the actual analysis context.
 
 ## Read-only GitHub connection
 

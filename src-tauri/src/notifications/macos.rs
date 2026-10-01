@@ -45,24 +45,12 @@ define_class!(
             if &*response.actionIdentifier() == unsafe { UNNotificationDefaultActionIdentifier } {
                 let app = self.ivars().app.clone();
                 let request_id = response.notification().request().identifier().to_string();
-                let open_app = app.clone();
-                if app
-                    .run_on_main_thread(move || {
-                        crate::record(
-                            &open_app,
-                            crate::storage::DiagnosticEvent::NotificationActivated,
-                        );
-                        if let Err(error) = super::host::open(&open_app, &request_id) {
-                            crate::report(&open_app, error);
-                        }
-                    })
-                    .is_err()
-                {
-                    crate::report(
-                        &app,
-                        "Notification navigation could not reach the application window.".into(),
-                    );
-                }
+                tauri::async_runtime::spawn(async move {
+                    crate::record(&app, crate::storage::DiagnosticEvent::NotificationActivated);
+                    if let Err(error) = super::host::open(&app, &request_id).await {
+                        crate::report(&app, error);
+                    }
+                });
             }
             completion.call(());
         }
@@ -70,7 +58,7 @@ define_class!(
 );
 
 // UserNotifications invokes its delegate on background threads. Our only ivar is
-// an immutable, thread-safe AppHandle; all window work is dispatched to its UI thread.
+// an immutable, thread-safe AppHandle; the panel adapter dispatches presentation to the UI thread.
 unsafe impl Send for Delegate {}
 unsafe impl Sync for Delegate {}
 

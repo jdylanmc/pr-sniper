@@ -2,7 +2,7 @@ use pr_sniper_lib::storage::{Settings, Store};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::io::{self, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -17,8 +17,128 @@ fn recorded_settings(store: &Store, settings: Settings) -> Result<Value, String>
         .map_err(|_| "Cannot encode settings.".into())
 }
 
+// Only the process-per-command browser bridge serializes the native navigation
+// session. The application retains this same state in memory, not a second store.
+fn panel_dispatch(store: &Store, root: &Path, request: &Request) -> Result<Value, String> {
+    use pr_sniper_lib::panel::{Route, Session, Tab};
+    let path = root.join("fixture-panel-session.json");
+    let mut session: Session = match std::fs::read(&path) {
+        Ok(bytes) => {
+            serde_json::from_slice(&bytes).map_err(|_| "Invalid panel fixture session.")?
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let mut session = Session::default();
+            session.navigate(store, None)?;
+            session.set_visible(true);
+            session
+        }
+        Err(_) => return Err("Cannot read panel fixture session.".into()),
+    };
+    let route = match request.command.as_str() {
+        "panel_navigate" => Some(
+            serde_json::from_value(request.args["route"].clone())
+                .map_err(|_| "Invalid panel route.")?,
+        ),
+        "open_settings" => Some(Route::tab(Tab::Settings)),
+        "open_diagnostics" => Some(Route::utility(true)),
+        "open_queue_item" => Some(Route::item(
+            request.args["itemId"]
+                .as_str()
+                .ok_or("Item identity required.")?
+                .into(),
+        )),
+        _ => None,
+    };
+    if route.is_some() || request.command == "fixture_show_panel" {
+        session.navigate(store, route)?;
+        session.set_visible(true);
+    } else if request.command == "hide_panel" {
+        session.set_visible(false);
+    }
+    let snapshot = session.snapshot(store);
+    if request.command != "panel_snapshot" {
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&session).map_err(|_| "Cannot encode panel fixture.")?,
+        )
+        .map_err(|_| "Cannot save panel fixture session.")?;
+    }
+    if request.command == "open_queue_item" {
+        if let Some(reason) = &snapshot.missing {
+            return Err(reason.clone());
+        }
+    }
+    serde_json::to_value(snapshot).map_err(|_| "Cannot encode panel snapshot.".into())
+}
+
 fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
     match request.command.as_str() {
+        "diagnostics" => serde_json::to_value(store.diagnostics()?)
+            .map_err(|_| "Cannot encode diagnostics.".into()),
+        "seed_action_observation" => {
+            let item = request.args["itemId"]
+                .as_str()
+                .ok_or("Iteration identity required.")?;
+            let observation = serde_json::from_value(request.args["observation"].clone())
+                .map_err(|_| "Invalid action-observation fixture.")?;
+            pr_sniper_lib::actions::synchronize(store, item, Ok(observation), 1_800_000_100)?;
+            serde_json::to_value(store.load_actions()?)
+                .map_err(|_| "Cannot encode action state.".into())
+        }
+        "start_final_review" => {
+            pr_sniper_lib::actions::request_final(
+                store,
+                request.args["id"]
+                    .as_str()
+                    .ok_or("Final identity required.")?,
+                request.args["confirmTrust"]
+                    .as_bool()
+                    .ok_or("Trust flag required.")?,
+                1_800_000_110,
+            )?;
+            Ok(Value::Null)
+        }
+        "retry_action_observation" => {
+            pr_sniper_lib::actions::request_observation_retry(
+                store,
+                request.args["itemId"]
+                    .as_str()
+                    .ok_or("Iteration identity required.")?,
+                1_800_000_110,
+            )?;
+            Ok(Value::Null)
+        }
+        "reconcile_provider_action" => {
+            pr_sniper_lib::actions::request_reconciliation(
+                store,
+                request.args["id"]
+                    .as_str()
+                    .ok_or("Action identity required.")?,
+                1_800_000_110,
+            )?;
+            Ok(Value::Null)
+        }
+        "cancel_provider_action" => {
+            pr_sniper_lib::actions::cancel_effect(
+                store,
+                request.args["id"]
+                    .as_str()
+                    .ok_or("Action identity required.")?,
+            )?;
+            Ok(Value::Null)
+        }
+        "automation_snapshot" => serde_json::to_value(
+            pr_sniper_lib::capacity::Coordinator::default().snapshot(store, 1_800_000_000)?,
+        )
+        .map_err(|_| "Cannot encode automation state.".into()),
+        "set_automation_paused" => {
+            store.save_automation(&pr_sniper_lib::capacity::Automation {
+                paused: request.args["paused"]
+                    .as_bool()
+                    .ok_or("Pause flag required.")?,
+            })?;
+            Ok(Value::Null)
+        }
         "seed_settings" => {
             let settings: Settings = serde_json::from_value(request.args)
                 .map_err(|_| "Invalid settings test fixture.".to_string())?;
@@ -46,12 +166,40 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
                 .map_err(|_| "Invalid review fixture.")?;
             let publications: Vec<_> = serde_json::from_value(request.args["publications"].clone())
                 .map_err(|_| "Invalid publication fixture.")?;
-            let follow_ups: Vec<_> = serde_json::from_value(request.args["follow_ups"].clone())
-                .map_err(|_| "Invalid follow-up fixture.")?;
-            store.save_queue(&jobs)?;
+            let follow_ups = pr_sniper_lib::follow_up::decode_with_origins(
+                &serde_json::to_vec(&request.args["follow_ups"])
+                    .map_err(|_| "Invalid conversation fixture.")?,
+                &publications,
+            )
+            .map_err(|_| "Invalid follow-up fixture.")?;
+            let mut queue = store.load_queue_state()?;
+            queue.jobs = jobs;
+            if let Some(tracked) = request.args.get("tracked") {
+                queue.tracked = serde_json::from_value(tracked.clone())
+                    .map_err(|_| "Invalid tracked PR fixture.")?;
+            }
+            store.save_queue_state(&queue)?;
+            if let Some(monitoring) = request.args.get("monitoring") {
+                store.save_monitoring_state(
+                    &serde_json::from_value(monitoring.clone())
+                        .map_err(|_| "Invalid monitoring fixture.")?,
+                )?;
+            }
             store.save_reviews(&reviews)?;
             store.save_publications(&publications)?;
             store.save_follow_ups(&follow_ups)?;
+            if let Some(actions) = request.args.get("actions") {
+                store.save_actions(
+                    &serde_json::from_value(actions.clone())
+                        .map_err(|_| "Invalid action fixture.")?,
+                )?;
+            }
+            if let Some(feedback) = request.args.get("feedback") {
+                store.save_feedback(
+                    &serde_json::from_value(feedback.clone())
+                        .map_err(|_| "Invalid feedback fixture.")?,
+                )?;
+            }
             Ok(Value::Null)
         }
         "monitoring_snapshot" => serde_json::to_value(pr_sniper_lib::queue::snapshot(
@@ -136,6 +284,19 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
                 .map_err(|_| "Unsupported settings snapshot.")?;
             recorded_settings(store, store.save_preferences(settings, &expected)?)
         }
+        "saved_resources" => serde_json::to_value(store.saved_resources()?)
+            .map_err(|_| "Cannot encode saved resources.".into()),
+        "validate_resource" => {
+            let edit = serde_json::from_value(request.args["edit"].clone())
+                .map_err(|_| "Unsupported resource edit.")?;
+            serde_json::to_value(store.validate_resource(edit)?.readiness())
+                .map_err(|_| "Cannot encode resource readiness.".into())
+        }
+        "save_resource" => {
+            let edit = serde_json::from_value(request.args["edit"].clone())
+                .map_err(|_| "Unsupported resource edit.")?;
+            recorded_settings(store, store.save_resource(edit)?)
+        }
         "monitoring_activation_status" => {
             let repository_id = request.args["repositoryId"]
                 .as_str()
@@ -210,7 +371,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut input = String::new();
     io::stdin().read_to_string(&mut input)?;
     let request: Request = serde_json::from_str(&input)?;
-    let response = match dispatch(&Store::new(root), request) {
+    let store = Store::new(root.clone());
+    let result = if matches!(
+        request.command.as_str(),
+        "panel_snapshot"
+            | "panel_navigate"
+            | "hide_panel"
+            | "open_settings"
+            | "open_diagnostics"
+            | "open_queue_item"
+            | "fixture_show_panel"
+    ) {
+        panel_dispatch(&store, &root, &request)
+    } else {
+        dispatch(&store, request)
+    };
+    let response = match result {
         Ok(value) => json!({ "ok": value }),
         Err(message) => json!({ "error": message }),
     };

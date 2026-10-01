@@ -1,6 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
-import { renderFollowUps, type FollowUpCandidate } from "./follow-up";
-import { openDestination, renderQueue, type QueueItem } from "./queue";
+import { mountAutomation, type AutomationSnapshot } from "./automation";
+import type { PanelDetail } from "./panel";
+import { renderActions } from "./actions";
+import {
+  renderFollowUps,
+  type FollowUpCandidate,
+  type MentionRouting,
+} from "./follow-up";
+import {
+  openDestination,
+  renderQueue,
+  type QueueItem,
+  type NormalWork,
+  renderItemEvidence,
+} from "./queue";
 import { renderNotificationHistory } from "./notifications";
 
 interface Health {
@@ -19,6 +32,7 @@ interface Health {
   schedule_available: boolean;
   last_failure: string | null;
   in_flight: boolean;
+  conversation_admission_pending?: boolean;
   manual_pending: boolean;
   operation: {
     id: string;
@@ -38,6 +52,7 @@ interface Health {
 }
 
 interface Job {
+  work?: NormalWork;
   account_id: string;
   account_login: string;
   repository_name: string;
@@ -52,7 +67,17 @@ interface Job {
   waiting: string;
 }
 
-interface MonitoringSnapshot {
+export interface MonitoringSnapshot {
+  mentions?: MentionRouting[];
+  global_scan?: {
+    schedule_key: string;
+    next_run: number;
+    pending: string[];
+  } | null;
+  tracked?: {
+    pull_request_id: string;
+    lifecycle: "open" | "closed" | "merged";
+  }[];
   items?: QueueItem[];
   health: Health[];
   jobs: Job[];
@@ -62,6 +87,7 @@ interface MonitoringSnapshot {
 }
 
 interface PublicationCandidate {
+  local_only?: boolean;
   review_operation_id: string;
   automatic: boolean;
   blocked: string | null;
@@ -96,14 +122,28 @@ interface ReviewCandidate {
   job: Job;
   trust_required: boolean;
   blocked: string | null;
+  planned_selection?: import("./resources").ReviewSelection | null;
   run: {
+    feedback_context?:
+      | {
+          id: string;
+          body: string;
+          closed: boolean;
+          owner_agent_id: string;
+          original_head: string;
+        }[]
+      | null;
+    trust_confirmed?: boolean;
     phase: string;
     error: string | null;
-    selection: { agent: { model: string; ai_account: { account_id: string } } };
+    selection: import("./resources").ReviewSelection;
+    job?: Job;
     operation: NonNullable<Health["operation"]>;
     result: {
       reviewed_base_sha?: string | null;
       output: {
+        feedback_conflict?: boolean;
+        held_findings?: { path: string; title: string; explanation: string }[];
         synopsis: string;
         decision: "machine_sign_off" | "human_input_required";
         files: { path: string; explanation: string; order: number }[];
@@ -135,6 +175,7 @@ const blockingFailures = new Set([
   "account_disconnected",
   "configuration",
   "invalid_schedule",
+  "invalid_global_cron",
   "provider_unavailable",
   "scope_confirmation_required",
   "settings_unavailable",
@@ -147,6 +188,8 @@ function healthLabel(item: Health) {
   if (item.operation?.state === "interrupted") return "Interrupted";
   if (item.operation?.state === "queued") return "Retry queued";
   if (item.in_flight) return "Checking";
+  if (item.conversation_admission_pending)
+    return "Conversation admission pending";
   if (item.last_failure && blockingFailures.has(item.last_failure))
     return "Blocked";
   if (!item.schedule_available) return "Unavailable";
@@ -181,26 +224,87 @@ function waitingLabel(waiting: string) {
       return "Not seen in the latest open-PR scan; rechecked next scan. This is not a terminal closed or merged state.";
     case "scope_excluded":
       return "Not actionable: this unchanged existing revision was excluded by the confirmed monitoring scope.";
+    case "closed":
+      return "GitHub confirmed this PR closed. This iteration is terminal.";
+    case "merged":
+      return "GitHub confirmed this PR merged. This iteration is terminal.";
+    case "assignment_removed":
+      return "Not actionable: this Agent assignment was removed or replaced.";
     default:
       return `Not actionable: unrecognized queue state (${waiting}).`;
   }
 }
 
+function conversationItem(
+  snapshot: MonitoringSnapshot,
+  detail: Extract<PanelDetail, { type: "job" }>,
+): QueueItem | undefined {
+  const candidates = (snapshot.follow_ups ?? []).filter(
+    ({ run }) =>
+      run.id === detail.id &&
+      (run.target?.kind === "mention" ? "mention" : "reply") === detail.kind,
+  );
+  if (candidates.length !== 1) return undefined;
+  const run = candidates[0].run;
+  const job = (run.context ?? run.review)?.job;
+  if (!job) return undefined;
+  const work = job.work;
+  const matches = (snapshot.items ?? []).filter(
+    (item) =>
+      item.follow_up_ids.includes(run.id) &&
+      item.job.provider === job.provider &&
+      item.job.account_id === job.account_id &&
+      item.job.configuration_id === job.configuration_id &&
+      item.job.repository_id === job.repository_id &&
+      item.job.pull_request_id === job.pull_request_id &&
+      item.job.head_sha === job.head_sha &&
+      item.job.number === job.number &&
+      (work
+        ? !!work.item_id &&
+          !!work.iteration_id &&
+          item.id === work.item_id &&
+          item.job.work?.item_id === work.item_id &&
+          item.job.work.iteration_id === work.iteration_id
+        : item.job.trigger_policy === job.trigger_policy),
+  );
+  // A legacy head can span several reopened iterations; never pick by order.
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
 export function renderMonitoring(
   root: HTMLElement,
   showError: (message: string) => void,
+  options: {
+    panel?: boolean;
+    navigate?: (detail: PanelDetail) => void;
+    onSnapshot?: (snapshot: MonitoringSnapshot) => void;
+    onAutomation?: (snapshot: AutomationSnapshot) => void;
+  } = {},
 ) {
-  root.innerHTML = `<div class="actions"><button id="check-now" type="button">Check Now</button><button id="queue-settings" type="button">Open Settings</button><button id="queue-diagnostics" type="button">Open Diagnostics</button></div>
-    <h2>Your review inbox</h2><section id="handoff-queue"></section>
+  root.innerHTML = `<div data-monitor-overview><div class="actions"><button id="check-now" type="button">Check Now</button><button id="queue-settings" type="button">Open Settings</button><button id="queue-diagnostics" type="button">Open Diagnostics</button></div>
+    <section id="automation-controls"></section>
+    <h2>Your review inbox</h2><section id="handoff-queue"></section></div>
+    <div data-monitor-detail><section data-item-evidence></section>
     <h2 id="evidence-heading" tabindex="-1">Review evidence and actions</h2>
     <p>Monitoring and assigned reviews run while the ${trayAdjective} app is active. Copilot uses read-only tools. GitHub comments require a separate publication gate; machine sign-off is not approval.</p>
     <p class="hint">Saved review evidence is tied to the head shown. GitHub links open the live PR or current diff in your browser's signed-in account; check its current revision and requirements before deciding to merge.</p>
-    <h2>Agent reviews</h2><section id="agent-reviews"></section>
-    <h2>Thread follow-ups</h2><section id="thread-follow-ups"></section>
+    <h2 data-normal-heading>Agent reviews</h2><section id="agent-reviews"></section>
+    <h2 data-conversation-heading>Thread follow-ups</h2><section id="thread-follow-ups"></section></div>
+    <div data-monitor-recovery>
     <h2>Notifications</h2><section id="notification-history"></section>
     <h2>Schedule health</h2><section id="schedule-health"></section>
-    <h2>Detected pull requests</h2><section id="review-jobs"></section>`;
+    <h2>Detected pull requests</h2><section id="review-jobs"></section></div>`;
   const check = root.querySelector<HTMLButtonElement>("#check-now")!;
+  const recoveryRoot = root.querySelector<HTMLElement>(
+    "[data-monitor-recovery]",
+  )!;
+  const automationRoot = root.querySelector<HTMLElement>(
+    "#automation-controls",
+  )!;
+  const refreshAutomation = mountAutomation(
+    automationRoot,
+    options.onAutomation,
+  );
   const health = root.querySelector<HTMLElement>("#schedule-health")!;
   const jobs = root.querySelector<HTMLElement>("#review-jobs")!;
   const reviews = root.querySelector<HTMLElement>("#agent-reviews")!;
@@ -211,6 +315,10 @@ export function renderMonitoring(
   let reviewsSignature = "";
   let loading = false;
   let snapshot: MonitoringSnapshot | undefined;
+  let panelDetail: PanelDetail | undefined;
+  let missingDetail: string | null = null;
+  let detailSignature = "";
+  let detailRevision = 0;
   let selection: QueueItem | null | undefined;
   const refreshNotifications = renderNotificationHistory(
     root.querySelector<HTMLElement>("#notification-history")!,
@@ -225,6 +333,11 @@ export function renderMonitoring(
     root.querySelector<HTMLElement>("#handoff-queue")!,
     showError,
     (item, focus) => {
+      if (options.panel) {
+        if (focus && item)
+          options.navigate?.({ type: "item", item_id: item.id });
+        return;
+      }
       selection = item;
       renderEvidence();
       if (focus) {
@@ -233,7 +346,13 @@ export function renderMonitoring(
         heading.scrollIntoView({ block: "start" });
       }
     },
+    refresh,
+    { compact: options.panel, externalSelection: options.panel },
   );
+  if (options.panel) {
+    root.querySelector<HTMLElement>("[data-monitor-detail]")!.hidden = true;
+    root.querySelector<HTMLElement>("[data-monitor-recovery]")!.hidden = true;
+  }
   for (const [id, command] of [
     ["#queue-settings", "open_settings"],
     ["#queue-diagnostics", "open_diagnostics"],
@@ -251,7 +370,92 @@ export function renderMonitoring(
 
   function renderEvidence() {
     if (!snapshot) return;
-    if (selection === undefined) {
+    const current = snapshot;
+    let jobDetail: Extract<PanelDetail, { type: "job" }> | undefined;
+    if (options.panel) {
+      const target = panelDetail;
+      const detail = root.querySelector<HTMLElement>("[data-monitor-detail]")!;
+      root.querySelector<HTMLElement>("[data-monitor-overview]")!.hidden =
+        !!target;
+      detail.hidden = !target;
+      if (!target) return;
+      const job = target.type === "job" ? target : undefined;
+      jobDetail = job;
+      const item =
+        target.type === "item"
+          ? current.items?.find(
+              (i) =>
+                i.id === target.item_id || i.aliases?.includes(target.item_id),
+            )
+          : job?.kind === "normal"
+            ? current.items?.find((i) => i.review_keys.includes(job.id))
+            : job?.kind === "primary_final"
+              ? current.items?.find(
+                  (i) => i.action_status?.final_review?.id === job.id,
+                )
+              : job
+                ? conversationItem(current, job)
+                : undefined;
+      const found =
+        target.type === "item"
+          ? !!item
+          : job?.kind === "normal"
+            ? current.reviews?.some((r) => r.key === job.id)
+            : job?.kind === "primary_final"
+              ? !!item
+              : current.follow_ups?.some(
+                  (f) =>
+                    f.run.id === job?.id &&
+                    (f.run.target?.kind === "mention" ? "mention" : "reply") ===
+                      job?.kind,
+                ) ||
+                (job?.kind === "mention" &&
+                  current.mentions?.some((m) => m.work_id === job.id));
+      const evidence = root.querySelector<HTMLElement>("[data-item-evidence]")!;
+      if (!found || missingDetail) {
+        evidence.textContent =
+          missingDetail ??
+          "This exact saved PR iteration or job is unavailable. No other item was selected.";
+        evidence.setAttribute("role", "status");
+        reviews.replaceChildren();
+        followUps([]);
+        root
+          .querySelector<HTMLElement>("#thread-follow-ups")!
+          .replaceChildren();
+        root.querySelector<HTMLElement>("[data-normal-heading]")!.hidden = true;
+        root.querySelector<HTMLElement>("[data-conversation-heading]")!.hidden =
+          true;
+        detailSignature = "";
+        reviewsSignature = "";
+        return;
+      }
+      selection = item;
+      const next = JSON.stringify([target, item]);
+      if (next !== detailSignature) {
+        detailSignature = next;
+        evidence.replaceChildren();
+        evidence.removeAttribute("role");
+        if (item) {
+          const title = document.createElement("h2");
+          title.textContent = `${item.job.repository_name} #${item.job.number}: ${item.job.title}`;
+          const summary = document.createElement("p");
+          summary.textContent = item.summary;
+          evidence.append(title, summary);
+          if (target.type === "item")
+            renderItemEvidence(evidence, item, showError, refresh);
+          else if (jobDetail?.kind === "primary_final" && item.action_status)
+            renderActions(evidence, item.action_status, showError, refresh);
+        } else if (
+          jobDetail?.kind === "reply" ||
+          jobDetail?.kind === "mention"
+        ) {
+          evidence.textContent =
+            "Parent PR iteration context unavailable. No other iteration was selected; captured conversation follows.";
+          evidence.setAttribute("role", "status");
+        }
+      }
+    }
+    if (selection === undefined && !options.panel) {
       reviews.textContent =
         "Select an available queue item to inspect its saved evidence.";
       reviewsSignature = "";
@@ -260,23 +464,46 @@ export function renderMonitoring(
         "Select an available queue item to inspect its conversation.";
       return;
     }
-    const candidates = (snapshot.reviews ?? []).filter(
-      (r) => selection === null || !!selection?.review_keys.includes(r.key),
+    const candidates = (snapshot.reviews ?? []).filter((r) =>
+      jobDetail
+        ? jobDetail.kind === "normal" && r.key === jobDetail.id
+        : selection === null || !!selection?.review_keys.includes(r.key),
     );
-    const replies = (snapshot.follow_ups ?? []).filter(
-      (f) =>
-        selection === null || !!selection?.follow_up_ids.includes(f.run.id),
+    const replies = (snapshot.follow_ups ?? []).filter((f) =>
+      jobDetail
+        ? (jobDetail.kind === "reply" || jobDetail.kind === "mention") &&
+          f.run.id === jobDetail.id
+        : selection === null || !!selection?.follow_up_ids.includes(f.run.id),
     );
     const signature = JSON.stringify([
       candidates,
       snapshot.publications,
       snapshot.items,
+      panelDetail,
     ]);
     if (signature !== reviewsSignature) {
       renderReviews(candidates, snapshot.publications ?? []);
       reviewsSignature = signature;
     }
-    followUps(replies, snapshot.follow_ups ?? []);
+    const mentions = (snapshot.mentions ?? []).filter((m) =>
+      jobDetail
+        ? jobDetail.kind === "mention" &&
+          (m.work_id === jobDetail.id || m.follow_up_id === jobDetail.id)
+        : selection === null ||
+          (selection?.job.repository_name === m.binding.repository_name &&
+            selection.job.account_id === m.binding.account_id &&
+            selection.job.number === m.binding.number),
+    );
+    followUps(replies, snapshot.follow_ups ?? [], mentions);
+    if (options.panel) {
+      root.querySelector<HTMLElement>("[data-normal-heading]")!.hidden =
+        candidates.length === 0;
+      reviews.hidden = candidates.length === 0;
+      root.querySelector<HTMLElement>("[data-conversation-heading]")!.hidden =
+        replies.length === 0 && mentions.length === 0;
+      root.querySelector<HTMLElement>("#thread-follow-ups")!.hidden =
+        replies.length === 0 && mentions.length === 0;
+    }
   }
 
   async function act(candidate: ReviewCandidate, cancel: boolean) {
@@ -344,6 +571,13 @@ export function renderMonitoring(
     state: PublicationCandidate,
   ) {
     const publication = state.publication;
+    if (state.local_only && !publication) {
+      const info = document.createElement("p");
+      info.textContent =
+        "Local-only evidence: comment publication is off. The PR author has not been notified; no manual machine-publication task is pending.";
+      row.append(info);
+      return;
+    }
     const info = document.createElement("p");
     info.className = "publication-state";
     info.textContent = publication
@@ -467,27 +701,98 @@ export function renderMonitoring(
         "No assigned reviews. Configure an Agent with a Copilot account and model, assign it to a repository, then detect an eligible revision.";
       return;
     }
-    const running = (snapshot?.reviews ?? candidates).some(
-      (c) => c.run?.operation.state === "running",
-    );
     for (const candidate of candidates) {
       const row = document.createElement("article");
       row.className = "review-run";
       const heading = document.createElement("h3");
-      heading.textContent = `${candidate.job.repository_name} #${candidate.job.number} / ${candidate.agent_name}`;
+      const run = candidate.run;
+      const capturedJob = run?.job ?? candidate.job;
+      heading.textContent = `${capturedJob.repository_name} #${capturedJob.number} / ${run?.selection.agent.name ?? candidate.agent_name}`;
       const identity = document.createElement("p");
       identity.className = "hint";
-      identity.textContent = `GitHub: ${candidate.job.account_login} (${candidate.job.account_id}). Head ${candidate.job.head_sha}.`;
+      identity.textContent = `GitHub: ${capturedJob.account_login} (${capturedJob.account_id}). Head ${capturedJob.head_sha}.`;
       row.append(heading, identity);
-      const run = candidate.run;
+      if (candidate.job.work) {
+        const work = candidate.job.work;
+        const provenance = document.createElement("p");
+        provenance.textContent = `Normal pass ${work.pass_ordinal}; iteration ${work.iteration} (${work.iteration_id}); queue order ${work.enqueue_order}; work ID ${work.id}; cause: ${work.trigger.replaceAll("_", " ")}. Retry attempts are separate.`;
+        row.append(provenance);
+      }
       const state = document.createElement("p");
       state.textContent = run
-        ? `${run.phase}. State: ${run.operation.state}; attempt ${run.operation.attempt_count}; deadline ${time(run.operation.retry_deadline)}. Copilot account: ${run.selection.agent.ai_account.account_id}; model: ${run.selection.agent.model}.`
+        ? `${run.phase}. State: ${run.operation.state}; attempt ${run.operation.attempt_count}; deadline ${run.operation.attempt_count === 0 ? "starts at first execution" : time(run.operation.retry_deadline)}. Copilot account: ${run.selection.agent.ai_account?.account_id ?? "not captured"}; model: ${run.selection.agent.model}.`
         : (candidate.blocked ??
           (candidate.trust_required
             ? "Trust confirmation required for this exact revision."
             : "Waiting for manual start or the automatic start gate."));
       row.append(state);
+      const configuration = (
+        label: string,
+        selection: import("./resources").ReviewSelection | null | undefined,
+      ) => {
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = label;
+        details.append(summary);
+        const text = (title: string, value: unknown) => {
+          const heading = document.createElement("h4");
+          heading.textContent = title;
+          const body = document.createElement("pre");
+          body.textContent =
+            typeof value === "string"
+              ? value
+              : (JSON.stringify(value, null, 2) ?? "Not captured");
+          details.append(heading, body);
+        };
+        if (!selection) {
+          text(
+            "Unavailable",
+            candidate.blocked ?? "No saved planned configuration is available.",
+          );
+        } else {
+          text("Agent", selection.agent);
+          text("Agent prompt", selection.agent.prompt);
+          text("Repository policy", selection.policy);
+          text("Review preset", selection.preset);
+          if (selection.configuration) {
+            text(
+              "Repository and assignments",
+              selection.configuration.repository,
+            );
+            text(
+              "Captured assignment authority (not a current provider grant)",
+              selection.configuration.authority,
+            );
+            if (!selection.configuration.doctrines.length)
+              text("Doctrines", "None selected");
+            for (const doctrine of selection.configuration.doctrines)
+              text(`Doctrine: ${doctrine.title}`, doctrine.body);
+          } else {
+            text(
+              "Legacy snapshot",
+              "Full doctrine and assignment configuration was not captured. Today's settings are not historical evidence.",
+            );
+            if (selection.doctrine)
+              text("Retained legacy doctrine text", selection.doctrine);
+          }
+        }
+        row.append(details);
+      };
+      if (run) configuration("Captured execution configuration", run.selection);
+      if (run?.feedback_context) {
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = `Captured prior feedback (${run.feedback_context.length})`;
+        const body = document.createElement("pre");
+        body.textContent = JSON.stringify(run.feedback_context, null, 2);
+        details.append(summary, body);
+        row.append(details);
+      }
+      if (!run || ["queued", "interrupted"].includes(run.operation.state))
+        configuration(
+          "Planned configuration (revalidated at start; not execution evidence)",
+          candidate.planned_selection,
+        );
       if (run?.error) {
         const error = document.createElement("p");
         error.className = "review-failure";
@@ -501,6 +806,17 @@ export function renderMonitoring(
       }
       const result = run?.result;
       if (result) {
+        if (result.output.feedback_conflict) {
+          const conflict = document.createElement("p");
+          conflict.textContent =
+            "New output overlaps a human-closed concern's file. It was not republished; human judgment is required.";
+          row.append(conflict);
+          for (const finding of result.output.held_findings ?? []) {
+            const held = document.createElement("p");
+            held.textContent = `Held locally: ${finding.path}: ${finding.title}. ${finding.explanation}`;
+            row.append(held);
+          }
+        }
         const decision = document.createElement("p");
         decision.className = "review-decision";
         decision.textContent =
@@ -560,6 +876,8 @@ export function renderMonitoring(
         if (publication) renderPublication(row, candidate, publication);
       } else if (!candidate.blocked) {
         const isRunning = run?.operation.state === "running";
+        const isQueued =
+          !!run && ["queued", "interrupted"].includes(run.operation.state);
         let consent: HTMLInputElement | undefined;
         if (candidate.trust_required && !isRunning) {
           const label = document.createElement("label");
@@ -576,15 +894,19 @@ export function renderMonitoring(
         button.type = "button";
         button.textContent = isRunning
           ? "Cancel review"
-          : run
-            ? "Retry review"
-            : "Start review";
+          : isQueued
+            ? "Cancel queued review"
+            : run
+              ? "Retry review"
+              : "Start review";
         const updateDisabled = () => {
           button.disabled =
             pending.has(candidate.key) ||
             (!isRunning &&
-              (running ||
-                (candidate.trust_required && !trust.has(candidate.key))));
+              !isQueued &&
+              candidate.trust_required &&
+              !run?.trust_confirmed &&
+              !trust.has(candidate.key));
         };
         consent?.addEventListener("change", () => {
           if (consent.checked) trust.add(candidate.key);
@@ -594,7 +916,7 @@ export function renderMonitoring(
         updateDisabled();
         button.addEventListener("click", () => {
           button.disabled = true;
-          void act(candidate, isRunning);
+          void act(candidate, isRunning || isQueued);
         });
         row.append(button);
       }
@@ -605,12 +927,35 @@ export function renderMonitoring(
   async function refresh() {
     if (loading || !root.isConnected) return;
     loading = true;
+    const requestedDetail = detailRevision;
     try {
       snapshot = await invoke<MonitoringSnapshot>("monitoring_snapshot");
-      if (snapshot.items) queue(snapshot.items);
+      if (requestedDetail === detailRevision) missingDetail = null;
+      options.onSnapshot?.(snapshot);
+      void refreshAutomation();
+      if (snapshot.items)
+        queue(
+          options.panel
+            ? snapshot.items.filter(
+                (i) =>
+                  ![
+                    "closed",
+                    "merged",
+                    "stale",
+                    "stale_after_publication",
+                    "waiting_for_author",
+                  ].includes(i.state),
+              )
+            : snapshot.items,
+        );
       renderEvidence();
       health.replaceChildren();
       jobs.replaceChildren();
+      if (snapshot.global_scan) {
+        const scan = document.createElement("p");
+        scan.textContent = `Global scan: ${snapshot.global_scan.schedule_key}. Next scan: ${snapshot.global_scan.next_run > 0 ? time(snapshot.global_scan.next_run) : "Unavailable; choose a global cron schedule in Settings"}. Pending repositories: ${snapshot.global_scan.pending.length}.`;
+        health.append(scan);
+      }
       if (!snapshot.health.length) {
         health.textContent =
           "No configured repositories. Add and bind a GitHub repository in Settings.";
@@ -630,7 +975,9 @@ export function renderMonitoring(
           : "unbound";
         const assignment = item.assignment_id
           ? `${item.agent_name ?? "Missing agent"} (${item.agent_id ?? "unknown agent ID"}), assignment ${item.assignment_id}`
-          : "legacy repository schedule";
+          : snapshot.global_scan
+            ? "repository read; fans out to the scan's assignments"
+            : "legacy repository schedule";
         row.textContent = `${item.name}: ${state}. Acting account: ${account}. Assignment: ${assignment}. Schedule: ${item.schedule_key || "Unavailable"}. Last attempt: ${time(item.last_attempt)}. Last success: ${time(item.last_success)}. Next run: ${next}. Last failure: ${item.last_failure ?? "None"}.`;
         if (item.operation) {
           row.append(
@@ -667,7 +1014,9 @@ export function renderMonitoring(
         health.append(row);
       }
       if (!snapshot.jobs.length)
-        jobs.textContent = "No eligible revisions detected.";
+        jobs.textContent = snapshot.tracked?.length
+          ? `${snapshot.tracked.length} pull requests tracked; no Agent jobs yet. Assign an Agent; its first normal pass is created by the next global scan.`
+          : "No eligible revisions detected.";
       for (const job of snapshot.jobs) {
         const row = document.createElement("article");
         const title = document.createElement("h3");
@@ -676,15 +1025,20 @@ export function renderMonitoring(
           job.author_login && job.author_id
             ? `${job.author_login} (${job.author_id})`
             : "deleted or unavailable";
+        const admission = job.work?.admission ?? job;
         const reasons = [
-          job.watched_author ? "watched author" : "",
-          job.all_authors ? "all-author monitoring scope" : "",
-          job.requested_reviewer ? "requested reviewer" : "",
+          admission.watched_author ? "watched author" : "",
+          admission.all_authors ? "all-author monitoring scope" : "",
+          admission.requested_reviewer ? "requested reviewer" : "",
         ]
           .filter(Boolean)
           .join(" and ");
         const details = document.createElement("p");
         details.textContent = `Acting account: ${job.account_login} (${job.account_id}). Author: ${author}. Trigger: ${reasons || "historical detection"}. Head ${job.head_sha}. ${waitingLabel(job.waiting)}`;
+        if (job.work)
+          details.append(
+            ` Normal pass ${job.work.pass_ordinal}; iteration ${job.work.iteration}; queue order ${job.work.enqueue_order}; cause ${job.work.trigger.replaceAll("_", " ")}.`,
+          );
         row.append(title, details);
         jobs.append(row);
       }
@@ -716,5 +1070,33 @@ export function renderMonitoring(
     if (!check.isConnected) window.clearInterval(timer);
     else void refresh();
   }, 5000);
+  return {
+    refresh,
+    detail: (
+      target: PanelDetail | undefined,
+      missing: string | null = null,
+    ) => {
+      detailRevision++;
+      panelDetail = target;
+      missingDetail = missing;
+      root.querySelector<HTMLElement>("[data-monitor-overview]")!.hidden =
+        !!target;
+      root.querySelector<HTMLElement>("[data-monitor-detail]")!.hidden =
+        !target;
+      if (target && !snapshot)
+        root.querySelector<HTMLElement>("[data-item-evidence]")!.textContent =
+          missing ?? "Loading this exact saved destination...";
+      renderEvidence();
+      void refresh();
+    },
+    automation: (destination: HTMLElement) => {
+      if (automationRoot.parentElement !== destination)
+        destination.prepend(automationRoot);
+    },
+    tools: (destination: HTMLElement) => {
+      recoveryRoot.hidden = false;
+      destination.append(recoveryRoot);
+    },
+  };
 }
 import { trayAdjective } from "./platform";

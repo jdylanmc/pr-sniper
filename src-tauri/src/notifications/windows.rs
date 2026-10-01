@@ -349,8 +349,8 @@ fn validate_saved(registration: &Registration, id: Option<&str>) -> Result<(), S
 fn dispatch(app: &tauri::AppHandle, registration: Registration, id: String) -> Result<(), String> {
     registration.notice_id(&id)?;
     let handle = app.clone();
-    app.run_on_main_thread(move || {
-        let result = (|| {
+    tauri::async_runtime::spawn(async move {
+        let result = async {
             let host = handle.try_state::<Host>().ok_or("Notification host is not ready; nothing was opened.")?;
             if host.quitting.load(Ordering::SeqCst) {
                 return Err("PR Sniper is quitting; try opening the notification again.".into());
@@ -360,13 +360,14 @@ fn dispatch(app: &tauri::AppHandle, registration: Registration, id: String) -> R
             }
             validate_saved(&registration, Some(&id))?;
             crate::record(&handle, crate::storage::DiagnosticEvent::NotificationActivated);
-            super::host::open(&handle, &id)
-        })();
+            super::host::open(&handle, &id).await
+        }.await;
         if let Err(error) = result {
             crate::report(&handle, error.clone());
             show_error(&error);
         }
-    }).map_err(|_| "Notification navigation could not reach the application window.".into())
+    });
+    Ok(())
 }
 
 pub(crate) fn show_error(error: &str) {

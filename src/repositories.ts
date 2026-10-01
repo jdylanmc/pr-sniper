@@ -11,7 +11,16 @@ export interface Repository {
   /** Optional per-repository watchlist, shared across this repository's
    * assignments. Exact login + stable id, no wildcards. */
   watched_authors?: WatchedIdentity[];
-  /** N agents, each with its own timer and permissions, running on this
-   * repository. */
+  /** N agents with repository-scoped permissions. */
   assignments?: Assignment[];
+  primary_assignment_id?: string;
+  review_preset?: string;
+}
+
+export function primaryAssignmentId(
+  repository: Repository,
+): string | undefined {
+  return repository.assignments?.length === 1
+    ? repository.assignments[0].id
+    : repository.primary_assignment_id;
 }
