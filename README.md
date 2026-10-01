@@ -69,7 +69,10 @@ window close, which the host intercepts without destroying the webview.
 **Quit PR Sniper** ends the process.
 Navigation, editor drafts, scroll and keyboard focus survive panel dismissal
 and destination changes. Back returns to the originating list and row; opening
-another PR/job replaces the single detail layer. Native notification and legacy
+another PR/job replaces the single detail layer. Route focus is restored as the
+destination is committed, not by a later animation frame. Deferred positioning
+and initial Settings loading yield to newer focus, routes or panel dismissal.
+Native notification and legacy
 Settings/Diagnostics entry points use retained routes, never a webview reload.
 Unavailable exact PR/iteration/job identities show a missing destination, not
 another item. Existing profile-scoped PR selection survives a restart; unsaved

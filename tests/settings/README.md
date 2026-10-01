@@ -35,6 +35,17 @@ visibility boundary are mocked. Tests do not prove OS focus/dismissal or
 notification activation; the isolated native harness and platform procedures
 remain required.
 
+`completion-focus.spec.mjs` retains the pointer/keyboard/nonfocusing completion
+matrix, final-redraw identity checks, independent saved resources/drafts and
+delayed account verification. Held-frame variants run each real resource save
+with its navigation frame delivered both before and after the save reply;
+neither may steal newer navigation focus. `panel-focus.spec.mjs` pairs those
+negative cases with initial route focus, delayed Settings mounting, exact Back
+row/scroll, rapid routes sharing one heading, and hide/reopen with a retained
+draft. The frame helper delays application callbacks, not Playwright's
+actionability checks, and attaches browser focus-call/frame ordering evidence.
+It uses no sleeps, retries, extended assertion timeouts or replacement storage.
+
 `visual.spec.mjs` covers the approved 408px shell and human cards, the complete
 301-file ordered guide, exact provider links, failed snapshot recovery, seven
 Agent jobs at capacity four, duplicate reservation identity, completion/refill,
