@@ -88,6 +88,13 @@ Reviewed exposes existing completed/terminal evidence in the current projection,
 not a new paged history or purge backend. Status retains schedule health,
 notification history and recovery; Diagnostics remains redacted.
 
+Queue contains human handoffs and actionable problems, not an Agent lane or a
+card per Agent. Each account/repository PR has one current handoff; active/waiting
+jobs belong in Running. Evidence retains every ordered changed file, exact
+provider links, local-only findings, distinct action receipts and original
+mutation recovery. Human comments and reviews stay on GitHub; confirmed approval
+does not imply personal review, and confirmed merged PRs are not actionable.
+
 The [native acceptance procedure](tests/macos-acceptance.md) and compiled
 test-owned smoke harness cover the actual window boundary separately from
 browser/geometry tests. Bundle compilation alone is not native acceptance.

@@ -185,6 +185,125 @@
   border-color: #e1e6ec;
   border-radius: 13px;
 }
+.panel-shell #handoff-queue {
+  margin: 0;
+}
+.panel-shell .queue-item {
+  position: relative;
+  margin: 0 0 10px;
+  padding: 13px 14px 12px;
+  border: 1px solid #e5e9ee;
+  box-shadow: 0 2px 4px #24324702;
+}
+.queue-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 10px;
+  color: var(--panel-muted);
+}
+.panel-shell .queue-state {
+  display: inline-block;
+  padding: 3px 7px;
+  border-radius: 5px;
+  font-size: 9px;
+  background: #fff0e0;
+  color: #944410;
+}
+.panel-shell .queue-item[data-state="machine_signed_off"] .queue-state {
+  background: #e4f3ef;
+  color: #176b68;
+}
+.panel-shell
+  .queue-item:is(
+    [data-state="failed"],
+    [data-state="stale"],
+    [data-state="stale_after_publication"]
+  )
+  .queue-state {
+  background: #fceae5;
+  color: #8b3021;
+}
+.panel-shell .queue-item h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  line-height: 1.3;
+  letter-spacing: -0.35px;
+}
+.panel-shell .queue-reference {
+  margin: 0;
+  font-size: 10px;
+  color: var(--panel-muted);
+}
+.panel-shell .queue-summary-text,
+.panel-shell .queue-receipt {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: #176773;
+}
+.queue-card-footer {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 13px;
+  padding-top: 10px;
+  padding-right: 12px;
+  border-top: 1px solid #edf0f4;
+  font-size: 10px;
+  color: var(--panel-muted);
+}
+.queue-avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  font-size: 8px;
+  text-transform: uppercase;
+  background: #dfefed;
+  color: #306765;
+}
+.queue-trigger {
+  margin-left: auto;
+  text-align: right;
+  font-size: 9px;
+}
+.panel-shell .queue-card-open {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 13px;
+  background: transparent;
+  color: var(--panel-muted);
+}
+.queue-card-open::after {
+  content: "";
+  position: absolute;
+  right: 16px;
+  bottom: 21px;
+  width: 5px;
+  height: 5px;
+  border-top: 1px solid currentColor;
+  border-right: 1px solid currentColor;
+  transform: rotate(45deg);
+}
+.panel-shell .queue-card-open:hover {
+  background: #24324704;
+}
+.panel-shell .queue-item[data-selected="true"] {
+  outline: none;
+}
+.panel-shell [data-monitor-detail] {
+  font-size: 12px;
+}
+.panel-shell [data-monitor-detail] button {
+  font-size: 12px;
+}
 .panel-shell h2 {
   font-size: 16px;
 }

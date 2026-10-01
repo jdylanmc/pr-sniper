@@ -5,6 +5,7 @@ import { renderMonitoring, type MonitoringSnapshot } from "./monitoring";
 import type { AutomationSnapshot } from "./automation";
 import crosshair from "./crosshair.svg";
 import sniperArt from "./sniper-mark.png";
+import { humanQueue } from "./queue";
 import "./panel.css";
 
 export type PanelTab = "queue" | "running" | "reviewed" | "settings";
@@ -150,7 +151,12 @@ export async function mountPanel(app: HTMLElement) {
       (row?.querySelector<HTMLElement>("button") ?? heading).focus({
         preventScroll: true,
       });
-      row?.scrollIntoView({ block: "nearest" });
+      if (row) {
+        const bounds = row.getBoundingClientRect();
+        const viewport = content.getBoundingClientRect();
+        if (bounds.bottom <= viewport.top || bounds.top >= viewport.bottom)
+          row.scrollIntoView({ block: "nearest" });
+      }
     } else heading.focus({ preventScroll: true });
   }
   const monitor = renderMonitoring(views.monitor, showError, {
@@ -196,13 +202,13 @@ export async function mountPanel(app: HTMLElement) {
         ? `${automation.waiting} waiting${automation.blocked ? ` / ${automation.blocked} blocked` : ""}${automation.stopping ? ` / ${automation.stopping} stopping` : ""}`
         : "Occupancy unknown";
     } else {
-      const items = snapshot?.items ?? [];
+      const items = humanQueue(snapshot?.items ?? []);
       const ready = items.filter(
         (item) => item.state === "machine_signed_off",
       ).length;
       main.textContent = snapshot
         ? `${items.length} for you`
-        : "Reading queue...";
+        : "Queue unavailable";
       detail.textContent = snapshot
         ? `${ready} ready / ${items.length - ready} need attention`
         : "";
