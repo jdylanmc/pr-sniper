@@ -30,7 +30,7 @@ Automated storage tests do not establish native window or menu-bar behavior.
 | Requirement                | Action                                                                                           | Required observation                                                                                                                                    |
 | -------------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | AC-001 / PR-001            | Build the local macOS bundle, copy into an isolated installation directory and launch that copy. | Native crosshair appears in the menu bar; no persistent main window; actual installed process remains alive.                                            |
-| vNext AC-001 / #70-1       | Left-click the tray twice, then use its secondary menu. | One panel opens/hides, without a blur/toggle reopen race. Secondary menu retains Status, Review Queue, Check Now, Settings, Diagnostics and Quit. |
+| vNext AC-001 / #70-1       | Left-click the tray twice, then use its secondary menu. | One panel opens/hides, without a blur/toggle reopen race. Secondary menu retains Status, Review Queue, Check Now, Settings, Diagnostics and Quit, and exposes Close Panel. |
 | vNext AC-001 / #70-2       | Visit Queue, Running, Reviewed and Settings; open exact fixture PR/job details and Back. | Same native window ID and one detail layer; Back restores originating list, row, scroll and keyboard focus. Switching details replaces the layer. Native snapshots supply real states. |
 | vNext AC-001 / #70-1/4     | Keep an unsaved editor, switch tabs, Escape, custom Close, native close and click outside; reopen after each. | Same process and webview; hidden only, draft retained, no duplicate editor or focus trap. Background work is not paused by dismissal. |
 | vNext AC-001 / #70-3       | Activate an exact saved notification, then one whose item is unavailable. | Same panel opens the saved identity, or an explicit missing state; never first/last item substitution. Settings drafts remain intact. |
@@ -79,8 +79,11 @@ The integration owner supplies the repository's build, lint and CI commands.
 
 ## Isolated unified-panel smoke harness
 
-The author may compile this harness only; the integration owner prepares and
-launches the test-owned bundle. The harness requires Accessibility and Screen
+By default the author may compile this harness only; the integration owner
+prepares and launches the test-owned bundle. A specific operator delegation may
+authorize an isolated correction run in the author's own ignored worktree
+artifacts, without extending any production or OS permission grants.
+The harness requires Accessibility and Screen
 Recording already granted, refuses a concurrently running production bundle
 or matching test bundle, and refuses production bundle IDs/installed paths.
 It does not request permissions, change login items, sign in, or take screenshots.
@@ -91,6 +94,32 @@ production row-actions accessibility group names its PR, account and item ID.
 After Back redraws the queue, the harness reacquires that exact group and its
 current button inside the original owned panel; it neither compares against a
 destroyed button nor walks ancestors into another row or the whole list.
+WebKit maps this `aria-pressed` HTML button to `AXCheckBox`; the harness accepts
+that native mapping or `AXButton` only within the unique exact action group.
+
+Native event and window checks must reflect the actual macOS APIs: mouse
+down/up events carry single-click state, and visible owned application windows
+below the menu-bar level are counted, including Tao's level-5 floating panel
+(Core Graphics' floating-level constant is 3). Offscreen/transparent windows,
+tooltips and other PIDs are excluded; duplicate panels still fail. The original
+window ID is retained throughout. macOS recreates its AX wrapper after hiding,
+so reopening reacquires the accessible window without relaxing native identity.
+Keyboard events require the owned app to be frontmost and use the normal event
+stream so AppKit shortcuts, not just webview keys, execute. Modifier flags are
+explicit and released. No system application menu or unrelated app is traversed.
+
+The borderless panel does not expose an AX close button; `AXClose` and the
+default File/Command-W path did not close it in the native correction evidence.
+Use the tray's **Close Panel**, a real native menu action calling the window's
+close request. Require a new durable `window_close_requested` diagnostic as well
+as disappearance; tray-menu focus loss alone is not a native-close pass.
+After an explicit dismissal, reopen immediately: it must not inherit the
+previous tray-menu blur's 500ms suppression token. Only focus-loss dismissal
+preserves that token to prevent the original left-click from reopening the
+panel. The harness logs the reopen interval and does not add a settling delay.
+Text entry waits for the exact owned AX control to gain focus and for its
+expected value before moving to another field; queued events are not evidence
+of delivered input.
 
 The Store-backed conversation regressions separately cover a closed iteration
 and a reopened iteration at the same SHA. Reply and mention details resolve
@@ -110,6 +139,7 @@ swiftc -module-cache-path src-tauri/target/issue70-validation/swift-cache \
   tests/macos-native-smoke.swift \
   -o src-tauri/target/issue70-validation/native-smoke
 src-tauri/target/issue70-validation/native-smoke --preflight
+src-tauri/target/issue70-validation/native-smoke --self-test
 ```
 
 Parent-only launch preparation after independent review: build the candidate
@@ -135,19 +165,25 @@ TMPDIR="$PWD/src-tauri/target/issue70-validation/tmp" \
   "$PWD/src-tauri/target/debug/examples/settings_bridge"
 ```
 
-The harness creates its own unique profile and
+Create the owned `tmp` directory before launch. The harness reads the absolute
+`TMPDIR` explicitly rather than Foundation's cached system temporary directory.
+It creates its own unique profile there and
 `com.jdylanmc.pr-sniper.tests.native-<uuid>` Keychain namespace and always passes
 both `PR_SNIPER_DATA_DIR` and `PR_SNIPER_KEYCHAIN_SERVICE` to the owned executable.
 It records the exact PID, verifies hidden startup and one retained window,
-four destinations/exact Back, tray toggle, Escape, custom Close, the separate
-native CloseRequested path, outside dismissal using a harness-owned window,
-secondary routes and explicit Quit. Missing native close or accessibility
+four destinations/exact Back, an unsaved doctrine draft across navigation and
+all dismissals, real Tab access to global navigation, tray toggle, Escape,
+custom Close, the separate native CloseRequested path, outside dismissal using
+a harness-owned window, exact secondary routes and explicit Quit. The native
+folder sheet visits a newly created owned directory via Go to Folder, then
+cancels without scanning repositories or saving configuration; panel visibility
+and restored focus are checked. Missing native close or accessibility
 support is a failed/unverified observation, not a skipped pass. Cleanup targets
 only its exact PID/profile/Keychain services; it does not delete the supplied
 bundle. Force-termination cleanup never counts as a Quit pass.
 
-The parent still records actual multi-monitor geometry, native picker and
-notification activation. Browser fixtures and this offline seed do not prove
+The parent still records actual multi-monitor geometry and notification
+activation. Browser fixtures and this offline seed do not prove
 live provider authentication, notification delivery or active-child teardown.
 
 ## Human-authorized GitHub OAuth App acceptance
@@ -232,37 +268,12 @@ discovery, or successful `gh` read does not satisfy this live acceptance.
 
 ### Native lifecycle harness
 
-First perform a non-launching permission check:
-
-```sh
-swift tests/macos-native-smoke.swift --preflight
-```
-
-It never requests or changes permissions. Missing Accessibility or Screen
-Recording access is a failed preflight and **unverified** native acceptance.
-Do not change host permissions merely to turn that result green.
-
-After coordinating with the implementation owner, use an installed local copy:
-
-```sh
-swift tests/macos-native-smoke.swift "/absolute/installation/PR Sniper.app"
-```
-
-The harness refuses a concurrent instance with the same bundle identifier,
-launches the bundle's actual executable with a fresh `PR_SNIPER_DATA_DIR`,
-and a unique `PR_SNIPER_KEYCHAIN_SERVICE`,
-checks native visible windows and menu actions, closes and reopens Settings
-and Review Queue, then selects Quit PR Sniper and waits for the exact PID to
-exit. The host's explicit data-root override disables operating-system
-autostart mutation. Never run this harness against a version lacking that
-isolation behavior.
-
-Failed runs terminate only their own process and remove only their fresh data
-fixture and exact test-owned Keychain services. Forced cleanup is not a
-successful Quit assertion. This harness does
-not prove visible icon quality, diagnostics content, login-item state or
-child-process cleanup; retain the manual checks above. Runtime automation must
-be exercised successfully before reporting its lifecycle checks as met.
+Use the compiled harness, unique test bundle, candidate Store bridge and
+explicit owned `TMPDIR` in **Isolated unified-panel smoke harness** above.
+Installed/production bundles are refused. Preflight and `--self-test` launch
+nothing and do not establish interactive acceptance. Failed runs terminate only
+their exact owned PID; forced cleanup is never a Quit pass. Logs include
+owned window geometry and explicit PID/profile/test-Keychain cleanup evidence.
 
 ## Completion record
 

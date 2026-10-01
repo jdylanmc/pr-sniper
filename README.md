@@ -63,8 +63,10 @@ installed toolchain's `bin` directory to your current shell. Do not confuse
 missing shell shims with a missing Rust installation.
 
 No main window opens at startup. Click the crosshair in the macOS menu bar.
-Outside click, Escape, the panel's Close button and native close hide the same
-panel; background work continues. **Quit PR Sniper** ends the process.
+Outside click, Escape, the panel's Close button and the tray's **Close Panel**
+hide the same panel; background work continues. **Close Panel** requests native
+window close, which the host intercepts without destroying the webview.
+**Quit PR Sniper** ends the process.
 Navigation, editor drafts, scroll and keyboard focus survive panel dismissal
 and destination changes. Back returns to the originating list and row; opening
 another PR/job replaces the single detail layer. Native notification and legacy

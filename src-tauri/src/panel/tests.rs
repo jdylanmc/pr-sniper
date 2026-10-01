@@ -158,6 +158,25 @@ fn retained_native_navigation_close_and_focus_lease_do_not_change_execution_stat
 }
 
 #[test]
+fn explicit_close_clears_tray_blur_without_delaying_the_next_real_click() {
+    let now = Instant::now();
+    let mut session = Session {
+        visible: true,
+        blur_from_tray: Some(now),
+        tray_down_visible: Some(true),
+        ..Default::default()
+    };
+    session.dismiss(false);
+    assert!(!session.should_toggle_closed(now + Duration::from_millis(1)));
+
+    session.visible = true;
+    session.blur_from_tray = Some(now);
+    session.tray_down_visible = Some(true);
+    session.dismiss(true);
+    assert!(session.should_toggle_closed(now + Duration::from_millis(1)));
+}
+
+#[test]
 fn unavailable_exact_routes_remain_requested_and_profile_scoped_without_substitution() {
     let root = tempfile::tempdir().unwrap();
     let other = tempfile::tempdir().unwrap();
