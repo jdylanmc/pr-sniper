@@ -71,6 +71,17 @@ func button(_ window: AXUIElement, _ title: String) throws -> AXUIElement {
     return found!
 }
 
+func rowActionButton(_ window: AXUIElement, _ identity: String) -> AXUIElement? {
+    let groups = descendants(window).filter {
+        text($0, kAXRoleAttribute) == kAXGroupRole && named($0, identity)
+    }
+    guard groups.count == 1 else { return nil }
+    let buttons = descendants(groups[0]).filter {
+        text($0, kAXRoleAttribute) == kAXButtonRole && named($0, "Evidence and actions")
+    }
+    return buttons.count == 1 ? buttons[0] : nil
+}
+
 func visibleWindows(_ pid: pid_t) -> [[String: Any]] {
     let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
                                            kCGNullWindowID) as? [[String: Any]] ?? []
@@ -179,7 +190,12 @@ func seed(_ bridge: URL, _ root: URL) throws {
     let jobs = [1, 2].map { number -> [String: Any] in
         ["assignment_id": assignment, "provider": "github", "account_id": "22", "account_login": "offline",
          "configuration_id": repo, "repository_id": "100", "repository_name": "example/repo",
-         "pull_request_id": "\(number)", "number": number, "title": "Native fixture \(number)",
+         "pull_request_id": "\(number)", "number": number, "title": "Same title",
+         "work": ["id": "native-work-\(number)", "item_id": "native-item-\(number)",
+                  "iteration_id": "native-iteration-\(number)", "iteration": 1,
+                  "agent_id": agent, "enqueue_order": number, "pass_ordinal": 1,
+                  "trigger": "admission",
+                  "admission": ["watched_author": false, "all_authors": true, "requested_reviewer": false]],
          "head_sha": String(repeating: "a", count: 40), "observed_base_sha": String(repeating: "b", count: 40),
          "trigger_policy": "[[],true]", "author_id": "11", "author_login": "offline-author",
          "watched_author": false, "all_authors": true, "requested_reviewer": false,
@@ -281,27 +297,26 @@ func run() throws {
         try singlePanel()
     }
     try press(button(window, "Queue"), "Queue")
+    let rowIdentity = "Actions for example/repo #2; account 22; item native-item-2"
+    let otherRowIdentity = "Actions for example/repo #1; account 22; item native-item-1"
     var rowButton: AXUIElement?
     try waitFor("exact fixture row") {
-        guard var row = descendants(window).first(where: { named($0, "example/repo #2: Native fixture 2") }) else { return false }
-        for _ in 0..<6 {
-            if let match = descendants(row).first(where: { text($0, kAXRoleAttribute) == kAXButtonRole && named($0, "Evidence and actions") }) {
-                rowButton = match; return true
-            }
-            guard let parent = element(row, kAXParentAttribute) else { return false }
-            row = parent
-        }
-        return false
+        rowButton = rowActionButton(window, rowIdentity)
+        return rowButton != nil && rowActionButton(window, otherRowIdentity) != nil
     }
     try press(rowButton!, "exact PR #2 detail")
     try waitFor("exact detail title") {
-        descendants(window).contains { named($0, "example/repo #2: Native fixture 2") }
+        descendants(window).contains { named($0, "example/repo #2: Same title") }
             && descendants(window).contains { named($0, "Saved evidence") }
     }
     try press(button(window, "Back"), "Back to exact row")
     try waitFor("exact row keyboard focus after Back") {
-        element(application, kAXFocusedUIElementAttribute).map { CFEqual($0, rowButton!) } == true
+        guard let currentButton = rowActionButton(window, rowIdentity),
+              let otherButton = rowActionButton(window, otherRowIdentity),
+              let focused = element(application, kAXFocusedUIElementAttribute) else { return false }
+        return CFEqual(focused, currentButton) && !CFEqual(focused, otherButton)
     }
+    try singlePanel()
     print("PASS four destinations, one native window and exact Back row/focus")
 
     try click(center(trayItem(application)))

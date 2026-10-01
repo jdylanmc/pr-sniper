@@ -235,6 +235,42 @@ function waitingLabel(waiting: string) {
   }
 }
 
+function conversationItem(
+  snapshot: MonitoringSnapshot,
+  detail: Extract<PanelDetail, { type: "job" }>,
+): QueueItem | undefined {
+  const candidates = (snapshot.follow_ups ?? []).filter(
+    ({ run }) =>
+      run.id === detail.id &&
+      (run.target?.kind === "mention" ? "mention" : "reply") === detail.kind,
+  );
+  if (candidates.length !== 1) return undefined;
+  const run = candidates[0].run;
+  const job = (run.context ?? run.review)?.job;
+  if (!job) return undefined;
+  const work = job.work;
+  const matches = (snapshot.items ?? []).filter(
+    (item) =>
+      item.follow_up_ids.includes(run.id) &&
+      item.job.provider === job.provider &&
+      item.job.account_id === job.account_id &&
+      item.job.configuration_id === job.configuration_id &&
+      item.job.repository_id === job.repository_id &&
+      item.job.pull_request_id === job.pull_request_id &&
+      item.job.head_sha === job.head_sha &&
+      item.job.number === job.number &&
+      (work
+        ? !!work.item_id &&
+          !!work.iteration_id &&
+          item.id === work.item_id &&
+          item.job.work?.item_id === work.item_id &&
+          item.job.work.iteration_id === work.iteration_id
+        : item.job.trigger_policy === job.trigger_policy),
+  );
+  // A legacy head can span several reopened iterations; never pick by order.
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
 export function renderMonitoring(
   root: HTMLElement,
   showError: (message: string) => void,
@@ -357,16 +393,9 @@ export function renderMonitoring(
               ? current.items?.find(
                   (i) => i.action_status?.final_review?.id === job.id,
                 )
-              : current.items?.find(
-                  (i) =>
-                    i.follow_up_ids.includes(job?.id ?? "") &&
-                    current.follow_ups?.some(
-                      (f) =>
-                        f.run.id === job?.id &&
-                        (f.run.context?.job.head_sha ??
-                          f.run.review?.job.head_sha) === i.job.head_sha,
-                    ),
-                );
+              : job
+                ? conversationItem(current, job)
+                : undefined;
       const found =
         target.type === "item"
           ? !!item
@@ -416,6 +445,13 @@ export function renderMonitoring(
             renderItemEvidence(evidence, item, showError, refresh);
           else if (jobDetail?.kind === "primary_final" && item.action_status)
             renderActions(evidence, item.action_status, showError, refresh);
+        } else if (
+          jobDetail?.kind === "reply" ||
+          jobDetail?.kind === "mention"
+        ) {
+          evidence.textContent =
+            "Parent PR iteration context unavailable. No other iteration was selected; captured conversation follows.";
+          evidence.setAttribute("role", "status");
         }
       }
     }

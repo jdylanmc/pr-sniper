@@ -122,6 +122,258 @@ function reply(fixture, head = "a".repeat(40)) {
   };
 }
 
+async function reopenedConversationFixture(store, kind, legacy = false) {
+  const fixture = await feedbackFixture(store);
+  const original = fixture.review;
+  if (!legacy) {
+    original.job.work = {
+      id: "original-work",
+      item_id: "original-item",
+      iteration_id: "original-iteration",
+      iteration: 1,
+      agent_id: fixture.settings.agents[0].id,
+      enqueue_order: 1,
+      pass_ordinal: 1,
+      trigger: "admission",
+      admission: {
+        watched_author: true,
+        all_authors: false,
+        requested_reviewer: false,
+      },
+    };
+    original.key = original.job.work.id;
+  }
+  const run = reply(fixture);
+  if (kind === "mention") {
+    run.id = "historical-mention";
+    run.trigger_id = "501";
+    run.target = {
+      kind: "mention",
+      comment: {
+        id: "501",
+        body: "@local-operator explain the original iteration.",
+        author_id: "11",
+        author_login: "pr-author",
+        created_at: "2026-09-30T00:01:00Z",
+        updated_at: "2026-09-30T00:01:00Z",
+      },
+    };
+  }
+  const reopened = structuredClone(original);
+  reopened.key = "reopened-work";
+  reopened.job.work = {
+    ...original.job.work,
+    id: reopened.key,
+    item_id: "reopened-item",
+    iteration_id: "reopened-iteration",
+    iteration: 2,
+    agent_id: fixture.settings.agents[0].id,
+    enqueue_order: 2,
+    pass_ordinal: 2,
+    trigger: "reopened",
+    admission: {
+      watched_author: true,
+      all_authors: false,
+      requested_reviewer: false,
+    },
+  };
+  reopened.operation.id = "reopened-review";
+  reopened.result.output.decision = "machine_sign_off";
+  reopened.result.output.findings = [];
+  const publication = fixture.published(reopened);
+  publication.id = "reopened-publication";
+  publication.operation.id = "reopened-publication-op";
+  publication.receipts[0].review_id = "201";
+  fixture.context.closed = true;
+  fixture.context.thread.resolved = true;
+  fixture.state.jobs = [{ ...original.job, waiting: "closed" }, reopened.job];
+  fixture.state.reviews.push(reopened);
+  fixture.state.publications.push(publication);
+  fixture.state.follow_ups = [run];
+  await store("seed_queue_state", fixture.state);
+  return { ...fixture, run };
+}
+
+for (const kind of ["reply", "mention"]) {
+  test(`panel historical ${kind} keeps its closed canonical iteration after same-head reopen and Back`, async ({
+    page,
+    store,
+  }) => {
+    const fixture = await reopenedConversationFixture(store, kind);
+    const before = await store("monitoring_snapshot");
+    const original = before.items.find((item) => item.id === "original-item");
+    const reopened = before.items.find((item) => item.id === "reopened-item");
+    expect(before.items[0].id).toBe(reopened.id);
+    expect(original.state).toBe("closed");
+    expect(reopened.state).toBe("machine_signed_off");
+    expect(original.job.head_sha).toBe(reopened.job.head_sha);
+    expect(original.follow_up_ids).toContain(fixture.run.id);
+    expect(reopened.follow_up_ids).toContain(fixture.run.id);
+    await page.goto("/");
+    await page
+      .getByRole("navigation", { name: "Application destinations" })
+      .getByRole("button", { name: "Running", exact: true })
+      .click();
+    const origin = page.locator(`[data-job-id="${kind}:${fixture.run.id}"]`);
+    const button = origin.getByRole("button", {
+      name: "Open job",
+      exact: true,
+    });
+    await button.click();
+    await expect(page.locator("[data-item-evidence]")).toContainText(
+      original.summary,
+    );
+    await expect(page.locator("[data-item-evidence]")).not.toContainText(
+      reopened.summary,
+    );
+    const conversation = page.locator("#thread-follow-ups");
+    await expect(conversation.locator("article")).toHaveCount(1);
+    await conversation.getByText(/^Conversation \(/).click();
+    if (kind === "reply") {
+      await expect(conversation).toContainText(fixture.thread.comments[0].body);
+      await expect(conversation).toContainText(fixture.thread.comments[1].body);
+      await expect(conversation).toContainText(
+        `Original root head ${original.job.head_sha}; publication ${fixture.origin.id}`,
+      );
+    } else {
+      await expect(conversation).toContainText(fixture.run.target.comment.body);
+      await expect(conversation).toContainText("Primary mention");
+    }
+    await conversation
+      .getByText("Original target and captured analysis context", {
+        exact: true,
+      })
+      .click();
+    const captured = before.follow_ups.find(
+      (candidate) => candidate.run.id === fixture.run.id,
+    ).run;
+    await expect(conversation.locator("pre")).toHaveText(
+      JSON.stringify(
+        { target: captured.target, context: captured.context },
+        null,
+        2,
+      ),
+    );
+    await expect(page.locator("#agent-reviews article")).toHaveCount(0);
+    await page.getByRole("button", { name: "Back", exact: true }).click();
+    await expect(button).toBeFocused();
+    expect((await store("panel_snapshot")).route).toEqual({ tab: "running" });
+    expect(await store("monitoring_snapshot")).toEqual(before);
+  });
+}
+
+test("panel legacy conversation rejects ambiguous same-head iterations without losing its body", async ({
+  page,
+  store,
+}) => {
+  const fixture = await reopenedConversationFixture(store, "reply", true);
+  const before = await store("monitoring_snapshot");
+  expect(before.items).toHaveLength(2);
+  expect(
+    before.items.every((item) => item.follow_up_ids.includes(fixture.run.id)),
+  ).toBe(true);
+  await store("panel_navigate", {
+    route: {
+      tab: "running",
+      detail: { type: "job", kind: "reply", id: fixture.run.id },
+    },
+  });
+  await page.goto("/");
+  await expect(page.locator("[data-item-evidence]")).toContainText(
+    "Parent PR iteration context unavailable",
+  );
+  for (const item of before.items)
+    await expect(page.locator("[data-item-evidence]")).not.toContainText(
+      item.summary,
+    );
+  await page.getByText("Conversation (2 comments)", { exact: true }).click();
+  await expect(page.locator("#thread-follow-ups")).toContainText(
+    fixture.thread.comments[1].body,
+  );
+  expect(await store("monitoring_snapshot")).toEqual(before);
+});
+
+for (const field of ["item_id", "iteration_id", "configuration_id"]) {
+  test(`panel canonical conversation rejects mismatched ${field} without legacy substitution`, async ({
+    page,
+    store,
+  }) => {
+    const fixture = await reopenedConversationFixture(store, "reply");
+    if (field === "configuration_id") {
+      // Native same-PR legacy compatibility treats an empty configuration as a wildcard.
+      fixture.state.jobs[0].configuration_id = "";
+    } else {
+      fixture.state.jobs[0].work = {
+        ...fixture.state.jobs[0].work,
+        [field]: `different-${field}`,
+      };
+    }
+    await store("seed_queue_state", fixture.state);
+    await store("panel_navigate", {
+      route: {
+        tab: "running",
+        detail: { type: "job", kind: "reply", id: fixture.run.id },
+      },
+    });
+    await page.goto("/");
+    await expect(page.locator("[data-item-evidence]")).toContainText(
+      "Parent PR iteration context unavailable",
+    );
+    await expect(page.locator("#thread-follow-ups article")).toHaveCount(1);
+    await page.getByText("Conversation (2 comments)", { exact: true }).click();
+    await expect(page.locator("#thread-follow-ups")).toContainText(
+      fixture.thread.comments[1].body,
+    );
+    expect(
+      (await store("monitoring_snapshot")).follow_ups[0].run.analysis,
+    ).toBeNull();
+  });
+}
+
+test("panel legacy conversation accepts only one exact binding despite same-head same-number neighbors", async ({
+  page,
+  store,
+}) => {
+  const fixture = await feedbackFixture(store);
+  const run = reply(fixture);
+  const original = (await store("monitoring_snapshot")).items[0];
+  for (const binding of [
+    { account_id: "different-account" },
+    { repository_id: "different-repository" },
+    { configuration_id: "" },
+  ]) {
+    fixture.state.jobs.push({ ...fixture.review.job, ...binding });
+  }
+  fixture.state.follow_ups = [run];
+  await store("seed_queue_state", fixture.state);
+  const before = await store("monitoring_snapshot");
+  expect(before.items).toHaveLength(4);
+  const bound = before.items.find((item) => item.id === original.id);
+  expect(before.items[0].id).not.toBe(bound.id);
+  expect(
+    before.items.every(
+      (item) =>
+        item.job.head_sha === run.context.job.head_sha &&
+        item.job.number === run.context.job.number,
+    ),
+  ).toBe(true);
+  await store("panel_navigate", {
+    route: {
+      tab: "running",
+      detail: { type: "job", kind: "reply", id: run.id },
+    },
+  });
+  await page.goto("/");
+  await expect(page.locator("[data-item-evidence]")).toContainText(
+    bound.summary,
+  );
+  await expect(page.locator("[data-item-evidence]")).not.toContainText(
+    "unavailable",
+  );
+  await expect(page.locator("#thread-follow-ups article")).toHaveCount(1);
+  expect(await store("monitoring_snapshot")).toEqual(before);
+});
+
 test("panel exact reply route retains provenance and never substitutes a normal or mention job", async ({
   page,
   store,

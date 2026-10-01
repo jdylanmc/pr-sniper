@@ -41,6 +41,11 @@ export interface QueueItem {
   aliases?: string[];
   job: {
     work?: NormalWork;
+    provider: string;
+    configuration_id: string;
+    repository_id: string;
+    pull_request_id: string;
+    trigger_policy: string;
     repository_name: string;
     number: number;
     title: string;
@@ -228,6 +233,11 @@ export function renderQueue(
       }
       const actions = document.createElement("div");
       actions.className = "actions";
+      actions.setAttribute("role", "group");
+      actions.setAttribute(
+        "aria-label",
+        `Actions for ${item.job.repository_name} #${item.job.number}; account ${item.job.account_id}; item ${item.id}`,
+      );
       const evidence = document.createElement("button");
       evidence.type = "button";
       evidence.textContent = "Evidence and actions";
