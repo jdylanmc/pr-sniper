@@ -1,6 +1,6 @@
 use super::provider::{boolean, decimal_id, GithubClient, RemoteRepository, Response, Transport};
 use super::{verify_identity, ConnectionError, Identity};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 
@@ -22,7 +22,7 @@ pub struct PullRequest {
     pub files: Vec<ChangedFile>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Lifecycle {
     Open,
@@ -99,6 +99,28 @@ impl<T: Transport> GithubClient<T> {
                 Ok(pull)
             })
             .collect()
+    }
+
+    /// An open listing cannot establish closure. Verify every previously admitted
+    /// active PR missing from that complete listing. Previously verified terminal
+    /// PRs can reappear in the open listing without polling all historical details.
+    pub fn poll_tracked_pull_requests(
+        &self,
+        repository: &RemoteRepository,
+        tracked: &[(String, u64)],
+    ) -> Result<Vec<PullRequest>, ConnectionError> {
+        let mut pulls = self.poll_pull_requests(repository)?;
+        for (id, number) in tracked {
+            if pulls.iter().any(|pull| &pull.id == id) {
+                continue;
+            }
+            let pull = self.review_pull(repository, *number)?;
+            if &pull.id != id {
+                return Err(ConnectionError::RepositoryChanged);
+            }
+            pulls.push(pull);
+        }
+        Ok(pulls)
     }
 
     pub fn pull_requests(
@@ -262,6 +284,14 @@ impl<T: Transport> GithubClient<T> {
     }
 
     pub(super) fn pages(&self, first: &str) -> Result<Vec<Value>, ConnectionError> {
+        self.pages_limited(first, 1_000_000)
+    }
+
+    pub(super) fn pages_limited(
+        &self,
+        first: &str,
+        limit: usize,
+    ) -> Result<Vec<Value>, ConnectionError> {
         let mut path = first.to_string();
         let mut seen = HashSet::new();
         let mut result = Vec::new();
@@ -277,6 +307,9 @@ impl<T: Transport> GithubClient<T> {
             }
             let next = next_page(&path, &response, &mut advertised_last)?;
             if page.is_empty() && (next.is_some() || seen.len() > 1) {
+                return Err(ConnectionError::IncompleteRead);
+            }
+            if result.len() + page.len() > limit {
                 return Err(ConnectionError::IncompleteRead);
             }
             result.extend(page.iter().cloned());
@@ -296,8 +329,16 @@ pub(super) fn polling_pull_request(value: &Value) -> Result<PullRequest, Connect
     }
     let state = match (value["state"].as_str(), value["merged"].as_bool()) {
         (Some("open"), None | Some(false)) => Lifecycle::Open,
-        (Some("closed"), None | Some(false)) => Lifecycle::Closed,
+        (Some("closed"), Some(false)) => Lifecycle::Closed,
         (Some("closed"), Some(true)) => Lifecycle::Merged,
+        (Some("closed"), None) if value.get("merged_at") == Some(&Value::Null) => Lifecycle::Closed,
+        (Some("closed"), None)
+            if value["merged_at"]
+                .as_str()
+                .is_some_and(|time| chrono::DateTime::parse_from_rfc3339(time).is_ok()) =>
+        {
+            Lifecycle::Merged
+        }
         _ => return Err(ConnectionError::InvalidResponse),
     };
     let author = match value.get("user") {
@@ -358,7 +399,7 @@ fn unsigned(value: &Value) -> Result<u64, ConnectionError> {
     value.as_u64().ok_or(ConnectionError::InvalidResponse)
 }
 
-fn sha(value: &Value) -> Result<String, ConnectionError> {
+pub(super) fn sha(value: &Value) -> Result<String, ConnectionError> {
     let value = text(value)?;
     if ![40, 64].contains(&value.len()) || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(ConnectionError::InvalidResponse);

@@ -1,7 +1,7 @@
 import { test, expect } from "./fixtures.mjs";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { closeDialog, saveChanges, section } from "./navigation.mjs";
+import { closeDialog, saveChanges, section, editAgent } from "./navigation.mjs";
 
 const canonicalDirectory = new URL(
   "../../.agents/skills/doctrine/doctrines/",
@@ -51,6 +51,7 @@ async function newDoctrine(page, title, body) {
   await modal
     .getByRole("button", { name: "Save doctrine", exact: true })
     .click();
+  await page.evaluate(() => window.__settingsIdle());
 }
 
 async function deleteDoctrine(page, card) {
@@ -59,6 +60,7 @@ async function deleteDoctrine(page, card) {
     .getByRole("dialog", { name: "Delete this doctrine?", exact: true })
     .getByRole("button", { name: "Delete doctrine", exact: true })
     .click();
+  await page.evaluate(() => window.__settingsIdle());
 }
 
 test.beforeEach(async ({ page }) => {
@@ -108,11 +110,13 @@ test("first open persists exact canonical content and offers every doctrine to A
   await section(page, "Agents");
   await page.getByRole("button", { name: "New agent", exact: true }).click();
   const modal = page.getByRole("dialog", { name: "New agent", exact: true });
-  await expect(
-    modal
-      .getByRole("combobox", { name: "Doctrine", exact: true })
-      .locator("option"),
-  ).toHaveText(["None", ...canonical.map(({ title }) => title)]);
+  await expect(modal.locator("[name=doctrine]")).toHaveCount(canonical.length);
+  expect(
+    await modal
+      .locator("[name=doctrine]")
+      .evaluateAll((inputs) => inputs.map((input) => input.value)),
+  ).toEqual(canonical.map(({ title }) => title));
+  await expect(modal.locator("[name=doctrine]:checked")).toHaveCount(0);
   await expect(modal.getByLabel("AI account", { exact: true })).toHaveValue("");
   await expect(modal.getByLabel("Model", { exact: true })).toHaveValue("");
   await closeDialog(page);
@@ -139,7 +143,7 @@ test("saving Integrations first preserves the catalog through fresh Store proces
     .getByLabel("GitHub repository", { exact: true })
     .fill("fixture/project");
   await modal
-    .getByRole("button", { name: "Use repository", exact: true })
+    .getByRole("button", { name: "Save repository", exact: true })
     .click();
   await saveChanges(page);
   expect((await diskSettings(dataRoot)).doctrines).toEqual(canonical);
@@ -203,6 +207,20 @@ test("doctrine edits, creation, deletion and delete-all persist without reseedin
   await page.reload();
   await section(page, "Doctrines");
   expect(await library(page)).toEqual(expected);
+  await page
+    .locator(".doctrine-card")
+    .first()
+    .getByRole("button", { name: "Delete", exact: true })
+    .click();
+  await expect(page.locator("#error")).toContainText("used by an Agent");
+  expect((await store("snapshot")).settings.doctrines).toEqual(expected);
+  const agent = await editAgent(page);
+  await agent
+    .getByRole("checkbox", { name: edited.title, exact: true })
+    .uncheck();
+  await agent.getByRole("button", { name: "Save agent", exact: true }).click();
+  await expect(agent).toHaveCount(0);
+  await section(page, "Doctrines");
   for (let remaining = expected.length; remaining > 0; remaining--)
     await deleteDoctrine(page, page.locator(".doctrine-card").first());
   await expect(
@@ -278,7 +296,7 @@ test("initialization write failure stays visible and unsaved until a successful 
   expect((await diskSettings(dataRoot)).doctrines).toEqual(canonical);
 });
 
-test("doctrine drafts retain global conflict protection and explicit discard recovery", async ({
+test("doctrine drafts retain same-resource conflict protection and explicit discard recovery", async ({
   page,
   store,
   dataRoot,
@@ -286,16 +304,33 @@ test("doctrine drafts retain global conflict protection and explicit discard rec
   await page.goto("/?view=settings");
   await section(page, "Doctrines");
   await newDoctrine(page, "unsaved", "Preserve this draft until discarded.");
+  await page
+    .locator(".doctrine-card")
+    .last()
+    .getByRole("button", { name: "Edit", exact: true })
+    .click();
+  const modal = page.getByRole("dialog", {
+    name: "Edit doctrine",
+    exact: true,
+  });
+  await modal
+    .getByRole("textbox", { name: "Principles", exact: true })
+    .fill("My local draft.");
   const expected = (await store("snapshot")).settings;
   const external = structuredClone(expected);
-  external.doctrines[0].body = "External user edit.";
+  external.doctrines.at(-1).body = "External user edit.";
   await store("save_preferences", { settings: external, expected });
-  await page.getByRole("button", { name: "Save changes", exact: true }).click();
-  await expect(page.locator("#error")).toContainText(
-    "Settings changed in another window",
+  await modal
+    .getByRole("button", { name: "Save doctrine", exact: true })
+    .click();
+  await expect(modal.getByRole("alert")).toContainText(
+    "Resource changed in another window",
   );
-  expect((await library(page)).at(-1).title).toBe("unsaved");
+  await expect(
+    modal.getByRole("textbox", { name: "Principles", exact: true }),
+  ).toHaveValue("My local draft.");
   expect((await diskSettings(dataRoot)).doctrines).toEqual(external.doctrines);
+  await closeDialog(page);
   await page
     .getByRole("button", { name: "Discard draft and reload", exact: true })
     .click();

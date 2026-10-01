@@ -93,6 +93,103 @@ function run(state) {
   };
 }
 
+for (const mode of ["planned", "captured", "legacy", "queued"]) {
+  test(`${mode} configuration distinguishes actual execution evidence from today's plan`, async ({
+    page,
+    store,
+  }) => {
+    const settings = (await store("snapshot")).settings;
+    const selection = {
+      agent: {
+        id: "agent",
+        name: "Captured Agent",
+        model: "captured-model",
+        ai_account: { provider: "copilot", account_id: "33" },
+        prompt: "Captured prompt <script>window.executed=true</script>",
+        signature: "machine",
+        doctrines: ["Captured doctrine"],
+      },
+      policy: settings.defaults,
+      doctrine: "Captured doctrine body.",
+      preset: null,
+      configuration: {
+        repository: {
+          id: "repo",
+          provider: "github",
+          name: "example/repo",
+          enabled: true,
+          provider_account_id: "22",
+          provider_repository_id: "100",
+          assignments: [],
+        },
+        authority: {
+          primary: true,
+          comment: false,
+          approve: false,
+          merge: false,
+        },
+        doctrines: [
+          { title: "Captured doctrine", body: "Captured doctrine body." },
+        ],
+      },
+    };
+    const planned = structuredClone(selection);
+    planned.agent.prompt = "Today's planned prompt.";
+    planned.configuration.doctrines[0].body = "Today's doctrine body.";
+    const review = {
+      ...candidate(),
+      planned_selection: planned,
+      run:
+        mode === "planned"
+          ? null
+          : {
+              ...run(mode === "queued" ? "queued" : "completed"),
+              selection,
+              job: candidate().job,
+            },
+    };
+    if (mode === "legacy") delete review.run.selection.configuration;
+    await page.addInitScript((review) => {
+      const original = window.__TAURI_INTERNALS__.invoke;
+      window.__TAURI_INTERNALS__.invoke = (command, args) =>
+        command === "monitoring_snapshot"
+          ? Promise.resolve({ health: [], jobs: [], reviews: [review] })
+          : original(command, args);
+    }, review);
+    await page.goto("/?view=queue");
+    const panel = page.locator("#agent-reviews");
+    if (mode !== "planned") {
+      await panel
+        .getByText("Captured execution configuration", { exact: true })
+        .click();
+      await expect(panel).toContainText(selection.agent.prompt);
+      expect(await page.evaluate(() => window.executed)).toBeUndefined();
+      await expect(panel.locator("script")).toHaveCount(0);
+    }
+    if (mode === "planned" || mode === "queued") {
+      await panel
+        .getByText(
+          "Planned configuration (revalidated at start; not execution evidence)",
+          { exact: true },
+        )
+        .click();
+      await expect(panel).toContainText("Today's planned prompt.");
+      await expect(panel).toContainText("Today's doctrine body.");
+    } else {
+      await expect(panel).not.toContainText("Today's planned prompt.");
+      await expect(panel).not.toContainText("Today's doctrine body.");
+    }
+    if (mode === "legacy")
+      await expect(panel).toContainText(
+        "Today's settings are not historical evidence",
+      );
+    if (mode === "captured")
+      await expect(panel).toContainText(
+        "Captured assignment authority (not a current provider grant)",
+      );
+  });
+}
+
 test("review start is explicit, revision-bound and requires trust consent", async ({
   page,
 }) => {

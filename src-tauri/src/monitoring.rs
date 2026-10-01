@@ -21,6 +21,9 @@ pub const WAITING_SUPERSEDED: &str = "superseded";
 pub const WAITING_INELIGIBLE: &str = "ineligible";
 pub const WAITING_NO_LONGER_CURRENT: &str = "no_longer_current";
 pub const WAITING_SCOPE_EXCLUDED: &str = "scope_excluded";
+pub const WAITING_CLOSED: &str = "closed";
+pub const WAITING_MERGED: &str = "merged";
+pub const WAITING_ASSIGNMENT_REMOVED: &str = "assignment_removed";
 pub const SCOPE_CONFIRMATION_REQUIRED: &str = "scope_confirmation_required";
 const RETRY_WINDOW_SECONDS: i64 = 15 * 60;
 const MAX_RETRIES: u8 = 3;
@@ -49,6 +52,10 @@ pub enum OperationFailure {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JobOperation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_attempt: Option<AttemptBudget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interruption: Option<crate::capacity::Interruption>,
     pub id: String,
     pub provider: String,
     pub account_id: String,
@@ -69,6 +76,15 @@ pub struct JobOperation {
     pub owned_thread_id: Option<String>,
     pub triggering_external_comment_id: Option<String>,
     pub confirmed_receipt: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttemptBudget {
+    pub attempt_count: u8,
+    pub initial_attempt_at: i64,
+    pub retry_deadline: i64,
+    pub failure: Option<OperationFailure>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,14 +119,20 @@ pub struct ScheduleHealth {
     pub last_failure: Option<String>,
     pub in_flight: bool,
     #[serde(default)]
+    pub conversation_admission_pending: bool,
+    #[serde(default)]
     pub manual_pending: bool,
     #[serde(default)]
     pub operation: Option<JobOperation>,
+    #[serde(default)]
+    pub scan_assignments: Vec<ScanAssignment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QueueJob {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<NormalWork>,
     #[serde(default)]
     pub assignment_id: Option<String>,
     pub provider: String,
@@ -139,6 +161,148 @@ pub struct QueueJob {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ScanAssignment {
+    pub assignment_id: String,
+    pub agent_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkTrigger {
+    Admission,
+    NewRevision,
+    Reopened,
+    AssignmentAdded,
+    LegacyAdmission,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Admission {
+    pub watched_author: bool,
+    pub all_authors: bool,
+    pub requested_reviewer: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NormalWork {
+    pub id: String,
+    pub item_id: String,
+    pub iteration_id: String,
+    pub iteration: u64,
+    pub agent_id: String,
+    pub enqueue_order: u64,
+    pub pass_ordinal: u64,
+    pub trigger: WorkTrigger,
+    pub admission: Admission,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_item_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrackedPullRequest {
+    pub provider: String,
+    pub configuration_id: String,
+    pub account_id: String,
+    pub repository_id: String,
+    pub pull_request_id: String,
+    pub number: u64,
+    pub head_sha: String,
+    pub lifecycle: Lifecycle,
+    pub iteration_id: String,
+    pub item_id: String,
+    pub iteration: u64,
+    pub admission: Admission,
+    pub admitted_at: i64,
+    pub observed_at: i64,
+}
+
+impl TrackedPullRequest {
+    fn matches(&self, job: &QueueJob) -> bool {
+        self.provider == job.provider
+            && self.configuration_id == job.configuration_id
+            && self.account_id == job.account_id
+            && self.repository_id == job.repository_id
+            && self.pull_request_id == job.pull_request_id
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueueState {
+    pub jobs: Vec<QueueJob>,
+    pub tracked: Vec<TrackedPullRequest>,
+    pub next_enqueue_order: u64,
+}
+
+impl QueueState {
+    pub(crate) fn recover_evidence(&mut self, store: &Store) -> Result<(), String> {
+        for run in store.review_evidence()? {
+            if run.job.assignment_id.as_deref() == Some(&run.assignment_id)
+                && !self.jobs.iter().any(|job| run.matches_job(job))
+            {
+                self.jobs.push(run.job.clone());
+            }
+        }
+        self.next_enqueue_order = self.next_enqueue_order.max(
+            store
+                .load_follow_ups()?
+                .iter()
+                .filter_map(|f| f.enqueue_order)
+                .max()
+                .unwrap_or(0),
+        );
+        self.next_enqueue_order = self.next_enqueue_order.max(
+            store
+                .load_actions()?
+                .finals
+                .iter()
+                .map(|f| f.enqueue_order)
+                .max()
+                .unwrap_or(0),
+        );
+        self.next_enqueue_order = self.next_enqueue_order.max(
+            store
+                .load_feedback()?
+                .mentions
+                .iter()
+                .map(|m| m.enqueue_order)
+                .max()
+                .unwrap_or(0),
+        );
+        Ok(())
+    }
+
+    pub fn allocate_order(&mut self) -> Result<u64, String> {
+        self.next_enqueue_order = self
+            .next_enqueue_order
+            .max(
+                self.jobs
+                    .iter()
+                    .filter_map(|j| j.work.as_ref().map(|w| w.enqueue_order))
+                    .max()
+                    .unwrap_or(0),
+            )
+            .checked_add(1)
+            .ok_or("The durable queue order is exhausted.")?;
+        Ok(self.next_enqueue_order)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GlobalScan {
+    pub schedule_key: String,
+    pub next_run: i64,
+    pub pending: Vec<String>,
+    #[serde(default)]
+    pub requested: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PollCursor {
     pub name: String,
     pub account_id: String,
@@ -150,6 +314,8 @@ pub struct PollCursor {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct MonitoringState {
+    #[serde(default)]
+    pub global_scan: Option<GlobalScan>,
     #[serde(default)]
     pub health: BTreeMap<String, ScheduleHealth>,
     #[serde(default)]
@@ -284,6 +450,8 @@ pub struct PollTicket {
     pub updated_after: Option<String>,
     pub activation_version: String,
     pub account_generation: u64,
+    pub assignments: Vec<ScanAssignment>,
+    pub tracked: Vec<(String, u64)>,
 }
 
 pub struct PollResult {
@@ -305,6 +473,7 @@ pub enum MonitoringError {
 impl MonitoringError {
     pub fn requires_host_report(&self) -> bool {
         matches!(self, Self::Storage(_))
+            || matches!(self, Self::Recoverable { code, .. } if code == "conversation_admission")
     }
 
     pub fn message(&self) -> &str {
@@ -337,6 +506,7 @@ struct ConfiguredSchedule {
     policy: Policy,
     watched_authors: Vec<WatchedIdentity>,
     trigger_policy: Option<String>,
+    assignments: Vec<ScanAssignment>,
 }
 
 #[derive(Default)]
@@ -347,6 +517,13 @@ pub struct Monitor {
 }
 
 impl Monitor {
+    pub(crate) fn restore_readonly(state: MonitoringState) -> Self {
+        Self {
+            state,
+            leases: Default::default(),
+            previews: Default::default(),
+        }
+    }
     pub fn restore(store: &Store) -> Result<Self, String> {
         let mut state = store.load_monitoring_state()?;
         let previous = state.clone();
@@ -364,6 +541,7 @@ impl Monitor {
             health.manual_pending = false;
             if health.in_flight {
                 health.in_flight = false;
+                health.conversation_admission_pending = true;
                 health.last_failure = Some("interrupted".into());
                 health.next_run = 0;
                 if let Some(operation) = health.operation.as_mut() {
@@ -651,6 +829,9 @@ impl Monitor {
         now: i64,
         check_now: bool,
     ) -> Result<Vec<PollTicket>, String> {
+        if store.load_automation()?.paused {
+            return Ok(Vec::new());
+        }
         let settings = store.load_settings()?;
         let previous = self.state.clone();
         let previous_leases = self.leases.clone();
@@ -662,7 +843,9 @@ impl Monitor {
             self.leases = previous_leases;
             return Err(error);
         }
-        let tickets = self.begin(&configured, now, check_now);
+        let mut queue = store.load_queue_state()?;
+        queue.recover_evidence(store)?;
+        let tickets = self.begin(&configured, &queue, now, check_now);
         if self.state != previous {
             if let Err(error) = store.save_monitoring_state(&self.state) {
                 self.state = previous;
@@ -699,6 +882,15 @@ impl Monitor {
 
     pub fn cancel_pending_checks(&mut self, store: &Store) -> Result<(), String> {
         let previous = self.state.clone();
+        if let Some(scan) = &mut self.state.global_scan {
+            scan.requested = false;
+            scan.pending.retain(|id| {
+                self.state
+                    .health
+                    .get(id)
+                    .is_some_and(|h| !h.manual_pending || h.in_flight)
+            });
+        }
         for health in self.state.health.values_mut() {
             health.manual_pending = false;
         }
@@ -724,7 +916,6 @@ impl Monitor {
             .values_mut()
             .find(|health| {
                 health.repository_id == job.configuration_id
-                    && health.assignment_id == job.assignment_id
                     && health.enabled
                     && health.schedule_available
                     && health.provider_account_id.as_deref() == Some(&job.account_id)
@@ -746,7 +937,9 @@ impl Monitor {
                 OperationState::Queued | OperationState::Interrupted
             )
         }) {
-            health.next_run = health.next_run.min(now.max(1));
+            if let Some(scan) = &mut self.state.global_scan {
+                scan.next_run = scan.next_run.min(now.max(1));
+            }
         }
         if let Err(error) = store.save_monitoring_state(&self.state) {
             self.state = previous;
@@ -832,6 +1025,77 @@ impl Monitor {
         accounts: &BTreeMap<String, AccountAvailability>,
         now: i64,
     ) {
+        let schedule = configured.first().map(|c| &c.schedule);
+        if let Some(schedule) = schedule {
+            let key = schedule_key(schedule);
+            let next = if matches!(schedule, Schedule::Cron { .. }) {
+                next_run(schedule, now).unwrap_or(0)
+            } else {
+                0
+            };
+            let scan = self.state.global_scan.get_or_insert_with(|| GlobalScan {
+                schedule_key: key.clone(),
+                next_run: next,
+                pending: Vec::new(),
+                requested: false,
+            });
+            if scan.schedule_key != key {
+                scan.schedule_key = key;
+                scan.next_run = next;
+            }
+        }
+        // Collapse legacy assignment health without losing its retry budget.
+        for configuration in configured {
+            if self.state.health.contains_key(&configuration.health_key) {
+                continue;
+            }
+            let previous = self
+                .state
+                .health
+                .values()
+                .filter(|h| {
+                    h.repository_id == configuration.repository_id
+                        && h.provider_account_id == configuration.provider_account_id
+                        && h.provider_repository_id == configuration.provider_repository_id
+                })
+                .max_by_key(|h| {
+                    (
+                        h.operation
+                            .as_ref()
+                            .map(|o| match o.state {
+                                OperationState::ManualRetry => 4,
+                                OperationState::Failed => 3,
+                                OperationState::Queued
+                                | OperationState::Interrupted
+                                | OperationState::Running => 2,
+                                OperationState::Completed => 1,
+                            })
+                            .unwrap_or(0),
+                        h.operation
+                            .as_ref()
+                            .and_then(|o| o.next_attempt_at)
+                            .unwrap_or(0),
+                        h.last_attempt,
+                    )
+                })
+                .cloned();
+            if let Some(mut previous) = previous {
+                previous.scan_assignments = configuration.assignments.clone();
+                if previous.operation.as_ref().is_some_and(|o| {
+                    matches!(
+                        o.state,
+                        OperationState::Queued | OperationState::Interrupted
+                    )
+                }) {
+                    if let Some(scan) = &mut self.state.global_scan {
+                        scan.pending.push(configuration.health_key.clone());
+                    }
+                }
+                self.state
+                    .health
+                    .insert(configuration.health_key.clone(), previous);
+            }
+        }
         let expected: HashSet<_> = configured
             .iter()
             .map(|configuration| configuration.health_key.as_str())
@@ -842,6 +1106,15 @@ impl Monitor {
             .iter()
             .filter(|(key, health)| !expected.contains(key.as_str()) && !health.in_flight)
             .filter_map(|(_, health)| health.operation.clone())
+            .filter(|operation| {
+                !self.state.health.iter().any(|(key, health)| {
+                    expected.contains(key.as_str())
+                        && health
+                            .operation
+                            .as_ref()
+                            .is_some_and(|current| current.id == operation.id)
+                })
+            })
             .map(|mut operation| {
                 if operation.state != OperationState::Completed {
                     operation.state = OperationState::Failed;
@@ -908,12 +1181,17 @@ impl Monitor {
                     schedule_available: false,
                     last_failure: None,
                     in_flight: false,
+                    conversation_admission_pending: false,
                     manual_pending: false,
                     operation: None,
+                    scan_assignments: Vec::new(),
                 });
             let binding_changed = health.name != configuration.name
                 || health.provider_account_id != configuration.provider_account_id
                 || health.provider_repository_id != configuration.provider_repository_id;
+            let key = schedule_key(&configuration.schedule);
+            let schedule_changed = health.schedule_key != key;
+            health.schedule_key = key;
             if binding_changed {
                 health.last_success = None;
                 health.next_run = 0;
@@ -940,6 +1218,10 @@ impl Monitor {
                 health.next_run = 0;
                 health.schedule_available = false;
                 health.manual_pending = false;
+                continue;
+            }
+            if !matches!(configuration.schedule, Schedule::Cron { .. }) {
+                unavailable_health(health, "invalid_global_cron");
                 continue;
             }
             let Some(account_id) = configuration.provider_account_id.as_ref() else {
@@ -973,6 +1255,19 @@ impl Monitor {
                 unavailable_health(health, SCOPE_CONFIRMATION_REQUIRED);
                 self.state.cursors.remove(&configuration.health_key);
                 continue;
+            }
+            if !health.in_flight
+                && configuration_failure(health.last_failure.as_deref())
+                && health
+                    .operation
+                    .as_ref()
+                    .is_some_and(|o| o.state == OperationState::Failed)
+            {
+                if let Some(operation) = health.operation.take() {
+                    self.state
+                        .operations
+                        .insert(operation.id.clone(), operation);
+                }
             }
             if health
                 .operation
@@ -1011,10 +1306,13 @@ impl Monitor {
                 continue;
             }
 
-            let key = schedule_key(&configuration.schedule);
-            if health.schedule_key != key || health.next_run == 0 {
-                health.next_run = next_run(&configuration.schedule, now).unwrap_or(0);
-                health.schedule_key = key;
+            if schedule_changed || health.next_run == 0 {
+                health.next_run = self
+                    .state
+                    .global_scan
+                    .as_ref()
+                    .map(|s| s.next_run)
+                    .unwrap_or(0);
             }
             health.schedule_available = health.next_run > 0;
             if !health.schedule_available {
@@ -1023,6 +1321,14 @@ impl Monitor {
             } else if configuration_failure(health.last_failure.as_deref()) {
                 health.last_failure = None;
             }
+        }
+        if let Some(scan) = &mut self.state.global_scan {
+            scan.pending.retain(|id| {
+                self.state
+                    .health
+                    .get(id)
+                    .is_some_and(|h| h.enabled && (h.schedule_available || h.in_flight))
+            });
         }
     }
 
@@ -1035,7 +1341,12 @@ impl Monitor {
         let mut jobs = store.load_queue()?;
         let previous = jobs.clone();
         for job in &mut jobs {
-            if !actionable(job) {
+            if !actionable(job) && job.work.is_none()
+                || matches!(
+                    job.waiting.as_str(),
+                    WAITING_SUPERSEDED | WAITING_CLOSED | WAITING_MERGED
+                )
+            {
                 continue;
             }
             let configuration = if job.configuration_id.is_empty() {
@@ -1071,9 +1382,28 @@ impl Monitor {
                 job.waiting = WAITING_ACCOUNT_DISCONNECTED.into();
                 continue;
             }
-            if configuration.trigger_policy.as_deref() != Some(&job.trigger_policy) {
+            if job.work.is_none()
+                && configuration.trigger_policy.as_deref() != Some(&job.trigger_policy)
+            {
                 job.waiting = WAITING_POLICY_CHANGED.into();
                 continue;
+            }
+            if let Some(work) = &job.work {
+                if !configuration.assignments.iter().any(|a| {
+                    Some(a.assignment_id.as_str()) == job.assignment_id.as_deref()
+                        && a.agent_id == work.agent_id
+                }) {
+                    job.waiting = WAITING_ASSIGNMENT_REMOVED.into();
+                    continue;
+                }
+                if actionable(job) {
+                    job.watched_author = job.author_id.as_ref().is_some_and(|id| {
+                        configuration.watched_authors.iter().any(|a| &a.id == id)
+                    });
+                    if !job.watched_author {
+                        job.waiting = WAITING_TRUST_CONFIRMATION.into();
+                    }
+                }
             }
             job.configuration_id = configuration.repository_id.clone();
             job.repository_name = configuration.name.clone();
@@ -1094,16 +1424,50 @@ impl Monitor {
     fn begin(
         &mut self,
         configured: &[ConfiguredSchedule],
+        queue: &QueueState,
         now: i64,
         check_now: bool,
     ) -> Vec<PollTicket> {
         let mut checking_repositories: HashSet<_> = self.leases.keys().cloned().collect();
         let mut tickets = Vec::new();
-        if check_now {
-            for configuration in configured {
-                if let Some(health) = self.state.health.get_mut(&configuration.health_key) {
-                    if health.enabled && health.schedule_available {
-                        health.manual_pending = true;
+        if let Some(scan) = &mut self.state.global_scan {
+            if check_now
+                && !scan.pending.is_empty()
+                && self.state.health.values().any(|h| h.in_flight)
+            {
+                scan.requested = true;
+            }
+            if scan.pending.is_empty()
+                && scan.next_run > 0
+                && (check_now || scan.requested || now >= scan.next_run)
+            {
+                scan.requested = false;
+                scan.next_run = configured
+                    .first()
+                    .and_then(|c| next_run(&c.schedule, now).ok())
+                    .unwrap_or(0);
+                for configuration in configured {
+                    if let Some(health) = self.state.health.get_mut(&configuration.health_key) {
+                        if health.enabled
+                            && health.schedule_available
+                            && health.operation.as_ref().is_none_or(|o| {
+                                !matches!(
+                                    o.state,
+                                    OperationState::Failed | OperationState::ManualRetry
+                                )
+                            })
+                        {
+                            scan.pending.push(configuration.health_key.clone());
+                            health.scan_assignments = configuration.assignments.clone();
+                            health.manual_pending = check_now;
+                        }
+                        if health
+                            .operation
+                            .as_ref()
+                            .is_none_or(|o| o.state == OperationState::Completed)
+                        {
+                            health.next_run = scan.next_run;
+                        }
                     }
                 }
             }
@@ -1130,12 +1494,21 @@ impl Monitor {
             let Some(health) = self.state.health.get_mut(&configuration.health_key) else {
                 continue;
             };
-            let interrupted = health.last_failure.as_deref() == Some("interrupted");
-            let manual = health.manual_pending;
+            let retry_waiting = health.operation.as_ref().is_some_and(|o| {
+                matches!(
+                    o.state,
+                    OperationState::Queued | OperationState::Interrupted
+                ) && o.next_attempt_at.is_none_or(|t| now < t)
+            });
             if health.in_flight
                 || !health.enabled
                 || !health.schedule_available
-                || (!manual && now < health.next_run && !interrupted)
+                || !self
+                    .state
+                    .global_scan
+                    .as_ref()
+                    .is_some_and(|scan| scan.pending.contains(&configuration.health_key))
+                || retry_waiting
                 || checking_repositories.contains(repository_id)
             {
                 continue;
@@ -1160,10 +1533,13 @@ impl Monitor {
             health.last_failure = None;
             health.in_flight = true;
             health.manual_pending = false;
-            start_poll_operation(health, configuration, now, manual);
-            if !manual {
-                health.next_run = next_run(&configuration.schedule, now).unwrap_or(0);
-            }
+            start_poll_operation(health, configuration, now, false);
+            health.next_run = self
+                .state
+                .global_scan
+                .as_ref()
+                .map(|s| s.next_run)
+                .unwrap_or(0);
             checking_repositories.insert(repository_id.clone());
             self.leases
                 .insert(repository_id.clone(), configuration.health_key.clone());
@@ -1180,6 +1556,33 @@ impl Monitor {
                 updated_after: cursor.and_then(|cursor| cursor.updated_after),
                 activation_version: activation.version.clone(),
                 account_generation: 0,
+                assignments: health.scan_assignments.clone(),
+                tracked: queue
+                    .tracked
+                    .iter()
+                    .filter(|p| {
+                        p.lifecycle == Lifecycle::Open
+                            && p.configuration_id == configuration.repository_id
+                            && p.account_id == *account_id
+                            && p.repository_id == *repository_id
+                    })
+                    .map(|p| (p.pull_request_id.clone(), p.number))
+                    .chain(
+                        queue
+                            .jobs
+                            .iter()
+                            .filter(|j| {
+                                (j.configuration_id == configuration.repository_id
+                                    || j.configuration_id.is_empty() && j.work.is_none())
+                                    && j.account_id == *account_id
+                                    && j.repository_id == *repository_id
+                                    && !queue.tracked.iter().any(|p| p.matches(j))
+                            })
+                            .map(|j| (j.pull_request_id.clone(), j.number)),
+                    )
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect(),
             });
         }
         tickets
@@ -1214,6 +1617,18 @@ impl Monitor {
         result: Result<PollResult, ConnectionError>,
         now: i64,
     ) -> Result<(), MonitoringError> {
+        self.finish_with_admission(store, accounts, ticket, result, now, |_, _| Ok(()))
+    }
+
+    pub(crate) fn finish_with_admission(
+        &mut self,
+        store: &Store,
+        accounts: &BTreeMap<String, AccountAvailability>,
+        ticket: PollTicket,
+        result: Result<PollResult, ConnectionError>,
+        now: i64,
+        admit: impl FnOnce(&Store, &PollTicket) -> Result<(), String>,
+    ) -> Result<(), MonitoringError> {
         if let Some(health) = self.state.health.get_mut(&ticket.health_key) {
             health.in_flight = false;
         }
@@ -1232,7 +1647,20 @@ impl Monitor {
         let configured = configured_schedules(&settings);
         let outcome = match self.synchronize_jobs(store, &configured, accounts) {
             Ok(()) => match result {
-                Ok(result) => self.commit_success(store, &configured, &ticket, result, now),
+                Ok(result) => self
+                    .commit_success(store, &configured, &ticket, result, now)
+                    .and_then(|login| {
+                        if let Some(health) = self.state.health.get_mut(&ticket.health_key) {
+                            health.conversation_admission_pending = true;
+                        }
+                        admit(store, &ticket).map_err(|message| MonitoringError::Recoverable {
+                            code: "conversation_admission".into(),
+                            message,
+                            failure: OperationFailure::Permanent,
+                            retry_after_seconds: None,
+                        })?;
+                        Ok(login)
+                    }),
                 Err(error) => Err(check_error(error)),
             },
             Err(error) => Err(MonitoringError::Storage(error)),
@@ -1250,6 +1678,7 @@ impl Monitor {
                         health.account_login = Some(login.clone());
                         health.last_success = Some(now);
                         health.last_failure = None;
+                        health.conversation_admission_pending = false;
                         if let Some(operation) = health.operation.as_mut() {
                             operation.state = OperationState::Completed;
                             operation.next_attempt_at = None;
@@ -1284,6 +1713,22 @@ impl Monitor {
             self.state
                 .operations
                 .insert(operation.id.clone(), operation);
+        }
+        let retrying = self
+            .state
+            .health
+            .get(&ticket.health_key)
+            .and_then(|h| h.operation.as_ref())
+            .is_some_and(|o| {
+                matches!(
+                    o.state,
+                    OperationState::Queued | OperationState::Interrupted
+                )
+            });
+        if !retrying {
+            if let Some(scan) = &mut self.state.global_scan {
+                scan.pending.retain(|id| id != &ticket.health_key);
+            }
         }
         store
             .save_monitoring_state(&self.state)
@@ -1330,6 +1775,11 @@ impl Monitor {
         health.last_failure = None;
         health.next_run = now;
         health.schedule_available = true;
+        if let Some(scan) = &mut self.state.global_scan {
+            if !scan.pending.contains(&health.repository_id) {
+                scan.pending.push(health.repository_id.clone());
+            }
+        }
         self.state
             .operations
             .insert(previous_operation.id.clone(), previous_operation);
@@ -1378,8 +1828,26 @@ impl Monitor {
             .map(chrono::DateTime::parse_from_rfc3339)
             .transpose()
             .map_err(|_| check_error(ConnectionError::Configuration))?;
-        let mut observed = Vec::new();
-        for pull in result.pull_requests {
+        let mut queue = store.load_queue_state().map_err(MonitoringError::Storage)?;
+        let previous_queue = queue.clone();
+        queue
+            .recover_evidence(store)
+            .map_err(MonitoringError::Storage)?;
+        let reviews = store.review_evidence().map_err(MonitoringError::Storage)?;
+        let reserved: HashSet<_> = store
+            .load_publications()
+            .map_err(MonitoringError::Storage)?
+            .into_iter()
+            .filter(|p| p.reserves_revision())
+            .map(|p| p.review.key)
+            .collect();
+        let mut pulls = result.pull_requests;
+        pulls.sort_by_key(|p| p.number);
+        let mut seen = HashSet::new();
+        for pull in pulls {
+            if !seen.insert(pull.id.clone()) {
+                return Err(check_error(ConnectionError::IncompleteRead));
+            }
             let updated = chrono::DateTime::parse_from_rfc3339(&pull.updated_at)
                 .map_err(|_| check_error(ConnectionError::InvalidResponse))?;
             newest = Some(newest.map_or(updated, |previous| previous.max(updated)));
@@ -1393,81 +1861,269 @@ impl Monitor {
                 &result.connection.identity.id,
                 &pull,
             );
-            let admitted = eligibility.eligible() && admission_candidate;
-            if admitted {
+            let bound = |job: &QueueJob| {
+                job.provider == "github"
+                    && (job.configuration_id == ticket.repository_id
+                        || job.configuration_id.is_empty() && job.work.is_none())
+                    && job.account_id == ticket.provider_account_id
+                    && job.repository_id == ticket.provider_repository_id
+                    && job.pull_request_id == pull.id
+            };
+            let mut index = queue.tracked.iter().position(|p| {
+                p.configuration_id == ticket.repository_id
+                    && p.account_id == ticket.provider_account_id
+                    && p.repository_id == ticket.provider_repository_id
+                    && p.pull_request_id == pull.id
+            });
+            let mut trigger = WorkTrigger::AssignmentAdded;
+            if index.is_none() {
+                let legacy = queue.jobs.iter().filter(|j| bound(j)).max_by_key(|j| {
+                    (
+                        j.work.as_ref().map(|w| w.iteration).unwrap_or(0),
+                        j.detected_at,
+                    )
+                });
+                if legacy.is_none()
+                    && (pull.state != Lifecycle::Open
+                        || pull.draft
+                        || !eligibility.eligible()
+                        || !(admission_candidate || eligibility.requested_reviewer))
+                {
+                    continue;
+                }
+                let iteration_id = legacy
+                    .and_then(|j| j.work.as_ref())
+                    .map(|w| w.iteration_id.clone())
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                let admission = legacy
+                    .and_then(|j| j.work.as_ref())
+                    .map(|w| w.admission.clone())
+                    .or_else(|| {
+                        legacy.map(|job| Admission {
+                            watched_author: job.watched_author,
+                            all_authors: job.all_authors,
+                            requested_reviewer: job.requested_reviewer,
+                        })
+                    })
+                    .unwrap_or(Admission {
+                        watched_author: eligibility.watched_author,
+                        all_authors: eligibility.all_authors,
+                        requested_reviewer: eligibility.requested_reviewer,
+                    });
+                trigger = match legacy {
+                    Some(job) if job.work.is_some() => WorkTrigger::AssignmentAdded,
+                    Some(_) => WorkTrigger::LegacyAdmission,
+                    None => WorkTrigger::Admission,
+                };
+                queue.tracked.push(TrackedPullRequest {
+                    provider: "github".into(),
+                    configuration_id: ticket.repository_id.clone(),
+                    account_id: ticket.provider_account_id.clone(),
+                    repository_id: ticket.provider_repository_id.clone(),
+                    pull_request_id: pull.id.clone(),
+                    number: pull.number,
+                    head_sha: legacy
+                        .map(|j| j.head_sha.clone())
+                        .unwrap_or_else(|| pull.head_sha.clone()),
+                    lifecycle: match legacy.map(|j| j.waiting.as_str()) {
+                        Some(WAITING_CLOSED) => Lifecycle::Closed,
+                        Some(WAITING_MERGED) => Lifecycle::Merged,
+                        _ => Lifecycle::Open,
+                    },
+                    iteration: legacy
+                        .and_then(|j| j.work.as_ref())
+                        .map(|w| w.iteration)
+                        .unwrap_or(1),
+                    item_id: legacy
+                        .map(crate::queue::item_id)
+                        .unwrap_or_else(|| format!("iteration-{iteration_id}")),
+                    iteration_id,
+                    admission,
+                    admitted_at: legacy.map(|j| j.detected_at).unwrap_or(now),
+                    observed_at: now,
+                });
+                index = Some(queue.tracked.len() - 1);
                 mark_activation_admitted(&mut activation, &pull);
             }
-            observed.push((pull, eligibility, admitted));
-        }
-
-        let mut jobs = store.load_queue().map_err(MonitoringError::Storage)?;
-        let previous_jobs = jobs.clone();
-        for job in &mut jobs {
-            if !actionable(job)
-                || job.configuration_id != ticket.repository_id
-                || job.account_id != ticket.provider_account_id
-                || job.repository_id != ticket.provider_repository_id
-                || job.trigger_policy != ticket.trigger_policy
+            let tracked = &mut queue.tracked[index.unwrap()];
+            if pull.state == Lifecycle::Open
+                && (tracked.lifecycle != Lifecycle::Open || tracked.head_sha != pull.head_sha)
             {
-                continue;
+                trigger = if tracked.lifecycle != Lifecycle::Open {
+                    WorkTrigger::Reopened
+                } else {
+                    WorkTrigger::NewRevision
+                };
+                tracked.iteration = tracked.iteration.checked_add(1).ok_or_else(|| {
+                    MonitoringError::Storage("PR iteration counter exhausted.".into())
+                })?;
+                tracked.iteration_id = uuid::Uuid::new_v4().to_string();
+                tracked.item_id = format!("iteration-{}", tracked.iteration_id);
             }
-            job.waiting = match observed
-                .iter()
-                .find(|(pull, _, _)| pull.id == job.pull_request_id)
-            {
-                Some((pull, _, _)) if pull.head_sha != job.head_sha => WAITING_SUPERSEDED.into(),
-                Some((pull, eligibility, _))
-                    if pull.state != Lifecycle::Open || pull.draft || !eligibility.eligible() =>
-                {
-                    WAITING_INELIGIBLE.into()
+            tracked.head_sha = pull.head_sha.clone();
+            tracked.lifecycle = pull.state.clone();
+            tracked.observed_at = now;
+            let tracked = tracked.clone();
+            for job in queue.jobs.iter_mut().filter(|j| bound(j)) {
+                if matches!(job.waiting.as_str(), WAITING_CLOSED | WAITING_MERGED) {
+                    continue;
                 }
-                Some((_, _, false)) => WAITING_SCOPE_EXCLUDED.into(),
-                Some(_) => continue,
-                None => WAITING_NO_LONGER_CURRENT.into(),
-            };
-        }
-
-        for (pull, eligibility, admitted) in observed {
-            if pull.state != Lifecycle::Open || pull.draft || !eligibility.eligible() || !admitted {
+                if pull.state != Lifecycle::Open {
+                    job.waiting = if pull.state == Lifecycle::Merged {
+                        WAITING_MERGED
+                    } else {
+                        WAITING_CLOSED
+                    }
+                    .into();
+                } else if job
+                    .work
+                    .as_ref()
+                    .is_some_and(|w| w.iteration_id != tracked.iteration_id)
+                    || job.head_sha != pull.head_sha
+                {
+                    job.waiting = WAITING_SUPERSEDED.into();
+                } else if pull.draft {
+                    job.waiting = WAITING_INELIGIBLE.into();
+                }
+            }
+            if pull.state != Lifecycle::Open || pull.draft {
                 continue;
             }
-            let job = QueueJob {
-                assignment_id: configuration.assignment_id.clone(),
-                provider: "github".into(),
-                account_id: result.connection.identity.id.clone(),
-                account_login: result.connection.identity.login.clone(),
-                configuration_id: configuration.repository_id.clone(),
-                repository_id: ticket.provider_repository_id.clone(),
-                repository_name: ticket.name.clone(),
-                pull_request_id: pull.id,
-                number: pull.number,
-                title: pull.title,
-                head_sha: pull.head_sha,
-                observed_base_sha: Some(pull.base_sha),
-                trigger_policy: ticket.trigger_policy.clone(),
-                author_id: pull.author.as_ref().map(|author| author.id.clone()),
-                author_login: pull.author.as_ref().map(|author| author.login.clone()),
-                watched_author: eligibility.watched_author,
-                all_authors: eligibility.all_authors,
-                requested_reviewer: eligibility.requested_reviewer,
-                waiting: waiting_state(
-                    eligibility.watched_author,
-                    pull.head_repository_id.as_deref(),
-                    ticket,
-                )
-                .into(),
-                detected_at: now,
-            };
-            if let Some(existing) = jobs.iter_mut().find(|existing| same_job(existing, &job)) {
-                let detected_at = existing.detected_at;
-                *existing = job;
-                existing.detected_at = detected_at;
-            } else {
-                jobs.push(job);
+            for assignment in &ticket.assignments {
+                if !configuration.assignments.contains(assignment) {
+                    continue;
+                }
+                let mut existing = queue.jobs.iter().position(|j| {
+                    tracked.matches(j)
+                        && j.assignment_id.as_deref() == Some(&assignment.assignment_id)
+                        && j.work.as_ref().is_some_and(|w| {
+                            w.iteration_id == tracked.iteration_id
+                                && w.agent_id == assignment.agent_id
+                        })
+                });
+                let mut adopting = false;
+                if existing.is_none() && tracked.iteration == 1 {
+                    existing = queue
+                        .jobs
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, j)| {
+                            bound(j)
+                                && j.head_sha == pull.head_sha
+                                && j.work.is_none()
+                                && j.assignment_id.as_deref() == Some(&assignment.assignment_id)
+                                && reviews
+                                    .iter()
+                                    .rev()
+                                    .find(|r| r.matches_job(j))
+                                    .is_none_or(|r| r.selection.agent.id == assignment.agent_id)
+                        })
+                        .max_by_key(|(_, j)| {
+                            (
+                                reserved
+                                    .contains(&crate::review::key(j, &assignment.assignment_id)),
+                                reviews.iter().any(|r| {
+                                    r.matches_job(j)
+                                        && r.operation.state == OperationState::Completed
+                                }),
+                                j.detected_at,
+                            )
+                        })
+                        .map(|(i, _)| i);
+                    adopting = existing.is_some();
+                }
+                let work = if let Some(work) = existing.and_then(|i| queue.jobs[i].work.clone()) {
+                    work
+                } else {
+                    let prior: Vec<_> = queue
+                        .jobs
+                        .iter()
+                        .filter(|j| {
+                            tracked.matches(j)
+                                && j.work
+                                    .as_ref()
+                                    .map(|w| w.agent_id == assignment.agent_id)
+                                    .unwrap_or_else(|| {
+                                        j.assignment_id.as_deref()
+                                            == Some(&assignment.assignment_id)
+                                    })
+                        })
+                        .collect();
+                    let ordinal = prior
+                        .iter()
+                        .filter_map(|j| j.work.as_ref().map(|w| w.pass_ordinal))
+                        .max()
+                        .unwrap_or(0)
+                        .max(prior.len() as u64)
+                        .checked_add(u64::from(!adopting))
+                        .ok_or_else(|| {
+                            MonitoringError::Storage("Normal pass counter exhausted.".into())
+                        })?;
+                    let order = queue.allocate_order().map_err(MonitoringError::Storage)?;
+                    let legacy = existing.map(|i| &queue.jobs[i]);
+                    NormalWork {
+                        id: legacy
+                            .map(|j| crate::review::key(j, &assignment.assignment_id))
+                            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                        item_id: tracked.item_id.clone(),
+                        iteration_id: tracked.iteration_id.clone(),
+                        iteration: tracked.iteration,
+                        agent_id: assignment.agent_id.clone(),
+                        enqueue_order: order,
+                        pass_ordinal: ordinal,
+                        trigger: trigger.clone(),
+                        admission: tracked.admission.clone(),
+                        legacy_item_id: legacy.map(crate::queue::item_id),
+                    }
+                };
+                let job = QueueJob {
+                    work: Some(work),
+                    assignment_id: Some(assignment.assignment_id.clone()),
+                    provider: "github".into(),
+                    account_id: result.connection.identity.id.clone(),
+                    account_login: result.connection.identity.login.clone(),
+                    configuration_id: configuration.repository_id.clone(),
+                    repository_id: ticket.provider_repository_id.clone(),
+                    repository_name: ticket.name.clone(),
+                    pull_request_id: pull.id.clone(),
+                    number: pull.number,
+                    title: pull.title.clone(),
+                    head_sha: pull.head_sha.clone(),
+                    observed_base_sha: Some(pull.base_sha.clone()),
+                    trigger_policy: existing
+                        .map(|i| queue.jobs[i].trigger_policy.clone())
+                        .unwrap_or_else(|| ticket.trigger_policy.clone()),
+                    author_id: pull.author.as_ref().map(|author| author.id.clone()),
+                    author_login: pull.author.as_ref().map(|author| author.login.clone()),
+                    watched_author: eligibility.watched_author,
+                    all_authors: eligibility.all_authors,
+                    requested_reviewer: eligibility.requested_reviewer,
+                    waiting: waiting_state(
+                        eligibility.watched_author,
+                        pull.head_repository_id.as_deref(),
+                        ticket,
+                    )
+                    .into(),
+                    detected_at: existing.map(|i| queue.jobs[i].detected_at).unwrap_or(now),
+                };
+                if let Some(index) = existing {
+                    queue.jobs[index] = job;
+                } else {
+                    queue.jobs.push(job);
+                }
+            }
+            for legacy in queue
+                .jobs
+                .iter_mut()
+                .filter(|j| bound(j) && j.work.is_none())
+            {
+                legacy.waiting = WAITING_SUPERSEDED.into();
             }
         }
-        if jobs != previous_jobs {
-            store.save_queue(&jobs).map_err(MonitoringError::Storage)?;
+        if queue != previous_queue {
+            store
+                .save_queue_state(&queue)
+                .map_err(MonitoringError::Storage)?;
         }
         self.state
             .activations
@@ -1616,7 +2272,8 @@ fn activation_matches_configuration(
 fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {
     let mut configured = Vec::new();
     for repository in &settings.repositories {
-        let policy = repository.overrides.effective(&settings.defaults);
+        let mut policy = repository.overrides.effective(&settings.defaults);
+        policy.schedule = settings.defaults.schedule.clone();
         let watched_authors = effective_watched_authors(repository, &policy);
         let policy_key = trigger_policy(&watched_authors, policy.reviewer_assignment).ok();
         let binding = repository.account_binding();
@@ -1630,47 +2287,30 @@ fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {
         let provider_repository_id = binding
             .as_ref()
             .map(|binding| binding.repository.repository_id.clone());
-        if repository.assignments.is_empty() {
-            configured.push(ConfiguredSchedule {
-                health_key: repository.id.clone(),
-                repository_id: repository.id.clone(),
-                name: repository.name.clone(),
-                enabled: repository.enabled,
-                provider_account_id,
-                provider_repository_id,
-                provider_supported,
-                schedule: policy.schedule.clone(),
-                assignment_id: None,
-                agent_id: None,
-                agent_name: None,
-                policy,
-                watched_authors,
-                trigger_policy: policy_key,
-            });
-            continue;
-        }
-        for assignment in &repository.assignments {
-            configured.push(ConfiguredSchedule {
-                health_key: format!("{}:assignment:{}", repository.id, assignment.id),
-                repository_id: repository.id.clone(),
-                name: repository.name.clone(),
-                enabled: repository.enabled,
-                provider_account_id: provider_account_id.clone(),
-                provider_repository_id: provider_repository_id.clone(),
-                provider_supported,
-                schedule: assignment.schedule.clone(),
-                assignment_id: Some(assignment.id.clone()),
-                agent_id: Some(assignment.agent_id.clone()),
-                agent_name: settings
-                    .agents
-                    .iter()
-                    .find(|agent| agent.id == assignment.agent_id)
-                    .map(|agent| agent.name.clone()),
-                policy: policy.clone(),
-                watched_authors: watched_authors.clone(),
-                trigger_policy: policy_key.clone(),
-            });
-        }
+        configured.push(ConfiguredSchedule {
+            health_key: repository.id.clone(),
+            repository_id: repository.id.clone(),
+            name: repository.name.clone(),
+            enabled: repository.enabled,
+            provider_account_id,
+            provider_repository_id,
+            provider_supported,
+            schedule: settings.defaults.schedule.clone(),
+            assignment_id: None,
+            agent_id: None,
+            agent_name: None,
+            policy,
+            watched_authors,
+            trigger_policy: policy_key,
+            assignments: repository
+                .assignments
+                .iter()
+                .map(|a| ScanAssignment {
+                    assignment_id: a.id.clone(),
+                    agent_id: a.agent_id.clone(),
+                })
+                .collect(),
+        });
     }
     configured
 }
@@ -1733,6 +2373,8 @@ fn start_poll_operation(
         }
     }
     health.operation = Some(JobOperation {
+        ai_attempt: None,
+        interruption: None,
         id: uuid::Uuid::new_v4().to_string(),
         provider: "github".into(),
         account_id: configuration
@@ -1772,7 +2414,33 @@ fn finish_failed_operation(health: &mut ScheduleHealth, error: &MonitoringError,
 }
 
 impl JobOperation {
+    pub fn begin_ai_attempt(&mut self, now: i64) -> Result<(), String> {
+        let budget = AttemptBudget {
+            attempt_count: self.attempt_count,
+            initial_attempt_at: self.initial_attempt_at,
+            retry_deadline: self.retry_deadline,
+            failure: self.failure.clone(),
+        };
+        self.begin_attempt(now)?;
+        self.ai_attempt = Some(budget);
+        self.interruption = None;
+        Ok(())
+    }
+
+    pub fn requeue_intentional(&mut self, now: i64) {
+        if let Some(budget) = self.ai_attempt.take() {
+            self.attempt_count = budget.attempt_count;
+            self.initial_attempt_at = budget.initial_attempt_at;
+            self.retry_deadline = budget.retry_deadline;
+            self.failure = budget.failure;
+        }
+        self.state = OperationState::Queued;
+        self.next_attempt_at = Some(now);
+    }
+
     pub fn fail(&mut self, error: &MonitoringError, now: i64) {
+        self.ai_attempt = None;
+        self.interruption = None;
         let operation = self;
         let failure = retryable_failure(error);
         operation.failure = Some(failure.clone());
@@ -1805,6 +2473,21 @@ impl JobOperation {
     }
 
     pub fn begin_attempt(&mut self, now: i64) -> Result<(), String> {
+        // Waiting for the first execution is not part of an AI retry window.
+        if self.attempt_count == 0
+            && self.failure.is_none()
+            && matches!(
+                self.operation_type.as_str(),
+                "copilot_review" | "primary_final_review" | "thread_analysis" | "mention_analysis"
+            )
+            && matches!(
+                self.state,
+                OperationState::Queued | OperationState::Interrupted
+            )
+        {
+            self.initial_attempt_at = now;
+            self.retry_deadline = now + RETRY_WINDOW_SECONDS;
+        }
         if now >= self.retry_deadline || self.attempt_count > MAX_RETRIES {
             self.state = OperationState::ManualRetry;
             self.next_attempt_at = None;
@@ -1825,6 +2508,8 @@ impl JobOperation {
 
     pub fn review(job: &QueueJob, now: i64) -> Self {
         Self {
+            ai_attempt: None,
+            interruption: None,
             id: uuid::Uuid::new_v4().to_string(),
             provider: job.provider.clone(),
             account_id: job.account_id.clone(),
@@ -1877,6 +2562,8 @@ fn configuration_failure(failure: Option<&str>) -> bool {
                 | "account_disconnected"
                 | "configuration"
                 | "invalid_schedule"
+                | "invalid_global_cron"
+                | "configuration_changed"
                 | "settings_unavailable"
                 | "scope_confirmation_required"
         )
@@ -1958,17 +2645,6 @@ fn configuration_changed() -> MonitoringError {
     }
 }
 
-fn same_job(left: &QueueJob, right: &QueueJob) -> bool {
-    left.assignment_id == right.assignment_id
-        && left.provider == right.provider
-        && left.account_id == right.account_id
-        && left.configuration_id == right.configuration_id
-        && left.repository_id == right.repository_id
-        && left.pull_request_id == right.pull_request_id
-        && left.head_sha == right.head_sha
-        && left.trigger_policy == right.trigger_policy
-}
-
 fn trigger_policy(
     watched_authors: &[WatchedIdentity],
     reviewer_assignment: bool,
@@ -1996,10 +2672,22 @@ pub fn review_policy(
         || configuration.name != job.repository_name
         || configuration.provider_account_id.as_deref() != Some(&job.account_id)
         || configuration.provider_repository_id.as_deref() != Some(&job.repository_id)
-        || configuration.trigger_policy.as_deref() != Some(&job.trigger_policy)
+        || (job.work.is_none()
+            && configuration.trigger_policy.as_deref() != Some(&job.trigger_policy))
         || !actionable(job)
     {
         return Err("Review eligibility or repository configuration changed.".into());
+    }
+    if let Some(work) = &job.work {
+        if !configuration.assignments.iter().any(|a| {
+            Some(a.assignment_id.as_str()) == job.assignment_id.as_deref()
+                && a.agent_id == work.agent_id
+        }) {
+            return Err(
+                "This Agent assignment was removed or replaced; wait for the next global scan."
+                    .into(),
+            );
+        }
     }
     if let Some(pull) = pull {
         if pull.id != job.pull_request_id
@@ -2008,13 +2696,14 @@ pub fn review_policy(
             || pull.base_repository_id != job.repository_id
             || pull.state != Lifecycle::Open
             || pull.draft
-            || !eligibility(
-                &configuration.watched_authors,
-                &configuration.policy,
-                &job.account_id,
-                pull,
-            )
-            .eligible()
+            || (job.work.is_none()
+                && !eligibility(
+                    &configuration.watched_authors,
+                    &configuration.policy,
+                    &job.account_id,
+                    pull,
+                )
+                .eligible())
         {
             return Err(
                 "Pull request revision or eligibility changed; wait for the next poll.".into(),
@@ -2027,7 +2716,7 @@ pub fn review_policy(
 pub fn new_revision_eligible(settings: &Settings, job: &QueueJob, pull: &PullRequest) -> bool {
     let Some(configuration) = configured_schedules(settings)
         .into_iter()
-        .find(|c| c.repository_id == job.configuration_id && c.assignment_id == job.assignment_id)
+        .find(|c| c.repository_id == job.configuration_id)
     else {
         return false;
     };
@@ -2039,6 +2728,13 @@ pub fn new_revision_eligible(settings: &Settings, job: &QueueJob, pull: &PullReq
     current.trigger_policy = trigger;
     current.waiting = WAITING_HUMAN_START.into();
     review_policy(settings, &current, Some(pull)).is_ok()
+}
+
+pub fn currently_watched(settings: &Settings, job: &QueueJob, author_id: Option<&str>) -> bool {
+    configured_schedules(settings)
+        .iter()
+        .find(|c| c.repository_id == job.configuration_id)
+        .is_some_and(|c| author_id.is_some_and(|id| c.watched_authors.iter().any(|a| a.id == id)))
 }
 
 fn schedule_key(schedule: &Schedule) -> String {

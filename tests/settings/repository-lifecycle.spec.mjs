@@ -25,7 +25,7 @@ test("editing, disabling and removing a repository preserves its identity and it
       await expect(page.getByText(canonical, { exact: true })).toBeVisible();
       await expect(page.getByRole("alert")).toBeHidden();
     }
-    expect((await store("snapshot")).settings.repositories ?? []).toEqual([]);
+    expect((await store("snapshot")).settings.repositories).toHaveLength(2);
     await saveChanges(page);
   });
   const original = (await store("snapshot")).settings;
@@ -36,8 +36,8 @@ test("editing, disabling and removing a repository preserves its identity and it
   const neighbor = original.repositories.find(
     (r) => r.name === "neighbor/keep-me",
   );
-  expect(primary).toMatchObject({ provider: "github", enabled: true });
-  expect(neighbor).toMatchObject({ provider: "github", enabled: true });
+  expect(primary).toMatchObject({ provider: "github", enabled: false });
+  expect(neighbor).toMatchObject({ provider: "github", enabled: false });
   expect(primary.id).not.toBe(neighbor.id);
   const card = (name) => page.getByRole("article", { name, exact: true });
   let current = { ...primary, name: "octo/renamed" };
@@ -62,11 +62,11 @@ test("editing, disabling and removing a repository preserves its identity and it
       .getByLabel("GitHub repository", { exact: true })
       .fill("https://github.com/Octo/Renamed.git/");
     await modal
-      .getByRole("button", { name: "Use repository", exact: true })
+      .getByRole("button", { name: "Save repository", exact: true })
       .click();
     await expect(card("octo/renamed")).toBeVisible();
     await expect(card("octo/hello-world")).toHaveCount(0);
-    await assertSaved([primary, neighbor]);
+    await assertSaved([current, neighbor]);
     await saveChanges(page);
     await assertSaved([current, neighbor]);
     await page.reload();
@@ -89,7 +89,7 @@ test("editing, disabling and removing a repository preserves its identity and it
       .getByLabel("GitHub repository", { exact: true })
       .fill("NEIGHBOR/KEEP-ME");
     await modal
-      .getByRole("button", { name: "Use repository", exact: true })
+      .getByRole("button", { name: "Save repository", exact: true })
       .click();
     await expect(modal.getByRole("alert")).toContainText(/already configured/i);
     await assertSaved([current, neighbor]);
@@ -128,8 +128,9 @@ test("editing, disabling and removing a repository preserves its identity and it
     await confirmation
       .getByRole("button", { name: "Remove from settings", exact: true })
       .click();
+    await expect(confirmation).toHaveCount(0);
     await expect(card("octo/renamed")).toHaveCount(0);
-    await assertSaved([current, neighbor]);
+    await assertSaved([neighbor]);
     await saveChanges(page);
     await assertSaved([neighbor]);
     await page.reload();

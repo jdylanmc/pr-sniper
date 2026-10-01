@@ -5,10 +5,9 @@ import {
   seedAgent,
   setAgentPrompt,
   saveChanges,
-  assignment,
-  saveAssignment,
-  advancedSchedule,
   closeDialog,
+  editAgent,
+  section,
 } from "./navigation.mjs";
 
 test("discovery preserves the fetch URL and reports ambiguous remotes", async ({
@@ -68,20 +67,23 @@ test("a settings conflict keeps the draft until explicit discard and reload", as
 }) => {
   await seedAgent(store);
   await page.goto("/?view=settings");
-  await setAgentPrompt(page, "My unsaved local draft");
+  const modal = await editAgent(page);
+  await modal
+    .getByRole("textbox", { name: "Prompt", exact: true })
+    .fill("My unsaved local draft");
 
   const external = (await store("snapshot")).settings;
   external.agents[0].prompt = "A concurrent external edit";
   await store("seed_settings", external);
 
-  await page.getByRole("button", { name: "Save changes", exact: true }).click();
-  await expect(page.locator("#error")).toContainText(
-    "Settings changed in another window",
+  await modal.getByRole("button", { name: "Save agent", exact: true }).click();
+  await expect(modal.getByRole("alert")).toContainText(
+    "Resource changed in another window",
   );
-  await expect(page.locator(".agent-card")).toContainText(
-    "My unsaved local draft",
-  );
-
+  await expect(
+    modal.getByRole("textbox", { name: "Prompt", exact: true }),
+  ).toHaveValue("My unsaved local draft");
+  await closeDialog(page);
   await page
     .getByRole("button", {
       name: "Discard draft and reload",
@@ -99,50 +101,26 @@ test("a settings conflict keeps the draft until explicit discard and reload", as
   );
 });
 
-test("advanced schedule edits immediately match the displayed and saved draft", async ({
+test("global schedule helper matches the displayed and saved draft", async ({
   page,
   store,
 }) => {
   await seedAgent(store);
   await store("save_repository", { repository: "fixture/project" });
   await page.goto("/?view=settings");
-  let modal = await assignment(page, "fixture/project");
-  await advancedSchedule(modal);
-  await modal.getByLabel("Interval minutes", { exact: true }).fill("42");
-
-  let frequency = modal.getByRole("combobox", {
-    name: "Check for pull requests",
-    exact: true,
-  });
-  await expect(frequency).toHaveValue("42");
-  await expect(frequency.locator("option:checked")).toHaveText(
-    "Every 42 minutes",
-  );
-  await modal.getByLabel("Time zone", { exact: true }).fill("UTC");
-  await saveAssignment(page, modal);
+  await section(page, "Preferences");
+  await page.locator("#cron-helper").selectOption("0 9 * * MON-FRI");
+  await expect(page.locator("#global-cron")).toHaveValue("0 9 * * MON-FRI");
+  await page.locator("#global-timezone").fill("Europe/London");
   await saveChanges(page);
-  expect(
-    (await store("snapshot")).settings.repositories[0].assignments[0].schedule,
-  ).toEqual({
-    kind: "interval",
-    minutes: 42,
-    timezone: "UTC",
+  expect((await store("snapshot")).settings.defaults.schedule).toEqual({
+    kind: "cron",
+    expression: "0 9 * * MON-FRI",
+    timezone: "Europe/London",
   });
 
   await page.reload();
-  modal = await assignment(page, "fixture/project", 0);
-  await advancedSchedule(modal);
-  frequency = modal.getByRole("combobox", {
-    name: "Check for pull requests",
-    exact: true,
-  });
-  await expect(frequency).toHaveValue("42");
-  await expect(
-    modal.getByLabel("Interval minutes", { exact: true }),
-  ).toHaveValue("42");
-  await expect(modal.getByLabel("Time zone", { exact: true })).toHaveValue(
-    "UTC",
-  );
-  await closeDialog(page);
-  await closeDialog(page);
+  await section(page, "Preferences");
+  await expect(page.locator("#global-cron")).toHaveValue("0 9 * * MON-FRI");
+  await expect(page.locator("#global-timezone")).toHaveValue("Europe/London");
 });

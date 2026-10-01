@@ -57,7 +57,10 @@ for (const action of ["add", "enable", "remove", "agent", "assignment"]) {
       await modal.getByRole("checkbox", { name: /^Comment/ }).uncheck();
       await saveAssignment(page, modal);
     }
-    expect((await store("snapshot")).settings).toEqual(before);
+    await page.evaluate(() => window.__settingsIdle());
+    if (action === "enable")
+      expect((await store("snapshot")).settings).toEqual(before);
+    else expect((await store("snapshot")).settings).not.toEqual(before);
     await saveChanges(page);
     await expect(page.locator("#error")).toContainText(/diagnostic/i);
     const saved = (await store("snapshot")).settings;

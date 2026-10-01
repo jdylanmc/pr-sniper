@@ -124,6 +124,8 @@ test("verifying GitHub preserves drafts and does not enable automation", async (
   });
   await page.goto("/?view=settings");
   await setAgentPrompt(page, "Keep this unsaved review prompt.");
+  await section(page, "Preferences");
+  await page.locator("#global-capacity").fill("6");
   const card = await connection(page);
   await card
     .getByRole("button", { name: "Verify GitHub connection", exact: true })
@@ -142,7 +144,15 @@ test("verifying GitHub preserves drafts and does not enable automation", async (
       args: { id: before.repositories[0].id },
     },
   ]);
-  expect((await store("snapshot")).settings).toEqual(before);
+  expect((await store("snapshot")).settings).toEqual({
+    ...before,
+    agents: [
+      { ...before.agents[0], prompt: "Keep this unsaved review prompt." },
+    ],
+  });
+  await closeDialog(page);
+  await section(page, "Preferences");
+  await expect(page.locator("#global-capacity")).toHaveValue("6");
 });
 
 for (const [error, expected] of [
@@ -286,7 +296,7 @@ test("retargeting a repository revalidates its stable binding", async ({
     .getByLabel("GitHub repository", { exact: true })
     .fill("other/target");
   await editor
-    .getByRole("button", { name: "Use repository", exact: true })
+    .getByRole("button", { name: "Save repository", exact: true })
     .click();
   await saveChanges(page);
   expect((await store("snapshot")).settings.repositories).toEqual([

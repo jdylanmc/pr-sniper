@@ -34,6 +34,7 @@ fn fixture() -> (tempfile::TempDir, Store, ReviewRun) {
     .unwrap();
     store.save_queue(std::slice::from_ref(&job)).unwrap();
     let run = ReviewRun {
+        feedback_context: None,
         key: key(&job, &assignment_id),
         assignment_id: assignment_id.clone(),
         selection: Selection::resolve(&settings, &job, &assignment_id).unwrap(),
@@ -52,7 +53,7 @@ fn fixture() -> (tempfile::TempDir, Store, ReviewRun) {
 fn configuration_edits_and_eligibility_loss_invalidate_saved_attempts() {
     for change in 0..5 {
         let (_root, store, run) = fixture();
-        validate_saved_selection(&store, &run).unwrap();
+        crate::review::validate_execution_selection(&store, &run).unwrap();
         let mut settings = store.load_settings().unwrap();
         match change {
             0 => settings.repositories[0].enabled = false,
@@ -66,7 +67,7 @@ fn configuration_edits_and_eligibility_loss_invalidate_saved_attempts() {
             }
         }
         store.save_settings(&settings).unwrap();
-        assert!(validate_saved_selection(&store, &run).is_err());
+        assert!(crate::review::validate_execution_selection(&store, &run).is_err());
     }
 }
 

@@ -25,6 +25,8 @@ pub enum State {
     AwaitingPublication,
     WaitingForAuthor,
     MachineSignedOff,
+    Closed,
+    Merged,
 }
 
 impl State {
@@ -36,6 +38,7 @@ impl State {
             Self::Reviewing | Self::Queued | Self::AwaitingPublication => 3,
             Self::WaitingForAuthor => 4,
             Self::Stale => 5,
+            Self::Closed | Self::Merged => 6,
         }
     }
 
@@ -52,13 +55,18 @@ impl State {
             Self::Blocked => "Current configuration or access prevents a completed handoff. Inspect evidence, schedule health and Settings.",
             Self::Stale => "This review no longer establishes readiness for the current PR or configuration. Check the latest revision; saved evidence remains available.",
             Self::StaleAfterPublication => "Comments were published, but the reviewed state is now stale. They do not establish readiness for the current PR.",
+            Self::Closed => "GitHub reports this PR closed. This iteration is terminal; saved evidence is retained.",
+            Self::Merged => "GitHub reports this PR merged. This is provider lifecycle evidence, not a claim that PR Sniper merged it.",
         }
     }
 }
 
 #[derive(Serialize)]
 pub struct Item {
+    pub action_status: Option<crate::actions::Status>,
+    pub feedback: Vec<crate::feedback::View>,
     pub id: String,
+    pub aliases: Vec<String>,
     pub job: QueueJob,
     pub state: State,
     pub summary: &'static str,
@@ -69,6 +77,10 @@ pub struct Item {
 
 #[derive(Serialize)]
 pub struct Snapshot {
+    pub feedback: BTreeMap<String, Vec<crate::feedback::View>>,
+    pub mentions: Vec<crate::feedback::Mention>,
+    pub global_scan: Option<monitoring::GlobalScan>,
+    pub tracked: Vec<monitoring::TrackedPullRequest>,
     pub health: Vec<ScheduleHealth>,
     pub jobs: Vec<QueueJob>,
     pub(crate) reviews: Vec<review::host::Candidate>,
@@ -78,6 +90,9 @@ pub struct Snapshot {
 }
 
 pub fn item_id(job: &QueueJob) -> String {
+    if let Some(work) = &job.work {
+        return work.item_id.clone();
+    }
     URL_SAFE_NO_PAD.encode(
         serde_json::json!([
             job.provider,
@@ -93,8 +108,27 @@ pub fn item_id(job: &QueueJob) -> String {
 }
 
 pub fn snapshot(store: &Store, health: Vec<ScheduleHealth>) -> Result<Snapshot, String> {
+    let mut snapshot = normal_snapshot(store, health)?;
+    crate::actions::project(store, &mut snapshot)?;
+    Ok(snapshot)
+}
+
+pub(crate) fn normal_snapshot(
+    store: &Store,
+    health: Vec<ScheduleHealth>,
+) -> Result<Snapshot, String> {
     let settings = store.load_settings()?;
+    let monitoring = store.load_monitoring_state()?;
+    let health = if health.is_empty() {
+        monitoring.health.into_values().collect()
+    } else {
+        health
+    };
     let mut result = Snapshot {
+        feedback: BTreeMap::new(),
+        mentions: store.load_feedback()?.mentions,
+        global_scan: monitoring.global_scan,
+        tracked: store.load_queue_state()?.tracked,
         health,
         jobs: store.load_queue()?,
         reviews: review::host::candidates(store)?,
@@ -102,6 +136,11 @@ pub fn snapshot(store: &Store, health: Vec<ScheduleHealth>) -> Result<Snapshot, 
         follow_ups: follow_up::host::candidates(store)?,
         items: vec![],
     };
+    for job in &result.jobs {
+        result
+            .feedback
+            .insert(item_id(job), crate::feedback::views(store, job)?);
+    }
     result.items = project(&settings, &result);
     Ok(result)
 }
@@ -130,6 +169,7 @@ fn review_state(
     settings: &Settings,
     candidate: &review::host::Candidate,
     publications: &[publication::host::Candidate],
+    feedback: &[crate::feedback::View],
 ) -> State {
     let batch = candidate.run.as_ref().and_then(|run| {
         publications
@@ -185,12 +225,17 @@ fn review_state(
     let Some(result) = &run.result else {
         return State::Failed;
     };
+    if result.output.feedback_conflict || !result.output.held_findings.is_empty() {
+        return State::WaitingForHuman;
+    }
     let Ok(current) = Selection::resolve(settings, &candidate.job, &candidate.assignment_id) else {
         return State::Blocked;
     };
     if current.agent != run.selection.agent
         || current.doctrine != run.selection.doctrine
         || current.preset != run.selection.preset
+        || current.policy.prompt != run.selection.policy.prompt
+        || current.policy.adapter != run.selection.policy.adapter
         || result.reviewed_base_sha.is_none()
     {
         return State::Stale;
@@ -206,16 +251,24 @@ fn review_state(
         None => return State::Queued,
         Some(_) => {}
     }
-    let comments = settings
-        .repositories
-        .iter()
-        .find(|r| r.id == candidate.job.configuration_id)
-        .and_then(|r| {
-            r.assignments
-                .iter()
-                .find(|a| a.id == candidate.assignment_id)
-        })
-        .is_some_and(|a| a.comment);
+    if publication.is_none()
+        && batch
+            .and_then(|p| p.blocked.as_deref())
+            .is_some_and(|reason| reason != "Comments are disabled for this Agent assignment.")
+    {
+        return State::Blocked;
+    }
+    let comments = current.policy.automatic_comment_publication
+        && settings
+            .repositories
+            .iter()
+            .find(|r| r.id == candidate.job.configuration_id)
+            .and_then(|r| {
+                r.assignments
+                    .iter()
+                    .find(|a| a.id == candidate.assignment_id)
+            })
+            .is_some_and(|a| a.comment);
     if comments || publication.is_some() {
         if batch.is_some_and(|p| p.blocked.is_some()) {
             return State::Blocked;
@@ -248,7 +301,26 @@ fn review_state(
     }
     match result.output.decision {
         Decision::MachineSignOff => State::MachineSignedOff,
-        Decision::HumanInputRequired if published => State::WaitingForAuthor,
+        Decision::HumanInputRequired if published => {
+            let cleared = publication.is_some_and(|p| {
+                !result.output.findings.is_empty()
+                    && p.receipts.last().is_some_and(|r| {
+                        !r.comment_ids.is_empty()
+                            && r.comment_ids.iter().all(|id| {
+                                feedback.iter().any(|f| {
+                                    f.context.root_id == *id
+                                        && f.context.publication_id == p.id
+                                        && matches!(f.state, "closed" | "cleared")
+                                })
+                            })
+                    })
+            });
+            if cleared {
+                State::MachineSignedOff
+            } else {
+                State::WaitingForAuthor
+            }
+        }
         Decision::HumanInputRequired => State::WaitingForHuman,
     }
 }
@@ -256,6 +328,10 @@ fn review_state(
 fn follow_up_state(candidate: &follow_up::host::Candidate) -> Option<State> {
     use follow_up::Phase;
     let run = &candidate.run;
+    if matches!(run.phase, Phase::Quiet | Phase::Published) && !run.uncertain && run.error.is_none()
+    {
+        return None;
+    }
     if run.phase == Phase::StaleAfterPublication {
         return Some(State::StaleAfterPublication);
     }
@@ -292,14 +368,26 @@ fn follow_up_state(candidate: &follow_up::host::Candidate) -> Option<State> {
 }
 
 fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
+    let current = |job| current_job(job, &snapshot.jobs);
     let mut groups = BTreeMap::new();
     for job in snapshot
         .jobs
         .iter()
         .chain(snapshot.reviews.iter().map(|r| &r.job))
-        .chain(snapshot.follow_ups.iter().map(|f| &f.run.review.job))
+        .chain(snapshot.follow_ups.iter().map(|f| &f.run.context.job))
     {
-        groups.entry(item_id(job)).or_insert(job);
+        let job = current(job);
+        groups
+            .entry(item_id(job))
+            .and_modify(|previous: &mut &QueueJob| {
+                if previous.waiting == monitoring::WAITING_ASSIGNMENT_REMOVED
+                    && job.waiting != monitoring::WAITING_ASSIGNMENT_REMOVED
+                    || previous.work.is_none() && job.work.is_some()
+                {
+                    *previous = job;
+                }
+            })
+            .or_insert(job);
     }
     let mut items = Vec::new();
     for (id, job) in groups {
@@ -311,11 +399,19 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
         let follow_ups: Vec<_> = snapshot
             .follow_ups
             .iter()
-            .filter(|f| item_id(&f.run.review.job) == id)
+            .filter(|f| crate::feedback::same_pr(&f.run.context.job, job))
             .collect();
         let mut states: Vec<_> = reviews
             .iter()
-            .map(|r| review_state(settings, r, &snapshot.publications))
+            .filter(|r| r.job.waiting != monitoring::WAITING_ASSIGNMENT_REMOVED)
+            .map(|r| {
+                review_state(
+                    settings,
+                    r,
+                    &snapshot.publications,
+                    snapshot.feedback.get(&id).map(Vec::as_slice).unwrap_or(&[]),
+                )
+            })
             .collect();
         let mut warnings = BTreeSet::new();
         for review in &reviews {
@@ -348,6 +444,57 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             }
         }
         for follow_up in &follow_ups {
+            let prior_iteration = follow_up.run.context.job.head_sha != job.head_sha
+                || follow_up
+                    .run
+                    .context
+                    .job
+                    .work
+                    .as_ref()
+                    .map(|w| &w.iteration_id)
+                    != job.work.as_ref().map(|w| &w.iteration_id);
+            if prior_iteration
+                && follow_up.run.publication.is_none()
+                && !follow_up.run.uncertain
+                && follow_up.run.phase != follow_up::Phase::HumanInputRequired
+            {
+                continue;
+            }
+            if let Ok(origin) = follow_up.run.owned() {
+                let feedback = snapshot.feedback.get(&id).and_then(|values| {
+                    values.iter().find(|f| {
+                        f.context.publication_id == origin.publication_id
+                            && origin
+                                .thread
+                                .root()
+                                .is_ok_and(|r| r.id == f.context.root_id)
+                    })
+                });
+                let needs_reconciliation = follow_up.run.uncertain
+                    || follow_up
+                        .run
+                        .publication
+                        .as_ref()
+                        .is_some_and(|op| op.state != OperationState::Completed);
+                if !needs_reconciliation
+                    && feedback.is_some_and(|f| {
+                        f.context.closed
+                            || f.context
+                                .thread
+                                .as_ref()
+                                .and_then(|t| t.latest_external(&job.account_id))
+                                .is_some_and(|c| c.id != follow_up.run.trigger_id)
+                    })
+                {
+                    continue;
+                }
+            }
+            if follow_up.run.cancelled
+                && follow_up.run.result.is_none()
+                && follow_up.run.publication.is_none()
+            {
+                continue;
+            }
             if let Some(state) = follow_up_state(follow_up) {
                 states.push(state);
             }
@@ -358,11 +505,41 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 warnings.insert(error.clone());
             }
         }
+        let feedback = snapshot.feedback.get(&id).cloned().unwrap_or_default();
+        for concern in &feedback {
+            match concern.state {
+                "open" => states.push(State::WaitingForAuthor),
+                "human_input_required" => states.push(State::WaitingForHuman),
+                "unavailable" | "owner_unavailable" => states.push(State::Blocked),
+                _ => {}
+            }
+        }
+        for mention in snapshot.mentions.iter().filter(|m| m.binding.matches(job)) {
+            if mention.follow_up_id.is_none() {
+                states.push(State::Blocked);
+                warnings.insert("Observed mention is awaiting durable execution admission.".into());
+            }
+            if let Some(reason) = &mention.blocked {
+                states.push(State::Blocked);
+                warnings.insert(reason.clone());
+            }
+            if mention
+                .follow_up_id
+                .as_ref()
+                .is_some_and(|id| !snapshot.follow_ups.iter().any(|f| &f.run.id == id))
+            {
+                states.push(State::Blocked);
+                warnings.insert(
+                    "Mention execution history is unavailable; no replay or clearance inferred."
+                        .into(),
+                );
+            }
+        }
         for publication in snapshot
             .publications
             .iter()
             .filter_map(|p| p.publication.as_ref())
-            .filter(|p| item_id(&p.review.job) == id)
+            .filter(|p| item_id(current(&p.review.job)) == id)
         {
             if let Some(error) = &publication.error {
                 warnings.insert(error.clone());
@@ -378,7 +555,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 .iter()
                 .filter_map(|p| p.publication.as_ref())
                 .any(|p| {
-                    item_id(&p.review.job) == id
+                    item_id(current(&p.review.job)) == id
                         && p.receipts
                             .last()
                             .is_some_and(|r| r.state == RemoteState::Commented)
@@ -410,14 +587,30 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 h.repository_id == job.configuration_id
                     && h.provider_account_id.as_deref() == Some(&job.account_id)
             }) {
+                if health.conversation_admission_pending {
+                    states.push(State::Blocked);
+                    warnings.insert("Conversation observations are not fully admitted; retry the repository check before relying on readiness.".into());
+                }
                 if let Some(failure) = &health.last_failure {
                     states.push(State::Failed);
                     warnings.insert(format!("Monitoring failure: {failure}. Check schedule health before relying on this saved revision."));
                 }
             }
         }
-        let state = states.into_iter().min().unwrap_or(State::Blocked);
+        let state = match job.waiting.as_str() {
+            monitoring::WAITING_CLOSED => State::Closed,
+            monitoring::WAITING_MERGED => State::Merged,
+            _ => states.into_iter().min().unwrap_or(State::Blocked),
+        };
         items.push(Item {
+            action_status: None,
+            feedback,
+            aliases: snapshot
+                .jobs
+                .iter()
+                .filter(|j| item_id(j) == id)
+                .filter_map(|j| j.work.as_ref()?.legacy_item_id.clone())
+                .collect(),
             id,
             job: job.clone(),
             state,
@@ -444,12 +637,24 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
     items
 }
 
+fn current_job<'a>(job: &'a QueueJob, jobs: &'a [QueueJob]) -> &'a QueueJob {
+    let Some(assignment_id) = &job.assignment_id else {
+        return job;
+    };
+    jobs.iter()
+        .find(|j| {
+            j.assignment_id == job.assignment_id
+                && review::key(j, assignment_id) == review::key(job, assignment_id)
+        })
+        .unwrap_or(job)
+}
+
 pub fn destination(store: &Store, id: &str, file: Option<&str>) -> Result<url::Url, String> {
     let snapshot = snapshot(store, vec![])?;
     let item = snapshot
         .items
         .iter()
-        .find(|item| item.id == id)
+        .find(|item| item.id == id || item.aliases.iter().any(|alias| alias == id))
         .ok_or("This exact queue item is no longer available; no other PR was opened.")?;
     if item.job.provider != "github" || item.job.number == 0 {
         return Err("This queue item's provider destination is unsupported.".into());

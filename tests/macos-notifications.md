@@ -40,14 +40,18 @@ not prove OS banner presentation or the notification-center callback.
    saved ID and the resulting notification request ID from the private ledger.
    **Send test notification**. Observe the real banner or Notification Center
    item: test-app identity and generic text, with no PR/repository title or code.
-3. Hide the app window, then click that exact OS notification. Verify Review
-   Queue opens and selects the same provider/account/repository/PR/head identity.
+3. Open an unsaved Settings editor, hide the panel, then click that exact OS
+   notification. Verify the same native panel opens the single detail layer
+   for that provider/account/repository/PR/iteration identity, without a reload.
+   Return to Settings and verify the draft is unchanged.
    `state/queue-selection.json` must contain that item ID, the matching notice
    must have `opened_at`, and fixed-schema diagnostics must contain
    `notification_activated` followed by `notification_opened`. Clicking the
    in-app history button alone is not native callback evidence.
 4. Confirm navigation did not start a review or publish/approve/merge anything.
    An unrelated or missing-profile request must never open a substitute item.
+   A valid saved notification whose exact destination is now unavailable must
+   open the explicit missing-destination state, not a first/last queue item.
 5. Wait through at least two scheduler ticks. Unchanged source state must not
    add requests. Restart the test process with the same profile and Keychain
    namespace, then repeat the count and exact-destination checks.

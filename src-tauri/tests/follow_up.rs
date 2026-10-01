@@ -1,5 +1,7 @@
 use pr_sniper_lib::{
-    follow_up::{self, Environment, Evidence, FollowUp, Phase, ReplyDecision, ReplyOutput},
+    follow_up::{
+        self, Environment, Evidence, FollowUp, Observation, Phase, ReplyDecision, ReplyOutput,
+    },
     github::{
         metadata::{Lifecycle, PullRequest},
         provider::{GithubClient, Response, Transport},
@@ -45,6 +47,7 @@ fn origin() -> Publication {
     let mut op = JobOperation::review(&job, 100);
     op.state = OperationState::Completed;
     let review=ReviewRun {
+        feedback_context: None,
         key:pr_sniper_lib::review::key(&job,ASSIGNMENT),selection:Selection::resolve(&settings(),&job,ASSIGNMENT).unwrap(),
         job,assignment_id:ASSIGNMENT.into(),operation:op,manual_start:true,trust_confirmed:true,phase:"Complete".into(),error:None,
         result:Some(serde_json::from_value(json!({"reviewed_base_sha":"b".repeat(40),
@@ -120,6 +123,7 @@ fn prepared(origin: &Publication) -> FollowUp {
     run.result = Some(ReviewResult {
         reviewed_base_sha: Some("b".repeat(40)),
         output: ReplyOutput {
+            feedback_assessments: Vec::new(),
             decision: ReplyDecision::Reply,
             body: "The function returns 42.".into(),
             new_information: "The function returns 42.".into(),
@@ -145,6 +149,42 @@ fn prepared(origin: &Publication) -> FollowUp {
     run.body = Some(run.reply_body().unwrap());
     run.phase = Phase::WaitingPublication;
     run
+}
+
+#[test]
+fn reply_work_ordinals_and_fifo_metadata_are_independent_of_retry_attempts() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let origin = origin();
+    let mut runs = Vec::new();
+    assert!(follow_up::admit(&mut runs, &origin, thread()).unwrap());
+    runs[0].enqueue_order = Some(store.allocate_enqueue_order().unwrap());
+    runs[0].enqueued_at = Some(100);
+    let mut operation = runs[0].operation("thread_analysis", 100);
+    operation.begin_attempt(100).unwrap();
+    operation.fail(&Failure::timeout().monitoring(), 101);
+    operation
+        .begin_attempt(operation.next_attempt_at.unwrap())
+        .unwrap();
+    runs[0].analysis = Some(operation);
+    store.save_follow_ups(&runs).unwrap();
+    let mut runs = store.load_follow_ups().unwrap();
+    assert_eq!(runs[0].reply_ordinal, Some(1));
+    assert_eq!(runs[0].enqueue_order, Some(1));
+    assert_eq!(runs[0].analysis.as_ref().unwrap().attempt_count, 2);
+    assert!(!follow_up::admit(&mut runs, &origin, thread()).unwrap());
+    let mut next = thread();
+    let mut reply = comment("102", "Here is new context.", Some("100"));
+    reply.published_at = "2026-09-27T00:01:00Z".into();
+    next.comments.push(reply);
+    assert!(follow_up::admit(&mut runs, &origin, next).unwrap());
+    runs[1].enqueue_order = Some(store.allocate_enqueue_order().unwrap());
+    assert_eq!(runs[1].reply_ordinal, Some(2));
+    assert_eq!(runs[1].enqueue_order, Some(2));
+    assert_eq!(runs[1].analysis, None);
+    store.save_follow_ups(&runs).unwrap();
+    std::fs::remove_file(root.path().join("state/queue.json")).unwrap();
+    assert_eq!(store.allocate_enqueue_order().unwrap(), 3);
 }
 
 #[derive(Clone, Copy)]
@@ -223,7 +263,7 @@ impl QueryTransport for Wire {
                 .iter()
                 .map(|t| node(t, 0, server.wrong_count, server.draft_replies))
                 .collect();
-            json!({"repository":{"databaseId":100,"pullRequest":{"fullDatabaseId":"9","headRefOid":"a".repeat(40),
+            json!({"repository":{"databaseId":100,"pullRequest":{"fullDatabaseId":"9","headRefOid":if server.changed_head {"c".repeat(40)} else {"a".repeat(40)},
                 "reviewThreads":connection(nodes,page,server.wrong_count)}}})
         } else {
             json!({"node":server.threads.iter().find(|t| Some(t.id.as_str())==variables["id"].as_str())            .map(|t|node(t,cursor,server.wrong_count,server.draft_replies))})
@@ -244,6 +284,7 @@ impl MutationTransport for Wire {
         if matches!(fault, Some(Fault::Before)) {
             return Err(ConnectionError::Timeout);
         }
+
         if matches!(fault, Some(Fault::Reject)) {
             return Ok(Response {
                 status: 422,
@@ -288,6 +329,7 @@ struct Fixture {
     now: i64,
     fail_save: bool,
     withdrawn: bool,
+    pause_after_reply: bool,
 }
 impl Fixture {
     fn new() -> Self {
@@ -299,6 +341,7 @@ impl Fixture {
             now: 100,
             fail_save: false,
             withdrawn: false,
+            pause_after_reply: false,
             wire: Wire(Arc::new(Mutex::new(Server {
                 threads: vec![thread()],
                 writes: 0,
@@ -341,12 +384,20 @@ impl Environment for Fixture {
             .save_follow_ups(std::slice::from_ref(run))
             .map_err(Failure::permanent)
     }
-    fn thread(&mut self, run: &FollowUp) -> Result<Thread, Failure> {
-        GithubClient::new(self.wire.clone())
-            .owned_thread(&self.origin, &run.thread.id)?
-            .ok_or_else(|| Failure::permanent("Thread missing."))
+    fn observe(&mut self, run: &FollowUp) -> Result<Observation, Failure> {
+        Ok(Observation::Owned(
+            GithubClient::new(self.wire.clone())
+                .owned_thread(&self.origin, &run.owned().unwrap().thread.id)?
+                .ok_or_else(|| Failure::permanent("Thread missing."))?,
+        ))
     }
-    fn gate(&mut self, run: &FollowUp, current: &Thread) -> Result<Option<String>, Failure> {
+    fn gate(&mut self, run: &FollowUp, observed: &Observation) -> Result<Option<String>, Failure> {
+        let Observation::Owned(current) = observed else {
+            panic!("Owned fixture expected")
+        };
+        if let Err(error) = pr_sniper_lib::capacity::publication_gate(&self.store) {
+            return Ok(Some(error));
+        }
         if !run.fresh_thread(current) {
             return Ok(Some("Thread changed or resolved.".into()));
         }
@@ -356,8 +407,8 @@ impl Environment for Fixture {
         }
         Ok(publication::evaluate_review_gate(
             &settings(),
-            &run.review,
-            Some(&run.review.job),
+            &run.owned().unwrap().review,
+            Some(&run.context.job),
             &pull,
             GatePermissions {
                 active: true,
@@ -370,7 +421,7 @@ impl Environment for Fixture {
         .stop)
     }
     fn reply(&mut self, run: &FollowUp) -> Result<String, WriteFailure> {
-        let thread = self.thread(run).map_err(|failure| WriteFailure {
+        let thread = self.observe(run).map_err(|failure| WriteFailure {
             failure,
             uncertain: false,
         })?;
@@ -383,12 +434,60 @@ impl Environment for Fixture {
                 uncertain: false,
             });
         }
-        GithubClient::new(self.wire.clone()).reply_to_thread(
+        let result = GithubClient::new(self.wire.clone()).reply_to_thread(
             &self.origin,
             "100",
             run.body.as_deref().unwrap(),
-        )
+        );
+        if self.pause_after_reply {
+            self.store
+                .save_automation(&pr_sniper_lib::capacity::Automation { paused: true })
+                .unwrap();
+        }
+        result
     }
+}
+
+#[test]
+fn pause_during_lost_reply_response_retains_the_original_intent_and_reconciles_once() {
+    let mut fixture = Fixture::new();
+    let mut run = prepared(&fixture.origin);
+    fixture.pause_after_reply = true;
+    fixture.wire.0.lock().unwrap().fault = Some(Fault::After);
+    assert!(follow_up::publish(&mut fixture, &mut run).is_err());
+    assert!(run.uncertain);
+    assert_eq!(fixture.writes(), 1);
+    assert!(fixture.store.load_automation().unwrap().paused);
+    let id = run.id.clone();
+    fixture
+        .store
+        .save_automation(&pr_sniper_lib::capacity::Automation { paused: false })
+        .unwrap();
+    let mut restored = fixture.resume();
+    follow_up::publish(&mut fixture, &mut restored).unwrap();
+    assert_eq!(restored.id, id);
+    assert_eq!(restored.receipt.as_deref(), Some("200"));
+    assert_eq!(fixture.writes(), 1);
+}
+
+#[test]
+fn current_head_thread_observation_keeps_original_commit_provenance_and_rejects_tampered_roots() {
+    let fixture = Fixture::new();
+    fixture.wire.0.lock().unwrap().changed_head = true;
+    let client = GithubClient::new(fixture.wire.clone());
+    assert!(client.owned_threads(&fixture.origin).is_err());
+    let threads = client
+        .owned_threads_at(&fixture.origin, &"c".repeat(40))
+        .unwrap();
+    assert_eq!(threads.len(), 1);
+    assert_eq!(
+        threads[0].root().unwrap().original_commit.as_deref(),
+        Some("a".repeat(40).as_str())
+    );
+    fixture.wire.0.lock().unwrap().threads[0].comments[0].body = "Tampered root".into();
+    assert!(client
+        .owned_threads_at(&fixture.origin, &"c".repeat(40))
+        .is_err());
 }
 
 #[test]
@@ -416,7 +515,7 @@ fn analysis_result_commit_fences_account_cancellation_and_late_settings_changes(
     fixture.store.save_settings(&settings()).unwrap();
     fixture
         .store
-        .save_queue(std::slice::from_ref(&run.review.job))
+        .save_queue(std::slice::from_ref(&run.context.job))
         .unwrap();
     fixture
         .store
@@ -499,7 +598,9 @@ fn one_signed_reply_has_a_confirmed_receipt_and_cannot_repeat() {
     assert!(run.body.as_ref().unwrap().ends_with("\u{f05b} PR Sniper"));
     assert!(follow_up::publish(&mut fixture, &mut run).is_err());
     assert_eq!(fixture.writes(), 1);
-    let current = fixture.thread(&run).unwrap();
+    let Observation::Owned(current) = fixture.observe(&run).unwrap() else {
+        panic!("Owned fixture expected")
+    };
     assert_eq!(current.latest_external("22").unwrap().id, "101");
 }
 

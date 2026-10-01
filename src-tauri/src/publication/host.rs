@@ -16,6 +16,7 @@ pub(crate) struct Coordinator {
 
 #[derive(Serialize)]
 pub(crate) struct Candidate {
+    pub(crate) local_only: bool,
     pub(crate) review_operation_id: String,
     pub(crate) automatic: bool,
     pub(crate) blocked: Option<String>,
@@ -26,7 +27,7 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
     let settings = store.load_settings()?;
     let jobs = store.load_queue()?;
     let publications = store.load_publications()?;
-    let reviews = store.load_reviews()?;
+    let reviews = store.review_evidence()?;
     let latest: std::collections::BTreeMap<_, _> = reviews
         .iter()
         .map(|review| (&review.key, &review.operation.id))
@@ -34,9 +35,22 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
     Ok(reviews.iter()
         .filter(|review| review.operation.state == OperationState::Completed && review.result.is_some())
         .map(|review| {
+            let publication = publications.iter().find(|p| p.review.operation.id == review.operation.id);
+            let completed = publication.is_some_and(|p|
+                p.phase == Phase::Published
+                    && p.operation.state == OperationState::Completed
+                    && !p.uncertain
+                    && p.error.is_none()
+                    && p.receipts.last().is_some_and(|r| r.state == RemoteState::Commented));
             let mut policy = jobs.iter().find(|job| review.matches_job(job))
                 .ok_or("Review detection is no longer available.".to_string())
                 .and_then(|job| automatic_policy(&settings, review, job))
+                .and_then(|automatic| {
+                    // Freshness authorizes new mutations, not an immutable confirmed receipt.
+                    // Queue readiness separately aggregates current feedback and pending work.
+                    if !completed { crate::feedback::publication_gate(store, review)?; }
+                    Ok(automatic)
+                })
                 .and_then(|automatic| {
                     if review.result.as_ref().and_then(|r| r.reviewed_base_sha.as_ref()).is_none() {
                         Err("This older result has no reviewed base. Run a new review before publication.".into())
@@ -49,12 +63,84 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
                 policy = Err("A newer local review attempt superseded this result.".into());
             }
             Candidate {
+                local_only: publication.is_none() && (
+                    settings.effective_policy(&review.job.configuration_id).is_none_or(|p|!p.automatic_comment_publication)
+                    || !settings.repositories.iter().find(|r|r.id==review.job.configuration_id)
+                        .is_some_and(|r|r.assignments.iter().any(|a|a.id==review.assignment_id&&a.comment))),
                 automatic: policy.as_ref().copied().unwrap_or(false),
                 blocked: policy.err(),
-                publication: publications.iter().find(|p| p.review.operation.id == review.operation.id).cloned(),
+                publication: publication.cloned(),
                 review_operation_id: review.operation.id.clone(),
             }
         }).collect())
+}
+
+fn next_candidate(store: &Store, now: i64) -> Result<Option<Candidate>, String> {
+    if store.load_automation()?.paused {
+        return Ok(None);
+    }
+    Ok(candidates(store)?
+        .into_iter()
+        .find(|candidate| match &candidate.publication {
+            Some(run) => {
+                matches!(
+                    run.operation.state,
+                    OperationState::Queued | OperationState::Interrupted
+                ) && run
+                    .operation
+                    .next_attempt_at
+                    .is_some_and(|next| now >= next)
+            }
+            None => candidate.blocked.is_none() && candidate.automatic,
+        }))
+}
+
+fn prepare_launch(
+    store: &Store,
+    review_id: &str,
+    manual: bool,
+    now: i64,
+) -> Result<Publication, String> {
+    if store.load_automation()?.paused {
+        return Err("Automation paused. Resume to publish or reconcile existing receipts.".into());
+    }
+    let candidate = candidates(store)?
+        .into_iter()
+        .find(|c| c.review_operation_id == review_id)
+        .ok_or("Completed review is no longer available.")?;
+    let mut runs = store.load_publications()?;
+    let review = match &candidate.publication {
+        Some(run) => run.review.clone(),
+        None => store
+            .review_evidence()?
+            .into_iter()
+            .find(|r| r.operation.id == review_id)
+            .ok_or("Completed review disappeared.")?,
+    };
+    if conflicting_publication(&runs, &review) {
+        return Err(
+            "Another review attempt owns this revision's publication; do not create another batch."
+                .into(),
+        );
+    }
+    if candidate.local_only {
+        return Err("Comment publication is off. This result is local-only; enable publication explicitly before creating a machine batch.".into());
+    }
+    let run = if let Some(mut run) = candidate.publication {
+        if manual {
+            // Reconciliation remains available even after permission/configuration loss.
+            run.retry(candidate.automatic, now)?;
+        }
+        run
+    } else {
+        if let Some(error) = candidate.blocked {
+            return Err(error);
+        }
+        Publication::new(review, candidate.automatic, manual, now)?
+    };
+    replace(&mut runs, &run);
+    store.save_publications(&runs)?;
+    Ok(run)
 }
 
 impl Coordinator {
@@ -72,21 +158,7 @@ impl Coordinator {
                 .store
                 .lock()
                 .map_err(|_| "Publication storage unavailable.")?;
-            let now = now_seconds()?;
-            candidates(&store)?
-                .into_iter()
-                .find(|candidate| match &candidate.publication {
-                    Some(run) => {
-                        matches!(
-                            run.operation.state,
-                            OperationState::Queued | OperationState::Interrupted
-                        ) && run
-                            .operation
-                            .next_attempt_at
-                            .is_some_and(|next| now >= next)
-                    }
-                    None => candidate.blocked.is_none() && candidate.automatic,
-                })
+            next_candidate(&store, now_seconds()?)?
         };
         if let Some(candidate) = candidate {
             Self::launch(app, &candidate.review_operation_id, false)?;
@@ -116,39 +188,18 @@ impl Coordinator {
                 .store
                 .lock()
                 .map_err(|_| "Publication storage unavailable.")?;
-            let candidate = candidates(&store)?
-                .into_iter()
-                .find(|c| c.review_operation_id == review_id)
-                .ok_or("Completed review is no longer available.")?;
-            let mut runs = store.load_publications()?;
-            let review = store
-                .load_reviews()?
-                .into_iter()
-                .find(|r| r.operation.id == review_id)
-                .ok_or("Completed review disappeared.")?;
-            if conflicting_publication(&runs, &review) {
-                return Err("Another review attempt owns this revision's publication; do not create another batch.".into());
-            }
-            let run = if let Some(mut run) = candidate.publication {
-                if manual {
-                    // Reconciliation remains available even after permission/configuration loss.
-                    run.retry(candidate.automatic, now_seconds()?)?;
-                }
-                run
-            } else {
-                if let Some(error) = candidate.blocked {
-                    return Err(error);
-                }
-                Publication::new(review, candidate.automatic, manual, now_seconds()?)?
-            };
-            replace(&mut runs, &run);
-            store.save_publications(&runs)?;
-            run
+            prepare_launch(&store, review_id, manual, now_seconds()?)?
         };
         let generation = generation
             .get(&run.review.job.account_id)
             .copied()
             .unwrap_or(0);
+        let mutation_owner = format!("publication:{}", run.id);
+        if !host.mutations.acquire(&mutation_owner)? {
+            return Err(
+                "Another provider mutation is running; this publication remains queued.".into(),
+            );
+        }
         *active = Some(run.id.clone());
         drop(active);
         let app = app.clone();
@@ -159,6 +210,9 @@ impl Coordinator {
             };
             if let Err(error) = execute(&mut environment, &mut run) {
                 crate::report(&app, error.message);
+            }
+            if let Err(error) = app.state::<Host>().mutations.release(&mutation_owner) {
+                crate::report(&app, error);
             }
             match app.state::<Host>().publications.active.lock() {
                 Ok(mut active) => *active = None,
@@ -261,6 +315,7 @@ impl Native {
             .store
             .lock()
             .map_err(|_| Failure::permanent("Publication storage unavailable."))?;
+        crate::capacity::publication_gate(&store).map_err(Failure::permanent)?;
         let current = store
             .load_publications()
             .map_err(Failure::permanent)?
@@ -280,6 +335,7 @@ impl Native {
             .ok_or_else(|| Failure::permanent("Review detection is no longer available."))?;
         let automatic =
             automatic_policy(&settings, &run.review, job).map_err(Failure::permanent)?;
+        crate::feedback::publication_gate(&store, &run.review).map_err(Failure::permanent)?;
         if automatic != run.automatic {
             return Err(Failure::permanent(
                 "The publication gate changed; confirm again before retrying.",
@@ -299,6 +355,16 @@ impl Native {
 }
 
 impl Environment for Native {
+    fn paused(&self) -> Result<bool, Failure> {
+        self.app
+            .state::<Host>()
+            .store
+            .lock()
+            .map_err(|_| Failure::permanent("Publication storage unavailable."))?
+            .load_automation()
+            .map(|s| s.paused)
+            .map_err(Failure::permanent)
+    }
     fn now(&self) -> Result<i64, Failure> {
         now_seconds().map_err(Failure::permanent)
     }
@@ -428,6 +494,17 @@ impl Environment for Native {
         })?;
         if let Some(receipt) = receipt {
             return Ok(receipt);
+        }
+        {
+            let host = self.app.state::<Host>();
+            let store = host.store.lock().map_err(|_| WriteFailure {
+                failure: Failure::permanent("Publication storage unavailable."),
+                uncertain: false,
+            })?;
+            crate::capacity::publication_gate(&store).map_err(|error| WriteFailure {
+                failure: Failure::permanent(error),
+                uncertain: false,
+            })?;
         }
         client.mutate_publication(run, mutation)
     }

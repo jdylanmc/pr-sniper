@@ -33,7 +33,7 @@ for (const api of ["showModal", "close"]) {
       .getByLabel("GitHub repository", { exact: true })
       .fill("octo/fallback");
     await modal
-      .getByRole("button", { name: "Use repository", exact: true })
+      .getByRole("button", { name: "Save repository", exact: true })
       .click();
     await saveChanges(page);
     expect((await store("snapshot")).settings.repositories[0].name).toBe(
@@ -74,7 +74,7 @@ test("R1 missing dialog and inert APIs retain a true keyboard modal", async ({
     .getByLabel("GitHub repository", { exact: true })
     .fill("octo/project");
   const last = modal.getByRole("button", {
-    name: "Use repository",
+    name: "Save repository",
     exact: true,
   });
   const first = modal.getByRole("button", {
@@ -129,23 +129,27 @@ test("R2 dismissed repository reply cannot resurrect a reset draft", async ({
       .getByLabel("GitHub repository", { exact: true })
       .fill("octo/cancelled");
     await page
-      .getByRole("button", { name: "Use repository", exact: true })
+      .getByRole("button", { name: "Save repository", exact: true })
       .click();
     await hold.arrived;
     await closeDialog(page);
-    await setAgentPrompt(page, "Reset this edit.");
+    const agent = await editAgent(page);
+    await agent
+      .getByRole("textbox", { name: "Prompt", exact: true })
+      .fill("Reset this edit.");
+    await closeDialog(page);
+    await section(page, "Preferences");
+    await page.locator("#global-capacity").fill("7");
     await page
       .getByRole("button", { name: "Reset changes", exact: true })
       .click();
     hold.release();
     await page.evaluate(() => window.__settingsIdle());
     await expect(
-      page.getByRole("button", { name: "Save changes", exact: true }),
+      page.getByRole("button", { name: "Save preferences", exact: true }),
     ).toBeDisabled({ timeout: 1500 });
     await setAgentPrompt(page, "Keep only this edit.");
-    await page
-      .getByRole("button", { name: "Save changes", exact: true })
-      .click();
+    await saveChanges(page);
     await expect(
       page.getByText("All changes saved", { exact: true }),
     ).toBeVisible();
@@ -300,14 +304,12 @@ for (const kind of ["add", "rename"]) {
           .getByLabel("GitHub repository", { exact: true })
           .fill(completion === "valid" ? "octo/dismissed" : "invalid");
         await page
-          .getByRole("button", { name: "Use repository", exact: true })
+          .getByRole("button", { name: "Save repository", exact: true })
           .click();
         await hold.arrived;
         await closeDialog(page);
         await setAgentPrompt(page, "An independent saved edit.");
-        await page
-          .getByRole("button", { name: "Save changes", exact: true })
-          .click();
+        await saveChanges(page);
         await expect(
           page.getByText("All changes saved", { exact: true }),
         ).toBeVisible();
@@ -375,7 +377,7 @@ test("R2 repeated submit dispatch cannot start a second repository request", asy
       .getByLabel("GitHub repository", { exact: true })
       .fill("octo/once");
     await page
-      .getByRole("button", { name: "Use repository", exact: true })
+      .getByRole("button", { name: "Save repository", exact: true })
       .click();
     await hold.arrived;
     await page
@@ -569,7 +571,7 @@ for (const viewport of [
       doctrine.getByRole("button", { name: "Edit", exact: true }),
     ).toBeFocused();
     const footer = await page
-      .getByRole("button", { name: "Save changes", exact: true })
+      .getByRole("button", { name: "Save preferences", exact: true })
       .boundingBox();
     expect(footer.y + footer.height).toBeLessThanOrEqual(viewport.height);
     expect(

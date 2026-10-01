@@ -180,13 +180,25 @@ credentials for these checks.
 2. Launch the production executable without Vite. Verify exactly one tray icon,
    no startup main window and no console. Use the actual taskbar/overflow area,
    including native UI Automation if appropriate, not a replacement test menu.
-3. Open **Status**, **Review Queue** and **Settings** from that tray. Check that
-   each is the actual application surface. **Check Now** on the unconfigured
-   profile must not cause provider actions. Close each window; verify its
-   native window hides while the owned host and tray remain.
+3. Left-click the tray crosshair: exactly one compact panel opens. Toggle it
+   closed/reopen and check no focus-loss race immediately reopens it. Navigate
+   **Queue**, **Running**, **Reviewed**, **Settings** and one exact saved job
+   detail; Back restores its row/scroll/focus. Retain an unsaved Settings draft
+   across tabs, Escape, outside click, custom Close and native Alt+F4; each hides
+   the same HWND while the host/tray remain. Right-click retains **Status**,
+   **Review Queue**, **Check Now**, **Settings**, **Diagnostics** and **Quit**.
+   Status/Diagnostics are routes within that panel, not new webviews.
+   **Check Now** on the unconfigured profile must not cause provider actions.
+   Check top/bottom/side taskbar and overflow placement at 100/125/150/200%
+   scaling and a negative-coordinate secondary display: the panel fits the
+   actual monitor work area without double-scaling or horizontal clipping.
+   A native folder dialog and a synthetic external-auth flow must not discard
+   the draft or strand the panel. Observe native picker focus restoration.
 4. Launch the exact executable again with the same profile. Verify the second
    process exits, one host/icon remains and no additional startup window
-   appears. Reopen a hidden window from the tray.
+   appears. Reopen the retained panel from the tray. Exact notification routes
+   preserve the registered profile and requested iteration/job, or show an
+   explicit unavailable destination; never substitute another item.
 5. In isolated Settings, verify Windows wording and disabled login mutation.
    Record the actual Run value before/after if it already exists, without
    replacing it. Read-only inspection is not proof of Windows startup launch.
