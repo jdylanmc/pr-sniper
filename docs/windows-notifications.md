@@ -138,6 +138,12 @@ profile's Settings or an unrelated pull request.
 
 ## Explicit removal and isolated test cleanup
 
+The [Windows installer](windows-packaging.md) preserves notification identity
+and user data on upgrade/uninstall. It never guesses this profile's owner token
+or recursively removes COM registrations. If permanent removal is desired,
+perform the exact-token procedure below **before** uninstalling the executable.
+Turning notification preference off alone does not unregister its identity.
+
 Quit the application first. Read **the exact owned** CLSID's
 `PRSniperNotificationOwner` value, and pass that token to the same application:
 
