@@ -37,6 +37,7 @@ try {
             CorruptRestore = $false
             Exercised = $false
             NormalizeNative = [bool]$NormalizeNative
+            DropOwnerGroup = $false
         }
         $key | Add-Member ScriptMethod GetAccessControl {
             param($section)
@@ -62,6 +63,13 @@ try {
             if ($this.Writes -eq 2 -and $this.CorruptRestore) { return }
             $this.Bytes = $descriptor.GetSecurityDescriptorBinaryForm()
             if ($this.NormalizeNative) { $this.Bytes[3] = $this.Bytes[3] -bor 0x04 }
+            if ($this.DropOwnerGroup) {
+                $raw = [Security.AccessControl.RawSecurityDescriptor]::new($this.Bytes, 0)
+                $raw.Owner = $null
+                $raw.Group = $null
+                $this.Bytes = New-Object byte[] $raw.BinaryLength
+                $raw.GetBinaryForm($this.Bytes, 0)
+            }
         }
         return $key
     }
@@ -107,7 +115,26 @@ try {
     $nativeAcl[3] = $nativeAcl[3] -bor 0x04
     Check (Test-PrSniperDaclReadback $expectedAcl $nativeAcl) 'Proved SE_DACL_AUTO_INHERITED addition is admitted.'
     Check (-not (Test-PrSniperDaclReadback $nativeAcl $expectedAcl)) 'Unproved removal of the bookkeeping bit is rejected.'
-    foreach ($change in @('mask','sid','order','inheritance','protection','inheritance-request')) {
+    $represented = [Security.AccessControl.RawSecurityDescriptor]::new(
+        'O:S-1-5-21-1-2-3-1001G:S-1-5-21-1-2-3-1002D:(A;;KA;;;S-1-5-21-1-2-3-1001)(A;CIID;KR;;;S-1-5-21-1-2-3-1002)(A;CIID;KR;;;S-1-5-21-1-2)')
+    $beforeRepresentation = New-Object byte[] $represented.BinaryLength
+    $represented.GetBinaryForm($beforeRepresentation, 0)
+    $represented.Owner = $null
+    $represented.Group = $null
+    $represented.SetFlags($represented.ControlFlags -bor [Security.AccessControl.ControlFlags]::DiscretionaryAclAutoInherited)
+    $afterRepresentation = New-Object byte[] $represented.BinaryLength
+    $represented.GetBinaryForm($afterRepresentation, 0)
+    Check ($beforeRepresentation.Length -eq 184 -and $afterRepresentation.Length -eq 128) 'Reproduce the actual 184-to-128 descriptor representation change with synthetic SIDs.'
+    Check (Test-PrSniperDaclReadback $beforeRepresentation $afterRepresentation) 'Identical raw DACL plus permitted bookkeeping survives optional owner/group omission.'
+    foreach ($right in @('SetValue', 'Delete')) {
+        $memoryKey = New-MemoryAclKey -Unprotected -NormalizeNative
+        $memoryKey.Bytes = [byte[]]$beforeRepresentation.Clone()
+        $memoryKey.DropOwnerGroup = $true
+        Invoke-PrSniperRegistryAclDenial $memoryKey $identity $right { $memoryKey.Exercised = $true }
+        Check ($memoryKey.Exercised -and (Test-PrSniperDaclReadback $beforeRepresentation $memoryKey.Bytes)) `
+            'Denial and restoration validate the DACL despite a different full descriptor representation.'
+    }
+    foreach ($change in @('mask','sid','order','ace-type','inheritance','protection','inheritance-request','defaulted','untrusted','server-security','presence','null-acl','empty-acl','revision')) {
         $raw = [Security.AccessControl.RawSecurityDescriptor]::new($expectedAcl, 0)
         switch ($change) {
             mask { $raw.DiscretionaryAcl[0].AccessMask = $raw.DiscretionaryAcl[0].AccessMask -bxor 2 }
@@ -117,15 +144,39 @@ try {
                 $raw.DiscretionaryAcl[0] = $raw.DiscretionaryAcl[1]
                 $raw.DiscretionaryAcl[1] = $first
             }
+            ace-type {
+                $ace = $raw.DiscretionaryAcl[0]
+                $raw.DiscretionaryAcl[0] = [Security.AccessControl.CommonAce]::new(
+                    $ace.AceFlags, [Security.AccessControl.AceQualifier]::AccessDenied, $ace.AccessMask, $ace.SecurityIdentifier, $false, $null)
+            }
             inheritance { $raw.DiscretionaryAcl[1].AceFlags = [Security.AccessControl.AceFlags]::Inherited }
             protection { $raw.SetFlags($raw.ControlFlags -bor [Security.AccessControl.ControlFlags]::DiscretionaryAclProtected) }
             inheritance-request { $raw.SetFlags($raw.ControlFlags -bor [Security.AccessControl.ControlFlags]::DiscretionaryAclAutoInheritRequired) }
+            defaulted { $raw.SetFlags($raw.ControlFlags -bor [Security.AccessControl.ControlFlags]::DiscretionaryAclDefaulted) }
+            untrusted { $raw.SetFlags($raw.ControlFlags -bor [Security.AccessControl.ControlFlags]::DiscretionaryAclUntrusted) }
+            server-security { $raw.SetFlags($raw.ControlFlags -bor [Security.AccessControl.ControlFlags]::ServerSecurity) }
+            presence { $raw.SetFlags($raw.ControlFlags -band (-bnot [Security.AccessControl.ControlFlags]::DiscretionaryAclPresent)) }
+            null-acl { $raw.DiscretionaryAcl = $null }
+            empty-acl { $raw.DiscretionaryAcl = [Security.AccessControl.RawAcl]::new(2, 0) }
         }
         $changedAcl = New-Object byte[] $raw.BinaryLength
         $raw.GetBinaryForm($changedAcl, 0)
         $changedAcl[3] = $changedAcl[3] -bor 0x04
+        if ($change -eq 'revision') {
+            $changedAcl[[BitConverter]::ToUInt32($changedAcl, 16)] = 4
+        }
         Check (-not (Test-PrSniperDaclReadback $expectedAcl $changedAcl)) "Reject real DACL drift despite normalization: $change"
     }
+    Check (-not (Test-PrSniperDaclReadback $null $afterRepresentation)) 'Missing descriptor is not valid comparison evidence.'
+    Check (-not (Test-PrSniperDaclReadback $expectedAcl ([byte[]]@(1, 2, 3)))) 'Truncated descriptor is rejected.'
+    $malformedAcl = [byte[]]$expectedAcl.Clone()
+    [Array]::Copy([BitConverter]::GetBytes([uint32]::MaxValue), 0, $malformedAcl, 16, 4)
+    Check (-not (Test-PrSniperDaclReadback $expectedAcl $malformedAcl)) 'Malformed DACL offset is rejected, not normalized.'
+    $nullDescriptor = [Security.AccessControl.RawSecurityDescriptor]::new(
+        [Security.AccessControl.ControlFlags]::DiscretionaryAclPresent, $null, $null, $null, $null)
+    $nullDescriptorBytes = New-Object byte[] $nullDescriptor.BinaryLength
+    $nullDescriptor.GetBinaryForm($nullDescriptorBytes, 0)
+    Check (-not (Test-PrSniperDaclReadback $nullDescriptorBytes $nullDescriptorBytes)) 'Even two null ACLs are not accepted as fixture permission evidence.'
     Check ((Get-PrSniperPayloadEntry @('Path = installer.exe', 'Path = $_41_\new-app.exe', 'Path = $_41_\new-uninstall.exe')) -ceq '$_41_\new-app.exe') `
         'Select the exact application entry, not the installer or uninstaller.'
     Reject { Get-PrSniperPayloadEntry @('Path = new-uninstall.exe') } 'exactly one'
