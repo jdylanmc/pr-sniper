@@ -1,6 +1,7 @@
 import { expect, test } from "./fixtures.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
 import { closeDialog, repositorySettings } from "./navigation.mjs";
+import { createHash } from "node:crypto";
 
 async function actionFixture(store, observe = true) {
   const fixture = await queueFixture(store);
@@ -268,13 +269,29 @@ test("panel primary-final route exposes only that final and returns to its exact
 }) => {
   const fixture = await actionFixture(store);
   const final = fixture.actions.finals[0];
-  final.execution.result = fixture.review.result;
+  final.execution.result = structuredClone(fixture.review.result);
+  final.execution.result.output.files.push({
+    path: "final-only.rs",
+    order: 3,
+    explanation: "Retained final guide evidence.",
+  });
   final.execution.operation.state = "completed";
   final.execution.operation.attempt_count = 1;
   final.execution.phase = "Primary final full review complete";
   fixture.state.actions = fixture.actions;
   await store("seed_queue_state", fixture.state);
   const before = await store("monitoring_snapshot");
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__finalDestination = null;
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      if (command === "open_queue_destination") {
+        window.__finalDestination = await original("queue_destination", args);
+        return;
+      }
+      return original(command, args);
+    };
+  });
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "Application destinations" })
@@ -306,12 +323,19 @@ test("panel primary-final route exposes only that final and returns to its exact
     "Review correctness.",
   );
   await page
-    .getByText("Complete final file guide (2 files)", { exact: true })
+    .getByText("Complete final file guide (3 files)", { exact: true })
     .click();
   await expect(page.locator("[data-item-evidence] ol li")).toHaveText([
     "z-first.rs: Read this first.",
     "a-second.rs: Then read this.",
+    "final-only.rs: Retained final guide evidence.",
   ]);
+  await page.getByRole("link", { name: "final-only.rs", exact: true }).click();
+  await expect
+    .poll(() => page.evaluate(() => window.__finalDestination))
+    .toBe(
+      `https://github.com/example/repo/pull/9/files#diff-${createHash("sha256").update("final-only.rs").digest("hex")}`,
+    );
   await expect(page.locator("#agent-reviews article")).toHaveCount(0);
   await expect(page.locator("#thread-follow-ups article")).toHaveCount(0);
   await page.getByRole("button", { name: "Back", exact: true }).click();

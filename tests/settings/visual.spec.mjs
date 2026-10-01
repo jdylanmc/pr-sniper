@@ -80,6 +80,16 @@ test("compact human cards retain all ordered files and exact external links", as
       url: `https://github.com/example/repo/pull/9/files#diff-${createHash("sha256").update("file-301.rs").digest("hex")}`,
     },
   ]);
+  await tab(page, "Reviewed").click();
+  await expect(
+    page.locator('[data-panel-view="reviewed"] article'),
+  ).toHaveCount(4);
+  await page.screenshot({ path: join(screenshots, "reviewed-shell.png") });
+  await tab(page, "Settings").click();
+  await expect(
+    page.getByLabel("Settings section", { exact: true }),
+  ).toBeVisible();
+  await page.screenshot({ path: join(screenshots, "settings-shell.png") });
 });
 
 async function workFixture(store) {
@@ -392,9 +402,54 @@ test("captured full configuration survives current Agent and doctrine edits with
   await expect(captured).toContainText('"account_id": "33"');
   await expect(captured).toContainText('"primary": true');
   await expect(captured).not.toContainText("Today's changed");
+  await page.locator(".panel-content").evaluate((e) => {
+    e.scrollTop = 0;
+  });
   await page.screenshot({
     path: join(screenshots, "captured-job-detail.png"),
   });
+});
+
+test("seven failed Agents produce one human PR card; superseded and completed jobs stay distinct", async ({
+  page,
+  store,
+}) => {
+  const fixture = await workFixture(store);
+  for (const run of fixture.state.reviews) {
+    run.operation.state = "failed";
+    run.error = `Synthetic failure for ${run.selection.agent.name}.`;
+  }
+  await store("seed_queue_state", fixture.state);
+  await page.goto("/");
+  await expect(page.locator("#handoff-queue article")).toHaveCount(1);
+  await expect(page.locator("[data-summary-main]")).toHaveText("1 for you");
+  await tab(page, "Running").click();
+  await expect(page.locator("[data-running-list] article")).toHaveCount(7);
+  await expect(page.locator(".work-state")).toHaveText(Array(7).fill("Failed"));
+  await expect(page.locator(".work-spin")).toHaveCount(0);
+  fixture.state.jobs[6].waiting = "superseded";
+  fixture.state.reviews[0].operation.state = "completed";
+  fixture.state.reviews[0].error = null;
+  fixture.state.reviews[0].result = fixture.base.result;
+  fixture.state.reviews[0].phase = "Automated review complete";
+  await store("seed_queue_state", fixture.state);
+  await tab(page, "Queue").click();
+  await tab(page, "Running").click();
+  await expect(page.locator("[data-running-list] article")).toHaveCount(6);
+  await expect(
+    page.locator('[data-job-id="normal:visual-work-7"] .work-state'),
+  ).toHaveText("Superseded");
+  await tab(page, "Reviewed").click();
+  const completed = page.locator(
+    '[data-panel-view="reviewed"] [data-job-id="normal:visual-work-1"]',
+  );
+  await expect(completed).toContainText("Automated review complete");
+  await completed.getByRole("button", { name: "Open job" }).click();
+  await expect(page.locator("#agent-reviews article")).toHaveCount(1);
+  await expect(page.locator("#agent-reviews")).toContainText("Scout");
+  await expect(page.locator("#agent-reviews")).not.toContainText(
+    "Synthetic failure for Pathfinder",
+  );
 });
 
 test("human Queue excludes running and author-wait jobs and recovers an unavailable snapshot", async ({
