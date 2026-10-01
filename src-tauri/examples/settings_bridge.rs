@@ -98,6 +98,26 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             )?;
             Ok(Value::Null)
         }
+        "retry_action_observation" => {
+            pr_sniper_lib::actions::request_observation_retry(
+                store,
+                request.args["itemId"]
+                    .as_str()
+                    .ok_or("Iteration identity required.")?,
+                1_800_000_110,
+            )?;
+            Ok(Value::Null)
+        }
+        "reconcile_provider_action" => {
+            pr_sniper_lib::actions::request_reconciliation(
+                store,
+                request.args["id"]
+                    .as_str()
+                    .ok_or("Action identity required.")?,
+                1_800_000_110,
+            )?;
+            Ok(Value::Null)
+        }
         "cancel_provider_action" => {
             pr_sniper_lib::actions::cancel_effect(
                 store,

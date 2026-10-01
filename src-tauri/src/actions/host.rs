@@ -304,7 +304,7 @@ pub(crate) fn launch_worker(
                 auth.account_session_allowed(&execution.job.account_id)?;
                 Ok(result)
             });
-            complete(&store, &execution, outcome, now_seconds()?)
+            finish_final_worker(&store, &host.ai, &execution, outcome, now_seconds()?)
         })();
         if let Err(error) = saved {
             crate::report(&app, error);
@@ -313,18 +313,39 @@ pub(crate) fn launch_worker(
             }
             return;
         }
-        crate::capacity::refill(
-            &app,
-            &WorkId {
-                kind: Kind::PrimaryFinal,
-                id: execution.key,
-            },
-            &execution.operation.id,
-        );
+        if let Err(error) = crate::capacity::Coordinator::pump(&app) {
+            crate::report(&app, error);
+        }
         if let Err(error) = Coordinator::pump(&app) {
             crate::report(&app, error);
         }
     });
+}
+
+pub(super) fn finish_final_worker(
+    store: &Store,
+    capacity: &crate::capacity::Coordinator,
+    execution: &ReviewRun,
+    outcome: Result<crate::review::ReviewResult, Failure>,
+    now: i64,
+) -> Result<(), String> {
+    let ledger = store.load_actions()?;
+    let saved = ledger
+        .finals
+        .iter()
+        .find(|f| f.id == execution.key)
+        .ok_or("Final review disappeared; capacity remains reserved.")?;
+    // A durable retry owns the saved state, but teardown still owns only the old slot.
+    if saved.execution.operation.id == execution.operation.id {
+        complete(store, execution, outcome, now)?;
+    }
+    capacity.release(
+        &WorkId {
+            kind: Kind::PrimaryFinal,
+            id: execution.key.clone(),
+        },
+        &execution.operation.id,
+    )
 }
 
 pub trait ActionEnvironment {
@@ -608,37 +629,7 @@ impl Coordinator {
                         .find(|o| o.item_id == item.id)
                         .is_none_or(|o| o.error.is_none() || o.retry_at.is_some_and(|at| at <= now))
                 })
-                .filter(|i| {
-                    ledger.effects.iter().any(|e| {
-                        e.item_id == i.id
-                            && (e.state == EffectState::Prepared
-                                || e.needs_reconciliation()
-                                    && (e.reconcile_requested
-                                        || e.reconcile_attempts < 3
-                                            && now < e.operation.retry_deadline))
-                    }) || i.state == State::MachineSignedOff
-                        && settings
-                            .repositories
-                            .iter()
-                            .find(|r| r.id == i.job.configuration_id)
-                            .is_some_and(|r| {
-                                r.assignments.iter().any(|a| {
-                                    let p = r.assignment_authority(a);
-                                    p.approve
-                                        && !ledger.effects.iter().any(|e| {
-                                            e.item_id == i.id && e.action == Action::Approve
-                                        })
-                                        || p.merge
-                                            && !ledger.effects.iter().any(|e| {
-                                                e.item_id == i.id && e.action == Action::Merge
-                                            })
-                                })
-                            })
-                        && !ledger
-                            .effects
-                            .iter()
-                            .any(|e| same_scope(e, &i.job) && e.state == EffectState::Uncertain)
-                })
+                .filter(|i| observation_pending(i, &settings, &ledger, now))
                 .min_by_key(|i| {
                     ledger
                         .observations
@@ -821,6 +812,15 @@ pub(crate) fn cancel_final_review(app: tauri::AppHandle, id: String) -> Result<(
         .store
         .lock()
         .map_err(|_| "Action storage unavailable.")?;
+    cancel_final_in_store(&store, &host.ai, &id, now_seconds()?)
+}
+
+pub(super) fn cancel_final_in_store(
+    store: &Store,
+    capacity: &crate::capacity::Coordinator,
+    id: &str,
+    now: i64,
+) -> Result<(), String> {
     let mut ledger = store.load_actions()?;
     let run = ledger
         .finals
@@ -833,9 +833,9 @@ pub(crate) fn cancel_final_review(app: tauri::AppHandle, id: String) -> Result<(
     run.cancelled = true;
     run.execution.operation.fail(
         &Failure::permanent("Final review cancelled.").monitoring(),
-        now_seconds()?,
+        now,
     );
-    host.ai.cancel(&run.execution.operation.id)?;
+    capacity.cancel(&run.execution.operation.id)?;
     store.save_actions(&ledger)
 }
 
@@ -859,25 +859,7 @@ pub(crate) fn reconcile_provider_action(app: tauri::AppHandle, id: String) -> Re
             .store
             .lock()
             .map_err(|_| "Action storage unavailable.")?;
-        let mut ledger = store.load_actions()?;
-        let effect = ledger
-            .effects
-            .iter_mut()
-            .find(|e| e.id == id)
-            .ok_or("Action unavailable.")?;
-        if !effect.needs_reconciliation() {
-            return Err("Only an unresolved original action needs reconciliation.".into());
-        }
-        request_observation_retry(&store, &effect.item_id, now_seconds()?)?;
-        // Reload after updating only the read budget; never replace the action intent.
-        ledger = store.load_actions()?;
-        let effect = ledger
-            .effects
-            .iter_mut()
-            .find(|e| e.id == id)
-            .ok_or("Action unavailable.")?;
-        effect.reconcile_requested = true;
-        store.save_actions(&ledger)?;
+        request_reconciliation(&store, &id, now_seconds()?)?;
     }
 
     Coordinator::pump(&app)

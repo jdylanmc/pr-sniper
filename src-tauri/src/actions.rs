@@ -111,6 +111,7 @@ pub struct Status {
     pub item_id: String,
     pub final_valid: bool,
     pub provider_observed_at: Option<i64>,
+    pub observation_retry_blocker: Option<String>,
     pub primary_assignment_id: Option<String>,
     pub machine_clear: bool,
     pub personal_review: &'static str,
@@ -901,7 +902,11 @@ fn record_terminal(store: &Store, observation: &Observation, now: i64) -> Result
 pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), String> {
     let settings = store.load_settings()?;
     let ledger = store.load_actions()?;
+    let paused = store.load_automation()?.paused;
+    let now = crate::now_seconds()?;
     for item in &mut snapshot.items {
+        let observation_retry_blocker =
+            observation_retry_blocker(item, &settings, &ledger, paused, now);
         let Some(repository) = settings
             .repositories
             .iter()
@@ -946,7 +951,14 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
         }
         if let Some(error) = observed.and_then(|o| o.error.clone()) {
             blockers.push(error);
-            if item.state == State::MachineSignedOff {
+            if item.state == State::MachineSignedOff
+                && (permissions.approve
+                    || permissions.merge
+                    || ledger.effects.iter().any(|e| {
+                        same_scope(e, &item.job)
+                            && (e.state == EffectState::Prepared || e.needs_reconciliation())
+                    }))
+            {
                 item.state = State::Blocked;
                 item.summary="Fresh provider review/policy evidence is unavailable; no action readiness is asserted.";
             }
@@ -1035,7 +1047,6 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
                 item.summary="The primary final review found concerns or needs human judgment. Automated actions are blocked.";
             }
         }
-        let machine_clear = item.state == State::MachineSignedOff;
         if effects
             .iter()
             .any(|e| e.state == EffectState::Confirmed && e.action == Action::Merge)
@@ -1053,10 +1064,12 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
             item.summary="A provider action outcome is unresolved. Reconcile its original intent; no replacement request is authorized.";
             blockers.push("An action on this PR has an unresolved provider outcome, possibly from an earlier iteration.".into());
         }
+        let machine_clear = item.state == State::MachineSignedOff;
         item.action_status = Some(Status {
             item_id: item.id.clone(),
             final_valid,
             provider_observed_at: observed.map(|o| o.at),
+            observation_retry_blocker,
             primary_assignment_id: primary.map(str::to_string),
             machine_clear,
             personal_review: if item.state == State::Merged {
@@ -1124,6 +1137,106 @@ pub fn request_final(store: &Store, id: &str, confirm_trust: bool, now: i64) -> 
 
 pub fn request_observation_retry(store: &Store, item_id: &str, now: i64) -> Result<(), String> {
     let mut ledger = store.load_actions()?;
+    let snapshot = queue::normal_snapshot(store, vec![])?;
+    let item = snapshot
+        .items
+        .iter()
+        .find(|i| i.id == item_id)
+        .ok_or("Current PR iteration unavailable.")?;
+    if let Some(reason) = observation_retry_blocker(
+        item,
+        &store.load_settings()?,
+        &ledger,
+        store.load_automation()?.paused,
+        now,
+    ) {
+        return Err(reason);
+    }
+    reset_observation_retry(&mut ledger, item_id, now)?;
+    store.save_actions(&ledger)
+}
+
+fn observation_pending(
+    item: &queue::Item,
+    settings: &crate::storage::Settings,
+    ledger: &Ledger,
+    now: i64,
+) -> bool {
+    ledger.effects.iter().any(|e| {
+        e.item_id == item.id
+            && (e.state == EffectState::Prepared && now < e.operation.retry_deadline
+                || e.needs_reconciliation()
+                    && (e.reconcile_requested
+                        || e.reconcile_attempts < 3 && now < e.operation.retry_deadline))
+    }) || item.state == State::MachineSignedOff
+        && settings
+            .repositories
+            .iter()
+            .find(|r| r.id == item.job.configuration_id)
+            .is_some_and(|r| {
+                r.assignments.iter().any(|a| {
+                    let p = r.assignment_authority(a);
+                    p.approve
+                        && !ledger
+                            .effects
+                            .iter()
+                            .any(|e| e.item_id == item.id && e.action == Action::Approve)
+                        || p.merge
+                            && !ledger
+                                .effects
+                                .iter()
+                                .any(|e| e.item_id == item.id && e.action == Action::Merge)
+                })
+            })
+        && !ledger
+            .effects
+            .iter()
+            .any(|e| same_scope(e, &item.job) && e.state == EffectState::Uncertain)
+}
+
+fn observation_retry_blocker(
+    item: &queue::Item,
+    settings: &crate::storage::Settings,
+    ledger: &Ledger,
+    paused: bool,
+    now: i64,
+) -> Option<String> {
+    let Some(observed) = ledger.observations.iter().find(|o| o.item_id == item.id) else {
+        return Some("No action observation is recorded for this iteration.".into());
+    };
+    if paused {
+        return Some("Automation is paused; resume before refreshing provider evidence.".into());
+    }
+    if observed.retry_at.is_some_and(|at| at > now) {
+        return Some(
+            "Provider retry backoff is still active; retry after its recorded delay.".into(),
+        );
+    }
+    if !observation_pending(item, settings, ledger, now) {
+        return Some(
+            "No enabled provider action or pending reconciliation is eligible for refresh.".into(),
+        );
+    }
+    None
+}
+
+pub fn request_reconciliation(store: &Store, id: &str, now: i64) -> Result<(), String> {
+    let mut ledger = store.load_actions()?;
+    let effect = ledger
+        .effects
+        .iter_mut()
+        .find(|e| e.id == id)
+        .ok_or("Action unavailable.")?;
+    if !effect.needs_reconciliation() {
+        return Err("Only an unresolved original action needs reconciliation.".into());
+    }
+    effect.reconcile_requested = true;
+    let item_id = effect.item_id.clone();
+    reset_observation_retry(&mut ledger, &item_id, now)?;
+    store.save_actions(&ledger)
+}
+
+fn reset_observation_retry(ledger: &mut Ledger, item_id: &str, now: i64) -> Result<(), String> {
     let observed = ledger
         .observations
         .iter_mut()
@@ -1136,7 +1249,7 @@ pub fn request_observation_retry(store: &Store, item_id: &str, now: i64) -> Resu
     }
     observed.failures = 0;
     observed.retry_at = Some(now);
-    store.save_actions(&ledger)
+    Ok(())
 }
 
 #[cfg(test)]

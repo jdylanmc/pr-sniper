@@ -4,6 +4,7 @@ export interface ActionStatus {
   item_id: string;
   final_valid: boolean;
   provider_observed_at: number | null;
+  observation_retry_blocker: string | null;
   primary_assignment_id: string | null;
   machine_clear: boolean;
   personal_review: string;
@@ -72,15 +73,22 @@ export function renderActions(
           : "Provider-action control failed. Original evidence and receipts are retained.",
       );
     } finally {
+      button.disabled = false;
       await refresh();
     }
   };
   if (status.blockers.length && status.provider_observed_at) {
     const retry = document.createElement("button");
     retry.textContent = "Refresh / retry provider evidence";
+    retry.disabled = status.observation_retry_blocker !== null;
     retry.onclick = () =>
       void act("retry_action_observation", { itemId: status.item_id }, retry);
     section.append(retry);
+    if (status.observation_retry_blocker) {
+      const reason = document.createElement("p");
+      reason.textContent = `Refresh unavailable: ${status.observation_retry_blocker}`;
+      section.append(reason);
+    }
   }
   if (status.final_review) {
     const final = status.final_review;
