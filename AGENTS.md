@@ -6,6 +6,14 @@ Build the approved macOS-first, GitHub-first MVP. Product authority is
 specification artifacts in `docs/agent/`; workflow guidance lives in
 `docs/agents/`. Do not treat requirements as implemented behavior.
 
+For #51, apply the scoped
+[`SPEC-PR-SNIPER-VNEXT` amendment](docs/agent/specs/pr-sniper-vnext.nano.md)
+and its [supporting reconciliation](docs/agent/specs/pr-sniper-vnext.full.md).
+It supersedes only the explicitly mapped MVP behavior, including polling,
+primary-Agent routing and opt-in provider actions. Other MVP requirements remain
+in force. Product permissions do not grant development agents permission to
+approve, merge or bypass repository protections.
+
 The human-authorized 2026-09-29 Windows follow-up under #12 extends the
 platform scope to existing-app system-tray parity, Windows CI and Chocolatey
 distribution (#57-#65). Merge the honest CI bootstrap (#65) before native
