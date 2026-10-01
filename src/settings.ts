@@ -1578,7 +1578,7 @@ export async function mountSettings(app: HTMLElement) {
         const value: Assignment = {
           id: assignmentId,
           agent_id: agentId,
-          schedule: existing?.schedule ?? clone(draft.defaults.schedule),
+          schedule: existing?.schedule ?? clone(saved.defaults.schedule),
           comment:
             modal.querySelector<HTMLInputElement>("[name=comment]")!.checked,
           approve: existing?.approve ?? false,

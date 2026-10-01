@@ -15,7 +15,7 @@ use pr_sniper_lib::{
     publication::{self, Publication, Receipt, RemoteState},
     queue,
     review::{self, ReviewRun, Selection},
-    storage::{Settings, Store},
+    storage::{ResourceEdit, Settings, Store},
 };
 use serde_json::json;
 use std::{
@@ -164,6 +164,221 @@ fn completed(settings: &Settings, job: &QueueJob) -> ReviewRun {
             }))
             .unwrap(),
         ),
+    }
+}
+
+fn running_primary_review() -> (Fixture, Store, ReviewRun) {
+    let (fixture, store, mut monitor) = configured(2);
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].primary_assignment_id =
+        Some(settings.repositories[0].assignments[0].id.clone());
+    settings.defaults.automatic_agent_start = true;
+    settings.doctrines = serde_json::from_value(json!([
+        {"title":"Correctness","body":"Trace state transitions."},
+        {"title":"Boundaries","body":"Keep authority explicit."}
+    ]))
+    .unwrap();
+    settings.agents[0].doctrines = Some(vec!["Correctness".into(), "Boundaries".into()]);
+    settings.presets = serde_json::from_value(json!([{
+        "id":"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        "name":"Review lens","body":"Check the repository contract."
+    }]))
+    .unwrap();
+    settings.repositories[0].review_preset = Some(settings.presets[0].id.clone());
+    store
+        .save_preferences(settings, &store.load_settings().unwrap())
+        .unwrap();
+    scan(&mut monitor, &store, vec![pull('a')], NOW);
+    let settings = store.load_settings().unwrap();
+    let job = store
+        .load_queue()
+        .unwrap()
+        .into_iter()
+        .find(|job| {
+            job.assignment_id.as_ref() == settings.repositories[0].primary_assignment_id.as_ref()
+        })
+        .unwrap();
+    assert!(job.work.is_some());
+    let mut run = completed(&settings, &job);
+    run.operation.state = OperationState::Running;
+    run.manual_start = false;
+    run.phase = "Reviewing fixture".into();
+    run.result = None;
+    store.save_reviews(std::slice::from_ref(&run)).unwrap();
+    review::validate_execution_selection(&store, &run).unwrap();
+    (fixture, store, run)
+}
+
+#[test]
+fn normal_review_survives_sibling_resource_saves_without_replacing_snapshot() {
+    let (fixture, store, run) = running_primary_review();
+    let original = run.selection.clone();
+    let bytes = std::fs::read(fixture.path().join("state/reviews.json")).unwrap();
+    for change in ["comment", "actions", "schedule", "agent", "remove"] {
+        let settings = store.load_settings().unwrap();
+        if change == "agent" {
+            let mut sibling = settings.agents[1].clone();
+            sibling.prompt = "A different sibling lens.".into();
+            sibling.model = "another-model".into();
+            sibling.ai_account.as_mut().unwrap().account_id = "44".into();
+            sibling.doctrines = Some(vec!["Boundaries".into()]);
+            store
+                .save_resource(ResourceEdit::Agent {
+                    id: sibling.id.clone(),
+                    expected: Some(settings.agents[1].clone()),
+                    value: Some(sibling),
+                })
+                .unwrap();
+        } else {
+            let mut repository = settings.repositories[0].clone();
+            match change {
+                "comment" => repository.assignments[1].comment = false,
+                "actions" => {
+                    repository.assignments[1].actions = Some(
+                        serde_json::from_value(json!({"approve":true,"merge":false})).unwrap(),
+                    );
+                }
+                "schedule" => {
+                    repository.assignments[1].schedule = serde_json::from_value(json!({
+                        "kind":"cron","expression":"0 9 * * MON-FRI","timezone":"America/New_York"
+                    }))
+                    .unwrap();
+                }
+                "remove" => {
+                    repository.assignments.remove(1);
+                }
+                _ => unreachable!(),
+            }
+            store
+                .save_resource(ResourceEdit::Repository {
+                    id: REPO.into(),
+                    expected: Some(Box::new(settings.repositories[0].clone())),
+                    value: Some(Box::new(repository)),
+                })
+                .unwrap();
+        }
+        let current = Selection::resolve(
+            &store.load_settings().unwrap(),
+            &run.job,
+            &run.assignment_id,
+        )
+        .unwrap();
+        assert_eq!(current.agent, original.agent);
+        assert_eq!(current.policy, original.policy);
+        assert_eq!(current.doctrine, original.doctrine);
+        assert_eq!(current.preset, original.preset);
+        assert_eq!(
+            current.configuration.as_ref().unwrap().authority,
+            original.configuration.as_ref().unwrap().authority
+        );
+        assert_eq!(
+            current.configuration.as_ref().unwrap().doctrines,
+            original.configuration.as_ref().unwrap().doctrines
+        );
+        assert_ne!(current, original, "{change}: archive must remain exact");
+        review::validate_execution_selection(&store, &run)
+            .unwrap_or_else(|error| panic!("{change}: {}", error.message));
+        assert_eq!(store.load_reviews().unwrap()[0], run);
+        assert_eq!(
+            std::fs::read(fixture.path().join("state/reviews.json")).unwrap(),
+            bytes
+        );
+    }
+    review::restore(&store).unwrap();
+    let restored = fixture.store().load_reviews().unwrap().remove(0);
+    assert_eq!(restored.operation.state, OperationState::Interrupted);
+    assert_eq!(restored.operation.id, run.operation.id);
+    assert_eq!(restored.key, review::key(&run.job, &run.assignment_id));
+    assert_eq!(restored.selection, original);
+    review::validate_execution_selection(&store, &restored).unwrap();
+}
+
+#[test]
+fn normal_review_execution_invalidates_own_inputs_authority_and_repository_gates() {
+    for change in [
+        "agent prompt",
+        "model",
+        "AI account",
+        "Agent replacement",
+        "doctrine body",
+        "doctrine order",
+        "doctrine selection",
+        "preset body",
+        "repository prompt",
+        "start gate",
+        "publication gate",
+        "comment",
+        "approve",
+        "merge",
+        "primary",
+        "repository disabled",
+        "repository account",
+        "repository identity",
+        "repository name",
+        "repository provider",
+        "watched authors",
+        "reviewer trigger",
+        "assignment removed",
+    ] {
+        let (_fixture, store, run) = running_primary_review();
+        let mut settings = store.load_settings().unwrap();
+        match change {
+            "agent prompt" => settings.agents[0].prompt = "Changed own lens.".into(),
+            "model" => settings.agents[0].model = "another-model".into(),
+            "AI account" => {
+                settings.agents[0].ai_account.as_mut().unwrap().account_id = "44".into()
+            }
+            "Agent replacement" => {
+                settings.repositories[0].assignments[0].agent_id = settings.agents[1].id.clone();
+            }
+            "doctrine body" => settings.doctrines[0].body = "Changed own doctrine.".into(),
+            "doctrine order" => settings.agents[0].doctrines.as_mut().unwrap().reverse(),
+            "doctrine selection" => settings.agents[0].doctrines = Some(vec![]),
+            "preset body" => settings.presets[0].body = "Changed preset instructions.".into(),
+            "repository prompt" => {
+                settings.repositories[0].review_preset = None;
+                settings.repositories[0].overrides.prompt = Some("Changed repository lens.".into());
+            }
+            "start gate" => settings.defaults.automatic_agent_start = false,
+            "publication gate" => settings.defaults.automatic_comment_publication = true,
+            "comment" => settings.repositories[0].assignments[0].comment = false,
+            "approve" | "merge" => {
+                settings.repositories[0].assignments[0].actions = Some(
+                    serde_json::from_value(json!({
+                        "approve":change == "approve","merge":change == "merge"
+                    }))
+                    .unwrap(),
+                );
+            }
+            "primary" => {
+                settings.repositories[0].primary_assignment_id =
+                    Some(settings.repositories[0].assignments[1].id.clone());
+            }
+            "repository disabled" => settings.repositories[0].enabled = false,
+            "repository account" => {
+                settings.repositories[0].provider_account_id = Some("44".into());
+            }
+            "repository identity" => {
+                settings.repositories[0].provider_repository_id = Some("200".into());
+            }
+            "repository name" => settings.repositories[0].name = "example/other".into(),
+            "repository provider" => {
+                settings.repositories[0].provider = pr_sniper_lib::storage::ProviderId::AzureDevops;
+            }
+            "watched authors" => settings.repositories[0].watched_authors.clear(),
+            "reviewer trigger" => settings.defaults.reviewer_assignment = false,
+            "assignment removed" => {
+                settings.repositories[0].assignments.remove(0);
+                settings.repositories[0].primary_assignment_id = None;
+            }
+            _ => unreachable!(),
+        }
+        store.save_settings(&settings).unwrap();
+        assert!(
+            review::validate_execution_selection(&store, &run).is_err(),
+            "{change} must invalidate the active review"
+        );
+        assert_eq!(store.load_reviews().unwrap()[0], run);
     }
 }
 

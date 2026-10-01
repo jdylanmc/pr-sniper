@@ -253,7 +253,7 @@ impl Coordinator {
                     result: None,
                 },
             };
-            if run.selection != selection {
+            if !run.selection.same_execution(&selection) {
                 run.error = Some(
                     "Review configuration changed. Explicitly retry with the new configuration."
                         .into(),

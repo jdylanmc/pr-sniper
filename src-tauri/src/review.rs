@@ -35,6 +35,37 @@ pub struct ExecutionConfiguration {
 }
 
 impl Selection {
+    /// Compare execution inputs and effective authority, not sibling assignment archives.
+    /// Callers must still revalidate the job, account and trust gates.
+    pub fn same_execution(&self, other: &Self) -> bool {
+        self.agent == other.agent
+            && self.policy == other.policy
+            && self.doctrine == other.doctrine
+            && self.preset == other.preset
+            && match (&self.configuration, &other.configuration) {
+                (Some(left), Some(right)) => {
+                    let a = &left.repository;
+                    let b = &right.repository;
+                    // Assignment records and raw primary designation are archival;
+                    // the selected Agent and effective authority carry their inputs.
+                    left.authority == right.authority
+                        && left.doctrines == right.doctrines
+                        && a.id == b.id
+                        && a.provider == b.provider
+                        && a.name == b.name
+                        && a.enabled == b.enabled
+                        && a.provider_account_id == b.provider_account_id
+                        && a.legacy_installation_id == b.legacy_installation_id
+                        && a.provider_repository_id == b.provider_repository_id
+                        && a.overrides == b.overrides
+                        && a.review_preset == b.review_preset
+                        && a.watched_authors == b.watched_authors
+                }
+                (None, None) => true,
+                _ => false,
+            }
+    }
+
     pub fn resolve(
         settings: &Settings,
         job: &QueueJob,
@@ -179,7 +210,9 @@ pub fn validate_execution_selection(store: &Store, run: &ReviewRun) -> Result<()
         .ok_or_else(|| Failure::permanent("Review detection is no longer available."))?;
     let current =
         Selection::resolve(&settings, job, &run.assignment_id).map_err(Failure::permanent)?;
-    if current != run.selection || (!current.policy.automatic_agent_start && !run.manual_start) {
+    if !current.same_execution(&run.selection)
+        || (!current.policy.automatic_agent_start && !run.manual_start)
+    {
         return Err(Failure::permanent(
             "Agent configuration or start gate changed; explicitly retry.",
         ));

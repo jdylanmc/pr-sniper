@@ -7,7 +7,75 @@ import {
   editAgent,
   repositorySettings,
   closeDialog,
+  assignment,
+  saveAssignment,
 } from "./navigation.mjs";
+
+for (const [scenario, expression, timezone] of [
+  ["invalid cron", "invalid", "UTC"],
+  ["invalid timezone", "0 9 * * MON-FRI", "Mars/Olympus_Mons"],
+  ["different valid schedule", "0 9 * * MON-FRI", "America/New_York"],
+]) {
+  test(`new assignment uses saved schedule with ${scenario} in unsaved Preferences`, async ({
+    page,
+    store,
+  }) => {
+    await seedAgent(store);
+    await store("save_repository", { repository: "fixture/schedules" });
+    const settings = (await store("snapshot")).settings;
+    settings.defaults.schedule = {
+      kind: "cron",
+      expression: "5 * * * *",
+      timezone: "UTC",
+    };
+    const existing = {
+      id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      agent_id: settings.agents[0].id,
+      schedule: { kind: "interval", minutes: 7, timezone: "UTC" },
+      comment: false,
+      approve: false,
+    };
+    settings.repositories[0].assignments = [existing];
+    await store("seed_settings", settings);
+    await page.goto("/?view=settings");
+    await section(page, "Preferences");
+    await page.locator("#global-cron").fill(expression);
+    await page.locator("#global-timezone").fill(timezone);
+    await saveAssignment(page, await assignment(page, "fixture/schedules"));
+    let saved = (await store("saved_resources")).settings;
+    expect(saved.defaults).toEqual(settings.defaults);
+    expect(saved.repositories[0].assignments).toHaveLength(2);
+    expect(saved.repositories[0].assignments[0]).toEqual(existing);
+    expect(saved.repositories[0].assignments[1].schedule).toEqual(
+      settings.defaults.schedule,
+    );
+    const modal = await assignment(page, "fixture/schedules", 0);
+    await modal.getByRole("checkbox", { name: /^Comment/ }).check();
+    await saveAssignment(page, modal);
+    saved = (await store("saved_resources")).settings;
+    expect(saved.repositories[0].assignments[0]).toMatchObject({
+      ...existing,
+      comment: true,
+    });
+    expect(saved.defaults).toEqual(settings.defaults);
+    await section(page, "Preferences");
+    await expect(page.locator("#global-cron")).toHaveValue(expression);
+    await expect(page.locator("#global-timezone")).toHaveValue(timezone);
+    await expect(page.locator("#save-status")).toHaveText("Unsaved changes");
+    await expect(
+      page.getByRole("button", { name: "Save preferences", exact: true }),
+    ).toBeEnabled();
+    await page.reload();
+    expect((await store("saved_resources")).settings).toEqual(saved);
+    await section(page, "Preferences");
+    await expect(page.locator("#global-cron")).toHaveValue(
+      settings.defaults.schedule.expression,
+    );
+    await expect(page.locator("#global-timezone")).toHaveValue(
+      settings.defaults.schedule.timezone,
+    );
+  });
+}
 
 test("Agent saves immediately while unrelated preference and repository drafts stay unsaved", async ({
   page,
