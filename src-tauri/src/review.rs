@@ -174,6 +174,8 @@ pub fn key(job: &QueueJob, assignment_id: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewRun {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feedback_context: Option<Vec<crate::feedback::Context>>,
     pub key: String,
     pub assignment_id: String,
     pub job: QueueJob,
@@ -214,6 +216,9 @@ pub fn validate_execution_selection(store: &Store, run: &ReviewRun) -> Result<()
         return Err(Failure::permanent(
             "Agent configuration or start gate changed; explicitly retry.",
         ));
+    }
+    if let Some(context) = &run.feedback_context {
+        crate::feedback::validate_context(store, job, &run.selection.agent.id, context)?;
     }
     Ok(())
 }
@@ -278,6 +283,8 @@ pub enum Severity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Finding {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feedback_id: Option<String>,
     pub path: String,
     pub side: String,
     pub line: u64,
@@ -290,6 +297,12 @@ pub struct Finding {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewOutput {
+    #[serde(default)]
+    pub feedback_conflict: bool,
+    #[serde(default)]
+    pub held_findings: Vec<Finding>,
+    #[serde(default)]
+    pub feedback_assessments: Vec<crate::feedback::Assessment>,
     pub synopsis: String,
     pub files: Vec<FileGuide>,
     pub findings: Vec<Finding>,
@@ -324,6 +337,11 @@ pub fn validate_output(text: &str, paths: &[String]) -> Result<ReviewOutput, Fai
             "Copilot's final response does not match the required review JSON schema.",
         )
     })?;
+    if output.feedback_conflict || !output.held_findings.is_empty() {
+        return Err(Failure::permanent(
+            "Model output cannot set host-owned feedback dispositions.",
+        ));
+    }
     let synopsis = output.synopsis.trim();
     let sentences = synopsis
         .char_indices()

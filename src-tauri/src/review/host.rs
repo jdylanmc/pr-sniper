@@ -159,6 +159,7 @@ pub(crate) fn request(
         }
         Some(_) if !manual => return Err("Manual retry is required.".into()),
         _ => ReviewRun {
+            feedback_context: None,
             key: candidate.key,
             assignment_id: candidate.assignment_id,
             operation: monitoring::JobOperation::review(&candidate.job, now),
@@ -199,6 +200,10 @@ pub(crate) fn prepare_dispatch(
     now: i64,
 ) -> Result<ReviewRun, String> {
     let mut run = request(store, key, false, false, now)?;
+    run.feedback_context = Some(
+        crate::feedback::contexts(store, &run.job, &run.selection.agent.id)
+            .map_err(|e| e.message)?,
+    );
     let mut reviews = store.load_reviews()?;
     if let Err(error) = run.operation.begin_ai_attempt(now) {
         run.error = Some(error.clone());
@@ -276,6 +281,16 @@ pub(crate) fn complete(
         .iter_mut()
         .find(|r| r.operation.id == id)
         .ok_or("Review operation disappeared.")?;
+    let outcome = outcome.and_then(|result| {
+        if let Some(contexts) = &current.feedback_context {
+            crate::feedback::validate_review(
+                &result.output,
+                contexts,
+                &current.selection.agent.id,
+            )?;
+        }
+        Ok(result)
+    });
     if current.operation.state != OperationState::Running {
         return Ok(());
     }
@@ -480,7 +495,10 @@ async fn execute(
     let expected_base = context.pull.base_sha.clone();
     let send_base = expected_base.clone();
     let request = runtime::Request {
-        task: runtime::FullReview,
+        task: runtime::FullReview {
+            feedback: run.feedback_context.clone().unwrap_or_default(),
+            owner_agent_id: run.selection.agent.id.clone(),
+        },
         context,
         client,
         repository_name: run.job.repository_name.clone(),

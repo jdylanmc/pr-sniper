@@ -144,6 +144,7 @@ fn completed(settings: &Settings, job: &QueueJob) -> ReviewRun {
     operation.begin_attempt(NOW + 1).unwrap();
     operation.state = OperationState::Completed;
     ReviewRun {
+        feedback_context: None,
         key: review::key(job, assignment),
         assignment_id: assignment.clone(),
         job: job.clone(),

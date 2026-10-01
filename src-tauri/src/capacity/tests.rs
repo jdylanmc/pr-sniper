@@ -74,6 +74,7 @@ fn add_reply(store: &Store, order: u64) -> FollowUp {
     let mut op = JobOperation::review(&job, 100);
     op.state = OperationState::Completed;
     let review = ReviewRun {
+        feedback_context: None,
         key: review::key(&job, job.assignment_id.as_ref().unwrap()),
         assignment_id: job.assignment_id.clone().unwrap(),
         selection: Selection::resolve(&settings, &job, job.assignment_id.as_ref().unwrap())

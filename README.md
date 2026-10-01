@@ -612,11 +612,12 @@ pending comments are excluded, so private drafts cannot trigger public replies.
 Comment discovery failures use the existing poll operation's retry budget.
 
 The latest published external comment creates a durable key containing provider,
-account, configuration, owned-thread ID, comment ID and reviewed head. Multiple
+account, configuration, owned-thread ID, comment ID and original reviewed head. Multiple
 new comments between polls are coalesced into that latest trigger while the full
 published conversation remains context. PR Sniper's own signed replies cannot
 trigger themselves; an actual human comment through the same account can.
-Repeated polling/restart does not create another job for the same key.
+Repeated polling/restart does not create another job for the same key. A push
+does not replay the same comment through a new owner.
 
 **Review Queue > Thread follow-ups** shows the conversation, acting account,
 revision, draft/evidence and separate analysis/publication states. Existing
@@ -639,9 +640,12 @@ Human-judgment questions enter **human input required** with no publishable
 body. That state pauses automatic follow-ups for the thread; a later external
 comment can be started explicitly after the human decision. Quiet and human-input
 results have no publication action. Resolved, changed, superseded or stale
-threads stop rather than responding to an outdated conversation. Follow-ups
-remain bound to the originating reviewed head/base; a push must go through
-normal new-revision review, not silently retarget an old reply.
+threads stop rather than responding to an outdated conversation. Each follow-up
+stores an immutable `target` (original publication/review/root) separately from
+its `context` (current iteration, captured selection and trust). A new author
+reply may analyze a later admitted iteration through the same original Agent;
+it never rewrites the old review/head or transfers ownership to a replacement.
+Normal passes on that iteration still fan out independently.
 
 Replies are posted only to the verified root comment, end with ` PR Sniper`,
 and never resolve a thread, approve a PR or merge. Before and after the mutation,
@@ -658,6 +662,57 @@ must be reconciled against the full remote thread before any further effect.
 An absent uncertain reply never authorizes another POST, even after manual
 retry. Live mutation acceptance still requires a separately approved disposable
 PR; provider fixtures do not claim a live reply pass.
+
+### Owned feedback across iterations
+
+`state/feedback.json` records verified owned roots, the original owner and
+publication, current-head observations, missing-root errors and durable closure
+tombstones. Observing earlier roots is independent of authorizing their current
+owner: removing an assignment retains unresolved feedback and visibly blocks
+clearance. Only actual provider closure settles a discussion; no Agent
+resolve/reopen mutation exists. Missing, tampered, failed or incomplete
+observations never mean resolved.
+
+New full reviews receive earlier open and closed feedback as untrusted context.
+They must reassess every earlier open concern owned by their Agent using stable
+feedback IDs. Reply analysis may reassess only its own concern; an explicit
+clearance requires rationale and exact verified source evidence. An explanation
+can therefore clear a concern without a push or another full review. Merely
+analyzing, replying, or choosing quiet never clears it. Local reassessment is
+displayed separately from provider thread closure.
+
+Existing feedback cannot be emitted again as a new finding. Closed identities
+remain tombstoned across reopening/new heads. As a conservative ambiguity gate,
+new findings on the same or renamed file as a closed concern are retained as
+**held locally** for human judgment, not republished; no finding is discarded
+as if it never existed. Semantic interpretation still requires human review.
+Pending conversations, human-input decisions, unavailable owners and unresolved
+mutation outcomes prevent false machine clearance. Original published receipts
+and local-only findings remain distinct.
+
+### Primary acting-account mentions
+
+For already tracked open PRs, scans read bounded, complete top-level issue-comment
+pages (up to 1,000 comments and 1 MiB of bodies). A standalone `@login` matching
+the live repository acting GitHub identity routes one response to the current
+primary; it never addresses the separate Copilot identity or all Agents.
+No primary, unavailable model/account selection or missing current iteration is
+visible blocked work with retained FIFO order. Mentions do not admit new PRs.
+
+Mention intent is keyed by provider/account/repository/PR/comment identity, not
+primary identity. Once assigned, it is not replayed through a later primary.
+Signed machine output cannot loop; legitimate same-account human comments remain
+eligible. Edited/deleted triggers block new replies, but an existing uncertain
+reply can still reconcile its exact signed body and acting-account receipt.
+Top-level responses link the original comment and reuse the constrained reply
+schema, shared `Kind::Mention` AI capacity, explicit trust/start/comment gates,
+serial reply publication, pause handling and no-blind-repost recovery. No fake
+review or publication is created for a mention.
+
+Legacy follow-up records load into the typed target/context shape without
+writing history during reads. When the original publication is available, its
+retained review supplies immutable provenance; the legacy captured selection
+remains the actual analysis context.
 
 ## Read-only GitHub connection
 

@@ -65,8 +65,10 @@ fn validate(value: serde_json::Value, previous: &str) -> Result<ReplyOutput, Fai
         )]),
     };
     ReplyTask {
-        thread,
+        conversation: ConversationInput::Owned { thread },
         trigger_id: "2".into(),
+        feedback: Vec::new(),
+        owner_agent_id: String::new(),
     }
     .validate(
         &value.to_string(),

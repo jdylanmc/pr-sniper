@@ -331,6 +331,7 @@ fn snapshots_and_completed_evidence_do_not_change_after_edits_or_restart() {
         Some("22")
     );
     let mut run = ReviewRun {
+        feedback_context: None,
         key: review::key(&job, ASSIGNMENT),
         assignment_id: ASSIGNMENT.into(),
         operation: JobOperation::review(&job, 100),

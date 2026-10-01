@@ -284,6 +284,14 @@ impl<T: Transport> GithubClient<T> {
     }
 
     pub(super) fn pages(&self, first: &str) -> Result<Vec<Value>, ConnectionError> {
+        self.pages_limited(first, 1_000_000)
+    }
+
+    pub(super) fn pages_limited(
+        &self,
+        first: &str,
+        limit: usize,
+    ) -> Result<Vec<Value>, ConnectionError> {
         let mut path = first.to_string();
         let mut seen = HashSet::new();
         let mut result = Vec::new();
@@ -299,6 +307,9 @@ impl<T: Transport> GithubClient<T> {
             }
             let next = next_page(&path, &response, &mut advertised_last)?;
             if page.is_empty() && (next.is_some() || seen.len() > 1) {
+                return Err(ConnectionError::IncompleteRead);
+            }
+            if result.len() + page.len() > limit {
                 return Err(ConnectionError::IncompleteRead);
             }
             result.extend(page.iter().cloned());

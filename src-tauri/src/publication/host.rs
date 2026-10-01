@@ -37,6 +37,7 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
             let mut policy = jobs.iter().find(|job| review.matches_job(job))
                 .ok_or("Review detection is no longer available.".to_string())
                 .and_then(|job| automatic_policy(&settings, review, job))
+                .and_then(|automatic| { crate::feedback::publication_gate(store, review)?; Ok(automatic) })
                 .and_then(|automatic| {
                     if review.result.as_ref().and_then(|r| r.reviewed_base_sha.as_ref()).is_none() {
                         Err("This older result has no reviewed base. Run a new review before publication.".into())
@@ -305,6 +306,7 @@ impl Native {
             .ok_or_else(|| Failure::permanent("Review detection is no longer available."))?;
         let automatic =
             automatic_policy(&settings, &run.review, job).map_err(Failure::permanent)?;
+        crate::feedback::publication_gate(&store, &run.review).map_err(Failure::permanent)?;
         if automatic != run.automatic {
             return Err(Failure::permanent(
                 "The publication gate changed; confirm again before retrying.",

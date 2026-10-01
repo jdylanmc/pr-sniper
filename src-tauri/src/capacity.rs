@@ -96,7 +96,7 @@ impl Dispatch {
                 id: run.key.clone(),
             },
             Self::Reply(run, _) => WorkId {
-                kind: Kind::Reply,
+                kind: run.kind(),
                 id: run.id.clone(),
             },
         }
@@ -112,6 +112,26 @@ fn due(operation: &JobOperation, now: i64) -> bool {
 
 pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
     let mut result = Vec::new();
+    for mention in store
+        .load_feedback()?
+        .mentions
+        .into_iter()
+        .filter(|m| m.follow_up_id.is_none())
+    {
+        result.push(Work {
+            key: WorkId {
+                kind: Kind::Mention,
+                id: mention.work_id,
+            },
+            enqueue_order: mention.enqueue_order,
+            state: "blocked",
+            reason: Some(
+                mention
+                    .blocked
+                    .unwrap_or_else(|| "Mention routing is unavailable.".into()),
+            ),
+        });
+    }
     for candidate in review::host::candidates(store)? {
         if candidate
             .run
@@ -121,6 +141,13 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
             continue;
         }
         let mut reason = candidate.blocked;
+        if reason.is_none() {
+            if let Some(selection) = &candidate.planned_selection {
+                reason = crate::feedback::contexts(store, &candidate.job, &selection.agent.id)
+                    .err()
+                    .map(|e| e.message);
+            }
+        }
         if reason.is_none() {
             reason = match &candidate.run {
                 Some(run)
@@ -189,6 +216,9 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
             continue;
         }
         let mut reason = candidate.blocked;
+        if reason.is_none() && candidate.trust_required {
+            reason = Some("Trust confirmation required for this conversation revision.".into());
+        }
         if reason.is_none() {
             reason = if run.cancelled {
                 Some("Follow-up cancelled; manual retry required.".into())
@@ -217,7 +247,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
         }
         result.push(Work {
             key: WorkId {
-                kind: Kind::Reply,
+                kind: run.kind(),
                 id: run.id,
             },
             enqueue_order: run.enqueue_order.unwrap_or(0),
@@ -351,7 +381,7 @@ impl Coordinator {
                         let id = run.operation.id.clone();
                         (Dispatch::Review(Box::new(run), cancelled.clone()), id)
                     }
-                    Kind::Reply => {
+                    Kind::Reply | Kind::Mention => {
                         let run = follow_up::host::prepare_dispatch(store, &candidate.key.id, now)?;
                         let id = run
                             .analysis
@@ -361,7 +391,7 @@ impl Coordinator {
                             .clone();
                         (Dispatch::Reply(Box::new(run), cancelled.clone()), id)
                     }
-                    Kind::PrimaryFinal | Kind::Mention => {
+                    Kind::PrimaryFinal => {
                         return Err("This AI work kind has no execution adapter yet.".into())
                     }
                 };

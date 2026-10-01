@@ -52,6 +52,7 @@ fn fixture() -> (tempfile::TempDir, Store, FollowUp) {
     .unwrap();
     store.save_queue(std::slice::from_ref(&job)).unwrap();
     let mut review = ReviewRun {
+        feedback_context: None,
         key: crate::review::key(&job, ASSIGNMENT),
         assignment_id: ASSIGNMENT.into(),
         selection: Selection::resolve(&settings, &job, ASSIGNMENT).unwrap(),
@@ -164,12 +165,12 @@ fn change_sibling_comment(store: &Store, run: &FollowUp) {
             value: Some(Box::new(repository)),
         })
         .unwrap();
-    let current = Selection::resolve(&saved, &run.review.job, ASSIGNMENT).unwrap();
-    assert_ne!(current, run.review.selection);
-    assert!(current.same_execution(&run.review.selection));
+    let current = Selection::resolve(&saved, &run.context.job, ASSIGNMENT).unwrap();
+    assert_ne!(current, run.context.selection);
+    assert!(current.same_execution(&run.context.selection));
     assert!(current.configuration.as_ref().unwrap().authority.primary);
     assert!(
-        run.review
+        run.context
             .selection
             .configuration
             .as_ref()
@@ -210,7 +211,7 @@ fn native_local_gate_accepts_sibling_comment_save_during_active_analysis() {
 fn analysis_commit_accepts_sibling_comment_save_with_original_snapshot() {
     let (root, store, mut run) = fixture();
     activate(&store, &mut run);
-    let selection = run.review.selection.clone();
+    let selection = run.context.selection.clone();
     let review_bytes = std::fs::read(root.path().join("state/reviews.json")).unwrap();
     let publication_bytes = std::fs::read(root.path().join("state/publications.json")).unwrap();
     complete_analysis(&mut run);
@@ -220,7 +221,7 @@ fn analysis_commit_accepts_sibling_comment_save_with_original_snapshot() {
     save_to_store(&store, &run).unwrap();
     let reopened = Store::new(root.path().into());
     assert_eq!(reopened.load_follow_ups().unwrap()[0], run);
-    assert_eq!(run.review.selection, selection);
+    assert_eq!(run.context.selection, selection);
     assert_eq!(
         std::fs::read(root.path().join("state/reviews.json")).unwrap(),
         review_bytes
@@ -243,12 +244,12 @@ fn first_start_and_manual_retry_preserve_equivalent_captured_selection() {
                 .fail(&Failure::timeout().monitoring(), 1000);
             save_to_store(&store, &run).unwrap();
         }
-        let selection = run.review.selection.clone();
-        let original_review = run.review.clone();
+        let selection = run.context.selection.clone();
+        let original_review = run.owned().unwrap().review.clone();
         let previous = run.analysis.clone();
         change_sibling_comment(&store, &run);
         start_at(&store, &mut run, retry, if retry { 1001 } else { 100 });
-        assert_eq!(run.review.selection, selection, "manual retry: {retry}");
+        assert_eq!(run.context.selection, selection, "manual retry: {retry}");
         assert_eq!(store.load_reviews().unwrap()[0], original_review);
         assert_eq!(
             store.load_publications().unwrap()[0].review,
@@ -276,7 +277,10 @@ fn interrupted_resume_keeps_original_selection_through_tools_and_commit() {
         resumed.analysis.as_ref().unwrap().state,
         OperationState::Interrupted
     );
-    assert_eq!(resumed.review, original.review);
+    assert_eq!(
+        resumed.owned().unwrap().review,
+        original.owned().unwrap().review
+    );
     start(&reopened, &mut resumed, false);
     assert_eq!(
         resumed.analysis.as_ref().unwrap().id,
@@ -295,8 +299,11 @@ fn interrupted_resume_keeps_original_selection_through_tools_and_commit() {
     super::super::validate_analysis_commit(&reopened, &resumed, true).unwrap();
     save_to_store(&reopened, &resumed).unwrap();
     assert_eq!(
-        reopened.load_follow_ups().unwrap()[0].review,
-        original.review
+        reopened.load_follow_ups().unwrap()[0]
+            .owned()
+            .unwrap()
+            .review,
+        original.owned().unwrap().review
     );
 }
 
@@ -365,7 +372,7 @@ fn active_and_interrupted_analysis_reject_relevant_input_and_authority_changes()
         activate(&store, &mut run);
         local_gate(&store, &run).unwrap();
         super::super::validate_analysis_commit(&store, &run, true).unwrap();
-        let original = run.review.clone();
+        let original = run.owned().unwrap().review.clone();
         let mut settings = store.load_settings().unwrap();
         change(&mut settings);
         store.save_settings(&settings).unwrap();
@@ -393,7 +400,11 @@ fn active_and_interrupted_analysis_reject_relevant_input_and_authority_changes()
             )
             .unwrap();
         }
-        assert_eq!(resumed.review, original, "resume recapture: {label}");
+        assert_eq!(
+            resumed.owned().unwrap().review,
+            original,
+            "resume recapture: {label}"
+        );
         assert!(
             local_gate(&store, &resumed).is_err(),
             "resume local: {label}"
@@ -420,8 +431,8 @@ fn analysis_gates_keep_cancellation_detection_and_explicit_start_checks() {
             let mut settings = store.load_settings().unwrap();
             settings.defaults.automatic_agent_start = false;
             store.save_settings(&settings).unwrap();
-            run.review.selection =
-                Selection::resolve(&settings, &run.review.job, ASSIGNMENT).unwrap();
+            run.context.selection =
+                Selection::resolve(&settings, &run.context.job, ASSIGNMENT).unwrap();
             save_to_store(&store, &run).unwrap();
             let candidate = candidates(&store).unwrap().remove(0);
             assert!(!candidate.automatic_start);

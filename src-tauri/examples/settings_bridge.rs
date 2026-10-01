@@ -58,8 +58,12 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
                 .map_err(|_| "Invalid review fixture.")?;
             let publications: Vec<_> = serde_json::from_value(request.args["publications"].clone())
                 .map_err(|_| "Invalid publication fixture.")?;
-            let follow_ups: Vec<_> = serde_json::from_value(request.args["follow_ups"].clone())
-                .map_err(|_| "Invalid follow-up fixture.")?;
+            let follow_ups = pr_sniper_lib::follow_up::decode_with_origins(
+                &serde_json::to_vec(&request.args["follow_ups"])
+                    .map_err(|_| "Invalid conversation fixture.")?,
+                &publications,
+            )
+            .map_err(|_| "Invalid follow-up fixture.")?;
             let mut queue = store.load_queue_state()?;
             queue.jobs = jobs;
             if let Some(tracked) = request.args.get("tracked") {
@@ -76,6 +80,12 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             store.save_reviews(&reviews)?;
             store.save_publications(&publications)?;
             store.save_follow_ups(&follow_ups)?;
+            if let Some(feedback) = request.args.get("feedback") {
+                store.save_feedback(
+                    &serde_json::from_value(feedback.clone())
+                        .map_err(|_| "Invalid feedback fixture.")?,
+                )?;
+            }
             Ok(Value::Null)
         }
         "monitoring_snapshot" => serde_json::to_value(pr_sniper_lib::queue::snapshot(
