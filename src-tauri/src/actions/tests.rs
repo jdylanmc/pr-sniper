@@ -265,6 +265,369 @@ impl Transport for NoReads {
 }
 
 #[test]
+fn correction_cancel_retry_final_teardown_releases_only_old_owner_and_refills_capacity_one() {
+    use std::{sync::mpsc, time::Duration};
+
+    let (root, store, item) = fixture(1, true, false);
+    let mut settings = store.load_settings().unwrap();
+    settings.capacity = 1;
+    store.save_settings(&settings).unwrap();
+    synchronize(&store, &item, Ok(observed()), NOW + 10).unwrap();
+    let capacity = Capacity::default();
+    let mut batch = capacity.dispatch(&store, NOW + 11).unwrap();
+    assert!(batch.errors.is_empty(), "{:?}", batch.errors);
+    assert_eq!(batch.dispatched.len(), 1);
+    let work = batch.dispatched.remove(0);
+    let key = work.key();
+    assert_eq!(key.kind, Kind::PrimaryFinal);
+    let Dispatch::Review(old, token) = work else {
+        panic!("Final worker expected")
+    };
+    let old_id = old.operation.id.clone();
+    let reviews = std::fs::read(root.path().join("state/reviews.json")).unwrap();
+    let mut queue = store.load_queue_state().unwrap();
+    let mut unrelated = queue.jobs[0].clone();
+    unrelated.pull_request_id = "10".into();
+    unrelated.number = 2;
+    let other_work = unrelated.work.as_mut().unwrap();
+    other_work.id = "unrelated-normal".into();
+    other_work.item_id = "unrelated-item".into();
+    other_work.iteration_id = "unrelated-iteration".into();
+    other_work.enqueue_order = store.allocate_enqueue_order().unwrap();
+    queue.jobs.push(unrelated);
+    store.save_queue_state(&queue).unwrap();
+    let store = Mutex::new(store);
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let accepted = std::thread::scope(|scope| {
+        let store = &store;
+        let capacity = &capacity;
+        let old = &old;
+        let worker = scope.spawn(move || {
+            ready_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let store = store.lock().unwrap();
+            assert!(host::phase(&store, old, "Late A phase").is_err());
+            assert!(host::complete(&store, old, Ok(output()), NOW + 15).is_err());
+            host::finish_final_worker(&store, capacity, old, Err(Failure::cancelled()), NOW + 15)
+        });
+        ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let accepted = {
+            let store = store.lock().unwrap();
+            host::cancel_final_in_store(&store, capacity, &key.id, NOW + 12).unwrap();
+            assert!(token.load(std::sync::atomic::Ordering::SeqCst));
+            let cancelled = store.load_actions().unwrap().finals.remove(0);
+            assert_eq!(cancelled.execution.operation.state, OperationState::Failed);
+            request_final(&store, &key.id, false, NOW + 13).unwrap();
+            let accepted = store.load_actions().unwrap().finals.remove(0);
+            assert_ne!(accepted.execution.operation.id, old_id);
+            assert_eq!(accepted.execution.operation.state, OperationState::Queued);
+            assert_eq!(accepted.attempts, vec![cancelled.execution]);
+            assert!(accepted.execution.manual_start);
+            assert!(!accepted.cancelled);
+            assert!(capacity
+                .dispatch(&store, NOW + 14)
+                .unwrap()
+                .dispatched
+                .is_empty());
+            let snapshot = capacity.snapshot(&store, NOW + 14).unwrap();
+            assert_eq!((snapshot.active, snapshot.stopping), (1, 1));
+            accepted
+        };
+        release_tx.send(()).unwrap();
+        worker.join().unwrap().unwrap();
+        accepted
+    });
+    let store = store.lock().unwrap();
+    assert_eq!(store.load_actions().unwrap().finals[0], accepted);
+    assert!(capacity.finished());
+    let mut batch = capacity.dispatch(&store, NOW + 16).unwrap();
+    assert!(batch.errors.is_empty(), "{:?}", batch.errors);
+    assert_eq!(batch.dispatched.len(), 1);
+    let Dispatch::Review(retry, _) = batch.dispatched.remove(0) else {
+        panic!("Final retry expected")
+    };
+    assert_eq!(retry.operation.id, accepted.execution.operation.id);
+    assert_eq!(retry.operation.attempt_count, 1);
+    assert!(retry.manual_start);
+    let running = store.load_actions().unwrap();
+    assert_eq!(running.finals[0].attempts, accepted.attempts);
+    assert_eq!(running.finals[0].basis, accepted.basis);
+    assert!(host::finish_final_worker(&store, &capacity, &old, Ok(output()), NOW + 17).is_err());
+    assert_eq!(store.load_actions().unwrap(), running);
+    assert_eq!(capacity.snapshot(&store, NOW + 17).unwrap().active, 1);
+    assert!(capacity
+        .dispatch(&store, NOW + 17)
+        .unwrap()
+        .dispatched
+        .is_empty());
+    host::finish_final_worker(&store, &capacity, &retry, Ok(output()), NOW + 18).unwrap();
+    assert_eq!(
+        std::fs::read(root.path().join("state/reviews.json")).unwrap(),
+        reviews
+    );
+    let mut batch = capacity.dispatch(&store, NOW + 19).unwrap();
+    assert!(batch.errors.is_empty(), "{:?}", batch.errors);
+    assert_eq!(batch.dispatched.len(), 1);
+    let other_key = batch.dispatched[0].key();
+    assert_eq!(other_key.kind, Kind::Normal);
+    let Dispatch::Review(other, _) = batch.dispatched.remove(0) else {
+        panic!("Unrelated normal work expected")
+    };
+    assert_eq!(other.job.pull_request_id, "10");
+    crate::review::host::complete(&store, &other.operation.id, Ok(output()), NOW + 20).unwrap();
+    capacity.release(&other_key, &other.operation.id).unwrap();
+    assert!(capacity
+        .dispatch(&store, NOW + 21)
+        .unwrap()
+        .dispatched
+        .is_empty());
+    let saved = store.load_actions().unwrap().finals.remove(0);
+    assert_eq!(saved.execution.operation.id, retry.operation.id);
+    assert_eq!(saved.execution.operation.attempt_count, 1);
+    assert_eq!(saved.attempts, accepted.attempts);
+}
+
+#[test]
+fn correction_action_read_error_opt_out_restores_personal_handoff_after_restart() {
+    let (root, store, item) = fixture(1, true, true);
+    synchronize(
+        &store,
+        &item,
+        Err(Failure::permanent("Optional action evidence unavailable.")),
+        NOW + 10,
+    )
+    .unwrap();
+    let before = store.load_actions().unwrap();
+    assert!(before.finals.is_empty());
+    assert!(before.effects.is_empty());
+    assert_eq!(
+        queue::snapshot(&store, vec![]).unwrap().items[0].state,
+        State::Blocked
+    );
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].assignments[0].actions = Some(ActionPermissions {
+        approve: false,
+        merge: false,
+    });
+    store.save_settings(&settings).unwrap();
+    drop(store);
+    let store = Store::new(root.path().into());
+    restore(&store).unwrap();
+    let snapshot = queue::snapshot(&store, vec![]).unwrap();
+    assert_eq!(snapshot.items[0].state, State::MachineSignedOff);
+    let status = snapshot.items[0].action_status.as_ref().unwrap();
+    assert!(status.machine_clear);
+    assert!(status.personal_review.starts_with("Required:"));
+    assert!(status
+        .blockers
+        .iter()
+        .any(|b| b == "Optional action evidence unavailable."));
+    assert!(status
+        .observation_retry_blocker
+        .as_ref()
+        .unwrap()
+        .contains("No enabled provider action"));
+    assert!(request_observation_retry(&store, &item, NOW + 19)
+        .unwrap_err()
+        .contains("No enabled provider action"));
+    assert_eq!(store.load_actions().unwrap(), before);
+    synchronize(&store, &item, Ok(observed()), NOW + 20).unwrap();
+    assert!(store.load_actions().unwrap().finals.is_empty());
+    assert!(store.load_actions().unwrap().effects.is_empty());
+    assert!(Capacity::default()
+        .dispatch(&store, NOW + 21)
+        .unwrap()
+        .dispatched
+        .is_empty());
+}
+
+#[test]
+fn correction_final_true_storage_failure_retains_visible_reservation() {
+    let (_root, store, item) = fixture(1, true, false);
+    let mut settings = store.load_settings().unwrap();
+    settings.capacity = 1;
+    store.save_settings(&settings).unwrap();
+    synchronize(&store, &item, Ok(observed()), NOW + 10).unwrap();
+    let capacity = Capacity::default();
+    let mut batch = capacity.dispatch(&store, NOW + 11).unwrap();
+    assert!(batch.errors.is_empty(), "{:?}", batch.errors);
+    assert_eq!(batch.dispatched.len(), 1);
+    let key = batch.dispatched[0].key();
+    let Dispatch::Review(run, token) = batch.dispatched.remove(0) else {
+        panic!("Final worker expected")
+    };
+    let before = store.load_actions().unwrap();
+    store.fail_state_write("actions.json", 1);
+    let error =
+        host::finish_final_worker(&store, &capacity, &run, Ok(output()), NOW + 12).unwrap_err();
+    assert_eq!(error, "Injected actions.json write failure.");
+    // The callback's error branch reports this error and marks only its operation.
+    capacity.persistence_failed(&run.operation.id).unwrap();
+    assert!(token.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(store.load_actions().unwrap(), before);
+    let snapshot = capacity.snapshot(&store, NOW + 13).unwrap();
+    assert_eq!((snapshot.active, snapshot.stopping), (1, 1));
+    let reservation = snapshot.work.iter().find(|w| w.key == key).unwrap();
+    assert!(reservation
+        .reason
+        .as_ref()
+        .unwrap()
+        .contains("Slot retained; repair storage and restart"));
+    assert!(capacity
+        .dispatch(&store, NOW + 13)
+        .unwrap()
+        .dispatched
+        .is_empty());
+    assert!(!capacity.finished());
+}
+
+#[test]
+fn correction_opt_out_preserves_pending_unknown_and_unverified_receipts_for_reconciliation() {
+    for state in [
+        EffectState::Prepared,
+        EffectState::Uncertain,
+        EffectState::Confirmed,
+    ] {
+        let (root, store, item) = fixture(1, true, true);
+        let run = completed_final(&store, &item);
+        let effect =
+            prepare_effect(&store, &run.id, Action::Approve, &observed(), NOW + 20).unwrap();
+        if state != EffectState::Prepared {
+            mark_intent(&store, &effect.id, NOW + 21).unwrap();
+        }
+        if state == EffectState::Confirmed {
+            finish_effect(
+                &store,
+                &effect.id,
+                &effect.operation.id,
+                Ok(Receipt {
+                    id: "retained-receipt".into(),
+                    actor_id: "22".into(),
+                    head: observed().head,
+                    action: Action::Approve,
+                    merge_commit: None,
+                }),
+            )
+            .unwrap();
+            verify_after_effect(
+                &store,
+                &effect,
+                Err(Failure::permanent("Post-action read failed.")),
+            )
+            .unwrap_err();
+        }
+        synchronize(
+            &store,
+            &item,
+            Err(Failure::permanent("Optional action evidence unavailable.")),
+            NOW + 22,
+        )
+        .unwrap();
+        let mut settings = store.load_settings().unwrap();
+        settings.repositories[0].assignments[0].actions = Some(ActionPermissions {
+            approve: false,
+            merge: false,
+        });
+        store.save_settings(&settings).unwrap();
+        let before = store.load_actions().unwrap();
+        drop(store);
+        let store = Store::new(root.path().into());
+        restore(&store).unwrap();
+        let snapshot = queue::snapshot(&store, vec![]).unwrap();
+        let status = snapshot.items[0].action_status.as_ref().unwrap();
+        assert!(!status.machine_clear, "{state:?}");
+        assert_eq!(status.personal_review, "Not inferred.");
+        assert!(matches!(
+            snapshot.items[0].state,
+            State::Blocked | State::Failed
+        ));
+        assert_eq!(store.load_actions().unwrap(), before);
+        assert!(ready(&store, &run, &observed(), Action::Approve).is_err());
+        assert!(ready(&store, &run, &observed(), Action::Merge).is_err());
+        request_observation_retry(&store, &item, NOW + 23).unwrap();
+        assert_eq!(store.load_actions().unwrap().effects, before.effects);
+        if state != EffectState::Prepared {
+            let mut ledger = store.load_actions().unwrap();
+            ledger.effects[0].reconcile_attempts = 3;
+            store.save_actions(&ledger).unwrap();
+            assert!(request_observation_retry(&store, &item, NOW + 24).is_err());
+            request_reconciliation(&store, &effect.id, NOW + 24).unwrap();
+            let mut expected = ledger.effects[0].clone();
+            expected.reconcile_requested = true;
+            assert_eq!(store.load_actions().unwrap().effects[0], expected);
+            assert!(observation_pending(
+                &queue::normal_snapshot(&store, vec![]).unwrap().items[0],
+                &settings,
+                &store.load_actions().unwrap(),
+                NOW + 24,
+            ));
+        }
+        assert!(Capacity::default()
+            .dispatch(&store, NOW + 25)
+            .unwrap()
+            .dispatched
+            .is_empty());
+    }
+}
+
+#[test]
+fn correction_optional_action_diagnostic_does_not_clear_normal_feedback_or_revision_blockers() {
+    for case in ["normal", "feedback", "revision", "human"] {
+        let (_root, store, item) = fixture(1, false, false);
+        synchronize(
+            &store,
+            &item,
+            Err(Failure::permanent("Optional action evidence unavailable.")),
+            NOW + 10,
+        )
+        .unwrap();
+        match case {
+            "normal" => {
+                let mut reviews = store.load_reviews().unwrap();
+                reviews[0].operation.state = OperationState::Running;
+                reviews[0].result = None;
+                store.save_reviews(&reviews).unwrap();
+            }
+            "feedback" => {
+                let mut monitoring = store.load_monitoring_state().unwrap();
+                monitoring
+                    .health
+                    .get_mut(REPO)
+                    .unwrap()
+                    .conversation_admission_pending = true;
+                store.save_monitoring_state(&monitoring).unwrap();
+            }
+            "revision" => {
+                let mut jobs = store.load_queue().unwrap();
+                jobs[0].waiting = monitoring::WAITING_SUPERSEDED.into();
+                store.save_queue(&jobs).unwrap();
+            }
+            "human" => {
+                let mut reviews = store.load_reviews().unwrap();
+                reviews[0].result.as_mut().unwrap().output.decision =
+                    crate::review::Decision::HumanInputRequired;
+                store.save_reviews(&reviews).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let normal = queue::normal_snapshot(&store, vec![]).unwrap();
+        assert_ne!(normal.items[0].state, State::MachineSignedOff, "{case}");
+        let projected = queue::snapshot(&store, vec![]).unwrap();
+        assert_eq!(projected.items[0].state, normal.items[0].state, "{case}");
+        assert!(
+            !projected.items[0]
+                .action_status
+                .as_ref()
+                .unwrap()
+                .machine_clear
+        );
+        assert!(request_observation_retry(&store, &item, NOW + 11).is_err());
+        assert!(store.load_actions().unwrap().effects.is_empty());
+    }
+}
+
+#[test]
 fn all_current_agents_clear_and_local_only_handoff_precede_distinct_shared_final() {
     let (root, store, item) = fixture(7, true, true);
     let mut peers = store.load_reviews().unwrap();

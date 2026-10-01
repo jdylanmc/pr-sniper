@@ -593,6 +593,12 @@ teardown. Findings or human judgment stop actions; they require human handling
 or a new iteration rather than repeated same-iteration AI attempts to obtain a
 different answer.
 
+A cancelled final worker keeps its capacity reservation until teardown. If an
+explicit retry is saved before teardown finishes, the old callback leaves that
+retry's identity, intent and history untouched and releases only its own
+reservation before refilling capacity. A real outcome-persistence failure still
+retains a visible stopping slot; it is not treated as a superseded attempt.
+
 Approval and merge are independent native operations, never Agent tools.
 Approval is one acting-account vote, not one vote per configured Agent. It can
 contribute before the provider has collected its other required approvals, but
@@ -626,6 +632,15 @@ confirmed automatic approval. Merge does not require a handoff acknowledgment.
 Confirmed merged PRs become terminal history. Notifications and read-only queue
 details distinguish normal clearance, final review, provider approval/merge,
 unknown outcomes and personal review; automation never asserts personal review.
+
+An action-evidence read failure remains visible after Approve and Merge are
+turned off, but does not suppress an otherwise valid personal-review handoff
+when no provider effect needs resolution. Pending or uncertain effects, current
+review/feedback blockers and stale revisions still block clearance. **Refresh /
+retry provider evidence** uses the native pump's eligibility and is disabled
+with a reason when no work can consume the request, during backoff or while
+paused. Original-effect reconciliation remains separate from admitting a new
+action, including in the retained panel detail.
 
 Provider limits remain explicit: final observations fail closed beyond 100
 threads/comments per GraphQL connection or 100 check contexts; REST review and

@@ -1,7 +1,8 @@
 import { expect, test } from "./fixtures.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
+import { closeDialog, repositorySettings } from "./navigation.mjs";
 
-async function actionFixture(store) {
+async function actionFixture(store, observe = true) {
   const fixture = await queueFixture(store);
   const review = fixture.review(9);
   const repository = fixture.settings.repositories[0];
@@ -95,12 +96,171 @@ async function actionFixture(store) {
     merged_at: null,
     merge_commit: null,
   };
-  const actions = await store("seed_action_observation", {
-    itemId: "action-iteration",
-    observation,
-  });
+  const actions = observe
+    ? await store("seed_action_observation", {
+        itemId: "action-iteration",
+        observation,
+      })
+    : { finals: [], effects: [], observations: [] };
   return { ...fixture, state, observation, actions, review };
 }
+
+async function optOutInSettings(page) {
+  await page
+    .getByRole("navigation", { name: "Application destinations" })
+    .getByRole("button", { name: "Settings", exact: true })
+    .click();
+  const parent = await repositorySettings(page, "example/repo");
+  await parent
+    .locator(".assignment-row")
+    .getByRole("button", { name: "Edit", exact: true })
+    .click();
+  const modal = page.getByRole("dialog", {
+    name: "Edit assignment",
+    exact: true,
+  });
+  await modal.getByRole("checkbox", { name: /^Approve/ }).uncheck();
+  await modal.getByRole("checkbox", { name: /^Merge/ }).uncheck();
+  await modal
+    .getByRole("button", { name: "Save assignment", exact: true })
+    .click();
+  await expect(modal).toHaveCount(0);
+  await closeDialog(page);
+}
+
+function failedObservation() {
+  return {
+    item_id: "action-iteration",
+    at: 1_800_000_100,
+    observation: null,
+    error: "Optional action evidence unavailable.",
+    failures: 1,
+    retry_at: null,
+  };
+}
+
+for (const destination of ["panel", "legacy queue"]) {
+  test(`action read failure followed by real settings opt-out restores personal handoff after restart in ${destination}`, async ({
+    page,
+    store,
+  }) => {
+    const fixture = await actionFixture(store, false);
+    fixture.actions.observations = [failedObservation()];
+    fixture.state.actions = fixture.actions;
+    await store("seed_queue_state", fixture.state);
+    await page.goto("/");
+    await expect(page.locator("#handoff-queue")).toContainText("Blocked");
+    await optOutInSettings(page);
+    const settings = (await store("snapshot")).settings;
+    expect(settings.repositories[0].assignments[0].actions).toEqual({
+      approve: false,
+      merge: false,
+    });
+    // Every bridge command creates a new Store; navigation also remounts the UI.
+    await page.goto(destination === "panel" ? "/" : "/?view=queue");
+    if (destination === "panel") {
+      await page
+        .getByRole("navigation", { name: "Application destinations" })
+        .getByRole("button", { name: "Queue", exact: true })
+        .click();
+    }
+    await expect(page.locator("#handoff-queue")).toContainText(
+      "Ready for your final review",
+    );
+    if (destination === "panel")
+      await page
+        .getByRole("button", { name: "Evidence and actions", exact: true })
+        .click();
+    const evidence =
+      destination === "panel"
+        ? page.locator("[data-item-evidence]")
+        : page.locator("#handoff-queue");
+    await expect(evidence).toContainText("Personal review: Required");
+    await expect(evidence).toContainText(
+      "Optional action evidence unavailable.",
+    );
+    await expect(evidence).toContainText(
+      "Refresh unavailable: No enabled provider action",
+    );
+    await expect(
+      evidence.getByRole("button", {
+        name: "Refresh / retry provider evidence",
+      }),
+    ).toBeDisabled();
+    await expect(
+      page.getByRole("button", {
+        name: /^(Approve|Merge|Start \/ retry final)/,
+      }),
+    ).toHaveCount(0);
+    const snapshot = await store("monitoring_snapshot");
+    expect(snapshot.items[0].action_status).toMatchObject({
+      machine_clear: true,
+      final_review: null,
+      effects: [],
+      permissions: { approve: false, merge: false },
+      blockers: ["Optional action evidence unavailable."],
+      provider_observed_at: 1_800_000_100,
+    });
+    await expect(
+      store("retry_action_observation", { itemId: "action-iteration" }),
+    ).rejects.toContain("No enabled provider action");
+    expect((await store("automation_snapshot")).work).toEqual([]);
+    expect((await store("monitoring_snapshot")).items[0].action_status).toEqual(
+      snapshot.items[0].action_status,
+    );
+  });
+}
+
+test("retained panel detail reports refresh failure and allows a real native retry without remounting", async ({
+  page,
+  store,
+}) => {
+  const fixture = await actionFixture(store, false);
+  fixture.actions.observations = [failedObservation()];
+  fixture.state.actions = fixture.actions;
+  await store("seed_queue_state", fixture.state);
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    let rejectOnce = true;
+    window.__TAURI_INTERNALS__.invoke = (command, args) => {
+      if (command === "retry_action_observation" && rejectOnce) {
+        rejectOnce = false;
+        return Promise.reject(
+          "Fixture transport interrupted before native retry.",
+        );
+      }
+      return original(command, args);
+    };
+  });
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "Evidence and actions", exact: true })
+    .click();
+  const evidence = page.locator("[data-item-evidence]");
+  const retry = evidence.getByRole("button", {
+    name: "Refresh / retry provider evidence",
+  });
+  await expect(retry).toBeEnabled();
+  await retry.click();
+  await expect(page.locator("[data-panel-error]")).toHaveText(
+    "Fixture transport interrupted before native retry.",
+  );
+  await expect(retry).toBeEnabled();
+  await retry.click();
+  await expect
+    .poll(
+      async () =>
+        (await store("monitoring_snapshot")).items[0].action_status
+          .observation_retry_blocker,
+    )
+    .toContain("backoff");
+  await expect(retry).toBeDisabled();
+  await expect(evidence).toContainText("Optional action evidence unavailable.");
+  const snapshot = await store("monitoring_snapshot");
+  expect(snapshot.items[0].state).toBe("blocked");
+  expect(snapshot.items[0].action_status.effects).toEqual([]);
+  expect(snapshot.items[0].action_status.final_review).toBeNull();
+});
 
 test("panel primary-final route exposes only that final and returns to its exact Reviewed row", async ({
   page,
@@ -296,32 +456,39 @@ test("unknown effects expose original reconciliation rather than another approve
   ];
   fixture.state.actions = fixture.actions;
   await store("seed_queue_state", fixture.state);
-  await page.addInitScript(() => {
-    const original = window.__TAURI_INTERNALS__.invoke;
-    window.__actionRequests = [];
-    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
-      if (command === "reconcile_provider_action") {
-        window.__actionRequests.push({ command, args });
-        return;
-      }
-      return original(command, args);
-    };
-  });
-  await page.goto("/?view=queue");
+  await page.goto("/");
+  await optOutInSettings(page);
+  await page.reload();
+  await page
+    .getByRole("navigation", { name: "Application destinations" })
+    .getByRole("button", { name: "Queue", exact: true })
+    .click();
   await expect(page.locator("#handoff-queue")).toContainText(
     "Failed / recovery required",
   );
-  await expect(page.locator("#handoff-queue")).toContainText(
+  await expect(page.locator("#handoff-queue")).not.toContainText(
+    "Ready for your final review",
+  );
+  await page
+    .getByRole("button", { name: "Evidence and actions", exact: true })
+    .click();
+  await expect(page.locator("[data-item-evidence]")).toContainText(
     "No action receipt",
   );
+  await expect(page.locator("[data-item-evidence]")).toContainText(
+    "Personal review: Not inferred.",
+  );
+  const before = (await store("monitoring_snapshot")).items[0].action_status
+    .effects[0];
   await page
     .getByRole("button", { name: "Reconcile original action (no resend)" })
     .click();
   await expect
-    .poll(() => page.evaluate(() => window.__actionRequests))
-    .toEqual([
-      { command: "reconcile_provider_action", args: { id: "lost-intent" } },
-    ]);
+    .poll(
+      async () =>
+        (await store("monitoring_snapshot")).items[0].action_status.effects,
+    )
+    .toEqual([{ ...before, reconcile_requested: true }]);
   expect(await page.evaluate(() => window.executed)).toBeUndefined();
   expect(
     (await store("monitoring_snapshot")).items[0].action_status.effects,
