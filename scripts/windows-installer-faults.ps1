@@ -2,6 +2,7 @@ param([ValidateSet('Install','Uninstall')][string] $Phase, [string] $Installer, 
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or
     $env:PR_SNIPER_PACKAGING_ACCEPTANCE -ne '1') { throw 'Native fault fixtures require the owned hosted acceptance job.' }
+. (Join-Path $PSScriptRoot 'windows-registry-acl-fixture.ps1')
 $directory = Join-Path $env:LOCALAPPDATA 'PR Sniper'
 $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'PR Sniper.lnk'
 $keyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\PR Sniper'
@@ -112,15 +113,23 @@ foreach ($file in $lockedFiles) {
 }
 $denials = if ($Phase -eq 'Uninstall') { @('SetValue', 'Delete') } else { @('SetValue') }
 foreach ($right in $denials) {
-    $originalAcl = Get-Acl $keyPath
+    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey('CurrentUser', 'Registry64')
+    $restoreKey = $null
     try {
-        $denied = Get-Acl $keyPath
-        $rule = [Security.AccessControl.RegistryAccessRule]::new(
-            [Security.Principal.WindowsIdentity]::GetCurrent().User, $right, 'None', 'None', 'Deny')
-        $denied.AddAccessRule($rule)
-        Set-Acl $keyPath $denied
-        Require-FailedAndPreserved
-    } finally { Set-Acl $keyPath $originalAcl }
+        # Set-Acl reopens a writable key (including SetValue), which the fixture
+        # deliberately denies. Retain only DACL read/change rights beforehand.
+        $restoreKey = $baseKey.OpenSubKey(
+            'Software\Microsoft\Windows\CurrentVersion\Uninstall\PR Sniper',
+            [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,
+            [Security.AccessControl.RegistryRights]::ReadPermissions -bor [Security.AccessControl.RegistryRights]::ChangePermissions)
+        if (-not $restoreKey) { throw 'Cannot retain the exact owned key for ACL restoration.' }
+        Invoke-PrSniperRegistryAclDenial -RestoreKey $restoreKey `
+            -Identity ([Security.Principal.WindowsIdentity]::GetCurrent().User) -Right $right `
+            -Exercise { Require-FailedAndPreserved }
+    } finally {
+        if ($restoreKey) { $restoreKey.Dispose() }
+        $baseKey.Dispose()
+    }
 }
 $points = @("$($Phase.ToLowerInvariant())-files", "$($Phase.ToLowerInvariant())-registration")
 if ($Phase -eq 'Install') { $points += 'install-revalidation' }

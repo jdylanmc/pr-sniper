@@ -25,6 +25,71 @@ try {
     . (Join-Path $repository 'scripts\windows-host-readiness.ps1')
     . (Join-Path $repository 'packaging\chocolatey\removal-state.ps1')
     . (Join-Path $repository 'scripts\windows-installer-payload.ps1')
+    . (Join-Path $repository 'scripts\windows-registry-acl-fixture.ps1')
+    function New-MemoryAclKey {
+        $descriptor = [Security.AccessControl.RegistrySecurity]::new()
+        $descriptor.SetSecurityDescriptorSddlForm('D:P(A;;KA;;;S-1-5-21-1-2-3-1001)(A;CIID;KR;;;BU)')
+        $key = [pscustomobject]@{
+            Bytes = $descriptor.GetSecurityDescriptorBinaryForm()
+            Writes = 0
+            FailRestore = $false
+            CorruptRestore = $false
+            Exercised = $false
+        }
+        $key | Add-Member ScriptMethod GetAccessControl {
+            param($section)
+            if ($section -ne [Security.AccessControl.AccessControlSections]::Access) { throw 'Unexpected security section.' }
+            $copy = [Security.AccessControl.RegistrySecurity]::new()
+            $copy.SetSecurityDescriptorBinaryForm($this.Bytes, $section)
+            return $copy
+        }
+        $key | Add-Member ScriptMethod SetAccessControl {
+            param($descriptor)
+            $flags = [Reflection.BindingFlags]'Instance,NonPublic'
+            $type = [Security.AccessControl.ObjectSecurity]
+            $type.GetMethod('ReadLock', $flags).Invoke($descriptor, @())
+            try {
+                if (-not $type.GetProperty('AccessRulesModified', $flags).GetValue($descriptor, $null)) {
+                    throw 'DACL was not marked changed for persistence.'
+                }
+            } finally { $type.GetMethod('ReadUnlock', $flags).Invoke($descriptor, @()) }
+            $this.Writes++
+            if ($this.Writes -eq 2 -and $this.FailRestore) { throw 'fixture restore denied' }
+            if ($this.Writes -eq 2 -and $this.CorruptRestore) { return }
+            $this.Bytes = $descriptor.GetSecurityDescriptorBinaryForm()
+        }
+        return $key
+    }
+    $identity = [Security.Principal.SecurityIdentifier]::new('S-1-5-21-1-2-3-1001')
+    foreach ($right in @('SetValue', 'Delete')) {
+        $memoryKey = New-MemoryAclKey
+        $originalAclBytes = [Convert]::ToBase64String($memoryKey.Bytes)
+        Invoke-PrSniperRegistryAclDenial -RestoreKey $memoryKey -Identity $identity -Right $right -Exercise {
+            $rules = $memoryKey.GetAccessControl([Security.AccessControl.AccessControlSections]::Access).
+                GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])
+            $denies = @($rules | Where-Object { $_.AccessControlType -eq 'Deny' })
+            Check ($denies.Count -eq 1 -and $denies[0].RegistryRights.ToString() -ceq $right -and
+                $denies[0].IdentityReference -eq $identity) 'Only the intended exact-user right is denied.'
+            $memoryKey.Exercised = $true
+        }
+        Check ($memoryKey.Exercised -and $memoryKey.Writes -eq 2) 'Fixture and restore use the same supplied handle abstraction.'
+        Check ([Convert]::ToBase64String($memoryKey.Bytes) -ceq $originalAclBytes) 'Exact protected/inherited DACL bytes restored.'
+    }
+    $memoryKey = New-MemoryAclKey
+    $originalAclBytes = [Convert]::ToBase64String($memoryKey.Bytes)
+    Reject { Invoke-PrSniperRegistryAclDenial $memoryKey $identity SetValue { throw 'primary assertion failed' } } 'primary assertion failed'
+    Check ([Convert]::ToBase64String($memoryKey.Bytes) -ceq $originalAclBytes) 'Primary failure still restores the original DACL.'
+    $memoryKey = New-MemoryAclKey
+    $memoryKey.FailRestore = $true
+    Reject { Invoke-PrSniperRegistryAclDenial $memoryKey $identity Delete {} } 'fixture restore denied'
+    $memoryKey = New-MemoryAclKey
+    $memoryKey.CorruptRestore = $true
+    Reject { Invoke-PrSniperRegistryAclDenial $memoryKey $identity Delete {} } 'restoration readback differs'
+    $memoryKey = New-MemoryAclKey
+    $memoryKey.FailRestore = $true
+    $script:aclWarnings = @()
+    Reject { Invoke-PrSniperRegistryAclDenial $memoryKey $identity SetValue { throw 'primary retained' } -WarningVariable script:aclWarnings } 'primary retained'
+    Check (($script:aclWarnings -join ' ') -match 'fixture restore denied') 'Cleanup failure remains visible without replacing the primary failure.'
     Check ((Get-PrSniperPayloadEntry @('Path = installer.exe', 'Path = $_41_\new-app.exe', 'Path = $_41_\new-uninstall.exe')) -ceq '$_41_\new-app.exe') `
         'Select the exact application entry, not the installer or uninstaller.'
     Reject { Get-PrSniperPayloadEntry @('Path = new-uninstall.exe') } 'exactly one'

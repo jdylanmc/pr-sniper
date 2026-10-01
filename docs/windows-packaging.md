@@ -341,6 +341,16 @@ values and the retained Chocolatey receipt, then release the obstruction and
 retry. Injection is compiled only into the disposable upgrade fixture, never the
 ordinary installer. Its WebView2 lookups use a unique synthetic key (machine
 miss/current-user hit); no real runtime keys, installation or policy are changed.
+For both SetValue and Delete denial, the fixture first retains a handle to the
+exact current-user, 64-bit installer key with only `ReadPermissions` and
+`ChangePermissions`. It snapshots the original DACL, applies and verifies the
+single intended denial, then restores and verifies the exact original DACL
+through that same handle. This avoids `Set-Acl` reopening the path with ordinary
+value-write rights that the fixture deliberately denied. No owner, group, SACL
+or parent-key permissions are changed. The product still uses its own separately
+opened handles; independent state snapshots are not taken through the restore
+handle. A primary assertion failure remains primary if restoration also fails;
+the additional cleanup failure is reported, never interpreted as acceptance.
 They also deny shortcut reads for direct/package removal, deny only registry
 Delete, and exercise a read-only post-native uninstaller plus a deterministic
 other-thread cleanup mutex conflict before retrying the same package. Unknown
