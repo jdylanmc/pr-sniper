@@ -180,7 +180,10 @@ test("Windows native application checks run on every PR and main push with read-
     push: { branches: ["main"] },
   });
   assert.deepEqual(windows.permissions, { contents: "read" });
-  assert.deepEqual(Object.keys(windows.jobs), ["windows"]);
+  assert.deepEqual(Object.keys(windows.jobs), [
+    "windows",
+    "windows-installer-acceptance",
+  ]);
   assert.equal(windows.jobs.windows["runs-on"], "windows-2022");
   assert.ok(windows.jobs.windows["timeout-minutes"] > 0);
 });
@@ -214,6 +217,8 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       "actions/setup-node",
       "actions/setup-python",
       "actions/upload-artifact",
+      "actions/upload-artifact",
+      "actions/upload-artifact",
     ],
   );
   for (const step of actions) {
@@ -235,6 +240,7 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       "npm ci",
       "npm run build",
       "npm run test:release:windows",
+      "npm run test:packaging:windows",
       "rustup show active-toolchain",
       "npm run format:check",
       "cargo check --manifest-path src-tauri\\Cargo.toml --locked --all-targets",
@@ -244,10 +250,267 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       "npm exec playwright install chromium",
       "npm run test:settings",
       "npm run build:windows",
+      "npm run bundle:windows",
       ".\\scripts\\windows-artifact.ps1",
+      ".\\scripts\\windows-installer-artifact.ps1",
+      ".\\scripts\\windows-upgrade-fixture.ps1",
     ],
   );
   assert.equal(scripts.build, "tsc --noEmit && vite build");
+});
+
+test("unsigned installers and disposable upgrade fixtures cannot become public release assets", () => {
+  assert.equal(
+    scripts["bundle:windows"],
+    "tauri bundle --ci --no-sign --bundles nsis",
+  );
+  const steps = windows.jobs.windows.steps;
+  assert.ok(
+    steps.findIndex((s) => s.run === "npm run bundle:windows") <
+      steps.findIndex((s) => s.run === ".\\scripts\\windows-artifact.ps1"),
+    "Create the installer before recording separate standalone and payload provenance",
+  );
+  const uploads = steps.filter((s) =>
+    s.uses?.startsWith("actions/upload-artifact@"),
+  );
+  assert.equal(
+    uploads[1].with.name,
+    "pr-sniper-windows-unsigned-installer-${{ github.sha }}",
+  );
+  assert.equal(
+    uploads[1].with.path,
+    "src-tauri/target/windows-installer-artifact/",
+  );
+  assert.equal(
+    uploads[2].with.name,
+    "pr-sniper-windows-upgrade-test-only-${{ github.sha }}",
+  );
+  assert.doesNotMatch(JSON.stringify(workflow), /windows|chocolatey/i);
+});
+
+test("base and upgrade metadata hash the extracted payload, not Tauri's restored standalone executable", () => {
+  for (const path of [
+    "scripts/windows-installer-artifact.ps1",
+    "scripts/windows-upgrade-fixture.ps1",
+  ]) {
+    const source = readFileSync(path, "utf8");
+    assert.match(
+      source,
+      /Get-PrSniperInstallerPayload -Installer \$installer -Version \$version/,
+    );
+    assert.match(source, /application_sha256 = \$payload\.sha256/);
+    assert.match(source, /standalone_application_sha256 = /);
+    assert.doesNotMatch(
+      source,
+      /(?<!standalone_)application_sha256 = \(Get-FileHash \$app\)/,
+    );
+  }
+  const reader = readFileSync("scripts/windows-installer-payload.ps1", "utf8");
+  assert.match(reader, /Get-FileHash -LiteralPath \$path -Algorithm SHA256/);
+  assert.doesNotMatch(
+    reader,
+    /__TAURI_BUNDLE_TYPE_VAR_|WriteAllBytes|Set-Content|Start-Process/,
+  );
+  const acceptance = readFileSync(
+    "scripts/windows-installer-acceptance.ps1",
+    "utf8",
+  );
+  assert.match(
+    acceptance,
+    /\$observedHash -ine \$Metadata\.application_sha256/,
+  );
+  assert.match(acceptance, /observed_pe_version = \$observedVersion/);
+  assert.match(
+    acceptance,
+    /observed_registration_version = \$registeredVersion/,
+  );
+});
+
+test("real installer acceptance depends on native checks and a fresh hosted VM", () => {
+  const job = windows.jobs["windows-installer-acceptance"];
+  assert.equal(job.needs, "windows");
+  assert.equal(job["runs-on"], "windows-2022");
+  assert.equal(job.environment, undefined);
+  assert.equal(job["continue-on-error"], undefined);
+  const diagnostics = job.steps.find(
+    (step) => step.name === "Retain native installer diagnostics",
+  );
+  assert.ok(diagnostics);
+  assert.equal(diagnostics.if, "${{ always() }}");
+  assert.equal(
+    diagnostics.with.path,
+    "src-tauri/target/windows-acceptance/installer-diagnostics/",
+  );
+  assert.equal(diagnostics.with["if-no-files-found"], "warn");
+  for (const step of job.steps) {
+    assert.equal(step.if, step === diagnostics ? "${{ always() }}" : undefined);
+    assert.equal(step["continue-on-error"], undefined);
+    if (step.uses) assert.match(step.uses, /^actions\/[a-z-]+@[a-f0-9]{40}$/);
+    if (step.uses?.startsWith("actions/download-artifact@")) {
+      assert.match(step.with.name, /\$\{\{ github.sha \}\}$/);
+      assert.equal(step.with["run-id"], undefined);
+    }
+  }
+  const config = JSON.parse(
+    readFileSync("src-tauri/tauri.windows.conf.json", "utf8"),
+  );
+  assert.equal(config.bundle.windows.nsis.installMode, "currentUser");
+  assert.deepEqual(config.bundle.windows.webviewInstallMode, { type: "skip" });
+  assert.equal(config.bundle.useLocalToolsDir, true);
+  const template = readFileSync("src-tauri/windows/installer.nsi", "utf8");
+  assert.doesNotMatch(template, /KillProcess|ExecWait|ExecShell|RmDir\s+\/r/i);
+  assert.doesNotMatch(template, /DeleteRegKey\s+(?!\/ifempty)/i);
+  assert.doesNotMatch(
+    template,
+    /WriteReg\w+\s+HKLM|CurrentVersion\\Run|Software\\Classes/i,
+  );
+  assert.match(template, /RequestExecutionLevel user/);
+  assert.match(
+    template,
+    /Install Microsoft Edge WebView2 Evergreen Runtime first/,
+  );
+});
+
+test("native diagnostics retain the refusal without weakening operation status or exposing app data", () => {
+  const template = readFileSync("src-tauri/windows/installer.nsi", "utf8");
+  const trace = template.match(/!macro Trace message([\s\S]*?)!macroend/)[1];
+  assert.doesNotMatch(
+    trace,
+    /ClearErrors|SetErrorLevel|Abort|ReadReg|ReadEnvStr/,
+  );
+  assert.match(trace, /Push \$0[\s\S]*Push \$1[\s\S]*Pop \$1[\s\S]*Pop \$0/);
+  assert.match(
+    template,
+    /!macro Fail message\s+!insertmacro Trace "refusal: \$\{message\}"\s+SetErrorLevel 2/,
+  );
+  assert.match(
+    template,
+    /CreateFileW\(w "\$DiagnosticPath", i 0x40000000, i 1, p 0, i 1,/,
+  );
+  assert.match(
+    template,
+    /ReadEnvStr \$DiagnosticDirectory PR_SNIPER_INSTALLER_DIAGNOSTICS/,
+  );
+  const acceptance = readFileSync(
+    "scripts/windows-installer-acceptance.ps1",
+    "utf8",
+  );
+  assert.match(
+    acceptance,
+    /\$failure = \$_[\s\S]*preserving original acceptance failure/,
+  );
+  assert.match(acceptance, /-Filter 'nsis-\*\.txt' -File/);
+  assert.doesNotMatch(
+    acceptance,
+    /chocolatey\.log|Start-Transcript|Get-ChildItem Env:/,
+  );
+});
+
+test("registry string data and byte counts use paired System register sources", () => {
+  const template = readFileSync("src-tauri/windows/installer.nsi", "utf8");
+  const setter = template.match(
+    /!macro SetString name value([\s\S]*?)!macroend/,
+  )[1];
+  assert.match(
+    setter,
+    /Push \$R8\s+Push \$R9\s+StrCpy \$R9 "\$\{value\}"\s+StrLen \$R8 "\$R9"/,
+  );
+  assert.match(setter, /IntOp \$R8 \$R8 \+ 1\s+IntOp \$R8 \$R8 \* 2/);
+  assert.match(
+    setter,
+    /RegSetValueExW\(p \$Registry, w "\$\{name\}", i 0, i 1, w R9, i R8\) i\.r0/,
+  );
+  assert.doesNotMatch(setter, /System::Call[^\n]*\$\{value\}/);
+  assert.match(
+    setter,
+    /Pop \$R9\s+Pop \$R8\s+\$\{If\} \$0 != 0[\s\S]*StrCpy \$OperationFailed 1[\s\S]*Return/,
+  );
+  // These quoted payloads are data, not descriptor syntax. Cover all writers
+  // sharing SetString, including rollback's same registration-writing function.
+  for (const name of [
+    "DisplayIcon",
+    "UninstallString",
+    "QuietUninstallString",
+  ]) {
+    assert.match(
+      template,
+      new RegExp(`!insertmacro SetString "${name}" '\\$\\\\"`),
+    );
+  }
+  assert.match(
+    template,
+    /StrCpy \$Registry \$0\s+\$\{If\} \$1 = 1\s+StrCpy \$RegistryCreated 1\s+\$\{EndIf\}\s+!insertmacro Trace "install:registration-open"/,
+  );
+});
+
+test("registry-denial fixtures retain only DACL restoration rights before injection", () => {
+  const faults = readFileSync("scripts/windows-installer-faults.ps1", "utf8");
+  assert.match(faults, /OpenBaseKey\('CurrentUser', 'Registry64'\)/);
+  assert.match(
+    faults,
+    /OpenSubKey\([\s\S]*RegistryKeyPermissionCheck\]::ReadWriteSubTree,[\s\S]*RegistryRights\]::ReadPermissions -bor \[Security\.AccessControl\.RegistryRights\]::ChangePermissions\)/,
+  );
+  assert.doesNotMatch(faults, /^\s*Set-Acl\b/m);
+  assert.match(faults, /-Exercise \{ Require-FailedAndPreserved \}/);
+  assert.match(faults, /if \(\$restoreKey\) \{ \$restoreKey\.Dispose\(\) \}/);
+  const fixture = readFileSync(
+    "scripts/windows-registry-acl-fixture.ps1",
+    "utf8",
+  );
+  assert.doesNotMatch(
+    fixture,
+    /OpenSubKey|Get-Acl|Set-Acl|FullControl|TakeOwnership/,
+  );
+  assert.match(
+    fixture,
+    /SetSecurityDescriptorBinaryForm\(\$original, \$section\)/,
+  );
+  assert.match(fixture, /restoration readback differs from the original/);
+  assert.match(fixture, /Preserving original fixture failure/);
+});
+
+test("immutable completion survives outer rollback and is left for package-owned cleanup", () => {
+  const install = readFileSync(
+    "packaging/chocolatey/chocolateyinstall.ps1",
+    "utf8",
+  );
+  const uninstall = readFileSync(
+    "packaging/chocolatey/chocolateyuninstall.ps1",
+    "utf8",
+  );
+  const state = readFileSync("packaging/chocolatey/removal-state.ps1", "utf8");
+  assert.match(install, /Initialize-PrSniperRemovalState \$tools/);
+  assert.match(install, /installation_id = \[guid\]::NewGuid\(\)/);
+  assert.match(
+    uninstall,
+    /Complete-PrSniperNativeRemoval \$tools \$receipt \$receiptHash \$durablePath/,
+  );
+  assert.match(
+    uninstall,
+    /Get-PrSniperDurableRemovalPath \$tools \$env:ChocolateyInstall \$receipt \$receiptHash/,
+  );
+  assert.doesNotMatch(
+    uninstall,
+    /CreateNew|Set-Content|WriteAllText|Remove-Item[^\n]*native-removal/,
+  );
+  assert.match(
+    state,
+    /foreach \(\$phase in @\('native-removal-pending', 'native-removal-state'\)\)/,
+  );
+  assert.match(
+    state,
+    /Remove-Item -LiteralPath \(Join-Path \$Tools 'native-removal\.pending\.json'\)/,
+  );
+  assert.doesNotMatch(state, /Remove-Item[^\n]*'native-removal\.json'/);
+  assert.doesNotMatch(state, /Remove-Item[^\n]*\$DurablePath/);
+  assert.match(
+    readFileSync("scripts/windows-installer-acceptance.ps1", "utf8"),
+    /Same-feed reinstall inherited stale native-completion state/,
+  );
+  assert.match(
+    readFileSync("scripts/windows-removal-retry.ps1", "utf8"),
+    /Outer package cleanup left tracked completion state/,
+  );
 });
 
 test("Windows artifact contains only the standalone app and exact-source provenance", () => {
