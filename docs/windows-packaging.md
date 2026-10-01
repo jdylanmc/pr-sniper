@@ -78,6 +78,19 @@ commit failure or interruption with uncertain phase still requires reconciliatio
 The now-empty application directory may remain; no extra fallible directory
 cleanup follows deletion of the last recovery executable.
 
+**Current failed-uninstall blocker:** Chocolatey 2.7.4 moves a failed package tree
+to its versioned `lib-bad` location, then restores the pre-operation backup into
+`lib`. This can restore `native-removal.pending.json` even after native removal
+committed. Clean removal/reinstall evidence does not prove this failure path.
+The retained-state assertion and read-only fault case remain mandatory.
+`removal-after-chocolatey-failure.json`, in the existing failure-retained
+diagnostic artifact, records expected/observed app presence, exact uninstaller
+hash, completion status and the three exact receipt-file hashes/presence in
+active, same-version `lib-bad` and `lib-bkp` trees. It contains no registry or
+credential dump and grants no recovery/adoption authority. Inspect that evidence
+before choosing a rollback-compatible completion repair; pending-marker absence
+inside a package tree alone is not durable against Chocolatey's own rollback.
+
 The pinned Tauri CLI 2.11.4 bundles the existing x64 GUI application using
 `tauri.windows.conf.json` and `src-tauri/windows/installer.nsi`. This small
 Tauri-supported NSIS template deliberately avoids the upstream template's

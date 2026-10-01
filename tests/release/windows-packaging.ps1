@@ -26,6 +26,7 @@ try {
     . (Join-Path $repository 'packaging\chocolatey\removal-state.ps1')
     . (Join-Path $repository 'scripts\windows-installer-payload.ps1')
     . (Join-Path $repository 'scripts\windows-registry-acl-fixture.ps1')
+    . (Join-Path $repository 'scripts\windows-removal-diagnostics.ps1')
     function New-MemoryAclKey([switch] $Unprotected, [switch] $NormalizeNative) {
         $descriptor = [Security.AccessControl.RegistrySecurity]::new()
         $prefix = if ($Unprotected) { 'D:' } else { 'D:P' }
@@ -230,6 +231,46 @@ try {
     Reject { Test-PrSniperUninstallerCleanupRequired $completion $removalReceipt ('b' * 64) $false '' } 'not evidenced'
     $completion.uninstaller_sha256 = 'a' * 64
     $removalReceipt.uninstaller_sha256 = 'a' * 64
+    $chocoFixture = Join-Path $fixture 'chocolatey'
+    $activeTools = Join-Path $chocoFixture 'lib\pr-sniper-localtest\tools'
+    $backupTools = Join-Path $chocoFixture 'lib-bkp\pr-sniper-localtest\0.1.1-localtest\tools'
+    $failedTools = Join-Path $chocoFixture 'lib-bad\pr-sniper-localtest\0.1.1-localtest\tools'
+    $appFixture = Join-Path $fixture 'application'
+    foreach ($path in @($activeTools, $backupTools, $failedTools, $appFixture)) {
+        New-Item -ItemType Directory $path | Out-Null
+    }
+    [IO.File]::WriteAllText((Join-Path $appFixture 'uninstall.exe'), 'inert never-executed fixture')
+    $rollbackReceipt = [pscustomobject]@{
+        directory = $appFixture; version = '0.1.1'
+        uninstaller_sha256 = (Get-FileHash (Join-Path $appFixture 'uninstall.exe')).Hash
+    }
+    $rollbackReceipt | ConvertTo-Json | Set-Content (Join-Path $activeTools 'installation.json')
+    $rollbackReceiptHash = (Get-FileHash (Join-Path $activeTools 'installation.json')).Hash
+    Initialize-PrSniperRemovalState $activeTools $rollbackReceipt $rollbackReceiptHash
+    foreach ($name in @('installation.json','native-removal.json','native-removal.pending.json')) {
+        Copy-Item (Join-Path $activeTools $name) (Join-Path $backupTools $name)
+    }
+    Complete-PrSniperNativeRemoval $activeTools $rollbackReceipt $rollbackReceiptHash
+    Check ((Get-PrSniperRemovalState $activeTools $rollbackReceipt $rollbackReceiptHash).completed) `
+        'Native success commits completion before the package manager handles failure.'
+    foreach ($name in @('installation.json','native-removal.json')) {
+        Copy-Item (Join-Path $activeTools $name) (Join-Path $failedTools $name)
+    }
+    # Pinned Chocolatey failure handling moves the failed tree aside, then
+    # restores its before-modify snapshot, including the deleted pending marker.
+    Copy-Item (Join-Path $backupTools 'native-removal.pending.json') (Join-Path $activeTools 'native-removal.pending.json')
+    $restored = Get-PrSniperRemovalState $activeTools $rollbackReceipt $rollbackReceiptHash
+    Check (-not $restored.completed) 'Replayed package rollback proves the current pending-delete protocol loses active completion.'
+    $observation = Get-PrSniperRemovalRetryObservation $activeTools $appFixture $chocoFixture `
+        0.1.1 $rollbackReceipt.uninstaller_sha256 $rollbackReceiptHash $restored.completed 1
+    Check (-not $observation.observed.app.exists -and
+        $observation.observed.uninstaller.sha256 -ieq $rollbackReceipt.uninstaller_sha256) 'Post-outer capture distinguishes app absence from changed uninstaller bytes.'
+    Check ($observation.observed.active['native-removal.pending.json'].exists -and
+        -not $observation.observed.failed_copy['native-removal.pending.json'].exists -and
+        $observation.observed.backup_copy['native-removal.pending.json'].exists) 'Capture distinguishes active/restored and exact failed/backup copies.'
+    Check ($observation.observed.active['installation.json'].sha256 -ceq
+        $observation.observed.failed_copy['installation.json'].sha256) 'Capture preserves exact receipt correspondence without adopting it.'
+    Reject { Get-PrSniperRemovalRetryObservation $activeTools $appFixture $chocoFixture '../other' '' '' $false 1 } 'Invalid version'
     $stateTools = Join-Path $fixture 'tracked-state'
     New-Item -ItemType Directory $stateTools | Out-Null
     Initialize-PrSniperRemovalState $stateTools $removalReceipt ('b' * 64)
