@@ -14,7 +14,11 @@ interface Entry {
 
 // Native dialogs arrived after our minimum macOS version. Both paths share
 // lifecycle, nested-modal isolation and keyboard handling without requiring inert.
-export function createDialogs(root: HTMLElement, changed: () => void) {
+export function createDialogs(
+  root: HTMLElement,
+  changed: () => void,
+  restoreFocus: (opener: HTMLElement, parent?: HTMLDialogElement) => void,
+) {
   const stack: Entry[] = [];
   const panelView = root.closest<HTMLElement>("[data-panel-view]");
   let suspended = false;
@@ -121,6 +125,9 @@ export function createDialogs(root: HTMLElement, changed: () => void) {
     while (top() !== entry) {
       if (!close(top())) return false;
     }
+    const ownedFocus =
+      entry.modal.contains(document.activeElement) ||
+      document.activeElement === document.body;
     changed();
     stack.pop();
     if (entry.nativeClose) entry.nativeClose();
@@ -138,9 +145,7 @@ export function createDialogs(root: HTMLElement, changed: () => void) {
     }
     entry.host.remove();
     if (!stack.length) listen(false);
-    if (entry.opener instanceof HTMLElement && entry.opener.isConnected)
-      entry.opener.focus({ preventScroll: true });
-    else if (top()) focusFirst(top().modal);
+    if (!suspended && ownedFocus) restoreFocus(entry.opener, top()?.modal);
     return true;
   }
   panelView?.addEventListener("pr-sniper:section-active", (event) => {
