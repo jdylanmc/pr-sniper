@@ -1893,6 +1893,9 @@ impl Monitor {
             tracked.observed_at = now;
             let tracked = tracked.clone();
             for job in queue.jobs.iter_mut().filter(|j| bound(j)) {
+                if matches!(job.waiting.as_str(), WAITING_CLOSED | WAITING_MERGED) {
+                    continue;
+                }
                 if pull.state != Lifecycle::Open {
                     job.waiting = if pull.state == Lifecycle::Merged {
                         WAITING_MERGED
@@ -1906,9 +1909,7 @@ impl Monitor {
                     .is_some_and(|w| w.iteration_id != tracked.iteration_id)
                     || job.head_sha != pull.head_sha
                 {
-                    if !matches!(job.waiting.as_str(), WAITING_CLOSED | WAITING_MERGED) {
-                        job.waiting = WAITING_SUPERSEDED.into();
-                    }
+                    job.waiting = WAITING_SUPERSEDED.into();
                 } else if pull.draft {
                     job.waiting = WAITING_INELIGIBLE.into();
                 }

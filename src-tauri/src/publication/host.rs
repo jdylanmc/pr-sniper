@@ -57,6 +57,65 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
         }).collect())
 }
 
+fn next_candidate(store: &Store, now: i64) -> Result<Option<Candidate>, String> {
+    Ok(candidates(store)?
+        .into_iter()
+        .find(|candidate| match &candidate.publication {
+            Some(run) => {
+                matches!(
+                    run.operation.state,
+                    OperationState::Queued | OperationState::Interrupted
+                ) && run
+                    .operation
+                    .next_attempt_at
+                    .is_some_and(|next| now >= next)
+            }
+            None => candidate.blocked.is_none() && candidate.automatic,
+        }))
+}
+
+fn prepare_launch(
+    store: &Store,
+    review_id: &str,
+    manual: bool,
+    now: i64,
+) -> Result<Publication, String> {
+    let candidate = candidates(store)?
+        .into_iter()
+        .find(|c| c.review_operation_id == review_id)
+        .ok_or("Completed review is no longer available.")?;
+    let mut runs = store.load_publications()?;
+    let review = match &candidate.publication {
+        Some(run) => run.review.clone(),
+        None => store
+            .review_evidence()?
+            .into_iter()
+            .find(|r| r.operation.id == review_id)
+            .ok_or("Completed review disappeared.")?,
+    };
+    if conflicting_publication(&runs, &review) {
+        return Err(
+            "Another review attempt owns this revision's publication; do not create another batch."
+                .into(),
+        );
+    }
+    let run = if let Some(mut run) = candidate.publication {
+        if manual {
+            // Reconciliation remains available even after permission/configuration loss.
+            run.retry(candidate.automatic, now)?;
+        }
+        run
+    } else {
+        if let Some(error) = candidate.blocked {
+            return Err(error);
+        }
+        Publication::new(review, candidate.automatic, manual, now)?
+    };
+    replace(&mut runs, &run);
+    store.save_publications(&runs)?;
+    Ok(run)
+}
+
 impl Coordinator {
     pub(crate) fn finished(&self) -> bool {
         self.active.lock().is_ok_and(|active| active.is_none())
@@ -72,21 +131,7 @@ impl Coordinator {
                 .store
                 .lock()
                 .map_err(|_| "Publication storage unavailable.")?;
-            let now = now_seconds()?;
-            candidates(&store)?
-                .into_iter()
-                .find(|candidate| match &candidate.publication {
-                    Some(run) => {
-                        matches!(
-                            run.operation.state,
-                            OperationState::Queued | OperationState::Interrupted
-                        ) && run
-                            .operation
-                            .next_attempt_at
-                            .is_some_and(|next| now >= next)
-                    }
-                    None => candidate.blocked.is_none() && candidate.automatic,
-                })
+            next_candidate(&store, now_seconds()?)?
         };
         if let Some(candidate) = candidate {
             Self::launch(app, &candidate.review_operation_id, false)?;
@@ -116,34 +161,7 @@ impl Coordinator {
                 .store
                 .lock()
                 .map_err(|_| "Publication storage unavailable.")?;
-            let candidate = candidates(&store)?
-                .into_iter()
-                .find(|c| c.review_operation_id == review_id)
-                .ok_or("Completed review is no longer available.")?;
-            let mut runs = store.load_publications()?;
-            let review = store
-                .load_reviews()?
-                .into_iter()
-                .find(|r| r.operation.id == review_id)
-                .ok_or("Completed review disappeared.")?;
-            if conflicting_publication(&runs, &review) {
-                return Err("Another review attempt owns this revision's publication; do not create another batch.".into());
-            }
-            let run = if let Some(mut run) = candidate.publication {
-                if manual {
-                    // Reconciliation remains available even after permission/configuration loss.
-                    run.retry(candidate.automatic, now_seconds()?)?;
-                }
-                run
-            } else {
-                if let Some(error) = candidate.blocked {
-                    return Err(error);
-                }
-                Publication::new(review, candidate.automatic, manual, now_seconds()?)?
-            };
-            replace(&mut runs, &run);
-            store.save_publications(&runs)?;
-            run
+            prepare_launch(&store, review_id, manual, now_seconds()?)?
         };
         let generation = generation
             .get(&run.review.job.account_id)

@@ -686,6 +686,59 @@ fn missing_observation_is_not_terminal_and_same_head_reopen_has_a_fresh_iteratio
 }
 
 #[test]
+fn closed_iteration_stays_closed_after_same_head_reopen_and_merge() {
+    let (_fixture, store, mut monitor) = configured(2);
+    scan(&mut monitor, &store, vec![pull('a')], NOW);
+    let original = store.load_queue().unwrap();
+    let mut closed = pull('a');
+    closed.state = Lifecycle::Closed;
+    scan(&mut monitor, &store, vec![closed], NOW + 10);
+    let closed_jobs = store.load_queue().unwrap();
+    assert!(closed_jobs
+        .iter()
+        .all(|job| job.waiting == monitoring::WAITING_CLOSED));
+    scan(&mut monitor, &store, vec![pull('a')], NOW + 20);
+    let reopened = store.load_queue().unwrap();
+    assert_eq!(reopened.len(), 4);
+    assert_eq!(&reopened[..2], closed_jobs.as_slice());
+    for (old, new) in original.iter().zip(&reopened[2..]) {
+        let old_work = old.work.as_ref().unwrap();
+        let new_work = new.work.as_ref().unwrap();
+        assert_eq!(old.head_sha, new.head_sha);
+        assert_ne!(old_work.id, new_work.id);
+        assert_ne!(old_work.iteration_id, new_work.iteration_id);
+        assert_ne!(old_work.item_id, new_work.item_id);
+        assert_eq!(new_work.iteration, 2);
+        assert_eq!(new_work.pass_ordinal, 2);
+        assert_eq!(new_work.trigger, WorkTrigger::Reopened);
+    }
+    let mut merged = pull('a');
+    merged.state = Lifecycle::Merged;
+    scan(&mut monitor, &store, vec![merged], NOW + 30);
+    monitor = Monitor::restore(&store).unwrap();
+    let terminal = store.load_queue().unwrap();
+    assert_eq!(&terminal[..2], closed_jobs.as_slice());
+    for (before, after) in reopened[2..].iter().zip(&terminal[2..]) {
+        assert_eq!(after.waiting, monitoring::WAITING_MERGED);
+        assert_eq!(after.work, before.work);
+        assert!(monitoring::review_policy(&store.load_settings().unwrap(), after, None).is_err());
+    }
+    let snapshot = queue::snapshot(&store, monitor.snapshot()).unwrap();
+    assert_eq!(snapshot.items.len(), 2);
+    for (job, state) in [
+        (&closed_jobs[0], queue::State::Closed),
+        (&terminal[2], queue::State::Merged),
+    ] {
+        let item = snapshot
+            .items
+            .iter()
+            .find(|item| item.id == queue::item_id(job))
+            .unwrap();
+        assert_eq!(item.state, state);
+    }
+}
+
+#[test]
 fn monitoring_state_write_failure_cannot_duplicate_an_already_committed_reopen() {
     let (fixture, store, mut monitor) = configured(1);
     scan(&mut monitor, &store, vec![pull('a')], NOW);
@@ -1141,6 +1194,31 @@ fn closure_after_an_unseen_push_still_marks_saved_work_terminal() {
     assert_eq!(snapshot.items[0].state, queue::State::Closed);
     assert_eq!(snapshot.jobs[0].head_sha, "a".repeat(40));
     assert_eq!(snapshot.tracked[0].head_sha, "b".repeat(40));
+}
+
+#[test]
+fn closure_after_an_unseen_push_also_terminates_superseded_heads() {
+    let (_fixture, store, mut monitor) = configured(1);
+    scan(&mut monitor, &store, vec![pull('a')], NOW);
+    scan(&mut monitor, &store, vec![pull('b')], NOW + 10);
+    assert_eq!(
+        store.load_queue().unwrap()[0].waiting,
+        monitoring::WAITING_SUPERSEDED
+    );
+    let mut closed = pull('c');
+    closed.state = Lifecycle::Closed;
+    scan(&mut monitor, &store, vec![closed], NOW + 20);
+    let snapshot = queue::snapshot(&store, monitor.snapshot()).unwrap();
+    assert_eq!(snapshot.items.len(), 2);
+    assert!(snapshot
+        .items
+        .iter()
+        .all(|item| item.state == queue::State::Closed));
+    assert!(snapshot
+        .jobs
+        .iter()
+        .all(|job| job.waiting == monitoring::WAITING_CLOSED));
+    assert_eq!(snapshot.tracked[0].head_sha, "c".repeat(40));
 }
 
 #[test]
