@@ -282,7 +282,7 @@ pub fn validate_analysis_commit(
         .ok_or_else(|| Failure::permanent("The reviewed revision is no longer available."))?;
     let current = crate::review::Selection::resolve(&settings, job, &run.review.assignment_id)
         .map_err(Failure::permanent)?;
-    if current != run.review.selection
+    if !current.same_execution(&run.review.selection)
         || (!current.policy.automatic_agent_start && !run.manual_start)
     {
         return Err(Failure::permanent(

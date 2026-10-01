@@ -180,7 +180,11 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
                 .and_then(|job| {
                     let selection = Selection::resolve(&settings, job, &run.review.assignment_id)?;
                     let mut review = run.review.clone();
-                    if run.result.is_none() && run.publication.is_none() {
+                    // This clone checks eligibility for a new/manual attempt, not saved evidence.
+                    if run.result.is_none()
+                        && run.publication.is_none()
+                        && !review.selection.same_execution(&selection)
+                    {
                         review.selection = selection.clone();
                     }
                     publication::automatic_policy(&settings, &review, job)?;
@@ -332,30 +336,14 @@ impl Coordinator {
                     }
                 }
             } else {
-                if run.result.is_some() || run.publication.is_some() {
-                    return Err("This follow-up was already analyzed; a later external comment creates new work.".into());
-                }
-                if let Some(error) = candidate.blocked {
-                    return Err(error);
-                }
-                if run.analysis.is_none() || manual {
-                    if !candidate.automatic_start && !manual {
-                        return Err("Explicit follow-up start is required.".into());
-                    }
-                    let settings = store.load_settings()?;
-                    let jobs = store.load_queue()?;
-                    let job = jobs
-                        .iter()
-                        .find(|j| run.review.matches_job(j))
-                        .ok_or("The reviewed revision is no longer available.")?;
-                    run.review.selection =
-                        Selection::resolve(&settings, job, &run.review.assignment_id)?;
-                    if let Some(previous) = run.analysis.take() {
-                        run.history.push(previous);
-                    }
-                    run.analysis = Some(run.operation("thread_analysis", now));
-                    run.manual_start = manual;
-                }
+                prepare_analysis(
+                    &store,
+                    &mut run,
+                    candidate.blocked,
+                    candidate.automatic_start,
+                    manual,
+                    now,
+                )?;
             }
             if manual {
                 run.cancelled = false;
@@ -409,6 +397,46 @@ impl Coordinator {
         });
         Ok(())
     }
+}
+
+fn prepare_analysis(
+    store: &Store,
+    run: &mut FollowUp,
+    blocked: Option<String>,
+    automatic_start: bool,
+    manual: bool,
+    now: i64,
+) -> Result<(), String> {
+    if run.result.is_some() || run.publication.is_some() {
+        return Err(
+            "This follow-up was already analyzed; a later external comment creates new work."
+                .into(),
+        );
+    }
+    if let Some(error) = blocked {
+        return Err(error);
+    }
+    if run.analysis.is_none() || manual {
+        if !automatic_start && !manual {
+            return Err("Explicit follow-up start is required.".into());
+        }
+        let settings = store.load_settings()?;
+        let jobs = store.load_queue()?;
+        let job = jobs
+            .iter()
+            .find(|j| run.review.matches_job(j))
+            .ok_or("The reviewed revision is no longer available.")?;
+        let selection = Selection::resolve(&settings, job, &run.review.assignment_id)?;
+        if !run.review.selection.same_execution(&selection) {
+            run.review.selection = selection;
+        }
+        if let Some(previous) = run.analysis.take() {
+            run.history.push(previous);
+        }
+        run.analysis = Some(run.operation("thread_analysis", now));
+        run.manual_start = manual;
+    }
+    Ok(())
 }
 
 fn save_to_store(store: &Store, run: &FollowUp) -> Result<(), String> {
@@ -513,36 +541,40 @@ impl Native {
             .store
             .lock()
             .map_err(|_| Failure::permanent("Thread storage unavailable."))?;
-        let current = store
-            .load_follow_ups()
-            .map_err(Failure::permanent)?
-            .into_iter()
-            .find(|r| r.id == run.id)
-            .ok_or_else(|| Failure::permanent("Thread follow-up disappeared."))?;
-        if current.cancelled {
-            return Err(Failure::permanent("Thread follow-up cancelled."));
-        }
-        let settings = store.load_settings().map_err(Failure::permanent)?;
-        let jobs = store.load_queue().map_err(Failure::permanent)?;
-        let job = jobs
-            .iter()
-            .find(|j| run.review.matches_job(j))
-            .ok_or_else(|| Failure::permanent("The reviewed revision is no longer detected."))?;
-        let selection = Selection::resolve(&settings, job, &run.review.assignment_id)
-            .map_err(Failure::permanent)?;
-        let automatic = publication::automatic_policy(&settings, &run.review, job)
-            .map_err(Failure::permanent)?;
-        run.check_publication_grant(&current, automatic)?;
-        if run.publication.is_none()
-            && (selection != run.review.selection
-                || (!selection.policy.automatic_agent_start && !run.manual_start))
-        {
-            return Err(Failure::permanent(
-                "Follow-up selection or start gate changed; explicit retry required.",
-            ));
-        }
-        Ok(())
+        local_gate(&store, run)
     }
+}
+
+fn local_gate(store: &Store, run: &FollowUp) -> Result<(), Failure> {
+    let current = store
+        .load_follow_ups()
+        .map_err(Failure::permanent)?
+        .into_iter()
+        .find(|r| r.id == run.id)
+        .ok_or_else(|| Failure::permanent("Thread follow-up disappeared."))?;
+    if current.cancelled {
+        return Err(Failure::permanent("Thread follow-up cancelled."));
+    }
+    let settings = store.load_settings().map_err(Failure::permanent)?;
+    let jobs = store.load_queue().map_err(Failure::permanent)?;
+    let job = jobs
+        .iter()
+        .find(|j| run.review.matches_job(j))
+        .ok_or_else(|| Failure::permanent("The reviewed revision is no longer detected."))?;
+    let selection = Selection::resolve(&settings, job, &run.review.assignment_id)
+        .map_err(Failure::permanent)?;
+    let automatic =
+        publication::automatic_policy(&settings, &run.review, job).map_err(Failure::permanent)?;
+    run.check_publication_grant(&current, automatic)?;
+    if run.publication.is_none()
+        && (!selection.same_execution(&run.review.selection)
+            || (!selection.policy.automatic_agent_start && !run.manual_start))
+    {
+        return Err(Failure::permanent(
+            "Follow-up selection or start gate changed; explicit retry required.",
+        ));
+    }
+    Ok(())
 }
 
 impl Environment for Native {
@@ -939,3 +971,6 @@ pub(crate) async fn cancel_follow_up(app: tauri::AppHandle, id: String) -> Resul
     .await
     .map_err(|_| "Follow-up cancellation failed.".to_string())?
 }
+
+#[cfg(test)]
+mod tests;
