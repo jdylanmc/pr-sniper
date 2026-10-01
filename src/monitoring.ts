@@ -84,6 +84,7 @@ interface MonitoringSnapshot {
 }
 
 interface PublicationCandidate {
+  local_only?: boolean;
   review_operation_id: string;
   automatic: boolean;
   blocked: string | null;
@@ -282,6 +283,7 @@ export function renderMonitoring(
         heading.scrollIntoView({ block: "start" });
       }
     },
+    refresh,
   );
   for (const [id, command] of [
     ["#queue-settings", "open_settings"],
@@ -403,6 +405,13 @@ export function renderMonitoring(
     state: PublicationCandidate,
   ) {
     const publication = state.publication;
+    if (state.local_only && !publication) {
+      const info = document.createElement("p");
+      info.textContent =
+        "Local-only evidence: comment publication is off. The PR author has not been notified; no manual machine-publication task is pending.";
+      row.append(info);
+      return;
+    }
     const info = document.createElement("p");
     info.className = "publication-state";
     info.textContent = publication

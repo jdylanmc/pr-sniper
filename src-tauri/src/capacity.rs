@@ -92,7 +92,11 @@ impl Dispatch {
     pub fn key(&self) -> WorkId {
         match self {
             Self::Review(run, _) => WorkId {
-                kind: Kind::Normal,
+                kind: if run.operation.operation_type == "primary_final_review" {
+                    Kind::PrimaryFinal
+                } else {
+                    Kind::Normal
+                },
                 id: run.key.clone(),
             },
             Self::Reply(run, _) => WorkId {
@@ -111,7 +115,7 @@ fn due(operation: &JobOperation, now: i64) -> bool {
 }
 
 pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
-    let mut result = Vec::new();
+    let mut result = crate::actions::host::candidates(store, now)?;
     let follow_ups = follow_up::host::candidates(store)?;
     for mention in store.load_feedback()?.mentions.into_iter().filter(|m| {
         m.follow_up_id.is_none()
@@ -393,7 +397,10 @@ impl Coordinator {
                         (Dispatch::Reply(Box::new(run), cancelled.clone()), id)
                     }
                     Kind::PrimaryFinal => {
-                        return Err("This AI work kind has no execution adapter yet.".into())
+                        let run =
+                            crate::actions::host::prepare_dispatch(store, &candidate.key.id, now)?;
+                        let id = run.operation.id.clone();
+                        (Dispatch::Review(Box::new(run), cancelled.clone()), id)
                     }
                 };
                 Ok((operation_id, dispatch))
@@ -476,6 +483,11 @@ pub(crate) fn launch_batch(app: &tauri::AppHandle, batch: Batch) {
     }
     for dispatch in batch.dispatched {
         match dispatch {
+            Dispatch::Review(run, cancelled)
+                if run.operation.operation_type == "primary_final_review" =>
+            {
+                crate::actions::host::launch_worker(app, *run, cancelled)
+            }
             Dispatch::Review(run, cancelled) => review::host::launch_worker(app, *run, cancelled),
             Dispatch::Reply(run, cancelled) => {
                 follow_up::host::launch_analysis_worker(app, *run, cancelled)
@@ -485,6 +497,15 @@ pub(crate) fn launch_batch(app: &tauri::AppHandle, batch: Batch) {
 }
 
 fn request_interruption(store: &Store, id: &str, reason: Interruption) -> Result<(), String> {
+    let mut ledger = store.load_actions()?;
+    if let Some(run) = ledger
+        .finals
+        .iter_mut()
+        .find(|f| f.execution.operation.id == id)
+    {
+        run.execution.operation.interruption = Some(reason);
+        return store.save_actions(&ledger);
+    }
     let mut reviews = store.load_reviews()?;
     if let Some(run) = reviews.iter_mut().find(|r| r.operation.id == id) {
         run.operation.interruption = Some(reason);

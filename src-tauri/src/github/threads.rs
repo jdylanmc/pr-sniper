@@ -90,7 +90,7 @@ impl Thread {
 }
 
 impl<T: QueryTransport> GithubClient<T> {
-    fn graph(&self, query: &str, variables: Value) -> Result<Value, ConnectionError> {
+    pub(super) fn graph(&self, query: &str, variables: Value) -> Result<Value, ConnectionError> {
         let (value, response) = parse_response(self.transport.query(query, variables)?)?;
         if let Some(errors) = value.get("errors").filter(|errors| !errors.is_null()) {
             let errors = errors.as_array().ok_or(ConnectionError::InvalidResponse)?;

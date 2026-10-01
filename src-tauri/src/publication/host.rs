@@ -16,6 +16,7 @@ pub(crate) struct Coordinator {
 
 #[derive(Serialize)]
 pub(crate) struct Candidate {
+    pub(crate) local_only: bool,
     pub(crate) review_operation_id: String,
     pub(crate) automatic: bool,
     pub(crate) blocked: Option<String>,
@@ -62,6 +63,10 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
                 policy = Err("A newer local review attempt superseded this result.".into());
             }
             Candidate {
+                local_only: publication.is_none() && (
+                    settings.effective_policy(&review.job.configuration_id).is_none_or(|p|!p.automatic_comment_publication)
+                    || !settings.repositories.iter().find(|r|r.id==review.job.configuration_id)
+                        .is_some_and(|r|r.assignments.iter().any(|a|a.id==review.assignment_id&&a.comment))),
                 automatic: policy.as_ref().copied().unwrap_or(false),
                 blocked: policy.err(),
                 publication: publication.cloned(),
@@ -117,6 +122,9 @@ fn prepare_launch(
             "Another review attempt owns this revision's publication; do not create another batch."
                 .into(),
         );
+    }
+    if candidate.local_only {
+        return Err("Comment publication is off. This result is local-only; enable publication explicitly before creating a machine batch.".into());
     }
     let run = if let Some(mut run) = candidate.publication {
         if manual {
@@ -186,6 +194,12 @@ impl Coordinator {
             .get(&run.review.job.account_id)
             .copied()
             .unwrap_or(0);
+        let mutation_owner = format!("publication:{}", run.id);
+        if !host.mutations.acquire(&mutation_owner)? {
+            return Err(
+                "Another provider mutation is running; this publication remains queued.".into(),
+            );
+        }
         *active = Some(run.id.clone());
         drop(active);
         let app = app.clone();
@@ -196,6 +210,9 @@ impl Coordinator {
             };
             if let Err(error) = execute(&mut environment, &mut run) {
                 crate::report(&app, error.message);
+            }
+            if let Err(error) = app.state::<Host>().mutations.release(&mutation_owner) {
+                crate::report(&app, error);
             }
             match app.state::<Host>().publications.active.lock() {
                 Ok(mut active) => *active = None,

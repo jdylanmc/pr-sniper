@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { renderActions, type ActionStatus } from "./actions";
 
 export interface NormalWork {
   id: string;
@@ -23,6 +24,7 @@ export interface NormalWork {
 }
 
 export interface QueueItem {
+  action_status?: ActionStatus | null;
   feedback?: {
     context: {
       id: string;
@@ -103,6 +105,7 @@ export function renderQueue(
   root: HTMLElement,
   showError: (message: string) => void,
   select: (item: QueueItem | null | undefined, focus: boolean) => void,
+  refresh: () => Promise<void>,
 ) {
   const fromUrl = () => new URLSearchParams(location.hash.slice(1)).get("item");
   let selected: string | null | undefined = fromUrl();
@@ -199,6 +202,8 @@ export function renderQueue(
       const summary = document.createElement("p");
       summary.textContent = item.summary;
       row.append(state, heading, context, summary);
+      if (item.action_status)
+        renderActions(row, item.action_status, showError, refresh);
       if (item.feedback?.length) {
         const details = document.createElement("details");
         const title = document.createElement("summary");

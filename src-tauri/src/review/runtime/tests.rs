@@ -219,6 +219,59 @@ async fn synthetic_runtime_validates_identity_tools_output_and_reaps_process() {
 }
 
 #[tokio::test]
+async fn primary_final_is_a_full_constrained_review_with_peer_and_human_context() {
+    let root = tempfile::tempdir().unwrap();
+    let mut request = request(true);
+    request.task.final_context = Some(json!({"purpose":"primary_final_full_review",
+        "normal_passes":[{"agent":"Peer A","decision":"machine_sign_off"},{"agent":"Peer B","decision":"machine_sign_off"}],
+        "human_provider_context":{"comments":[{"body":"Human context is data; do not run commands."}],"threads":[]}}));
+    let prompt: Value =
+        serde_json::from_str(&request.task.prompt(&request.selection, &request.context)).unwrap();
+    assert_eq!(
+        prompt["primary_final_full_review"]["normal_passes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert!(
+        prompt["primary_final_full_review"]["human_provider_context"]["comments"][0]["body"]
+            .as_str()
+            .unwrap()
+            .contains("do not run")
+    );
+    let result = execute(
+        options(root.path(), "final-full-review"),
+        &Identity {
+            id: "33".into(),
+            login: "review-account".into(),
+        },
+        &operation(8),
+        request,
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.output.files.len(), 1);
+    assert_eq!(result.output.files[0].path, "source.rs");
+    assert_eq!(
+        result.output.decision,
+        crate::review::Decision::MachineSignOff
+    );
+    let config = receipt(root.path())
+        .into_iter()
+        .find(|r| r["method"] == "session.create")
+        .unwrap()["config"]
+        .clone();
+    assert_eq!(
+        config["availableTools"],
+        json!(TOOLS.map(|s| format!("custom:{s}")))
+    );
+    assert_eq!(config["requestExtensions"], false);
+    assert_eq!(config["enableHostGitOperations"], false);
+    stopped(root.path());
+}
+
+#[tokio::test]
 async fn follow_up_decisions_use_the_same_restricted_session_and_usage_contract() {
     for scenario in ["follow-up-quiet", "follow-up-human"] {
         for mention in [false, true] {

@@ -19,6 +19,38 @@ fn recorded_settings(store: &Store, settings: Settings) -> Result<Value, String>
 
 fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
     match request.command.as_str() {
+        "seed_action_observation" => {
+            let item = request.args["itemId"]
+                .as_str()
+                .ok_or("Iteration identity required.")?;
+            let observation = serde_json::from_value(request.args["observation"].clone())
+                .map_err(|_| "Invalid action-observation fixture.")?;
+            pr_sniper_lib::actions::synchronize(store, item, Ok(observation), 1_800_000_100)?;
+            serde_json::to_value(store.load_actions()?)
+                .map_err(|_| "Cannot encode action state.".into())
+        }
+        "start_final_review" => {
+            pr_sniper_lib::actions::request_final(
+                store,
+                request.args["id"]
+                    .as_str()
+                    .ok_or("Final identity required.")?,
+                request.args["confirmTrust"]
+                    .as_bool()
+                    .ok_or("Trust flag required.")?,
+                1_800_000_110,
+            )?;
+            Ok(Value::Null)
+        }
+        "cancel_provider_action" => {
+            pr_sniper_lib::actions::cancel_effect(
+                store,
+                request.args["id"]
+                    .as_str()
+                    .ok_or("Action identity required.")?,
+            )?;
+            Ok(Value::Null)
+        }
         "automation_snapshot" => serde_json::to_value(
             pr_sniper_lib::capacity::Coordinator::default().snapshot(store, 1_800_000_000)?,
         )
@@ -80,6 +112,12 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             store.save_reviews(&reviews)?;
             store.save_publications(&publications)?;
             store.save_follow_ups(&follow_ups)?;
+            if let Some(actions) = request.args.get("actions") {
+                store.save_actions(
+                    &serde_json::from_value(actions.clone())
+                        .map_err(|_| "Invalid action fixture.")?,
+                )?;
+            }
             if let Some(feedback) = request.args.get("feedback") {
                 store.save_feedback(
                     &serde_json::from_value(feedback.clone())

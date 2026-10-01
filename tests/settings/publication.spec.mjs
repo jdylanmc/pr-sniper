@@ -185,26 +185,30 @@ async function setup(page, state) {
   await page.goto("/?view=queue");
 }
 
-test("manual publication requires exact-revision acting-account confirmation", async ({
+test("publication-off normal output is local-only with no invented manual-publication task", async ({
   page,
 }) => {
-  await setup(page, snapshot());
-  const publish = page.getByRole("button", {
-    name: "Publish review",
-    exact: true,
-  });
-  await expect(publish).toBeDisabled();
+  const state = snapshot();
+  state.publications[0].local_only = true;
+  await setup(page, state);
+  await expect(
+    page.getByRole("button", {
+      name: "Publish review",
+      exact: true,
+    }),
+  ).toHaveCount(0);
   await expect(page.locator("#agent-reviews")).toContainText("repo-owner (22)");
-  await page
-    .getByRole("checkbox", { name: /Publish or reconcile this exact revision/ })
-    .check();
-  await publish.click();
+  await expect(page.locator("#agent-reviews")).toContainText(
+    "Local-only evidence",
+  );
+  await expect(
+    page.getByRole("checkbox", {
+      name: /Publish or reconcile this exact revision/,
+    }),
+  ).toHaveCount(0);
   await expect
     .poll(() => page.evaluate(() => window.__publicationActions))
-    .toEqual([
-      { command: "publish_review", args: { reviewOperationId: "review-1" } },
-    ]);
-  await expect(publish).toBeDisabled();
+    .toEqual([]);
   await expect(page.getByRole("button", { name: /^Approve/ })).toHaveCount(0);
 });
 
