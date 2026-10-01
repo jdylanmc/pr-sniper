@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { mountAutomation } from "./automation";
-import { renderFollowUps, type FollowUpCandidate } from "./follow-up";
+import {
+  renderFollowUps,
+  type FollowUpCandidate,
+  type MentionRouting,
+} from "./follow-up";
 import {
   openDestination,
   renderQueue,
@@ -60,6 +64,7 @@ interface Job {
 }
 
 interface MonitoringSnapshot {
+  mentions?: MentionRouting[];
   global_scan?: {
     schedule_key: string;
     next_run: number;
@@ -114,6 +119,15 @@ interface ReviewCandidate {
   blocked: string | null;
   planned_selection?: import("./resources").ReviewSelection | null;
   run: {
+    feedback_context?:
+      | {
+          id: string;
+          body: string;
+          closed: boolean;
+          owner_agent_id: string;
+          original_head: string;
+        }[]
+      | null;
     trust_confirmed?: boolean;
     phase: string;
     error: string | null;
@@ -123,6 +137,8 @@ interface ReviewCandidate {
     result: {
       reviewed_base_sha?: string | null;
       output: {
+        feedback_conflict?: boolean;
+        held_findings?: { path: string; title: string; explanation: string }[];
         synopsis: string;
         decision: "machine_sign_off" | "human_input_required";
         files: { path: string; explanation: string; order: number }[];
@@ -306,7 +322,17 @@ export function renderMonitoring(
       renderReviews(candidates, snapshot.publications ?? []);
       reviewsSignature = signature;
     }
-    followUps(replies, snapshot.follow_ups ?? []);
+    followUps(
+      replies,
+      snapshot.follow_ups ?? [],
+      (snapshot.mentions ?? []).filter(
+        (m) =>
+          selection === null ||
+          (selection?.job.repository_name === m.binding.repository_name &&
+            selection.job.account_id === m.binding.account_id &&
+            selection.job.number === m.binding.number),
+      ),
+    );
   }
 
   async function act(candidate: ReviewCandidate, cancel: boolean) {
@@ -575,6 +601,15 @@ export function renderMonitoring(
         row.append(details);
       };
       if (run) configuration("Captured execution configuration", run.selection);
+      if (run?.feedback_context) {
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = `Captured prior feedback (${run.feedback_context.length})`;
+        const body = document.createElement("pre");
+        body.textContent = JSON.stringify(run.feedback_context, null, 2);
+        details.append(summary, body);
+        row.append(details);
+      }
       if (!run || ["queued", "interrupted"].includes(run.operation.state))
         configuration(
           "Planned configuration (revalidated at start; not execution evidence)",
@@ -593,6 +628,17 @@ export function renderMonitoring(
       }
       const result = run?.result;
       if (result) {
+        if (result.output.feedback_conflict) {
+          const conflict = document.createElement("p");
+          conflict.textContent =
+            "New output overlaps a human-closed concern's file. It was not republished; human judgment is required.";
+          row.append(conflict);
+          for (const finding of result.output.held_findings ?? []) {
+            const held = document.createElement("p");
+            held.textContent = `Held locally: ${finding.path}: ${finding.title}. ${finding.explanation}`;
+            row.append(held);
+          }
+        }
         const decision = document.createElement("p");
         decision.className = "review-decision";
         decision.textContent =

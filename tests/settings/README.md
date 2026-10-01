@@ -138,3 +138,13 @@ pause/reduction, rapid resume and real failures racing cancellation. Existing
 restricted-runtime tests still verify owned process teardown. Provider tests
 inject pause during pending creation and a lost submit response, preserving
 original receipts and proving no duplicate batch is posted.
+
+`conversations.spec.mjs` exercises typed conversation targets/current contexts
+through the Store bridge, explicit versus absent feedback assessments, retained
+provider-closed tombstones, unavailable observations and missing-primary
+presentation. Native conversation tests exercise production scan admission,
+normal/reply/mention FIFO dispatch, provider comment pagination, scoped mention
+matching, current-head observation with immutable root provenance, exact
+reconciliation after lost responses/primary changes and human-judgment gates.
+Owned and mention runtime fixtures share the same restricted tool contract.
+Provider responses are deterministic fixtures, never live action acceptance.

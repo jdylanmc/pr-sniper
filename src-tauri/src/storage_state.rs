@@ -4,6 +4,18 @@ use std::io::ErrorKind;
 // Typed application state stays attached to Store without coupling settings,
 // policy and filesystem tests to the native host and provider runtimes.
 impl Store {
+    pub fn load_feedback(&self) -> Result<crate::feedback::Ledger, String> {
+        match self.read_state("feedback.json") {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
+                "Owned feedback state is invalid; no clearance may be inferred.".into()
+            }),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(Default::default()),
+            Err(_) => Err("Cannot read owned feedback state.".into()),
+        }
+    }
+    pub fn save_feedback(&self, ledger: &crate::feedback::Ledger) -> Result<(), String> {
+        self.write_state("feedback.json", ledger)
+    }
     pub fn load_automation(&self) -> Result<crate::capacity::Automation, String> {
         match self.read_state("automation.json") {
             Ok(bytes) => serde_json::from_slice(&bytes)
@@ -106,7 +118,14 @@ impl Store {
             .load_publications()?
             .into_iter()
             .map(|p| p.review)
-            .chain(self.load_follow_ups()?.into_iter().map(|f| f.review))
+            .chain(
+                self.load_follow_ups()?
+                    .into_iter()
+                    .filter_map(|f| match f.target {
+                        crate::follow_up::ConversationTarget::Owned(origin) => Some(origin.review),
+                        _ => None,
+                    }),
+            )
             .filter(|r| ids.insert(r.operation.id.clone()))
             .collect();
         evidence.extend(reviews);
@@ -131,7 +150,7 @@ impl Store {
 
     pub fn load_follow_ups(&self) -> Result<Vec<crate::follow_up::FollowUp>, String> {
         match self.read_state("follow-ups.json") {
-            Ok(bytes) => serde_json::from_slice(&bytes)
+            Ok(bytes) => crate::follow_up::decode_with_origins(&bytes, &self.load_publications()?)
                 .map_err(|_| "Thread follow-up state is invalid; automation is blocked.".into()),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
             Err(_) => {

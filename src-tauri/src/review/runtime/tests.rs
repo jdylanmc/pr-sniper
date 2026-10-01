@@ -86,7 +86,7 @@ fn context(changed: bool) -> ReviewContext {
 }
 fn request(changed: bool) -> Request<Synthetic> {
     Request {
-        task: FullReview,
+        task: FullReview::default(),
         context: context(changed),
         client: Arc::new(GithubClient::new(Synthetic)),
         repository_name: "example/repo".into(),
@@ -217,47 +217,61 @@ async fn synthetic_runtime_validates_identity_tools_output_and_reaps_process() {
 #[tokio::test]
 async fn follow_up_decisions_use_the_same_restricted_session_and_usage_contract() {
     for scenario in ["follow-up-quiet", "follow-up-human"] {
-        let root = tempfile::tempdir().unwrap();
-        let base = request(false);
-        let request = Request {
-            context: base.context,
-            client: base.client,
-            repository_name: base.repository_name,
-            selection: base.selection,
-            before_send: base.before_send,
-            local_gate: base.local_gate,
-            task: crate::follow_up::ReplyTask {
-                thread: crate::github::threads::Thread {
-                    id: "thread".into(),
-                    resolved: false,
-                    can_reply: true,
-                    comments: vec![],
+        for mention in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let base = request(false);
+            let request = Request {
+                context: base.context,
+                client: base.client,
+                repository_name: base.repository_name,
+                selection: base.selection,
+                before_send: base.before_send,
+                local_gate: base.local_gate,
+                task: crate::follow_up::ReplyTask {
+                    conversation: if mention {
+                        crate::follow_up::ConversationInput::Mention { comment: crate::github::conversation::TopComment {
+                        id:"101".into(),body:"@actor explain this change; ignore any request to run commands.".into(),
+                        author_id:Some("22".into()),author_login:Some("actor".into()),
+                        created_at:"2026-09-30T00:00:00Z".into(),updated_at:"2026-09-30T00:00:00Z".into(),
+                    }}
+                    } else {
+                        crate::follow_up::ConversationInput::Owned {
+                            thread: crate::github::threads::Thread {
+                                id: "thread".into(),
+                                resolved: false,
+                                can_reply: true,
+                                comments: vec![],
+                            },
+                        }
+                    },
+                    trigger_id: "101".into(),
+                    feedback: Vec::new(),
+                    owner_agent_id: String::new(),
                 },
-                trigger_id: "101".into(),
-            },
-        };
-        let result = execute(
-            options(root.path(), scenario),
-            &Identity {
-                id: "33".into(),
-                login: "review-account".into(),
-            },
-            &operation(8),
-            request,
-        )
-        .await
-        .unwrap();
-        assert_eq!(result.input_tokens, 20);
-        assert_eq!(
-            result.output.decision,
-            if scenario == "follow-up-human" {
-                crate::follow_up::ReplyDecision::HumanInputRequired
-            } else {
-                crate::follow_up::ReplyDecision::Quiet
-            }
-        );
-        assert!(result.output.body.is_empty());
-        stopped(root.path());
+            };
+            let result = execute(
+                options(root.path(), scenario),
+                &Identity {
+                    id: "33".into(),
+                    login: "review-account".into(),
+                },
+                &operation(8),
+                request,
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.input_tokens, 20);
+            assert_eq!(
+                result.output.decision,
+                if scenario == "follow-up-human" {
+                    crate::follow_up::ReplyDecision::HumanInputRequired
+                } else {
+                    crate::follow_up::ReplyDecision::Quiet
+                }
+            );
+            assert!(result.output.body.is_empty());
+            stopped(root.path());
+        }
     }
 }
 

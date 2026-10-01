@@ -71,6 +71,7 @@ fn review() -> ReviewRun {
     let mut operation = JobOperation::review(&job, 100);
     operation.state = OperationState::Completed;
     ReviewRun {
+        feedback_context: None,
         key: pr_sniper_lib::review::key(&job, "assignment"),
         selection: Selection::resolve(&settings(), &job, "assignment").unwrap(),
         job,

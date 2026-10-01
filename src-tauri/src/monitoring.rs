@@ -252,6 +252,15 @@ impl QueueState {
                 .max()
                 .unwrap_or(0),
         );
+        self.next_enqueue_order = self.next_enqueue_order.max(
+            store
+                .load_feedback()?
+                .mentions
+                .iter()
+                .map(|m| m.enqueue_order)
+                .max()
+                .unwrap_or(0),
+        );
         Ok(())
     }
 

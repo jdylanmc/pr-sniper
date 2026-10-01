@@ -1,16 +1,17 @@
 pub(crate) mod host;
-mod task;
+pub(crate) mod task;
 
 use crate::{
+    github::conversation::TopComment,
     github::threads::Thread,
     monitoring::{JobOperation, OperationFailure, OperationState},
     publication::Publication,
-    review::{Failure, ReviewResult, ReviewRun},
+    review::{Failure, ReviewResult, ReviewRun, Selection},
     storage::Store,
 };
 use serde::{Deserialize, Serialize};
 
-pub(crate) use task::ReplyTask;
+pub(crate) use task::{ConversationInput, ReplyTask};
 pub use task::{Evidence, ReplyDecision, ReplyOutput};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,12 +31,48 @@ pub enum Phase {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct FollowUp {
-    pub id: String,
-    pub key: String,
+pub struct ConversationContext {
+    pub assignment_id: String,
+    pub job: crate::monitoring::QueueJob,
+    pub selection: Selection,
+    pub trust_confirmed: bool,
+    #[serde(default)]
+    pub feedback: Vec<crate::feedback::Context>,
+    #[serde(default)]
+    pub feedback_checked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwnedTarget {
     pub publication_id: String,
     pub review: ReviewRun,
     pub thread: Thread,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ConversationTarget {
+    Owned(Box<OwnedTarget>),
+    Mention { comment: TopComment },
+}
+
+#[derive(Debug, Clone)]
+pub enum Observation {
+    Owned(Thread),
+    Mention {
+        comment: Option<TopComment>,
+        replies: Vec<TopComment>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FollowUp {
+    pub id: String,
+    pub key: String,
+    pub target: ConversationTarget,
+    pub context: ConversationContext,
     pub trigger_id: String,
     pub phase: Phase,
     pub analysis: Option<JobOperation>,
@@ -59,6 +96,167 @@ pub struct FollowUp {
 }
 
 impl FollowUp {
+    pub fn owned(&self) -> Result<&OwnedTarget, String> {
+        match &self.target {
+            ConversationTarget::Owned(value) => Ok(value),
+            _ => Err("This is not an owned-thread target.".into()),
+        }
+    }
+    pub fn owned_mut(&mut self) -> Result<&mut OwnedTarget, String> {
+        match &mut self.target {
+            ConversationTarget::Owned(value) => Ok(value),
+            _ => Err("This is not an owned-thread target.".into()),
+        }
+    }
+    pub fn kind(&self) -> crate::capacity::Kind {
+        match self.target {
+            ConversationTarget::Owned(_) => crate::capacity::Kind::Reply,
+            ConversationTarget::Mention { .. } => crate::capacity::Kind::Mention,
+        }
+    }
+    pub fn same_result_lens(&self, current: &Selection) -> bool {
+        self.context.selection.agent == current.agent
+            && self.context.selection.doctrine == current.doctrine
+            && self.context.selection.preset == current.preset
+    }
+    pub(crate) fn input(&self) -> ConversationInput {
+        match &self.target {
+            ConversationTarget::Owned(origin) => ConversationInput::Owned {
+                thread: origin.thread.clone(),
+            },
+            ConversationTarget::Mention { comment } => ConversationInput::Mention {
+                comment: comment.clone(),
+            },
+        }
+    }
+    pub fn fresh_observation(&self, observed: &Observation) -> bool {
+        match (&self.target, observed) {
+            (ConversationTarget::Owned(_), Observation::Owned(thread)) => self.fresh_thread(thread),
+            (
+                ConversationTarget::Mention { comment },
+                Observation::Mention {
+                    comment: current, ..
+                },
+            ) => current.as_ref() == Some(comment),
+            _ => false,
+        }
+    }
+    pub fn validate_current(
+        &self,
+        settings: &crate::storage::Settings,
+        job: &crate::monitoring::QueueJob,
+        pull: &crate::github::metadata::PullRequest,
+        active: bool,
+        can_comment: bool,
+    ) -> Result<(), Failure> {
+        if !active {
+            return Err(Failure::permanent("Monitoring scope is no longer active."));
+        }
+        crate::monitoring::review_policy(settings, job, Some(pull)).map_err(Failure::permanent)?;
+        let current = Selection::resolve(settings, job, &self.context.assignment_id)
+            .map_err(Failure::permanent)?;
+        if self.publication.is_none() {
+            if !current.same_execution(&self.context.selection)
+                || (!current.policy.automatic_agent_start && !self.manual_start)
+            {
+                return Err(Failure::permanent(
+                    "Conversation execution configuration or start gate changed.",
+                ));
+            }
+        } else if !self.same_result_lens(&current) {
+            return Err(Failure::permanent(
+                "The conversation review lens changed before publication.",
+            ));
+        }
+        let automatic = self.authority(settings, job).map_err(Failure::permanent)?;
+        if !can_comment {
+            return Err(Failure::permanent(
+                "The acting account cannot publish to this repository.",
+            ));
+        }
+        if crate::review::requires_trust(settings, job, pull) && !self.context.trust_confirmed {
+            return Err(Failure::permanent(
+                "Trust confirmation for this conversation's exact revision is required.",
+            ));
+        }
+        if self.publication.is_some()
+            && ((!self.confirmed && !self.automatic_publication)
+                || automatic != self.automatic_publication)
+        {
+            return Err(Failure::permanent(
+                "Conversation publication permission changed.",
+            ));
+        }
+        if self
+            .result
+            .as_ref()
+            .and_then(|r| r.reviewed_base_sha.as_ref())
+            .is_some_and(|base| base != &pull.base_sha)
+        {
+            return Err(Failure::permanent(
+                "Conversation output refers to an older base revision.",
+            ));
+        }
+        if self
+            .context
+            .job
+            .observed_base_sha
+            .as_ref()
+            .is_some_and(|base| base != &pull.base_sha)
+        {
+            return Err(Failure::permanent(
+                "Conversation analysis context has an older base revision.",
+            ));
+        }
+        Ok(())
+    }
+    pub fn matches_job(&self, job: &crate::monitoring::QueueJob) -> bool {
+        self.context.job.assignment_id == job.assignment_id
+            && crate::review::key(
+                &self.context.job,
+                self.context.job.assignment_id.as_deref().unwrap_or(""),
+            ) == crate::review::key(job, job.assignment_id.as_deref().unwrap_or(""))
+            && self.context.job.account_id == job.account_id
+            && self.context.job.repository_id == job.repository_id
+            && self.context.job.head_sha == job.head_sha
+    }
+    pub fn authority(
+        &self,
+        settings: &crate::storage::Settings,
+        job: &crate::monitoring::QueueJob,
+    ) -> Result<bool, String> {
+        if self
+            .owned()
+            .is_ok_and(|origin| origin.review.selection.agent.id != self.context.selection.agent.id)
+        {
+            return Err("The original feedback owner differs from this analysis Agent; ownership cannot transfer.".into());
+        }
+        let repository = settings
+            .repositories
+            .iter()
+            .find(|r| r.id == job.configuration_id)
+            .ok_or("Repository removed.")?;
+        let assignment = repository
+            .assignments
+            .iter()
+            .find(|a| {
+                Some(a.id.as_str()) == job.assignment_id.as_deref()
+                    && a.agent_id == self.context.selection.agent.id
+            })
+            .ok_or(
+                "The original conversation owner is unavailable; ownership was not transferred.",
+            )?;
+        if self.kind() == crate::capacity::Kind::Mention
+            && repository.primary_assignment_id() != Some(assignment.id.as_str())
+        {
+            return Err("The mention's original primary changed. This comment is not replayed through another Agent.".into());
+        }
+        if !assignment.comment {
+            return Err("Comments are disabled for this conversation assignment.".into());
+        }
+        Ok(crate::monitoring::review_policy(settings, job, None)?.automatic_comment_publication)
+    }
+
     pub fn new(origin: &Publication, thread: Thread) -> Result<Self, String> {
         if thread.resolved || !thread.can_reply || !thread.owned_by(origin) {
             return Err(
@@ -83,9 +281,19 @@ impl FollowUp {
         Ok(Self {
             id: uuid::Uuid::new_v4().to_string(),
             key,
-            publication_id: origin.id.clone(),
-            review: origin.review.clone(),
-            thread,
+            target: ConversationTarget::Owned(Box::new(OwnedTarget {
+                publication_id: origin.id.clone(),
+                review: origin.review.clone(),
+                thread,
+            })),
+            context: ConversationContext {
+                assignment_id: origin.review.assignment_id.clone(),
+                job: origin.review.job.clone(),
+                selection: origin.review.selection.clone(),
+                trust_confirmed: origin.review.trust_confirmed,
+                feedback: Vec::new(),
+                feedback_checked: false,
+            },
             trigger_id,
             phase: Phase::WaitingStart,
             analysis: None,
@@ -106,15 +314,45 @@ impl FollowUp {
         })
     }
 
+    pub fn mention(comment: TopComment, context: ConversationContext) -> Self {
+        let job = &context.job;
+        let key = mention_key(job, &comment.id);
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            key,
+            trigger_id: comment.id.clone(),
+            target: ConversationTarget::Mention { comment },
+            context,
+            phase: Phase::WaitingStart,
+            analysis: None,
+            publication: None,
+            history: Vec::new(),
+            manual_start: false,
+            confirmed: false,
+            automatic_publication: false,
+            cancelled: false,
+            error: None,
+            result: None,
+            body: None,
+            uncertain: false,
+            receipt: None,
+            reply_ordinal: None,
+            enqueue_order: None,
+            enqueued_at: None,
+        }
+    }
+
     pub fn operation(&self, kind: &str, now: i64) -> JobOperation {
-        let mut operation = JobOperation::review(&self.review.job, now);
+        let mut operation = JobOperation::review(&self.context.job, now);
         operation.operation_type = kind.into();
-        operation.pending_review_id = self
-            .thread
-            .comments
-            .first()
-            .and_then(|comment| comment.review_id.clone());
-        operation.owned_thread_id = Some(self.thread.id.clone());
+        if let ConversationTarget::Owned(origin) = &self.target {
+            operation.pending_review_id = origin
+                .thread
+                .comments
+                .first()
+                .and_then(|c| c.review_id.clone());
+            operation.owned_thread_id = Some(origin.thread.id.clone());
+        }
         operation.triggering_external_comment_id = Some(self.trigger_id.clone());
         operation
     }
@@ -136,8 +374,15 @@ impl FollowUp {
             .iter()
             .map(|e| format!("    {} ({} line {}): {}\n", e.path, e.side, e.line, e.quote))
             .collect::<String>();
-        let body = format!("Automated follow-up by PR Sniper.\n\n{}\n\nEvidence at {}:\n\n{}\n<!-- pr-sniper:reply:{} -->\n\n\u{f05b} PR Sniper",
-            result.output.body, self.review.job.head_sha, citations, self.id);
+        let target = match &self.target {
+            ConversationTarget::Mention { comment } => format!(
+                "In response to https://github.com/{}/pull/{}#issuecomment-{}\n\n",
+                self.context.job.repository_name, self.context.job.number, comment.id
+            ),
+            _ => String::new(),
+        };
+        let body = format!("Automated follow-up by PR Sniper.\n\n{target}{}\n\nEvidence at {}:\n\n{}\n<!-- pr-sniper:reply:{} -->\n\n\u{f05b} PR Sniper",
+            result.output.body, self.context.job.head_sha, citations, self.id);
         if body.chars().count() > 65_536 {
             return Err(Failure::permanent(
                 "Reply exceeds GitHub's body limit; nothing was truncated.",
@@ -161,7 +406,10 @@ impl FollowUp {
     }
 
     pub fn fresh_thread(&self, current: &Thread) -> bool {
-        if current.id != self.thread.id || current.resolved || !current.can_reply {
+        let Ok(origin) = self.owned() else {
+            return false;
+        };
+        if current.id != origin.thread.id || current.resolved || !current.can_reply {
             return false;
         }
         let comments: Vec<_> = current
@@ -169,23 +417,49 @@ impl FollowUp {
             .iter()
             .filter(|comment| {
                 !(self.body.as_ref().is_some_and(|body| body == &comment.body)
-                    && comment.author_id.as_deref() == Some(&self.review.job.account_id))
+                    && comment.author_id.as_deref() == Some(&self.context.job.account_id))
             })
             .collect();
-        comments == self.thread.comments.iter().collect::<Vec<_>>()
+        comments == origin.thread.comments.iter().collect::<Vec<_>>()
     }
 
+    pub fn reconcile_observation(
+        &self,
+        observation: &Observation,
+    ) -> Result<Option<String>, Failure> {
+        match (observation, &self.target) {
+            (Observation::Owned(thread), ConversationTarget::Owned(_)) => self.reconcile(thread),
+            (Observation::Mention { replies, .. }, ConversationTarget::Mention { .. }) => {
+                let matches = replies
+                    .iter()
+                    .filter(|c| {
+                        self.body.as_ref() == Some(&c.body)
+                            && c.author_id.as_deref() == Some(&self.context.job.account_id)
+                    })
+                    .collect::<Vec<_>>();
+                if matches.len() > 1 {
+                    return Err(Failure::permanent(
+                        "Multiple remote replies match this mention intent.",
+                    ));
+                }
+                Ok(matches.first().map(|c| c.id.clone()))
+            }
+            _ => Err(Failure::permanent(
+                "Conversation target does not match its observation.",
+            )),
+        }
+    }
     pub fn reconcile(&self, current: &Thread) -> Result<Option<String>, Failure> {
         let Some(body) = &self.body else {
             return Ok(None);
         };
-        let root = self.thread.root()?;
+        let root = self.owned().map_err(Failure::permanent)?.thread.root()?;
         let matches: Vec<_> = current
             .comments
             .iter()
             .filter(|comment| {
                 comment.body == *body
-                    && comment.author_id.as_deref() == Some(&self.review.job.account_id)
+                    && comment.author_id.as_deref() == Some(&self.context.job.account_id)
                     && comment.reply_to.as_deref() == Some(&root.id)
             })
             .collect();
@@ -198,29 +472,123 @@ impl FollowUp {
     }
 }
 
+pub fn mention_key(job: &crate::monitoring::QueueJob, comment: &str) -> String {
+    serde_json::json!([
+        "mention",
+        job.provider,
+        job.account_id,
+        job.configuration_id,
+        job.repository_id,
+        job.pull_request_id,
+        comment
+    ])
+    .to_string()
+}
+
+pub fn decode_runs(bytes: &[u8]) -> Result<Vec<FollowUp>, String> {
+    decode_with_origins(bytes, &[])
+}
+
+pub fn decode_with_origins(bytes: &[u8], origins: &[Publication]) -> Result<Vec<FollowUp>, String> {
+    let mut values: Vec<serde_json::Value> =
+        serde_json::from_slice(bytes).map_err(|_| "Invalid conversation history.")?;
+    for value in &mut values {
+        let object = value
+            .as_object_mut()
+            .ok_or("Invalid conversation record.")?;
+        if !object.contains_key("target") {
+            let review = object
+                .remove("review")
+                .ok_or("Legacy conversation origin missing.")?;
+            let publication = object
+                .remove("publication_id")
+                .ok_or("Legacy publication reference missing.")?;
+            let thread = object.remove("thread").ok_or("Legacy thread missing.")?;
+            object.insert("context".into(), serde_json::json!({"assignment_id":review["assignment_id"],"job":review["job"],"selection":review["selection"],"trust_confirmed":review["trust_confirmed"],"feedback":[]}));
+            let original = origins
+                .iter()
+                .find(|p| Some(p.id.as_str()) == publication.as_str())
+                .map(|p| serde_json::to_value(&p.review))
+                .transpose()
+                .map_err(|_| "Cannot decode retained conversation provenance.")?
+                .unwrap_or(review);
+            object.insert("target".into(), serde_json::json!({"kind":"owned","publication_id":publication,"review":original,"thread":thread}));
+        }
+    }
+    serde_json::from_value(serde_json::Value::Array(values))
+        .map_err(|_| "Invalid conversation state; no automation allowed.".into())
+}
+
 pub fn admit(
     runs: &mut Vec<FollowUp>,
     origin: &Publication,
     thread: Thread,
 ) -> Result<bool, String> {
-    let mut run = FollowUp::new(origin, thread)?;
+    admit_run(runs, FollowUp::new(origin, thread)?)
+}
+
+pub fn admit_run(runs: &mut Vec<FollowUp>, mut run: FollowUp) -> Result<bool, String> {
     if runs.iter().any(|previous| previous.key == run.key) {
         return Ok(false);
     }
     run.reply_ordinal = Some(
         runs.iter()
             .filter(|previous| {
-                previous.review.job.account_id == run.review.job.account_id
-                    && previous.review.job.configuration_id == run.review.job.configuration_id
-                    && previous.review.job.repository_id == run.review.job.repository_id
-                    && previous.review.job.pull_request_id == run.review.job.pull_request_id
-                    && previous.review.selection.agent.id == run.review.selection.agent.id
+                previous.context.job.account_id == run.context.job.account_id
+                    && previous.context.job.configuration_id == run.context.job.configuration_id
+                    && previous.context.job.repository_id == run.context.job.repository_id
+                    && previous.context.job.pull_request_id == run.context.job.pull_request_id
+                    && previous.context.selection.agent.id == run.context.selection.agent.id
             })
             .count() as u64
             + 1,
     );
     runs.push(run);
     Ok(true)
+}
+
+pub fn observation_origins(
+    store: &Store,
+    ticket: &crate::monitoring::PollTicket,
+    pulls: &[crate::github::metadata::PullRequest],
+) -> Result<Vec<Publication>, String> {
+    Ok(store
+        .load_publications()?
+        .into_iter()
+        .filter(|p| {
+            (p.review.job.configuration_id == ticket.repository_id
+                || p.review.job.configuration_id.is_empty())
+                && p.review.job.account_id == ticket.provider_account_id
+                && p.review.job.repository_id == ticket.provider_repository_id
+                && p.receipts.last().is_some_and(|r| {
+                    r.state == crate::publication::RemoteState::Commented
+                        && !r.comment_ids.is_empty()
+                })
+                && pulls.iter().any(|pull| {
+                    pull.id == p.review.job.pull_request_id
+                        && pull.state == crate::github::metadata::Lifecycle::Open
+                })
+        })
+        .collect())
+}
+
+pub fn current_owner_job<'a>(
+    jobs: &'a [crate::monitoring::QueueJob],
+    origin: &ReviewRun,
+) -> Option<&'a crate::monitoring::QueueJob> {
+    jobs.iter().rev().find(|j| {
+        crate::feedback::same_pr(j, &origin.job)
+            && j.assignment_id.as_deref() == Some(&origin.assignment_id)
+            && j.work
+                .as_ref()
+                .is_none_or(|w| w.agent_id == origin.selection.agent.id)
+            && matches!(
+                j.waiting.as_str(),
+                crate::monitoring::WAITING_HUMAN_START
+                    | crate::monitoring::WAITING_AGENT_UNAVAILABLE
+                    | crate::monitoring::WAITING_TRUST_CONFIRMATION
+            )
+    })
 }
 
 pub fn polling_origins(
@@ -245,11 +613,11 @@ pub fn polling_origins(
                         && !r.comment_ids.is_empty()
                 })
                 && pulls.iter().any(|pull| {
-                    jobs.iter()
-                        .find(|j| origin.review.matches_job(j))
-                        .is_some_and(|job| {
-                            crate::monitoring::review_policy(&settings, job, Some(pull)).is_ok()
-                        })
+                    current_owner_job(&jobs, &origin.review).is_some_and(|job| {
+                        crate::monitoring::review_policy(&settings, job, Some(pull)).is_ok()
+                            && Selection::resolve(&settings, job, &origin.review.assignment_id)
+                                .is_ok_and(|s| s.agent.id == origin.review.selection.agent.id)
+                    })
                 })
         })
         .collect())
@@ -278,19 +646,32 @@ pub fn validate_analysis_commit(
     let jobs = store.load_queue().map_err(Failure::permanent)?;
     let job = jobs
         .iter()
-        .find(|job| run.review.matches_job(job))
+        .find(|job| run.matches_job(job))
         .ok_or_else(|| Failure::permanent("The reviewed revision is no longer available."))?;
-    let current = crate::review::Selection::resolve(&settings, job, &run.review.assignment_id)
-        .map_err(Failure::permanent)?;
-    if !current.same_execution(&run.review.selection)
+    let current = crate::review::Selection::resolve(
+        &settings,
+        job,
+        job.assignment_id
+            .as_deref()
+            .ok_or_else(|| Failure::permanent("Conversation assignment missing."))?,
+    )
+    .map_err(Failure::permanent)?;
+    if !current.same_execution(&run.context.selection)
         || (!current.policy.automatic_agent_start && !run.manual_start)
     {
         return Err(Failure::permanent(
             "Follow-up selection or start permission changed before result persistence.",
         ));
     }
-    crate::publication::automatic_policy(&settings, &run.review, job)
-        .map_err(Failure::permanent)?;
+    run.authority(&settings, job).map_err(Failure::permanent)?;
+    if run.context.feedback_checked {
+        crate::feedback::validate_context(
+            store,
+            &run.context.job,
+            &run.context.selection.agent.id,
+            &run.context.feedback,
+        )?;
+    }
     Ok(())
 }
 
@@ -325,8 +706,12 @@ pub fn restore(store: &Store) -> Result<(), String> {
 pub trait Environment {
     fn now(&self) -> Result<i64, Failure>;
     fn save(&mut self, run: &mut FollowUp) -> Result<(), Failure>;
-    fn thread(&mut self, run: &FollowUp) -> Result<Thread, Failure>;
-    fn gate(&mut self, run: &FollowUp, thread: &Thread) -> Result<Option<String>, Failure>;
+    fn observe(&mut self, run: &FollowUp) -> Result<Observation, Failure>;
+    fn gate(
+        &mut self,
+        run: &FollowUp,
+        observation: &Observation,
+    ) -> Result<Option<String>, Failure>;
     fn reply(&mut self, run: &FollowUp) -> Result<String, crate::publication::WriteFailure>;
 }
 
@@ -365,8 +750,8 @@ pub fn publish(env: &mut impl Environment, run: &mut FollowUp) -> Result<(), Fai
         run.phase = Phase::Publishing;
         run.error = None;
         env.save(run)?;
-        let current = env.thread(run)?;
-        if let Some(receipt) = run.reconcile(&current)? {
+        let current = env.observe(run)?;
+        if let Some(receipt) = run.reconcile_observation(&current)? {
             run.receipt = Some(receipt.clone());
             run.publication.as_mut().unwrap().confirmed_receipt = Some(receipt);
             run.uncertain = false;
@@ -402,7 +787,9 @@ pub fn publish(env: &mut impl Environment, run: &mut FollowUp) -> Result<(), Fai
             Err(error) => {
                 run.uncertain = error.uncertain;
                 env.save(run)?;
-                let observation = env.thread(run).and_then(|thread| env.gate(run, &thread));
+                let observation = env
+                    .observe(run)
+                    .and_then(|observation| env.gate(run, &observation));
                 return Err(match observation {
                     Ok(_) => error.failure,
                     Err(observation) => Failure {
@@ -415,7 +802,7 @@ pub fn publish(env: &mut impl Environment, run: &mut FollowUp) -> Result<(), Fai
                 });
             }
         }
-        let current = env.thread(run)?;
+        let current = env.observe(run)?;
         let gate = env.gate(run, &current)?;
         finish(env, run, gate)
     })();

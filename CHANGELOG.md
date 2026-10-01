@@ -74,6 +74,17 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Added
 
+- Retain verified owned feedback across PR iterations, including closure
+  tombstones and explicit evidence-backed reassessment. Keep immutable original
+  publication/root provenance separate from current conversation analysis;
+  missing or unavailable ownership never becomes clearance.
+- Route top-level acting-account mentions to one repository primary through the
+  existing constrained conversation engine and shared AI capacity. Preserve
+  same-account human replies, stable deduplication, independent publication gates
+  and exact lost-response reconciliation without replacement posts.
+- Show current feedback disposition, blocked mention routing, captured context
+  and held-local ambiguous findings in existing read-only evidence surfaces.
+
 - Share AI capacity across normal reviews and owned-thread analysis, default
   four, with oldest-eligible ordering and completion-driven refill. Persist
   manual requests before capacity waiting and start the first AI retry window

@@ -2,6 +2,7 @@ pub mod capacity;
 mod copilot;
 pub mod discovery;
 mod doctrine_seeds;
+pub mod feedback;
 pub mod follow_up;
 pub mod github;
 pub mod monitoring;
@@ -1082,7 +1083,7 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
         tauri::async_runtime::spawn_blocking(move || {
             let ticket_for_poll = ticket.clone();
             let account_id = ticket.provider_account_id.clone();
-            let mut follow_ups = Vec::new();
+            let mut follow_ups = follow_up::host::Scan::default();
             let result = (|| {
                 let host = app.state::<Host>();
                 let (identity, client) = github_session(&host, &account_id)?;
@@ -1098,7 +1099,12 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                 }
                 let pull_requests = client
                     .poll_tracked_pull_requests(&connection.repository, &ticket_for_poll.tracked)?;
-                follow_ups = follow_up::host::scan(&app, &ticket_for_poll, &pull_requests)?;
+                follow_ups = follow_up::host::scan(
+                    &app,
+                    &ticket_for_poll,
+                    &pull_requests,
+                    &connection.identity,
+                )?;
                 Ok(monitoring::PollResult {
                     connection,
                     pull_requests,

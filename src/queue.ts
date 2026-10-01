@@ -23,6 +23,18 @@ export interface NormalWork {
 }
 
 export interface QueueItem {
+  feedback?: {
+    context: {
+      id: string;
+      root_id: string;
+      owner_agent_id: string;
+      original_head: string;
+      title: string;
+      body: string;
+    };
+    state: string;
+    reason: string | null;
+  }[];
   id: string;
   aliases?: string[];
   job: {
@@ -187,6 +199,20 @@ export function renderQueue(
       const summary = document.createElement("p");
       summary.textContent = item.summary;
       row.append(state, heading, context, summary);
+      if (item.feedback?.length) {
+        const details = document.createElement("details");
+        const title = document.createElement("summary");
+        title.textContent = `Current owned feedback (${item.feedback.length})`;
+        details.append(title);
+        for (const feedback of item.feedback) {
+          const entry = document.createElement("p");
+          entry.textContent = `${feedback.state.replaceAll("_", " ")}: ${feedback.context.title || feedback.context.root_id}. Owner ${feedback.context.owner_agent_id}; original head ${feedback.context.original_head}. ${feedback.reason ?? ""}${feedback.state === "cleared" ? " Agent reassessment, not provider thread closure." : ""}`;
+          const body = document.createElement("pre");
+          body.textContent = feedback.context.body;
+          details.append(entry, body);
+        }
+        row.append(details);
+      }
       for (const warning of item.warnings) {
         const text = document.createElement("p");
         text.className = "review-failure";

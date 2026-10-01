@@ -8,6 +8,7 @@ pub mod windows_credentials;
 pub use macos_keychain::MacKeychainStore as NativeCredentialStore;
 #[cfg(windows)]
 pub use windows_credentials::WindowsCredentialStore as NativeCredentialStore;
+pub mod conversation;
 pub mod metadata;
 pub mod oauth;
 pub mod provider;

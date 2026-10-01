@@ -63,6 +63,7 @@ impl State {
 
 #[derive(Serialize)]
 pub struct Item {
+    pub feedback: Vec<crate::feedback::View>,
     pub id: String,
     pub aliases: Vec<String>,
     pub job: QueueJob,
@@ -75,6 +76,8 @@ pub struct Item {
 
 #[derive(Serialize)]
 pub struct Snapshot {
+    pub feedback: BTreeMap<String, Vec<crate::feedback::View>>,
+    pub mentions: Vec<crate::feedback::Mention>,
     pub global_scan: Option<monitoring::GlobalScan>,
     pub tracked: Vec<monitoring::TrackedPullRequest>,
     pub health: Vec<ScheduleHealth>,
@@ -106,6 +109,8 @@ pub fn item_id(job: &QueueJob) -> String {
 pub fn snapshot(store: &Store, health: Vec<ScheduleHealth>) -> Result<Snapshot, String> {
     let settings = store.load_settings()?;
     let mut result = Snapshot {
+        feedback: BTreeMap::new(),
+        mentions: store.load_feedback()?.mentions,
         global_scan: store.load_monitoring_state()?.global_scan,
         tracked: store.load_queue_state()?.tracked,
         health,
@@ -115,6 +120,11 @@ pub fn snapshot(store: &Store, health: Vec<ScheduleHealth>) -> Result<Snapshot, 
         follow_ups: follow_up::host::candidates(store)?,
         items: vec![],
     };
+    for job in &result.jobs {
+        result
+            .feedback
+            .insert(item_id(job), crate::feedback::views(store, job)?);
+    }
     result.items = project(&settings, &result);
     Ok(result)
 }
@@ -143,6 +153,7 @@ fn review_state(
     settings: &Settings,
     candidate: &review::host::Candidate,
     publications: &[publication::host::Candidate],
+    feedback: &[crate::feedback::View],
 ) -> State {
     let batch = candidate.run.as_ref().and_then(|run| {
         publications
@@ -198,6 +209,9 @@ fn review_state(
     let Some(result) = &run.result else {
         return State::Failed;
     };
+    if result.output.feedback_conflict {
+        return State::WaitingForHuman;
+    }
     let Ok(current) = Selection::resolve(settings, &candidate.job, &candidate.assignment_id) else {
         return State::Blocked;
     };
@@ -261,7 +275,26 @@ fn review_state(
     }
     match result.output.decision {
         Decision::MachineSignOff => State::MachineSignedOff,
-        Decision::HumanInputRequired if published => State::WaitingForAuthor,
+        Decision::HumanInputRequired if published => {
+            let cleared = publication.is_some_and(|p| {
+                !result.output.findings.is_empty()
+                    && p.receipts.last().is_some_and(|r| {
+                        !r.comment_ids.is_empty()
+                            && r.comment_ids.iter().all(|id| {
+                                feedback.iter().any(|f| {
+                                    f.context.root_id == *id
+                                        && f.context.publication_id == p.id
+                                        && matches!(f.state, "closed" | "cleared")
+                                })
+                            })
+                    })
+            });
+            if cleared {
+                State::MachineSignedOff
+            } else {
+                State::WaitingForAuthor
+            }
+        }
         Decision::HumanInputRequired => State::WaitingForHuman,
     }
 }
@@ -269,6 +302,10 @@ fn review_state(
 fn follow_up_state(candidate: &follow_up::host::Candidate) -> Option<State> {
     use follow_up::Phase;
     let run = &candidate.run;
+    if matches!(run.phase, Phase::Quiet | Phase::Published) && !run.uncertain && run.error.is_none()
+    {
+        return None;
+    }
     if run.phase == Phase::StaleAfterPublication {
         return Some(State::StaleAfterPublication);
     }
@@ -311,7 +348,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
         .jobs
         .iter()
         .chain(snapshot.reviews.iter().map(|r| &r.job))
-        .chain(snapshot.follow_ups.iter().map(|f| &f.run.review.job))
+        .chain(snapshot.follow_ups.iter().map(|f| &f.run.context.job))
     {
         let job = current(job);
         groups
@@ -336,12 +373,19 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
         let follow_ups: Vec<_> = snapshot
             .follow_ups
             .iter()
-            .filter(|f| item_id(current(&f.run.review.job)) == id)
+            .filter(|f| crate::feedback::same_pr(&f.run.context.job, job))
             .collect();
         let mut states: Vec<_> = reviews
             .iter()
             .filter(|r| r.job.waiting != monitoring::WAITING_ASSIGNMENT_REMOVED)
-            .map(|r| review_state(settings, r, &snapshot.publications))
+            .map(|r| {
+                review_state(
+                    settings,
+                    r,
+                    &snapshot.publications,
+                    snapshot.feedback.get(&id).map(Vec::as_slice).unwrap_or(&[]),
+                )
+            })
             .collect();
         let mut warnings = BTreeSet::new();
         for review in &reviews {
@@ -374,6 +418,57 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             }
         }
         for follow_up in &follow_ups {
+            let prior_iteration = follow_up.run.context.job.head_sha != job.head_sha
+                || follow_up
+                    .run
+                    .context
+                    .job
+                    .work
+                    .as_ref()
+                    .map(|w| &w.iteration_id)
+                    != job.work.as_ref().map(|w| &w.iteration_id);
+            if prior_iteration
+                && follow_up.run.publication.is_none()
+                && !follow_up.run.uncertain
+                && follow_up.run.phase != follow_up::Phase::HumanInputRequired
+            {
+                continue;
+            }
+            if let Ok(origin) = follow_up.run.owned() {
+                let feedback = snapshot.feedback.get(&id).and_then(|values| {
+                    values.iter().find(|f| {
+                        f.context.publication_id == origin.publication_id
+                            && origin
+                                .thread
+                                .root()
+                                .is_ok_and(|r| r.id == f.context.root_id)
+                    })
+                });
+                let needs_reconciliation = follow_up.run.uncertain
+                    || follow_up
+                        .run
+                        .publication
+                        .as_ref()
+                        .is_some_and(|op| op.state != OperationState::Completed);
+                if !needs_reconciliation
+                    && feedback.is_some_and(|f| {
+                        f.context.closed
+                            || f.context
+                                .thread
+                                .as_ref()
+                                .and_then(|t| t.latest_external(&job.account_id))
+                                .is_some_and(|c| c.id != follow_up.run.trigger_id)
+                    })
+                {
+                    continue;
+                }
+            }
+            if follow_up.run.cancelled
+                && follow_up.run.result.is_none()
+                && follow_up.run.publication.is_none()
+            {
+                continue;
+            }
             if let Some(state) = follow_up_state(follow_up) {
                 states.push(state);
             }
@@ -382,6 +477,32 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 .flatten()
             {
                 warnings.insert(error.clone());
+            }
+        }
+        let feedback = snapshot.feedback.get(&id).cloned().unwrap_or_default();
+        for concern in &feedback {
+            match concern.state {
+                "open" => states.push(State::WaitingForAuthor),
+                "human_input_required" => states.push(State::WaitingForHuman),
+                "unavailable" | "owner_unavailable" => states.push(State::Blocked),
+                _ => {}
+            }
+        }
+        for mention in snapshot.mentions.iter().filter(|m| m.binding.matches(job)) {
+            if let Some(reason) = &mention.blocked {
+                states.push(State::Blocked);
+                warnings.insert(reason.clone());
+            }
+            if mention
+                .follow_up_id
+                .as_ref()
+                .is_some_and(|id| !snapshot.follow_ups.iter().any(|f| &f.run.id == id))
+            {
+                states.push(State::Blocked);
+                warnings.insert(
+                    "Mention execution history is unavailable; no replay or clearance inferred."
+                        .into(),
+                );
             }
         }
         for publication in snapshot
@@ -448,6 +569,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             _ => states.into_iter().min().unwrap_or(State::Blocked),
         };
         items.push(Item {
+            feedback,
             aliases: snapshot
                 .jobs
                 .iter()

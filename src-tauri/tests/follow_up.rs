@@ -1,5 +1,7 @@
 use pr_sniper_lib::{
-    follow_up::{self, Environment, Evidence, FollowUp, Phase, ReplyDecision, ReplyOutput},
+    follow_up::{
+        self, Environment, Evidence, FollowUp, Observation, Phase, ReplyDecision, ReplyOutput,
+    },
     github::{
         metadata::{Lifecycle, PullRequest},
         provider::{GithubClient, Response, Transport},
@@ -45,6 +47,7 @@ fn origin() -> Publication {
     let mut op = JobOperation::review(&job, 100);
     op.state = OperationState::Completed;
     let review=ReviewRun {
+        feedback_context: None,
         key:pr_sniper_lib::review::key(&job,ASSIGNMENT),selection:Selection::resolve(&settings(),&job,ASSIGNMENT).unwrap(),
         job,assignment_id:ASSIGNMENT.into(),operation:op,manual_start:true,trust_confirmed:true,phase:"Complete".into(),error:None,
         result:Some(serde_json::from_value(json!({"reviewed_base_sha":"b".repeat(40),
@@ -120,6 +123,7 @@ fn prepared(origin: &Publication) -> FollowUp {
     run.result = Some(ReviewResult {
         reviewed_base_sha: Some("b".repeat(40)),
         output: ReplyOutput {
+            feedback_assessments: Vec::new(),
             decision: ReplyDecision::Reply,
             body: "The function returns 42.".into(),
             new_information: "The function returns 42.".into(),
@@ -259,7 +263,7 @@ impl QueryTransport for Wire {
                 .iter()
                 .map(|t| node(t, 0, server.wrong_count, server.draft_replies))
                 .collect();
-            json!({"repository":{"databaseId":100,"pullRequest":{"fullDatabaseId":"9","headRefOid":"a".repeat(40),
+            json!({"repository":{"databaseId":100,"pullRequest":{"fullDatabaseId":"9","headRefOid":if server.changed_head {"c".repeat(40)} else {"a".repeat(40)},
                 "reviewThreads":connection(nodes,page,server.wrong_count)}}})
         } else {
             json!({"node":server.threads.iter().find(|t| Some(t.id.as_str())==variables["id"].as_str())            .map(|t|node(t,cursor,server.wrong_count,server.draft_replies))})
@@ -280,6 +284,7 @@ impl MutationTransport for Wire {
         if matches!(fault, Some(Fault::Before)) {
             return Err(ConnectionError::Timeout);
         }
+
         if matches!(fault, Some(Fault::Reject)) {
             return Ok(Response {
                 status: 422,
@@ -379,12 +384,17 @@ impl Environment for Fixture {
             .save_follow_ups(std::slice::from_ref(run))
             .map_err(Failure::permanent)
     }
-    fn thread(&mut self, run: &FollowUp) -> Result<Thread, Failure> {
-        GithubClient::new(self.wire.clone())
-            .owned_thread(&self.origin, &run.thread.id)?
-            .ok_or_else(|| Failure::permanent("Thread missing."))
+    fn observe(&mut self, run: &FollowUp) -> Result<Observation, Failure> {
+        Ok(Observation::Owned(
+            GithubClient::new(self.wire.clone())
+                .owned_thread(&self.origin, &run.owned().unwrap().thread.id)?
+                .ok_or_else(|| Failure::permanent("Thread missing."))?,
+        ))
     }
-    fn gate(&mut self, run: &FollowUp, current: &Thread) -> Result<Option<String>, Failure> {
+    fn gate(&mut self, run: &FollowUp, observed: &Observation) -> Result<Option<String>, Failure> {
+        let Observation::Owned(current) = observed else {
+            panic!("Owned fixture expected")
+        };
         if let Err(error) = pr_sniper_lib::capacity::publication_gate(&self.store) {
             return Ok(Some(error));
         }
@@ -397,8 +407,8 @@ impl Environment for Fixture {
         }
         Ok(publication::evaluate_review_gate(
             &settings(),
-            &run.review,
-            Some(&run.review.job),
+            &run.owned().unwrap().review,
+            Some(&run.context.job),
             &pull,
             GatePermissions {
                 active: true,
@@ -411,7 +421,7 @@ impl Environment for Fixture {
         .stop)
     }
     fn reply(&mut self, run: &FollowUp) -> Result<String, WriteFailure> {
-        let thread = self.thread(run).map_err(|failure| WriteFailure {
+        let thread = self.observe(run).map_err(|failure| WriteFailure {
             failure,
             uncertain: false,
         })?;
@@ -461,6 +471,26 @@ fn pause_during_lost_reply_response_retains_the_original_intent_and_reconciles_o
 }
 
 #[test]
+fn current_head_thread_observation_keeps_original_commit_provenance_and_rejects_tampered_roots() {
+    let fixture = Fixture::new();
+    fixture.wire.0.lock().unwrap().changed_head = true;
+    let client = GithubClient::new(fixture.wire.clone());
+    assert!(client.owned_threads(&fixture.origin).is_err());
+    let threads = client
+        .owned_threads_at(&fixture.origin, &"c".repeat(40))
+        .unwrap();
+    assert_eq!(threads.len(), 1);
+    assert_eq!(
+        threads[0].root().unwrap().original_commit.as_deref(),
+        Some("a".repeat(40).as_str())
+    );
+    fixture.wire.0.lock().unwrap().threads[0].comments[0].body = "Tampered root".into();
+    assert!(client
+        .owned_threads_at(&fixture.origin, &"c".repeat(40))
+        .is_err());
+}
+
+#[test]
 fn last_local_check_rejects_withdrawn_or_changed_publication_grants() {
     let mut run = prepared(&origin());
     let mut current = run.clone();
@@ -485,7 +515,7 @@ fn analysis_result_commit_fences_account_cancellation_and_late_settings_changes(
     fixture.store.save_settings(&settings()).unwrap();
     fixture
         .store
-        .save_queue(std::slice::from_ref(&run.review.job))
+        .save_queue(std::slice::from_ref(&run.context.job))
         .unwrap();
     fixture
         .store
@@ -568,7 +598,9 @@ fn one_signed_reply_has_a_confirmed_receipt_and_cannot_repeat() {
     assert!(run.body.as_ref().unwrap().ends_with("\u{f05b} PR Sniper"));
     assert!(follow_up::publish(&mut fixture, &mut run).is_err());
     assert_eq!(fixture.writes(), 1);
-    let current = fixture.thread(&run).unwrap();
+    let Observation::Owned(current) = fixture.observe(&run).unwrap() else {
+        panic!("Owned fixture expected")
+    };
     assert_eq!(current.latest_external("22").unwrap().id, "101");
 }
 
