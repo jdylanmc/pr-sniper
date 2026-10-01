@@ -782,6 +782,16 @@ pub(crate) fn launch_analysis_worker(
 ) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
+        let operation_id = run
+            .analysis
+            .as_ref()
+            .expect("dispatched analysis")
+            .id
+            .clone();
+        let key = crate::capacity::WorkId {
+            kind: run.kind(),
+            id: run.id.clone(),
+        };
         let outcome = async {
             let generation = app
                 .state::<Host>()
@@ -803,34 +813,39 @@ pub(crate) fn launch_analysis_worker(
         if let Err(error) = outcome {
             crate::report(&app, error.message);
         }
-        // Persistence failure leaves the reservation visibly owned, never replayed.
-        let saved = app
-            .state::<Host>()
+        let host = app.state::<Host>();
+        let saved = host
             .store
             .lock()
             .map_err(|_| "Thread storage unavailable.".to_string())
-            .and_then(|s| s.load_follow_ups())
-            .is_ok_and(|runs| {
-                runs.iter()
-                    .find(|r| r.id == run.id)
-                    .and_then(|r| r.analysis.as_ref())
-                    .is_some_and(|op| op.state != OperationState::Running)
-            });
-        if saved {
-            crate::capacity::refill(
-                &app,
-                &crate::capacity::WorkId {
-                    kind: run.kind(),
-                    id: run.id.clone(),
-                },
-                &run.analysis.as_ref().expect("dispatched analysis").id,
-            );
-        } else if let Some(op) = &run.analysis {
-            if let Err(error) = app.state::<Host>().ai.persistence_failed(&op.id) {
+            .and_then(|store| finish_analysis_worker(&store, &host.ai, &key, &operation_id));
+        if let Err(error) = saved {
+            crate::report(&app, error);
+            if let Err(error) = host.ai.persistence_failed(&operation_id) {
                 crate::report(&app, error);
             }
+        } else if let Err(error) = crate::capacity::Coordinator::pump(&app) {
+            crate::report(&app, error);
         }
     });
+}
+
+fn finish_analysis_worker(
+    store: &Store,
+    capacity: &crate::capacity::Coordinator,
+    key: &crate::capacity::WorkId,
+    operation_id: &str,
+) -> Result<(), String> {
+    let saved = store
+        .load_follow_ups()?
+        .into_iter()
+        .find(|r| r.id == key.id)
+        .and_then(|r| r.analysis)
+        .is_some_and(|op| op.id != operation_id || op.state != OperationState::Running);
+    if !saved {
+        return Err("Analysis outcome could not be persisted; capacity remains reserved.".into());
+    }
+    capacity.release(key, operation_id)
 }
 
 fn save_to_store(store: &Store, run: &FollowUp) -> Result<(), String> {
@@ -1019,12 +1034,6 @@ impl Environment for Native {
             .store
             .lock()
             .map_err(|_| Failure::permanent("Thread storage unavailable."))?;
-        let current = store
-            .load_follow_ups()
-            .map_err(Failure::permanent)?
-            .into_iter()
-            .find(|r| r.id == run.id)
-            .ok_or_else(|| Failure::permanent("Thread follow-up disappeared."))?;
         if accepting_analysis {
             let allowed = !host.quitting.load(Ordering::SeqCst)
                 && !self.cancelled.load(Ordering::SeqCst)
@@ -1041,29 +1050,7 @@ impl Environment for Native {
                 .ok_or_else(|| Failure::permanent("Analysis result unavailable."))?;
             return complete_analysis(&store, run, Ok(result), allowed, self.now()?);
         }
-        if run.publication.is_none()
-            && run
-                .analysis
-                .as_ref()
-                .is_some_and(|op| op.state == OperationState::Running)
-        {
-            if let (Some(operation), Some(saved)) = (&mut run.analysis, &current.analysis) {
-                operation.interruption = saved.interruption;
-            }
-        }
-        if current.cancelled {
-            run.cancelled = true;
-            run.confirmed = false;
-            if run.publication.is_none() {
-                run.result = None;
-                run.phase = Phase::Stopped;
-                run.error = Some("Thread follow-up cancelled.".into());
-                if let Some(op) = run.analysis.as_mut() {
-                    op.fail(&Failure::permanent("Cancelled.").monitoring(), self.now()?);
-                }
-            }
-        }
-        save_to_store(&store, run).map_err(Failure::permanent)
+        save_progress(&store, run, self.now()?)
     }
     fn observe(&mut self, run: &FollowUp) -> Result<Observation, Failure> {
         let client = self.read_client(run)?;
@@ -1213,6 +1200,45 @@ impl Environment for Native {
             ),
         }
     }
+}
+
+fn save_progress(store: &Store, run: &mut FollowUp, now: i64) -> Result<(), Failure> {
+    let current = store
+        .load_follow_ups()
+        .map_err(Failure::permanent)?
+        .into_iter()
+        .find(|r| r.id == run.id)
+        .ok_or_else(|| Failure::permanent("Thread follow-up disappeared."))?;
+    if run.publication.is_none()
+        && current.analysis.as_ref().map(|op| &op.id) != run.analysis.as_ref().map(|op| &op.id)
+    {
+        return Err(Failure::permanent(
+            "A newer analysis attempt owns this follow-up.",
+        ));
+    }
+    if run.publication.is_none()
+        && run
+            .analysis
+            .as_ref()
+            .is_some_and(|op| op.state == OperationState::Running)
+    {
+        if let (Some(operation), Some(saved)) = (&mut run.analysis, &current.analysis) {
+            operation.interruption = saved.interruption;
+        }
+    }
+    if current.cancelled {
+        run.cancelled = true;
+        run.confirmed = false;
+        if run.publication.is_none() {
+            run.result = None;
+            run.phase = Phase::Stopped;
+            run.error = Some("Thread follow-up cancelled.".into());
+            if let Some(op) = run.analysis.as_mut() {
+                op.fail(&Failure::permanent("Cancelled.").monitoring(), now);
+            }
+        }
+    }
+    save_to_store(store, run).map_err(Failure::permanent)
 }
 
 impl Native {
@@ -1472,42 +1498,51 @@ pub(crate) async fn cancel_follow_up(app: tauri::AppHandle, id: String) -> Resul
             .store
             .lock()
             .map_err(|_| "Thread storage unavailable.")?;
-        let mut runs = store.load_follow_ups()?;
-        let run = runs
-            .iter_mut()
-            .find(|r| r.id == id)
-            .ok_or("Thread follow-up unavailable.")?;
-        if run.receipt.is_some() {
-            return Err("A published reply cannot be withdrawn.".into());
-        }
-        run.cancelled = true;
-        run.confirmed = false;
-        run.error = Some("Thread follow-up cancelled.".into());
-        if let Some(operation) = &run.analysis {
-            host.ai.cancel(&operation.id)?;
-        }
-        if let Some((_, cancelled)) = active.as_ref().filter(|(active, _)| active == &id) {
-            cancelled.store(true, Ordering::SeqCst);
-        } else {
-            let now = now_seconds()?;
-            for op in [&mut run.analysis, &mut run.publication]
-                .into_iter()
-                .flatten()
-            {
-                if op.state != OperationState::Completed {
-                    op.fail(&Failure::permanent("Cancelled.").monitoring(), now);
-                }
-            }
-            run.phase = if run.uncertain {
-                Phase::Unresolved
-            } else {
-                Phase::Stopped
-            };
-        }
-        store.save_follow_ups(&runs)
+        cancel_in_store(&store, &host.ai, active.as_ref(), &id, now_seconds()?)
     })
     .await
     .map_err(|_| "Follow-up cancellation failed.".to_string())?
+}
+
+fn cancel_in_store(
+    store: &Store,
+    capacity: &crate::capacity::Coordinator,
+    active_publication: Option<&(String, Arc<AtomicBool>)>,
+    id: &str,
+    now: i64,
+) -> Result<(), String> {
+    let mut runs = store.load_follow_ups()?;
+    let run = runs
+        .iter_mut()
+        .find(|r| r.id == id)
+        .ok_or("Thread follow-up unavailable.")?;
+    if run.receipt.is_some() {
+        return Err("A published reply cannot be withdrawn.".into());
+    }
+    run.cancelled = true;
+    run.confirmed = false;
+    run.error = Some("Thread follow-up cancelled.".into());
+    if let Some(operation) = &run.analysis {
+        capacity.cancel(&operation.id)?;
+    }
+    if let Some((_, cancelled)) = active_publication.filter(|(active, _)| active == id) {
+        cancelled.store(true, Ordering::SeqCst);
+    } else {
+        for op in [&mut run.analysis, &mut run.publication]
+            .into_iter()
+            .flatten()
+        {
+            if op.state != OperationState::Completed {
+                op.fail(&Failure::permanent("Cancelled.").monitoring(), now);
+            }
+        }
+        run.phase = if run.uncertain {
+            Phase::Unresolved
+        } else {
+            Phase::Stopped
+        };
+    }
+    store.save_follow_ups(&runs)
 }
 
 #[cfg(test)]

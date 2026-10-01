@@ -854,6 +854,172 @@ fn mixed_normal_owner_reply_and_mention_use_real_fifo_dispatch_and_pause_account
     assert_eq!(store.load_publications().unwrap(), vec![origin]);
 }
 
+fn retry_while_phase_save_is_held(kind: Kind) {
+    use std::{sync::mpsc, time::Duration};
+
+    let (root, store, origin, mut thread) = fixture(1);
+    let comments = if kind == Kind::Mention {
+        vec![mention("501", "@actor explain this revision")]
+    } else {
+        explanation(&mut thread, "11");
+        vec![]
+    };
+    observe(&store, &origin, &thread, 'a', comments, NOW + 10);
+    let reviews = std::fs::read(root.path().join("state/reviews.json")).unwrap();
+    let publications = std::fs::read(root.path().join("state/publications.json")).unwrap();
+    let capacity = Capacity::default();
+    let mut batch = capacity.dispatch(&store, NOW + 20).unwrap();
+    assert!(batch.errors.is_empty(), "{:?}", batch.errors);
+    assert_eq!(batch.dispatched.len(), 1);
+    let work = batch.dispatched.remove(0);
+    let key = work.key();
+    assert_eq!(key.kind, kind);
+    let Dispatch::Reply(mut old, token) = work else {
+        panic!("Conversation worker expected")
+    };
+    let old_id = old.analysis.as_ref().unwrap().id.clone();
+    let store = Mutex::new(store);
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let accepted = std::thread::scope(|scope| {
+        let store = &store;
+        let capacity = &capacity;
+        let key = &key;
+        let old_id = &old_id;
+        let worker = scope.spawn(move || {
+            old.phase = Phase::Analyzing;
+            ready_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let store = store.lock().unwrap();
+            // The same locked save called by Native at both analysis phase boundaries.
+            let saved = save_progress(&store, &mut old, NOW + 24);
+            let failure = saved.clone().err().unwrap_or_else(Failure::cancelled);
+            let completed = complete_analysis(&store, &mut old, Err(failure), false, NOW + 24);
+            let after = store.load_follow_ups().unwrap().remove(0);
+            let released = finish_analysis_worker(&store, capacity, key, old_id);
+            (saved, completed, after, released)
+        });
+        ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let accepted = {
+            let store = store.lock().unwrap();
+            cancel_in_store(&store, capacity, None, &key.id, NOW + 21).unwrap();
+            assert!(token.load(Ordering::SeqCst));
+            let cancelled = store.load_follow_ups().unwrap().remove(0);
+            assert_eq!(
+                cancelled.analysis.as_ref().unwrap().state,
+                OperationState::Failed
+            );
+            let accepted = request_analysis(&store, &key.id, true, NOW + 22).unwrap();
+            assert_ne!(&accepted.analysis.as_ref().unwrap().id, old_id);
+            assert_eq!(
+                accepted.analysis.as_ref().unwrap().state,
+                OperationState::Queued
+            );
+            assert_eq!(accepted.history, vec![cancelled.analysis.unwrap()]);
+            assert!(accepted.manual_start);
+            assert!(!accepted.cancelled);
+            assert!(capacity
+                .dispatch(&store, NOW + 23)
+                .unwrap()
+                .dispatched
+                .is_empty());
+            let snapshot = capacity.snapshot(&store, NOW + 23).unwrap();
+            assert_eq!((snapshot.active, snapshot.stopping), (1, 1));
+            accepted
+        };
+        release_tx.send(()).unwrap();
+        let (saved, completed, after, released) = worker.join().unwrap();
+        assert_eq!(
+            after, accepted,
+            "Stale phase save/completion replaced accepted retry intent"
+        );
+        assert!(
+            saved.is_err(),
+            "Superseded worker must stop at the phase save"
+        );
+        assert!(completed.is_err());
+        released.unwrap();
+        accepted
+    });
+    let store = store.lock().unwrap();
+    assert!(capacity.finished());
+    let mut batch = capacity.dispatch(&store, NOW + 25).unwrap();
+    assert!(batch.errors.is_empty(), "{:?}", batch.errors);
+    assert_eq!(batch.dispatched.len(), 1);
+    let Dispatch::Reply(mut retry, _) = batch.dispatched.remove(0) else {
+        panic!("Retry expected")
+    };
+    let retry_id = retry.analysis.as_ref().unwrap().id.clone();
+    assert_eq!(retry_id, accepted.analysis.as_ref().unwrap().id);
+    assert_eq!(retry.analysis.as_ref().unwrap().attempt_count, 1);
+    assert_eq!(retry.history, accepted.history);
+    assert_eq!(retry.target, accepted.target);
+    assert_eq!(retry.context, accepted.context);
+    assert!(retry.manual_start);
+    assert!(capacity
+        .dispatch(&store, NOW + 26)
+        .unwrap()
+        .dispatched
+        .is_empty());
+    // A late A callback cannot release B's reservation or change its durable operation.
+    assert!(finish_analysis_worker(&store, &capacity, &key, &old_id).is_err());
+    let snapshot = capacity.snapshot(&store, NOW + 26).unwrap();
+    assert_eq!((snapshot.active, snapshot.stopping), (1, 0));
+    assert!(snapshot
+        .work
+        .iter()
+        .find(|w| w.key == key)
+        .unwrap()
+        .reason
+        .is_none());
+    assert_eq!(store.load_follow_ups().unwrap(), vec![*retry.clone()]);
+    let assessments = retry
+        .context
+        .feedback
+        .iter()
+        .filter(|c| {
+            kind == Kind::Reply && !c.closed && c.owner_agent_id == retry.context.selection.agent.id
+        })
+        .map(|c| assessment(&c.id, Disposition::Open))
+        .collect();
+    let result = output_for(&retry, ReplyDecision::Quiet, assessments);
+    complete_analysis(&store, &mut retry, Ok(result), true, NOW + 27).unwrap();
+    finish_analysis_worker(&store, &capacity, &key, &retry_id).unwrap();
+    assert!(capacity.finished());
+    assert!(capacity
+        .dispatch(&store, NOW + 28)
+        .unwrap()
+        .dispatched
+        .is_empty());
+    let saved = store.load_follow_ups().unwrap().remove(0);
+    assert_eq!(saved.analysis.as_ref().unwrap().id, retry_id);
+    assert_eq!(saved.analysis.as_ref().unwrap().attempt_count, 1);
+    assert_eq!(
+        saved.analysis.as_ref().unwrap().state,
+        OperationState::Completed
+    );
+    assert_eq!(saved.history, accepted.history);
+    assert!(saved.manual_start);
+    assert_eq!(
+        std::fs::read(root.path().join("state/reviews.json")).unwrap(),
+        reviews
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("state/publications.json")).unwrap(),
+        publications
+    );
+}
+
+#[test]
+fn r72_owner_reply_retry_survives_stale_production_phase_save_and_completion() {
+    retry_while_phase_save_is_held(Kind::Reply);
+}
+
+#[test]
+fn r72_primary_mention_retry_survives_stale_production_phase_save_and_completion() {
+    retry_while_phase_save_is_held(Kind::Mention);
+}
+
 #[test]
 fn unavailable_owner_and_fork_trust_do_not_gain_authority_from_comments() {
     let (_root, store, origin, mut thread) = fixture(1);
