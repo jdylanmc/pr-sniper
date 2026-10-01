@@ -207,7 +207,11 @@ export async function mountSettings(
   let disposeCopilot: (() => void) | undefined;
   let updateAgentAccounts: (() => void) | undefined;
   let refreshAgentAccounts: (() => void) | undefined;
-  const dialogs = createDialogs(content, () => revision++);
+  const dialogs = createDialogs(
+    content,
+    () => revision++,
+    (opener, parent) => restoreControl(opener, parent ?? content, parent),
+  );
   const notificationView = { target: "" };
   const dirty = () => !!draft && !sameResource(draft, saved);
   const preferencesDirty = () =>
@@ -224,6 +228,41 @@ export async function mountSettings(
   const repositories = () => draft.repositories ?? [];
   const doctrines = () => draft.doctrines ?? [];
   const agents = () => draft.agents ?? [];
+  function restoreControl(
+    opener: HTMLElement,
+    scope = content,
+    fallback: HTMLElement | undefined = app.querySelector("h1")!,
+  ) {
+    if (!scope.isConnected || scope.closest('[hidden],[aria-hidden="true"]'))
+      return;
+    const key = opener.dataset.focusKey;
+    const replacement = opener.isConnected
+      ? opener
+      : key
+        ? scope.querySelector<HTMLElement>(
+            `[data-focus-key="${CSS.escape(key)}"]`,
+          )
+        : opener.id
+          ? scope.querySelector<HTMLElement>(`#${CSS.escape(opener.id)}`)
+          : null;
+    const target =
+      replacement &&
+      !replacement.matches(":disabled") &&
+      replacement.getClientRects().length
+        ? replacement
+        : fallback;
+    target?.focus({ preventScroll: true });
+  }
+  function rememberControl(
+    scope = content,
+    fallback?: HTMLElement,
+    opener = document.activeElement,
+  ) {
+    // Retain logical identity across this redraw, not a node it will detach.
+    return opener instanceof HTMLElement && scope.contains(opener)
+      ? () => restoreControl(opener, scope, fallback)
+      : () => {};
+  }
   function changed() {
     revision++;
     status.textContent = busy
@@ -242,6 +281,7 @@ export async function mountSettings(
     busy = true;
     changed();
     if (modal) modal.dataset.closeLocked = "true";
+    const focused = document.activeElement;
     const controls = [
       ...app.querySelectorAll<
         | HTMLInputElement
@@ -263,6 +303,13 @@ export async function mountSettings(
       controls.forEach(
         ({ control, disabled }) => (control.disabled = disabled),
       );
+      // Disabling a focused control can move focus to body while IPC is pending.
+      if (
+        focused instanceof HTMLElement &&
+        app.contains(focused) &&
+        document.activeElement === document.body
+      )
+        restoreControl(focused, app);
       if (modal) delete modal.dataset.closeLocked;
       busy = false;
       changed();
@@ -317,6 +364,10 @@ export async function mountSettings(
   function render() {
     if (!draft) return;
     dialogs.closeAll();
+    const restoreFocus = rememberControl();
+    const awaitingAgentAccess =
+      document.activeElement === content.querySelector("#new-agent");
+    let focusAfterRender: Element | null;
     updateAgentAccounts = undefined;
     refreshAgentAccounts = undefined;
     disposeCopilot?.();
@@ -336,9 +387,15 @@ export async function mountSettings(
     content.replaceChildren();
     if (section === "integrations") renderIntegrations();
     if (section === "doctrines") renderDoctrines();
-    if (section === "agents") renderAgents();
+    if (section === "agents")
+      renderAgents(() => {
+        if (awaitingAgentAccess && document.activeElement === focusAfterRender)
+          restoreFocus();
+      });
     if (section === "preferences") renderPreferences();
     changed();
+    restoreFocus();
+    focusAfterRender = document.activeElement;
   }
   function navigate(next: Section) {
     if (busy) return;
@@ -368,6 +425,9 @@ export async function mountSettings(
       const row = document.createElement("article");
       row.className = "doctrine-card";
       row.innerHTML = `<div><h3>${escape(doctrine.title)}</h3><p>${escape(doctrine.body)}</p><p class="word-count">${words(doctrine.body)} words</p></div><div class="card-actions"><button data-edit>Edit</button><button data-remove>Delete</button></div>`;
+      for (const action of ["edit", "remove"])
+        row.querySelector<HTMLElement>(`[data-${action}]`)!.dataset.focusKey =
+          `doctrine:${doctrine.title}:${action}`;
       row.querySelector<HTMLButtonElement>("[data-edit]")!.onclick = (event) =>
         editDoctrine(event.currentTarget as HTMLButtonElement, doctrine);
       row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick = async (
@@ -453,6 +513,7 @@ export async function mountSettings(
           },
           modal,
         );
+        if (existing) opener.dataset.focusKey = `doctrine:${title}:edit`;
         modal.close();
         render();
       } catch (cause) {
@@ -464,7 +525,7 @@ export async function mountSettings(
 
   // -------------------------------------------------------------------- Agents
 
-  function renderAgents() {
+  function renderAgents(onReady: () => void) {
     content.innerHTML = `<div class="section-actions"><h2>Your agents</h2><button class="primary" id="new-agent" disabled>New agent</button></div><p class="settings-hint">Each Agent chooses an AI account and a model returned by that account. Doctrine, prompt and saved signature stay reusable across repository assignments. Repository credentials, not the AI account, determine the acting identity for repository access and gated comment publication.</p><p class="settings-notice" data-copilot-status>Reading Copilot accounts...</p><button id="manage-copilot">Manage Copilot accounts</button><div class="agent-list"></div>`;
     const list = content.querySelector(".agent-list")!;
     if (!agents().length)
@@ -484,6 +545,9 @@ export async function mountSettings(
           "",
         )}<span class="chip">${escape(agent.signature)}</span></div></div><div class="card-actions"><button data-edit>Edit</button><button data-remove>Delete</button></div>`;
       row.dataset.agentId = agent.id;
+      for (const action of ["edit", "remove"])
+        row.querySelector<HTMLElement>(`[data-${action}]`)!.dataset.focusKey =
+          `agent:${agent.id}:${action}`;
       row.querySelector<HTMLButtonElement>("[data-edit]")!.onclick = (event) =>
         editAgent(event.currentTarget as HTMLButtonElement, agent);
       row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick = async (
@@ -544,6 +608,7 @@ export async function mountSettings(
             : "No verified Copilot connection. Connect an account in Integrations; existing Agents and assignments are retained.";
           content.querySelector<HTMLButtonElement>("#new-agent")!.disabled =
             !connected;
+          onReady();
           for (const agent of agents()) {
             const state = content.querySelector<HTMLElement>(
               `[data-agent-id="${agent.id}"] [data-account-state]`,
@@ -995,6 +1060,7 @@ export async function mountSettings(
     }
     function rows() {
       const list = content.querySelector<HTMLElement>(".repository-list")!;
+      const restoreFocus = rememberControl(list);
       list.replaceChildren();
       content.querySelector("#selected-count")!.textContent =
         `${repositories().filter((r) => r.enabled).length} selected`;
@@ -1028,8 +1094,15 @@ export async function mountSettings(
                 saved.repositories?.find((r) => r.id === current.id),
               ),
           );
+          for (const [selector, action] of [
+            ["input", "monitor"],
+            [".configure", "settings"],
+          ]) {
+            const control = row.querySelector<HTMLElement>(selector);
+            if (control)
+              control.dataset.focusKey = `repository:${current?.id ?? item.name ?? item.path}:${action}`;
+          }
         };
-        markDraft();
         const localName = item.path.split(isWindows ? /[\\/]/ : "/").pop();
         const duplicateBinding =
           !!repository &&
@@ -1045,8 +1118,11 @@ export async function mountSettings(
         row.innerHTML = `<input type="checkbox" aria-label="Monitor ${escape(item.name ?? localName ?? "repository")}" ${repository?.enabled ? "checked" : ""} ${!item.name ? "disabled" : ""} />
           <span class="repo-symbol">${icon("integrations")}</span><div class="repository-info"><strong>${escape(item.name?.split("/")[1] ?? localName ?? "")}</strong><p>${escape(item.name ?? item.unavailable ?? "Unavailable")}</p><p>${escape(providerLabel)}</p>${item.paths.length ? `<details class="clone-paths"><summary>${item.paths.length} local ${item.paths.length === 1 ? "clone" : "clones"}</summary><ul>${item.paths.map((path) => `<li>${escape(path)}</li>`).join("")}</ul></details>` : ""}</div>
           ${item.name ? `<span class="repository-note">${assignmentCount ? `${assignmentCount} agent${assignmentCount === 1 ? "" : "s"} assigned` : "No agents assigned"}</span><button class="configure">Settings</button>` : ""}`;
+        markDraft();
         row.querySelector<HTMLInputElement>("input")!.onchange = (event) => {
-          markDraft(select(item, (event.target as HTMLInputElement).checked));
+          const checkbox = event.currentTarget as HTMLInputElement;
+          checkbox.focus({ preventScroll: true });
+          markDraft(select(item, checkbox.checked));
           content.querySelector("#selected-count")!.textContent =
             `${repositories().filter((r) => r.enabled).length} selected`;
         };
@@ -1068,10 +1144,12 @@ export async function mountSettings(
               (draft.repositories ??= []).push(repo);
               changed();
             }
+            markDraft(repo);
             repositoryDialog(repo, event.currentTarget as HTMLButtonElement);
           });
         list.append(row);
       }
+      restoreFocus();
     }
     rows();
   }
@@ -1197,6 +1275,8 @@ export async function mountSettings(
       "[data-cancel-repository]",
     )!.onclick = () => {
       acceptResource(draft, clone(saved), repositoryEdit(repository));
+      if (!repositories().some((item) => item.id === repository.id))
+        opener.dataset.focusKey = `repository:${repository.name}:settings`;
       modal.close();
       render();
     };
@@ -1538,12 +1618,18 @@ export async function mountSettings(
       renderCandidates();
     }
 
-    function renderAssignments() {
+    function renderAssignments(opener = document.activeElement) {
       const list = modal.querySelector<HTMLElement>(".assignment-list")!;
+      const restoreFocus = rememberControl(
+        list,
+        modal.querySelector<HTMLElement>("[data-assign-agent]")!,
+        opener,
+      );
       const assignments = repository.assignments ?? [];
       if (!assignments.length) {
         list.innerHTML =
           '<p class="settings-empty">No agents assigned. This repository is watched but nothing reviews it yet.</p>';
+        restoreFocus();
         return;
       }
       list.innerHTML = "";
@@ -1552,6 +1638,9 @@ export async function mountSettings(
         const row = document.createElement("div");
         row.className = "assignment-row";
         row.innerHTML = `<div><strong>${escape(agent?.name ?? "Deleted agent")}</strong><p>${primaryAssignmentId(repository) === assignment.id ? "Primary \u00b7 " : ""}${assignment.comment ? "Comments" : "Silent"}${assignment.actions?.approve ? " \u00b7 Approve opted in" : ""}${assignment.actions?.merge ? " \u00b7 Merge opted in (primary only)" : ""}</p></div><button data-edit>Edit</button><button data-remove>Remove</button>`;
+        for (const action of ["edit", "remove"])
+          row.querySelector<HTMLElement>(`[data-${action}]`)!.dataset.focusKey =
+            `assignment:${assignment.id}:${action}`;
         row.querySelector<HTMLButtonElement>("[data-edit]")!.onclick = (
           event,
         ) =>
@@ -1561,22 +1650,31 @@ export async function mountSettings(
             () => renderAssignments(),
             assignment,
           );
-        row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick = () => {
+        row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick = (
+          event,
+        ) => {
           repository.assignments = assignments.filter((a) => a !== assignment);
           if (repository.primary_assignment_id === assignment.id)
             delete repository.primary_assignment_id;
           changed();
-          renderAssignments();
+          renderAssignments(event.currentTarget as HTMLButtonElement);
         };
         list.append(row);
       }
+      restoreFocus();
     }
-    function renderWatchlist() {
+    function renderWatchlist(opener = document.activeElement) {
       const list = modal.querySelector<HTMLElement>(".watchlist")!;
+      const restoreFocus = rememberControl(
+        list,
+        modal.querySelector<HTMLElement>("[data-add-people]")!,
+        opener,
+      );
       const people = repository.watched_authors ?? [];
       if (!people.length) {
         list.innerHTML =
           '<p class="settings-empty">No people added for this repository. Inherited watched authors still apply; if the effective author filter is empty, all authors qualify only after scope confirmation and are not trusted. Reviewer requests qualify when that trigger is enabled.</p>';
+        restoreFocus();
         return;
       }
       list.innerHTML = "";
@@ -1584,13 +1682,18 @@ export async function mountSettings(
         const row = document.createElement("div");
         row.className = "watchlist-row";
         row.innerHTML = `<span>@${escape(person.login)}</span><button data-remove aria-label="Remove ${escape(person.login)}">Remove</button>`;
-        row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick = () => {
+        row.querySelector<HTMLElement>("[data-remove]")!.dataset.focusKey =
+          `person:${person.id}:remove`;
+        row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick = (
+          event,
+        ) => {
           repository.watched_authors = people.filter((p) => p !== person);
           changed();
-          renderWatchlist();
+          renderWatchlist(event.currentTarget as HTMLButtonElement);
         };
         list.append(row);
       }
+      restoreFocus();
     }
   }
 

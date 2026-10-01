@@ -117,6 +117,13 @@ the selected inspector intact; its own updates retain focus and open
 configuration/provenance disclosures. Back and Settings dialog close restore
 the actual activating control, including WebKit pointer clicks that do not focus
 buttons and asynchronously opened nested dialogs.
+Settings saves and repository cancellation retain that logical opener through
+the final parent and account-refresh redraw, using stable resource identities
+even after renaming. Removed resources return focus to the visible section
+heading; removed assignments or watched people return to their respective Add
+control, never another row. Background completion does not move focus out of
+the current destination. Repository monitoring checkboxes explicitly retain
+activation focus on WebKit as well as Chromium.
 
 The [native acceptance procedure](tests/macos-acceptance.md) and compiled
 test-owned smoke harness cover the actual window boundary separately from
