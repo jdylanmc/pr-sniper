@@ -27,6 +27,12 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   separate the selected job's state from sibling activity and PR-wide outcomes.
 - Retain historical job ordinals after later same-commit work and show planned
   configuration for failures before the first execution attempt.
+- Distinguish failed/retrying conversation analysis, intentional cancellation
+  and pending/unknown reply publication; analysis completion is not a receipt.
+- Keep selected job controls intact during unrelated polling and retain keyed
+  focus and configuration disclosures through the selected job's own updates.
+- Restore actual row and Settings dialog openers on WebKit pointer activation,
+  including nested, replacement and asynchronously opened editors.
 
 ## 0.1.2 - 2026-10-01
 

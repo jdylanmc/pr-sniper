@@ -23,7 +23,11 @@ that target. The default target is `src-tauri/target`.
 one detail layer, exact Back row/scroll/focus, retained unsaved editors,
 Escape/close/hide/reopen, native route revisions, notification destinations,
 missing/escaped identities, external-auth and folder-dialog fixture returns,
-and 400px/small-monitor layout. Final and conversation suites also exercise
+and 400px/small-monitor layout. Explicit pointer, keyboard and nonfocusing
+activation regressions cover row redraw, nested/replacement Settings editors,
+and retained drafts. `monitoring-activation.spec.mjs` also moves focus while a
+scope preview is pending to prove that closing its asynchronous dialog returns
+to the actual invoker. Final and conversation suites also exercise
 their exact panel job routes. The bridge serializes the production native
 `panel::Session` only to carry it between fixture processes; the real host
 retains that session in memory. Only the Tauri event delivery and window
@@ -35,8 +39,10 @@ remain required.
 301-file ordered guide, exact provider links, failed snapshot recovery, seven
 Agent jobs at capacity four, duplicate reservation identity, completion/refill,
 tail append, retained blockers, immutable full configuration and keyboard access
-at 320x300 with reduced motion. Screenshots live under
-`src-tauri/target/visual-77-79` (or the configured target). The fixture-only
+at 320x300 with reduced motion. Automatic-poll regressions retain the exact
+selected inspector controls for unrelated job changes and preserve keyed focus
+and open configuration/provenance through its own status transition.
+Screenshots live under `<target>/visual-correction-1`. The fixture-only
 `fixture_capacity_snapshot` command uses the real native Coordinator reservation
 and projection path with synthetic jobs. It launches no workers or provider
 sessions; deterministic native capacity tests separately prove dispatch/refill.
@@ -148,9 +154,27 @@ Agent's inputs, effective authority and repository gates.
 and macOS without changing authorization or native policy. Browser presentation
 checks do not select a native credential backend.
 
-The tests do not exercise native Tauri command registration, macOS WebKit,
+The default Chromium run does not exercise native Tauri command registration, macOS WebKit,
 Windows WebView2, tray behavior, or login-item integration. They never launch the native
-application or changes host login settings. Tests run serially. Port 1421 must
+application or change host login settings. The same production build and native
+bridge can be exercised in **headless Playwright WebKit**, including its
+nonfocusing pointer clicks, without launching the app:
+
+```sh
+SETTINGS_TEST_PORT=1441 npm exec playwright -- test \
+  --config tests/settings/playwright.config.mjs --browser=webkit \
+  visual.spec.mjs panel.spec.mjs actions.spec.mjs conversations.spec.mjs \
+  css-compatibility.spec.mjs corrections.spec.mjs monitoring-activation.spec.mjs
+```
+
+Build first with `npm run build` and
+`cargo build --manifest-path src-tauri/Cargo.toml --locked --example settings_bridge`.
+For an isolated `CARGO_TARGET_DIR`, build the bridge there or copy the compiled
+bridge from the same native source revision into its `debug/examples` directory.
+Install the matching WebKit build only if it is missing. Playwright WebKit is
+browser regression evidence, not native WKWebView/installed-app acceptance.
+Keep screenshots in the owned target and generate hash manifests only after
+all capture runs finish. Tests run serially. Port 1421 must
 be free, or select another port with `SETTINGS_TEST_PORT=1422 npm run test:settings`
 for a separate worktree. An existing server is never reused.
 
@@ -168,7 +192,13 @@ original receipts and proving no duplicate batch is posted.
 `conversations.spec.mjs` exercises typed conversation targets/current contexts
 through the Store bridge, explicit versus absent feedback assessments, retained
 provider-closed tombstones, unavailable observations and missing-primary
-presentation. Native conversation tests exercise production scan admission,
+presentation.
+The inspector matrix retains native-shaped stopped/failed/manual-retry and
+stopped/backoff operations for both owned replies and primary mentions. Completed
+analysis is combined with quiet, human judgment, waiting/publishing, rejected,
+uncertain and confirmed publication states; unknown outcomes retain the original
+reconciliation controls, and only actual AI reservations animate.
+Native conversation tests exercise production scan admission,
 normal/reply/mention FIFO dispatch, provider comment pagination, scoped mention
 matching, current-head observation with immutable root provenance, exact
 reconciliation after lost responses/primary changes and human-judgment gates.

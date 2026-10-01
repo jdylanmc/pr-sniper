@@ -7,7 +7,7 @@ interface HiddenSibling {
 interface Entry {
   modal: HTMLDialogElement;
   host: HTMLElement;
-  opener: Element | null;
+  opener: HTMLElement;
   hidden: HiddenSibling[];
   nativeClose: (() => void) | null;
 }
@@ -152,7 +152,7 @@ export function createDialogs(root: HTMLElement, changed: () => void) {
     closeAll: () => {
       while (top()) if (!close(top())) break;
     },
-    show(modal: HTMLDialogElement) {
+    show(modal: HTMLDialogElement, opener: HTMLElement) {
       changed();
       const native =
         !panelView &&
@@ -167,7 +167,7 @@ export function createDialogs(root: HTMLElement, changed: () => void) {
       const entry: Entry = {
         modal,
         host,
-        opener: document.activeElement,
+        opener,
         hidden: [],
         nativeClose: native ? modal.close.bind(modal) : null,
       };

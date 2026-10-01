@@ -369,41 +369,173 @@ for (const kind of ["reply", "mention"]) {
       ["running", "Running"],
       ["stopping", "Stopping"],
       ["failed", "Failed"],
+      ["manual_retry", "Failed"],
+      ["backoff", "Retry queued"],
       ["superseded", "Superseded"],
+      ["cancelled", "Stopped"],
       ["completed", "Done"],
+      ["human_input_required", "Human input required"],
+      ["waiting_publication", "Awaiting publication"],
+      ["publishing", "Publishing"],
+      ["publication_failed", "Publication failed"],
+      ["publication_backoff", "Publication retry queued"],
+      ["unresolved", "Outcome unknown"],
+      ["unresolved_cancelled", "Outcome unknown"],
+      ["published", "Published"],
+      ["receipt_recovery", "Publication retry queued"],
+      ["stale_after_publication", "Published; stale evidence"],
     ]) {
+      const publication = [
+        "publishing",
+        "publication_failed",
+        "publication_backoff",
+        "unresolved",
+        "unresolved_cancelled",
+        "published",
+        "receipt_recovery",
+        "stale_after_publication",
+      ].includes(state);
+      const analyzed =
+        publication ||
+        ["completed", "human_input_required", "waiting_publication"].includes(
+          state,
+        );
       run.context.job.waiting =
         state === "superseded" ? "superseded" : "human_start";
-      run.phase = state === "completed" ? "quiet" : "waiting_start";
+      run.phase = [
+        "failed",
+        "manual_retry",
+        "backoff",
+        "cancelled",
+        "superseded",
+        "publication_failed",
+        "publication_backoff",
+      ].includes(state)
+        ? "stopped"
+        : state === "completed"
+          ? "quiet"
+          : ["running", "stopping"].includes(state)
+            ? "analyzing"
+            : state === "queued"
+              ? "waiting_start"
+              : state === "unresolved_cancelled"
+                ? "unresolved"
+                : state === "receipt_recovery"
+                  ? "published"
+                  : state;
+      run.cancelled = ["cancelled", "unresolved_cancelled"].includes(state);
+      run.uncertain = ["unresolved", "unresolved_cancelled"].includes(state);
+      run.receipt = [
+        "published",
+        "receipt_recovery",
+        "stale_after_publication",
+      ].includes(state)
+        ? `${kind}-confirmed-reply`
+        : null;
+      run.error = [
+        "failed",
+        "manual_retry",
+        "backoff",
+        "publication_failed",
+        "publication_backoff",
+        "unresolved",
+        "unresolved_cancelled",
+        "receipt_recovery",
+      ].includes(state)
+        ? "Synthetic operation failure; original intent retained."
+        : run.cancelled
+          ? "Thread follow-up cancelled."
+          : null;
       run.analysis = {
         ...fixture.review.operation,
         id: `${kind}-own-analysis`,
-        operation_type: "thread_analysis",
-        next_attempt_at: 1_800_000_000,
-        state: ["stopping"].includes(state)
-          ? "running"
-          : state === "superseded"
-            ? "failed"
-            : state,
-        attempt_count: state === "queued" ? 0 : 2,
+        operation_type:
+          kind === "mention" ? "mention_analysis" : "thread_analysis",
+        next_attempt_at: ["queued", "backoff"].includes(state)
+          ? 1_800_000_000
+          : null,
+        failure: ["failed", "cancelled", "superseded"].includes(state)
+          ? "permanent"
+          : ["backoff", "manual_retry"].includes(state)
+            ? "network"
+            : null,
+        state: analyzed
+          ? "completed"
+          : state === "stopping"
+            ? "running"
+            : ["superseded", "cancelled"].includes(state)
+              ? "failed"
+              : state === "backoff"
+                ? "queued"
+                : state,
+        attempt_count:
+          state === "queued" ? 0 : state === "manual_retry" ? 4 : 2,
       };
-      run.result =
-        state === "completed"
-          ? {
-              ...fixture.review.result,
-              output: {
-                decision: "quiet",
-                body: "",
-                new_information: "",
-                reason: "No new response needed.",
-                evidence: [],
-                feedback_assessments: [],
-              },
-              session_id: `${kind}-session`,
-              model: "configured-model",
-            }
-          : null;
+      run.result = analyzed
+        ? {
+            ...fixture.review.result,
+            output: {
+              decision:
+                state === "completed"
+                  ? "quiet"
+                  : state === "human_input_required"
+                    ? state
+                    : "reply",
+              body:
+                state === "completed" || state === "human_input_required"
+                  ? ""
+                  : "Saved synthetic reply.",
+              new_information: "",
+              reason: "No new response needed.",
+              evidence: [],
+              feedback_assessments: [],
+            },
+            session_id: `${kind}-session`,
+            model: "configured-model",
+          }
+        : null;
+      run.publication = publication
+        ? {
+            ...fixture.review.operation,
+            id: `${kind}-original-publication`,
+            operation_type:
+              kind === "mention" ? "mention_reply" : "thread_reply",
+            state: ["published", "stale_after_publication"].includes(state)
+              ? "completed"
+              : state === "publishing"
+                ? "running"
+                : state === "publication_failed"
+                  ? "failed"
+                  : "queued",
+            failure:
+              state === "publication_failed"
+                ? "permanent"
+                : run.error
+                  ? "network"
+                  : null,
+            attempt_count: 1,
+            next_attempt_at: [
+              "publication_backoff",
+              "unresolved",
+              "unresolved_cancelled",
+              "receipt_recovery",
+            ].includes(state)
+              ? 1_800_000_000
+              : null,
+            attempted_mutation: "thread_reply",
+            confirmed_receipt: run.receipt,
+          }
+        : null;
+      run.body = publication ? run.result.output.body : null;
       await store("seed_queue_state", fixture.state);
+      const saved = (await store("monitoring_snapshot")).follow_ups[0].run;
+      expect(saved).toMatchObject({
+        phase: run.phase,
+        cancelled: run.cancelled,
+        uncertain: run.uncertain,
+        analysis: { state: run.analysis.state },
+        publication: run.publication ? { state: run.publication.state } : null,
+      });
       if (state === "queued")
         expect(
           (await store("monitoring_snapshot")).follow_ups[0].blocked,
@@ -440,9 +572,38 @@ for (const kind of ["reply", "mention"]) {
       await expect(page.locator("#thread-follow-ups article")).toHaveCount(1);
       await expect(page.locator("#agent-reviews article")).toHaveCount(0);
       await expect(page.locator(".job-facts")).toContainText(
+        `Analysis${run.analysis.state.replaceAll("_", " ")}`,
+      );
+      if (run.receipt)
+        await expect(page.locator(".job-facts")).toContainText(
+          `Confirmed GitHub reply ${run.receipt}`,
+        );
+      else {
+        await expect(page.locator("[data-monitor-detail]")).not.toContainText(
+          "Confirmed GitHub reply",
+        );
+        if (publication)
+          await expect(page.locator(".job-facts")).toContainText(
+            "no confirmed reply receipt",
+          );
+      }
+      if (run.uncertain) {
+        await expect(page.locator("#thread-follow-ups")).toContainText(
+          "Reconciliation checks the original reply and never blindly posts a replacement.",
+        );
+        await expect(
+          page.getByRole("button", { name: "Reconcile / retry reply" }),
+        ).toBeDisabled();
+        await expect(
+          page.getByRole("checkbox", {
+            name: /Publish or reconcile this thread/,
+          }),
+        ).toBeVisible();
+      }
+      await expect(page.locator(".job-facts")).toContainText(
         "Reply / mention count1 for this Agent on this PR",
       );
-      if (state === "running" || state === "failed")
+      if (["running", "failed", "unresolved"].includes(state))
         await captureInspector(page, `${kind}-${state}`);
     }
   });
