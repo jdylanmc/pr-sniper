@@ -14,6 +14,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   complete ordered file guides, external personal-review links and retained
   publication/provider recovery. Automatic approval remains a personal handoff,
   not a claim of human review.
+- Show one continuous list of actual shared-capacity jobs: active work first,
+  waiting/blocked work in arrival order, static reduced-motion states and one
+  exact inspector for normal, final, reply and mention work. Preserve captured
+  configuration, canonical iteration, work ordinals and separate retry counts.
 
 ## 0.1.2 - 2026-10-01
 

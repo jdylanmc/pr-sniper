@@ -304,6 +304,133 @@
 .panel-shell [data-monitor-detail] button {
   font-size: 12px;
 }
+.work-caption {
+  margin: 0 2px 10px;
+  color: var(--panel-muted);
+  font-size: 10px;
+}
+.work-list {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  border: 1px solid #e1e6ec;
+  border-radius: 13px;
+  overflow: hidden;
+  background: white;
+}
+.panel-shell .work-list article {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.panel-shell .work-row {
+  display: grid;
+  grid-template-columns: 19px minmax(0, 1fr) 12px;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 11px 12px;
+  border: 0;
+  border-bottom: 1px solid #e9edf1;
+  border-radius: 0;
+  color: var(--panel-ink);
+  background: transparent;
+  text-align: left;
+}
+.work-list li:last-child .work-row {
+  border-bottom: 0;
+}
+.panel-shell [data-work-state="active"] .work-row {
+  background: #fff6ed;
+}
+.panel-shell .work-row:hover {
+  background: #edf4f5;
+}
+.panel-shell .work-row:focus-visible {
+  outline-offset: -3px;
+}
+.work-marker {
+  display: flex;
+  color: #576c80;
+}
+.work-marker .panel-icon {
+  width: 17px;
+  height: 17px;
+}
+.work-spin {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #f6d4b9;
+  border-top-color: #b85b1c;
+  border-right-color: #b85b1c;
+  border-radius: 50%;
+  animation: work-turn 950ms linear infinite;
+}
+@keyframes work-turn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.work-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+.work-heading,
+.work-reference {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.work-heading strong {
+  font-size: 13px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.work-state {
+  font-size: 10px;
+  flex: none;
+  color: var(--panel-muted);
+}
+[data-work-state="active"] .work-state {
+  color: #94501f;
+  font-weight: 650;
+}
+.work-subject,
+.work-reference {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--panel-muted);
+}
+.work-subject {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.work-reference {
+  overflow-wrap: anywhere;
+}
+.work-reference > span {
+  flex: none;
+}
+.work-blocker {
+  color: #91511f;
+  font-size: 10px;
+  line-height: 1.4;
+}
+.work-chevron {
+  width: 5px;
+  height: 5px;
+  border-top: 1px solid #8a9baa;
+  border-right: 1px solid #8a9baa;
+  transform: rotate(45deg);
+}
 .panel-shell h2 {
   font-size: 16px;
 }

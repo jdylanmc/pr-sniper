@@ -31,6 +31,19 @@ visibility boundary are mocked. Tests do not prove OS focus/dismissal or
 notification activation; the isolated native harness and platform procedures
 remain required.
 
+`visual.spec.mjs` covers the approved 408px shell and human cards, the complete
+301-file ordered guide, exact provider links, failed snapshot recovery, seven
+Agent jobs at capacity four, duplicate reservation identity, completion/refill,
+tail append, retained blockers, immutable full configuration and keyboard access
+at 320x300 with reduced motion. Screenshots live under
+`src-tauri/target/visual-77-79` (or the configured target). The fixture-only
+`fixture_capacity_snapshot` command uses the real native Coordinator reservation
+and projection path with synthetic jobs. It launches no workers or provider
+sessions; deterministic native capacity tests separately prove dispatch/refill.
+Final and conversation regressions cover all four work purposes and exact
+same-commit reopened iteration provenance. These captures are browser evidence,
+not installed-app or live-provider acceptance.
+
 `doctrine-seeding.spec.mjs` covers the complete 23-document canonical catalog
 (exact titles and bodies, with only frontmatter/H1 removed), durable first load,
 Agent choices before visiting Doctrines, and saving Integrations first. It

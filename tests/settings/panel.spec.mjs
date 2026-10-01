@@ -338,7 +338,7 @@ test("Running and Reviewed use real native jobs and exact kind identities withou
   const row = page
     .locator("[data-running-list] article")
     .filter({ hasText: "example/repo #3" });
-  await expect(row).toContainText("normal");
+  await expect(row.locator(".work-reference")).toContainText("Normal pass");
   await row.getByRole("button", { name: "Open job", exact: true }).click();
   await expect(page.locator("#agent-reviews article")).toHaveCount(1);
   await expect(page.locator("#agent-reviews")).toContainText("example/repo #3");

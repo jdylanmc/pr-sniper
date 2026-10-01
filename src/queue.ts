@@ -106,8 +106,9 @@ export function humanQueue(items: QueueItem[]): QueueItem[] {
       ["stale", "stale_after_publication"].includes(value.state);
     if (
       !previous ||
-      (job.work?.iteration ?? 0) > (previous.job.work?.iteration ?? 0) ||
-      (historical(previous) && !historical(item))
+      (job.work && previous.job.work
+        ? job.work.iteration > previous.job.work.iteration
+        : historical(previous) && !historical(item))
     )
       current.set(key, item);
   }

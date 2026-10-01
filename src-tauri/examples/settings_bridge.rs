@@ -127,6 +127,33 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             )?;
             Ok(Value::Null)
         }
+        "fixture_capacity_snapshot" => {
+            // Synthetic reservations only: no worker, provider session or inference is launched.
+            let coordinator = pr_sniper_lib::capacity::Coordinator::default();
+            let candidates = pr_sniper_lib::capacity::candidates(store, 1_800_000_000)?;
+            for id in request.args["activeIds"]
+                .as_array()
+                .ok_or("Synthetic active IDs required.")?
+            {
+                let id = id.as_str().ok_or("Invalid synthetic work identity.")?;
+                let work = candidates
+                    .iter()
+                    .find(|w| w.key.id == id)
+                    .ok_or("Synthetic work identity is not a native candidate.")?;
+                if let Some(cancelled) = coordinator.reserve(store, work, |cancelled| {
+                    Ok((format!("fixture-{id}"), cancelled))
+                })? {
+                    if request.args["stoppingIds"]
+                        .as_array()
+                        .is_some_and(|ids| ids.iter().any(|value| value.as_str() == Some(id)))
+                    {
+                        cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
+            }
+            serde_json::to_value(coordinator.snapshot(store, 1_800_000_000)?)
+                .map_err(|_| "Cannot encode synthetic capacity state.".into())
+        }
         "automation_snapshot" => serde_json::to_value(
             pr_sniper_lib::capacity::Coordinator::default().snapshot(store, 1_800_000_000)?,
         )
