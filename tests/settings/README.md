@@ -148,3 +148,12 @@ matching, current-head observation with immutable root provenance, exact
 reconciliation after lost responses/primary changes and human-judgment gates.
 Owned and mention runtime fixtures share the same restricted tool contract.
 Provider responses are deterministic fixtures, never live action acceptance.
+
+`actions.spec.mjs` drives native Store-backed final-observation fixtures, durable
+manual final requests, approval-versus-personal-review handoff, terminal merge
+receipts, unknown original-effect reconciliation and local-only publication.
+Native `actions::tests` exercises real aggregate/basis capture, shared-capacity
+dispatch, preparation/intent/receipt/reconciliation helpers and the GitHub
+transport adapter with deterministic responses. The restricted-runtime fixture
+answers an actual external-tool request for a changed file before emitting a
+final full-review result. No test approves or merges a live PR.

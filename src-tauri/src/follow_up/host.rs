@@ -615,6 +615,10 @@ impl Coordinator {
             .unwrap_or(0);
         drop(generations);
         let cancelled = Arc::new(AtomicBool::new(false));
+        let mutation_owner = format!("conversation:{}", run.id);
+        if !host.mutations.acquire(&mutation_owner)? {
+            return Err("Another provider mutation is running; this reply remains queued.".into());
+        }
         *active = Some((run.id.clone(), cancelled.clone()));
         drop(active);
         let app = app.clone();
@@ -638,6 +642,9 @@ impl Coordinator {
                     }
                     _ => {}
                 }
+            }
+            if let Err(error) = app.state::<Host>().mutations.release(&mutation_owner) {
+                crate::report(&app, error);
             }
             match app.state::<Host>().follow_ups.active.lock() {
                 Ok(mut active) => *active = None,

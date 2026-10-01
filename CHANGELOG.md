@@ -74,6 +74,17 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Added
 
+- Add primary final full reviews through shared AI capacity after current
+  aggregate Agent/feedback clearance. Capture peer and human context, validate
+  full-file coverage, and preserve separate final evidence and attempt history.
+- Execute independent opt-in GitHub approval and primary-only exact-head merge
+  through native capability/policy gates and one serialized mutation owner.
+  Retain frozen intents, definitive receipts and bounded no-resend reconciliation;
+  preserve personal-review handoff after approval and terminal merge history.
+- Present publication-off normal findings as local-only evidence, without
+  manufacturing author-wait or manual-publication tasks. Retain real pending
+  publication recovery and distinguish action outcomes in notifications.
+
 - Retain verified owned feedback across PR iterations, including closure
   tombstones and explicit evidence-backed reassessment. Keep immutable original
   publication/root provenance separate from current conversation analysis;

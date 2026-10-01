@@ -20,6 +20,9 @@ pub enum Category {
     Ready,
     Failure,
     Test,
+    Approved,
+    Merged,
+    FinalReviewCleared,
 }
 
 impl Category {
@@ -30,6 +33,9 @@ impl Category {
             Self::Ready => "Ready for your final review",
             Self::Failure => "PR Sniper needs attention",
             Self::Test => "PR Sniper test notification",
+            Self::Approved => "Automated approval confirmed; personal review remains",
+            Self::Merged => "PR merged on GitHub",
+            Self::FinalReviewCleared => "Primary final full review cleared",
         }
     }
 
@@ -40,13 +46,20 @@ impl Category {
             Self::Ready => "Automated review completed. Open the exact queue item for your final review and merge decision. This is not approval.",
             Self::Failure => "A review or monitoring operation needs recovery. Open the saved destination for details; no success is implied.",
             Self::Test => "Open to verify the selected in-app destination. No review will start and nothing will be published.",
+            Self::Approved => "GitHub recorded the acting account's automated approval. This unmerged PR still needs your personal review; one account is one vote.",
+            Self::Merged => "GitHub confirmed merge. Open saved evidence for action attribution; human review is not inferred.",
+            Self::FinalReviewCleared => "The primary completed its final full review. Provider approval/merge remain separately gated; an unmerged PR still needs personal review.",
         }
     }
 
     fn priority(self) -> u8 {
         match self {
             Self::Test => 0,
-            Self::HumanInput | Self::Ready => 1,
+            Self::HumanInput
+            | Self::Ready
+            | Self::Approved
+            | Self::Merged
+            | Self::FinalReviewCleared => 1,
             Self::Confirmation => 2,
             Self::Failure => 3,
         }
@@ -88,7 +101,7 @@ fn digest(value: &str) -> String {
 pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
     let mut frames = Vec::new();
     for item in &snapshot.items {
-        let category = match item.state {
+        let mut category = match item.state {
             queue::State::ConfirmationRequired => Some(Category::Confirmation),
             queue::State::WaitingForHuman => Some(Category::HumanInput),
             queue::State::MachineSignedOff => Some(Category::Ready),
@@ -97,7 +110,60 @@ pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
             }
             _ => None,
         };
+        if item.state == queue::State::MachineSignedOff
+            && item.action_status.as_ref().is_some_and(|s| s.final_valid)
+        {
+            category = Some(Category::FinalReviewCleared);
+        }
+        if item.state == queue::State::Merged && item.action_status.is_some() {
+            category = Some(Category::Merged);
+        }
+        if item.state == queue::State::MachineSignedOff
+            && item.action_status.as_ref().is_some_and(|s| {
+                s.effects.iter().any(|e| {
+                    e.action == crate::github::actions::Action::Approve
+                        && e.state == crate::actions::EffectState::Confirmed
+                })
+            })
+        {
+            category = Some(Category::Approved);
+        }
+        if item.state != queue::State::Merged
+            && item.action_status.as_ref().is_some_and(|s| {
+                s.effects.iter().any(|e| {
+                    e.error.is_some()
+                        || matches!(
+                            e.state,
+                            crate::actions::EffectState::Rejected
+                                | crate::actions::EffectState::Uncertain
+                        )
+                }) || s.final_review.as_ref().is_some_and(|f| {
+                    matches!(
+                        f.execution.operation.state,
+                        crate::monitoring::OperationState::Failed
+                            | crate::monitoring::OperationState::ManualRetry
+                    )
+                })
+            })
+        {
+            category = Some(Category::Failure);
+        }
         let mut causes = BTreeSet::new();
+        if let Some(status) = &item.action_status {
+            if let Some(final_review) = &status.final_review {
+                if matches!(
+                    final_review.execution.operation.state,
+                    crate::monitoring::OperationState::Completed
+                        | crate::monitoring::OperationState::Failed
+                        | crate::monitoring::OperationState::ManualRetry
+                ) {
+                    causes.insert(final_review.execution.operation.id.clone());
+                }
+            }
+            for effect in &status.effects {
+                causes.insert(format!("{}:{:?}", effect.id, effect.state));
+            }
+        }
         for review in snapshot
             .reviews
             .iter()

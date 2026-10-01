@@ -216,8 +216,8 @@ automatic/manual gates. A sole assignment is primary automatically; multiple
 assignments permit one explicit primary or none. Primary selection never opts
 into actions. Legacy inert `approve` flags remain preserved but are not grants;
 new choices live in assignment `actions`. Merge is effective only for the
-primary, and no primary means no effective approval or merge. Provider-action
-execution remains a separate follow-up.
+primary, and no primary means no effective approval or merge. Opted-in provider
+actions require aggregate clearance and the primary final-review path below.
 
 **Preferences** exposes one global five-field cron expression, default
 `*/15 * * * *` in `UTC`, an expression helper, explicit IANA time-zone semantics,
@@ -548,18 +548,81 @@ until storage is repaired and the application restarted.
 
 Native `automation_snapshot` returns saved pause/capacity plus actual occupied,
 stopping, waiting and blocked work. `set_automation_paused` persists the gate and
-signals current workers. Future primary-final and mention execution adapters
-must join the same candidate order and `capacity::Coordinator::reserve` path;
-their provider-action/routing engines are not implemented here.
+signals current workers. Normal, primary-final, owned-reply and mention adapters
+join the same candidate order and `capacity::Coordinator::reserve` path.
+
+## Primary final review and provider actions
+
+The existing queue projection supplies current normal-pass/feedback clearance.
+Every current assignment must have its own completed pass for the tracked
+iteration; adding/replacing an assignment cannot authorize an action from old
+evidence. Pending conversations, held findings, human-input decisions, incomplete
+conversation admission and unknown mutations block the action path.
+
+When Approve or Merge is explicitly opted in, the primary receives a distinct
+**full** constrained review after clearance and fresh provider observations.
+It reads every changed file and sees the peer results, owned feedback, complete
+bounded human discussion/review evidence and actual policy observations.
+`state/actions.json` retains its own immutable basis, FIFO identity, operation,
+attempt history and result without replacing normal review history.
+It uses shared AI capacity, start/trust gates, pause accounting and worker
+teardown. Findings or human judgment stop actions; they require human handling
+or a new iteration rather than repeated same-iteration AI attempts to obtain a
+different answer.
+
+Approval and merge are independent native operations, never Agent tools.
+Approval is one acting-account vote, not one vote per configured Agent. It can
+contribute before the provider has collected its other required approvals, but
+cannot self-approve a GitHub PR or replace an existing account vote. Merge is
+primary-only and additionally requires current-head green checks, satisfied
+provider reviews/rules, conflict-free **CLEAN** readiness, no unresolved threads
+(even outdated ones), no required/active merge queue, and a provider-selected
+enabled merge method. Admin-bypass capability is neither queried nor used.
+Absent, partial, unsupported or inaccessible policy/check evidence blocks merge
+explicitly; it is not assumed green.
+
+Each effect freezes action/account/head/attribution and persists intent before
+its external request. Approval pins `commit_id`; merge pins `expectedHeadOid`
+and an explicit provider-selected method. Head/base, role, scope, permissions,
+feedback and human context are rechecked around work. A valid final can serve
+both actions; its own exact confirmed approval receipt does not invalidate it.
+Other relevant changes require fresh final evidence.
+
+Lost responses and crashes reconcile the **original** effect, never a blind
+replacement. Approval reconciliation requires its exact signed body, actor,
+commit and review receipt. A later read proving merge after a lost response
+establishes terminal provider state, **not attribution** to PR Sniper.
+Automatic reconciliation is bounded to three observations within the original
+window; **Reconcile original action (no resend)** requests another read.
+Definitively rejected/stale/cancelled effects are not automatically replaced.
+All comment, reply, approval and merge writers share one native mutation owner,
+independently of AI capacity. Pause/cancel cannot undo an accepted remote write.
+
+Every cleared unmerged PR retains a personal-review handoff, including after
+confirmed automatic approval. Merge does not require a handoff acknowledgment.
+Confirmed merged PRs become terminal history. Notifications and read-only queue
+details distinguish normal clearance, final review, provider approval/merge,
+unknown outcomes and personal review; automation never asserts personal review.
+
+Provider limits remain explicit: final observations fail closed beyond 100
+threads/comments per GraphQL connection or 100 check contexts; REST review and
+discussion reads are bounded. `HAS_HOOKS`, unavailable merge rules, merge queues
+and absent green-CI evidence do not take a direct-merge fallback. GitHub exposes
+an atomic expected-head merge condition, not an expected-base condition; base
+movement is detected by fresh pre/post observations, and confirmed effects are
+retained rather than falsely undone. These offline-tested paths are not live
+approval/merge acceptance evidence.
 
 ## Revision-safe comment publication
 
 An assignment must allow **Comment**. The **Preferences > Publish review
 comments automatically** default and each repository's **Comment publication**
-override independently choose automatic publication or explicit confirmation.
+override choose automatic normal publication or **off/local-only** evidence.
 Review Queue shows the acting repository GitHub account, exact head, local
-findings, publication state and confirmed provider receipts. **Publish review**
-requires a checked confirmation for that review. Copilot credentials never
+findings, publication state and confirmed provider receipts. Off does not create
+an author-wait state or an invented manual-publication task. Genuine historical
+pending batches retain their checked reconciliation/withdrawal controls.
+Copilot credentials never
 publish to GitHub, and the read-only agent adapter has no mutation tools.
 
 The host freezes the validated output, maps findings only to verified diff
@@ -569,8 +632,9 @@ the summary reports their count rather than silently dropping them or posting
 them at guessed locations. Summaries and machine sign-off end with the canonical
 ` PR Sniper` and explicitly request final human review. The existing saved
 custom Agent signature is not applied by this slice; signature customization
-and its revised default remain separate #30 work. No `APPROVE` or merging is
-implemented. Owned-thread replies use the separate follow-up workflow below.
+and its revised default remain separate #30 work. This comment-only publisher
+does not approve or merge; those independent operations use the final-review
+path above. Owned-thread replies use the conversation workflow below.
 
 Before and after mutations the host rechecks account/repository identity, head
 and reviewed target base, open/non-draft lifecycle, eligibility, active monitoring

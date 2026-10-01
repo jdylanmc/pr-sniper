@@ -256,6 +256,15 @@ impl QueueState {
         );
         self.next_enqueue_order = self.next_enqueue_order.max(
             store
+                .load_actions()?
+                .finals
+                .iter()
+                .map(|f| f.enqueue_order)
+                .max()
+                .unwrap_or(0),
+        );
+        self.next_enqueue_order = self.next_enqueue_order.max(
+            store
                 .load_feedback()?
                 .mentions
                 .iter()
@@ -508,6 +517,13 @@ pub struct Monitor {
 }
 
 impl Monitor {
+    pub(crate) fn restore_readonly(state: MonitoringState) -> Self {
+        Self {
+            state,
+            leases: Default::default(),
+            previews: Default::default(),
+        }
+    }
     pub fn restore(store: &Store) -> Result<Self, String> {
         let mut state = store.load_monitoring_state()?;
         let previous = state.clone();

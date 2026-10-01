@@ -63,6 +63,7 @@ impl State {
 
 #[derive(Serialize)]
 pub struct Item {
+    pub action_status: Option<crate::actions::Status>,
     pub feedback: Vec<crate::feedback::View>,
     pub id: String,
     pub aliases: Vec<String>,
@@ -107,6 +108,15 @@ pub fn item_id(job: &QueueJob) -> String {
 }
 
 pub fn snapshot(store: &Store, health: Vec<ScheduleHealth>) -> Result<Snapshot, String> {
+    let mut snapshot = normal_snapshot(store, health)?;
+    crate::actions::project(store, &mut snapshot)?;
+    Ok(snapshot)
+}
+
+pub(crate) fn normal_snapshot(
+    store: &Store,
+    health: Vec<ScheduleHealth>,
+) -> Result<Snapshot, String> {
     let settings = store.load_settings()?;
     let monitoring = store.load_monitoring_state()?;
     let health = if health.is_empty() {
@@ -215,7 +225,7 @@ fn review_state(
     let Some(result) = &run.result else {
         return State::Failed;
     };
-    if result.output.feedback_conflict {
+    if result.output.feedback_conflict || !result.output.held_findings.is_empty() {
         return State::WaitingForHuman;
     }
     let Ok(current) = Selection::resolve(settings, &candidate.job, &candidate.assignment_id) else {
@@ -224,6 +234,8 @@ fn review_state(
     if current.agent != run.selection.agent
         || current.doctrine != run.selection.doctrine
         || current.preset != run.selection.preset
+        || current.policy.prompt != run.selection.policy.prompt
+        || current.policy.adapter != run.selection.policy.adapter
         || result.reviewed_base_sha.is_none()
     {
         return State::Stale;
@@ -239,16 +251,24 @@ fn review_state(
         None => return State::Queued,
         Some(_) => {}
     }
-    let comments = settings
-        .repositories
-        .iter()
-        .find(|r| r.id == candidate.job.configuration_id)
-        .and_then(|r| {
-            r.assignments
-                .iter()
-                .find(|a| a.id == candidate.assignment_id)
-        })
-        .is_some_and(|a| a.comment);
+    if publication.is_none()
+        && batch
+            .and_then(|p| p.blocked.as_deref())
+            .is_some_and(|reason| reason != "Comments are disabled for this Agent assignment.")
+    {
+        return State::Blocked;
+    }
+    let comments = current.policy.automatic_comment_publication
+        && settings
+            .repositories
+            .iter()
+            .find(|r| r.id == candidate.job.configuration_id)
+            .and_then(|r| {
+                r.assignments
+                    .iter()
+                    .find(|a| a.id == candidate.assignment_id)
+            })
+            .is_some_and(|a| a.comment);
     if comments || publication.is_some() {
         if batch.is_some_and(|p| p.blocked.is_some()) {
             return State::Blocked;
@@ -583,6 +603,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             _ => states.into_iter().min().unwrap_or(State::Blocked),
         };
         items.push(Item {
+            action_status: None,
             feedback,
             aliases: snapshot
                 .jobs

@@ -399,7 +399,7 @@ fn unsigned(value: &Value) -> Result<u64, ConnectionError> {
     value.as_u64().ok_or(ConnectionError::InvalidResponse)
 }
 
-fn sha(value: &Value) -> Result<String, ConnectionError> {
+pub(super) fn sha(value: &Value) -> Result<String, ConnectionError> {
     let value = text(value)?;
     if ![40, 64].contains(&value.len()) || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(ConnectionError::InvalidResponse);

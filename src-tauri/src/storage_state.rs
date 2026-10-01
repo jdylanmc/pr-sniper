@@ -4,6 +4,18 @@ use std::io::ErrorKind;
 // Typed application state stays attached to Store without coupling settings,
 // policy and filesystem tests to the native host and provider runtimes.
 impl Store {
+    pub fn load_actions(&self) -> Result<crate::actions::Ledger, String> {
+        match self.read_state("actions.json") {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
+                "Final review/action state is invalid; no provider action allowed.".into()
+            }),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(Default::default()),
+            Err(_) => Err("Cannot read final review/action state.".into()),
+        }
+    }
+    pub fn save_actions(&self, ledger: &crate::actions::Ledger) -> Result<(), String> {
+        self.write_state("actions.json", ledger)
+    }
     pub fn load_feedback(&self) -> Result<crate::feedback::Ledger, String> {
         match self.read_state("feedback.json") {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {

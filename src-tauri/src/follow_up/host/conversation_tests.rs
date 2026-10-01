@@ -396,6 +396,7 @@ fn review_and_publish(store: &Store, output: Value, now: i64) -> Publication {
         panic!("Normal review expected")
     };
     let task = FullReview {
+        final_context: None,
         feedback: run.feedback_context.clone().unwrap(),
         owner_agent_id: run.selection.agent.id.clone(),
     };
@@ -1019,6 +1020,7 @@ fn current_iteration_owner_reply_keeps_original_review_root_and_receipts() {
         crate::feedback::contexts(&store, &job, &origin.review.selection.agent.id).unwrap();
     assert_eq!(context.len(), 1);
     let task = FullReview {
+        final_context: None,
         feedback: context.clone(),
         owner_agent_id: origin.review.selection.agent.id.clone(),
     };
@@ -1150,6 +1152,7 @@ fn closed_tombstones_cannot_be_resurrected_by_new_heads_or_renamed_findings() {
         explanation: "Source.".into(),
     }];
     let task = FullReview {
+        final_context: None,
         feedback: context.clone(),
         owner_agent_id: origin.review.selection.agent.id.clone(),
     };

@@ -412,6 +412,7 @@ fn only_operator_attention_maps_to_alerts_and_routine_author_waits_do_not() {
             publications: vec![],
             follow_ups: vec![],
             items: vec![queue::Item {
+                action_status: None,
                 feedback: vec![],
                 aliases: vec![],
                 id: queue::item_id(&job()),

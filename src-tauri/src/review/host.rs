@@ -344,7 +344,11 @@ fn local_gate(app: &tauri::AppHandle, run: &ReviewRun) -> Result<(), Failure> {
         .store
         .lock()
         .map_err(|_| Failure::permanent("Review storage is unavailable."))?;
-    super::validate_execution_selection(&store, run)
+    if run.operation.operation_type == "primary_final_review" {
+        crate::actions::host::validate_execution(&store, run)
+    } else {
+        super::validate_execution_selection(&store, run)
+    }
 }
 
 fn remote_gate(
@@ -352,6 +356,9 @@ fn remote_gate(
     run: &ReviewRun,
 ) -> Result<crate::github::metadata::PullRequest, Failure> {
     local_gate(app, run)?;
+    if run.operation.operation_type == "primary_final_review" {
+        crate::actions::host::remote_gate(app, run)?;
+    }
     let host = app.state::<Host>();
     let (_, client) = crate::github_session(&host, &run.job.account_id).map_err(Failure::from)?;
     let repo = RemoteRepository {
@@ -373,7 +380,7 @@ fn remote_gate(
     Ok(pull)
 }
 
-async fn execute(
+pub(crate) async fn execute(
     app: tauri::AppHandle,
     run: ReviewRun,
     cancelled: Arc<AtomicBool>,
@@ -479,16 +486,25 @@ async fn execute(
             .store
             .lock()
             .map_err(|_| Failure::permanent("Review storage unavailable."))?;
-        let mut reviews = store.load_reviews().map_err(Failure::permanent)?;
-        let current = reviews
-            .iter_mut()
-            .find(|r| r.operation.id == run.operation.id)
-            .ok_or_else(|| Failure::permanent("Review operation disappeared."))?;
-        if current.operation.state != OperationState::Running {
-            return Err(Failure::permanent("Review is no longer running."));
+        if run.operation.operation_type == "primary_final_review" {
+            crate::actions::host::phase(
+                &store,
+                &run,
+                "Verifying restricted runtime for primary final full review",
+            )
+            .map_err(Failure::permanent)?;
+        } else {
+            let mut reviews = store.load_reviews().map_err(Failure::permanent)?;
+            let current = reviews
+                .iter_mut()
+                .find(|r| r.operation.id == run.operation.id)
+                .ok_or_else(|| Failure::permanent("Review operation disappeared."))?;
+            if current.operation.state != OperationState::Running {
+                return Err(Failure::permanent("Review is no longer running."));
+            }
+            current.phase = "Verifying restricted Copilot runtime and reviewing".into();
+            store.save_reviews(&reviews).map_err(Failure::permanent)?;
         }
-        current.phase = "Verifying restricted Copilot runtime and reviewing".into();
-        store.save_reviews(&reviews).map_err(Failure::permanent)?;
     }
     let remote_app = app.clone();
     let remote_run = run.clone();
@@ -498,6 +514,19 @@ async fn execute(
         task: runtime::FullReview {
             feedback: run.feedback_context.clone().unwrap_or_default(),
             owner_agent_id: run.selection.agent.id.clone(),
+            final_context: if run.operation.operation_type == "primary_final_review" {
+                let host = app.state::<Host>();
+                let store = host
+                    .store
+                    .lock()
+                    .map_err(|_| Failure::permanent("Final storage unavailable."))?;
+                Some(
+                    crate::actions::host::prompt_context(&store, &run.key)
+                        .map_err(Failure::permanent)?,
+                )
+            } else {
+                None
+            },
         },
         context,
         client,

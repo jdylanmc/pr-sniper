@@ -1,3 +1,4 @@
+pub mod actions;
 pub mod capacity;
 mod copilot;
 pub mod discovery;
@@ -48,6 +49,8 @@ struct Host {
     ai: capacity::Coordinator,
     publications: publication::host::Coordinator,
     follow_ups: follow_up::host::Coordinator,
+    actions: actions::host::Coordinator,
+    mutations: actions::host::MutationOwner,
     notifications: notifications::host::Coordinator,
 }
 
@@ -2204,6 +2207,11 @@ pub fn run() {
             save_resource,
             capacity::set_automation_paused,
             capacity::automation_snapshot,
+            actions::host::start_final_review,
+            actions::host::cancel_final_review,
+            actions::host::cancel_provider_action,
+            actions::host::reconcile_provider_action,
+            actions::host::retry_action_observation,
             canonical_repository_name,
             choose_repository_folder,
             discover_repositories,
@@ -2288,6 +2296,7 @@ pub fn run() {
             review::restore(&store).map_err(std::io::Error::other)?;
             publication::restore(&store).map_err(std::io::Error::other)?;
             follow_up::restore(&store).map_err(std::io::Error::other)?;
+            actions::restore(&store).map_err(std::io::Error::other)?;
             let monitor = monitoring::Monitor::restore(&store).map_err(std::io::Error::other)?;
             let notification_restore = notifications::restore(&store);
             #[cfg(target_os = "macos")]
@@ -2310,6 +2319,8 @@ pub fn run() {
                 ai: capacity::Coordinator::default(),
                 publications: publication::host::Coordinator::default(),
                 follow_ups: follow_up::host::Coordinator::default(),
+                actions: actions::host::Coordinator::default(),
+                mutations: actions::host::MutationOwner::default(),
                 notifications,
             });
             #[cfg(windows)]
@@ -2336,6 +2347,9 @@ pub fn run() {
                         report(&scheduler_app, error);
                     }
                     if let Err(error) = follow_up::host::Coordinator::pump(&scheduler_app) {
+                        report(&scheduler_app, error);
+                    }
+                    if let Err(error) = actions::host::Coordinator::pump(&scheduler_app) {
                         report(&scheduler_app, error);
                     }
                     notifications::host::Coordinator::pump(&scheduler_app);
@@ -2413,7 +2427,8 @@ pub fn run() {
                             while (!shutdown_app.state::<Host>().copilot.lookups_finished()
                                 || !shutdown_app.state::<Host>().ai.finished()
                                 || !shutdown_app.state::<Host>().publications.finished()
-                                || !shutdown_app.state::<Host>().follow_ups.finished())
+                                || !shutdown_app.state::<Host>().follow_ups.finished()
+                                || !shutdown_app.state::<Host>().actions.finished())
                                 && tokio::time::Instant::now() < deadline
                             {
                                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
