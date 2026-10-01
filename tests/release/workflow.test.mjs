@@ -443,6 +443,32 @@ test("registry string data and byte counts use paired System register sources", 
   );
 });
 
+test("registry-denial fixtures retain only DACL restoration rights before injection", () => {
+  const faults = readFileSync("scripts/windows-installer-faults.ps1", "utf8");
+  assert.match(faults, /OpenBaseKey\('CurrentUser', 'Registry64'\)/);
+  assert.match(
+    faults,
+    /OpenSubKey\([\s\S]*RegistryKeyPermissionCheck\]::ReadWriteSubTree,[\s\S]*RegistryRights\]::ReadPermissions -bor \[Security\.AccessControl\.RegistryRights\]::ChangePermissions\)/,
+  );
+  assert.doesNotMatch(faults, /^\s*Set-Acl\b/m);
+  assert.match(faults, /-Exercise \{ Require-FailedAndPreserved \}/);
+  assert.match(faults, /if \(\$restoreKey\) \{ \$restoreKey\.Dispose\(\) \}/);
+  const fixture = readFileSync(
+    "scripts/windows-registry-acl-fixture.ps1",
+    "utf8",
+  );
+  assert.doesNotMatch(
+    fixture,
+    /OpenSubKey|Get-Acl|Set-Acl|FullControl|TakeOwnership/,
+  );
+  assert.match(
+    fixture,
+    /SetSecurityDescriptorBinaryForm\(\$original, \$section\)/,
+  );
+  assert.match(fixture, /restoration readback differs from the original/);
+  assert.match(fixture, /Preserving original fixture failure/);
+});
+
 test("Windows artifact contains only the standalone app and exact-source provenance", () => {
   const upload = windows.jobs.windows.steps.find((step) =>
     step.uses?.startsWith("actions/upload-artifact@"),
