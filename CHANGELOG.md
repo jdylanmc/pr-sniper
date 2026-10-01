@@ -74,6 +74,15 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Added
 
+- Share AI capacity across normal reviews and owned-thread analysis, default
+  four, with oldest-eligible ordering and completion-driven refill. Persist
+  manual requests before capacity waiting and start the first AI retry window
+  at actual execution.
+- Add durable global pause/resume and real occupied/stopping/waiting/blocked
+  controls. Pause and capacity reduction discard partial AI work without
+  consuming failure retries, retain stopping reservations through teardown,
+  preserve genuine failures and reconcile existing provider effects.
+
 - Add resource-scoped Settings saves and validation over the existing Store,
   with a shared saved-configuration readiness contract for future setup flows.
   Preserve unrelated drafts, reject stale same-resource writes, guard referenced

@@ -90,11 +90,7 @@ export function renderFollowUps(
     }
   }
   return (candidates: FollowUpCandidate[], all = candidates) => {
-    const working = all.some(
-      ({ run }) =>
-        run.analysis?.state === "running" ||
-        run.publication?.state === "running",
-    );
+    const working = all.some(({ run }) => run.publication?.state === "running");
     const next = JSON.stringify([candidates, working]);
     if (next === signature) return;
     signature = next;
@@ -129,7 +125,7 @@ export function renderFollowUps(
         if (!operation) continue;
         const detail = document.createElement("p");
         detail.className = "hint";
-        detail.textContent = `${label}: ${operation.state}; attempt ${operation.attempt_count}; deadline ${new Date(operation.retry_deadline * 1000).toLocaleString()}.`;
+        detail.textContent = `${label}: ${operation.state}; attempt ${operation.attempt_count}; deadline ${label === "Analysis" && operation.attempt_count === 0 ? "starts at first execution" : new Date(operation.retry_deadline * 1000).toLocaleString()}.`;
         row.append(detail);
       }
       if (candidate.human_gate) {
@@ -194,9 +190,15 @@ export function renderFollowUps(
       const publishing = run.result?.output.decision === "reply";
       const terminal =
         run.publication?.state === "completed" || (run.result && !publishing);
-      if (running && !run.cancelled && !run.receipt) {
+      const queued =
+        !run.result &&
+        !!run.analysis &&
+        ["queued", "interrupted"].includes(run.analysis.state);
+      if ((running || queued) && !run.cancelled && !run.receipt) {
         const button = document.createElement("button");
-        button.textContent = "Cancel follow-up";
+        button.textContent = queued
+          ? "Cancel queued follow-up"
+          : "Cancel follow-up";
         button.disabled = pending.has(run.id);
         button.onclick = () => {
           button.disabled = true;
@@ -215,7 +217,7 @@ export function renderFollowUps(
         const update = () => {
           button.disabled =
             pending.has(run.id) ||
-            working ||
+            (!!publishing && working) ||
             (!!publishing && !consent.has(run.id));
         };
         if (publishing) {

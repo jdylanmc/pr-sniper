@@ -520,7 +520,7 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     };
-    let result = tokio::select! { biased; error = monitor => Err(error), result = run => result };
+    let result = tokio::select! { biased; result = run => result, error = monitor => Err(error) };
     crate::copilot::runtime::shutdown(&client).await;
     result
 }

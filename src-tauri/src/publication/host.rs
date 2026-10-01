@@ -58,6 +58,9 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
 }
 
 fn next_candidate(store: &Store, now: i64) -> Result<Option<Candidate>, String> {
+    if store.load_automation()?.paused {
+        return Ok(None);
+    }
     Ok(candidates(store)?
         .into_iter()
         .find(|candidate| match &candidate.publication {
@@ -80,6 +83,9 @@ fn prepare_launch(
     manual: bool,
     now: i64,
 ) -> Result<Publication, String> {
+    if store.load_automation()?.paused {
+        return Err("Automation paused. Resume to publish or reconcile existing receipts.".into());
+    }
     let candidate = candidates(store)?
         .into_iter()
         .find(|c| c.review_operation_id == review_id)
@@ -279,6 +285,7 @@ impl Native {
             .store
             .lock()
             .map_err(|_| Failure::permanent("Publication storage unavailable."))?;
+        crate::capacity::publication_gate(&store).map_err(Failure::permanent)?;
         let current = store
             .load_publications()
             .map_err(Failure::permanent)?
@@ -317,6 +324,16 @@ impl Native {
 }
 
 impl Environment for Native {
+    fn paused(&self) -> Result<bool, Failure> {
+        self.app
+            .state::<Host>()
+            .store
+            .lock()
+            .map_err(|_| Failure::permanent("Publication storage unavailable."))?
+            .load_automation()
+            .map(|s| s.paused)
+            .map_err(Failure::permanent)
+    }
     fn now(&self) -> Result<i64, Failure> {
         now_seconds().map_err(Failure::permanent)
     }
@@ -446,6 +463,17 @@ impl Environment for Native {
         })?;
         if let Some(receipt) = receipt {
             return Ok(receipt);
+        }
+        {
+            let host = self.app.state::<Host>();
+            let store = host.store.lock().map_err(|_| WriteFailure {
+                failure: Failure::permanent("Publication storage unavailable."),
+                uncertain: false,
+            })?;
+            crate::capacity::publication_gate(&store).map_err(|error| WriteFailure {
+                failure: Failure::permanent(error),
+                uncertain: false,
+            })?;
         }
         client.mutate_publication(run, mutation)
     }

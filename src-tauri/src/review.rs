@@ -11,8 +11,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
-pub(crate) use host::Coordinator;
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Selection {
@@ -225,6 +223,13 @@ pub fn restore(store: &Store) -> Result<(), String> {
     let mut changed = false;
     for review in &mut reviews {
         if review.operation.state == OperationState::Running {
+            if review.operation.interruption.is_some() {
+                review.operation.requeue_intentional(0);
+                review.result = None;
+                review.phase = "Waiting after intentional interruption".into();
+                changed = true;
+                continue;
+            }
             review.operation.state = OperationState::Interrupted;
             review.operation.next_attempt_at = Some(0);
             review.phase = "Interrupted; revalidating before retry".into();
@@ -377,14 +382,22 @@ pub fn validate_output(text: &str, paths: &[String]) -> Result<ReviewOutput, Fai
 
 #[derive(Debug, Clone)]
 pub struct Failure {
+    pub cancelled: bool,
     pub kind: OperationFailure,
     pub message: String,
     pub retry_after_seconds: Option<i64>,
 }
 
 impl Failure {
+    pub fn cancelled() -> Self {
+        Self {
+            cancelled: true,
+            ..Self::permanent("AI work cancelled intentionally.")
+        }
+    }
     pub fn permanent(message: impl Into<String>) -> Self {
         Self {
+            cancelled: false,
             kind: OperationFailure::Permanent,
             message: message.into(),
             retry_after_seconds: None,
@@ -392,6 +405,7 @@ impl Failure {
     }
     pub fn timeout() -> Self {
         Self {
+            cancelled: false,
             kind: OperationFailure::Timeout,
             message: "Copilot review timed out.".into(),
             retry_after_seconds: None,
@@ -401,6 +415,9 @@ impl Failure {
         Self::permanent("Copilot returned invalid or incomplete review output.")
     }
     pub fn operation(message: String) -> Self {
+        if message == "Copilot operation cancelled." {
+            return Self::cancelled();
+        }
         if message == "Copilot operation timed out. Retry." {
             Self::timeout()
         } else {
@@ -414,6 +431,7 @@ impl Failure {
                 _ => OperationFailure::Permanent,
             };
             Self {
+                cancelled: false,
                 kind,
                 message,
                 retry_after_seconds: None,
@@ -428,7 +446,7 @@ impl Failure {
             | ErrorKind::Session(SessionErrorKind::Timeout(_)) => OperationFailure::Timeout,
             _ => OperationFailure::Permanent,
         };
-        Self { kind, message: "Copilot runtime request failed; check account, model, and runtime availability before retrying.".into(), retry_after_seconds: None }
+        Self { cancelled: false, kind, message: "Copilot runtime request failed; check account, model, and runtime availability before retrying.".into(), retry_after_seconds: None }
     }
     fn event(data: &Value) -> Self {
         let kind = match data["statusCode"].as_u64() {
@@ -443,6 +461,7 @@ impl Failure {
         };
         let retry_after_seconds = data["retryAfterSeconds"].as_i64().filter(|n| *n >= 0);
         Self {
+            cancelled: false,
             kind,
             message: "Copilot reported an execution failure; no review result was accepted.".into(),
             retry_after_seconds,
@@ -467,6 +486,7 @@ impl From<ConnectionError> for Failure {
                 retry_after_seconds,
                 ..
             } => Self {
+                cancelled: false,
                 kind: failure,
                 message,
                 retry_after_seconds,

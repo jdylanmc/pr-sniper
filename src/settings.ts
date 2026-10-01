@@ -23,6 +23,7 @@ import {
 import "./settings.css";
 import { createDialogs } from "./dialogs";
 import { mountNotificationSettings } from "./notifications";
+import { mountAutomation } from "./automation";
 
 interface ConfiguredRepository extends Repository {
   watched_authors?: WatchedIdentity[];
@@ -1683,11 +1684,12 @@ export async function mountSettings(app: HTMLElement) {
       <label>Cron expression<input id="global-cron" value="${escape(schedule.kind === "cron" ? schedule.expression : "")}" placeholder="*/15 * * * *" /></label>
       <label>Schedule helper<select id="cron-helper"><option value="">Custom five-field expression</option><option value="*/15 * * * *">Every 15 minutes</option><option value="0 * * * *">Every hour</option><option value="0 9 * * MON-FRI">Weekdays at 09:00</option></select></label>
       <label>Time zone<input id="global-timezone" value="${escape(schedule.timezone)}" /></label>
-      <p class="settings-hint">Five fields: minute, hour, day, month, weekday. Evaluated in this IANA time zone, including its daylight-saving rules. One global scan covers enabled, scope-confirmed repositories. The shared-capacity engine remains a separate follow-up.${schedule.kind === "interval" ? ` Saved legacy interval: ${schedule.minutes} minutes. Polling is blocked until you explicitly choose a cron expression; no automatic conversion.` : ""}</p>
+      <p class="settings-hint">Five fields: minute, hour, day, month, weekday. Evaluated in this IANA time zone, including its daylight-saving rules. One global scan covers enabled, scope-confirmed repositories. Shared AI capacity drains admitted work independently of polling.${schedule.kind === "interval" ? ` Saved legacy interval: ${schedule.minutes} minutes. Polling is blocked until you explicitly choose a cron expression; no automatic conversion.` : ""}</p>
       <label>AI capacity<input id="global-capacity" type="number" min="1" max="4294967295" step="1" value="${draft.capacity}" /></label>
       <p class="settings-hint" data-readiness role="status">Reading saved-resource readiness...</p></fieldset></div>
       <div class="settings-group"><fieldset aria-label="Review execution"><legend>Review execution</legend><label class="setting-row"><span>Start eligible reviews automatically<small>Default for assigned repositories. Forks and untrusted authors still require confirmation; publication has its own gate.</small></span><input id="automatic-review-start" type="checkbox" role="switch" ${draft.defaults.automatic_agent_start ? "checked" : ""} /></label></fieldset></div>
       <div class="settings-group"><fieldset aria-label="Comment publication"><legend>Comment publication</legend><label class="setting-row"><span>Publish review comments automatically<small>Default for assigned repositories that allow Comment. Revalidates revision, trust and eligibility before publication. Never approves or merges.</small></span><input id="automatic-publication" type="checkbox" role="switch" ${draft.defaults.automatic_comment_publication ? "checked" : ""} /></label></fieldset></div>
+      <div class="settings-group" id="automation-settings"></div>
       <div class="settings-group" id="notification-settings"></div>
       <div class="settings-group"><fieldset aria-label="Diagnostics"><legend>Diagnostics</legend><p class="settings-hint">Settings and logs live in your ${isWindows ? "Windows local application-data" : "macOS app-support"} folder. Open a redacted diagnostics view to check in on them without exposing tokens.</p><button id="diagnostics">Open redacted diagnostics</button></fieldset></div>`;
     const cron = content.querySelector<HTMLInputElement>("#global-cron")!;
@@ -1739,6 +1741,9 @@ export async function mountSettings(app: HTMLElement) {
     mountNotificationSettings(
       content.querySelector<HTMLElement>("#notification-settings")!,
       notificationView,
+    );
+    mountAutomation(
+      content.querySelector<HTMLElement>("#automation-settings")!,
     );
     content.querySelector<HTMLInputElement>(
       "#automatic-review-start",

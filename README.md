@@ -225,7 +225,7 @@ and saved AI capacity (default four). Legacy interval choices and scoped
 schedules remain readable, without scoped polling editors. An incompatible
 legacy global interval remains visible as a setup issue until explicitly
 replaced, never silently converted. The global scheduler consumes this saved
-cron; the shared-capacity engine remains a separate delivery.
+cron; the shared AI dispatcher consumes the positive capacity independently.
 
 **Doctrines** manages plain-text review principles. A fresh configuration
 persists all 23 bundled doctrines on first load, before any Settings tab is
@@ -464,7 +464,7 @@ silently start legacy work.
 **Start review** is explicit when automatic start is disabled. Enabling the
 **Preferences > Start eligible reviews automatically** default (or **Review
 start** in a repository's Settings) admits trusted, eligible assignment detections
-to the serial review runner. Forks and authors outside the trusted watchlist
+to the shared-capacity review runner. Forks and authors outside the trusted watchlist
 always require a checkbox confirmation for that exact revision. All-author
 monitoring is not trust. **Cancel review** stops inference and requires an
 explicit retry; changing the account, Agent, prompt, doctrine, repository or
@@ -488,8 +488,10 @@ token metadata. Every changed file must actually have been read. Missing,
 duplicate or invalid file entries fail validation; only invalid ordering falls
 back to bytewise ascending paths. Machine-cleared never means human approval.
 
-Review state is persisted before work. Restart preserves operation identity,
-attempt count, confirmations and the original 15-minute budget, with at most
+Review requests persist before waiting for capacity. The first 15-minute AI
+budget begins when the worker actually starts, not when the request joins the
+queue. Restart preserves operation identity, attempt count, confirmations and
+an already-started budget, with at most
 three retries for recognized transient failures. Expired budgets and permanent
 failures require **Retry review**, which creates a new operation without
 deleting history. Results remain local until the separate publication gate
@@ -501,6 +503,46 @@ Keychain services, never config, state or diagnostics. Neither Settings
 connection copies terminal credentials. A green Copilot check verifies sign-in
 only, not a subscription, seat or inference request.
 See the [bounded architecture decision](docs/adr/0001-macos-foundation.md).
+
+### Shared AI capacity and pause
+
+Normal reviews and owned-thread analysis share one machine-wide capacity,
+default **4**, configured in **Settings > Preferences**. Values such as **1**
+and **20** are independent of saved Agent/repository counts. Work retains its
+canonical FIFO order across retries and pauses. Blocked older work keeps its
+reason and order without blocking eligible waiters; completion immediately
+fills free slots across both kinds without another repository poll.
+
+**Pause automation**, available in the queue and Settings, persists separately
+in `state/automation.json`. It blocks new polling, AI admission and provider
+writes without changing repository enablement or permissions. Active AI workers
+are signalled to stop; their slots remain occupied and visibly **stopping**
+until runtime and blocking work have ended. Rapid resume cannot reuse a slot or
+operation while teardown is pending. Reducing capacity stops the newest excess
+workers and keeps the oldest permitted workers running.
+
+Partial AI output is discarded after pause/reduction. Durable interruption
+metadata restores the pre-attempt retry budget only for intentional cancellation
+or discarded successful output; a real failure racing pause remains a failure.
+Prior failure counts/deadlines are not reset or extended by resume. Initial
+unexecuted requests may wait beyond 15 minutes and still receive their first
+budget. Individual cancellation withdraws work until explicit retry. Completed
+reviews, pass/reply ordinals, execution snapshots and provider receipts remain
+unchanged.
+
+Higher AI capacity does not increase provider-write concurrency: the existing
+serial publication and reply-publication coordinators remain separate from AI
+slots. Pause cannot undo an already-started remote request. Its original
+mutation intent and receipts are retained for reconciliation; a pending batch
+is not deleted merely because automation paused. Storage failures are visible;
+a worker whose final outcome cannot be saved retains a blocked stopping slot
+until storage is repaired and the application restarted.
+
+Native `automation_snapshot` returns saved pause/capacity plus actual occupied,
+stopping, waiting and blocked work. `set_automation_paused` persists the gate and
+signals current workers. Future primary-final and mention execution adapters
+must join the same candidate order and `capacity::Coordinator::reserve` path;
+their provider-action/routing engines are not implemented here.
 
 ## Revision-safe comment publication
 

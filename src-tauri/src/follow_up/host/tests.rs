@@ -127,6 +127,10 @@ fn fixture() -> (tempfile::TempDir, Store, FollowUp) {
 }
 
 fn start(store: &Store, run: &mut FollowUp, manual: bool) {
+    start_at(store, run, manual, 100);
+}
+
+fn start_at(store: &Store, run: &mut FollowUp, manual: bool, now: i64) {
     let candidate = candidates(store).unwrap().remove(0);
     assert!(candidate.blocked.is_none(), "{:?}", candidate.blocked);
     assert_eq!(candidate.run, *run);
@@ -136,7 +140,7 @@ fn start(store: &Store, run: &mut FollowUp, manual: bool) {
         candidate.blocked,
         candidate.automatic_start,
         manual,
-        100,
+        now,
     )
     .unwrap();
     save_to_store(store, run).unwrap();
@@ -236,14 +240,14 @@ fn first_start_and_manual_retry_preserve_equivalent_captured_selection() {
             run.analysis
                 .as_mut()
                 .unwrap()
-                .fail(&Failure::timeout().monitoring(), 101);
+                .fail(&Failure::timeout().monitoring(), 1000);
             save_to_store(&store, &run).unwrap();
         }
         let selection = run.review.selection.clone();
         let original_review = run.review.clone();
         let previous = run.analysis.clone();
         change_sibling_comment(&store, &run);
-        start(&store, &mut run, retry);
+        start_at(&store, &mut run, retry, if retry { 1001 } else { 100 });
         assert_eq!(run.review.selection, selection, "manual retry: {retry}");
         assert_eq!(store.load_reviews().unwrap()[0], original_review);
         assert_eq!(

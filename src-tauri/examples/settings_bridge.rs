@@ -19,6 +19,18 @@ fn recorded_settings(store: &Store, settings: Settings) -> Result<Value, String>
 
 fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
     match request.command.as_str() {
+        "automation_snapshot" => serde_json::to_value(
+            pr_sniper_lib::capacity::Coordinator::default().snapshot(store, 1_800_000_000)?,
+        )
+        .map_err(|_| "Cannot encode automation state.".into()),
+        "set_automation_paused" => {
+            store.save_automation(&pr_sniper_lib::capacity::Automation {
+                paused: request.args["paused"]
+                    .as_bool()
+                    .ok_or("Pause flag required.")?,
+            })?;
+            Ok(Value::Null)
+        }
         "seed_settings" => {
             let settings: Settings = serde_json::from_value(request.args)
                 .map_err(|_| "Invalid settings test fixture.".to_string())?;

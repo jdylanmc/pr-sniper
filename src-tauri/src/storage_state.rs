@@ -4,6 +4,19 @@ use std::io::ErrorKind;
 // Typed application state stays attached to Store without coupling settings,
 // policy and filesystem tests to the native host and provider runtimes.
 impl Store {
+    pub fn load_automation(&self) -> Result<crate::capacity::Automation, String> {
+        match self.read_state("automation.json") {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|_| "Automation state is invalid; repair it before running work.".into()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Default::default()),
+            Err(_) => Err("Cannot read automation state. No work can start.".into()),
+        }
+    }
+
+    pub fn save_automation(&self, automation: &crate::capacity::Automation) -> Result<(), String> {
+        self.write_state("automation.json", automation)
+    }
+
     pub fn load_queue(&self) -> Result<Vec<crate::monitoring::QueueJob>, String> {
         Ok(self.load_queue_state()?.jobs)
     }
