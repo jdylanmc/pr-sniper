@@ -2328,6 +2328,8 @@ pub fn run() {
             let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
             let diagnostics =
                 MenuItem::with_id(app, "diagnostics", "Diagnostics", true, None::<&str>)?;
+            let close_panel =
+                MenuItem::with_id(app, "close-panel", "Close Panel", true, None::<&str>)?;
             let separator = PredefinedMenuItem::separator(app)?;
             let quit = MenuItem::with_id(app, "quit", "Quit PR Sniper", true, Some("CmdOrCtrl+Q"))?;
             let menu = Menu::with_items(
@@ -2338,6 +2340,7 @@ pub fn run() {
                     &check,
                     &settings,
                     &diagnostics,
+                    &close_panel,
                     &separator,
                     &quit,
                 ],
@@ -2367,6 +2370,14 @@ pub fn run() {
                     }
                 })
                 .on_menu_event(|app, event| {
+                    if event.id.as_ref() == "close-panel" {
+                        if let Some(window) = app.get_webview_window(panel::LABEL) {
+                            if window.close().is_err() {
+                                report(app, "Cannot request native panel close.".into());
+                            }
+                        }
+                        return;
+                    }
                     if event.id.as_ref() == "check" {
                         let check_app = app.clone();
                         tauri::async_runtime::spawn_blocking(move || {
@@ -2452,6 +2463,7 @@ pub fn run() {
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
+                record(window.app_handle(), DiagnosticEvent::WindowCloseRequested);
                 if let Err(error) = panel::hide(window.app_handle()) {
                     report(window.app_handle(), error);
                 }

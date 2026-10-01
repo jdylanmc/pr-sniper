@@ -117,6 +117,13 @@ impl Session {
         self.visible = visible;
         self.revision += 1;
     }
+    fn dismiss(&mut self, from_focus_loss: bool) {
+        self.set_visible(false);
+        if !from_focus_loss {
+            self.blur_from_tray = None;
+            self.tray_down_visible = None;
+        }
+    }
     pub fn snapshot(&self, store: &Store) -> Snapshot {
         let missing = match missing(store, &self.route) {
             Ok(value) => value,
@@ -454,6 +461,10 @@ pub(crate) async fn show(app: &tauri::AppHandle, route: Option<Route>) -> Result
 }
 
 pub(crate) fn hide(app: &tauri::AppHandle) -> Result<(), String> {
+    dismiss(app, false)
+}
+
+fn dismiss(app: &tauri::AppHandle, from_focus_loss: bool) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(LABEL) {
         window
             .hide()
@@ -466,7 +477,7 @@ pub(crate) fn hide(app: &tauri::AppHandle) -> Result<(), String> {
             .session
             .lock()
             .map_err(|_| "Panel navigation unavailable.")?;
-        session.set_visible(false);
+        session.dismiss(from_focus_loss);
     }
     emit(app)?;
     crate::record(app, crate::storage::DiagnosticEvent::WindowHidden);
@@ -560,7 +571,7 @@ pub(crate) fn lost_focus(app: &tauri::AppHandle) {
                             .is_focused()
                             .map_err(|_| "Panel focus unavailable.")?
                         {
-                            hide(&dismiss_app)?;
+                            dismiss(&dismiss_app, true)?;
                         }
                     }
                     Ok(())

@@ -67,6 +67,28 @@ fn diagnostic_writes_preserve_separate_configuration() {
 }
 
 #[test]
+fn native_close_request_is_distinct_from_hide_only_dismissal() {
+    let fixture = Fixture::new();
+    for event in [
+        DiagnosticEvent::WindowHidden,
+        DiagnosticEvent::WindowCloseRequested,
+        DiagnosticEvent::WindowHidden,
+    ] {
+        fixture.store().record(event).unwrap();
+    }
+    let records = fixture.store().diagnostics().unwrap();
+    let values = serde_json::to_value(records).unwrap();
+    assert_eq!(values[0]["event"], "window_hidden");
+    assert_eq!(values[1]["event"], "window_close_requested");
+    assert_eq!(values[2]["event"], "window_hidden");
+    assert!(values
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|record| record.as_object().unwrap().len() == 2));
+}
+
+#[test]
 fn a_fresh_profile_has_no_diagnostic_events() {
     let fixture = Fixture::new();
 

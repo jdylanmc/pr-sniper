@@ -16,6 +16,7 @@ pub(crate) mod private_fs;
 pub enum DiagnosticEvent {
     SessionStarted,
     WindowOpened,
+    WindowCloseRequested,
     WindowHidden,
     SettingsSaved,
     QuitRequested,
