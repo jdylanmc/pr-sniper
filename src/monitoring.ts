@@ -287,9 +287,9 @@ export function renderMonitoring(
     <section id="automation-controls"></section>
     <h2>Your review inbox</h2><section id="handoff-queue"></section></div>
     <div data-monitor-detail><section data-item-evidence></section>
-    <h2 id="evidence-heading" tabindex="-1">Review evidence and actions</h2>
+    <div data-evidence-guidance><h2 id="evidence-heading" tabindex="-1">Review evidence and actions</h2>
     <p>Monitoring and assigned reviews run while the ${trayAdjective} app is active. Copilot uses read-only tools. GitHub comments require a separate publication gate; machine sign-off is not approval.</p>
-    <p class="hint">Saved review evidence is tied to the head shown. GitHub links open the live PR or current diff in your browser's signed-in account; check its current revision and requirements before deciding to merge.</p>
+    <p class="hint">Saved review evidence is tied to the head shown. GitHub links open the live PR or current diff in your browser's signed-in account; check its current revision and requirements before deciding to merge.</p></div>
     <h2 data-normal-heading>Agent reviews</h2><section id="agent-reviews"></section>
     <h2 data-conversation-heading>Thread follow-ups</h2><section id="thread-follow-ups"></section></div>
     <div data-monitor-recovery>
@@ -303,9 +303,14 @@ export function renderMonitoring(
   const automationRoot = root.querySelector<HTMLElement>(
     "#automation-controls",
   )!;
+  let automation: AutomationSnapshot | undefined;
   const refreshAutomation = mountAutomation(
     automationRoot,
-    options.onAutomation,
+    (value) => {
+      automation = value;
+      options.onAutomation?.(value);
+      renderEvidence();
+    },
     { compact: options.panel, onError: options.panel ? showError : undefined },
   );
   const health = root.querySelector<HTMLElement>("#schedule-health")!;
@@ -389,6 +394,8 @@ export function renderMonitoring(
       if (!target) return;
       const job = target.type === "job" ? target : undefined;
       jobDetail = job;
+      root.querySelector<HTMLElement>("[data-evidence-guidance]")!.hidden =
+        !!job;
       const item =
         target.type === "item"
           ? current.items?.find(
@@ -442,37 +449,49 @@ export function renderMonitoring(
         target,
         item,
         jobDetail && [current.reviews, current.follow_ups, current.mentions],
+        jobDetail &&
+          automation?.work.find(
+            (entry) => entry.key.kind === job?.kind && entry.key.id === job.id,
+          ),
+        !!automation,
       ]);
       if (next !== detailSignature) {
         detailSignature = next;
         evidence.replaceChildren();
         evidence.removeAttribute("role");
-        if (item) {
+        if (jobDetail) {
+          renderWorkContext(
+            evidence,
+            current,
+            jobDetail.kind,
+            jobDetail.id,
+            automation,
+            item
+              ? () => void openDestination(item.id, null, showError)
+              : undefined,
+          );
+          if (jobDetail.kind === "primary_final" && item?.action_status) {
+            const context = document.createElement("h2");
+            context.textContent = "PR-level provider evidence and recovery";
+            evidence.append(context);
+            renderActions(
+              evidence,
+              item.action_status,
+              showError,
+              refresh,
+              false,
+            );
+          }
+        } else if (item) {
+          const hero = document.createElement("section");
+          hero.className = "detail-hero";
           const title = document.createElement("h2");
           title.textContent = `${item.job.repository_name} #${item.job.number}: ${item.job.title}`;
           const summary = document.createElement("p");
           summary.textContent = item.summary;
-          evidence.append(title, summary);
-          if (target.type === "item")
-            renderItemEvidence(evidence, item, showError, refresh, true);
-          else if (jobDetail?.kind === "primary_final" && item.action_status)
-            renderActions(evidence, item.action_status, showError, refresh);
-        } else if (
-          jobDetail?.kind === "reply" ||
-          jobDetail?.kind === "mention"
-        ) {
-          evidence.textContent =
-            "Parent PR iteration context unavailable. No other iteration was selected; captured conversation follows.";
-          evidence.setAttribute("role", "status");
-        }
-        if (jobDetail) {
-          renderWorkContext(evidence, current, jobDetail.kind, jobDetail.id);
-          if (item) {
-            const link = document.createElement("button");
-            link.textContent = "Open PR on GitHub";
-            link.onclick = () => void openDestination(item.id, null, showError);
-            evidence.append(link);
-          }
+          hero.append(title, summary);
+          evidence.append(hero);
+          renderItemEvidence(evidence, item, showError, refresh, true);
         }
       }
     }
@@ -515,7 +534,7 @@ export function renderMonitoring(
             selection.job.account_id === m.binding.account_id &&
             selection.job.number === m.binding.number),
     );
-    followUps(replies, snapshot.follow_ups ?? [], mentions);
+    followUps(replies, snapshot.follow_ups ?? [], mentions, !jobDetail);
     if (options.panel) {
       root.querySelector<HTMLElement>("[data-normal-heading]")!.hidden =
         candidates.length === 0;
@@ -747,7 +766,8 @@ export function renderMonitoring(
             ? "Trust confirmation required for this exact revision."
             : "Waiting for manual start or the automatic start gate."));
       row.append(state);
-      if (run && run.operation.attempt_count > 0)
+      const singleJob = options.panel && panelDetail?.type === "job";
+      if (!singleJob && run && run.operation.attempt_count > 0)
         renderConfiguration(
           row,
           "Captured execution configuration",
@@ -762,7 +782,12 @@ export function renderMonitoring(
         details.append(summary, body);
         row.append(details);
       }
-      if (!run || ["queued", "interrupted"].includes(run.operation.state))
+      if (
+        (!singleJob && (!run || run.operation.attempt_count === 0)) ||
+        (run &&
+          run.operation.attempt_count > 0 &&
+          ["queued", "interrupted"].includes(run.operation.state))
+      )
         renderConfiguration(
           row,
           "Planned configuration (revalidated at start; not execution evidence)",
