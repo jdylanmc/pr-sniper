@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { QueueItem } from "./queue";
 
 interface Operation {
   state: string;
@@ -7,13 +8,7 @@ interface Operation {
 }
 
 interface ConversationContext {
-  job: {
-    repository_name: string;
-    number: number;
-    account_login: string;
-    account_id: string;
-    head_sha: string;
-  };
+  job: QueueItem["job"];
   selection: {
     agent: {
       name: string;

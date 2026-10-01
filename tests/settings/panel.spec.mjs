@@ -175,6 +175,76 @@ test("Back restores exact row, list scroll and focus and switching detail replac
   ).toBeHidden();
 });
 
+test("Back reacquires the exact accessible row action group after redraw with same-title neighbors", async ({
+  page,
+  store,
+}) => {
+  const fixture = await queueFixture(store);
+  const jobs = [1, 2].map((number) => {
+    const job = fixture.review(number).job;
+    return {
+      ...job,
+      title: "Same title",
+      work: {
+        id: `native-work-${number}`,
+        item_id: `native-item-${number}`,
+        iteration_id: `native-iteration-${number}`,
+        iteration: 1,
+        agent_id: fixture.settings.agents[0].id,
+        enqueue_order: number,
+        pass_ordinal: 1,
+        trigger: "admission",
+        admission: {
+          watched_author: true,
+          all_authors: false,
+          requested_reviewer: false,
+        },
+      },
+    };
+  });
+  await store("seed_queue_state", {
+    jobs,
+    reviews: [],
+    publications: [],
+    follow_ups: [],
+  });
+  const before = await store("monitoring_snapshot");
+  await page.goto("/");
+  const actions = (number) =>
+    page.locator("#handoff-queue").getByRole("group", {
+      name: `Actions for example/repo #${number}; account 22; item native-item-${number}`,
+      exact: true,
+    });
+  await expect(actions(1)).toHaveCount(1);
+  await expect(actions(2)).toHaveCount(1);
+  const button = actions(2).getByRole("button", {
+    name: "Evidence and actions",
+    exact: true,
+  });
+  await button.evaluate((element) => {
+    window.__originalRowButton = element;
+  });
+  await button.click();
+  await expect(page.locator("[data-item-evidence]")).toContainText(
+    "example/repo #2: Same title",
+  );
+  expect(
+    await page.evaluate(() => window.__originalRowButton.isConnected),
+  ).toBe(false);
+  await page.getByRole("button", { name: "Back", exact: true }).click();
+  await expect(button).toBeFocused();
+  await expect(
+    actions(1).getByRole("button", {
+      name: "Evidence and actions",
+      exact: true,
+    }),
+  ).not.toBeFocused();
+  expect(
+    await button.evaluate((element) => element === window.__originalRowButton),
+  ).toBe(false);
+  expect(await store("monitoring_snapshot")).toEqual(before);
+});
+
 test("native notification identity, legacy entry commands and missing routes never reload or substitute", async ({
   page,
   store,

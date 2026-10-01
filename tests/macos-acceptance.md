@@ -85,7 +85,22 @@ Recording already granted, refuses a concurrently running production bundle
 or matching test bundle, and refuses production bundle IDs/installed paths.
 It does not request permissions, change login items, sign in, or take screenshots.
 It seeds two offline PRs through the candidate's real Store bridge with the
-repository disabled, no connected accounts and all automation off.
+repository disabled, no connected accounts and all automation off. Both rows
+have the same title and distinct canonical item/iteration identities. The
+production row-actions accessibility group names its PR, account and item ID.
+After Back redraws the queue, the harness reacquires that exact group and its
+current button inside the original owned panel; it neither compares against a
+destroyed button nor walks ancestors into another row or the whole list.
+
+The Store-backed conversation regressions separately cover a closed iteration
+and a reopened iteration at the same SHA. Reply and mention details resolve
+their parent from the captured analysis job's canonical item and iteration,
+with exact provider/account/configuration/repository/PR binding and job kind.
+Only contexts without canonical work may use a unique exact binding, head and
+trigger-policy match. Ambiguous or mismatched parents show an unavailable
+context without replacing the saved conversation, its provenance or Back's
+originating row. Navigation does not authorize work. These browser checks are
+not a native accessibility pass.
 
 Compile and preflight (preflight launches no app):
 
