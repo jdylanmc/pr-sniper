@@ -1045,7 +1045,7 @@ export function renderMonitoring(
   });
   void refresh();
   const timer = window.setInterval(() => {
-    if (!check.isConnected) window.clearInterval(timer);
+    if (!root.isConnected) window.clearInterval(timer);
     else void refresh();
   }, 5000);
   return {
