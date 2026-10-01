@@ -1,6 +1,7 @@
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or
     $env:PR_SNIPER_PACKAGING_ACCEPTANCE -ne '1') { throw 'Removal retry fixture requires owned hosted acceptance.' }
+. (Join-Path $PSScriptRoot 'windows-removal-diagnostics.ps1')
 $directory = Join-Path $env:LOCALAPPDATA 'PR Sniper'
 $uninstaller = Join-Path $directory 'uninstall.exe'
 $tools = Join-Path $env:ChocolateyInstall 'lib\pr-sniper-localtest\tools'
@@ -13,11 +14,20 @@ $failure = $null
 try {
     [IO.File]::SetAttributes($uninstaller, $attributes -bor [IO.FileAttributes]::ReadOnly)
     & choco uninstall pr-sniper-localtest --yes --limit-output --no-progress --execution-timeout=180
-    if ($LASTEXITCODE -eq 0) { throw 'Read-only post-native deletion incorrectly succeeded.' }
-    if ((Test-Path (Join-Path $directory 'pr-sniper.exe')) -or
-        (Get-FileHash $uninstaller).Hash -ine $receipt.uninstaller_sha256 -or
-        -not (Get-PrSniperRemovalState $tools $receipt $receiptHash).completed) {
-        throw 'Post-native failure did not preserve the exact completion evidence.'
+    $failedExit = $LASTEXITCODE
+    if ($failedExit -eq 0) { throw 'Read-only post-native deletion incorrectly succeeded.' }
+    $appExists = Test-Path (Join-Path $directory 'pr-sniper.exe')
+    $observedHash = (Get-FileHash $uninstaller).Hash
+    $completed = (Get-PrSniperRemovalState $tools $receipt $receiptHash).completed
+    try {
+        $observation = Get-PrSniperRemovalRetryObservation $tools $directory $env:ChocolateyInstall `
+            $receipt.version $receipt.uninstaller_sha256 $receiptHash $completed $failedExit
+        $json = $observation | ConvertTo-Json -Depth 6
+        $json | Set-Content (Join-Path $env:PR_SNIPER_INSTALLER_DIAGNOSTICS 'removal-after-chocolatey-failure.json') -Encoding utf8
+        Write-Host $json
+    } catch { Write-Warning 'Post-native diagnostic capture failed; original evidence assertion remains mandatory.' }
+    if ($appExists -or $observedHash -ine $receipt.uninstaller_sha256 -or -not $completed) {
+        throw "Post-native failure did not preserve the exact completion evidence: app_exists=$appExists; expected_uninstaller_sha256=$($receipt.uninstaller_sha256); observed_uninstaller_sha256=$observedHash; native_completed=$completed."
     }
 } catch { $failure = $_ }
 finally {
