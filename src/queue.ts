@@ -146,7 +146,11 @@ export async function openDestination(
 export function renderQueue(
   root: HTMLElement,
   showError: (message: string) => void,
-  select: (item: QueueItem | null | undefined, focus: boolean) => void,
+  select: (
+    item: QueueItem | null | undefined,
+    focus: boolean,
+    opener?: HTMLElement,
+  ) => void,
   refresh: () => Promise<void>,
   options: { compact?: boolean; externalSelection?: boolean } = {},
 ) {
@@ -197,7 +201,7 @@ export function renderQueue(
         draw(false);
       });
 
-  function choose(id: string | null, focus: boolean) {
+  function choose(id: string | null, focus: boolean, opener?: HTMLElement) {
     selectionRevision++;
     initialized = true;
     selected = id;
@@ -207,10 +211,10 @@ export function renderQueue(
       url.hash = id ? new URLSearchParams({ item: id }).toString() : "";
       history.replaceState(null, "", url);
     }
-    draw(focus);
+    draw(focus, opener);
   }
 
-  function draw(focus: boolean) {
+  function draw(focus: boolean, opener?: HTMLElement) {
     if (!loaded) return;
     const active =
       document.activeElement instanceof HTMLElement &&
@@ -335,7 +339,7 @@ export function renderQueue(
         evidence.replaceChildren(label);
       }
       evidence.setAttribute("aria-pressed", String(matches(item)));
-      evidence.onclick = () => choose(item.id, true);
+      evidence.onclick = () => choose(item.id, true, evidence);
       const github = document.createElement("button");
       github.type = "button";
       github.textContent = "Open PR on GitHub";
@@ -364,6 +368,7 @@ export function renderQueue(
     select(
       !initialized ? undefined : selected === null ? null : items.find(matches),
       focus,
+      opener,
     );
     if (!focus && focusedItem && focusedLabel && !root.closest("[hidden]")) {
       const row = [

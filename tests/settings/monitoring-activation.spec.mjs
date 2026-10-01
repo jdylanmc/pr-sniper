@@ -69,6 +69,53 @@ async function activationFixture(page, handler) {
   });
 }
 
+for (const embedded of [true, false]) {
+  test(`${embedded ? "panel" : "legacy"} async scope dialog returns to its invoker rather than later focus`, async ({
+    page,
+    store,
+  }) => {
+    await seedBoundRepository(store);
+    const preview = Promise.withResolvers();
+    await activationFixture(page, (command, args) => {
+      if (command === "monitoring_activation_status")
+        return { active: false, selected_existing: 0 };
+      if (command === "preview_monitoring_activation")
+        return preview.promise.then(() => ({
+          preview_id: "held-preview",
+          repository_id: args.repositoryId,
+          name: repositoryName,
+          account_id: "101",
+          account_login: "fixture-owner",
+          candidates: [],
+        }));
+      return null;
+    });
+    await page.goto(embedded ? "/" : "/?view=settings");
+    if (embedded)
+      await page
+        .getByRole("navigation", { name: "Application destinations" })
+        .getByRole("button", { name: "Settings", exact: true })
+        .click();
+    const repository = await repositorySettings(page, repositoryName);
+    const opener = repository.getByRole("button", { name: "Configure scope" });
+    try {
+      await opener.click();
+      await expect(opener).toBeDisabled();
+      await repository.getByLabel("Review start", { exact: true }).focus();
+      preview.resolve();
+      const scope = page.getByRole("dialog", {
+        name: `Monitoring scope for ${repositoryName}`,
+        exact: true,
+      });
+      await scope.getByRole("button", { name: "Cancel", exact: true }).click();
+      await expect(opener).toBeFocused();
+      await expect(repository).toBeVisible();
+    } finally {
+      preview.resolve();
+    }
+  });
+}
+
 test("activation saves filter drafts then scopes 1,800 matching pull requests explicitly", async ({
   page,
   store,
@@ -225,6 +272,9 @@ test("activation cancel and failed apply leave scope unchanged and retryable", a
     exact: true,
   });
   await scope.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(
+    repository.getByRole("button", { name: "Configure scope" }),
+  ).toBeFocused();
   expect(cancelled).toBe(1);
   await expect(repository.locator("[data-scope-status]")).toContainText(
     "Scope confirmation required",

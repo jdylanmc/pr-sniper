@@ -103,6 +103,7 @@ export async function mountPanel(app: HTMLElement) {
   let snapshot: MonitoringSnapshot | undefined;
   let automation: AutomationSnapshot | undefined;
   let navigating = Promise.resolve();
+  let navigationOrigin: string | undefined;
   let utilityRevision = 0;
   let lastVisible = false;
   const positions = new Map<string, Position>();
@@ -112,13 +113,15 @@ export async function mountPanel(app: HTMLElement) {
     error.textContent = message;
     error.hidden = false;
   };
-  const remember = () => {
+  const remember = (opener?: HTMLElement) => {
+    if (!opener && navigationOrigin === key(route)) return;
     const previous = positions.get(key(route));
     const focus =
-      document.activeElement instanceof HTMLElement &&
+      opener ??
+      (document.activeElement instanceof HTMLElement &&
       content.contains(document.activeElement)
         ? document.activeElement
-        : (previous?.focus ?? null);
+        : (previous?.focus ?? null));
     const row = focus?.closest<HTMLElement>("[data-item-id],[data-job-id]");
     const nested = [...content.querySelectorAll<HTMLElement>("*")]
       .filter(
@@ -139,7 +142,7 @@ export async function mountPanel(app: HTMLElement) {
           : previous?.row,
     });
   };
-  content.addEventListener("focusin", remember);
+  content.addEventListener("focusin", () => remember());
   function restorePosition(focus: boolean) {
     const saved = positions.get(key(route));
     content.scrollTop = saved?.scroll ?? 0;
@@ -167,11 +170,14 @@ export async function mountPanel(app: HTMLElement) {
   }
   const monitor = renderMonitoring(views.monitor, showError, {
     panel: true,
-    navigate: (detail) =>
-      void navigate({
-        tab: route.tab === "settings" ? "queue" : route.tab,
-        detail,
-      }),
+    navigate: (detail, opener) =>
+      void navigate(
+        {
+          tab: route.tab === "settings" ? "queue" : route.tab,
+          detail,
+        },
+        opener,
+      ),
     onSnapshot: (value) => {
       snapshot = value;
       drawSummary();
@@ -277,13 +283,16 @@ export async function mountPanel(app: HTMLElement) {
       button.textContent =
         row.kind === "item" ? "Open PR evidence" : "Open job";
       button.onclick = () =>
-        void navigate({
-          tab,
-          detail:
-            row.kind === "item"
-              ? { type: "item", item_id: row.id }
-              : { type: "job", kind: row.kind, id: row.id },
-        });
+        void navigate(
+          {
+            tab,
+            detail:
+              row.kind === "item"
+                ? { type: "item", item_id: row.id }
+                : { type: "job", kind: row.kind, id: row.id },
+          },
+          button,
+        );
       if (tab === "running") {
         const displayState =
           row.state === "active"
@@ -552,9 +561,11 @@ export async function mountPanel(app: HTMLElement) {
       requestAnimationFrame(() => restorePosition(true));
     lastVisible = state.visible;
   }
-  function navigate(next: PanelRoute) {
+  function navigate(next: PanelRoute, opener?: HTMLElement) {
+    // Capture activation before a queue redraw detaches the actual row button.
+    remember(opener);
     navigating = navigating.then(async () => {
-      remember();
+      navigationOrigin = key(route);
       error.hidden = true;
       try {
         await apply(
@@ -566,6 +577,8 @@ export async function mountPanel(app: HTMLElement) {
             ? cause
             : "Panel navigation failed; the current view was retained.",
         );
+      } finally {
+        navigationOrigin = undefined;
       }
     });
     return navigating;
@@ -604,7 +617,7 @@ export async function mountPanel(app: HTMLElement) {
     },
     true,
   );
-  window.addEventListener("blur", remember);
+  window.addEventListener("blur", () => remember());
   window.addEventListener("focus", () => restorePosition(true));
   try {
     await listen<PanelSnapshot>(

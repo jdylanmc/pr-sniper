@@ -3,6 +3,7 @@ import type { WorkKind } from "./panel";
 import type { QueueItem } from "./queue";
 import type { ReviewSelection } from "./resources";
 import type { AutomationSnapshot } from "./automation";
+import type { FollowUpCandidate } from "./follow-up";
 
 export const purposes: Record<WorkKind, string> = {
   normal: "Normal pass",
@@ -24,7 +25,51 @@ export interface WorkPresentation {
   attempt: number | null;
   trigger: string;
   reason?: string | null;
+  conversation?: {
+    analysis: string;
+    publication: string;
+    cancelled: boolean;
+  };
 }
+
+function conversationState(run: FollowUpCandidate["run"]) {
+  // Analysis completion does not settle a remote mutation, even after cancel.
+  if (run.uncertain || run.phase === "unresolved") return "outcome_unknown";
+  if (run.phase === "stale_after_publication") return "stale_after_publication";
+  if (run.publication) {
+    if (run.publication.state === "completed")
+      return run.receipt ? "published" : "outcome_unknown";
+    if (run.cancelled) return "stopped";
+    if (["failed", "manual_retry"].includes(run.publication.state))
+      return "publication_failed";
+    if (["queued", "interrupted"].includes(run.publication.state))
+      return "publication_retry";
+    return "publishing";
+  }
+  if (run.cancelled) return "stopped";
+  if (run.analysis?.state === "completed") {
+    if (run.result?.output.decision === "quiet") return "completed";
+    if (run.result?.output.decision === "human_input_required")
+      return "human_input_required";
+    if (run.result?.output.decision === "reply") return "waiting_publication";
+    return "outcome_unknown";
+  }
+  if (run.analysis?.state === "queued" && run.analysis.attempt_count > 0)
+    return "retry_queued";
+  return run.analysis?.state ?? run.phase;
+}
+
+const conversationLabels: Record<string, string> = {
+  outcome_unknown: "Outcome unknown",
+  human_input_required: "Human input required",
+  waiting_publication: "Awaiting publication",
+  publication_failed: "Publication failed",
+  publication_retry: "Publication retry queued",
+  publishing: "Publishing",
+  published: "Published",
+  stale_after_publication: "Published; stale evidence",
+  retry_queued: "Retry queued",
+};
 
 export function workPresentation(
   snapshot: MonitoringSnapshot,
@@ -40,6 +85,7 @@ export function workPresentation(
   let ordinal = purposes[kind];
   let count: number | null = null;
   let reason: string | null = null;
+  let conversation: WorkPresentation["conversation"];
   if (kind === "normal") {
     const candidate = snapshot.reviews?.find((r) => r.key === id);
     if (!candidate) return;
@@ -110,12 +156,23 @@ export function workPresentation(
     captured = !!run.analysis?.attempt_count || !!run.result;
     selection = captured ? context?.selection : candidate.planned_selection;
     attempt = run.analysis?.attempt_count ?? 0;
-    state = run.analysis?.state ?? (run.result ? "completed" : run.phase);
+    state = conversationState(run);
     reason = candidate.blocked ?? run.error;
-    if (run.cancelled) state = "stopped";
-    if (["stopped", "stale_after_publication"].includes(run.phase))
-      state = run.phase;
-    if (job?.waiting === "superseded") state = "superseded";
+    if (job?.waiting === "superseded" && !run.publication && !run.uncertain)
+      state = "superseded";
+    conversation = {
+      analysis: run.analysis?.state.replaceAll("_", " ") ?? "Not started",
+      publication: run.receipt
+        ? `Confirmed GitHub reply ${run.receipt}${run.error ? "; verification or recovery needs attention" : ""}`
+        : run.uncertain || run.phase === "unresolved"
+          ? "Outcome unknown; no confirmed reply receipt. Reconcile the original intent."
+          : run.publication
+            ? `${run.publication.state.replaceAll("_", " ")}; no confirmed reply receipt`
+            : run.result && run.result.output.decision !== "reply"
+              ? "No automated reply"
+              : "Not started; no confirmed reply receipt",
+      cancelled: run.cancelled,
+    };
     trigger = `External comment ${run.trigger_id}; ${kind === "mention" ? "acting-account mention" : "owned-thread reply"}`;
     ordinal =
       run.reply_ordinal == null
@@ -138,6 +195,7 @@ export function workPresentation(
     attempt,
     trigger,
     reason,
+    conversation,
   };
 }
 
@@ -163,6 +221,7 @@ export function renderConfiguration(
 ) {
   const details = document.createElement("details");
   details.className = "work-configuration";
+  details.dataset.disclosure = "configuration";
   details.open = options.open ?? false;
   const summary = document.createElement("summary");
   summary.textContent = label;
@@ -273,6 +332,7 @@ export function renderConfiguration(
         text("Retained legacy doctrine text", selection.doctrine);
     }
     const raw = document.createElement("details");
+    raw.dataset.disclosure = "raw-configuration";
     const rawTitle = document.createElement("summary");
     rawTitle.textContent = "Full saved configuration";
     const body = document.createElement("pre");
@@ -303,21 +363,22 @@ export function renderWorkContext(
       ? "Running"
       : active?.state === "stopping"
         ? "Stopping"
-        : work.state === "completed"
-          ? "Done"
-          : work.state === "superseded"
-            ? "Superseded"
-            : ["failed", "manual_retry", "unresolved"].includes(work.state)
-              ? "Failed"
-              : ["stopped", "stale_after_publication"].includes(work.state)
-                ? "Stopped"
-                : active?.state === "blocked" ||
-                    work.state === "blocked" ||
-                    work.reason
-                  ? "Blocked"
-                  : work.state === "running" && !automation
-                    ? "Activity unavailable"
-                    : "Waiting";
+        : (conversationLabels[work.state] ??
+          (work.state === "completed"
+            ? "Done"
+            : work.state === "superseded"
+              ? "Superseded"
+              : ["failed", "manual_retry", "unresolved"].includes(work.state)
+                ? "Failed"
+                : work.state === "stopped"
+                  ? "Stopped"
+                  : active?.state === "blocked" ||
+                      work.state === "blocked" ||
+                      work.reason
+                    ? "Blocked"
+                    : work.state === "running" && !automation
+                      ? "Activity unavailable"
+                      : "Waiting"));
   const hero = document.createElement("section");
   hero.className = "detail-hero job-hero";
   hero.dataset.jobState = state.toLowerCase();
@@ -394,6 +455,12 @@ export function renderWorkContext(
     ],
     ["Revision head", work.job?.head_sha.slice(0, 7) ?? "Unavailable"],
   ]);
+  if (work.conversation)
+    renderFacts(card, [
+      ["Analysis", work.conversation.analysis],
+      ["Reply publication", work.conversation.publication],
+      ["Cancellation requested", work.conversation.cancelled ? "Yes" : "No"],
+    ]);
   const note = document.createElement("p");
   note.textContent =
     kind === "normal"
@@ -417,6 +484,7 @@ export function renderWorkContext(
     },
   );
   const provenance = document.createElement("details");
+  provenance.dataset.disclosure = "provenance";
   const provenanceTitle = document.createElement("summary");
   provenanceTitle.textContent = "Job identity and provenance";
   provenance.append(provenanceTitle);

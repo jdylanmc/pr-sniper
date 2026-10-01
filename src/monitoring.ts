@@ -16,7 +16,11 @@ import {
   humanQueue,
 } from "./queue";
 import { renderNotificationHistory } from "./notifications";
-import { renderConfiguration, renderWorkContext } from "./work-presentation";
+import {
+  renderConfiguration,
+  renderWorkContext,
+  workPresentation,
+} from "./work-presentation";
 
 interface Health {
   repository_id: string;
@@ -278,7 +282,7 @@ export function renderMonitoring(
   showError: (message: string) => void,
   options: {
     panel?: boolean;
-    navigate?: (detail: PanelDetail) => void;
+    navigate?: (detail: PanelDetail, opener?: HTMLElement) => void;
     onSnapshot?: (snapshot: MonitoringSnapshot | undefined) => void;
     onAutomation?: (snapshot: AutomationSnapshot | undefined) => void;
   } = {},
@@ -326,6 +330,7 @@ export function renderMonitoring(
   let panelDetail: PanelDetail | undefined;
   let missingDetail: string | null = null;
   let detailSignature = "";
+  let evidenceTarget = "";
   let detailRevision = 0;
   let selection: QueueItem | null | undefined;
   const refreshNotifications = renderNotificationHistory(
@@ -340,10 +345,10 @@ export function renderMonitoring(
   const queue = renderQueue(
     root.querySelector<HTMLElement>("#handoff-queue")!,
     showError,
-    (item, focus) => {
+    (item, focus, opener) => {
       if (options.panel) {
         if (focus && item)
-          options.navigate?.({ type: "item", item_id: item.id });
+          options.navigate?.({ type: "item", item_id: item.id }, opener);
         return;
       }
       selection = item;
@@ -447,8 +452,13 @@ export function renderMonitoring(
       selection = item;
       const next = JSON.stringify([
         target,
-        item,
-        jobDetail && [current.reviews, current.follow_ups, current.mentions],
+        jobDetail
+          ? [
+              workPresentation(current, jobDetail.kind, jobDetail.id),
+              item?.id,
+              jobDetail.kind === "primary_final" && item?.action_status,
+            ]
+          : item,
         jobDetail &&
           automation?.work.find(
             (entry) => entry.key.kind === job?.kind && entry.key.id === job.id,
@@ -456,7 +466,33 @@ export function renderMonitoring(
         !!automation,
       ]);
       if (next !== detailSignature) {
+        const sameJob =
+          !!jobDetail && evidenceTarget === JSON.stringify(target);
+        const disclosures = sameJob
+          ? [
+              ...evidence.querySelectorAll<HTMLDetailsElement>(
+                "[data-disclosure]",
+              ),
+            ].map(
+              (element) => [element.dataset.disclosure!, element.open] as const,
+            )
+          : [];
+        const focused = document.activeElement;
+        const focusSelector =
+          sameJob &&
+          focused instanceof HTMLElement &&
+          evidence.contains(focused)
+            ? focused.matches(".job-provider-link")
+              ? ".job-provider-link"
+              : focused.matches("summary") &&
+                  focused.parentElement?.dataset.disclosure
+                ? `[data-disclosure="${CSS.escape(focused.parentElement.dataset.disclosure)}"] > summary`
+                : undefined
+            : undefined;
+        const scroller = evidence.closest<HTMLElement>(".panel-content");
+        const scroll = scroller?.scrollTop;
         detailSignature = next;
+        evidenceTarget = JSON.stringify(target);
         evidence.replaceChildren();
         evidence.removeAttribute("role");
         if (jobDetail) {
@@ -493,6 +529,18 @@ export function renderMonitoring(
           evidence.append(hero);
           renderItemEvidence(evidence, item, showError, refresh, true);
         }
+        for (const [id, open] of disclosures) {
+          const element = evidence.querySelector<HTMLDetailsElement>(
+            `[data-disclosure="${CSS.escape(id)}"]`,
+          );
+          if (element) element.open = open;
+        }
+        if (focusSelector)
+          evidence
+            .querySelector<HTMLElement>(focusSelector)
+            ?.focus({ preventScroll: true });
+        if (sameJob && scroller && scroll !== undefined)
+          scroller.scrollTop = scroll;
       }
     }
     if (selection === undefined && !options.panel) {
@@ -515,14 +563,25 @@ export function renderMonitoring(
           f.run.id === jobDetail.id
         : selection === null || !!selection?.follow_up_ids.includes(f.run.id),
     );
+    const publications = (snapshot.publications ?? []).filter((publication) =>
+      candidates.some(
+        (candidate) =>
+          candidate.run?.operation.id === publication.review_operation_id,
+      ),
+    );
     const signature = JSON.stringify([
       candidates,
-      snapshot.publications,
-      snapshot.items,
+      publications,
+      candidates.map(
+        (candidate) =>
+          current.items?.find((item) =>
+            item.review_keys.includes(candidate.key),
+          )?.id,
+      ),
       panelDetail,
     ]);
     if (signature !== reviewsSignature) {
-      renderReviews(candidates, snapshot.publications ?? []);
+      renderReviews(candidates, publications);
       reviewsSignature = signature;
     }
     const mentions = (snapshot.mentions ?? []).filter((m) =>

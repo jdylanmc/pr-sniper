@@ -281,19 +281,25 @@ export async function mountSettings(
     value: clone(value),
   });
 
-  function dialog(title: string, body: string) {
+  function dialog(title: string, body: string, opener: HTMLElement) {
     const modal = document.createElement("dialog");
     modal.className = "settings-dialog";
     modal.setAttribute("aria-label", title);
     modal.innerHTML = `<div class="dialog-head"><h2>${escape(title)}</h2><button type="button" aria-label="Close dialog">Close</button></div><div class="dialog-body">${body}</div>`;
     modal.querySelector("button")!.onclick = () => modal.close();
-    dialogs.show(modal);
+    dialogs.show(modal, opener);
     return modal;
   }
-  function confirmDialog(title: string, body: string, action: string) {
+  function confirmDialog(
+    title: string,
+    body: string,
+    action: string,
+    opener: HTMLElement,
+  ) {
     const modal = dialog(
       title,
       `<p>${body}</p><button class="primary" id="confirm">${escape(action)}</button>`,
+      opener,
     );
     return new Promise<boolean>((resolve) => {
       let resolved = false;
@@ -362,55 +368,59 @@ export async function mountSettings(
       const row = document.createElement("article");
       row.className = "doctrine-card";
       row.innerHTML = `<div><h3>${escape(doctrine.title)}</h3><p>${escape(doctrine.body)}</p><p class="word-count">${words(doctrine.body)} words</p></div><div class="card-actions"><button data-edit>Edit</button><button data-remove>Delete</button></div>`;
-      row.querySelector<HTMLButtonElement>("[data-edit]")!.onclick = () =>
-        editDoctrine(doctrine);
-      row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick =
-        async () => {
-          const usedBy = agents().filter((a) =>
-            doctrineTitles(a).some(
-              (title) =>
-                title.trim().toLowerCase() ===
-                doctrine.title.trim().toLowerCase(),
-            ),
+      row.querySelector<HTMLButtonElement>("[data-edit]")!.onclick = (event) =>
+        editDoctrine(event.currentTarget as HTMLButtonElement, doctrine);
+      row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick = async (
+        event,
+      ) => {
+        const opener = event.currentTarget as HTMLButtonElement;
+        const usedBy = agents().filter((a) =>
+          doctrineTitles(a).some(
+            (title) =>
+              title.trim().toLowerCase() ===
+              doctrine.title.trim().toLowerCase(),
+          ),
+        );
+        if (usedBy.length) {
+          showError(
+            "This doctrine is used by an Agent. Remove or replace its references and save the Agent before deleting it.",
           );
-          if (usedBy.length) {
-            showError(
-              "This doctrine is used by an Agent. Remove or replace its references and save the Agent before deleting it.",
-            );
-            return;
-          }
-          if (
-            !(await confirmDialog(
-              "Delete this doctrine?",
-              `Delete "${escape(doctrine.title)}" from the saved library? Completed review evidence is retained.`,
-              "Delete doctrine",
-            ))
-          )
-            return;
-          try {
-            await commitResource({
-              kind: "doctrine",
-              title: doctrine.title,
-              expected:
-                saved.doctrines?.find((d) => d.title === doctrine.title) ??
-                null,
-              value: null,
-            });
-            render();
-          } catch (cause) {
-            showError(reason(cause));
-          }
-        };
+          return;
+        }
+        if (
+          !(await confirmDialog(
+            "Delete this doctrine?",
+            `Delete "${escape(doctrine.title)}" from the saved library? Completed review evidence is retained.`,
+            "Delete doctrine",
+            opener,
+          ))
+        )
+          return;
+        try {
+          await commitResource({
+            kind: "doctrine",
+            title: doctrine.title,
+            expected:
+              saved.doctrines?.find((d) => d.title === doctrine.title) ?? null,
+            value: null,
+          });
+          render();
+        } catch (cause) {
+          showError(reason(cause));
+        }
+      };
       list.append(row);
     }
-    content.querySelector<HTMLButtonElement>("#new-doctrine")!.onclick = () =>
-      editDoctrine();
+    content.querySelector<HTMLButtonElement>("#new-doctrine")!.onclick = (
+      event,
+    ) => editDoctrine(event.currentTarget as HTMLButtonElement);
   }
 
-  function editDoctrine(existing?: Doctrine) {
+  function editDoctrine(opener: HTMLElement, existing?: Doctrine) {
     const modal = dialog(
       existing ? "Edit doctrine" : "New doctrine",
       `<form><label>Title<input name="title" required maxlength="100" value="${escape(existing?.title ?? "")}" placeholder="e.g. boundaries" /></label><label>Principles<textarea name="body" rows="12" required>${escape(existing?.body ?? "")}</textarea></label><p class="word-count" data-count>${words(existing?.body ?? "")} words</p><p class="settings-hint">Title doubles as this doctrine's slug -- keep it short and unique. Plain text only, never credentials.</p><p role="alert" hidden></p><button class="primary">Save doctrine</button></form>`,
+      opener,
     );
     const body = modal.querySelector<HTMLTextAreaElement>("[name=body]")!;
     const count = modal.querySelector<HTMLElement>("[data-count]")!;
@@ -474,43 +484,46 @@ export async function mountSettings(
           "",
         )}<span class="chip">${escape(agent.signature)}</span></div></div><div class="card-actions"><button data-edit>Edit</button><button data-remove>Delete</button></div>`;
       row.dataset.agentId = agent.id;
-      row.querySelector<HTMLButtonElement>("[data-edit]")!.onclick = () =>
-        editAgent(agent);
-      row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick =
-        async () => {
-          const assigned = repositories().filter((r) =>
-            (r.assignments ?? []).some((a) => a.agent_id === agent.id),
+      row.querySelector<HTMLButtonElement>("[data-edit]")!.onclick = (event) =>
+        editAgent(event.currentTarget as HTMLButtonElement, agent);
+      row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick = async (
+        event,
+      ) => {
+        const opener = event.currentTarget as HTMLButtonElement;
+        const assigned = repositories().filter((r) =>
+          (r.assignments ?? []).some((a) => a.agent_id === agent.id),
+        );
+        if (assigned.length) {
+          showError(
+            "This Agent is assigned to a repository. Remove or replace its assignments and save the repository before deleting it.",
           );
-          if (assigned.length) {
-            showError(
-              "This Agent is assigned to a repository. Remove or replace its assignments and save the repository before deleting it.",
-            );
-            return;
-          }
-          if (
-            !(await confirmDialog(
-              "Delete this agent?",
-              `Delete "${escape(agent.name)}" from saved Agents? Completed review evidence is retained.`,
-              "Delete agent",
-            ))
-          )
-            return;
-          try {
-            await commitResource({
-              kind: "agent",
-              id: agent.id,
-              expected: saved.agents?.find((a) => a.id === agent.id) ?? null,
-              value: null,
-            });
-            render();
-          } catch (cause) {
-            showError(reason(cause));
-          }
-        };
+          return;
+        }
+        if (
+          !(await confirmDialog(
+            "Delete this agent?",
+            `Delete "${escape(agent.name)}" from saved Agents? Completed review evidence is retained.`,
+            "Delete agent",
+            opener,
+          ))
+        )
+          return;
+        try {
+          await commitResource({
+            kind: "agent",
+            id: agent.id,
+            expected: saved.agents?.find((a) => a.id === agent.id) ?? null,
+            value: null,
+          });
+          render();
+        } catch (cause) {
+          showError(reason(cause));
+        }
+      };
       list.append(row);
     }
-    content.querySelector<HTMLButtonElement>("#new-agent")!.onclick = () =>
-      editAgent();
+    content.querySelector<HTMLButtonElement>("#new-agent")!.onclick = (event) =>
+      editAgent(event.currentTarget as HTMLButtonElement);
     content.querySelector<HTMLButtonElement>("#manage-copilot")!.onclick = () =>
       navigate("integrations");
     const notice = content.querySelector<HTMLElement>("[data-copilot-status]")!;
@@ -555,7 +568,7 @@ export async function mountSettings(
     refreshAccounts();
   }
 
-  function editAgent(existing?: Agent) {
+  function editAgent(opener: HTMLElement, existing?: Agent) {
     const modal = dialog(
       existing ? "Edit agent" : "New agent",
       `<form><label>Name<input name="name" required maxlength="80" value="${escape(existing?.name ?? "")}" placeholder="e.g. The Nitpicker" /></label>
@@ -573,6 +586,7 @@ export async function mountSettings(
         <label>Signature<input name="signature" required maxlength="80" value="${escape(existing?.signature ?? "PR Sniper \u{1F3AF}")}" /></label>
         <p class="settings-hint">Custom signature is saved for the signature-customization follow-up. Current publication uses the canonical PR Sniper signature.</p>
         <p class="settings-hint">No review or test prompt runs here. Saving an existing unconfigured Agent preserves its selection until you explicitly replace it.</p><p role="alert" hidden></p><button class="primary">Save agent</button></form>`,
+      opener,
     );
     const accountSelect =
       modal.querySelector<HTMLSelectElement>("[name=ai-account]")!;
@@ -910,8 +924,9 @@ export async function mountSettings(
       query = (event.target as HTMLInputElement).value;
       rows();
     };
-    content.querySelector<HTMLButtonElement>("#add-repository")!.onclick = () =>
-      editRepository();
+    content.querySelector<HTMLButtonElement>("#add-repository")!.onclick = (
+      event,
+    ) => editRepository(event.currentTarget as HTMLButtonElement);
     content.querySelector<HTMLButtonElement>("#select-visible")!.onclick =
       () => {
         for (const item of visible()) if (item.name) select(item, true);
@@ -1037,7 +1052,7 @@ export async function mountSettings(
         };
         row
           .querySelector<HTMLButtonElement>(".configure")
-          ?.addEventListener("click", () => {
+          ?.addEventListener("click", (event) => {
             let repo = item.repositoryId
               ? repositories().find((r) => r.id === item.repositoryId)
               : repositories().find(
@@ -1053,7 +1068,7 @@ export async function mountSettings(
               (draft.repositories ??= []).push(repo);
               changed();
             }
-            repositoryDialog(repo);
+            repositoryDialog(repo, event.currentTarget as HTMLButtonElement);
           });
         list.append(row);
       }
@@ -1061,12 +1076,16 @@ export async function mountSettings(
     rows();
   }
 
-  function editRepository(repository?: ConfiguredRepository) {
+  function editRepository(
+    opener: HTMLElement,
+    repository?: ConfiguredRepository,
+  ) {
     const selectedAccount =
       repository?.provider_account_id ?? githubAccounts[0]?.account_id ?? "";
     const modal = dialog(
       repository ? "Edit repository" : "Add repository",
       `<form><label>GitHub repository<input name="repository" required value="${escape(repository?.name ?? "")}" placeholder="owner/repository or https://github.com/owner/repository" /></label>${githubAccounts.length ? `<label>Acting GitHub account<select name="account" required>${githubAccounts.map((account) => option(account.account_id, `${account.login} (${account.account_id})`, selectedAccount)).join("")}</select></label>` : ""}<p class="settings-hint">${githubAccounts.length ? "PR Sniper validates this repository with the selected account before binding its stable identity." : "Connect a GitHub account to validate and bind this repository. Until then it remains explicitly unbound."} Save persists this repository only. Monitoring scope still requires separate confirmation.</p><p role="alert" hidden></p><button class="primary">Save repository</button></form>`,
+      opener,
     );
     let submitting = false;
     const originDraft = draft;
@@ -1137,7 +1156,10 @@ export async function mountSettings(
     };
   }
 
-  function repositoryDialog(repository: ConfiguredRepository) {
+  function repositoryDialog(
+    repository: ConfiguredRepository,
+    opener: HTMLElement,
+  ) {
     const modal = dialog(
       `Settings for ${repository.name}`,
       `<p class="settings-hint">${escape(repository.provider === "github" ? `GitHub acting account: ${githubAccounts.find((account) => account.account_id === repository.provider_account_id)?.login ?? repository.provider_account_id ?? "not selected"}.` : "Azure DevOps account binding is not available in this build.")}</p>
@@ -1155,6 +1177,7 @@ export async function mountSettings(
         <p class="settings-hint">Optional. A nonempty effective watched-author filter qualifies those authors. An empty effective author filter means all authors only after scope confirmation and never establishes trust. Pull requests requesting the signed-in account also qualify when the effective inherited reviewer-assignment trigger is enabled. Exact GitHub login, no wildcards.</p>
         <details><summary>Repository and connection</summary><div class="settings-actions"><button id="rename-repository">Edit repository</button><button id="remove-repository">Remove repository</button></div><div class="connection"></div></details>
         <p role="alert" data-resource-error hidden></p><div class="settings-actions"><button class="primary" data-save-repository>Save repository</button><button data-cancel-repository>Cancel repository changes</button></div>`,
+      opener,
     );
     modal.querySelector<HTMLButtonElement>("[data-save-repository]")!.onclick =
       async () => {
@@ -1239,39 +1262,52 @@ export async function mountSettings(
     else
       modal.querySelector(".connection")!.textContent =
         "Save this repository before verifying its GitHub connection.";
-    modal.querySelector<HTMLButtonElement>("[data-assign-agent]")!.onclick =
-      () =>
-        assignAgentDialog(repository, () => {
+    modal.querySelector<HTMLButtonElement>("[data-assign-agent]")!.onclick = (
+      event,
+    ) =>
+      assignAgentDialog(
+        event.currentTarget as HTMLButtonElement,
+        repository,
+        () => {
           renderAssignments();
-        });
-    modal.querySelector<HTMLButtonElement>("[data-add-people]")!.onclick = () =>
-      addPersonDialog(repository, () => renderWatchlist());
+        },
+      );
+    modal.querySelector<HTMLButtonElement>("[data-add-people]")!.onclick = (
+      event,
+    ) =>
+      addPersonDialog(
+        event.currentTarget as HTMLButtonElement,
+        repository,
+        () => renderWatchlist(),
+      );
     configureScope.onclick = () => void configureMonitoringScope();
     modal.querySelector<HTMLButtonElement>("#rename-repository")!.onclick =
       () => {
         modal.close();
-        editRepository(repository);
+        editRepository(opener, repository);
       };
-    modal.querySelector<HTMLButtonElement>("#remove-repository")!.onclick =
-      () => {
-        const confirm = dialog(
-          "Remove repository?",
-          `<p>Remove ${escape(repository.name)} and its assignments from saved settings? Completed evidence is retained.</p><p role="alert" hidden></p><button class="primary" id="confirm-remove">Remove from settings</button>`,
-        );
-        confirm.querySelector<HTMLButtonElement>("#confirm-remove")!.onclick =
-          async () => {
-            try {
-              await commitResource(repositoryEdit(repository, null), confirm);
-              confirm.close();
-              modal.close();
-              render();
-            } catch (cause) {
-              const alert = confirm.querySelector<HTMLElement>("[role=alert]")!;
-              alert.textContent = reason(cause);
-              alert.hidden = false;
-            }
-          };
-      };
+    modal.querySelector<HTMLButtonElement>("#remove-repository")!.onclick = (
+      event,
+    ) => {
+      const confirm = dialog(
+        "Remove repository?",
+        `<p>Remove ${escape(repository.name)} and its assignments from saved settings? Completed evidence is retained.</p><p role="alert" hidden></p><button class="primary" id="confirm-remove">Remove from settings</button>`,
+        event.currentTarget as HTMLButtonElement,
+      );
+      confirm.querySelector<HTMLButtonElement>("#confirm-remove")!.onclick =
+        async () => {
+          try {
+            await commitResource(repositoryEdit(repository, null), confirm);
+            confirm.close();
+            modal.close();
+            render();
+          } catch (cause) {
+            const alert = confirm.querySelector<HTMLElement>("[role=alert]")!;
+            alert.textContent = reason(cause);
+            alert.hidden = false;
+          }
+        };
+    };
 
     async function refreshScopeStatus() {
       if (
@@ -1347,6 +1383,7 @@ export async function mountSettings(
         <div class="activation-list" data-scope-list></div>
         <p role="alert" hidden></p>
         <div class="settings-actions"><button class="primary" data-confirm-scope>Confirm monitoring scope</button><button data-cancel-scope>Cancel</button></div>`,
+        configureScope,
       );
       const list = scope.querySelector<HTMLElement>("[data-scope-list]")!;
       const search = scope.querySelector<HTMLInputElement>(
@@ -1515,8 +1552,15 @@ export async function mountSettings(
         const row = document.createElement("div");
         row.className = "assignment-row";
         row.innerHTML = `<div><strong>${escape(agent?.name ?? "Deleted agent")}</strong><p>${primaryAssignmentId(repository) === assignment.id ? "Primary \u00b7 " : ""}${assignment.comment ? "Comments" : "Silent"}${assignment.actions?.approve ? " \u00b7 Approve opted in" : ""}${assignment.actions?.merge ? " \u00b7 Merge opted in (primary only)" : ""}</p></div><button data-edit>Edit</button><button data-remove>Remove</button>`;
-        row.querySelector<HTMLButtonElement>("[data-edit]")!.onclick = () =>
-          assignAgentDialog(repository, () => renderAssignments(), assignment);
+        row.querySelector<HTMLButtonElement>("[data-edit]")!.onclick = (
+          event,
+        ) =>
+          assignAgentDialog(
+            event.currentTarget as HTMLButtonElement,
+            repository,
+            () => renderAssignments(),
+            assignment,
+          );
         row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick = () => {
           repository.assignments = assignments.filter((a) => a !== assignment);
           if (repository.primary_assignment_id === assignment.id)
@@ -1551,6 +1595,7 @@ export async function mountSettings(
   }
 
   function assignAgentDialog(
+    opener: HTMLElement,
     repository: ConfiguredRepository,
     onSaved: () => void,
     existing?: Assignment,
@@ -1569,6 +1614,7 @@ export async function mountSettings(
         <label><input type="checkbox" name="primary" ${isPrimary ? "checked" : ""} ${sole ? "disabled" : ""} />Primary<small>${sole ? "The sole assignment is primary automatically." : "At most one explicit primary per repository. Uncheck to leave none."}</small></label>
         <div class="permission-row"><label><input type="checkbox" name="comment" ${(existing?.comment ?? true) ? "checked" : ""} />Comment<small>Allow comment publication, independently of approval and merge.</small></label><label><input type="checkbox" name="approve" ${existing?.actions?.approve ? "checked" : ""} />Approve<small>Opt in to the acting GitHub account's approval after current Agent clearance and a primary final full review. Never self-approval or policy bypass.</small></label><label><input type="checkbox" name="merge" ${existing?.actions?.merge ? "checked" : ""} ${isPrimary ? "" : "disabled"} />Merge<small>Independent opt-in; primary only, after final review, green CI and verified provider policies. Does not require Approve or personal acknowledgment.</small></label></div>
         <p class="settings-hint">Primary selection never enables permissions. Polling is configured globally in Preferences. Saving commits this repository, not unrelated drafts.</p><p role="alert" hidden></p><button class="primary">${existing ? "Save assignment" : "Assign agent"}</button></form>`,
+      opener,
     );
     const primary = modal.querySelector<HTMLInputElement>("[name=primary]")!;
     const merge = modal.querySelector<HTMLInputElement>("[name=merge]")!;
@@ -1616,6 +1662,7 @@ export async function mountSettings(
   }
 
   function addPersonDialog(
+    opener: HTMLElement,
     repository: ConfiguredRepository,
     onSaved: () => void,
   ) {
@@ -1629,6 +1676,7 @@ export async function mountSettings(
     const picker = dialog(
       "Add people",
       `<form class="person-lookup"><label>Acting GitHub account<select name="account" required>${availableAccounts.map((account) => option(account.account_id, `${account.login} (${account.account_id})`, repository.provider_account_id ?? availableAccounts[0]?.account_id ?? "")).join("")}</select></label><label>GitHub login<input name="login" placeholder="octocat" autocomplete="off" required /></label><p class="settings-hint">${availableAccounts.length ? "Looks up the exact login through the selected GitHub account and stores its stable identity. No wildcards." : "No connected GitHub account is available. Connect one in Integrations."}</p><p role="alert" hidden></p><button type="submit" class="primary" ${availableAccounts.length ? "" : "disabled"}>Add person</button></form>`,
+      opener,
     );
     picker.querySelector<HTMLInputElement>("[name=login]")!.focus();
     picker.querySelector("form")!.onsubmit = async (event) => {

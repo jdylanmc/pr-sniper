@@ -109,6 +109,14 @@ handoff as its state. Historical pass/reply ordinals stay with the selected job.
 Never-started failures retain planned configuration without claiming execution;
 full saved configuration and identifiers remain available in collapsed evidence.
 Status/Diagnostics navigation does not stop automatic evidence refresh.
+Conversation inspectors separate analysis, intentional cancellation and reply
+publication: failed/backoff analysis is not a user stop, and completed analysis
+is not confirmation of a reply. Unknown publication outcomes retain the original
+reconciliation controls and cannot display Done. Polls for unrelated jobs leave
+the selected inspector intact; its own updates retain focus and open
+configuration/provenance disclosures. Back and Settings dialog close restore
+the actual activating control, including WebKit pointer clicks that do not focus
+buttons and asynchronously opened nested dialogs.
 
 The [native acceptance procedure](tests/macos-acceptance.md) and compiled
 test-owned smoke harness cover the actual window boundary separately from

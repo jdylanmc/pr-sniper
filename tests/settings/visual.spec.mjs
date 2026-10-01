@@ -659,6 +659,69 @@ test("completed jobs do not adopt aggregate author-wait or ready-for-personal-re
   }
 });
 
+test("polling preserves selected inspector controls on unrelated work and keyed focus and disclosures on its own transition", async ({
+  page,
+  store,
+}) => {
+  const fixture = await workFixture(store);
+  await nativeCapacity(page, ["visual-work-1"]);
+  await page.clock.install();
+  await page.goto("/");
+  await tab(page, "Running").click();
+  await page
+    .locator('[data-job-id="normal:visual-work-1"]')
+    .getByRole("button")
+    .click();
+  const context = page.locator("[data-work-context]");
+  const link = context.getByRole("button", {
+    name: "View pull request on GitHub",
+  });
+  const configuration = context.locator('[data-disclosure="configuration"]');
+  const raw = context.locator('[data-disclosure="raw-configuration"]');
+  const provenance = context.locator('[data-disclosure="provenance"]');
+  await raw.locator("summary").click();
+  await provenance.locator("summary").click();
+  await link.focus();
+  await context.evaluate((element) => {
+    window.__selectedInspector = element;
+    window.__selectedControls = [...element.querySelectorAll("button,summary")];
+  });
+  fixture.state.reviews[1].operation.attempt_count++;
+  await store("seed_queue_state", fixture.state);
+  await page.clock.runFor(5100);
+  await page.evaluate(() => window.__settingsIdle());
+  expect(
+    await context.evaluate(
+      (element) =>
+        element === window.__selectedInspector &&
+        [...element.querySelectorAll("button,summary")].every(
+          (control, index) => control === window.__selectedControls[index],
+        ),
+    ),
+  ).toBe(true);
+  await expect(link).toBeFocused();
+  for (const detail of [configuration, raw, provenance])
+    await expect(detail).toHaveAttribute("open", "");
+  fixture.state.reviews[0].operation.state = "completed";
+  fixture.state.reviews[0].result = fixture.base.result;
+  await store("seed_queue_state", fixture.state);
+  await page.evaluate(() => {
+    window.__activeIds = [];
+  });
+  await page.clock.runFor(5100);
+  await expect(page.locator(".job-status strong")).toHaveText("Done");
+  await expect(link).toBeFocused();
+  for (const detail of [configuration, raw, provenance])
+    await expect(detail).toHaveAttribute("open", "");
+  await provenance.locator("summary").focus();
+  fixture.state.reviews[0].operation.attempt_count++;
+  await store("seed_queue_state", fixture.state);
+  await page.clock.runFor(5100);
+  await expect(page.locator(".job-facts")).toContainText("Retry attempt2");
+  await expect(provenance.locator("summary")).toBeFocused();
+  await expect(raw).toHaveAttribute("open", "");
+});
+
 test("seven failed Agents produce one human PR card; superseded and completed jobs stay distinct", async ({
   page,
   store,
