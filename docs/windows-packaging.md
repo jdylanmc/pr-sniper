@@ -363,9 +363,15 @@ opened handles; independent state snapshots are not taken through the restore
 handle. A primary assertion failure remains primary if restoration also fails;
 the additional cleanup failure is reported, never interpreted as acceptance.
 Readback admits only the demonstrated kernel **addition** of
-`SE_DACL_AUTO_INHERITED` bookkeeping. Every other descriptor byte, including ACE
-content/order, SID/mask, protection and meaningful inheritance flags, remains
-exact; removal of that bit or any permission drift still fails.
+`SE_DACL_AUTO_INHERITED` bookkeeping among DACL control flags. The helper extracts
+the `RawSecurityDescriptor.DiscretionaryAcl` and compares its binary form exactly,
+including revision and every ACE's type/order, SID, mask and inheritance flags.
+DACL presence, defaulted/untrusted/server-security flags, protection and inheritance
+requirements must match; removal of the bookkeeping bit still fails. Invalid,
+missing or null DACLs are refused. Optional owner/group metadata and offsets in
+the surrounding Access-only descriptor are not DACL authorization state; their
+representation may change without changing the ACL. No owner/group writes are
+performed, and real permission drift is not normalized.
 They also deny shortcut reads for direct/package removal, deny only registry
 Delete, and exercise a read-only post-native uninstaller plus a deterministic
 other-thread cleanup mutex conflict before retrying the same package. Unknown
