@@ -177,11 +177,17 @@ try {
     if (Test-Path "$env:ChocolateyInstall\lib\pr-sniper-localtest") {
         throw 'Clean package uninstall retained package files or completion state.'
     }
+    if (Test-Path "$env:ChocolateyInstall\lib-bad\pr-sniper-localtest") {
+        throw 'Clean package uninstall retained durable completion state.'
+    }
     Invoke-Choco @('install', 'pr-sniper-localtest', "--version=$($next.version)-localtest", '--pre', "--source=$($feed.FullName)")
     $packageTools = "$env:ChocolateyInstall\lib\pr-sniper-localtest\tools"
     . (Join-Path $packageTools 'removal-state.ps1')
     $receiptPath = Join-Path $packageTools 'installation.json'
-    if ((Get-PrSniperRemovalState $packageTools (Get-Content $receiptPath -Raw | ConvertFrom-Json) (Get-FileHash $receiptPath).Hash).completed) {
+    $reinstallReceipt = Get-Content $receiptPath -Raw | ConvertFrom-Json
+    $reinstallReceiptHash = (Get-FileHash $receiptPath).Hash
+    $reinstallCompletion = Get-PrSniperDurableRemovalPath $packageTools $env:ChocolateyInstall $reinstallReceipt $reinstallReceiptHash
+    if ((Get-PrSniperRemovalState $packageTools $reinstallReceipt $reinstallReceiptHash $reinstallCompletion).completed) {
         throw 'Same-feed reinstall inherited stale native-completion state.'
     }
     Assert-Installed $next (Join-Path $Upgrade 'upgrade-test-only.exe')

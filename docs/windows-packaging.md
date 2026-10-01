@@ -49,12 +49,20 @@ aborts or rolls back on an unreadable result. An empty owned uninstall key must
 actually disappear before backups are discarded; a Delete-only denial restores
 the prior registration/files. A nonempty foreign key is retained instead.
 
-At package installation, two exclusively created, flushed, immutable records are
+At each package installation, `installation.json` gets a new random installation
+ID, so even a same-version/same-binary reinstall has distinct receipt bytes.
+Two exclusively created, flushed, immutable records are
 enrolled in Chocolatey's installed-file snapshot: schema-2 `native-removal.json`
 binds the exact installation receipt bytes, version, directory and uninstaller
 hash; `native-removal.pending.json` records **not completed** with the same binding.
-Only after native uninstall returns zero does the wrapper validate and delete the
-pending marker. The valid immutable state record plus committed pending-marker
+Only after native uninstall returns zero does the wrapper exclusively create and
+flush a bound completion receipt at
+`%ChocolateyInstall%\lib-bad\PACKAGE\native-removal-RECEIPT_SHA256.json`, then
+validate and delete the pending marker. This single file is outside Chocolatey's
+replaceable versioned failed copy, but inside its package-specific success
+cleanup. Existing files are validated, never overwritten; neither directory
+scanning nor foreign completion adoption is used.
+The valid immutable state record plus committed pending-marker
 absence means **native removal completed**. The state record itself is never
 rewritten or deleted by the uninstall script.
 
@@ -63,7 +71,10 @@ still matches: both newly created-at-uninstall and modified records can otherwis
 survive a successful package removal. On success Chocolatey owns final deletion
 of the unchanged state/installation records. If later executable or outer cleanup
 fails, retained evidence still permits retry under the SID mutex and **all** live
-removal postconditions; native uninstall is not repeated.
+removal postconditions; native uninstall is not repeated. Restored pending markers
+are reconciled only after those locked checks, including any remaining
+uninstaller's original hash. The durable receipt itself is never removed by our
+script, even after executable deletion.
 If executable deletion succeeded but Chocolatey's outer package cleanup failed,
 the same bound receipts also permit an already-absent uninstaller: revalidate
 both receipts, current absence and live removal postconditions under the SID
@@ -73,23 +84,47 @@ Absent registration alone never admits resume. Missing/corrupt completion
 evidence, changed hashes, a new installation, an empty leftover key or pending
 transaction fail closed; do not manufacture a receipt. Legacy untracked schema-1
 completion files are not adopted or deleted automatically. Reconcile/archive
-their exact evidence before installing regenerated packages. Persistence/marker
+their exact evidence before installing regenerated packages. Earlier schema-2
+packages without a unique installation ID also require explicit reconciliation;
+they cannot gain a durable receipt by guessing that absent registration means
+success. Persistence/marker
 commit failure or interruption with uncertain phase still requires reconciliation.
 The now-empty application directory may remain; no extra fallible directory
 cleanup follows deletion of the last recovery executable.
 
-**Current failed-uninstall blocker:** Chocolatey 2.7.4 moves a failed package tree
+**Failed-uninstall rollback:** Chocolatey 2.7.4 moves a failed package tree
 to its versioned `lib-bad` location, then restores the pre-operation backup into
-`lib`. This can restore `native-removal.pending.json` even after native removal
-committed. Clean removal/reinstall evidence does not prove this failure path.
-The retained-state assertion and read-only fault case remain mandatory.
+`lib`. Actual native reproduction confirmed that this resurrects the original
+pending marker after successful native removal and failed executable deletion.
+A subsequent failed attempt can also replace the versioned failed copy, so that
+copy alone is not durable proof. The sibling completion receipt survives both
+operations, including a retry refused by a busy lifecycle mutex. A validated
+receipt is evidence of the earlier native success, not permission to bypass
+current ownership checks. Chocolatey's successful `UninstallCleanup` removes the
+package's `lib-bad` tree; unchanged active records remain eligible for its normal
+installed-file cleanup. See the pinned
+[failure/success handling](https://github.com/chocolatey/choco/blob/2.7.4/src/chocolatey/infrastructure.app/services/ChocolateyPackageService.cs#L1507-L1575)
+and [versioned replacement](https://github.com/chocolatey/choco/blob/2.7.4/src/chocolatey/infrastructure.app/services/FilesService.cs#L186-L251).
+
+Retain the exact active installation/state receipts, matching durable receipt
+and original uninstaller if present; retry the same package's normal uninstall
+after resolving the file lock/read-only condition. Do not use force, manufacture
+completion, delete markers to claim success, or reconcile a newly installed app
+using an old receipt. Missing/corrupt proof, denied persistence, partial package
+cleanup or changed live state requires exact operator reconciliation. This is
+not a crash-atomic ledger or a general repair framework.
+
+The retained-state assertion and read-only fault case remain mandatory. Pure
+tests cover repeated backup restoration and stale/foreign binding refusal;
+corrected real Chocolatey fault/retry and residue-free cleanup still need native
+validation. Historical clean install/uninstall/reinstall proof does not establish
+this repaired failure path.
 `removal-after-chocolatey-failure.json`, in the existing failure-retained
 diagnostic artifact, records expected/observed app presence, exact uninstaller
 hash, completion status and the three exact receipt-file hashes/presence in
-active, same-version `lib-bad` and `lib-bkp` trees. It contains no registry or
-credential dump and grants no recovery/adoption authority. Inspect that evidence
-before choosing a rollback-compatible completion repair; pending-marker absence
-inside a package tree alone is not durable against Chocolatey's own rollback.
+active, same-version `lib-bad` and `lib-bkp` trees, plus the durable receipt's
+presence/hash. It contains no registry or credential dump and grants no
+recovery/adoption authority.
 
 The pinned Tauri CLI 2.11.4 bundles the existing x64 GUI application using
 `tauri.windows.conf.json` and `src-tauri/windows/installer.nsi`. This small

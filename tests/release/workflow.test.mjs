@@ -469,7 +469,7 @@ test("registry-denial fixtures retain only DACL restoration rights before inject
   assert.match(fixture, /Preserving original fixture failure/);
 });
 
-test("completion evidence is enrolled at install and remains immutable until outer package cleanup", () => {
+test("immutable completion survives outer rollback and is left for package-owned cleanup", () => {
   const install = readFileSync(
     "packaging/chocolatey/chocolateyinstall.ps1",
     "utf8",
@@ -480,9 +480,14 @@ test("completion evidence is enrolled at install and remains immutable until out
   );
   const state = readFileSync("packaging/chocolatey/removal-state.ps1", "utf8");
   assert.match(install, /Initialize-PrSniperRemovalState \$tools/);
+  assert.match(install, /installation_id = \[guid\]::NewGuid\(\)/);
   assert.match(
     uninstall,
-    /Complete-PrSniperNativeRemoval \$tools \$receipt \$receiptHash/,
+    /Complete-PrSniperNativeRemoval \$tools \$receipt \$receiptHash \$durablePath/,
+  );
+  assert.match(
+    uninstall,
+    /Get-PrSniperDurableRemovalPath \$tools \$env:ChocolateyInstall \$receipt \$receiptHash/,
   );
   assert.doesNotMatch(
     uninstall,
@@ -497,6 +502,7 @@ test("completion evidence is enrolled at install and remains immutable until out
     /Remove-Item -LiteralPath \(Join-Path \$Tools 'native-removal\.pending\.json'\)/,
   );
   assert.doesNotMatch(state, /Remove-Item[^\n]*'native-removal\.json'/);
+  assert.doesNotMatch(state, /Remove-Item[^\n]*\$DurablePath/);
   assert.match(
     readFileSync("scripts/windows-installer-acceptance.ps1", "utf8"),
     /Same-feed reinstall inherited stale native-completion state/,
