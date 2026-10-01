@@ -10,7 +10,8 @@ $uninstaller = Join-Path $directory 'uninstall.exe'
 if ($receipt.directory -cne $directory) {
     throw 'Installation receipt does not name this exact application directory.'
 }
-$removalState = Get-PrSniperRemovalState $tools $receipt $receiptHash
+$durablePath = Get-PrSniperDurableRemovalPath $tools $env:ChocolateyInstall $receipt $receiptHash
+$removalState = Get-PrSniperRemovalState $tools $receipt $receiptHash $durablePath
 if (-not $removalState.completed) {
     if ((Get-FileHash $uninstaller -Algorithm SHA256).Hash -ine $receipt.uninstaller_sha256) {
         throw 'The exact package-owned uninstaller is unavailable or has changed.'
@@ -32,7 +33,7 @@ if (-not $removalState.completed) {
     # completion; a pending/failed native operation never gains a resume receipt.
     Start-ChocolateyProcessAsAdmin -ExeToRun $uninstaller -Statements "/S _?=$directory" `
         -Elevated:$false -ValidExitCodes @(0)
-    Complete-PrSniperNativeRemoval $tools $receipt $receiptHash
+    Complete-PrSniperNativeRemoval $tools $receipt $receiptHash $durablePath
 }
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $lifecycle = [Threading.Mutex]::new($false, "Global\com.jdylanmc.pr-sniper.installer.$sid")
@@ -44,7 +45,8 @@ try {
     if ((Get-FileHash $receiptPath -Algorithm SHA256).Hash -ine $receiptHash) {
         throw 'Installation receipt changed before cleanup.'
     }
-    $removalState = Get-PrSniperRemovalState $tools $receipt $receiptHash
+    $durablePath = Get-PrSniperDurableRemovalPath $tools $env:ChocolateyInstall $receipt $receiptHash
+    $removalState = Get-PrSniperRemovalState $tools $receipt $receiptHash $durablePath
     if (-not $removalState.completed) { throw 'Native removal is not completed; cleanup is refused.' }
     $completion = $removalState.receipt
     Assert-PrSniperRemovalReceipt $completion $receipt $receiptHash
@@ -66,7 +68,13 @@ try {
         -RegistryKeyExists $keyExists -RegistrySubKeyCount $subKeys -RegistryValueNames $values `
         -ShortcutExists $shortcutExists -ShortcutTarget $shortcutTarget -ExpectedApp (Join-Path $directory 'pr-sniper.exe')
     $fileState = Get-PrSniperUninstallerFileState $uninstaller
-    if (Test-PrSniperUninstallerCleanupRequired $completion $receipt $receiptHash $fileState.exists $fileState.sha256) {
+    $cleanupRequired = Test-PrSniperUninstallerCleanupRequired $completion $receipt $receiptHash $fileState.exists $fileState.sha256
+    if (-not (Get-PrSniperRemovalState $tools $receipt $receiptHash).completed) {
+        # Only after locked live-state checks may the restored pending marker
+        # be removed. Never delete the durable record before outer cleanup.
+        Complete-PrSniperNativeRemoval $tools $receipt $receiptHash $durablePath
+    }
+    if ($cleanupRequired) {
         Remove-Item -LiteralPath $uninstaller
     }
     # Empty directory removal is optional. Do not introduce a second fallible

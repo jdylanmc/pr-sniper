@@ -18,7 +18,7 @@ function Get-PrSniperRemovalDiagnosticState([string] $Tools) {
 function Get-PrSniperRemovalRetryObservation(
     [string] $Tools, [string] $Directory, [string] $ChocolateyRoot,
     [string] $Version, [string] $ExpectedUninstallerHash, [string] $ExpectedReceiptHash,
-    [bool] $Completed, [int] $ExitCode
+    [bool] $Completed, [int] $ExitCode, [string] $DurablePath
 ) {
     if ($Version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
         throw 'Invalid version for exact removal diagnostic paths.'
@@ -37,6 +37,7 @@ function Get-PrSniperRemovalRetryObservation(
             app = Get-PrSniperRemovalDiagnosticFile (Join-Path $Directory 'pr-sniper.exe')
             uninstaller = Get-PrSniperRemovalDiagnosticFile (Join-Path $Directory 'uninstall.exe')
             native_completed = $Completed
+            durable_completion = if ($DurablePath) { Get-PrSniperRemovalDiagnosticFile $DurablePath } else { $null }
             active = Get-PrSniperRemovalDiagnosticState $Tools
             failed_copy = Get-PrSniperRemovalDiagnosticState (Join-Path $ChocolateyRoot "lib-bad\$relative")
             backup_copy = Get-PrSniperRemovalDiagnosticState (Join-Path $ChocolateyRoot "lib-bkp\$relative")

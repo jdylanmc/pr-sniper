@@ -8,7 +8,8 @@ $tools = Join-Path $env:ChocolateyInstall 'lib\pr-sniper-localtest\tools'
 $receipt = Get-Content (Join-Path $tools 'installation.json') -Raw | ConvertFrom-Json
 . (Join-Path $tools 'removal-state.ps1')
 $receiptHash = (Get-FileHash (Join-Path $tools 'installation.json')).Hash
-if ((Get-PrSniperRemovalState $tools $receipt $receiptHash).completed) { throw 'Installed package was already marked removed.' }
+$durablePath = Get-PrSniperDurableRemovalPath $tools $env:ChocolateyInstall $receipt $receiptHash
+if ((Get-PrSniperRemovalState $tools $receipt $receiptHash $durablePath).completed) { throw 'Installed package was already marked removed.' }
 $attributes = [IO.File]::GetAttributes($uninstaller)
 $failure = $null
 try {
@@ -18,10 +19,10 @@ try {
     if ($failedExit -eq 0) { throw 'Read-only post-native deletion incorrectly succeeded.' }
     $appExists = Test-Path (Join-Path $directory 'pr-sniper.exe')
     $observedHash = (Get-FileHash $uninstaller).Hash
-    $completed = (Get-PrSniperRemovalState $tools $receipt $receiptHash).completed
+    $completed = (Get-PrSniperRemovalState $tools $receipt $receiptHash $durablePath).completed
     try {
         $observation = Get-PrSniperRemovalRetryObservation $tools $directory $env:ChocolateyInstall `
-            $receipt.version $receipt.uninstaller_sha256 $receiptHash $completed $failedExit
+            $receipt.version $receipt.uninstaller_sha256 $receiptHash $completed $failedExit $durablePath
         $json = $observation | ConvertTo-Json -Depth 6
         $json | Set-Content (Join-Path $env:PR_SNIPER_INSTALLER_DIAGNOSTICS 'removal-after-chocolatey-failure.json') -Encoding utf8
         Write-Host $json
@@ -58,7 +59,7 @@ public sealed class PrSniperCleanupLock : IDisposable {
                     catch (AbandonedMutexException) { owned = true; }
                     if (!owned) throw new InvalidOperationException("Fixture lock unavailable.");
                     ready.Set();
-                    release.Wait(30000);
+                    release.Wait(240000);
                 } catch (Exception e) { failure = e; ready.Set(); }
                 finally { if (owned) mutex.ReleaseMutex(); }
             }
@@ -78,6 +79,7 @@ public sealed class PrSniperCleanupLock : IDisposable {
 '@
 $completionPath = Join-Path $tools 'native-removal.json'
 $completionHash = (Get-FileHash $completionPath).Hash
+$durableHash = (Get-FileHash $durablePath).Hash
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 function Assert-BusyCleanupRefusal([bool] $UninstallerPresent) {
     $hold = [PrSniperCleanupLock]::new("Global\com.jdylanmc.pr-sniper.installer.$sid")
@@ -89,7 +91,13 @@ function Assert-BusyCleanupRefusal([bool] $UninstallerPresent) {
             if ($_.Exception.Message -notmatch 'Another installer owns post-uninstall cleanup') { throw }
             $rejected = $true
         }
+        # Exercise Chocolatey's own rollback while busy, not only the script.
+        # Replacing the failed versioned copy must not erase committed evidence.
+        & choco uninstall pr-sniper-localtest --yes --limit-output --no-progress --execution-timeout=180
+        if ($LASTEXITCODE -eq 0) { throw 'Chocolatey ignored the held cleanup mutex.' }
         if (-not $rejected -or (Get-FileHash $completionPath).Hash -cne $completionHash -or
+            (Get-FileHash $durablePath).Hash -cne $durableHash -or
+            -not (Get-PrSniperRemovalState $tools $receipt $receiptHash $durablePath).completed -or
             (Test-Path -LiteralPath $uninstaller) -ne $UninstallerPresent -or
             ($UninstallerPresent -and (Get-FileHash $uninstaller).Hash -ine $receipt.uninstaller_sha256)) {
             throw 'Busy-mutex resume did not fail with its exact completion evidence retained.'
@@ -117,6 +125,7 @@ Assert-BusyCleanupRefusal $false
 & choco uninstall pr-sniper-localtest --yes --limit-output --no-progress --execution-timeout=180
 if ($LASTEXITCODE -ne 0 -or (Test-Path $uninstaller)) { throw 'Completed-removal retry did not finish.' }
 if (Test-Path (Split-Path -Parent $tools)) { throw 'Outer package cleanup left tracked completion state or package files.' }
+if (Test-Path (Split-Path -Parent $durablePath)) { throw 'Outer package cleanup left durable native-completion evidence.' }
 $listed = @(& choco list pr-sniper-localtest --exact --limit-output)
 if ($LASTEXITCODE -ne 0 -or @($listed | Where-Object { $_.Trim() }).Count) { throw 'Final package list is not empty or could not be verified.' }
 'Hosted deletion failure, present/absent mutex rejection and retained-package retry passed.'

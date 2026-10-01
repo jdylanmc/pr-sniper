@@ -69,7 +69,52 @@ function Initialize-PrSniperRemovalState([string] $Tools, $Receipt, [string] $Re
     }
 }
 
-function Get-PrSniperRemovalState([string] $Tools, $Receipt, [string] $ReceiptHash) {
+function Get-PrSniperDurableRemovalPath(
+    [string] $Tools, [string] $ChocolateyRoot, $Receipt, [string] $ReceiptHash
+) {
+    $installationId = [guid]::Empty
+    if (-not [guid]::TryParseExact([string]$Receipt.installation_id, 'D', [ref]$installationId) -or
+        $installationId -eq [guid]::Empty -or $ReceiptHash -notmatch '^[a-fA-F0-9]{64}$') {
+        throw 'Durable removal requires a uniquely identified installation receipt; reconcile legacy state explicitly.'
+    }
+    if (-not [IO.Path]::IsPathRooted($ChocolateyRoot) -or -not [IO.Path]::IsPathRooted($Tools)) {
+        throw 'Removal state requires the exact Chocolatey package location.'
+    }
+    $root = [IO.Path]::GetFullPath($ChocolateyRoot)
+    $package = Split-Path (Split-Path $Tools -Parent) -Leaf
+    if ($package -cnotin @('pr-sniper','pr-sniper-localtest') -or
+        [IO.Path]::GetFullPath($Tools).TrimEnd('\') -ine (Join-Path $root "lib\$package\tools")) {
+        throw 'Removal state requires the exact Chocolatey package location.'
+    }
+    $failedRoot = Join-Path $root 'lib-bad'
+    $packageFailedRoot = Join-Path $failedRoot $package
+    foreach ($path in @($root, $failedRoot, $packageFailedRoot)) {
+        try { $attributes = [IO.File]::GetAttributes($path) }
+        catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] { continue }
+        if (-not ($attributes -band [IO.FileAttributes]::Directory) -or
+            ($attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'Removal state location is not an ordinary Chocolatey directory.'
+        }
+    }
+    # Failure replaces lib-bad/package/version, not this sibling. Chocolatey's
+    # successful uninstall cleanup owns deletion of the package's lib-bad tree.
+    return Join-Path $packageFailedRoot "native-removal-$($ReceiptHash.ToLowerInvariant()).json"
+}
+
+function Read-PrSniperDurableRemoval([string] $Path, $Receipt, [string] $ReceiptHash) {
+    try { $attributes = [IO.File]::GetAttributes($Path) }
+    catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] { return $null }
+    if ($attributes -band ([IO.FileAttributes]::Directory -bor [IO.FileAttributes]::ReparsePoint)) {
+        throw 'Durable completion is not an ordinary receipt file.'
+    }
+    $completion = [IO.File]::ReadAllText($Path) | ConvertFrom-Json
+    Assert-PrSniperRemovalReceipt $completion $Receipt $ReceiptHash
+    return $completion
+}
+
+function Get-PrSniperRemovalState(
+    [string] $Tools, $Receipt, [string] $ReceiptHash, [string] $DurablePath
+) {
     $state = [IO.File]::ReadAllText((Join-Path $Tools 'native-removal.json')) | ConvertFrom-Json
     if ($state.schema -ne 2 -or $state.phase -cne 'native-removal-state') {
         throw 'Legacy/unrecognized removal state needs explicit reconciliation; it was not adopted.'
@@ -84,6 +129,14 @@ function Get-PrSniperRemovalState([string] $Tools, $Receipt, [string] $ReceiptHa
             throw 'Invalid pending-removal marker; native completion is unknown.'
         }
         Assert-PrSniperRemovalBinding $pending $Receipt $ReceiptHash
+    }
+    if ($DurablePath) {
+        $durable = Read-PrSniperDurableRemoval $DurablePath $Receipt $ReceiptHash
+        if ($null -ne $durable) {
+            return [pscustomobject]@{ completed = $true; receipt = $durable }
+        }
+    }
+    if ($null -ne $pendingText) {
         return [pscustomobject]@{ completed = $false; receipt = $null }
     }
     # The validated installed state plus committed absence of its pending marker
@@ -98,9 +151,31 @@ function Get-PrSniperRemovalState([string] $Tools, $Receipt, [string] $ReceiptHa
     return [pscustomobject]@{ completed = $true; receipt = $completion }
 }
 
-function Complete-PrSniperNativeRemoval([string] $Tools, $Receipt, [string] $ReceiptHash) {
+function Complete-PrSniperNativeRemoval(
+    [string] $Tools, $Receipt, [string] $ReceiptHash, [string] $DurablePath
+) {
     $state = Get-PrSniperRemovalState $Tools $Receipt $ReceiptHash
     if ($state.completed) { throw 'Native removal was already committed; it must not be repeated.' }
+    if ($DurablePath) {
+        $completion = Read-PrSniperDurableRemoval $DurablePath $Receipt $ReceiptHash
+        if ($null -eq $completion) {
+            $completion = [ordered]@{
+                schema = 1; phase = 'native-removal-complete'
+                installation_receipt_sha256 = $ReceiptHash
+                directory = $Receipt.directory; version = $Receipt.version
+                uninstaller_sha256 = $Receipt.uninstaller_sha256
+            }
+            Assert-PrSniperRemovalReceipt ([pscustomobject]$completion) $Receipt $ReceiptHash
+            [IO.Directory]::CreateDirectory((Split-Path $DurablePath -Parent)) | Out-Null
+            $bytes = [Text.Encoding]::UTF8.GetBytes(($completion | ConvertTo-Json))
+            $stream = [IO.File]::Open($DurablePath, 'CreateNew', 'Write', 'None')
+            try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) }
+            finally { $stream.Dispose() }
+        }
+        if ($null -eq (Read-PrSniperDurableRemoval $DurablePath $Receipt $ReceiptHash)) {
+            throw 'Durable completion was not persisted; recovery requires exact reconciliation.'
+        }
+    }
     Remove-Item -LiteralPath (Join-Path $Tools 'native-removal.pending.json') -ErrorAction Stop
     if (-not (Get-PrSniperRemovalState $Tools $Receipt $ReceiptHash).completed) {
         throw 'Native removal completion was not committed.'

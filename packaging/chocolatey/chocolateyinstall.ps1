@@ -40,6 +40,7 @@ if ([Diagnostics.FileVersionInfo]::GetVersionInfo($app).ProductVersion -cne $met
 }
 $uninstaller = Join-Path $directory 'uninstall.exe'
 [ordered]@{
+    installation_id = [guid]::NewGuid().ToString('D')
     directory = $directory
     uninstaller_sha256 = (Get-FileHash $uninstaller -Algorithm SHA256).Hash
     version = $metadata.version

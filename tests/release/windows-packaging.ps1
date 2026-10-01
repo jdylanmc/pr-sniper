@@ -241,6 +241,7 @@ try {
     }
     [IO.File]::WriteAllText((Join-Path $appFixture 'uninstall.exe'), 'inert never-executed fixture')
     $rollbackReceipt = [pscustomobject]@{
+        installation_id = '727d86c7-d485-4190-9140-7168128d9a39'
         directory = $appFixture; version = '0.1.1'
         uninstaller_sha256 = (Get-FileHash (Join-Path $appFixture 'uninstall.exe')).Hash
     }
@@ -271,6 +272,78 @@ try {
     Check ($observation.observed.active['installation.json'].sha256 -ceq
         $observation.observed.failed_copy['installation.json'].sha256) 'Capture preserves exact receipt correspondence without adopting it.'
     Reject { Get-PrSniperRemovalRetryObservation $activeTools $appFixture $chocoFixture '../other' '' '' $false 1 } 'Invalid version'
+    $durablePath = Get-PrSniperDurableRemovalPath $activeTools $chocoFixture $rollbackReceipt $rollbackReceiptHash
+    Complete-PrSniperNativeRemoval $activeTools $rollbackReceipt $rollbackReceiptHash $durablePath
+    $durableHash = (Get-FileHash $durablePath).Hash
+    foreach ($attempt in 1..2) {
+        # Each outer failure replaces the versioned failed copy and restores
+        # the original pending marker. The sibling completion must survive both.
+        foreach ($name in @('installation.json','native-removal.json','native-removal.pending.json')) {
+            Copy-Item (Join-Path $backupTools $name) (Join-Path $failedTools $name) -Force
+            Copy-Item (Join-Path $backupTools $name) (Join-Path $activeTools $name) -Force
+        }
+        $recovered = Get-PrSniperRemovalState $activeTools $rollbackReceipt $rollbackReceiptHash $durablePath
+        Check ($recovered.completed -and (Get-FileHash $durablePath).Hash -ceq $durableHash) `
+            'Exact completion survives repeated outer rollback, including before a mutex can be acquired.'
+        Check (Test-Path (Join-Path $activeTools 'native-removal.pending.json')) `
+            'Reading completion does not mutate a restored marker outside the lifecycle lock.'
+    }
+    Check ($durablePath -ieq (Join-Path $chocoFixture "lib-bad\pr-sniper-localtest\native-removal-$($rollbackReceiptHash.ToLowerInvariant()).json")) `
+        'Durable completion is outside the replaceable versioned failed copy, inside package-owned outer cleanup.'
+    Reject { Get-PrSniperDurableRemovalPath $activeTools (Join-Path $chocoFixture 'foreign-root') $rollbackReceipt $rollbackReceiptHash } 'exact Chocolatey'
+    Reject { Get-PrSniperDurableRemovalPath $activeTools '' $rollbackReceipt $rollbackReceiptHash } 'exact Chocolatey'
+    Reject { Get-PrSniperDurableRemovalPath $activeTools $chocoFixture $removalReceipt $rollbackReceiptHash } 'uniquely identified'
+    Reject { Get-PrSniperDurableRemovalPath $activeTools $chocoFixture $rollbackReceipt '../foreign' } 'uniquely identified'
+    $durableBytes = [IO.File]::ReadAllBytes($durablePath)
+    foreach ($field in @('schema','phase','directory','version','uninstaller_sha256','installation_receipt_sha256')) {
+        $changed = [Text.Encoding]::UTF8.GetString($durableBytes) | ConvertFrom-Json
+        $changed.$field = 'foreign-or-invalid'
+        $changed | ConvertTo-Json | Set-Content $durablePath
+        Reject { Get-PrSniperRemovalState $activeTools $rollbackReceipt $rollbackReceiptHash $durablePath } 'not evidenced'
+    }
+    [IO.File]::WriteAllText($durablePath, '{')
+    Reject { Get-PrSniperRemovalState $activeTools $rollbackReceipt $rollbackReceiptHash $durablePath } '.'
+    [IO.File]::WriteAllBytes($durablePath, $durableBytes)
+    $lockedReceipt = [IO.File]::Open($durablePath, 'Open', 'Read', 'None')
+    try {
+        Reject { Get-PrSniperRemovalState $activeTools $rollbackReceipt $rollbackReceiptHash $durablePath } '.'
+    } finally { $lockedReceipt.Dispose() }
+    $pendingRollbackPath = Join-Path $activeTools 'native-removal.pending.json'
+    $pendingRollbackBytes = [IO.File]::ReadAllBytes($pendingRollbackPath)
+    [IO.File]::WriteAllText($pendingRollbackPath, '{}')
+    Reject { Get-PrSniperRemovalState $activeTools $rollbackReceipt $rollbackReceiptHash $durablePath } 'Invalid pending'
+    [IO.File]::WriteAllBytes($pendingRollbackPath, $pendingRollbackBytes)
+    # A distinct same-version installation must not inherit the old completion,
+    # even when its directory and uninstaller bytes are identical.
+    $reinstalled = $rollbackReceipt | ConvertTo-Json | ConvertFrom-Json
+    $reinstalled.installation_id = '5f478293-9983-4990-afef-c6e1b2d1bf66'
+    $reinstallBytes = [Text.Encoding]::UTF8.GetBytes(($reinstalled | ConvertTo-Json))
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $reinstallHash = ([BitConverter]::ToString($sha.ComputeHash($reinstallBytes))).Replace('-', '') }
+    finally { $sha.Dispose() }
+    $reinstallPath = Get-PrSniperDurableRemovalPath $activeTools $chocoFixture $reinstalled $reinstallHash
+    Check ($reinstallPath -ine $durablePath -and -not (Test-Path $reinstallPath)) 'Same-version reinstall has a distinct completion identity.'
+    Reject { Read-PrSniperDurableRemoval $durablePath $reinstalled $reinstallHash } 'not evidenced'
+    Remove-Item (Join-Path $appFixture 'uninstall.exe')
+    Check (-not (Test-PrSniperUninstallerCleanupRequired $recovered.receipt $rollbackReceipt $rollbackReceiptHash $false '')) `
+        'Durable exact completion also permits retry with the original uninstaller already gone.'
+    # After the caller's locked live-state checks, reconcile the active marker.
+    Complete-PrSniperNativeRemoval $activeTools $rollbackReceipt $rollbackReceiptHash $durablePath
+    Check ((Get-PrSniperRemovalState $activeTools $rollbackReceipt $rollbackReceiptHash).completed -and
+        (Get-FileHash $durablePath).Hash -ceq $durableHash) 'Reconciliation preserves the durable receipt and restores active completion.'
+    # Model successful Chocolatey cleanup of its exact package failure tree,
+    # then installed-snapshot removal. No production script deletes the durable receipt.
+    Remove-Item -LiteralPath $durablePath
+    foreach ($name in @('installation.json','native-removal.json')) {
+        Check ((Get-FileHash (Join-Path $activeTools $name)).Hash -ceq (Get-FileHash (Join-Path $backupTools $name)).Hash) `
+            'Active immutable records retain their installed-snapshot checksums after recovery.'
+        Remove-Item -LiteralPath (Join-Path $activeTools $name)
+    }
+    Check (-not (Get-ChildItem $activeTools -File) -and -not (Test-Path $durablePath)) 'Successful cleanup leaves neither active state nor durable completion.'
+    $directoryReceipt = Join-Path $fixture 'not-a-receipt'
+    New-Item -ItemType Directory $directoryReceipt | Out-Null
+    Reject { Read-PrSniperDurableRemoval $directoryReceipt $rollbackReceipt $rollbackReceiptHash } 'ordinary receipt file'
+    Remove-Item -LiteralPath $directoryReceipt
     $stateTools = Join-Path $fixture 'tracked-state'
     New-Item -ItemType Directory $stateTools | Out-Null
     Initialize-PrSniperRemovalState $stateTools $removalReceipt ('b' * 64)
