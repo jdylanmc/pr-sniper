@@ -10,6 +10,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 - Apply the approved compact navy/orange/teal shell, supplied header artwork
   and persistent four-destination bottom navigation. Monitoring uses native
   pause state; unavailable snapshots never retain a successful work badge.
+- Present human Queue as compact PR cards, separate from Agent work, with
+  complete ordered file guides, external personal-review links and retained
+  publication/provider recovery. Automatic approval remains a personal handoff,
+  not a claim of human review.
 
 ## 0.1.2 - 2026-10-01
 

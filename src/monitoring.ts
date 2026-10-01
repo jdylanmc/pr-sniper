@@ -13,6 +13,7 @@ import {
   type QueueItem,
   type NormalWork,
   renderItemEvidence,
+  humanQueue,
 } from "./queue";
 import { renderNotificationHistory } from "./notifications";
 
@@ -277,7 +278,7 @@ export function renderMonitoring(
   options: {
     panel?: boolean;
     navigate?: (detail: PanelDetail) => void;
-    onSnapshot?: (snapshot: MonitoringSnapshot) => void;
+    onSnapshot?: (snapshot: MonitoringSnapshot | undefined) => void;
     onAutomation?: (snapshot: AutomationSnapshot | undefined) => void;
   } = {},
 ) {
@@ -351,6 +352,11 @@ export function renderMonitoring(
     { compact: options.panel, externalSelection: options.panel },
   );
   if (options.panel) {
+    const overview = root.querySelector<HTMLElement>(
+      "[data-monitor-overview]",
+    )!;
+    recoveryRoot.prepend(overview.querySelector(".actions")!);
+    overview.querySelector("h2")!.remove();
     root.querySelector<HTMLElement>("[data-monitor-detail]")!.hidden = true;
     root.querySelector<HTMLElement>("[data-monitor-recovery]")!.hidden = true;
   }
@@ -443,7 +449,7 @@ export function renderMonitoring(
           summary.textContent = item.summary;
           evidence.append(title, summary);
           if (target.type === "item")
-            renderItemEvidence(evidence, item, showError, refresh);
+            renderItemEvidence(evidence, item, showError, refresh, true);
           else if (jobDetail?.kind === "primary_final" && item.action_status)
             renderActions(evidence, item.action_status, showError, refresh);
         } else if (
@@ -845,7 +851,9 @@ export function renderMonitoring(
         const summary = document.createElement("summary");
         summary.textContent = `Complete file guide (${result.output.files.length} files)`;
         const list = document.createElement("ol");
-        for (const file of result.output.files) {
+        for (const file of [...result.output.files].sort(
+          (a, b) => a.order - b.order,
+        )) {
           const item = document.createElement("li");
           const path = document.createElement("strong");
           path.textContent = file.path;
@@ -935,20 +943,7 @@ export function renderMonitoring(
       options.onSnapshot?.(snapshot);
       void refreshAutomation();
       if (snapshot.items)
-        queue(
-          options.panel
-            ? snapshot.items.filter(
-                (i) =>
-                  ![
-                    "closed",
-                    "merged",
-                    "stale",
-                    "stale_after_publication",
-                    "waiting_for_author",
-                  ].includes(i.state),
-              )
-            : snapshot.items,
-        );
+        queue(options.panel ? humanQueue(snapshot.items) : snapshot.items);
       renderEvidence();
       health.replaceChildren();
       jobs.replaceChildren();
@@ -1044,11 +1039,25 @@ export function renderMonitoring(
         jobs.append(row);
       }
     } catch {
+      snapshot = undefined;
+      options.onSnapshot?.(undefined);
+      if (options.panel) {
+        queue.invalidate();
+        root.querySelector<HTMLElement>("#handoff-queue")!.textContent =
+          "Queue unavailable. Use Status or Diagnostics to inspect storage, then retry.";
+        root.querySelector<HTMLElement>("[data-item-evidence]")!.textContent =
+          "Evidence unavailable. Saved state could not be refreshed; no readiness or action is inferred.";
+        reviews.replaceChildren();
+        reviewsSignature = "";
+        detailSignature = "";
+        followUps([]);
+      }
       showError(
         "Could not read monitoring state. Check local storage and diagnostics; this is not an empty successful check.",
       );
     } finally {
       loading = false;
+      void refreshAutomation();
       void refreshNotifications();
     }
   }
