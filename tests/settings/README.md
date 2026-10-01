@@ -61,7 +61,9 @@ remain unchanged by resource saves, without exposing scoped polling editors.
 `resources.spec.mjs` covers resource-scoped persistence, conflicting and failed
 writes with retained drafts, ordered doctrine selection, rename/deletion guards,
 global cron/time-zone/capacity controls, shared saved-resource readiness, primary
-selection and independent opt-in permissions. `sidebar.spec.mjs` covers
+selection and independent opt-in permissions. New assignments retain the saved
+global schedule even with invalid or different unsaved Preferences; existing
+assignment schedules and unrelated drafts remain untouched. `sidebar.spec.mjs` covers
 per-repository People, inert doctrine authoring, retained Agent references,
 opted-out Approve/notification controls and both desktop/mobile navigation.
 
@@ -112,6 +114,9 @@ scan-time assignment capture, sticky admission, explicit missing-PR reads,
 404/unavailable/incomplete responses, restart and write-failure recovery,
 legacy receipt deduplication and continued owned-thread polling. No capacity
 engine, new mention routing or provider action is exercised.
+Normal-review execution and resume checks ignore sibling assignment archives
+while preserving the original snapshot and rejecting changes to the selected
+Agent's inputs, effective authority and repository gates.
 
 `platform.spec.mjs` checks the existing host and Settings wording for Windows
 and macOS without changing authorization or native policy. Browser presentation
