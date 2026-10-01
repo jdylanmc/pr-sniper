@@ -424,10 +424,11 @@ func run() throws {
         lastHiddenAt = Date()
         print("PASS \(reason); owned PID \(pid) retained")
     }
+    let destinationHeadings = ["Queue": "Your queue", "Running": "Work queue"]
     for tab in ["Queue", "Running", "Reviewed", "Settings"] {
         try press(button(window, tab), tab)
         try waitFor("destination \(tab)") {
-            descendants(window).contains { named($0, tab) && [kAXHeadingRole, kAXStaticTextRole].contains(text($0, kAXRoleAttribute)) }
+            descendants(window).contains { named($0, destinationHeadings[tab] ?? tab) && text($0, kAXRoleAttribute) == kAXHeadingRole }
         }
         try singlePanel()
     }
@@ -527,7 +528,7 @@ func run() throws {
     for tab in ["Queue", "Running", "Reviewed", "Settings"] {
         try press(button(window, tab), "draft tab \(tab)")
         try waitFor("draft destination \(tab)") {
-            descendants(window).contains { text($0, kAXRoleAttribute) == kAXHeadingRole && named($0, tab) }
+            descendants(window).contains { text($0, kAXRoleAttribute) == kAXHeadingRole && named($0, destinationHeadings[tab] ?? tab) }
         }
         try singlePanel()
     }
@@ -593,7 +594,7 @@ func run() throws {
         try waitFor("secondary route \(entry)") { visibleWindows(pid).count == 1 }
         try singlePanel()
         try reacquirePanel()
-        let heading = entry == "Review Queue" ? "Queue" : entry
+        let heading = entry == "Review Queue" ? "Your queue" : entry
         try waitFor("exact secondary destination \(entry)") {
             descendants(window).contains { text($0, kAXRoleAttribute) == kAXHeadingRole && named($0, heading) }
         }

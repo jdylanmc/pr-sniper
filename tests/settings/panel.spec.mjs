@@ -71,7 +71,7 @@ test("legacy viewport and dialog fallback preserves compact editor keyboard acce
     modal.getByRole("button", { name: "Save doctrine", exact: true }),
   ).toBeInViewport();
   await tab(page, "Running").click();
-  await expect(heading(page)).toHaveText("Running");
+  await expect(heading(page)).toHaveText("Work queue");
   await tab(page, "Settings").click();
   await expect(modal.getByLabel("Title", { exact: true })).toHaveValue(
     "Legacy retained draft",
@@ -103,7 +103,11 @@ test("one retained panel shares four destinations, editor drafts and hide-only d
   });
   for (const name of ["Queue", "Running", "Reviewed"]) {
     await tab(page, name).click();
-    await expect(heading(page)).toHaveText(name);
+    await expect(heading(page)).toHaveText(
+      { Queue: "Your queue", Running: "Work queue", Reviewed: "Reviewed" }[
+        name
+      ],
+    );
     await expect(modal).toBeHidden();
   }
   await expect(
@@ -334,7 +338,7 @@ test("Running and Reviewed use real native jobs and exact kind identities withou
   const row = page
     .locator("[data-running-list] article")
     .filter({ hasText: "example/repo #3" });
-  await expect(row).toContainText("normal");
+  await expect(row.locator(".work-reference")).toContainText("Normal pass");
   await row.getByRole("button", { name: "Open job", exact: true }).click();
   await expect(page.locator("#agent-reviews article")).toHaveCount(1);
   await expect(page.locator("#agent-reviews")).toContainText("example/repo #3");
@@ -460,10 +464,215 @@ test("compact and small-monitor panels keep navigation and editor controls reach
       ),
     ).toBe(true);
     await tab(page, "Queue").click();
-    await expect(heading(page)).toHaveText("Queue");
+    await expect(heading(page)).toHaveText("Your queue");
     await tab(page, "Settings").click();
     await expect(
       modal.getByRole("textbox", { name: "Principles", exact: true }),
     ).toHaveValue("Small monitor draft");
   }
 });
+
+test("approved shell keeps bottom destinations, authoritative pause and unavailable occupancy", async ({
+  page,
+  store,
+}) => {
+  await page.setViewportSize({ width: 408, height: 744 });
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__failAutomation = false;
+    window.__TAURI_INTERNALS__.invoke = (command, args) => {
+      if (command === "automation_snapshot" && window.__failAutomation)
+        return Promise.reject("Synthetic automation read failure");
+      return original(command, args);
+    };
+  });
+
+  await page.goto("/");
+  const toggle = page.locator(".panel-header [data-toggle-automation]");
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("[data-running-count]")).toHaveText("0");
+  const navigation = page.getByRole("navigation", {
+    name: "Application destinations",
+  });
+  await expect(navigation.getByRole("button")).toHaveCount(4);
+  expect((await navigation.boundingBox()).y).toBeGreaterThan(600);
+  await expect(page.locator(".panel-art")).toBeVisible();
+  await expect(page.locator("[data-ai-work]")).toHaveCount(0);
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-label", "Resume automation");
+  expect((await store("automation_snapshot")).paused).toBe(true);
+  await page.getByRole("button", { name: "Hide PR Sniper panel" }).click();
+  expect((await store("automation_snapshot")).paused).toBe(true);
+  await invoke(page, "fixture_show_panel");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-label", "Pause automation");
+  await page.evaluate(() => {
+    window.__failAutomation = true;
+  });
+  await tab(page, "Running").click();
+  await expect(toggle).toBeDisabled();
+  await expect(toggle).toHaveAttribute("aria-label", "Monitoring unavailable");
+  await expect(page.locator("[data-running-count]")).toHaveText("?");
+  await expect(page.locator("[data-summary-main]")).toHaveText(
+    "Work state unavailable",
+  );
+  await expect(page.locator("[data-panel-error]")).toContainText(
+    "Synthetic automation read failure",
+  );
+});
+
+for (const destination of ["Queue", "Running", "Reviewed"]) {
+  test(`nonfocusing ${destination} activation retains the exact opener across a list redraw`, async ({
+    page,
+    store,
+  }) => {
+    const fixture = await queueFixture(store);
+    const waiting = fixture.state.reviews.find((run) => run.job.number === 3);
+    waiting.operation.state = "queued";
+    waiting.operation.attempt_count = 0;
+    waiting.result = null;
+    fixture.state.publications = fixture.state.publications.filter(
+      (publication) => publication.review.job.number !== 3,
+    );
+    await store("seed_queue_state", fixture.state);
+    await page.clock.install();
+    await page.goto("/");
+    await tab(page, destination).click();
+    const opener =
+      destination === "Queue"
+        ? queueRow(page, 9).getByRole("button", {
+            name: "Evidence and actions",
+          })
+        : page
+            .locator(
+              destination === "Running"
+                ? "[data-running-list] article"
+                : '[data-panel-view="reviewed"] article',
+            )
+            .filter({
+              hasText: `example/repo #${destination === "Running" ? 3 : 9}`,
+            })
+            .getByRole("button", { name: "Open job" });
+    await tab(page, destination).focus();
+    await opener.evaluate((element) => {
+      window.__nonfocusingOpener = element;
+      element.click();
+    });
+    await expect(heading(page)).toHaveText(
+      destination === "Queue" ? "Saved evidence" : "Job details",
+    );
+    // Redraw the hidden list without choosing a new destination or changing identity.
+    for (const job of fixture.state.jobs) job.title += " updated";
+    for (const run of fixture.state.reviews) run.job.title += " updated";
+    if (destination === "Reviewed") {
+      waiting.operation.state = "completed";
+      waiting.result = fixture.review(3).result;
+    }
+    await store("seed_queue_state", fixture.state);
+    await page.clock.runFor(5100);
+    await page.evaluate(() => window.__settingsIdle());
+    await expect
+      .poll(() => page.evaluate(() => window.__nonfocusingOpener.isConnected))
+      .toBe(false);
+    await page.getByRole("button", { name: "Back", exact: true }).click();
+    await expect(opener).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(heading(page)).toHaveText(
+      destination === "Queue" ? "Saved evidence" : "Job details",
+    );
+    await page.getByRole("button", { name: "Back", exact: true }).click();
+    await expect(opener).toBeFocused();
+  });
+}
+
+for (const embedded of [true, false]) {
+  for (const activation of ["pointer", "nonfocusing", "keyboard"]) {
+    test(`${embedded ? "panel" : "legacy fallback"} Settings restores explicit ${activation} openers through nested and replacement editors`, async ({
+      page,
+      store,
+    }) => {
+      await store("save_repository", { repository: "example/focus" });
+      await page.addInitScript(() => {
+        delete HTMLElement.prototype.inert;
+        Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
+          value: undefined,
+        });
+        Object.defineProperty(HTMLDialogElement.prototype, "close", {
+          value: undefined,
+        });
+      });
+      await page.goto(embedded ? "/" : "/?view=settings");
+      if (embedded) await tab(page, "Settings").click();
+      const activate = async (control) => {
+        if (activation === "pointer") await control.click();
+        else if (activation === "nonfocusing")
+          await control.evaluate((element) => element.click());
+        else {
+          await control.focus();
+          await page.keyboard.press("Enter");
+        }
+      };
+      const opener = page
+        .getByRole("article", { name: "example/focus", exact: true })
+        .getByRole("button", { name: "Settings", exact: true });
+      await page.getByLabel("Find a repository", { exact: true }).focus();
+      await activate(opener);
+      const repository = page.getByRole("dialog", {
+        name: "Settings for example/focus",
+        exact: true,
+      });
+      const people = repository.getByRole("button", {
+        name: "Add people",
+        exact: true,
+      });
+      await repository
+        .getByLabel("Review start", { exact: true })
+        .selectOption("manual");
+      await activate(people);
+      const picker = page.getByRole("dialog", {
+        name: "Add people",
+        exact: true,
+      });
+      await picker
+        .getByLabel("GitHub login", { exact: true })
+        .fill("retained-person");
+      if (embedded) {
+        await tab(page, "Running").click();
+        await tab(page, "Settings").click();
+        await expect(
+          picker.getByLabel("GitHub login", { exact: true }),
+        ).toHaveValue("retained-person");
+      }
+      await picker
+        .getByRole("button", { name: "Close dialog", exact: true })
+        .click();
+      await expect(people).toBeFocused();
+      await expect(
+        repository.getByLabel("Review start", { exact: true }),
+      ).toHaveValue("manual");
+      await repository
+        .getByText("Repository and connection", { exact: true })
+        .click();
+      await activate(
+        repository.getByRole("button", {
+          name: "Edit repository",
+          exact: true,
+        }),
+      );
+      const editor = page.getByRole("dialog", {
+        name: "Edit repository",
+        exact: true,
+      });
+      await editor
+        .getByLabel("GitHub repository", { exact: true })
+        .fill("example/unsaved");
+      await editor
+        .getByRole("button", { name: "Close dialog", exact: true })
+        .click();
+      await expect(opener).toBeFocused();
+      expect((await store("snapshot")).settings.repositories[0].name).toBe(
+        "example/focus",
+      );
+    });
+  }
+}

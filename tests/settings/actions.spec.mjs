@@ -1,6 +1,7 @@
-import { expect, test } from "./fixtures.mjs";
+import { expect, test, captureInspector, nativeCapacity } from "./fixtures.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
 import { closeDialog, repositorySettings } from "./navigation.mjs";
+import { createHash } from "node:crypto";
 
 async function actionFixture(store, observe = true) {
   const fixture = await queueFixture(store);
@@ -268,12 +269,29 @@ test("panel primary-final route exposes only that final and returns to its exact
 }) => {
   const fixture = await actionFixture(store);
   const final = fixture.actions.finals[0];
-  final.execution.result = fixture.review.result;
+  final.execution.result = structuredClone(fixture.review.result);
+  final.execution.result.output.files.push({
+    path: "final-only.rs",
+    order: 3,
+    explanation: "Retained final guide evidence.",
+  });
   final.execution.operation.state = "completed";
+  final.execution.operation.attempt_count = 1;
   final.execution.phase = "Primary final full review complete";
   fixture.state.actions = fixture.actions;
   await store("seed_queue_state", fixture.state);
   const before = await store("monitoring_snapshot");
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__finalDestination = null;
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      if (command === "open_queue_destination") {
+        window.__finalDestination = await original("queue_destination", args);
+        return;
+      }
+      return original(command, args);
+    };
+  });
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "Application destinations" })
@@ -286,6 +304,39 @@ test("panel primary-final route exposes only that final and returns to its exact
   await expect(page.locator("[data-item-evidence]")).toContainText(
     "Primary final full review complete",
   );
+  await expect(page.locator("[data-work-context]")).toContainText(
+    "Primary final review",
+  );
+  await expect(page.locator("[data-work-context]")).toContainText(
+    "Iteration 1 (iteration-1)",
+  );
+  await expect(page.locator("[data-work-context]")).toContainText(
+    "Captured rolePrimary Agent",
+  );
+  await expect(page.locator("[data-work-context]")).toContainText(
+    "Primary final review (separate from normal passes)",
+  );
+  await expect(page.locator(".work-configuration")).toContainText(
+    "Captured for this execution.",
+  );
+  await expect(page.locator(".work-configuration")).toContainText(
+    "Review correctness.",
+  );
+  await captureInspector(page, "primary-final-done");
+  await page
+    .getByText("Complete final file guide (3 files)", { exact: true })
+    .click();
+  await expect(page.locator("[data-item-evidence] ol li")).toHaveText([
+    "z-first.rs: Read this first.",
+    "a-second.rs: Then read this.",
+    "final-only.rs: Retained final guide evidence.",
+  ]);
+  await page.getByRole("link", { name: "final-only.rs", exact: true }).click();
+  await expect
+    .poll(() => page.evaluate(() => window.__finalDestination))
+    .toBe(
+      `https://github.com/example/repo/pull/9/files#diff-${createHash("sha256").update("final-only.rs").digest("hex")}`,
+    );
   await expect(page.locator("#agent-reviews article")).toHaveCount(0);
   await expect(page.locator("#thread-follow-ups article")).toHaveCount(0);
   await page.getByRole("button", { name: "Back", exact: true }).click();
@@ -295,6 +346,67 @@ test("panel primary-final route exposes only that final and returns to its exact
   expect((await store("monitoring_snapshot")).items[0].action_status).toEqual(
     before.items[0].action_status,
   );
+});
+
+test("primary final inspector distinguishes waiting, active, stopping, failed and superseded from normal clearance", async ({
+  page,
+  store,
+}) => {
+  const fixture = await actionFixture(store);
+  const final = fixture.actions.finals[0];
+  final.execution.manual_start = true;
+  fixture.state.actions = fixture.actions;
+  await nativeCapacity(page, []);
+  for (const [state, label] of [
+    ["queued", "Waiting"],
+    ["running", "Running"],
+    ["stopping", "Stopping"],
+    ["failed", "Failed"],
+    ["superseded", "Superseded"],
+  ]) {
+    final.execution.operation.state =
+      state === "stopping"
+        ? "running"
+        : state === "superseded"
+          ? "failed"
+          : state;
+    final.execution.operation.attempt_count = state === "queued" ? 0 : 2;
+    final.execution.operation.next_attempt_at = 1_800_000_000;
+    final.execution.job.waiting =
+      state === "superseded" ? "superseded" : "human_start";
+    await store("seed_queue_state", fixture.state);
+    await page.goto("/");
+    await page.evaluate(
+      ({ id, state }) => {
+        window.__activeIds = ["running", "stopping"].includes(state)
+          ? [id]
+          : [];
+        window.__stoppingIds = state === "stopping" ? [id] : [];
+      },
+      { id: final.id, state },
+    );
+    await page.evaluate(
+      (id) =>
+        window.__TAURI_INTERNALS__.invoke("panel_navigate", {
+          route: {
+            tab: "running",
+            detail: { type: "job", kind: "primary_final", id },
+          },
+        }),
+      final.id,
+    );
+    await expect(page.locator(".job-status strong")).toHaveText(label);
+    await expect(page.locator(".job-hero .work-spin")).toHaveCount(
+      state === "running" ? 1 : 0,
+    );
+    await expect(page.locator(".job-facts")).toContainText(
+      "Primary final review (separate from normal passes)",
+    );
+    await expect(page.locator(".job-facts")).not.toContainText("Review count");
+    await expect(page.locator("#agent-reviews article")).toHaveCount(0);
+    if (state === "running" || state === "failed")
+      await captureInspector(page, `primary-final-${state}`);
+  }
 });
 
 test("current normal clearance hands off personally and exposes a distinct durable final request", async ({
