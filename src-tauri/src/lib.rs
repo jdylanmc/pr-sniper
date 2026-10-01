@@ -1041,7 +1041,7 @@ fn finish_monitored_ticket(
     store: &Mutex<Store>,
     monitor: &Mutex<monitoring::Monitor>,
     ticket: monitoring::PollTicket,
-    result: Result<monitoring::PollResult, ConnectionError>,
+    result: Result<(monitoring::PollResult, follow_up::host::Scan), ConnectionError>,
     now: i64,
 ) -> Result<(), monitoring::MonitoringError> {
     let generations = generations.lock().map_err(|_| {
@@ -1068,7 +1068,13 @@ fn finish_monitored_ticket(
     if current_generation != ticket.account_generation || !account_available {
         monitor.discard_account_result(&store, &accounts, ticket, now)
     } else {
-        monitor.finish_with_accounts(&store, &accounts, ticket, result, now)
+        let (result, observations) = match result {
+            Ok((result, observations)) => (Ok(result), observations),
+            Err(error) => (Err(error), follow_up::host::Scan::default()),
+        };
+        monitor.finish_with_admission(&store, &accounts, ticket, result, now, |store, ticket| {
+            follow_up::host::admit_scan(store, ticket, observations, now)
+        })
     }
 }
 
@@ -1083,7 +1089,6 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
         tauri::async_runtime::spawn_blocking(move || {
             let ticket_for_poll = ticket.clone();
             let account_id = ticket.provider_account_id.clone();
-            let mut follow_ups = follow_up::host::Scan::default();
             let result = (|| {
                 let host = app.state::<Host>();
                 let (identity, client) = github_session(&host, &account_id)?;
@@ -1099,16 +1104,19 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                 }
                 let pull_requests = client
                     .poll_tracked_pull_requests(&connection.repository, &ticket_for_poll.tracked)?;
-                follow_ups = follow_up::host::scan(
+                let follow_ups = follow_up::host::scan(
                     &app,
                     &ticket_for_poll,
                     &pull_requests,
                     &connection.identity,
                 )?;
-                Ok(monitoring::PollResult {
-                    connection,
-                    pull_requests,
-                })
+                Ok((
+                    monitoring::PollResult {
+                        connection,
+                        pull_requests,
+                    },
+                    follow_ups,
+                ))
             })();
             let connection_failure = result.as_ref().err().copied();
             let host = app.state::<Host>();
@@ -1128,13 +1136,7 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                 Err(error) => Err(monitoring::MonitoringError::Storage(error)),
             };
             let continue_checks = match &saved {
-                Ok(()) => match follow_up::host::admit(&app, &ticket_for_poll, follow_ups) {
-                    Ok(()) => true,
-                    Err(error) => {
-                        report(&app, error);
-                        false
-                    }
-                },
+                Ok(()) => true,
                 Err(error) if error.requires_host_report() => {
                     report(&app, error.message().into());
                     false
@@ -2701,7 +2703,7 @@ mod github_auth_tests {
                     &store,
                     &monitor,
                     ticket,
-                    Ok(result),
+                    Ok((result, crate::follow_up::host::Scan::default())),
                     1_800_000_002,
                 )
             })
@@ -3227,7 +3229,7 @@ mod github_auth_tests {
                 &store,
                 &monitor,
                 initial,
-                Ok(monitoring_result()),
+                Ok((monitoring_result(), crate::follow_up::host::Scan::default())),
                 1_800_000_001,
             )
             .unwrap();
@@ -3294,7 +3296,7 @@ mod github_auth_tests {
                 &store,
                 &monitor,
                 recovery_ticket,
-                Ok(monitoring_result()),
+                Ok((monitoring_result(), crate::follow_up::host::Scan::default())),
                 next_due + 1,
             )
             .unwrap();

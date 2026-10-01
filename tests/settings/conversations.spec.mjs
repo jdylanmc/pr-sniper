@@ -297,3 +297,231 @@ test("a missing primary is explicit, durable and does not create a fake review o
     "without fallback",
   );
 });
+
+test("completed second publication permits closure and explicit same-head reassessment without rewriting the archive", async ({
+  page,
+  store,
+}, testInfo) => {
+  const fixture = await feedbackFixture(store);
+  fixture.review.feedback_context = [];
+  const current = structuredClone(fixture.review);
+  current.job.head_sha = "c".repeat(40);
+  current.operation.id = "second-review";
+  current.operation.head_sha = current.job.head_sha;
+  const key = JSON.parse(current.key);
+  key[5] = current.job.head_sha;
+  current.key = JSON.stringify(key);
+  current.feedback_context = [structuredClone(fixture.context)];
+  current.result.output.findings = [];
+  current.result.output.decision = "machine_sign_off";
+  current.result.output.feedback_assessments = [
+    {
+      feedback_id: fixture.context.id,
+      disposition: "open",
+      reason: "The earlier concern remains open.",
+      evidence: [],
+    },
+  ];
+  const second = fixture.published(current);
+  second.id = "second-publication";
+  second.operation.id = "second-publication-operation";
+  second.receipts[0].review_id = "102";
+  fixture.state.jobs = [
+    { ...fixture.review.job, waiting: "superseded" },
+    current.job,
+  ];
+  fixture.state.reviews.push(current);
+  fixture.state.publications.push(second);
+  fixture.state.feedback.records[0].observed_head = current.job.head_sha;
+  await store("seed_queue_state", fixture.state);
+  const archive = (await store("monitoring_snapshot")).publications.map(
+    (p) => p.publication,
+  );
+  await page.goto("/?view=queue");
+  const row = page
+    .locator("#handoff-queue .queue-item")
+    .filter({ hasText: current.job.head_sha });
+  await expect(row).toHaveAttribute("data-state", "waiting_for_author");
+
+  fixture.context.closed = true;
+  fixture.context.thread.resolved = true;
+  await store("seed_queue_state", fixture.state);
+  await page.reload();
+  await expect(row).toHaveAttribute("data-state", "machine_signed_off");
+  await page.screenshot({
+    path: testInfo.outputPath("second-publication-human-closure.png"),
+    fullPage: true,
+  });
+
+  // A separate synthetic observation exercises local clearance, not provider closure.
+  fixture.context.closed = false;
+  fixture.context.thread.resolved = false;
+  fixture.context.thread.comments.push({
+    ...fixture.thread.comments[1],
+    id: "103",
+    body: "The current source still intentionally returns 42.",
+  });
+  const run = reply(fixture, current.job.head_sha);
+  run.trigger_id = "103";
+  run.context.feedback = [structuredClone(fixture.context)];
+  run.phase = "quiet";
+  run.analysis = {
+    ...current.operation,
+    id: "owner-reassessment",
+    initial_attempt_at: 1_800_000_100,
+  };
+  run.result = {
+    ...current.result,
+    output: {
+      decision: "quiet",
+      body: "",
+      new_information: "",
+      reason: "Source checked.",
+      evidence: [],
+      feedback_assessments: [
+        {
+          feedback_id: fixture.context.id,
+          disposition: "cleared",
+          reason: "Source matches the explanation.",
+          evidence: [
+            { path: "source.rs", side: "head", line: 1, quote: "return 42;" },
+          ],
+        },
+      ],
+    },
+  };
+  fixture.state.follow_ups = [run];
+  await store("seed_queue_state", fixture.state);
+  await page.reload();
+  await expect(row).toHaveAttribute("data-state", "machine_signed_off");
+  await row.getByText("Current owned feedback (1)", { exact: true }).click();
+  await expect(row).toContainText(
+    "Agent reassessment, not provider thread closure",
+  );
+  await page.screenshot({
+    path: testInfo.outputPath("second-publication-local-clearance.png"),
+    fullPage: true,
+  });
+  const saved = await store("monitoring_snapshot");
+  expect(saved.publications.map((p) => p.publication)).toEqual(archive);
+  expect(
+    saved.feedback[
+      saved.items.find((i) => i.job.head_sha === current.job.head_sha).id
+    ][0].context.closed,
+  ).toBe(false);
+});
+
+test("unlinked durable mention blocks a cleared PR across reload before any execution exists", async ({
+  page,
+  store,
+}, testInfo) => {
+  const fixture = await feedbackFixture(store);
+  fixture.context.closed = true;
+  fixture.context.thread.resolved = true;
+  const intent = {
+    key: JSON.stringify([
+      "mention",
+      "github",
+      "22",
+      fixture.review.job.configuration_id,
+      "100",
+      "1",
+      "501",
+    ]),
+    work_id: "retained-mention-501",
+    enqueue_order: 17,
+    enqueued_at: 1_800_000_010,
+    binding: {
+      configuration_id: fixture.review.job.configuration_id,
+      account_id: "22",
+      account_login: "local-operator",
+      repository_id: "100",
+      repository_name: "example/repo",
+      pull_request_id: "1",
+      number: 1,
+    },
+    comment: {
+      id: "501",
+      body: "@local-operator explain",
+      author_id: "22",
+      author_login: "local-operator",
+      created_at: "2026-09-30T00:01:00Z",
+      updated_at: "2026-09-30T00:01:00Z",
+    },
+    follow_up_id: null,
+    blocked: "Mention observed; execution admission is pending.",
+  };
+  fixture.state.feedback.mentions = [intent];
+  await store("seed_queue_state", fixture.state);
+  await page.goto("/?view=queue");
+  await expect(page.locator("#handoff-queue .queue-item")).toHaveAttribute(
+    "data-state",
+    "blocked",
+  );
+  await expect(page.locator("#thread-follow-ups")).toContainText(
+    "execution admission is pending",
+  );
+  await expect(page.locator("[data-ai-work]")).toContainText(
+    "mention retained-mention-501: blocked",
+  );
+  await page.reload();
+  await expect(page.locator("#handoff-queue")).not.toContainText(
+    "Ready for your final review",
+  );
+  const saved = await store("monitoring_snapshot");
+  expect(saved.mentions).toEqual([intent]);
+  expect(saved.follow_ups).toEqual([]);
+  await page.screenshot({
+    path: testInfo.outputPath("durable-mention-pending.png"),
+    fullPage: true,
+  });
+});
+
+test("incomplete observation admission stays visibly blocked after retry clears its transient failure", async ({
+  page,
+  store,
+}, testInfo) => {
+  const fixture = await feedbackFixture(store);
+  fixture.context.closed = true;
+  fixture.context.thread.resolved = true;
+  fixture.state.monitoring = {
+    health: {
+      [fixture.review.job.configuration_id]: {
+        repository_id: fixture.review.job.configuration_id,
+        name: "example/repo",
+        schedule_key: "fixture",
+        provider_account_id: "22",
+        account_login: "local-operator",
+        provider_repository_id: "100",
+        enabled: true,
+        last_attempt: 1_800_000_020,
+        last_success: 1_800_000_001,
+        next_run: 1_800_000_030,
+        schedule_available: true,
+        last_failure: null,
+        in_flight: false,
+        conversation_admission_pending: true,
+      },
+    },
+  };
+  await store("seed_queue_state", fixture.state);
+  await page.goto("/?view=queue");
+  await expect(page.locator("#handoff-queue .queue-item")).toHaveAttribute(
+    "data-state",
+    "blocked",
+  );
+  await expect(page.locator("#handoff-queue")).toContainText(
+    "Conversation observations are not fully admitted",
+  );
+  await expect(
+    page.getByText("Conversation admission pending", { exact: false }),
+  ).toBeVisible();
+  await page.reload();
+  await expect(page.locator("#handoff-queue")).not.toContainText(
+    "Ready for your final review",
+  );
+  await page.screenshot({
+    path: testInfo.outputPath("observation-admission-blocker.png"),
+    fullPage: true,
+  });
+});

@@ -652,11 +652,23 @@ fn canonical_provider_repository(provider: &ProviderId, input: &str) -> Result<S
 
 pub struct Store {
     root: PathBuf,
+    #[cfg(test)]
+    failed_state_write: std::sync::Mutex<Option<(String, usize)>>,
 }
 
 impl Store {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            #[cfg(test)]
+            failed_state_write: std::sync::Mutex::new(None),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_state_write(&self, name: &str, occurrence: usize) {
+        assert!(occurrence > 0);
+        *self.failed_state_write.lock().unwrap() = Some((name.into(), occurrence));
     }
 
     pub fn load_queue_selection(&self) -> Result<Option<String>, String> {
@@ -680,6 +692,19 @@ impl Store {
         name: &str,
         value: &T,
     ) -> Result<(), String> {
+        #[cfg(test)]
+        {
+            let mut fault = self.failed_state_write.lock().unwrap();
+            if let Some((target, remaining)) = fault.as_mut() {
+                if target == name {
+                    *remaining -= 1;
+                    if *remaining == 0 {
+                        *fault = None;
+                        return Err(format!("Injected {name} write failure."));
+                    }
+                }
+            }
+        }
         let directory = self
             .directory("state")
             .map_err(|_| "Cannot create monitoring state directory.".to_string())?;

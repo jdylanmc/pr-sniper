@@ -297,7 +297,10 @@ pub fn validate_context(
             .map_err(Failure::permanent)?
             .health
             .values()
-            .any(|h| h.repository_id == job.configuration_id && h.last_failure.is_some())
+            .any(|h| {
+                h.repository_id == job.configuration_id
+                    && (h.last_failure.is_some() || h.conversation_admission_pending)
+            })
     {
         return Err(Failure::permanent(
             "Feedback observation failed; no clearance accepted.",
