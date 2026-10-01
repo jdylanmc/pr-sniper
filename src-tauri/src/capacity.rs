@@ -564,4 +564,4 @@ pub(crate) fn automation_snapshot(app: tauri::AppHandle) -> Result<Snapshot, Str
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

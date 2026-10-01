@@ -524,11 +524,19 @@ workers and keeps the oldest permitted workers running.
 Partial AI output is discarded after pause/reduction. Durable interruption
 metadata restores the pre-attempt retry budget only for intentional cancellation
 or discarded successful output; a real failure racing pause remains a failure.
+Once inference reports a failure, abort and runtime teardown cannot replace it
+with a refundable cancellation; the slot stays occupied until cleanup finishes.
 Prior failure counts/deadlines are not reset or extended by resume. Initial
 unexecuted requests may wait beyond 15 minutes and still receive their first
 budget. Individual cancellation withdraws work until explicit retry. Completed
 reviews, pass/reply ordinals, execution snapshots and provider receipts remain
 unchanged.
+
+Owner replies and primary mentions fence every analysis-worker save by operation
+identity. A manual retry accepted while the cancelled worker is stopping keeps
+its new operation, history and manual-start intent; stale progress/completion
+cannot overwrite it. The old worker releases only its own reservation after
+teardown, then the accepted retry can start.
 
 Higher AI capacity does not increase provider-write concurrency: the existing
 serial publication and reply-publication coordinators remain separate from AI

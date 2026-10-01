@@ -8,7 +8,7 @@ use crate::{
 };
 use serde_json::json;
 
-fn fixture(count: usize, capacity: u32, automatic: bool) -> (tempfile::TempDir, Store) {
+pub(crate) fn fixture(count: usize, capacity: u32, automatic: bool) -> (tempfile::TempDir, Store) {
     let root = tempfile::tempdir().unwrap();
     let store = Store::new(root.path().into());
     let mut settings = Settings {
@@ -62,7 +62,7 @@ fn output() -> ReviewResult {
     })).unwrap()
 }
 
-fn add_reply(store: &Store, order: u64) -> FollowUp {
+pub(crate) fn add_reply(store: &Store, order: u64) -> FollowUp {
     let settings = store.load_settings().unwrap();
     let mut job: QueueJob = store.load_queue().unwrap().remove(0);
     job.pull_request_id = "99".into();

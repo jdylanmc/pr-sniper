@@ -116,6 +116,10 @@ fn options(root: &Path, scenario: &str) -> ClientOptions {
     for (k, v) in [
         ("REVIEW_SCENARIO", scenario.into()),
         ("TEST_RECEIPT", root.join("receipt.jsonl").into_os_string()),
+        (
+            "TEST_ABORT_RELEASE",
+            root.join("release-abort").into_os_string(),
+        ),
     ] {
         options.env_remove.retain(|name| name != k);
         options.env.push((k.into(), v));
@@ -332,6 +336,199 @@ async fn cancellation_timeout_and_last_moment_gate_change_never_complete() {
                 .any(|r| r["method"] == "session.send"));
         }
         stopped(root.path());
+    }
+}
+
+async fn failure_during_abort(reply: bool, signal: &str, scenario: &str) {
+    use crate::{
+        capacity::{tests as fixtures, Automation, Coordinator, Dispatch},
+        monitoring::{OperationFailure, OperationState},
+    };
+    use std::sync::atomic::Ordering;
+
+    let (_state, store) = fixtures::fixture(if reply { 1 } else { 2 }, 2, true);
+    let mut settings = store.load_settings().unwrap();
+    for agent in &mut settings.agents {
+        agent.model = "review-model".into();
+    }
+    store.save_settings(&settings).unwrap();
+    if reply {
+        let run = fixtures::add_reply(&store, 2);
+        crate::follow_up::host::request_analysis(&store, &run.id, false, 100).unwrap();
+    } else {
+        crate::review::host::request(&store, "normal-2", false, false, 100).unwrap();
+    }
+    let archived = store.load_publications().unwrap();
+    let coordinator = Coordinator::default();
+    let mut batch = coordinator.dispatch(&store, 200).unwrap();
+    assert!(batch.errors.is_empty(), "{:?}", batch.errors);
+    assert_eq!(batch.dispatched.len(), 2);
+    let mut worker = batch.dispatched.pop().unwrap();
+    let key = worker.key();
+    let (budget, cancelled) = match &worker {
+        Dispatch::Review(run, token) => (run.operation.clone(), token.clone()),
+        Dispatch::Reply(run, token) => (run.analysis.clone().unwrap(), token.clone()),
+    };
+    assert_eq!(budget.initial_attempt_at, 200);
+    assert_eq!(budget.retry_deadline, 1100);
+    let mut operation = operation(8);
+    operation.cancelled = cancelled;
+    let root = tempfile::tempdir().unwrap();
+    let finished = AtomicBool::new(false);
+    let identity = Identity {
+        id: "33".into(),
+        login: "review-account".into(),
+    };
+    let inference = async {
+        let base = request(false);
+        let error = match &worker {
+            Dispatch::Review(run, _) => execute(
+                options(root.path(), scenario),
+                &identity,
+                &operation,
+                Request {
+                    selection: run.selection.clone(),
+                    ..base
+                },
+            )
+            .await
+            .unwrap_err(),
+            Dispatch::Reply(run, _) => execute(
+                options(root.path(), scenario),
+                &identity,
+                &operation,
+                Request {
+                    context: base.context,
+                    client: base.client,
+                    repository_name: base.repository_name,
+                    selection: run.context.selection.clone(),
+                    before_send: base.before_send,
+                    local_gate: base.local_gate,
+                    task: crate::follow_up::ReplyTask {
+                        conversation: run.input(),
+                        trigger_id: run.trigger_id.clone(),
+                        feedback: run.context.feedback.clone(),
+                        owner_agent_id: run.context.selection.agent.id.clone(),
+                    },
+                },
+            )
+            .await
+            .unwrap_err(),
+        };
+        stopped(root.path());
+        let saved = match &mut worker {
+            Dispatch::Review(run, _) => {
+                crate::review::host::complete(&store, &budget.id, Err(error.clone()), 203).unwrap();
+                store
+                    .load_reviews()
+                    .unwrap()
+                    .into_iter()
+                    .find(|r| r.operation.id == run.operation.id)
+                    .unwrap()
+                    .operation
+            }
+            Dispatch::Reply(run, _) => {
+                let completion = crate::follow_up::host::complete_analysis(
+                    &store,
+                    run,
+                    Err(error.clone()),
+                    true,
+                    203,
+                );
+                assert_eq!(completion.is_err(), !error.cancelled);
+                store.load_follow_ups().unwrap().remove(0).analysis.unwrap()
+            }
+        };
+        coordinator.release(&key, &budget.id).unwrap();
+        finished.store(true, Ordering::SeqCst);
+        (error, saved)
+    };
+    let interrupt = async {
+        crate::copilot::runtime::wait_for_fixture_method(root.path(), "session.abort").await;
+        match signal {
+            "cancel" => coordinator.cancel(&budget.id).unwrap(),
+            "pause" => store.save_automation(&Automation { paused: true }).unwrap(),
+            "reduction" => {
+                settings.capacity = 1;
+                store.save_settings(&settings).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert!(coordinator
+            .dispatch(&store, 201)
+            .unwrap()
+            .dispatched
+            .is_empty());
+        assert!(operation.cancelled.load(Ordering::SeqCst));
+        // Cross the production monitor's 100 ms poll while abort is still held.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let pending = !finished.load(Ordering::SeqCst);
+        let snapshot = coordinator.snapshot(&store, 202).unwrap();
+        let blocked = coordinator
+            .dispatch(&store, 202)
+            .unwrap()
+            .dispatched
+            .is_empty();
+        std::fs::write(root.path().join("release-abort"), b"release").unwrap();
+        (pending, snapshot, blocked)
+    };
+    let ((error, saved), (pending, snapshot, blocked)) = tokio::join!(inference, interrupt);
+    assert_eq!(coordinator.snapshot(&store, 203).unwrap().active, 1);
+    assert_eq!(store.load_publications().unwrap(), archived);
+    assert!(
+        !error.cancelled,
+        "{signal}/{scenario}: observed failure became {error:?}"
+    );
+    let expected = if scenario == "failure-held-abort" {
+        OperationFailure::Provider
+    } else {
+        OperationFailure::Permanent
+    };
+    assert_eq!(error.kind, expected);
+    assert_eq!(saved.failure, Some(expected));
+    assert_eq!(saved.attempt_count, budget.attempt_count);
+    assert_eq!(saved.initial_attempt_at, budget.initial_attempt_at);
+    assert_eq!(saved.retry_deadline, budget.retry_deadline);
+    assert_eq!(
+        saved.next_attempt_at,
+        if scenario == "failure-held-abort" {
+            Some(210)
+        } else {
+            None
+        }
+    );
+    assert_eq!(
+        saved.state,
+        if scenario == "failure-held-abort" {
+            OperationState::Queued
+        } else {
+            OperationState::Failed
+        }
+    );
+    assert!(pending, "Runtime returned before the held abort response");
+    assert_eq!(snapshot.active, 2);
+    assert!(snapshot.stopping >= 1);
+    assert!(blocked);
+    assert!(receipt(root.path())
+        .iter()
+        .any(|r| r["method"] == "fixture.abortReleased"));
+}
+
+#[tokio::test]
+async fn r72_observed_review_failure_survives_cancellation_during_abort_and_keeps_budget() {
+    for signal in ["pause", "reduction", "cancel"] {
+        for scenario in ["failure-held-abort", "malformed-held-abort"] {
+            failure_during_abort(false, signal, scenario).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn r72_observed_reply_failure_survives_cancellation_during_abort_and_keeps_budget() {
+    for signal in ["pause", "reduction", "cancel"] {
+        for scenario in ["failure-held-abort", "malformed-held-abort"] {
+            failure_during_abort(true, signal, scenario).await;
+        }
     }
 }
 

@@ -1,5 +1,5 @@
 // Synthetic transport: verifies the adapter, not live Copilot acceptance.
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 
 if (process.env.TEST_STARTUP_DELAY_MS) {
@@ -118,10 +118,14 @@ process.stdin.on("data", (chunk) => {
         respond(request.id, { messageId: randomUUID() });
         if (scenario === "waiting") break;
         setTimeout(() => {
+          if (scenario === "failure-held-abort") {
+            event("session.error", { statusCode: 503, retryAfterSeconds: 7 });
+            return;
+          }
           event("assistant.usage", { inputTokens: 20, outputTokens: 10 });
           event("assistant.message", {
             content:
-              scenario === "malformed"
+              scenario.startsWith("malformed")
                 ? "not JSON"
                 : scenario.startsWith("follow-up-")
                   ? JSON.stringify({
@@ -140,6 +144,17 @@ process.stdin.on("data", (chunk) => {
         }, 10);
         break;
       case "session.abort":
+        if (scenario.endsWith("-held-abort")) {
+          const held = setInterval(() => {
+            if (!existsSync(process.env.TEST_ABORT_RELEASE)) return;
+            clearInterval(held);
+            receipt({ method: "fixture.abortReleased" });
+            respond(request.id, {});
+          }, 10);
+          break;
+        }
+        respond(request.id, {});
+        break;
       case "session.destroy":
       case "session.detach":
       case "runtime.shutdown":

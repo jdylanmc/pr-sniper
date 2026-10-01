@@ -384,6 +384,7 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
         .await
         .map_err(Failure::operation)?
         .map_err(Failure::sdk)?;
+    let mut session = None;
     let run = async {
         let auth = client
             .get_auth_status()
@@ -432,13 +433,15 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
                 tool_gate()
             }),
         });
-        let session = client
-            .create_session(config(&request.selection, tools.clone()))
-            .await
-            .map_err(|_| {
-                Failure::permanent("Copilot could not create a restricted review session.")
-            })?;
-        let result = async {
+        let session = session.insert(
+            client
+                .create_session(config(&request.selection, tools.clone()))
+                .await
+                .map_err(|_| {
+                    Failure::permanent("Copilot could not create a restricted review session.")
+                })?,
+        );
+        async {
             session
                 .rpc()
                 .tools()
@@ -518,16 +521,7 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
                 },
             )
         }
-        .await;
-        if result.is_err()
-            && !matches!(
-                tokio::time::timeout(Duration::from_secs(2), session.abort()).await,
-                Ok(Ok(()))
-            )
-        {
-            eprintln!("[review] stage=abort outcome=incomplete");
-        }
-        result
+        .await
     };
     let monitor = async {
         loop {
@@ -544,6 +538,18 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
         }
     };
     let result = tokio::select! { biased; result = run => result, error = monitor => Err(error) };
+    // The inference outcome is fixed before cleanup; cancellation must not
+    // replace an observed failure while abort or client shutdown is pending.
+    if let Some(session) = session {
+        if result.is_err()
+            && !matches!(
+                tokio::time::timeout(Duration::from_secs(2), session.abort()).await,
+                Ok(Ok(()))
+            )
+        {
+            eprintln!("[review] stage=abort outcome=incomplete");
+        }
+    }
     crate::copilot::runtime::shutdown(&client).await;
     result
 }
