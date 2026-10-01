@@ -2,7 +2,7 @@ use pr_sniper_lib::storage::{Settings, Store};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::io::{self, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -17,8 +17,64 @@ fn recorded_settings(store: &Store, settings: Settings) -> Result<Value, String>
         .map_err(|_| "Cannot encode settings.".into())
 }
 
+// Only the process-per-command browser bridge serializes the native navigation
+// session. The application retains this same state in memory, not a second store.
+fn panel_dispatch(store: &Store, root: &Path, request: &Request) -> Result<Value, String> {
+    use pr_sniper_lib::panel::{Route, Session, Tab};
+    let path = root.join("fixture-panel-session.json");
+    let mut session: Session = match std::fs::read(&path) {
+        Ok(bytes) => {
+            serde_json::from_slice(&bytes).map_err(|_| "Invalid panel fixture session.")?
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let mut session = Session::default();
+            session.navigate(store, None)?;
+            session.set_visible(true);
+            session
+        }
+        Err(_) => return Err("Cannot read panel fixture session.".into()),
+    };
+    let route = match request.command.as_str() {
+        "panel_navigate" => Some(
+            serde_json::from_value(request.args["route"].clone())
+                .map_err(|_| "Invalid panel route.")?,
+        ),
+        "open_settings" => Some(Route::tab(Tab::Settings)),
+        "open_diagnostics" => Some(Route::utility(true)),
+        "open_queue_item" => Some(Route::item(
+            request.args["itemId"]
+                .as_str()
+                .ok_or("Item identity required.")?
+                .into(),
+        )),
+        _ => None,
+    };
+    if route.is_some() || request.command == "fixture_show_panel" {
+        session.navigate(store, route)?;
+        session.set_visible(true);
+    } else if request.command == "hide_panel" {
+        session.set_visible(false);
+    }
+    let snapshot = session.snapshot(store);
+    if request.command != "panel_snapshot" {
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&session).map_err(|_| "Cannot encode panel fixture.")?,
+        )
+        .map_err(|_| "Cannot save panel fixture session.")?;
+    }
+    if request.command == "open_queue_item" {
+        if let Some(reason) = &snapshot.missing {
+            return Err(reason.clone());
+        }
+    }
+    serde_json::to_value(snapshot).map_err(|_| "Cannot encode panel snapshot.".into())
+}
+
 fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
     match request.command.as_str() {
+        "diagnostics" => serde_json::to_value(store.diagnostics()?)
+            .map_err(|_| "Cannot encode diagnostics.".into()),
         "seed_action_observation" => {
             let item = request.args["itemId"]
                 .as_str()
@@ -295,7 +351,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut input = String::new();
     io::stdin().read_to_string(&mut input)?;
     let request: Request = serde_json::from_str(&input)?;
-    let response = match dispatch(&Store::new(root), request) {
+    let store = Store::new(root.clone());
+    let result = if matches!(
+        request.command.as_str(),
+        "panel_snapshot"
+            | "panel_navigate"
+            | "hide_panel"
+            | "open_settings"
+            | "open_diagnostics"
+            | "open_queue_item"
+            | "fixture_show_panel"
+    ) {
+        panel_dispatch(&store, &root, &request)
+    } else {
+        dispatch(&store, request)
+    };
+    let response = match result {
         Ok(value) => json!({ "ok": value }),
         Err(message) => json!({ "error": message }),
     };

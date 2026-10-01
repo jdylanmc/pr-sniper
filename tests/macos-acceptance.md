@@ -1,8 +1,9 @@
 # macOS foundation acceptance
 
 This procedure covers the focused P1 contract in
-[#12](https://github.com/jdylanmc/pr-sniper/issues/12#issuecomment-5746576429),
-not the historical Windows/distribution scope or later monitoring features.
+[#12](https://github.com/jdylanmc/pr-sniper/issues/12#issuecomment-5746576429)
+and the unified-panel host/navigation slice of #70, not distribution or live
+provider execution.
 Automated storage tests do not establish native window or menu-bar behavior.
 
 ## Safety and evidence
@@ -29,9 +30,12 @@ Automated storage tests do not establish native window or menu-bar behavior.
 | Requirement                | Action                                                                                           | Required observation                                                                                                                                    |
 | -------------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | AC-001 / PR-001            | Build the local macOS bundle, copy into an isolated installation directory and launch that copy. | Native crosshair appears in the menu bar; no persistent main window; actual installed process remains alive.                                            |
-| AC-001 / PR-001            | Open the tray menu.                                                                              | Queue, Settings, Status and Quit entry points are reachable.                                                                              |
-| AC-001 / PR-001            | Open Queue and Status individually.                                                | Surfaces render; unimplemented monitoring and provider operations are explicitly unavailable, not falsely reported successful.                   |
-| AC-001 / PR-002            | Open Settings, close its native window, reopen it from the tray; repeat with Queue.              | Window disappears, same process and tray remain alive, and each surface opens again.                                                                    |
+| vNext AC-001 / #70-1       | Left-click the tray twice, then use its secondary menu. | One panel opens/hides, without a blur/toggle reopen race. Secondary menu retains Status, Review Queue, Check Now, Settings, Diagnostics and Quit. |
+| vNext AC-001 / #70-2       | Visit Queue, Running, Reviewed and Settings; open exact fixture PR/job details and Back. | Same native window ID and one detail layer; Back restores originating list, row, scroll and keyboard focus. Switching details replaces the layer. Native snapshots supply real states. |
+| vNext AC-001 / #70-1/4     | Keep an unsaved editor, switch tabs, Escape, custom Close, native close and click outside; reopen after each. | Same process and webview; hidden only, draft retained, no duplicate editor or focus trap. Background work is not paused by dismissal. |
+| vNext AC-001 / #70-3       | Activate an exact saved notification, then one whose item is unavailable. | Same panel opens the saved identity, or an explicit missing state; never first/last item substitution. Settings drafts remain intact. |
+| vNext AC-001 / #70-4       | Open a folder picker and cancel; use a synthetic external-auth flow, then reopen. | Native picker holds focus dismissal and restores it on return. Browser focus loss may hide, but connecting identity and drafts remain retained. No live sign-in is needed for this host proof. |
+| vNext AC-001 / #70-4       | Move the menu bar across mixed-scale/negative-coordinate monitors and use a small work area. | Actual tray rectangle/monitor work area drives physical placement; compact width, clamped height and reachable scroll/navigation. Record native observations separately from pure geometry tests. |
 | AC-001 / PR-001            | Observe login preference on a fresh isolated profile, then restart without changing it.          | Preference remains off; launching, opening Settings and restarting do not enable a login item.                                                          |
 | AC-018 / PR-039 host slice | Open diagnostics from Settings.                                                                  | Readable host diagnostics; no tokens, credentials or arbitrary raw error payloads. Configuration and diagnostics/state have distinct storage locations. |
 | AC-015 / PR-032            | Inspect the native tray crosshair in light and dark menu-bar appearance.                         | Legible canonical crosshair, not a missing-glyph box or font-dependent text; preserve cropped evidence for both appearances if available.               |
@@ -72,6 +76,64 @@ launch.
 Retain command output and distinguish a behavior assertion failure from a
 missing compiler, missing package, compilation failure or unexecuted test.
 The integration owner supplies the repository's build, lint and CI commands.
+
+## Isolated unified-panel smoke harness
+
+The author may compile this harness only; the integration owner prepares and
+launches the test-owned bundle. The harness requires Accessibility and Screen
+Recording already granted, refuses a concurrently running production bundle
+or matching test bundle, and refuses production bundle IDs/installed paths.
+It does not request permissions, change login items, sign in, or take screenshots.
+It seeds two offline PRs through the candidate's real Store bridge with the
+repository disabled, no connected accounts and all automation off.
+
+Compile and preflight (preflight launches no app):
+
+```sh
+mkdir -p src-tauri/target/issue70-validation/swift-cache
+swiftc -module-cache-path src-tauri/target/issue70-validation/swift-cache \
+  tests/macos-native-smoke.swift \
+  -o src-tauri/target/issue70-validation/native-smoke
+src-tauri/target/issue70-validation/native-smoke --preflight
+```
+
+Parent-only launch preparation after independent review: build the candidate
+with `npm run bundle` and compile `settings_bridge`. Copy the resulting bundle
+to a new owned directory outside Applications; do not replace the installed
+production app. Give the copy a unique
+`com.jdylanmc.pr-sniper.tests.native-<uuid>` CFBundleIdentifier, ad-hoc sign that
+copy, and verify its signature/Info.plist agree. For example:
+
+```sh
+# Use a NEW exact destination for each run; do not overwrite another owner's copy.
+ditto "src-tauri/target/release/bundle/macos/PR Sniper.app" \
+  "/absolute/owned-run/PR Sniper Test.app"
+/usr/libexec/PlistBuddy -c \
+  "Set :CFBundleIdentifier com.jdylanmc.pr-sniper.tests.native-<uuid>" \
+  "/absolute/owned-run/PR Sniper Test.app/Contents/Info.plist"
+codesign --force --deep --sign - "/absolute/owned-run/PR Sniper Test.app"
+codesign --verify --deep --strict "/absolute/owned-run/PR Sniper Test.app"
+codesign -dv --verbose=2 "/absolute/owned-run/PR Sniper Test.app"
+TMPDIR="$PWD/src-tauri/target/issue70-validation/tmp" \
+  src-tauri/target/issue70-validation/native-smoke \
+  "/absolute/owned-run/PR Sniper Test.app" \
+  "$PWD/src-tauri/target/debug/examples/settings_bridge"
+```
+
+The harness creates its own unique profile and
+`com.jdylanmc.pr-sniper.tests.native-<uuid>` Keychain namespace and always passes
+both `PR_SNIPER_DATA_DIR` and `PR_SNIPER_KEYCHAIN_SERVICE` to the owned executable.
+It records the exact PID, verifies hidden startup and one retained window,
+four destinations/exact Back, tray toggle, Escape, custom Close, the separate
+native CloseRequested path, outside dismissal using a harness-owned window,
+secondary routes and explicit Quit. Missing native close or accessibility
+support is a failed/unverified observation, not a skipped pass. Cleanup targets
+only its exact PID/profile/Keychain services; it does not delete the supplied
+bundle. Force-termination cleanup never counts as a Quit pass.
+
+The parent still records actual multi-monitor geometry, native picker and
+notification activation. Browser fixtures and this offline seed do not prove
+live provider authentication, notification delivery or active-child teardown.
 
 ## Human-authorized GitHub OAuth App acceptance
 

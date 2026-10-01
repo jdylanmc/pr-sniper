@@ -15,7 +15,10 @@ export interface AutomationSnapshot {
   }[];
 }
 
-export function mountAutomation(root: HTMLElement) {
+export function mountAutomation(
+  root: HTMLElement,
+  onSnapshot?: (state: AutomationSnapshot) => void,
+) {
   root.innerHTML = `<h2>Shared AI capacity</h2><p role="status" data-automation-status>Reading automation state...</p>
     <button type="button" data-toggle-automation disabled>Pause automation</button>
     <p class="hint">Pause stops new polling, AI work and provider writes. Stopping workers keep their slots until teardown. Already-started remote mutations may have succeeded and still require reconciliation. Capacity is saved in Settings > Preferences.</p>
@@ -36,6 +39,7 @@ export function mountAutomation(root: HTMLElement) {
       const next = await invoke<AutomationSnapshot>("automation_snapshot");
       if (!root.isConnected || busy || request !== revision) return;
       state = next;
+      onSnapshot?.(next);
       status.textContent = `${next.paused ? "Paused" : "Running"}; ${next.active} occupied / ${next.capacity} AI slots (${next.stopping} stopping); ${next.waiting} waiting; ${next.blocked} blocked.`;
       button.textContent = next.paused
         ? "Resume automation"

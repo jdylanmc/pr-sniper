@@ -1,8 +1,10 @@
 # PR Sniper
 
 A macOS menu-bar application for human-owned pull request review. Built with
-Tauri 2, Rust and vanilla TypeScript. The tray exposes **Status**, **Review
-Queue**, **Settings** and **Quit PR Sniper**.
+Tauri 2, Rust and vanilla TypeScript. Left-click the tray crosshair for one
+retained panel with **Queue**, **Running**, **Reviewed** and **Settings**.
+The secondary/right-click menu retains **Status**, **Review Queue**,
+**Check Now**, **Settings**, **Diagnostics** and **Quit PR Sniper**.
 
 Settings can explicitly verify a configured GitHub connection and read complete
 pull-request metadata. The active tray process also polls enabled, account-bound
@@ -61,7 +63,28 @@ installed toolchain's `bin` directory to your current shell. Do not confuse
 missing shell shims with a missing Rust installation.
 
 No main window opens at startup. Click the crosshair in the macOS menu bar.
-Closing any window leaves the tray running; **Quit PR Sniper** ends the process.
+Outside click, Escape, the panel's Close button and native close hide the same
+panel; background work continues. **Quit PR Sniper** ends the process.
+Navigation, editor drafts, scroll and keyboard focus survive panel dismissal
+and destination changes. Back returns to the originating list and row; opening
+another PR/job replaces the single detail layer. Native notification and legacy
+Settings/Diagnostics entry points use retained routes, never a webview reload.
+Unavailable exact PR/iteration/job identities show a missing destination, not
+another item. Existing profile-scoped PR selection survives a restart; unsaved
+editor drafts are in-process state, not restart persistence.
+
+Placement uses the tray's monitor work area and physical coordinates, clamping
+the approximately 400px-wide panel for small screens and mixed scaling. Native
+folder selection holds focus dismissal until it returns. External browser
+sign-in may hide the panel; reopening retains the connecting flow and draft.
+Running shows the native shared-capacity jobs (including stopping work);
+Reviewed exposes existing completed/terminal evidence in the current projection,
+not a new paged history or purge backend. Status retains schedule health,
+notification history and recovery; Diagnostics remains redacted.
+
+The [native acceptance procedure](tests/macos-acceptance.md) and compiled
+test-owned smoke harness cover the actual window boundary separately from
+browser/geometry tests. Bundle compilation alone is not native acceptance.
 The local frontend server is only for development; terminate the development
 command too when finished.
 

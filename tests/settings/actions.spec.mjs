@@ -102,6 +102,41 @@ async function actionFixture(store) {
   return { ...fixture, state, observation, actions, review };
 }
 
+test("panel primary-final route exposes only that final and returns to its exact Reviewed row", async ({
+  page,
+  store,
+}) => {
+  const fixture = await actionFixture(store);
+  const final = fixture.actions.finals[0];
+  final.execution.result = fixture.review.result;
+  final.execution.operation.state = "completed";
+  final.execution.phase = "Primary final full review complete";
+  fixture.state.actions = fixture.actions;
+  await store("seed_queue_state", fixture.state);
+  const before = await store("monitoring_snapshot");
+  await page.goto("/");
+  await page
+    .getByRole("navigation", { name: "Application destinations" })
+    .getByRole("button", { name: "Reviewed", exact: true })
+    .click();
+  const row = page
+    .locator('[data-panel-view="reviewed"] article')
+    .filter({ hasText: "Primary final review" });
+  await row.getByRole("button", { name: "Open job", exact: true }).click();
+  await expect(page.locator("[data-item-evidence]")).toContainText(
+    "Primary final full review complete",
+  );
+  await expect(page.locator("#agent-reviews article")).toHaveCount(0);
+  await expect(page.locator("#thread-follow-ups article")).toHaveCount(0);
+  await page.getByRole("button", { name: "Back", exact: true }).click();
+  await expect(
+    row.getByRole("button", { name: "Open job", exact: true }),
+  ).toBeFocused();
+  expect((await store("monitoring_snapshot")).items[0].action_status).toEqual(
+    before.items[0].action_status,
+  );
+});
+
 test("current normal clearance hands off personally and exposes a distinct durable final request", async ({
   page,
   store,

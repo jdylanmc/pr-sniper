@@ -18,6 +18,19 @@ data, even when an assertion fails. Native bridge lookup honors `CARGO_TARGET_DI
 and the Windows `.exe` suffix; temporary profiles and browser output remain under
 that target. The default target is `src-tauri/target`.
 
+`panel.spec.mjs` exercises the production root panel (not the explicit
+`?view=settings` / `?view=queue` component harnesses): all four destinations,
+one detail layer, exact Back row/scroll/focus, retained unsaved editors,
+Escape/close/hide/reopen, native route revisions, notification destinations,
+missing/escaped identities, external-auth and folder-dialog fixture returns,
+and 400px/small-monitor layout. Final and conversation suites also exercise
+their exact panel job routes. The bridge serializes the production native
+`panel::Session` only to carry it between fixture processes; the real host
+retains that session in memory. Only the Tauri event delivery and window
+visibility boundary are mocked. Tests do not prove OS focus/dismissal or
+notification activation; the isolated native harness and platform procedures
+remain required.
+
 `doctrine-seeding.spec.mjs` covers the complete 23-document canonical catalog
 (exact titles and bodies, with only frontmatter/H1 removed), durable first load,
 Agent choices before visiting Doctrines, and saving Integrations first. It

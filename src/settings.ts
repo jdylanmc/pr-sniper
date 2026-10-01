@@ -163,9 +163,15 @@ const reason = (error: unknown) => {
     : "This action failed. Check local access and try again.";
 };
 
-export async function mountSettings(app: HTMLElement) {
-  document.body.classList.add("settings-page");
-  app.className = "settings-window";
+export async function mountSettings(
+  app: HTMLElement,
+  options: { embedded?: boolean } = {},
+) {
+  if (options.embedded) app.className = "settings-window settings-page";
+  else {
+    document.body.classList.add("settings-page");
+    app.className = "settings-window";
+  }
   app.innerHTML = `<aside class="settings-sidebar"><div class="settings-brand"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><circle cx="16" cy="16" r="9" stroke="currentColor" stroke-width="1.7"/><path d="M16 2v8m0 12v8M2 16h8m12 0h8" stroke="currentColor" stroke-width="1.7"/><circle cx="16" cy="16" r="2.5" fill="currentColor"/></svg>PR Sniper</div><p class="settings-caption">Preferences</p>
     <nav aria-label="Settings sections">${Object.entries(sections)
       .map(

@@ -43,6 +43,16 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- Replace separate native Queue/Settings/Status/Diagnostics windows with one
+  hidden-at-start tray panel. Four retained destinations, one exact job-detail
+  layer and Back preserve drafts, row/scroll/focus context and current evidence
+  without reloading. Native notifications route to the saved identity or an
+  explicit missing state, never another PR.
+- Anchor the compact panel to the actual tray monitor/work area with DPI-aware
+  clamping. Outside/Escape/close hide without stopping background work; native
+  pickers retain focus ownership and tray toggles avoid the dismissal/reopen
+  race. Secondary-menu recovery and explicit Quit remain available. Reviewed
+  uses the existing evidence projection, without adding history storage/purge.
 - Replace assignment timers with one durable global cron scan. Capture the scan's
   assignments and read each account/repository binding once before fanning out
   individual Agent jobs. Preserve retry budgets, manual-check coalescing and
