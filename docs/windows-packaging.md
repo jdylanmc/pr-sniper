@@ -49,12 +49,21 @@ aborts or rolls back on an unreadable result. An empty owned uninstall key must
 actually disappear before backups are discarded; a Delete-only denial restores
 the prior registration/files. A nonempty foreign key is retained instead.
 
-After native uninstall returns zero, Chocolatey exclusively writes and flushes
-`native-removal.json`, bound to the exact installation receipt bytes, version,
-directory and uninstaller hash. If subsequent mutex acquisition or executable
-deletion fails, retrying the same package uses this completion receipt under the
-SID mutex, rechecks the exact remaining executable and **all** removal
-postconditions, and finishes only that cleanup without rerunning native uninstall.
+At package installation, two exclusively created, flushed, immutable records are
+enrolled in Chocolatey's installed-file snapshot: schema-2 `native-removal.json`
+binds the exact installation receipt bytes, version, directory and uninstaller
+hash; `native-removal.pending.json` records **not completed** with the same binding.
+Only after native uninstall returns zero does the wrapper validate and delete the
+pending marker. The valid immutable state record plus committed pending-marker
+absence means **native removal completed**. The state record itself is never
+rewritten or deleted by the uninstall script.
+
+This matters because Chocolatey 2.7.4 removes only tracked paths whose checksum
+still matches: both newly created-at-uninstall and modified records can otherwise
+survive a successful package removal. On success Chocolatey owns final deletion
+of the unchanged state/installation records. If later executable or outer cleanup
+fails, retained evidence still permits retry under the SID mutex and **all** live
+removal postconditions; native uninstall is not repeated.
 If executable deletion succeeded but Chocolatey's outer package cleanup failed,
 the same bound receipts also permit an already-absent uninstaller: revalidate
 both receipts, current absence and live removal postconditions under the SID
@@ -62,8 +71,10 @@ mutex, then finish without launching or deleting a nonexistent file. A present
 file still requires its original hash; absence without completion evidence fails.
 Absent registration alone never admits resume. Missing/corrupt completion
 evidence, changed hashes, a new installation, an empty leftover key or pending
-transaction fail closed; do not manufacture a receipt. Persistence failure or
-interruption with uncertain phase still requires exact-state reconciliation.
+transaction fail closed; do not manufacture a receipt. Legacy untracked schema-1
+completion files are not adopted or deleted automatically. Reconcile/archive
+their exact evidence before installing regenerated packages. Persistence/marker
+commit failure or interruption with uncertain phase still requires reconciliation.
 The now-empty application directory may remain; no extra fallible directory
 cleanup follows deletion of the last recovery executable.
 
@@ -344,13 +355,17 @@ miss/current-user hit); no real runtime keys, installation or policy are changed
 For both SetValue and Delete denial, the fixture first retains a handle to the
 exact current-user, 64-bit installer key with only `ReadPermissions` and
 `ChangePermissions`. It snapshots the original DACL, applies and verifies the
-single intended denial, then restores and verifies the exact original DACL
+single intended denial, then restores and verifies the original DACL
 through that same handle. This avoids `Set-Acl` reopening the path with ordinary
 value-write rights that the fixture deliberately denied. No owner, group, SACL
 or parent-key permissions are changed. The product still uses its own separately
 opened handles; independent state snapshots are not taken through the restore
 handle. A primary assertion failure remains primary if restoration also fails;
 the additional cleanup failure is reported, never interpreted as acceptance.
+Readback admits only the demonstrated kernel **addition** of
+`SE_DACL_AUTO_INHERITED` bookkeeping. Every other descriptor byte, including ACE
+content/order, SID/mask, protection and meaningful inheritance flags, remains
+exact; removal of that bit or any permission drift still fails.
 They also deny shortcut reads for direct/package removal, deny only registry
 Delete, and exercise a read-only post-native uninstaller plus a deterministic
 other-thread cleanup mutex conflict before retrying the same package. Unknown
@@ -416,5 +431,7 @@ No #62/#63/#64 completion is inferred from this bounded candidate.
 - [Chocolatey pack CLI](https://docs.chocolatey.org/en-us/create/commands/pack/)
 - [Download/checksum helper](https://docs.chocolatey.org/en-us/create/functions/get-chocolateywebfile/)
 - [Process helper and explicit non-elevation](https://docs.chocolatey.org/en-us/create/functions/start-chocolateyprocessasadmin/)
+- [Chocolatey 2.7.4 post-install file snapshot](https://github.com/chocolatey/choco/blob/2.7.4/src/chocolatey/infrastructure.app/services/ChocolateyPackageService.cs#L507-L510)
+- [Chocolatey 2.7.4 tracked-path/checksum uninstall rules](https://github.com/chocolatey/choco/blob/2.7.4/src/chocolatey/infrastructure.app/services/NugetService.cs#L3024-L3121)
 - [Community moderation/metadata requirements](https://docs.chocolatey.org/en-us/community-repository/moderation/)
 - [Official package-name lookup](<https://community.chocolatey.org/api/v2/FindPackagesById()?id=%27pr-sniper%27>)

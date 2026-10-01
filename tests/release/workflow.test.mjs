@@ -469,6 +469,44 @@ test("registry-denial fixtures retain only DACL restoration rights before inject
   assert.match(fixture, /Preserving original fixture failure/);
 });
 
+test("completion evidence is enrolled at install and remains immutable until outer package cleanup", () => {
+  const install = readFileSync(
+    "packaging/chocolatey/chocolateyinstall.ps1",
+    "utf8",
+  );
+  const uninstall = readFileSync(
+    "packaging/chocolatey/chocolateyuninstall.ps1",
+    "utf8",
+  );
+  const state = readFileSync("packaging/chocolatey/removal-state.ps1", "utf8");
+  assert.match(install, /Initialize-PrSniperRemovalState \$tools/);
+  assert.match(
+    uninstall,
+    /Complete-PrSniperNativeRemoval \$tools \$receipt \$receiptHash/,
+  );
+  assert.doesNotMatch(
+    uninstall,
+    /CreateNew|Set-Content|WriteAllText|Remove-Item[^\n]*native-removal/,
+  );
+  assert.match(
+    state,
+    /foreach \(\$phase in @\('native-removal-pending', 'native-removal-state'\)\)/,
+  );
+  assert.match(
+    state,
+    /Remove-Item -LiteralPath \(Join-Path \$Tools 'native-removal\.pending\.json'\)/,
+  );
+  assert.doesNotMatch(state, /Remove-Item[^\n]*'native-removal\.json'/);
+  assert.match(
+    readFileSync("scripts/windows-installer-acceptance.ps1", "utf8"),
+    /Same-feed reinstall inherited stale native-completion state/,
+  );
+  assert.match(
+    readFileSync("scripts/windows-removal-retry.ps1", "utf8"),
+    /Outer package cleanup left tracked completion state/,
+  );
+});
+
 test("Windows artifact contains only the standalone app and exact-source provenance", () => {
   const upload = windows.jobs.windows.steps.find((step) =>
     step.uses?.startsWith("actions/upload-artifact@"),

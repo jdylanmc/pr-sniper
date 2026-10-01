@@ -1,3 +1,14 @@
+function Test-PrSniperDaclReadback([byte[]] $Expected, [byte[]] $Observed) {
+    if ($Expected.Length -lt 20 -or $Expected.Length -ne $Observed.Length) { return $false }
+    $expectedEncoding = [Convert]::ToBase64String($Expected)
+    if ([Convert]::ToBase64String($Observed) -ceq $expectedEncoding) { return $true }
+    # Admit only the observed kernel addition of SE_DACL_AUTO_INHERITED (0x0400).
+    # ACE bytes/order, protection, inheritance requests and every other byte stay exact.
+    $normalized = [byte[]]$Expected.Clone()
+    $normalized[3] = $normalized[3] -bor 0x04
+    return [Convert]::ToBase64String($Observed) -ceq [Convert]::ToBase64String($normalized)
+}
+
 function Invoke-PrSniperRegistryAclDenial {
     param(
         [Parameter(Mandatory)] $RestoreKey,
@@ -7,17 +18,16 @@ function Invoke-PrSniperRegistryAclDenial {
     )
     $section = [Security.AccessControl.AccessControlSections]::Access
     $original = $RestoreKey.GetAccessControl($section).GetSecurityDescriptorBinaryForm()
-    $originalEncoding = [Convert]::ToBase64String($original)
     $denied = [Security.AccessControl.RegistrySecurity]::new()
     $denied.SetSecurityDescriptorBinaryForm($original, $section)
     $denied.AddAccessRule([Security.AccessControl.RegistryAccessRule]::new(
         $Identity, $Right, 'None', 'None', 'Deny'))
-    $expectedDenial = [Convert]::ToBase64String($denied.GetSecurityDescriptorBinaryForm())
+    $expectedDenial = $denied.GetSecurityDescriptorBinaryForm()
     $failure = $null
     try {
         $RestoreKey.SetAccessControl($denied)
-        if ([Convert]::ToBase64String($RestoreKey.GetAccessControl($section).GetSecurityDescriptorBinaryForm()) -cne $expectedDenial) {
-            throw 'Owned registry denial did not persist exactly; fixture was not exercised.'
+        if (-not (Test-PrSniperDaclReadback $expectedDenial $RestoreKey.GetAccessControl($section).GetSecurityDescriptorBinaryForm())) {
+            throw 'Owned registry denial permissions/inheritance did not persist; fixture was not exercised.'
         }
         & $Exercise
     } catch { $failure = $_ }
@@ -28,7 +38,7 @@ function Invoke-PrSniperRegistryAclDenial {
             $restore = [Security.AccessControl.RegistrySecurity]::new()
             $restore.SetSecurityDescriptorBinaryForm($original, $section)
             $RestoreKey.SetAccessControl($restore)
-            if ([Convert]::ToBase64String($RestoreKey.GetAccessControl($section).GetSecurityDescriptorBinaryForm()) -cne $originalEncoding) {
+            if (-not (Test-PrSniperDaclReadback $original $RestoreKey.GetAccessControl($section).GetSecurityDescriptorBinaryForm())) {
                 throw 'Owned registry DACL restoration readback differs from the original.'
             }
         } catch {

@@ -2,6 +2,7 @@ $ErrorActionPreference = 'Stop'
 $tools = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $metadata = Get-Content (Join-Path $tools 'installer.json') -Raw | ConvertFrom-Json
 . (Join-Path $tools 'windows-signature.ps1')
+. (Join-Path $tools 'removal-state.ps1')
 if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64' -or $metadata.target -cne 'x86_64-pc-windows-msvc') {
     throw 'This package supports only native Windows x64.'
 }
@@ -27,6 +28,10 @@ $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($installer)
 if ($info.ProductVersion -cne $metadata.version -or $info.ProductName -cne 'PR Sniper') {
     throw 'Installer identity/version mismatch.'
 }
+if ((Test-Path (Join-Path $tools 'native-removal.json')) -or
+    (Test-Path (Join-Path $tools 'native-removal.pending.json'))) {
+    throw 'Prior package removal state remains; reconcile it before installing or upgrading.'
+}
 Start-ChocolateyProcessAsAdmin -ExeToRun $installer -Statements '/S' -Elevated:$false -ValidExitCodes @(0)
 $directory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'PR Sniper'
 $app = Join-Path $directory 'pr-sniper.exe'
@@ -39,3 +44,6 @@ $uninstaller = Join-Path $directory 'uninstall.exe'
     uninstaller_sha256 = (Get-FileHash $uninstaller -Algorithm SHA256).Hash
     version = $metadata.version
 } | ConvertTo-Json | Set-Content (Join-Path $tools 'installation.json') -Encoding utf8
+$receiptPath = Join-Path $tools 'installation.json'
+Initialize-PrSniperRemovalState $tools (Get-Content $receiptPath -Raw | ConvertFrom-Json) `
+    (Get-FileHash $receiptPath -Algorithm SHA256).Hash

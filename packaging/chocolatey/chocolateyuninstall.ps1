@@ -3,7 +3,6 @@ $tools = Split-Path -Parent $MyInvocation.MyCommand.Definition
 . (Join-Path $tools 'windows-signature.ps1')
 . (Join-Path $tools 'removal-state.ps1')
 $receiptPath = Join-Path $tools 'installation.json'
-$completionPath = Join-Path $tools 'native-removal.json'
 $receiptHash = (Get-FileHash $receiptPath -Algorithm SHA256).Hash
 $receipt = Get-Content $receiptPath -Raw | ConvertFrom-Json
 $directory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'PR Sniper'
@@ -11,10 +10,8 @@ $uninstaller = Join-Path $directory 'uninstall.exe'
 if ($receipt.directory -cne $directory) {
     throw 'Installation receipt does not name this exact application directory.'
 }
-if (Test-Path -LiteralPath $completionPath) {
-    # Missing registration alone never admits cleanup or execution of a leftover.
-    Assert-PrSniperRemovalReceipt (Get-Content $completionPath -Raw | ConvertFrom-Json) $receipt $receiptHash
-} else {
+$removalState = Get-PrSniperRemovalState $tools $receipt $receiptHash
+if (-not $removalState.completed) {
     if ((Get-FileHash $uninstaller -Algorithm SHA256).Hash -ine $receipt.uninstaller_sha256) {
         throw 'The exact package-owned uninstaller is unavailable or has changed.'
     }
@@ -35,20 +32,7 @@ if (Test-Path -LiteralPath $completionPath) {
     # completion; a pending/failed native operation never gains a resume receipt.
     Start-ChocolateyProcessAsAdmin -ExeToRun $uninstaller -Statements "/S _?=$directory" `
         -Elevated:$false -ValidExitCodes @(0)
-    $completion = [ordered]@{
-        schema = 1
-        phase = 'native-removal-complete'
-        installation_receipt_sha256 = $receiptHash
-        directory = $receipt.directory
-        version = $receipt.version
-        uninstaller_sha256 = $receipt.uninstaller_sha256
-    } | ConvertTo-Json
-    $stream = [IO.File]::Open($completionPath, 'CreateNew', 'Write', 'None')
-    try {
-        $bytes = [Text.Encoding]::UTF8.GetBytes($completion)
-        $stream.Write($bytes, 0, $bytes.Length)
-        $stream.Flush($true)
-    } finally { $stream.Dispose() }
+    Complete-PrSniperNativeRemoval $tools $receipt $receiptHash
 }
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $lifecycle = [Threading.Mutex]::new($false, "Global\com.jdylanmc.pr-sniper.installer.$sid")
@@ -60,7 +44,9 @@ try {
     if ((Get-FileHash $receiptPath -Algorithm SHA256).Hash -ine $receiptHash) {
         throw 'Installation receipt changed before cleanup.'
     }
-    $completion = Get-Content $completionPath -Raw | ConvertFrom-Json
+    $removalState = Get-PrSniperRemovalState $tools $receipt $receiptHash
+    if (-not $removalState.completed) { throw 'Native removal is not completed; cleanup is refused.' }
+    $completion = $removalState.receipt
     Assert-PrSniperRemovalReceipt $completion $receipt $receiptHash
     $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('CurrentUser', 'Registry64')
     $key = $base.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Uninstall\PR Sniper')

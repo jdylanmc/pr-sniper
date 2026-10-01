@@ -174,7 +174,16 @@ try {
     # separately from the intentionally nonempty foreign-container case below.
     Invoke-Choco @('uninstall', 'pr-sniper-localtest')
     if (Test-Path $uninstallKey) { throw 'Clean uninstall retained its empty installer key.' }
+    if (Test-Path "$env:ChocolateyInstall\lib\pr-sniper-localtest") {
+        throw 'Clean package uninstall retained package files or completion state.'
+    }
     Invoke-Choco @('install', 'pr-sniper-localtest', "--version=$($next.version)-localtest", '--pre', "--source=$($feed.FullName)")
+    $packageTools = "$env:ChocolateyInstall\lib\pr-sniper-localtest\tools"
+    . (Join-Path $packageTools 'removal-state.ps1')
+    $receiptPath = Join-Path $packageTools 'installation.json'
+    if ((Get-PrSniperRemovalState $packageTools (Get-Content $receiptPath -Raw | ConvertFrom-Json) (Get-FileHash $receiptPath).Hash).completed) {
+        throw 'Same-feed reinstall inherited stale native-completion state.'
+    }
     Assert-Installed $next (Join-Path $Upgrade 'upgrade-test-only.exe')
     Assert-Preserved
     # Prove the uninstaller preserves foreign contents, not merely a clean dir.

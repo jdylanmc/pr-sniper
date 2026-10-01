@@ -26,21 +26,25 @@ try {
     . (Join-Path $repository 'packaging\chocolatey\removal-state.ps1')
     . (Join-Path $repository 'scripts\windows-installer-payload.ps1')
     . (Join-Path $repository 'scripts\windows-registry-acl-fixture.ps1')
-    function New-MemoryAclKey {
+    function New-MemoryAclKey([switch] $Unprotected, [switch] $NormalizeNative) {
         $descriptor = [Security.AccessControl.RegistrySecurity]::new()
-        $descriptor.SetSecurityDescriptorSddlForm('D:P(A;;KA;;;S-1-5-21-1-2-3-1001)(A;CIID;KR;;;BU)')
+        $prefix = if ($Unprotected) { 'D:' } else { 'D:P' }
+        $descriptor.SetSecurityDescriptorSddlForm($prefix + '(A;;KA;;;S-1-5-21-1-2-3-1001)(A;CIID;KR;;;BU)')
         $key = [pscustomobject]@{
             Bytes = $descriptor.GetSecurityDescriptorBinaryForm()
             Writes = 0
             FailRestore = $false
             CorruptRestore = $false
             Exercised = $false
+            NormalizeNative = [bool]$NormalizeNative
         }
         $key | Add-Member ScriptMethod GetAccessControl {
             param($section)
             if ($section -ne [Security.AccessControl.AccessControlSections]::Access) { throw 'Unexpected security section.' }
             $copy = [Security.AccessControl.RegistrySecurity]::new()
             $copy.SetSecurityDescriptorBinaryForm($this.Bytes, $section)
+            $copy | Add-Member NoteProperty NativeBytes ([byte[]]$this.Bytes.Clone())
+            $copy | Add-Member ScriptMethod GetSecurityDescriptorBinaryForm { return $this.NativeBytes } -Force
             return $copy
         }
         $key | Add-Member ScriptMethod SetAccessControl {
@@ -57,6 +61,7 @@ try {
             if ($this.Writes -eq 2 -and $this.FailRestore) { throw 'fixture restore denied' }
             if ($this.Writes -eq 2 -and $this.CorruptRestore) { return }
             $this.Bytes = $descriptor.GetSecurityDescriptorBinaryForm()
+            if ($this.NormalizeNative) { $this.Bytes[3] = $this.Bytes[3] -bor 0x04 }
         }
         return $key
     }
@@ -90,6 +95,37 @@ try {
     $script:aclWarnings = @()
     Reject { Invoke-PrSniperRegistryAclDenial $memoryKey $identity SetValue { throw 'primary retained' } -WarningVariable script:aclWarnings } 'primary retained'
     Check (($script:aclWarnings -join ' ') -match 'fixture restore denied') 'Cleanup failure remains visible without replacing the primary failure.'
+    foreach ($right in @('SetValue', 'Delete')) {
+        $memoryKey = New-MemoryAclKey -Unprotected -NormalizeNative
+        $originalBytes = [byte[]]$memoryKey.Bytes.Clone()
+        Invoke-PrSniperRegistryAclDenial $memoryKey $identity $right { $memoryKey.Exercised = $true }
+        Check ($memoryKey.Exercised -and (Test-PrSniperDaclReadback $originalBytes $memoryKey.Bytes)) `
+            'Unprotected inherited DACL admits only the native bookkeeping-bit addition.'
+    }
+    $expectedAcl = (New-MemoryAclKey -Unprotected).Bytes
+    $nativeAcl = [byte[]]$expectedAcl.Clone()
+    $nativeAcl[3] = $nativeAcl[3] -bor 0x04
+    Check (Test-PrSniperDaclReadback $expectedAcl $nativeAcl) 'Proved SE_DACL_AUTO_INHERITED addition is admitted.'
+    Check (-not (Test-PrSniperDaclReadback $nativeAcl $expectedAcl)) 'Unproved removal of the bookkeeping bit is rejected.'
+    foreach ($change in @('mask','sid','order','inheritance','protection','inheritance-request')) {
+        $raw = [Security.AccessControl.RawSecurityDescriptor]::new($expectedAcl, 0)
+        switch ($change) {
+            mask { $raw.DiscretionaryAcl[0].AccessMask = $raw.DiscretionaryAcl[0].AccessMask -bxor 2 }
+            sid { $raw.DiscretionaryAcl[0].SecurityIdentifier = [Security.Principal.SecurityIdentifier]::new('S-1-5-21-1-2-3-1002') }
+            order {
+                $first = $raw.DiscretionaryAcl[0].Copy()
+                $raw.DiscretionaryAcl[0] = $raw.DiscretionaryAcl[1]
+                $raw.DiscretionaryAcl[1] = $first
+            }
+            inheritance { $raw.DiscretionaryAcl[1].AceFlags = [Security.AccessControl.AceFlags]::Inherited }
+            protection { $raw.SetFlags($raw.ControlFlags -bor [Security.AccessControl.ControlFlags]::DiscretionaryAclProtected) }
+            inheritance-request { $raw.SetFlags($raw.ControlFlags -bor [Security.AccessControl.ControlFlags]::DiscretionaryAclAutoInheritRequired) }
+        }
+        $changedAcl = New-Object byte[] $raw.BinaryLength
+        $raw.GetBinaryForm($changedAcl, 0)
+        $changedAcl[3] = $changedAcl[3] -bor 0x04
+        Check (-not (Test-PrSniperDaclReadback $expectedAcl $changedAcl)) "Reject real DACL drift despite normalization: $change"
+    }
     Check ((Get-PrSniperPayloadEntry @('Path = installer.exe', 'Path = $_41_\new-app.exe', 'Path = $_41_\new-uninstall.exe')) -ceq '$_41_\new-app.exe') `
         'Select the exact application entry, not the installer or uninstaller.'
     Reject { Get-PrSniperPayloadEntry @('Path = new-uninstall.exe') } 'exactly one'
@@ -143,6 +179,40 @@ try {
     Reject { Test-PrSniperUninstallerCleanupRequired $completion $removalReceipt ('b' * 64) $false '' } 'not evidenced'
     $completion.uninstaller_sha256 = 'a' * 64
     $removalReceipt.uninstaller_sha256 = 'a' * 64
+    $stateTools = Join-Path $fixture 'tracked-state'
+    New-Item -ItemType Directory $stateTools | Out-Null
+    Initialize-PrSniperRemovalState $stateTools $removalReceipt ('b' * 64)
+    $statePath = Join-Path $stateTools 'native-removal.json'
+    $pendingPath = Join-Path $stateTools 'native-removal.pending.json'
+    $trackedHashes = @{}
+    foreach ($file in Get-ChildItem $stateTools -File) { $trackedHashes[$file.FullName] = (Get-FileHash $file.FullName).Hash }
+    Check ($trackedHashes.Count -eq 2 -and -not (Get-PrSniperRemovalState $stateTools $removalReceipt ('b' * 64)).completed) `
+        'Both immutable records exist at install tracking time and initially mean not completed.'
+    Reject { Initialize-PrSniperRemovalState $stateTools $removalReceipt ('b' * 64) } 'nothing was overwritten'
+    Reject { Get-PrSniperRemovalState $stateTools $removalReceipt ('c' * 64) } 'not evidenced'
+    Complete-PrSniperNativeRemoval $stateTools $removalReceipt ('b' * 64)
+    $committed = Get-PrSniperRemovalState $stateTools $removalReceipt ('b' * 64)
+    Check ($committed.completed -and -not (Test-Path $pendingPath)) 'Only the pending marker is removed at native completion.'
+    Check ((Get-FileHash $statePath).Hash -ceq $trackedHashes[$statePath]) 'Completion evidence retains its original tracked checksum.'
+    Check (-not (Test-PrSniperUninstallerCleanupRequired $committed.receipt $removalReceipt ('b' * 64) $false '')) `
+        'Completed evidence survives an outer-cleanup failure with the uninstaller already absent.'
+    Reject { Complete-PrSniperNativeRemoval $stateTools $removalReceipt ('b' * 64) } 'must not be repeated'
+    # Model Chocolatey 2.7.4: only installed-snapshot paths with equal checksums
+    # are removed. This catches both newly created and mutated receipt residues.
+    foreach ($file in Get-ChildItem $stateTools -File) {
+        if ($trackedHashes.ContainsKey($file.FullName) -and (Get-FileHash $file.FullName).Hash -ceq $trackedHashes[$file.FullName]) {
+            Remove-Item -LiteralPath $file.FullName
+        }
+    }
+    Check (-not (Get-ChildItem $stateTools -File)) 'Tracked outer cleanup leaves no completion state.'
+    Initialize-PrSniperRemovalState $stateTools $removalReceipt ('b' * 64)
+    Check (-not (Get-PrSniperRemovalState $stateTools $removalReceipt ('b' * 64)).completed) 'Same-package reinstall starts noncompleted, not poisoned by an old receipt.'
+    $pendingBytes = [IO.File]::ReadAllBytes($pendingPath)
+    [IO.File]::WriteAllText($pendingPath, '{}')
+    Reject { Get-PrSniperRemovalState $stateTools $removalReceipt ('b' * 64) } 'Invalid pending'
+    [IO.File]::WriteAllBytes($pendingPath, $pendingBytes)
+    [IO.File]::WriteAllText($statePath, '{"schema":1,"phase":"native-removal-complete"}')
+    Reject { Get-PrSniperRemovalState $stateTools $removalReceipt ('b' * 64) } 'Legacy/unrecognized'
     $missingUninstaller = Get-PrSniperUninstallerFileState (Join-Path $fixture 'absent-uninstaller.exe')
     Check (-not $missingUninstaller.exists -and $missingUninstaller.sha256 -ceq '') 'Only actual file absence produces absent evidence.'
     Reject { Get-PrSniperUninstallerFileState $fixture } 'not a regular file'
