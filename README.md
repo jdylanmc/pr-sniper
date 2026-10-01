@@ -94,6 +94,15 @@ jobs belong in Running. Evidence retains every ordered changed file, exact
 provider links, local-only findings, distinct action receipts and original
 mutation recovery. Human comments and reviews stay on GitHub; confirmed approval
 does not imply personal review, and confirmed merged PRs are not actionable.
+Running counts jobs, not triggers: seven assigned Agents occupy four active
+slots and leave three waiting at the default capacity. Active rows lead one
+continuous list; waiting/blocked work retains arrival order and reasons.
+Only active work animates, with static labels under reduced motion. Each row
+opens one exact job, not a second PR drill-in. Its inspector distinguishes normal,
+primary-final, reply and mention purposes, immutable execution configuration
+versus current planned configuration, canonical iteration (including same-commit
+reopening), per-Agent work ordinals and retry attempts. Missing legacy evidence
+is labeled unavailable rather than reconstructed from current Settings.
 
 The [native acceptance procedure](tests/macos-acceptance.md) and compiled
 test-owned smoke harness cover the actual window boundary separately from

@@ -247,12 +247,27 @@ for (const kind of ["reply", "mention"]) {
     const captured = before.follow_ups.find(
       (candidate) => candidate.run.id === fixture.run.id,
     ).run;
-    await expect(conversation.locator("pre")).toHaveText(
+    await expect(
+      conversation
+        .locator("details")
+        .filter({
+          has: page.getByText("Original target and captured analysis context", {
+            exact: true,
+          }),
+        })
+        .locator("pre"),
+    ).toHaveText(
       JSON.stringify(
         { target: captured.target, context: captured.context },
         null,
         2,
       ),
+    );
+    await expect(page.locator("[data-work-context]")).toContainText(
+      "Iteration 1 (original-iteration)",
+    );
+    await expect(page.locator("[data-work-context]")).toContainText(
+      kind === "reply" ? "Purpose: Targeted reply" : "Purpose: Primary mention",
     );
     await expect(page.locator("#agent-reviews article")).toHaveCount(0);
     await page.getByRole("button", { name: "Back", exact: true }).click();

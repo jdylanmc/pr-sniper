@@ -270,6 +270,7 @@ test("panel primary-final route exposes only that final and returns to its exact
   const final = fixture.actions.finals[0];
   final.execution.result = fixture.review.result;
   final.execution.operation.state = "completed";
+  final.execution.operation.attempt_count = 1;
   final.execution.phase = "Primary final full review complete";
   fixture.state.actions = fixture.actions;
   await store("seed_queue_state", fixture.state);
@@ -286,6 +287,31 @@ test("panel primary-final route exposes only that final and returns to its exact
   await expect(page.locator("[data-item-evidence]")).toContainText(
     "Primary final full review complete",
   );
+  await expect(page.locator("[data-work-context]")).toContainText(
+    "Purpose: Primary final review",
+  );
+  await expect(page.locator("[data-work-context]")).toContainText(
+    "Iteration 1 (iteration-1)",
+  );
+  await expect(page.locator("[data-work-context]")).toContainText(
+    "Captured role: Primary Agent",
+  );
+  await expect(page.locator("[data-work-context]")).toContainText(
+    "Final review is separate from normal passes",
+  );
+  await page
+    .getByText("Captured final execution configuration", { exact: true })
+    .click();
+  await expect(page.locator(".work-configuration")).toContainText(
+    "Review correctness.",
+  );
+  await page
+    .getByText("Complete final file guide (2 files)", { exact: true })
+    .click();
+  await expect(page.locator("[data-item-evidence] ol li")).toHaveText([
+    "z-first.rs: Read this first.",
+    "a-second.rs: Then read this.",
+  ]);
   await expect(page.locator("#agent-reviews article")).toHaveCount(0);
   await expect(page.locator("#thread-follow-ups article")).toHaveCount(0);
   await page.getByRole("button", { name: "Back", exact: true }).click();

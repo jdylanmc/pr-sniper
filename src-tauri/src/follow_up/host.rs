@@ -359,6 +359,7 @@ pub(crate) fn admit_scan(
 #[derive(Serialize)]
 pub(crate) struct Candidate {
     pub(crate) run: FollowUp,
+    pub(crate) planned_selection: Option<Selection>,
     pub(crate) blocked: Option<String>,
     pub(crate) automatic_start: bool,
     pub(crate) automatic_publication: bool,
@@ -421,6 +422,7 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
                 .is_some_and(|j| j.waiting == monitoring::WAITING_TRUST_CONFIRMATION)
                 && !run.context.trust_confirmed;
             Candidate {
+                planned_selection: policy.as_ref().ok().cloned(),
                 trust_required,
                 run: run.clone(),
                 blocked: policy.as_ref().err().cloned(),

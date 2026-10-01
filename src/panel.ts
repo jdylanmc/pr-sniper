@@ -6,6 +6,11 @@ import type { AutomationSnapshot } from "./automation";
 import crosshair from "./crosshair.svg";
 import sniperArt from "./sniper-mark.png";
 import { humanQueue } from "./queue";
+import {
+  workPresentation,
+  purposes,
+  type WorkPresentation,
+} from "./work-presentation";
 import "./panel.css";
 
 export type PanelTab = "queue" | "running" | "reviewed" | "settings";
@@ -37,6 +42,7 @@ interface Row {
   title: string;
   state: string;
   reason?: string | null;
+  work?: WorkPresentation;
 }
 
 const destinations = {
@@ -218,42 +224,9 @@ export async function mountPanel(app: HTMLElement) {
     kind: WorkKind,
     id: string,
   ): { title: string; state: string } | undefined {
-    if (!snapshot) return undefined;
-    if (kind === "normal") {
-      const candidate = snapshot.reviews?.find((r) => r.key === id);
-      return candidate
-        ? {
-            title: `${candidate.job.repository_name} #${candidate.job.number} / ${candidate.agent_name}`,
-            state: candidate.run?.operation.state ?? "waiting",
-          }
-        : undefined;
-    }
-    if (kind === "primary_final") {
-      const item = snapshot.items?.find(
-        (i) => i.action_status?.final_review?.id === id,
-      );
-      return item
-        ? {
-            title: `${item.job.repository_name} #${item.job.number} / Primary final review`,
-            state: item.action_status!.final_review!.execution.operation.state,
-          }
-        : undefined;
-    }
-    const candidate = snapshot.follow_ups?.find((f) => f.run.id === id);
-    if (!candidate && kind === "mention") {
-      const mention = snapshot.mentions?.find((m) => m.work_id === id);
-      if (mention)
-        return {
-          title: `${mention.binding.repository_name} #${mention.binding.number} / Primary mention`,
-          state: "blocked",
-        };
-    }
-    const execution = candidate?.run.context ?? candidate?.run.review;
-    return execution && candidate
-      ? {
-          title: `${execution.job.repository_name} #${execution.job.number} / ${execution.selection.agent.name}`,
-          state: candidate.run.phase,
-        }
+    const work = snapshot && workPresentation(snapshot, kind, id);
+    return work
+      ? { title: `${work.reference} / ${work.agent}`, state: work.state }
       : undefined;
   }
   function draw(tab: "running" | "reviewed", rows: Row[]) {
@@ -273,9 +246,16 @@ export async function mountPanel(app: HTMLElement) {
     const hint = document.createElement("p");
     hint.textContent =
       tab === "running"
-        ? "One row per actual AI job. Stopping work retains its slot until teardown; blocked work keeps its reason and order."
+        ? "Running at the top. New work joins the bottom."
         : "Completed evidence available in the current native projection. This foundation does not add paged history or storage purge.";
     root.append(hint);
+    hint.className = "work-caption";
+    const list = document.createElement("ol");
+    if (tab === "running") {
+      list.className = "work-list";
+      list.setAttribute("aria-label", "Agent work queue");
+      root.append(list);
+    }
     if (!rows.length) {
       const empty = document.createElement("p");
       empty.textContent =
@@ -287,11 +267,13 @@ export async function mountPanel(app: HTMLElement) {
     for (const row of rows) {
       const article = document.createElement("article");
       article.dataset.jobId = `${row.kind}:${row.id}`;
+      article.dataset.workState = row.state;
       const title = document.createElement("h2");
       title.textContent = row.title;
       const status = document.createElement("p");
       status.textContent = `${row.kind.replaceAll("_", " ")}: ${row.state}. ${row.reason ?? ""}`;
       const button = document.createElement("button");
+      button.type = "button";
       button.textContent =
         row.kind === "item" ? "Open PR evidence" : "Open job";
       button.onclick = () =>
@@ -302,8 +284,68 @@ export async function mountPanel(app: HTMLElement) {
               ? { type: "item", item_id: row.id }
               : { type: "job", kind: row.kind, id: row.id },
         });
-      article.append(title, status, button);
-      root.append(article);
+      if (tab === "running") {
+        const displayState =
+          row.state === "active"
+            ? "Running"
+            : row.state === "stopping"
+              ? "Stopping"
+              : row.work?.state === "superseded"
+                ? "Superseded"
+                : ["failed", "manual_retry"].includes(row.work?.state ?? "")
+                  ? "Failed"
+                  : row.state === "blocked"
+                    ? "Blocked"
+                    : "Queued";
+        button.className = "work-row";
+        button.setAttribute("aria-label", "Open job");
+        button.title = `${row.title}; ${displayState}`;
+        button.replaceChildren();
+        const marker = document.createElement("span");
+        marker.className = row.state === "active" ? "work-spin" : "work-marker";
+        marker.setAttribute("aria-hidden", "true");
+        if (row.state !== "active")
+          marker.innerHTML = icon(destinations.queue.icon);
+        const copy = document.createElement("span");
+        copy.className = "work-copy";
+        const top = document.createElement("span");
+        top.className = "work-heading";
+        const agent = document.createElement("strong");
+        agent.textContent = row.work?.agent ?? "Job evidence unavailable";
+        const state = document.createElement("span");
+        state.className = "work-state";
+        state.textContent = displayState;
+        top.append(agent, state);
+        const subject = document.createElement("span");
+        subject.className = "work-subject";
+        subject.textContent = row.work?.subject ?? row.title;
+        const reference = document.createElement("span");
+        reference.className = "work-reference";
+        reference.textContent = row.work?.reference ?? "Repository unavailable";
+        const purpose = document.createElement("span");
+        purpose.textContent =
+          row.work?.ordinal ??
+          (row.kind === "item" ? "PR" : purposes[row.kind]);
+        reference.append(purpose);
+        copy.append(top, subject, reference);
+        if (row.reason) {
+          const reason = document.createElement("span");
+          reason.className = "work-blocker";
+          reason.textContent = row.reason;
+          copy.append(reason);
+        }
+        const chevron = document.createElement("span");
+        chevron.className = "work-chevron";
+        chevron.setAttribute("aria-hidden", "true");
+        button.append(marker, copy, chevron);
+        article.append(button);
+        const entry = document.createElement("li");
+        entry.append(article);
+        list.append(entry);
+      } else {
+        article.append(title, status, button);
+        root.append(article);
+      }
       if (
         activeId === article.dataset.jobId &&
         route.tab === tab &&
@@ -316,19 +358,46 @@ export async function mountPanel(app: HTMLElement) {
     }
   }
   function drawLists() {
-    if (!snapshot || !automation) return;
-    draw(
-      "running",
-      automation.work.map((work) => ({
-        id: work.key.id,
-        kind: work.key.kind,
-        title:
-          metadata(work.key.kind, work.key.id)?.title ??
-          `Saved ${work.key.kind} job ${work.key.id}`,
-        state: work.state,
-        reason: work.reason,
-      })),
-    );
+    if (!automation) {
+      views.running.querySelector<HTMLElement>(
+        "[data-running-list]",
+      )!.textContent =
+        "Work state unavailable. No active or waiting jobs can be confirmed. Retry from Status or inspect Diagnostics.";
+      listSignatures.delete("running");
+    } else
+      draw(
+        "running",
+        [...automation.work]
+          .sort((a, b) => {
+            const rank = (state: string) =>
+              state === "active" ? 0 : state === "stopping" ? 1 : 2;
+            return (
+              rank(a.state) - rank(b.state) || a.enqueue_order - b.enqueue_order
+            );
+          })
+          .map((work) => ({
+            id: work.key.id,
+            kind: work.key.kind,
+            title:
+              metadata(work.key.kind, work.key.id)?.title ??
+              `Saved ${work.key.kind} job ${work.key.id}`,
+            state: work.state,
+            reason:
+              work.reason ??
+              (automation?.paused && work.state === "waiting"
+                ? "Monitoring paused."
+                : null),
+            work:
+              snapshot &&
+              workPresentation(snapshot, work.key.kind, work.key.id),
+          })),
+      );
+    if (!snapshot) {
+      views.reviewed.textContent =
+        "Saved evidence unavailable; no completed state is inferred.";
+      listSignatures.delete("reviewed");
+      return;
+    }
     const rows: Row[] = [];
     for (const review of snapshot.reviews ?? [])
       if (review.run?.operation.state === "completed") {

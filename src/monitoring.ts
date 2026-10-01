@@ -16,6 +16,7 @@ import {
   humanQueue,
 } from "./queue";
 import { renderNotificationHistory } from "./notifications";
+import { renderConfiguration, renderWorkContext } from "./work-presentation";
 
 interface Health {
   repository_id: string;
@@ -52,7 +53,7 @@ interface Health {
   } | null;
 }
 
-interface Job {
+export type Job = QueueItem["job"] & {
   work?: NormalWork;
   account_id: string;
   account_login: string;
@@ -66,7 +67,7 @@ interface Job {
   all_authors: boolean;
   requested_reviewer: boolean;
   waiting: string;
-}
+};
 
 export interface MonitoringSnapshot {
   mentions?: MentionRouting[];
@@ -116,7 +117,7 @@ interface PublicationCandidate {
   } | null;
 }
 
-interface ReviewCandidate {
+export interface ReviewCandidate {
   key: string;
   assignment_id: string;
   agent_name: string;
@@ -437,7 +438,11 @@ export function renderMonitoring(
         return;
       }
       selection = item;
-      const next = JSON.stringify([target, item]);
+      const next = JSON.stringify([
+        target,
+        item,
+        jobDetail && [current.reviews, current.follow_ups, current.mentions],
+      ]);
       if (next !== detailSignature) {
         detailSignature = next;
         evidence.replaceChildren();
@@ -459,6 +464,15 @@ export function renderMonitoring(
           evidence.textContent =
             "Parent PR iteration context unavailable. No other iteration was selected; captured conversation follows.";
           evidence.setAttribute("role", "status");
+        }
+        if (jobDetail) {
+          renderWorkContext(evidence, current, jobDetail.kind, jobDetail.id);
+          if (item) {
+            const link = document.createElement("button");
+            link.textContent = "Open PR on GitHub";
+            link.onclick = () => void openDestination(item.id, null, showError);
+            evidence.append(link);
+          }
         }
       }
     }
@@ -733,59 +747,12 @@ export function renderMonitoring(
             ? "Trust confirmation required for this exact revision."
             : "Waiting for manual start or the automatic start gate."));
       row.append(state);
-      const configuration = (
-        label: string,
-        selection: import("./resources").ReviewSelection | null | undefined,
-      ) => {
-        const details = document.createElement("details");
-        const summary = document.createElement("summary");
-        summary.textContent = label;
-        details.append(summary);
-        const text = (title: string, value: unknown) => {
-          const heading = document.createElement("h4");
-          heading.textContent = title;
-          const body = document.createElement("pre");
-          body.textContent =
-            typeof value === "string"
-              ? value
-              : (JSON.stringify(value, null, 2) ?? "Not captured");
-          details.append(heading, body);
-        };
-        if (!selection) {
-          text(
-            "Unavailable",
-            candidate.blocked ?? "No saved planned configuration is available.",
-          );
-        } else {
-          text("Agent", selection.agent);
-          text("Agent prompt", selection.agent.prompt);
-          text("Repository policy", selection.policy);
-          text("Review preset", selection.preset);
-          if (selection.configuration) {
-            text(
-              "Repository and assignments",
-              selection.configuration.repository,
-            );
-            text(
-              "Captured assignment authority (not a current provider grant)",
-              selection.configuration.authority,
-            );
-            if (!selection.configuration.doctrines.length)
-              text("Doctrines", "None selected");
-            for (const doctrine of selection.configuration.doctrines)
-              text(`Doctrine: ${doctrine.title}`, doctrine.body);
-          } else {
-            text(
-              "Legacy snapshot",
-              "Full doctrine and assignment configuration was not captured. Today's settings are not historical evidence.",
-            );
-            if (selection.doctrine)
-              text("Retained legacy doctrine text", selection.doctrine);
-          }
-        }
-        row.append(details);
-      };
-      if (run) configuration("Captured execution configuration", run.selection);
+      if (run && run.operation.attempt_count > 0)
+        renderConfiguration(
+          row,
+          "Captured execution configuration",
+          run.selection,
+        );
       if (run?.feedback_context) {
         const details = document.createElement("details");
         const summary = document.createElement("summary");
@@ -796,7 +763,8 @@ export function renderMonitoring(
         row.append(details);
       }
       if (!run || ["queued", "interrupted"].includes(run.operation.state))
-        configuration(
+        renderConfiguration(
+          row,
           "Planned configuration (revalidated at start; not execution evidence)",
           candidate.planned_selection,
         );
