@@ -8,6 +8,7 @@ pub mod follow_up;
 pub mod github;
 pub mod monitoring;
 pub mod notifications;
+pub mod panel;
 pub mod policy;
 mod process_path;
 pub mod publication;
@@ -29,11 +30,12 @@ use std::time::SystemTime;
 use storage::{Diagnostic, DiagnosticEvent, SavedSettings, Settings, Store};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
-    tray::TrayIconBuilder,
-    Manager, State, WebviewUrl, WebviewWindowBuilder,
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Manager, State,
 };
 
 struct Host {
+    panel: panel::Panel,
     store: Mutex<Store>,
     monitor: Mutex<monitoring::Monitor>,
     error: Mutex<Option<String>>,
@@ -1436,7 +1438,16 @@ async fn choose_repository_folder(
 ) -> Result<Option<discovery::Discovery>, String> {
     use tauri_plugin_dialog::DialogExt;
     tauri::async_runtime::spawn_blocking(move || {
-        let Some(folder) = app.dialog().file().blocking_pick_folder() else {
+        let _focus = panel::NativeFocus::acquire(&app)?;
+        let window = app
+            .get_webview_window(panel::LABEL)
+            .ok_or("Application panel is unavailable.")?;
+        let Some(folder) = app
+            .dialog()
+            .file()
+            .set_parent(&window)
+            .blocking_pick_folder()
+        else {
             return Ok(None);
         };
         let path = folder.into_path().map_err(|_| "Choose a local folder.")?;
@@ -2009,13 +2020,17 @@ async fn read_provider_metadata(
 }
 
 #[tauri::command]
-fn open_diagnostics(app: tauri::AppHandle) -> Result<(), String> {
-    open_window(&app, "diagnostics", "Diagnostics")
+async fn open_diagnostics(app: tauri::AppHandle) -> Result<(), String> {
+    panel::show(&app, Some(panel::Route::utility(true)))
+        .await
+        .map(|_| ())
 }
 
 #[tauri::command]
-fn open_settings(app: tauri::AppHandle) -> Result<(), String> {
-    open_window(&app, "settings", "Settings")
+async fn open_settings(app: tauri::AppHandle) -> Result<(), String> {
+    panel::show(&app, Some(panel::Route::tab(panel::Tab::Settings)))
+        .await
+        .map(|_| ())
 }
 
 #[tauri::command]
@@ -2041,26 +2056,14 @@ async fn open_queue_destination(
 }
 
 #[tauri::command]
-fn open_queue_item(app: tauri::AppHandle, item_id: String) -> Result<(), String> {
+async fn open_queue_item(app: tauri::AppHandle, item_id: String) -> Result<(), String> {
+    match panel::show(&app, Some(panel::Route::item(item_id)))
+        .await?
+        .missing
     {
-        let host = app.state::<Host>();
-        let store = host
-            .store
-            .lock()
-            .map_err(|_| "Queue storage is unavailable.")?;
-        queue::select(&store, Some(&item_id))?;
+        Some(reason) => Err(reason),
+        None => Ok(()),
     }
-    open_window(&app, "queue", "Review Queue")?;
-    let window = app
-        .get_webview_window("queue")
-        .ok_or("Review Queue window is unavailable.")?;
-    let mut url = window
-        .url()
-        .map_err(|_| "Queue navigation is unavailable.")?;
-    url.set_fragment(Some(&format!("item={item_id}")));
-    window
-        .navigate(url)
-        .map_err(|_| "Could not navigate to the exact queue item.".into())
 }
 
 #[tauri::command]
@@ -2078,46 +2081,6 @@ fn select_queue_item(host: State<'_, Host>, item_id: Option<String>) -> Result<(
         .lock()
         .map_err(|_| "Queue storage is unavailable.")?;
     queue::select(&store, item_id.as_deref())
-}
-
-fn open_window(app: &tauri::AppHandle, label: &str, title: &str) -> Result<(), String> {
-    let window = if let Some(window) = app.get_webview_window(label) {
-        window
-    } else {
-        WebviewWindowBuilder::new(
-            app,
-            label,
-            WebviewUrl::App(format!("index.html?view={label}").into()),
-        )
-        .title(format!("PR Sniper - {title}"))
-        .inner_size(
-            match label {
-                "settings" => 1120.0,
-                "queue" => 900.0,
-                _ => 640.0,
-            },
-            if matches!(label, "settings" | "queue") {
-                760.0
-            } else {
-                520.0
-            },
-        )
-        .min_inner_size(390.0, 360.0)
-        .visible(false)
-        .build()
-        .map_err(|_| "Cannot create application window.")?
-    };
-    window
-        .show()
-        .map_err(|_| "Cannot show application window.")?;
-    window
-        .unminimize()
-        .map_err(|_| "Cannot restore application window.")?;
-    window
-        .set_focus()
-        .map_err(|_| "Cannot focus application window.")?;
-    record(app, DiagnosticEvent::WindowOpened);
-    Ok(())
 }
 
 fn github_keychain_stores(
@@ -2244,6 +2207,9 @@ pub fn run() {
             open_settings,
             open_queue_destination,
             open_queue_item,
+            panel::panel_snapshot,
+            panel::panel_navigate,
+            panel::hide_panel,
             queue_selection,
             select_queue_item,
             notifications::host::notification_snapshot,
@@ -2305,6 +2271,7 @@ pub fn run() {
             let executable = std::env::current_exe()?;
             let notifications = notifications::host::Coordinator::new(app.handle(), &store, &root);
             app.manage(Host {
+                panel: panel::Panel::default(),
                 store: Mutex::new(store),
                 monitor: Mutex::new(monitor),
                 error: Mutex::new(None),
@@ -2359,11 +2326,21 @@ pub fn run() {
             let queue = MenuItem::with_id(app, "queue", "Review Queue", true, None::<&str>)?;
             let check = MenuItem::with_id(app, "check", "Check Now", true, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
+            let diagnostics =
+                MenuItem::with_id(app, "diagnostics", "Diagnostics", true, None::<&str>)?;
             let separator = PredefinedMenuItem::separator(app)?;
             let quit = MenuItem::with_id(app, "quit", "Quit PR Sniper", true, Some("CmdOrCtrl+Q"))?;
             let menu = Menu::with_items(
                 app,
-                &[&status, &queue, &check, &settings, &separator, &quit],
+                &[
+                    &status,
+                    &queue,
+                    &check,
+                    &settings,
+                    &diagnostics,
+                    &separator,
+                    &quit,
+                ],
             )?;
             TrayIconBuilder::with_id("pr-sniper")
                 .icon(tauri::image::Image::from_bytes(if cfg!(windows) {
@@ -2374,7 +2351,21 @@ pub fn run() {
                 .icon_as_template(cfg!(target_os = "macos"))
                 .tooltip("PR Sniper")
                 .menu(&menu)
-                .show_menu_on_left_click(true)
+                .show_menu_on_left_click(false)
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state,
+                        ..
+                    } = event
+                    {
+                        if let Err(error) =
+                            panel::tray(tray.app_handle(), button_state == MouseButtonState::Down)
+                        {
+                            report(tray.app_handle(), error);
+                        }
+                    }
+                })
                 .on_menu_event(|app, event| {
                     if event.id.as_ref() == "check" {
                         let check_app = app.clone();
@@ -2439,28 +2430,33 @@ pub fn run() {
                     }
 
                     let target = match event.id.as_ref() {
-                        "status" => ("status", "Status"),
-                        "queue" => ("queue", "Review Queue"),
-                        "settings" => ("settings", "Settings"),
+                        "status" => panel::Route::utility(false),
+                        "diagnostics" => panel::Route::utility(true),
+                        "queue" => panel::Route::tab(panel::Tab::Queue),
+                        "settings" => panel::Route::tab(panel::Tab::Settings),
                         _ => return,
                     };
-                    if let Err(error) = open_window(app, target.0, target.1) {
-                        report(app, error);
-                    }
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(error) = panel::show(&app, Some(target)).await {
+                            report(&app, error);
+                        }
+                    });
                 })
                 .build(app)?;
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label() != panel::LABEL {
+                return;
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                match window.hide() {
-                    Ok(()) => record(window.app_handle(), DiagnosticEvent::WindowHidden),
-                    Err(_) => report(
-                        window.app_handle(),
-                        "Cannot hide application window.".into(),
-                    ),
+                if let Err(error) = panel::hide(window.app_handle()) {
+                    report(window.app_handle(), error);
                 }
+            } else if let tauri::WindowEvent::Focused(false) = event {
+                panel::lost_focus(window.app_handle());
             }
         })
         .build(tauri::generate_context!())

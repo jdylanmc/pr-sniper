@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
-import { mountAutomation } from "./automation";
+import { mountAutomation, type AutomationSnapshot } from "./automation";
+import type { PanelDetail } from "./panel";
+import { renderActions } from "./actions";
 import {
   renderFollowUps,
   type FollowUpCandidate,
@@ -10,6 +12,7 @@ import {
   renderQueue,
   type QueueItem,
   type NormalWork,
+  renderItemEvidence,
 } from "./queue";
 import { renderNotificationHistory } from "./notifications";
 
@@ -64,7 +67,7 @@ interface Job {
   waiting: string;
 }
 
-interface MonitoringSnapshot {
+export interface MonitoringSnapshot {
   mentions?: MentionRouting[];
   global_scan?: {
     schedule_key: string;
@@ -235,21 +238,36 @@ function waitingLabel(waiting: string) {
 export function renderMonitoring(
   root: HTMLElement,
   showError: (message: string) => void,
+  options: {
+    panel?: boolean;
+    navigate?: (detail: PanelDetail) => void;
+    onSnapshot?: (snapshot: MonitoringSnapshot) => void;
+    onAutomation?: (snapshot: AutomationSnapshot) => void;
+  } = {},
 ) {
-  root.innerHTML = `<div class="actions"><button id="check-now" type="button">Check Now</button><button id="queue-settings" type="button">Open Settings</button><button id="queue-diagnostics" type="button">Open Diagnostics</button></div>
+  root.innerHTML = `<div data-monitor-overview><div class="actions"><button id="check-now" type="button">Check Now</button><button id="queue-settings" type="button">Open Settings</button><button id="queue-diagnostics" type="button">Open Diagnostics</button></div>
     <section id="automation-controls"></section>
-    <h2>Your review inbox</h2><section id="handoff-queue"></section>
+    <h2>Your review inbox</h2><section id="handoff-queue"></section></div>
+    <div data-monitor-detail><section data-item-evidence></section>
     <h2 id="evidence-heading" tabindex="-1">Review evidence and actions</h2>
     <p>Monitoring and assigned reviews run while the ${trayAdjective} app is active. Copilot uses read-only tools. GitHub comments require a separate publication gate; machine sign-off is not approval.</p>
     <p class="hint">Saved review evidence is tied to the head shown. GitHub links open the live PR or current diff in your browser's signed-in account; check its current revision and requirements before deciding to merge.</p>
-    <h2>Agent reviews</h2><section id="agent-reviews"></section>
-    <h2>Thread follow-ups</h2><section id="thread-follow-ups"></section>
+    <h2 data-normal-heading>Agent reviews</h2><section id="agent-reviews"></section>
+    <h2 data-conversation-heading>Thread follow-ups</h2><section id="thread-follow-ups"></section></div>
+    <div data-monitor-recovery>
     <h2>Notifications</h2><section id="notification-history"></section>
     <h2>Schedule health</h2><section id="schedule-health"></section>
-    <h2>Detected pull requests</h2><section id="review-jobs"></section>`;
+    <h2>Detected pull requests</h2><section id="review-jobs"></section></div>`;
   const check = root.querySelector<HTMLButtonElement>("#check-now")!;
+  const recoveryRoot = root.querySelector<HTMLElement>(
+    "[data-monitor-recovery]",
+  )!;
+  const automationRoot = root.querySelector<HTMLElement>(
+    "#automation-controls",
+  )!;
   const refreshAutomation = mountAutomation(
-    root.querySelector<HTMLElement>("#automation-controls")!,
+    automationRoot,
+    options.onAutomation,
   );
   const health = root.querySelector<HTMLElement>("#schedule-health")!;
   const jobs = root.querySelector<HTMLElement>("#review-jobs")!;
@@ -261,6 +279,10 @@ export function renderMonitoring(
   let reviewsSignature = "";
   let loading = false;
   let snapshot: MonitoringSnapshot | undefined;
+  let panelDetail: PanelDetail | undefined;
+  let missingDetail: string | null = null;
+  let detailSignature = "";
+  let detailRevision = 0;
   let selection: QueueItem | null | undefined;
   const refreshNotifications = renderNotificationHistory(
     root.querySelector<HTMLElement>("#notification-history")!,
@@ -275,6 +297,11 @@ export function renderMonitoring(
     root.querySelector<HTMLElement>("#handoff-queue")!,
     showError,
     (item, focus) => {
+      if (options.panel) {
+        if (focus && item)
+          options.navigate?.({ type: "item", item_id: item.id });
+        return;
+      }
       selection = item;
       renderEvidence();
       if (focus) {
@@ -284,7 +311,12 @@ export function renderMonitoring(
       }
     },
     refresh,
+    { compact: options.panel, externalSelection: options.panel },
   );
+  if (options.panel) {
+    root.querySelector<HTMLElement>("[data-monitor-detail]")!.hidden = true;
+    root.querySelector<HTMLElement>("[data-monitor-recovery]")!.hidden = true;
+  }
   for (const [id, command] of [
     ["#queue-settings", "open_settings"],
     ["#queue-diagnostics", "open_diagnostics"],
@@ -302,7 +334,92 @@ export function renderMonitoring(
 
   function renderEvidence() {
     if (!snapshot) return;
-    if (selection === undefined) {
+    const current = snapshot;
+    let jobDetail: Extract<PanelDetail, { type: "job" }> | undefined;
+    if (options.panel) {
+      const target = panelDetail;
+      const detail = root.querySelector<HTMLElement>("[data-monitor-detail]")!;
+      root.querySelector<HTMLElement>("[data-monitor-overview]")!.hidden =
+        !!target;
+      detail.hidden = !target;
+      if (!target) return;
+      const job = target.type === "job" ? target : undefined;
+      jobDetail = job;
+      const item =
+        target.type === "item"
+          ? current.items?.find(
+              (i) =>
+                i.id === target.item_id || i.aliases?.includes(target.item_id),
+            )
+          : job?.kind === "normal"
+            ? current.items?.find((i) => i.review_keys.includes(job.id))
+            : job?.kind === "primary_final"
+              ? current.items?.find(
+                  (i) => i.action_status?.final_review?.id === job.id,
+                )
+              : current.items?.find(
+                  (i) =>
+                    i.follow_up_ids.includes(job?.id ?? "") &&
+                    current.follow_ups?.some(
+                      (f) =>
+                        f.run.id === job?.id &&
+                        (f.run.context?.job.head_sha ??
+                          f.run.review?.job.head_sha) === i.job.head_sha,
+                    ),
+                );
+      const found =
+        target.type === "item"
+          ? !!item
+          : job?.kind === "normal"
+            ? current.reviews?.some((r) => r.key === job.id)
+            : job?.kind === "primary_final"
+              ? !!item
+              : current.follow_ups?.some(
+                  (f) =>
+                    f.run.id === job?.id &&
+                    (f.run.target?.kind === "mention" ? "mention" : "reply") ===
+                      job?.kind,
+                ) ||
+                (job?.kind === "mention" &&
+                  current.mentions?.some((m) => m.work_id === job.id));
+      const evidence = root.querySelector<HTMLElement>("[data-item-evidence]")!;
+      if (!found || missingDetail) {
+        evidence.textContent =
+          missingDetail ??
+          "This exact saved PR iteration or job is unavailable. No other item was selected.";
+        evidence.setAttribute("role", "status");
+        reviews.replaceChildren();
+        followUps([]);
+        root
+          .querySelector<HTMLElement>("#thread-follow-ups")!
+          .replaceChildren();
+        root.querySelector<HTMLElement>("[data-normal-heading]")!.hidden = true;
+        root.querySelector<HTMLElement>("[data-conversation-heading]")!.hidden =
+          true;
+        detailSignature = "";
+        reviewsSignature = "";
+        return;
+      }
+      selection = item;
+      const next = JSON.stringify([target, item]);
+      if (next !== detailSignature) {
+        detailSignature = next;
+        evidence.replaceChildren();
+        evidence.removeAttribute("role");
+        if (item) {
+          const title = document.createElement("h2");
+          title.textContent = `${item.job.repository_name} #${item.job.number}: ${item.job.title}`;
+          const summary = document.createElement("p");
+          summary.textContent = item.summary;
+          evidence.append(title, summary);
+          if (target.type === "item")
+            renderItemEvidence(evidence, item, showError, refresh);
+          else if (jobDetail?.kind === "primary_final" && item.action_status)
+            renderActions(evidence, item.action_status, showError, refresh);
+        }
+      }
+    }
+    if (selection === undefined && !options.panel) {
       reviews.textContent =
         "Select an available queue item to inspect its saved evidence.";
       reviewsSignature = "";
@@ -311,33 +428,46 @@ export function renderMonitoring(
         "Select an available queue item to inspect its conversation.";
       return;
     }
-    const candidates = (snapshot.reviews ?? []).filter(
-      (r) => selection === null || !!selection?.review_keys.includes(r.key),
+    const candidates = (snapshot.reviews ?? []).filter((r) =>
+      jobDetail
+        ? jobDetail.kind === "normal" && r.key === jobDetail.id
+        : selection === null || !!selection?.review_keys.includes(r.key),
     );
-    const replies = (snapshot.follow_ups ?? []).filter(
-      (f) =>
-        selection === null || !!selection?.follow_up_ids.includes(f.run.id),
+    const replies = (snapshot.follow_ups ?? []).filter((f) =>
+      jobDetail
+        ? (jobDetail.kind === "reply" || jobDetail.kind === "mention") &&
+          f.run.id === jobDetail.id
+        : selection === null || !!selection?.follow_up_ids.includes(f.run.id),
     );
     const signature = JSON.stringify([
       candidates,
       snapshot.publications,
       snapshot.items,
+      panelDetail,
     ]);
     if (signature !== reviewsSignature) {
       renderReviews(candidates, snapshot.publications ?? []);
       reviewsSignature = signature;
     }
-    followUps(
-      replies,
-      snapshot.follow_ups ?? [],
-      (snapshot.mentions ?? []).filter(
-        (m) =>
-          selection === null ||
+    const mentions = (snapshot.mentions ?? []).filter((m) =>
+      jobDetail
+        ? jobDetail.kind === "mention" &&
+          (m.work_id === jobDetail.id || m.follow_up_id === jobDetail.id)
+        : selection === null ||
           (selection?.job.repository_name === m.binding.repository_name &&
             selection.job.account_id === m.binding.account_id &&
             selection.job.number === m.binding.number),
-      ),
     );
+    followUps(replies, snapshot.follow_ups ?? [], mentions);
+    if (options.panel) {
+      root.querySelector<HTMLElement>("[data-normal-heading]")!.hidden =
+        candidates.length === 0;
+      reviews.hidden = candidates.length === 0;
+      root.querySelector<HTMLElement>("[data-conversation-heading]")!.hidden =
+        replies.length === 0 && mentions.length === 0;
+      root.querySelector<HTMLElement>("#thread-follow-ups")!.hidden =
+        replies.length === 0 && mentions.length === 0;
+    }
   }
 
   async function act(candidate: ReviewCandidate, cancel: boolean) {
@@ -761,10 +891,27 @@ export function renderMonitoring(
   async function refresh() {
     if (loading || !root.isConnected) return;
     loading = true;
+    const requestedDetail = detailRevision;
     try {
       snapshot = await invoke<MonitoringSnapshot>("monitoring_snapshot");
+      if (requestedDetail === detailRevision) missingDetail = null;
+      options.onSnapshot?.(snapshot);
       void refreshAutomation();
-      if (snapshot.items) queue(snapshot.items);
+      if (snapshot.items)
+        queue(
+          options.panel
+            ? snapshot.items.filter(
+                (i) =>
+                  ![
+                    "closed",
+                    "merged",
+                    "stale",
+                    "stale_after_publication",
+                    "waiting_for_author",
+                  ].includes(i.state),
+              )
+            : snapshot.items,
+        );
       renderEvidence();
       health.replaceChildren();
       jobs.replaceChildren();
@@ -887,5 +1034,33 @@ export function renderMonitoring(
     if (!check.isConnected) window.clearInterval(timer);
     else void refresh();
   }, 5000);
+  return {
+    refresh,
+    detail: (
+      target: PanelDetail | undefined,
+      missing: string | null = null,
+    ) => {
+      detailRevision++;
+      panelDetail = target;
+      missingDetail = missing;
+      root.querySelector<HTMLElement>("[data-monitor-overview]")!.hidden =
+        !!target;
+      root.querySelector<HTMLElement>("[data-monitor-detail]")!.hidden =
+        !target;
+      if (target && !snapshot)
+        root.querySelector<HTMLElement>("[data-item-evidence]")!.textContent =
+          missing ?? "Loading this exact saved destination...";
+      renderEvidence();
+      void refresh();
+    },
+    automation: (destination: HTMLElement) => {
+      if (automationRoot.parentElement !== destination)
+        destination.prepend(automationRoot);
+    },
+    tools: (destination: HTMLElement) => {
+      recoveryRoot.hidden = false;
+      destination.append(recoveryRoot);
+    },
+  };
 }
 import { trayAdjective } from "./platform";

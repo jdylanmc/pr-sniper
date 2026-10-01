@@ -16,6 +16,8 @@ interface Entry {
 // lifecycle, nested-modal isolation and keyboard handling without requiring inert.
 export function createDialogs(root: HTMLElement, changed: () => void) {
   const stack: Entry[] = [];
+  const panelView = root.closest<HTMLElement>("[data-panel-view]");
+  let suspended = false;
   const top = () => stack[stack.length - 1];
   const controls = (modal: HTMLElement) =>
     [
@@ -36,22 +38,39 @@ export function createDialogs(root: HTMLElement, changed: () => void) {
     const entry = top();
     if (!entry) return;
     if (event.key === "Escape") {
+      if (panelView) return;
       event.preventDefault();
       event.stopPropagation();
       if (entry.modal.dataset.closeLocked !== "true") entry.modal.close();
     } else if (event.key === "Tab") {
-      const items = controls(entry.modal);
+      const shell = panelView?.closest(".panel-shell");
+      const shellControls = (selector: string) => {
+        const area = shell?.querySelector<HTMLElement>(selector);
+        return area ? controls(area) : [];
+      };
+      const items = panelView
+        ? [
+            ...shellControls(".panel-header"),
+            ...shellControls(".panel-tabs"),
+            ...controls(entry.modal),
+            ...shellControls(".panel-footer"),
+          ]
+        : controls(entry.modal);
       const index = items.indexOf(document.activeElement as HTMLElement);
       if (
+        panelView ||
         index < 0 ||
         (!event.shiftKey && index === items.length - 1) ||
         (event.shiftKey && index === 0)
       ) {
         event.preventDefault();
-        (event.shiftKey
-          ? (items[items.length - 1] ?? entry.modal)
-          : (items[0] ?? entry.modal)
-        ).focus();
+        const next =
+          panelView && index >= 0
+            ? (index + (event.shiftKey ? -1 : 1) + items.length) % items.length
+            : event.shiftKey
+              ? items.length - 1
+              : 0;
+        (items[next] ?? entry.modal).focus();
       }
     }
   }
@@ -60,7 +79,8 @@ export function createDialogs(root: HTMLElement, changed: () => void) {
     if (
       entry &&
       event.target instanceof Node &&
-      !entry.modal.contains(event.target)
+      !entry.modal.contains(event.target) &&
+      (!panelView || panelView.contains(event.target))
     )
       focusFirst(entry.modal);
   }
@@ -68,6 +88,13 @@ export function createDialogs(root: HTMLElement, changed: () => void) {
     const entry = top();
     if (
       entry &&
+      !(
+        panelView &&
+        event.target instanceof Element &&
+        event.target.closest(
+          "[data-panel-navigation],.panel-header,.panel-footer",
+        )
+      ) &&
       event.target instanceof Node &&
       !entry.modal.contains(event.target)
     ) {
@@ -116,6 +143,10 @@ export function createDialogs(root: HTMLElement, changed: () => void) {
     else if (top()) focusFirst(top().modal);
     return true;
   }
+  panelView?.addEventListener("pr-sniper:section-active", (event) => {
+    suspended = !(event as CustomEvent<boolean>).detail;
+    if (stack.length) listen(!suspended);
+  });
   return {
     hasOpen: () => stack.length > 0,
     closeAll: () => {
@@ -124,6 +155,7 @@ export function createDialogs(root: HTMLElement, changed: () => void) {
     show(modal: HTMLDialogElement) {
       changed();
       const native =
+        !panelView &&
         typeof modal.showModal === "function" &&
         typeof modal.close === "function";
       const host = native ? modal : document.createElement("div");
@@ -140,7 +172,7 @@ export function createDialogs(root: HTMLElement, changed: () => void) {
         nativeClose: native ? modal.close.bind(modal) : null,
       };
       modal.setAttribute("role", "dialog");
-      modal.setAttribute("aria-modal", "true");
+      modal.setAttribute("aria-modal", panelView ? "false" : "true");
       modal.tabIndex = -1;
       modal.close = () => close(entry);
       modal.addEventListener("cancel", (event) => {
@@ -151,7 +183,7 @@ export function createDialogs(root: HTMLElement, changed: () => void) {
       modal.addEventListener("change", changed);
       root.append(host);
       stack.push(entry);
-      listen(true);
+      if (!suspended) listen(true);
       if (native) modal.showModal();
       else {
         modal.open = true;
@@ -172,6 +204,7 @@ export function createDialogs(root: HTMLElement, changed: () => void) {
           if ("inert" in sibling) sibling.setAttribute("inert", "");
         }
         if (parent === document.body) break;
+        if (parent === panelView) break;
         branch = parent;
       }
     },

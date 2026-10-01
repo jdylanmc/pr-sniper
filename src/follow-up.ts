@@ -27,6 +27,7 @@ interface ConversationThread {
   comments: { id: string; body: string; author_login: string | null }[];
 }
 export interface MentionRouting {
+  work_id: string;
   binding: { repository_name: string; number: number; account_id: string };
   comment: { id: string; body: string };
   blocked: string | null;

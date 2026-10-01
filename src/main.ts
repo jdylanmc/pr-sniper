@@ -3,6 +3,7 @@ import crosshair from "./crosshair.svg";
 import "./style.css";
 import { renderMonitoring } from "./monitoring";
 import { mountSettings } from "./settings";
+import { mountPanel } from "./panel";
 import { isWindows, trayAdjective, trayLocation } from "./platform";
 
 interface Snapshot {
@@ -21,7 +22,7 @@ interface Diagnostic {
 }
 
 const app = document.querySelector<HTMLElement>("#app")!;
-const view = new URLSearchParams(location.search).get("view") ?? "status";
+const view = new URLSearchParams(location.search).get("view") ?? "panel";
 const titles: Record<string, string> = {
   queue: "Review Queue",
   settings: "Settings",
@@ -87,10 +88,11 @@ async function load() {
   }
 }
 
-if (view === "settings") void mountSettings(app);
+if (view === "panel") void mountPanel(app);
+else if (view === "settings") void mountSettings(app);
 else if (view === "queue") void load();
 else void load();
 window.addEventListener("focus", () => {
-  if (view === "settings" || view === "queue") return;
+  if (view === "panel" || view === "settings" || view === "queue") return;
   void load();
 });

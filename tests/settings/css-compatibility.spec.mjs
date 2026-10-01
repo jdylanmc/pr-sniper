@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { test, expect } from "./fixtures.mjs";
 import { saveChanges, seedAgent } from "./navigation.mjs";
 
-test("FR1 normal production CSS retains all five legacy viewport fallbacks", async () => {
+test("production CSS retains all five Settings and three panel viewport fallbacks", async () => {
   const html = await readFile(
     new URL("../../dist/index.html", import.meta.url),
     "utf8",
@@ -22,6 +22,9 @@ test("FR1 normal production CSS retains all five legacy viewport fallbacks", asy
     [".dialog-body", "max-height", "70vh"],
     [".settings-window", "height", "calc(100vh - 32px)"],
     [".settings-window", "height", "calc(100vh - 20px)"],
+    [".panel-shell", "height", "100vh"],
+    [".panel-shell .dialog-body", "max-height", "calc(100vh - 230px)"],
+    [".panel-shell .dialog-body", "max-height", "calc(100vh - 180px)"],
   ];
   const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)];
   const retainedPairs = pairs.map(([selector, property, value]) =>
@@ -99,7 +102,7 @@ for (const viewport of [
       .getByRole("article", { name: "octo/legacy-viewport", exact: true })
       .getByRole("button", { name: "Settings", exact: true });
     await opener.click();
-    expect(unsupportedDeclarations).toBe(5);
+    expect(unsupportedDeclarations).toBe(8);
     const modal = page.getByRole("dialog", {
       name: "Settings for octo/legacy-viewport",
       exact: true,

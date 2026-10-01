@@ -321,7 +321,7 @@ pub(crate) fn test_notification(
     Ok(id)
 }
 
-pub(crate) fn open(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
+pub(crate) async fn open(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
     let host = app
         .try_state::<Host>()
         .ok_or("Notification host is not ready; no alternative destination was opened.")?;
@@ -334,8 +334,8 @@ pub(crate) fn open(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
     };
     let now = now_seconds()?;
     let outcome = match destination {
-        Destination::QueueItem { item_id } => crate::open_queue_item(app.clone(), item_id),
-        Destination::Settings => crate::open_settings(app.clone()),
+        Destination::QueueItem { item_id } => crate::open_queue_item(app.clone(), item_id).await,
+        Destination::Settings => crate::open_settings(app.clone()).await,
     };
     {
         let store = host
@@ -369,6 +369,6 @@ pub(crate) fn open(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub(crate) fn open_notification(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    open(&app, &id)
+pub(crate) async fn open_notification(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    open(&app, &id).await
 }

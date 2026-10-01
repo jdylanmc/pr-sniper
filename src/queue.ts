@@ -106,6 +106,7 @@ export function renderQueue(
   showError: (message: string) => void,
   select: (item: QueueItem | null | undefined, focus: boolean) => void,
   refresh: () => Promise<void>,
+  options: { compact?: boolean; externalSelection?: boolean } = {},
 ) {
   const fromUrl = () => new URLSearchParams(location.hash.slice(1)).get("item");
   let selected: string | null | undefined = fromUrl();
@@ -130,39 +131,54 @@ export function renderQueue(
     });
   }
 
-  void invoke<string | null>("queue_selection")
-    .then((stored) => {
-      if (selectionRevision) return;
-      selected = fromUrl() ?? stored;
-      initialized = true;
-      select(selected === null ? null : undefined, false);
-      if (fromUrl() !== null) persist(selected);
-      draw(false);
-    })
-    .catch(() => {
-      if (selectionRevision) return;
-      initialized = true;
-      selected = fromUrl() ?? undefined;
-      showError(
-        "Could not restore the queue destination. Select an item explicitly; no substitute was selected.",
-      );
-      select(undefined, false);
-      draw(false);
-    });
+  if (options.externalSelection) {
+    selected = null;
+    initialized = true;
+  } else
+    void invoke<string | null>("queue_selection")
+      .then((stored) => {
+        if (selectionRevision) return;
+        selected = fromUrl() ?? stored;
+        initialized = true;
+        select(selected === null ? null : undefined, false);
+        if (fromUrl() !== null) persist(selected);
+        draw(false);
+      })
+      .catch(() => {
+        if (selectionRevision) return;
+        initialized = true;
+        selected = fromUrl() ?? undefined;
+        showError(
+          "Could not restore the queue destination. Select an item explicitly; no substitute was selected.",
+        );
+        select(undefined, false);
+        draw(false);
+      });
 
   function choose(id: string | null, focus: boolean) {
     selectionRevision++;
     initialized = true;
     selected = id;
-    persist(id);
-    const url = new URL(location.href);
-    url.hash = id ? new URLSearchParams({ item: id }).toString() : "";
-    history.replaceState(null, "", url);
+    if (!options.externalSelection) {
+      persist(id);
+      const url = new URL(location.href);
+      url.hash = id ? new URLSearchParams({ item: id }).toString() : "";
+      history.replaceState(null, "", url);
+    }
     draw(focus);
   }
 
   function draw(focus: boolean) {
     if (!loaded) return;
+    const active =
+      document.activeElement instanceof HTMLElement &&
+      root.contains(document.activeElement)
+        ? document.activeElement
+        : null;
+    const focusedItem =
+      active?.closest<HTMLElement>("[data-item-id]")?.dataset.itemId;
+    const focusedLabel =
+      active instanceof HTMLButtonElement ? active.textContent : null;
     signature = JSON.stringify([items, selected]);
     const matches = (item: QueueItem) =>
       item.id === selected || !!item.aliases?.includes(selected ?? "");
@@ -181,6 +197,7 @@ export function renderQueue(
     for (const item of items) {
       const row = document.createElement("article");
       row.className = "queue-item";
+      row.dataset.itemId = item.id;
       row.dataset.state = item.state;
       row.dataset.selected = String(matches(item));
       row.setAttribute(
@@ -202,22 +219,7 @@ export function renderQueue(
       const summary = document.createElement("p");
       summary.textContent = item.summary;
       row.append(state, heading, context, summary);
-      if (item.action_status)
-        renderActions(row, item.action_status, showError, refresh);
-      if (item.feedback?.length) {
-        const details = document.createElement("details");
-        const title = document.createElement("summary");
-        title.textContent = `Current owned feedback (${item.feedback.length})`;
-        details.append(title);
-        for (const feedback of item.feedback) {
-          const entry = document.createElement("p");
-          entry.textContent = `${feedback.state.replaceAll("_", " ")}: ${feedback.context.title || feedback.context.root_id}. Owner ${feedback.context.owner_agent_id}; original head ${feedback.context.original_head}. ${feedback.reason ?? ""}${feedback.state === "cleared" ? " Agent reassessment, not provider thread closure." : ""}`;
-          const body = document.createElement("pre");
-          body.textContent = feedback.context.body;
-          details.append(entry, body);
-        }
-        row.append(details);
-      }
+      if (!options.compact) renderItemEvidence(row, item, showError, refresh);
       for (const warning of item.warnings) {
         const text = document.createElement("p");
         text.className = "review-failure";
@@ -243,7 +245,7 @@ export function renderQueue(
       row.append(actions);
       root.append(row);
     }
-    if (initialized && selected !== null) {
+    if (initialized && selected !== null && !options.externalSelection) {
       const navigation = document.createElement("p");
       navigation.setAttribute("role", "status");
       navigation.textContent = items.some(matches)
@@ -259,14 +261,53 @@ export function renderQueue(
       !initialized ? undefined : selected === null ? null : items.find(matches),
       focus,
     );
+    if (!focus && focusedItem && focusedLabel && !root.closest("[hidden]")) {
+      const row = [
+        ...root.querySelectorAll<HTMLElement>("[data-item-id]"),
+      ].find((row) => row.dataset.itemId === focusedItem);
+      [...(row?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
+        .find((button) => button.textContent === focusedLabel)
+        ?.focus({ preventScroll: true });
+    }
   }
 
   window.addEventListener("hashchange", () => {
-    if (root.isConnected) choose(fromUrl(), true);
+    if (root.isConnected && !options.externalSelection) choose(fromUrl(), true);
   });
-  return (next: QueueItem[]) => {
+  const update = (next: QueueItem[]) => {
     items = next;
     loaded = true;
     if (JSON.stringify([items, selected]) !== signature) draw(false);
   };
+  return Object.assign(update, {
+    select: (id: string | null) => {
+      selected = id;
+      initialized = true;
+      draw(false);
+    },
+  });
+}
+
+export function renderItemEvidence(
+  root: HTMLElement,
+  item: QueueItem,
+  showError: (value: string) => void,
+  refresh: () => Promise<void>,
+) {
+  if (item.action_status)
+    renderActions(root, item.action_status, showError, refresh);
+  if (item.feedback?.length) {
+    const details = document.createElement("details");
+    const title = document.createElement("summary");
+    title.textContent = `Current owned feedback (${item.feedback.length})`;
+    details.append(title);
+    for (const feedback of item.feedback) {
+      const entry = document.createElement("p");
+      entry.textContent = `${feedback.state.replaceAll("_", " ")}: ${feedback.context.title || feedback.context.root_id}. Owner ${feedback.context.owner_agent_id}; original head ${feedback.context.original_head}. ${feedback.reason ?? ""}${feedback.state === "cleared" ? " Agent reassessment, not provider thread closure." : ""}`;
+      const body = document.createElement("pre");
+      body.textContent = feedback.context.body;
+      details.append(entry, body);
+    }
+    root.append(details);
+  }
 }

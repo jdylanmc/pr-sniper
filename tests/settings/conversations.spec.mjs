@@ -122,6 +122,82 @@ function reply(fixture, head = "a".repeat(40)) {
   };
 }
 
+test("panel exact reply route retains provenance and never substitutes a normal or mention job", async ({
+  page,
+  store,
+}) => {
+  const fixture = await feedbackFixture(store);
+  const run = reply(fixture);
+  fixture.state.follow_ups = [run];
+  await store("seed_queue_state", fixture.state);
+  await store("panel_navigate", {
+    route: {
+      tab: "running",
+      detail: { type: "job", kind: "reply", id: run.id },
+    },
+  });
+  await page.goto("/");
+  await expect(page.locator("#thread-follow-ups article")).toHaveCount(1);
+  await expect(page.locator("#thread-follow-ups")).toContainText("Wrong value");
+  await expect(page.locator("#agent-reviews article")).toHaveCount(0);
+  await page.evaluate(
+    (id) =>
+      window.__TAURI_INTERNALS__.invoke("panel_navigate", {
+        route: { tab: "running", detail: { type: "job", kind: "mention", id } },
+      }),
+    run.id,
+  );
+  await expect(page.locator("[data-item-evidence]")).toContainText(
+    "No other PR",
+  );
+  await expect(page.locator("#thread-follow-ups article")).toHaveCount(0);
+  expect(
+    (await store("monitoring_snapshot")).follow_ups[0].run.analysis,
+  ).toBeNull();
+});
+
+test("panel exact primary mention route shows its captured comment without authorizing work", async ({
+  page,
+  store,
+}) => {
+  const fixture = await feedbackFixture(store);
+  const run = reply(fixture);
+  run.id = "mention-exact";
+  run.key = "mention-comment-501";
+  run.trigger_id = "501";
+  run.target = {
+    kind: "mention",
+    comment: {
+      id: "501",
+      body: "@local-operator explain <script>window.injected=true</script>",
+      author_id: "11",
+      author_login: "pr-author",
+      created_at: "2026-09-30T00:01:00Z",
+      updated_at: "2026-09-30T00:01:00Z",
+    },
+  };
+  fixture.state.follow_ups = [run, reply(fixture)];
+  await store("seed_queue_state", fixture.state);
+  await store("panel_navigate", {
+    route: {
+      tab: "running",
+      detail: { type: "job", kind: "mention", id: run.id },
+    },
+  });
+  await page.goto("/");
+  await expect(page.locator("#thread-follow-ups article")).toHaveCount(1);
+  await expect(page.locator("#thread-follow-ups")).toContainText(
+    "@local-operator explain",
+  );
+  await expect(page.locator("#thread-follow-ups script")).toHaveCount(0);
+  await expect(page.locator("#agent-reviews article")).toHaveCount(0);
+  expect(
+    (await store("monitoring_snapshot")).follow_ups.every(
+      (f) => f.run.analysis === null,
+    ),
+  ).toBe(true);
+});
+
 test("owned conversation exposes original provenance separately from current iteration analysis", async ({
   page,
   store,
@@ -296,6 +372,24 @@ test("a missing primary is explicit, durable and does not create a fake review o
   await expect(page.locator("#thread-follow-ups")).toContainText(
     "without fallback",
   );
+  await page.goto("/");
+  await page
+    .getByRole("navigation", { name: "Application destinations" })
+    .getByRole("button", { name: "Running", exact: true })
+    .click();
+  await page
+    .locator("[data-running-list] article")
+    .filter({ hasText: "Primary mention" })
+    .getByRole("button", { name: "Open job", exact: true })
+    .click();
+  await expect(page.locator("[data-item-evidence]")).not.toContainText(
+    "not available",
+  );
+  await expect(page.locator("#thread-follow-ups")).toContainText(
+    "No primary assigned",
+  );
+  await expect(page.locator("#agent-reviews article")).toHaveCount(0);
+  expect((await store("monitoring_snapshot")).follow_ups).toHaveLength(0);
 });
 
 test("completed second publication permits closure and explicit same-head reassessment without rewriting the archive", async ({
