@@ -51,8 +51,12 @@ jobs:
           cache-bin: "false"
           cache-targets: "false"
           cache-directories: |
-            src-tauri\target\debug
-            src-tauri\target\release
+            src-tauri\target\debug\.fingerprint
+            src-tauri\target\debug\build
+            src-tauri\target\debug\deps
+            src-tauri\target\release\.fingerprint
+            src-tauri\target\release\build
+            src-tauri\target\release\deps
           cache-workspace-crates: "false"
           cache-on-failure: "false"
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
