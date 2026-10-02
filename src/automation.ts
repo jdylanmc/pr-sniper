@@ -24,7 +24,7 @@ export function mountAutomation(
     onError?: (message: string) => void;
     view?: {
       pending?: boolean;
-      error?: string;
+      actionError?: string;
       refresh?: () => Promise<void>;
     };
   } = {},
@@ -53,13 +53,13 @@ export function mountAutomation(
   let revision = 0;
   async function refresh() {
     if (view.pending || !root.isConnected) return;
-    error.textContent = view.error ?? "";
-    error.hidden = !view.error;
     const request = ++revision;
     try {
       const next = await invoke<AutomationSnapshot>("automation_snapshot");
       if (!root.isConnected || view.pending || request !== revision) return;
       state = next;
+      error.textContent = view.actionError ?? "";
+      error.hidden = !error.textContent;
       onSnapshot?.(next);
       status.textContent = `${next.paused ? "Paused" : "Running"}; ${next.active} occupied / ${next.capacity} AI slots (${next.stopping} stopping); ${next.waiting} waiting; ${next.blocked} blocked.`;
       const label = next.paused ? "Resume automation" : "Pause automation";
@@ -93,11 +93,13 @@ export function mountAutomation(
       }
       status.textContent =
         "Automation state unavailable; occupancy is unknown.";
-      error.textContent =
+      const message =
         typeof cause === "string" ? cause : "Cannot read automation state.";
-      view.error = error.textContent;
+      error.textContent = [view.actionError, message]
+        .filter(Boolean)
+        .join("\n");
       error.hidden = false;
-      options.onError?.(error.textContent);
+      options.onError?.(message);
     }
   }
   button.onclick = async () => {
@@ -106,7 +108,7 @@ export function mountAutomation(
     revision++;
     button.disabled = true;
     error.hidden = true;
-    view.error = undefined;
+    view.actionError = undefined;
     try {
       await invoke("set_automation_paused", { paused: !state.paused });
     } catch (cause) {
@@ -114,7 +116,7 @@ export function mountAutomation(
         typeof cause === "string"
           ? cause
           : "Automation change failed; inspect the current saved state.";
-      view.error = error.textContent;
+      view.actionError = error.textContent;
       error.hidden = false;
       options.onError?.(error.textContent);
     } finally {
@@ -123,8 +125,8 @@ export function mountAutomation(
     }
   };
   view.refresh = refresh;
-  error.textContent = view.error ?? "";
-  error.hidden = !view.error;
+  error.textContent = view.actionError ?? "";
+  error.hidden = !view.actionError;
   if (view.pending)
     status.textContent =
       "Automation change pending; the saved pause state is not yet confirmed.";
