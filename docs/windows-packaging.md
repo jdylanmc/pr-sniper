@@ -10,11 +10,13 @@ and explicitly deferred by the owner.
 
 ## Delivery status
 
-**Status as of 2026-10-01:** Windows work is parked. GitHub's **Windows native
-application** workflow is manually disabled, including its `windows` and
-`windows-installer-acceptance` jobs. The workflow YAML and implementation remain
-in source; this is a repository setting, not a code removal. macOS CI and signed
-macOS release workflows remain enabled.
+**Status as of 2026-10-01:** The Windows app and private packaging are delivered;
+public distribution remains deferred. The **Windows native application** workflow
+was temporarily disabled to unblock macOS work, not because the code was removed.
+Its hardened configuration retains both `windows` and
+`windows-installer-acceptance` jobs. The operational enable/disable switch lives
+in GitHub; verify its current state rather than inferring it from the YAML.
+macOS CI and signed macOS release workflows are independent and unchanged.
 
 The completed delivery is anchored to merged commit
 `513c1a3f5746450dfc3022a988634577901ed97e`:
@@ -30,10 +32,43 @@ The completed delivery is anchored to merged commit
   restored; hosted process readiness alone is not interactive GUI proof.
 
 These receipts establish acceptance for that delivery snapshot, not every later
-`main` commit. When Windows work resumes, re-enable the workflow and obtain fresh
-exact-commit evidence. Public Windows release preflight still requires a green
-Windows **main-push** run; the pause does not waive that gate or justify reusing
-an older pass for a newer release.
+`main` commit. Public Windows release preflight still requires a green Windows
+**main-push** run; an operational pause does not waive that gate or justify
+reusing an older pass for a newer release.
+
+### CI execution and troubleshooting
+
+The workflow runs all checks on pull requests and `main` pushes, and accepts
+manual `workflow_dispatch` runs. Superseded runs of the same PR are cancelled;
+`main` runs are not automatically cancelled, preserving exact-commit release
+evidence. Queue time is separate from execution time and is not a test hang.
+
+The pinned Rust cache action restores compiler/lockfile-keyed dependencies.
+Only successful `main` pushes save caches; PRs and manual runs only restore.
+Workspace crates are rebuilt, and only Cargo's debug/release dependency profiles
+and registry/git dependencies are cached. Installer artifacts, extracted payloads,
+upgrade-fixture directories and acceptance profiles are outside the cache paths.
+A cache miss still runs the full cold build and every check; it is not a bypass.
+
+The build job retains a 60-minute limit and installer acceptance a 15-minute
+limit, with shorter timeouts on individual command steps. Every actual Chocolatey
+test command prints a start message, expectation and elapsed-time result.
+Deliberate faults are labelled as expected nonzero exits; their raw output is
+retained in separate `choco-*.log` files in the installer diagnostics artifact.
+An unexpected zero/nonzero exit prints the log tail and fails the check.
+Expected failure is not enough to pass: the existing independent ownership,
+preservation and recovery assertions still run.
+
+To resume after an intentional operational pause:
+
+```powershell
+gh workflow enable windows.yml --repo jdylanmc/pr-sniper
+gh workflow run windows.yml --repo jdylanmc/pr-sniper --ref main
+```
+
+Confirm the actual run conclusion before claiming Windows is healthy. A manual
+run is useful for diagnostics but does not replace the required `main`-push
+release evidence.
 
 ## Installer contract
 
@@ -387,7 +422,9 @@ An explicitly requested but unusable diagnostic destination fails before mutatio
 
 The separate `pr-sniper-windows-installer-diagnostics-COMMIT` artifact uploads
 even when acceptance fails; it contains only these traces and source/hash/failure
-context. The failure path also prints its own native traces into the job log,
+context, plus the bounded test commands' raw `choco-*.log` output. These are
+per-command fixture logs, not Chocolatey's global log. The failure path also
+prints its own native traces into the job log,
 without replacing the original failure if collection fails. No complete Chocolatey
 log, application profile, credential data or whole target directory is uploaded.
 Missing traces are not success: the process may have failed before trace setup.
@@ -426,8 +463,7 @@ notification delivery. The real later-release upgrade and public-feed install
 remain separate. Each new candidate needs its own green hosted run; build/helper
 checks or an older run do not establish CI acceptance. The
 [recorded delivery](#delivery-status) has both successful
-hosted lifecycle acceptance and separate local interactive proof; the workflow
-is currently paused.
+hosted lifecycle acceptance and separate local interactive proof.
 
 Hosted fault fixtures lock only the owned uninstaller/shortcut, deny writes on
 only the owned installer key and exercise test-only injected failures after file
