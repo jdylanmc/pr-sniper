@@ -240,6 +240,7 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       "npm ci",
       "npm run build",
       "npm run test:release:windows",
+      "npm run test:regression",
       "npm run test:packaging:windows",
       "rustup show active-toolchain",
       "npm run format:check",
