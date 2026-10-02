@@ -17,12 +17,27 @@ confirmation and cancellation, while delayed reads cannot revive cancelled
 sign-in or steal newer focus. Screenshots use each test's output directory at
 408x744 and 408x500. The account geometry matrix additionally crosses widths
 320, 400 and 408 with heights 300, 400, 439, 440, 441, 460, 499, 500, 501 and 744. Both providers' saved-account actions, requesting, device waiting,
-confirmation and failure/retry states use Tab and Shift+Tab navigation, including
-opening and closing consent with Enter. Every focused control must fit completely
-inside the actual scroll viewport and its clipping ancestors, retain a visible
-focus outline and avoid horizontal clipping. Geometry JSON and forward/reverse
-screenshots are retained per test; native command and saved-resource assertions
-remain unchanged.
+confirmation and failure/retry states use real sequential keyboard navigation,
+including opening and closing consent with Enter. On a native macOS host,
+Playwright WebKit uses Option+Tab / Option+Shift+Tab to include buttons; other
+browser/host combinations retain Tab / Shift+Tab. The local helper checks
+`browserName` and Node's `process.platform`, not the deliberately spoofed user
+agents used for consent wording. A neutral HTML test checks buttons and a summary
+in both directions using the same selected chords. No host keyboard preference
+is changed, and no per-control focus replaces sequential traversal.
+
+All 30 dimensions and 4,200 geometry observations remain: every focused control
+must fit completely inside the actual scroll viewport and its clipping ancestors,
+retain a visible solid 3px focus outline and avoid horizontal clipping. Geometry
+JSON is retained for every dimension, including observations collected before an
+assertion failure. Routine matrix screenshots cover 320x300 (smallest viewport),
+408x441 (just above the outer chrome breakpoint) and 408x744 (full-height panel):
+22 forward/reverse and confirmation-focus captures each, 66 rather than 660.
+Every failed test still captures a failure screenshot, including dimensions
+outside that representative set. Existing compact-flow screenshots, native
+command/effect checks and persisted-settings assertions remain unchanged.
+Screenshot reduction is not proof of a hosted timing budget; complete hosted
+gates remain required.
 
 The account-scoped `:has(.account-connection)` chrome stays compact through 500px,
 independently of the outer panel's 440px treatment. The 439/440/441 and 499/500/501

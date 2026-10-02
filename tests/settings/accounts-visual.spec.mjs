@@ -2,9 +2,60 @@ import { test, expect } from "./fixtures.mjs";
 import { section } from "./navigation.mjs";
 import { writeFile } from "node:fs/promises";
 
+const geometryObservations = new WeakMap();
+
 test.afterEach(async ({ page }, testInfo) => {
-  if (testInfo.status !== testInfo.expectedStatus)
-    await page.screenshot({ path: testInfo.outputPath("failed-attempt.png") });
+  try {
+    if (testInfo.status !== testInfo.expectedStatus)
+      await page.screenshot({
+        path: testInfo.outputPath("failed-attempt.png"),
+      });
+  } finally {
+    const observations = geometryObservations.get(testInfo);
+    if (observations)
+      await writeFile(
+        testInfo.outputPath("geometry.json"),
+        JSON.stringify(observations, null, 2) + "\n",
+      );
+  }
+});
+
+function accountTabKey(browserName, direction) {
+  // Native WebKit keyboard mode is independent of spoofed consent user agents.
+  return browserName === "webkit" && process.platform === "darwin"
+    ? `Alt+${direction}`
+    : direction;
+}
+
+test("account keyboard mode traverses neutral buttons and summary in both directions", async ({
+  page,
+  browserName,
+}) => {
+  await page.setContent(`
+    <input aria-label="Start">
+    <button>First</button>
+    <details><summary>Consent</summary>Neutral consent text</details>
+    <button>Last</button>
+    <input aria-label="End">
+  `);
+  const controls = [
+    page.getByRole("textbox", { name: "Start", exact: true }),
+    page.getByRole("button", { name: "First", exact: true }),
+    page.locator("summary"),
+    page.getByRole("button", { name: "Last", exact: true }),
+    page.getByRole("textbox", { name: "End", exact: true }),
+  ];
+  await controls[0].focus();
+  for (const direction of ["Tab", "Shift+Tab"]) {
+    const ordered =
+      direction === "Tab"
+        ? controls.slice(1)
+        : controls.slice(0, -1).toReversed();
+    for (const control of ordered) {
+      await page.keyboard.press(accountTabKey(browserName, direction));
+      await expect(control).toBeFocused();
+    }
+  }
 });
 
 // Synthetic auth transport using the native GithubAuthView / copilot_view shapes.
@@ -712,10 +763,16 @@ for (const [provider, role] of Object.entries(roles)) {
 
 for (const width of [320, 400, 408]) {
   for (const height of [300, 400, 439, 440, 441, 460, 499, 500, 501, 744]) {
+    const capture =
+      (width === 320 && height === 300) ||
+      (width === 408 && [441, 744].includes(height));
     test(`all compact account controls fit the scroll viewport at ${width}x${height}`, async ({
       page,
       store,
+      browserName,
     }, testInfo) => {
+      const observations = [];
+      geometryObservations.set(testInfo, observations);
       await page.setViewportSize({ width, height });
       await page.emulateMedia({ reducedMotion: "reduce" });
       const fixture = await syntheticAuth(page);
@@ -726,7 +783,6 @@ for (const width of [320, 400, 408]) {
       await section(page, "Integrations");
       await page.evaluate(() => window.__settingsIdle());
       const before = (await store("snapshot")).settings;
-      const observations = [];
       for (const [provider, role] of Object.entries(roles)) {
         const accounts = [
           identity(provider, "202"),
@@ -750,7 +806,7 @@ for (const width of [320, 400, 408]) {
           const tabStops = await page
             .locator("button, input, select, textarea, summary, a[href]")
             .count();
-          // Bootstrap at navigation, then reach every account control by Tab.
+          // Bootstrap once, then use the host/browser's full-control Tab mode.
           await navigation.focus();
           for (const direction of ["Tab", "Shift+Tab"]) {
             const ordered =
@@ -763,7 +819,9 @@ for (const width of [320, 400, 408]) {
                   )
                 )
                   break;
-                await page.keyboard.press(direction);
+                await page.keyboard.press(
+                  accountTabKey(browserName, direction),
+                );
               }
               await expect(control).toBeFocused();
               const bounds = await control.evaluate((element) => {
@@ -852,26 +910,27 @@ for (const width of [320, 400, 408]) {
                     "",
                   );
               }
-              if (direction === "Tab" && bounds.label === role.confirmLabel)
+              if (
+                capture &&
+                direction === "Tab" &&
+                bounds.label === role.confirmLabel
+              )
                 await page.screenshot({
                   path: testInfo.outputPath(
                     `${provider}-confirmation-focused.png`,
                   ),
                 });
             }
-            await page.screenshot({
-              path: testInfo.outputPath(
-                `${provider}-${state}-${direction === "Tab" ? "forward" : "reverse"}.png`,
-              ),
-            });
+            if (capture)
+              await page.screenshot({
+                path: testInfo.outputPath(
+                  `${provider}-${state}-${direction === "Tab" ? "forward" : "reverse"}.png`,
+                ),
+              });
           }
           expect(fixture.states[provider].accounts).toEqual(accounts);
         }
       }
-      await writeFile(
-        testInfo.outputPath("geometry.json"),
-        JSON.stringify(observations, null, 2) + "\n",
-      );
       expect(effects(fixture.calls)).toEqual([]);
       expect((await store("snapshot")).settings).toEqual(before);
       expect(
