@@ -1057,7 +1057,7 @@ export async function mountSettings(
       .filter((m) => !m.available)
       .map(
         (m) =>
-          `<div class="integration-card" data-disabled="true"><strong>Direct ${escape(m.label)}</strong><p>Coming soon.</p></div>`,
+          `<button type="button" class="integration-card" data-disabled="true" disabled aria-disabled="true"><strong>Direct ${escape(m.label)}</strong><span>Coming soon</span></button>`,
       )
       .join("")}</div></div>
       <div class="integration-group"><h2>Git repositories</h2><div class="github-auth"></div><div class="folder-card"><div class="folder-symbol">${icon("folder")}</div><div><strong>${escape(draft.root_folder ?? "Choose your repository folder")}</strong><p>${discovery ? `${discovery.repositories.length} local repositories discovered` : "Only a folder you choose is scanned."}</p></div><button id="choose-folder">Choose folder...</button></div>
@@ -2280,10 +2280,19 @@ export async function mountSettings(
         );
         return;
       }
+      const retainAccounts =
+        section === "integrations" &&
+        content.querySelector(".account-connection") !== null &&
+        sameResource(saved, state.settings);
       saved = clone(state.settings);
       draft = clone(saved);
       conflict = false;
       if (state.error) showError(state.error);
+      if (retainAccounts) {
+        changed();
+        window.dispatchEvent(new Event("pr-sniper:refresh-provider-accounts"));
+        return;
+      }
       render();
     } catch {
       if (
