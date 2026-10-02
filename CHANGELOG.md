@@ -7,6 +7,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- Match the approved compact Agent and doctrine libraries with shared-resource
+  editors, full prompt/principles, explicit account/model choices, filter-retained
+  doctrine selections and visible shared-use/deletion consequences. Save applies
+  only the resource; Back/Cancel preserves earlier saves and unrelated drafts.
 - Harden Windows CI with main-owned Rust dependency caching, superseded-PR
   cancellation, bounded command steps and labelled Chocolatey fault logs while
   retaining all native, installer and recovery checks.
