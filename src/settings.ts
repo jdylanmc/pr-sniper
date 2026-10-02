@@ -1432,7 +1432,7 @@ export async function mountSettings(
         </section><section class="repository-group" data-global-schedule><h2>Saved global schedule</h2><p>${schedule.kind === "cron" ? `<code>${escape(schedule.expression)}</code>` : `Every ${schedule.minutes} minutes (saved legacy schedule)`} / ${escape(schedule.timezone)}</p><p class="settings-hint">One schedule scans enabled repositories. Change it in Preferences; repository and Agent assignments have no separate polling controls.</p></section>
         <details class="repository-group"><summary>Repository and connection</summary><div class="settings-actions"><button id="rename-repository">Edit repository</button><button data-unbind-repository ${repository.provider_account_id ? "" : "disabled"}>Unbind account</button><button id="remove-repository">Remove repository</button></div><div class="connection"></div></details>
         <p class="settings-hint">Save applies only this repository. Back retains its draft for this session; Cancel discards it. Earlier assignment saves stay applied.</p>
-        <p role="alert" data-resource-error hidden></p><div class="resource-actions"><button class="primary" data-save-repository>Save repository</button><button data-cancel-repository>Cancel repository changes</button></div>`,
+        <p role="alert" data-resource-error hidden></p><div class="resource-actions"><button class="primary" data-save-repository>Save repository</button><button data-cancel-repository aria-label="Cancel repository changes">Cancel</button></div>`,
       opener,
     );
     compactEditor(

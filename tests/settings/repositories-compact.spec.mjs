@@ -1085,6 +1085,11 @@ test("verified watched people, draft cancellation and keyboard controls remain u
   await expect(
     parent.getByRole("button", { name: "Cancel repository changes" }),
   ).toBeInViewport();
+  const saveButton = await parent
+    .getByRole("button", { name: "Save repository", exact: true })
+    .boundingBox();
+  expect(saveButton.width).toBeGreaterThanOrEqual(110);
+  expect(saveButton.height).toBeLessThanOrEqual(60);
   await capture(page, testInfo, "repository-320x300-keyboard");
   await page.keyboard.press("Enter");
   await expect(parent).toHaveCount(0);

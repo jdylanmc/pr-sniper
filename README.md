@@ -319,7 +319,7 @@ permissions and completed evidence, but provider operations need a new explicit
 binding. Manual binding never selects the first account automatically.
 
 Back from repository settings retains that repository draft for the current
-session; **Cancel repository changes** discards only its unsaved changes.
+session; **Cancel** discards only its unsaved repository changes.
 Assignment saves apply immediately to the owning repository, including its
 pending fields. Back/Cancel from an assignment or binding form discards that
 form's unsaved fields without undoing earlier saves. Delayed scope-status reads
