@@ -7,6 +7,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- Re-home global schedule, machine AI capacity and automation defaults in compact
+  Preferences. Clearly separate draft-backed saves from immediate native pause,
+  notification opt-in and startup; keep Status/recovery and redacted Diagnostics
+  reachable through existing routes.
 - Harden Windows CI with main-owned Rust dependency caching, superseded-PR
   cancellation, bounded command steps and labelled Chocolatey fault logs while
   retaining all native, installer and recovery checks.
@@ -24,6 +28,11 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- Keep native pending operations and rejection messages visible across unrelated
+  preference saves, distinguish startup registration from the saved request, and
+  label unreadable notification authorization as unknown rather than stale success.
+- Synchronize the global cron helper with saved and edited expressions without
+  changing time-zone semantics, legacy schedules or repository action permissions.
 - Keep evidence polling alive across Status and Diagnostics, including delayed
   or failed utility reads.
 - Match the approved Job details hero, facts and readable configuration cards;

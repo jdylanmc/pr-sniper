@@ -18,7 +18,16 @@ export interface AutomationSnapshot {
 export function mountAutomation(
   root: HTMLElement,
   onSnapshot?: (state: AutomationSnapshot | undefined) => void,
-  options: { compact?: boolean; onError?: (message: string) => void } = {},
+  options: {
+    compact?: boolean;
+    preferences?: boolean;
+    onError?: (message: string) => void;
+    view?: {
+      pending?: boolean;
+      error?: string;
+      refresh?: () => Promise<void>;
+    };
+  } = {},
 ) {
   root.innerHTML = options.compact
     ? `<button type="button" class="monitoring-toggle" data-toggle-automation disabled aria-label="Monitoring unavailable"><span data-monitoring-label>Unavailable</span><span class="switch-track" aria-hidden="true"></span></button><span class="sr-only" role="status" data-automation-status>Reading automation state...</span><span class="sr-only" role="alert" data-automation-error hidden></span>`
@@ -26,21 +35,30 @@ export function mountAutomation(
     <button type="button" data-toggle-automation disabled>Pause automation</button>
     <p class="hint">Pause stops new polling, AI work and provider writes. Stopping workers keep their slots until teardown. Already-started remote mutations may have succeeded and still require reconciliation. Capacity is saved in Settings > Preferences.</p>
     <p role="alert" data-automation-error hidden></p><ol data-ai-work></ol>`;
+  if (options.preferences)
+    root.innerHTML = `<fieldset aria-label="Global pause"><legend>Global pause</legend>
+      <p role="status" data-automation-status>Reading automation state...</p>
+      <button type="button" data-toggle-automation disabled>Pause automation</button>
+      <p class="settings-hint">Pause stops new polling, AI work and provider writes immediately. Stopping workers keep their slots until teardown. Already-started remote mutations may have succeeded and still require reconciliation.</p>
+      <p role="alert" data-automation-error hidden></p>
+      <details id="preferences-capacity-work"><summary>Capacity work details</summary><ol data-ai-work></ol></details></fieldset>`;
   const status = root.querySelector<HTMLElement>("[data-automation-status]")!;
   const button = root.querySelector<HTMLButtonElement>(
     "[data-toggle-automation]",
   )!;
   const error = root.querySelector<HTMLElement>("[data-automation-error]")!;
   const list = root.querySelector<HTMLOListElement>("[data-ai-work]");
+  const view = options.view ?? {};
   let state: AutomationSnapshot | undefined;
-  let busy = false;
   let revision = 0;
   async function refresh() {
-    if (busy || !root.isConnected) return;
+    if (view.pending || !root.isConnected) return;
+    error.textContent = view.error ?? "";
+    error.hidden = !view.error;
     const request = ++revision;
     try {
       const next = await invoke<AutomationSnapshot>("automation_snapshot");
-      if (!root.isConnected || busy || request !== revision) return;
+      if (!root.isConnected || view.pending || request !== revision) return;
       state = next;
       onSnapshot?.(next);
       status.textContent = `${next.paused ? "Paused" : "Running"}; ${next.active} occupied / ${next.capacity} AI slots (${next.stopping} stopping); ${next.waiting} waiting; ${next.blocked} blocked.`;
@@ -77,16 +95,18 @@ export function mountAutomation(
         "Automation state unavailable; occupancy is unknown.";
       error.textContent =
         typeof cause === "string" ? cause : "Cannot read automation state.";
+      view.error = error.textContent;
       error.hidden = false;
       options.onError?.(error.textContent);
     }
   }
   button.onclick = async () => {
-    if (!state || busy) return;
-    busy = true;
+    if (!state || view.pending) return;
+    view.pending = true;
     revision++;
     button.disabled = true;
     error.hidden = true;
+    view.error = undefined;
     try {
       await invoke("set_automation_paused", { paused: !state.paused });
     } catch (cause) {
@@ -94,13 +114,20 @@ export function mountAutomation(
         typeof cause === "string"
           ? cause
           : "Automation change failed; inspect the current saved state.";
+      view.error = error.textContent;
       error.hidden = false;
       options.onError?.(error.textContent);
     } finally {
-      busy = false;
-      await refresh();
+      view.pending = false;
+      await view.refresh?.();
     }
   };
+  view.refresh = refresh;
+  error.textContent = view.error ?? "";
+  error.hidden = !view.error;
+  if (view.pending)
+    status.textContent =
+      "Automation change pending; the saved pause state is not yet confirmed.";
   void refresh();
   const timer = window.setInterval(() => {
     if (!root.isConnected) window.clearInterval(timer);
