@@ -2,6 +2,7 @@ $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or
     $env:PR_SNIPER_PACKAGING_ACCEPTANCE -ne '1') { throw 'Removal retry fixture requires owned hosted acceptance.' }
 . (Join-Path $PSScriptRoot 'windows-removal-diagnostics.ps1')
+. (Join-Path $PSScriptRoot 'windows-choco-test.ps1')
 $directory = Join-Path $env:LOCALAPPDATA 'PR Sniper'
 $uninstaller = Join-Path $directory 'uninstall.exe'
 $tools = Join-Path $env:ChocolateyInstall 'lib\pr-sniper-localtest\tools'
@@ -14,9 +15,9 @@ $attributes = [IO.File]::GetAttributes($uninstaller)
 $failure = $null
 try {
     [IO.File]::SetAttributes($uninstaller, $attributes -bor [IO.FileAttributes]::ReadOnly)
-    & choco uninstall pr-sniper-localtest --yes --limit-output --no-progress --execution-timeout=180
-    $failedExit = $LASTEXITCODE
-    if ($failedExit -eq 0) { throw 'Read-only post-native deletion incorrectly succeeded.' }
+    $injected = Invoke-PrSniperChocoTest -Name 'readonly-removal' `
+        -Arguments @('uninstall','pr-sniper-localtest') -ExpectFailure
+    $failedExit = $injected.exit_code
     $appExists = Test-Path (Join-Path $directory 'pr-sniper.exe')
     $observedHash = (Get-FileHash $uninstaller).Hash
     $completed = (Get-PrSniperRemovalState $tools $receipt $receiptHash $durablePath).completed
@@ -93,8 +94,8 @@ function Assert-BusyCleanupRefusal([bool] $UninstallerPresent) {
         }
         # Exercise Chocolatey's own rollback while busy, not only the script.
         # Replacing the failed versioned copy must not erase committed evidence.
-        & choco uninstall pr-sniper-localtest --yes --limit-output --no-progress --execution-timeout=180
-        if ($LASTEXITCODE -eq 0) { throw 'Chocolatey ignored the held cleanup mutex.' }
+        Invoke-PrSniperChocoTest -Name 'busy-cleanup' `
+            -Arguments @('uninstall','pr-sniper-localtest') -ExpectFailure | Out-Null
         if (-not $rejected -or (Get-FileHash $completionPath).Hash -cne $completionHash -or
             (Get-FileHash $durablePath).Hash -cne $durableHash -or
             -not (Get-PrSniperRemovalState $tools $receipt $receiptHash $durablePath).completed -or
@@ -122,8 +123,9 @@ if ((Test-Path -LiteralPath $uninstaller) -or
     throw 'Absent-uninstaller fixture did not retain the exact package completion evidence.'
 }
 Assert-BusyCleanupRefusal $false
-& choco uninstall pr-sniper-localtest --yes --limit-output --no-progress --execution-timeout=180
-if ($LASTEXITCODE -ne 0 -or (Test-Path $uninstaller)) { throw 'Completed-removal retry did not finish.' }
+Invoke-PrSniperChocoTest -Name 'completed-removal-retry' `
+    -Arguments @('uninstall','pr-sniper-localtest') | Out-Null
+if (Test-Path $uninstaller) { throw 'Completed-removal retry did not finish.' }
 if (Test-Path (Split-Path -Parent $tools)) { throw 'Outer package cleanup left tracked completion state or package files.' }
 if (Test-Path (Split-Path -Parent $durablePath)) { throw 'Outer package cleanup left durable native-completion evidence.' }
 $listed = @(& choco list pr-sniper-localtest --exact --limit-output)

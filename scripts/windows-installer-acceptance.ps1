@@ -9,6 +9,7 @@ if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hoste
 }
 $repository = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'windows-host-readiness.ps1')
+. (Join-Path $PSScriptRoot 'windows-choco-test.ps1')
 $directory = Join-Path $env:LOCALAPPDATA 'PR Sniper'
 $data = Join-Path $env:LOCALAPPDATA 'com.jdylanmc.pr-sniper'
 $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'PR Sniper.lnk'
@@ -57,8 +58,7 @@ $ownedHost = $null
 $credentialCreated = $false
 $failure = $null
 function Invoke-Choco([string[]] $Arguments) {
-    & choco @Arguments --yes --no-progress --limit-output --execution-timeout=180
-    if ($LASTEXITCODE -ne 0) { throw "Chocolatey $($Arguments[0]) failed with exit code $LASTEXITCODE." }
+    Invoke-PrSniperChocoTest -Name $Arguments[0] -Arguments $Arguments | Out-Null
 }
 function Assert-Preserved {
     if ((Get-Content (Join-Path $data 'packaging-preservation.txt') -Raw).Trim() -cne $sentinel) {
@@ -164,11 +164,13 @@ try {
     Invoke-Choco @('install', 'pr-sniper-localtest', "--version=$($base.version)-localtest", '--pre', "--source=$($feed.FullName)")
     Assert-Installed $base (Join-Path $Candidate $base.filename)
     Assert-Preserved
+    Write-Host '[Phase] Install refusal and rollback fixtures; nonzero child exits are expected.'
     & (Join-Path $PSScriptRoot 'windows-installer-faults.ps1') -Phase Install `
         -Installer (Join-Path $Upgrade 'upgrade-test-only.exe') -PreviousInstaller (Join-Path $Candidate $base.filename)
     Invoke-Choco @('upgrade', 'pr-sniper-localtest', "--version=$($next.version)-localtest", '--pre', "--source=$($feed.FullName)")
     Assert-Installed $next (Join-Path $Upgrade 'upgrade-test-only.exe')
     Assert-Preserved
+    Write-Host '[Phase] Uninstall refusal and rollback fixtures; nonzero child exits are expected.'
     & (Join-Path $PSScriptRoot 'windows-installer-faults.ps1') -Phase Uninstall
     # After clearing Delete-only denial, prove empty-key removal and reinstall,
     # separately from the intentionally nonempty foreign-container case below.
@@ -202,6 +204,7 @@ try {
     if ($link.TargetPath -ine (Join-Path $directory 'pr-sniper.exe')) { throw 'Installed shortcut target mismatch.' }
     $link.TargetPath = $env:ComSpec
     $link.Save()
+    Write-Host '[Phase] Interrupted removal and repeated retry; injected failures must retain completion evidence.'
     & (Join-Path $PSScriptRoot 'windows-removal-retry.ps1')
     Assert-Preserved
     if ((Test-Path (Join-Path $directory 'pr-sniper.exe')) -or
