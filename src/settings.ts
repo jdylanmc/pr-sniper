@@ -781,6 +781,9 @@ export async function mountSettings(
         : "No doctrines yet. Save or cancel this Agent, then add principles in Doctrines.";
     };
     filter.oninput = updateChoices;
+    filter.onkeydown = (event) => {
+      if (event.key === "Enter") event.preventDefault();
+    };
     modal
       .querySelector(".doctrine-choices")!
       .addEventListener("change", updateChoices);

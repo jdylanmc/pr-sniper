@@ -221,6 +221,135 @@ test("mouse and keyboard reach scrolling doctrines and preserve zero, one and ma
   expect((await store("snapshot")).settings.agents[0].doctrines).toEqual([]);
 });
 
+for (const query of ["03", "no match"]) {
+  test(`Enter in doctrine filter "${query}" keeps Agent edits unsaved until keyboard Save`, async ({
+    page,
+    store,
+  }) => {
+    const settings = await seed(page, store, 4);
+    await page.evaluate(() => window.__settingsIdle());
+    settings.agents[0].doctrines = ["Principle 03", "Principle 01"];
+    await store("seed_settings", settings);
+    await page.reload();
+    await page.evaluate(() => window.__settingsIdle());
+    const original = (await store("snapshot")).settings;
+    const intended = {
+      ...original.agents[0],
+      prompt: "Keep these unfinished review instructions.",
+      signature: "Deliberately saved signature",
+      doctrines: ["Principle 03", "Principle 02", "Principle 04"],
+    };
+
+    for (const action of ["Cancel", "Save agent"]) {
+      const modal = await openAgent(page);
+      const prompt = modal.getByRole("textbox", {
+        name: "Prompt",
+        exact: true,
+      });
+      const signature = modal.getByLabel("Signature", { exact: true });
+      const filter = modal.getByLabel("Filter doctrines", { exact: true });
+      await expect(prompt).toHaveValue(original.agents[0].prompt);
+      await expect(signature).toHaveValue(original.agents[0].signature);
+      expect(
+        await modal
+          .locator("[name=doctrine]:checked")
+          .evaluateAll((inputs) => inputs.map((input) => input.value)),
+      ).toEqual(["Principle 01", "Principle 03"]);
+      await prompt.fill(intended.prompt);
+      await signature.fill(intended.signature);
+      await modal
+        .getByRole("checkbox", { name: "Principle 01", exact: true })
+        .uncheck();
+      await modal
+        .getByRole("checkbox", { name: "Principle 04", exact: true })
+        .check();
+      await modal
+        .getByRole("checkbox", { name: "Principle 02", exact: true })
+        .check();
+      await filter.fill(query);
+      const count =
+        query === "03"
+          ? "3 selected (2 hidden by filter) / 1 shown"
+          : "3 selected (3 hidden by filter) / 0 shown";
+      await expect(modal.locator("[data-selection-count]")).toHaveText(count);
+      await expect(filter).toBeFocused();
+      await filter.press("Enter");
+      await page.evaluate(() => window.__settingsIdle());
+      expect.soft((await store("snapshot")).settings).toEqual(original);
+      await expect(modal).toBeVisible();
+      await expect(filter).toBeFocused();
+      await expect(filter).toHaveValue(query);
+      await expect(prompt).toHaveValue(intended.prompt);
+      await expect(signature).toHaveValue(intended.signature);
+      await expect(modal.locator("[data-selection-count]")).toHaveText(count);
+      await expect(modal.locator("[data-no-doctrines]")).toBeVisible({
+        visible: query === "no match",
+      });
+      expect(
+        await modal.locator("[name=doctrine]").evaluateAll((inputs) =>
+          inputs.map((input) => ({
+            title: input.value,
+            checked: input.checked,
+            hidden: input.closest("[data-doctrine-choice]").hidden,
+          })),
+        ),
+      ).toEqual(
+        original.doctrines.map(({ title }) => ({
+          title,
+          checked: intended.doctrines.includes(title),
+          hidden: !title.includes(query),
+        })),
+      );
+      const button = modal.getByRole("button", { name: action, exact: true });
+      await button.focus();
+      await expect(button).toBeFocused();
+      await page.keyboard.press("Enter");
+      await expect(modal).toHaveCount(0);
+      await page.evaluate(() => window.__settingsIdle());
+      expect((await store("snapshot")).settings).toEqual(
+        action === "Cancel" ? original : { ...original, agents: [intended] },
+      );
+    }
+    await page.reload();
+    await page.evaluate(() => window.__settingsIdle());
+    expect((await store("snapshot")).settings).toEqual({
+      ...original,
+      agents: [intended],
+    });
+  });
+}
+
+test("Enter outside the doctrine filter retains ordinary Agent form behavior", async ({
+  page,
+  store,
+}) => {
+  await seed(page, store);
+  const modal = await openAgent(page);
+  await page.evaluate(() => window.__settingsIdle());
+  const original = (await store("snapshot")).settings;
+  const prompt = modal.getByRole("textbox", { name: "Prompt", exact: true });
+  await prompt.fill("First line");
+  await prompt.press("End");
+  await prompt.press("Enter");
+  await expect(prompt).toHaveValue("First line\n");
+  await expect(modal).toBeVisible();
+  const signature = modal.getByLabel("Signature", { exact: true });
+  await signature.fill("Ordinary text-field submission");
+  await signature.press("Enter");
+  await expect(modal).toHaveCount(0);
+  await page.evaluate(() => window.__settingsIdle());
+  expect((await store("snapshot")).settings).toEqual({
+    ...original,
+    agents: [
+      {
+        ...original.agents[0],
+        prompt: "First line\n",
+        signature: "Ordinary text-field submission",
+      },
+    ],
+  });
+});
+
 test("Cancel and Back discard only unsaved fields while saved shared resources and other drafts survive", async ({
   page,
   store,
