@@ -1373,6 +1373,9 @@
 .settings-window .repository-editor {
   overflow-wrap: anywhere;
 }
+.settings-window .repository-editor .resource-actions > button {
+  flex: 1 1 110px;
+}
 .settings-window .repository-editor h2 {
   font-size: 13px;
 }
