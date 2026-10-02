@@ -91,6 +91,21 @@ Reviewed exposes existing completed/terminal evidence in the current projection,
 not a new paged history or purge backend. Status retains schedule health,
 notification history and recovery; Diagnostics remains redacted.
 
+Preferences separates **Saved preferences** (the one global cron, time zone,
+machine capacity and independent automatic-start/comment defaults) from
+**Immediate controls** (pause, notification opt-in and startup).
+Save preferences and Reset changes do not apply or undo native controls.
+Capacity accepts the full positive 32-bit integer range, 1 through 4294967295,
+and shares slots across normal, final-primary, reply and mention work. Admitted
+jobs drain independently of polling. The cron helper reflects the exact
+expression; saved time zones and legacy intervals are never silently converted.
+Native controls retain pending/rejected operations across preference saves.
+Startup shows the saved request separately from actual registration; unknown
+registration or notification authorization is not successful enablement.
+Preferences links to the existing Status/recovery and redacted Diagnostics
+routes, with notification history and exact pending-publication destinations
+retained. These compact browser surfaces do not replace native acceptance.
+
 Queue contains human handoffs and actionable problems, not an Agent lane or a
 card per Agent. Each account/repository PR has one current handoff; active/waiting
 jobs belong in Running. Evidence retains every ordered changed file, exact

@@ -61,10 +61,15 @@ function permissionText(state: Snapshot) {
 
 export function mountNotificationSettings(
   root: HTMLElement,
-  view: { target: string },
+  view: {
+    target: string;
+    pending?: boolean;
+    actionError?: string | null;
+    refresh?: () => Promise<void>;
+  },
 ) {
   root.innerHTML = `<fieldset aria-label="Notifications"><legend>Notifications</legend>
-    <label class="setting-row"><span>Notify me when my attention is needed<small>Confirmation, human input, ready-for-review and failures. Off until you opt in. Changes immediately, separately from Save changes.</small></span><input id="notification-enabled" type="checkbox" role="switch" disabled /></label>
+    <label class="setting-row"><span>Notify me when my attention is needed<small>Confirmation, human input, ready-for-review and failures. Off until you opt in. Changes immediately, separately from Save preferences.</small></span><input id="notification-enabled" type="checkbox" role="switch" aria-describedby="notification-permission" disabled /></label>
     <p class="settings-hint">Banners contain no PR titles, repository names or code. Opening an alert only opens its saved destination; it never starts, publishes, approves or merges.</p>
     <p id="notification-permission" role="status">Reading operating system notification status...</p>
     <p id="notification-error" role="alert" hidden></p>
@@ -78,12 +83,10 @@ export function mountNotificationSettings(
   const error = root.querySelector<HTMLElement>("#notification-error")!;
   const target = root.querySelector<HTMLSelectElement>("#notification-target")!;
   const test = root.querySelector<HTMLButtonElement>("#notification-test")!;
-  let busy = false;
   let reading = false;
   let revision = 0;
   let selected = view.target;
   let targetsSignature = "";
-  let actionError: string | null = null;
   let state: Snapshot | undefined;
   target.onchange = () => {
     selected = target.value;
@@ -92,21 +95,21 @@ export function mountNotificationSettings(
   };
 
   function updateControls() {
-    enabled.disabled = busy || !state;
+    enabled.disabled = !!view.pending || !state;
     test.disabled =
-      busy ||
+      !!view.pending ||
       !state?.enabled ||
       (!!selected && !state.targets.some((t) => t.id === selected));
-    target.disabled = busy || !state;
+    target.disabled = !!view.pending || !state;
   }
 
   async function refresh() {
-    if (busy || reading || !root.isConnected) return;
+    if (view.pending || reading || !root.isConnected) return;
     reading = true;
     const captured = revision;
     try {
       const next = await invoke<Snapshot>("notification_snapshot");
-      if (!root.isConnected || busy || captured !== revision) return;
+      if (!root.isConnected || view.pending || captured !== revision) return;
       state = next;
       enabled.checked = next.enabled;
       status.textContent = permissionText(next);
@@ -114,7 +117,9 @@ export function mountNotificationSettings(
         next.platform === "windows"
           ? "Opting in explicitly creates this profile's Start Menu notification shortcut and current-user COM activation registration for this executable. First use may submit a short-lived, popup-suppressed test notice to initialize Windows status, then remove that exact notice; it can briefly appear in notification center. Windows has no permission prompt here. For blocked alerts, open Windows Settings > System > Notifications > PR Sniper. Separate banner and notification center settings remain unknown to this app. Turning off stops new sends; saved notifications can still navigate."
           : "For blocked alerts, open System Settings > Notifications > PR Sniper. Review Queue retains notification history, even when a banner is missed.";
-      error.textContent = [actionError, next.error].filter(Boolean).join("\n");
+      error.textContent = [view.actionError, next.error]
+        .filter(Boolean)
+        .join("\n");
       error.hidden = !error.textContent;
       const targets = JSON.stringify(next.targets);
       if (targets !== targetsSignature) {
@@ -135,20 +140,27 @@ export function mountNotificationSettings(
     } catch {
       if (!root.isConnected || captured !== revision) return;
       state = undefined;
-      error.textContent =
-        "Notification state could not be read. No permission or delivery is assumed.";
+      status.textContent =
+        "Notification state unavailable; saved opt-in and OS permission are unknown. No delivery is assumed.";
+      error.textContent = [
+        view.actionError,
+        "Notification state could not be read. No permission or delivery is assumed.",
+      ]
+        .filter(Boolean)
+        .join("\n");
       error.hidden = false;
     } finally {
       reading = false;
       updateControls();
-      if (captured !== revision && !busy && root.isConnected) void refresh();
+      if (captured !== revision && !view.pending && root.isConnected)
+        void refresh();
     }
   }
 
   async function act(command: string, args: Record<string, unknown>) {
-    if (busy) return;
-    busy = true;
-    actionError = null;
+    if (view.pending) return;
+    view.pending = true;
+    view.actionError = null;
     error.hidden = true;
     revision++;
     updateControls();
@@ -159,19 +171,24 @@ export function mountNotificationSettings(
     try {
       await invoke(command, args);
     } catch (cause) {
-      actionError =
+      view.actionError =
         typeof cause === "string"
           ? cause
           : "Notification action failed. Check its saved state.";
     } finally {
-      busy = false;
-      await refresh();
+      view.pending = false;
+      await view.refresh?.();
     }
   }
   enabled.onchange = () =>
     void act("set_notifications_enabled", { enabled: enabled.checked });
   test.onclick = () =>
     void act("test_notification", { itemId: selected || null });
+  view.refresh = refresh;
+  updateControls();
+  if (view.pending)
+    status.textContent =
+      "Notification operation pending; saved opt-in and OS permission are not yet confirmed.";
   void refresh();
   const timer = window.setInterval(() => {
     if (!root.isConnected) window.clearInterval(timer);

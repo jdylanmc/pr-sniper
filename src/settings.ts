@@ -98,10 +98,7 @@ const sections: Record<Section, [string, string]> = {
     "Agents",
     "A model, shared doctrines, a prompt and a signature, ready to assign.",
   ],
-  preferences: [
-    "Preferences",
-    "The small stuff: login items, diagnostics, notifications.",
-  ],
+  preferences: ["Preferences", "Schedule, AI capacity and native controls."],
 };
 // Bespoke reticle/scope marks, not a generic icon-kit -- each nods at the
 // tab's job rather than a stock glyph.
@@ -200,6 +197,8 @@ export async function mountSettings(
   let discovery: Discovery | null = null;
   let query = "";
   let busy = false;
+  let startupPending = false;
+  let startupError = "";
   let conflict = false;
   let revision = 0;
   let githubAccounts: GithubAccount[] = [];
@@ -213,6 +212,8 @@ export async function mountSettings(
     (opener, parent) => restoreControl(opener, parent ?? content, parent),
   );
   const notificationView = { target: "" };
+  const automationView = {};
+  const preferenceDisclosures = new Set<string>();
   const dirty = () => !!draft && !sameResource(draft, saved);
   const preferencesDirty = () =>
     !!draft &&
@@ -373,6 +374,7 @@ export async function mountSettings(
     disposeCopilot?.();
     disposeCopilot = undefined;
     app.querySelector("h1")!.textContent = sections[section][0];
+    app.toggleAttribute("data-preferences", section === "preferences");
     app.querySelector(".settings-heading p")!.textContent =
       sections[section][1];
     app
@@ -1834,22 +1836,62 @@ export async function mountSettings(
 
   // ------------------------------------------------------------- Preferences
 
+  function updateStartup() {
+    const checkbox = content.querySelector<HTMLInputElement>("#login");
+    const status = content.querySelector<HTMLElement>("#login-status");
+    const error = content.querySelector<HTMLElement>("#login-error");
+    if (!checkbox || !status || !error) return;
+    error.textContent = startupError;
+    error.hidden = !startupError;
+    checkbox.checked = saved.launch_at_login;
+    checkbox.disabled =
+      startupPending ||
+      snapshot.isolated ||
+      snapshot.login_registration === null;
+    status.textContent = startupPending
+      ? "Updating startup request and reading native registration..."
+      : `Saved request: ${saved.launch_at_login ? "On" : "Off"}. Registration: ${snapshot.login_registration ?? "unavailable"}. ${
+          snapshot.isolated
+            ? `Isolated development run: changing ${isWindows ? "Windows startup apps" : "macOS login items"} is disabled.`
+            : `Registration is not effective ${platformName} launch state; ${startupSettingsName} can disable a registered entry.`
+        }`;
+  }
+
   function renderPreferences() {
     const schedule = draft.defaults.schedule;
-    content.innerHTML = `<div class="settings-group"><fieldset aria-label="Startup"><legend>Startup</legend><label class="setting-row"><span>Open PR Sniper at login<small>${snapshot.isolated ? `Isolated development run: changing ${isWindows ? "Windows startup apps" : "macOS login items"} is disabled.` : `Saved request, not effective ${platformName} state. Registration: ${snapshot.login_registration ?? "unavailable"}.${isWindows ? " Windows Startup Apps can disable a registered entry." : ""}`}</small></span><input id="login" type="checkbox" role="switch" ${draft.launch_at_login ? "checked" : ""} ${snapshot.isolated || snapshot.login_registration === null ? "disabled" : ""} /></label></fieldset></div>
-      <div class="settings-group"><fieldset aria-label="Global polling and capacity"><legend>Global polling and capacity</legend>
+    content.innerHTML = `<div class="preferences-view">
+      <div class="preferences-boundary"><h2>Saved preferences</h2><span>Save to apply</span></div>
+      <div class="settings-group preferences-saved"><fieldset aria-label="Global polling and capacity"><legend>Global polling and capacity</legend>
+      <label class="preferences-capacity">AI capacity<input id="global-capacity" type="number" min="1" max="4294967295" step="1" value="${draft.capacity}" aria-describedby="capacity-guidance" /></label>
+      <p id="capacity-guidance" class="settings-hint">Simultaneous jobs on this computer: normal passes, final primary reviews, replies and mentions. Default 4; any whole number from 1 to 4294967295. Saved Agents and queued PRs are not limited.</p>
+      <p class="preferences-warning">Lowering capacity stops surplus AI work and queues fresh attempts. Completed evidence and provider receipts remain.</p>
+      <div class="preferences-schedule">
       <label>Cron expression<input id="global-cron" value="${escape(schedule.kind === "cron" ? schedule.expression : "")}" placeholder="*/15 * * * *" /></label>
       <label>Schedule helper<select id="cron-helper"><option value="">Custom five-field expression</option><option value="*/15 * * * *">Every 15 minutes</option><option value="0 * * * *">Every hour</option><option value="0 9 * * MON-FRI">Weekdays at 09:00</option></select></label>
       <label>Time zone<input id="global-timezone" value="${escape(schedule.timezone)}" /></label>
-      <p class="settings-hint">Five fields: minute, hour, day, month, weekday. Evaluated in this IANA time zone, including its daylight-saving rules. One global scan covers enabled, scope-confirmed repositories. Shared AI capacity drains admitted work independently of polling.${schedule.kind === "interval" ? ` Saved legacy interval: ${schedule.minutes} minutes. Polling is blocked until you explicitly choose a cron expression; no automatic conversion.` : ""}</p>
-      <label>AI capacity<input id="global-capacity" type="number" min="1" max="4294967295" step="1" value="${draft.capacity}" /></label>
-      <p class="settings-hint" data-readiness role="status">Reading saved-resource readiness...</p></fieldset></div>
-      <div class="settings-group"><fieldset aria-label="Review execution"><legend>Review execution</legend><label class="setting-row"><span>Start eligible reviews automatically<small>Default for assigned repositories. Forks and untrusted authors still require confirmation; publication has its own gate.</small></span><input id="automatic-review-start" type="checkbox" role="switch" ${draft.defaults.automatic_agent_start ? "checked" : ""} /></label></fieldset></div>
-      <div class="settings-group"><fieldset aria-label="Comment publication"><legend>Comment publication</legend><label class="setting-row"><span>Publish review comments automatically<small>Default for assigned repositories that allow Comment. Revalidates revision, trust and eligibility before publication. Never approves or merges.</small></span><input id="automatic-publication" type="checkbox" role="switch" ${draft.defaults.automatic_comment_publication ? "checked" : ""} /></label></fieldset></div>
+      </div><p class="settings-hint">Five fields: minute, hour, day, month, weekday. Evaluated in this IANA time zone, including its daylight-saving rules. One global scan covers enabled, scope-confirmed repositories. Shared AI capacity drains admitted work independently of polling.${schedule.kind === "interval" ? ` Saved legacy interval: ${schedule.minutes} minutes. Polling is blocked until you explicitly choose a cron expression; no automatic conversion.` : ""}</p></fieldset>
+      <fieldset aria-label="Review execution"><legend>Review execution</legend><label class="setting-row"><span>Start eligible reviews automatically<small>Default for assigned repositories. Forks and untrusted authors still require confirmation; publication has its own gate.</small></span><input id="automatic-review-start" type="checkbox" role="switch" ${draft.defaults.automatic_agent_start ? "checked" : ""} /></label></fieldset>
+      <fieldset aria-label="Comment publication"><legend>Comment publication</legend><label class="setting-row"><span>Publish review comments automatically<small>Default for assigned repositories that allow Comment. Revalidates revision, trust and eligibility before publication. Never approves or merges.</small></span><input id="automatic-publication" type="checkbox" role="switch" ${draft.defaults.automatic_comment_publication ? "checked" : ""} /></label></fieldset>
+      <p class="settings-hint preferences-permissions">Approve and Merge remain separate repository-assignment permissions, never global grants.</p></div>
+      <div class="preferences-boundary"><h2>Immediate controls</h2><span>Applied separately</span></div>
+      <p class="settings-hint">Pause, notification opt-in and startup commit immediately. Save preferences and Reset changes do not apply or undo them.</p>
       <div class="settings-group" id="automation-settings"></div>
       <div class="settings-group" id="notification-settings"></div>
-      <div class="settings-group"><fieldset aria-label="Diagnostics"><legend>Diagnostics</legend><p class="settings-hint">Settings and logs live in your ${isWindows ? "Windows local application-data" : "macOS app-support"} folder. Open a redacted diagnostics view to check in on them without exposing tokens.</p><button id="diagnostics">Open redacted diagnostics</button></fieldset></div>`;
+      <div class="settings-group"><fieldset aria-label="Startup"><legend>Startup</legend><label class="setting-row"><span>Open PR Sniper at login<small>Changes the saved request and native registration immediately, not through Save preferences.</small></span><input id="login" type="checkbox" role="switch" aria-describedby="login-status" disabled /></label><p id="login-status" class="settings-hint" role="status"></p><p id="login-error" role="alert" hidden></p></fieldset></div>
+      <div class="settings-group"><fieldset aria-label="Status and recovery"><legend>Status and recovery</legend><p class="settings-hint">Status keeps notification history, schedule health and pending-operation recovery reachable. Uncertain provider writes still need reconciliation.</p><button id="preferences-status" type="button">Open status and recovery</button>
+      <p class="settings-hint">Settings and logs live in your ${isWindows ? "Windows local application-data" : "macOS app-support"} folder. Diagnostics shows redacted host events, not tokens.</p><button id="diagnostics" type="button">Open redacted diagnostics</button>
+      <details id="preferences-readiness" class="preferences-readiness"><summary>Saved setup readiness</summary><p class="settings-hint" data-readiness role="status">Reading saved-resource readiness...</p></details></fieldset></div></div>`;
+    updateStartup();
     const cron = content.querySelector<HTMLInputElement>("#global-cron")!;
+    const helper = content.querySelector<HTMLSelectElement>("#cron-helper")!;
+    const syncHelper = () => {
+      helper.value = [...helper.options].some(
+        (option) => option.value === cron.value,
+      )
+        ? cron.value
+        : "";
+    };
+    syncHelper();
     const timezone =
       content.querySelector<HTMLInputElement>("#global-timezone")!;
     const updateSchedule = () => {
@@ -1858,6 +1900,7 @@ export async function mountSettings(
         expression: cron.value,
         timezone: timezone.value,
       };
+      syncHelper();
       changed();
     };
     cron.oninput = updateSchedule;
@@ -1901,7 +1944,19 @@ export async function mountSettings(
     );
     mountAutomation(
       content.querySelector<HTMLElement>("#automation-settings")!,
+      undefined,
+      { preferences: true, view: automationView },
     );
+    content
+      .querySelectorAll<HTMLDetailsElement>("details[id]")
+      .forEach((details) => {
+        details.open = preferenceDisclosures.has(details.id);
+        details.ontoggle = () => {
+          if (!details.isConnected) return;
+          if (details.open) preferenceDisclosures.add(details.id);
+          else preferenceDisclosures.delete(details.id);
+        };
+      });
     content.querySelector<HTMLInputElement>(
       "#automatic-review-start",
     )!.onchange = (event) => {
@@ -1921,13 +1976,20 @@ export async function mountSettings(
     content.querySelector<HTMLInputElement>("#login")!.onchange = async (
       event,
     ) => {
+      if (startupPending) return;
       const checkbox = event.target as HTMLInputElement;
-      checkbox.disabled = true;
+      const enabled = checkbox.checked;
+      const errors: string[] = [];
+      startupPending = true;
+      startupError = "";
+      updateStartup();
       try {
-        await invoke("save_login", { enabled: checkbox.checked });
-      } catch {
-        showError(
-          `Startup preference change could not complete. Check ${startupSettingsName} and the saved request.`,
+        await invoke("save_login", { enabled });
+      } catch (cause) {
+        errors.push(
+          typeof cause === "string"
+            ? cause
+            : `Startup preference change could not complete. Check ${startupSettingsName} and the saved request.`,
         );
       } finally {
         try {
@@ -1937,22 +1999,52 @@ export async function mountSettings(
             saved.launch_at_login = fresh.settings.launch_at_login;
           }
           snapshot = fresh;
+          if (!fresh.settings) snapshot.login_registration = null;
+          if (fresh.error) errors.push(fresh.error);
+          else if (!fresh.settings)
+            errors.push(
+              "Startup settings unavailable; the saved request is unconfirmed.",
+            );
         } catch {
-          showError(
+          snapshot.login_registration = null;
+          errors.push(
             `Could not reload startup registration. Check ${startupSettingsName}.`,
           );
         }
-        render();
+        startupPending = false;
+        startupError = errors.join("\n");
+        updateStartup();
+        changed();
+        if (errors.length) showError(errors.join("\n"));
       }
     };
-    content.querySelector<HTMLButtonElement>("#diagnostics")!.onclick =
-      async () => {
+    content.querySelector<HTMLButtonElement>("#preferences-status")!.onclick =
+      async (event) => {
+        (event.currentTarget as HTMLButtonElement).focus({
+          preventScroll: true,
+        });
         try {
-          await invoke("open_diagnostics");
-        } catch {
-          showError("Could not open diagnostics.");
+          await invoke("panel_navigate", {
+            route: { tab: "settings", detail: { type: "status" } },
+          });
+        } catch (cause) {
+          showError(
+            typeof cause === "string"
+              ? cause
+              : "Could not open status and recovery.",
+          );
         }
       };
+    content.querySelector<HTMLButtonElement>("#diagnostics")!.onclick = async (
+      event,
+    ) => {
+      (event.currentTarget as HTMLButtonElement).focus({ preventScroll: true });
+      try {
+        await invoke("open_diagnostics");
+      } catch {
+        showError("Could not open diagnostics.");
+      }
+    };
   }
 
   save.onclick = async () => {
@@ -2036,7 +2128,13 @@ export async function mountSettings(
     const requestRevision = revision;
     try {
       const state = await invoke<Snapshot>("snapshot");
-      if (requestRevision !== revision || dirty() || busy || dialogs.hasOpen())
+      if (
+        requestRevision !== revision ||
+        dirty() ||
+        busy ||
+        startupPending ||
+        dialogs.hasOpen()
+      )
         return;
       snapshot = state;
       if (!state.settings) {
@@ -2052,7 +2150,13 @@ export async function mountSettings(
       if (state.error) showError(state.error);
       render();
     } catch {
-      if (requestRevision !== revision || dirty() || busy || dialogs.hasOpen())
+      if (
+        requestRevision !== revision ||
+        dirty() ||
+        busy ||
+        startupPending ||
+        dialogs.hasOpen()
+      )
         return;
       showError(
         "Could not read Settings. Open the native application and check local storage access.",
@@ -2061,7 +2165,7 @@ export async function mountSettings(
   }
   window.addEventListener("focus", () => {
     refreshAgentAccounts?.();
-    if (!dirty() && !busy && !dialogs.hasOpen()) void load();
+    if (!dirty() && !busy && !startupPending && !dialogs.hasOpen()) void load();
   });
   await load();
 }
