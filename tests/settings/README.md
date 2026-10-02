@@ -107,6 +107,29 @@ removal. Fresh reads protect immutable identity, the independent neighboring
 record, and the startup preference throughout. Both lifecycle commands call the
 same production Store operations as the native app.
 
+`repositories-compact.spec.mjs` covers the production 408x744 repository cards
+and editors, explicit overlapping acting-account bindings, provider selection,
+identity/access rejection, delayed-read cancellation, saved global schedule
+versus unsaved Preferences, every Comment/Approve/Merge combination, automatic
+and explicit primary roles, seven separate assignments and retained normal-job
+identities. It also checks guarded unbind/write/conflict recovery, scope-status
+ordering, filter-retained scope selections, non-submitting search Enter,
+watched-person identity, exact Back focus/scroll, hide/reopen, restart and
+320x300 keyboard access. Tests initialize their unique Store/panel fixture
+before concurrent readers and use explicit readiness rather than sleeps.
+
+Run the suite headlessly with either `--browser=chromium` or `--browser=webkit`;
+screenshots use Playwright's per-test output directory. Repository, assignment,
+permission and preference assertions read fresh production Store processes.
+Provider identity, repository lookup and scope-preview/apply transports are
+explicit synthetic boundaries, not live-provider or persisted-activation proof.
+The unchanged native `monitoring`, `iterations` and `resources` test targets
+separately exercise actual scope persistence, cancellation/staleness, independent
+older reviewer admission, sticky tracking, seven-way scan fan-out/deduplication,
+next-scan additions, primary authority and resource guards. No bridge fixture or
+native implementation is changed; browser captures are not installed-app,
+native focus, credential or provider-action acceptance.
+
 `policy-inheritance.spec.mjs` exercises reusable Agents with multiple
 independent per-repository assignments, comment permissions and removal/reset.
 It seeds nondefault legacy schedules, policies and presets and proves they
