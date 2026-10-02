@@ -117,6 +117,12 @@ ordering, filter-retained scope selections, non-submitting search Enter,
 watched-person identity, exact Back focus/scroll, hide/reopen, restart and
 320x300 keyboard access. Tests initialize their unique Store/panel fixture
 before concurrent readers and use explicit readiness rather than sleeps.
+Corrective regressions require explicit Save/Cancel before dirty unbind,
+preserving assignment permissions, reviewer overrides, enablement and unrelated
+Preferences drafts. They retain clean unbind cancellation/write/conflict checks,
+label saved legacy intervals as polling-blocked without changing their bytes,
+and assert accessible late-preview cleanup errors after edits or dismissal,
+including a newer resource-save rejection and retry without scope confirmation.
 
 Run the suite headlessly with either `--browser=chromium` or `--browser=webkit`;
 screenshots use Playwright's per-test output directory. Repository, assignment,
@@ -217,6 +223,16 @@ For an isolated `CARGO_TARGET_DIR`, build the bridge there or copy the compiled
 bridge from the same native source revision into its `debug/examples` directory.
 Install the matching WebKit build only if it is missing. Playwright WebKit is
 browser regression evidence, not native WKWebView/installed-app acceptance.
+The additive [`macos-webkit.yml`](../../.github/workflows/macos-webkit.yml) gate
+runs on fresh hosted `macos-15` runners for every pull request and main push.
+It installs the locked npm dependencies and their matching WebKit build, then
+uses `npm run test:settings -- --browser=webkit` to build the frontend and
+Store bridge and run the **full unchanged browser suite**. It does not filter
+tests, relax retries/timeouts, override the user agent or launch a native app.
+Existing macOS and Windows gates remain separate and unchanged. Hosted browser
+proof neither establishes native Tart readiness nor replaces isolated guest
+acceptance for installed-app windows, focus, credentials or live providers.
+No developer-host unlock, wake, permission change or local VM setup is required.
 Keep screenshots in the owned target and generate hash manifests only after
 all capture runs finish. Tests run serially. Port 1421 must
 be free, or select another port with `SETTINGS_TEST_PORT=1422 npm run test:settings`

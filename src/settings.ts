@@ -1414,6 +1414,7 @@ export async function mountSettings(
         <label class="repository-check"><input type="checkbox" data-repository-enabled ${repository.enabled ? "checked" : ""} /><span>Enable repository monitoring</span></label>
         <section class="repository-group"><div class="section-actions"><h2>Monitoring scope</h2><button data-configure-scope ${repository.provider_account_id && repository.provider_repository_id ? "" : "disabled"}>Configure scope</button></div>
         <p class="settings-hint" data-scope-status>Reading monitoring scope...</p>
+        <p role="alert" data-scope-error hidden></p>
         <button data-refresh-scope>Refresh scope status</button>
         <label for="repository-reviewer-trigger">Reviewer requests</label><select id="repository-reviewer-trigger" data-reviewer-trigger><option value="inherit">Use default (${saved.defaults.reviewer_assignment ? "on" : "off"})</option><option value="on">Include PRs explicitly requesting the acting account</option><option value="off">Do not admit through reviewer requests</option></select>
         <p class="settings-hint">Reviewer requests independently admit older or unwatched PRs. Once admitted, work stays tracked until verified closure or merge. Scope is not trust; disablement and execution gates still apply.</p></section>
@@ -1429,7 +1430,7 @@ export async function mountSettings(
         </section><section class="repository-group"><div class="section-actions"><h2>People you watch</h2><button data-add-people>Add people</button></div>
         <div class="watchlist"></div>
         <p class="settings-hint">Optional. A nonempty effective watched-author filter qualifies those authors. An empty effective author filter means all authors only after scope confirmation and never establishes trust. Pull requests requesting the signed-in account also qualify when the effective inherited reviewer-assignment trigger is enabled. Exact GitHub login, no wildcards.</p>
-        </section><section class="repository-group" data-global-schedule><h2>Saved global schedule</h2><p>${schedule.kind === "cron" ? `<code>${escape(schedule.expression)}</code>` : `Every ${schedule.minutes} minutes (saved legacy schedule)`} / ${escape(schedule.timezone)}</p><p class="settings-hint">One schedule scans enabled repositories. Change it in Preferences; repository and Agent assignments have no separate polling controls.</p></section>
+        </section><section class="repository-group" data-global-schedule><h2>Saved global schedule</h2><p>${schedule.kind === "cron" ? `<code>${escape(schedule.expression)}</code>` : `Every ${schedule.minutes} minutes (saved legacy schedule)`} / ${escape(schedule.timezone)}</p><p class="settings-hint">${schedule.kind === "cron" ? "One schedule scans enabled repositories. Change it in Preferences;" : "Polling is blocked until you choose a global five-field cron schedule in Preferences. The saved legacy interval is retained;"} repository and Agent assignments have no separate polling controls.</p></section>
         <details class="repository-group"><summary>Repository and connection</summary><div class="settings-actions"><button id="rename-repository">Edit repository</button><button data-unbind-repository ${repository.provider_account_id ? "" : "disabled"}>Unbind account</button><button id="remove-repository">Remove repository</button></div><div class="connection"></div></details>
         <p class="settings-hint">Save applies only this repository. Back retains its draft for this session; Cancel discards it. Earlier assignment saves stay applied.</p>
         <p role="alert" data-resource-error hidden></p><div class="resource-actions"><button class="primary" data-save-repository>Save repository</button><button data-cancel-repository aria-label="Cancel repository changes">Cancel</button></div>`,
@@ -1527,6 +1528,7 @@ export async function mountSettings(
     const scopeStatus = modal.querySelector<HTMLElement>(
       "[data-scope-status]",
     )!;
+    const scopeError = modal.querySelector<HTMLElement>("[data-scope-error]")!;
     const configureScope = modal.querySelector<HTMLButtonElement>(
       "[data-configure-scope]",
     )!;
@@ -1602,6 +1604,16 @@ export async function mountSettings(
     modal.querySelector<HTMLButtonElement>(
       "[data-unbind-repository]",
     )!.onclick = (event) => {
+      const persisted = saved.repositories?.find((r) => r.id === repository.id);
+      if (!persisted || !sameResource(repository, persisted)) {
+        const alert = modal.querySelector<HTMLElement>(
+          "[data-resource-error]",
+        )!;
+        alert.textContent =
+          "Save or Cancel repository changes before unbinding. Your draft and saved repository have not been changed.";
+        alert.hidden = false;
+        return;
+      }
       const confirm = dialog(
         "Unbind repository account?",
         `<p>Unbind ${escape(repository.name)} from its acting account? Provider reads and actions require an explicit binding again. Assignments, permissions and completed evidence are retained.</p><p role="alert" hidden></p><button class="primary" data-confirm-unbind>Unbind account</button>`,
@@ -1611,7 +1623,7 @@ export async function mountSettings(
       confirm.querySelector<HTMLButtonElement>(
         "[data-confirm-unbind]",
       )!.onclick = async () => {
-        const next = clone(repository);
+        const next = clone(persisted);
         delete next.provider_account_id;
         delete next.provider_repository_id;
         try {
@@ -1671,6 +1683,7 @@ export async function mountSettings(
       configureScope.disabled = true;
       modal.querySelector<HTMLButtonElement>("[data-refresh-scope]")!.disabled =
         true;
+      scopeError.hidden = true;
       const expected = clone(repository);
       scopeStatus.textContent =
         "Reading matching open pull requests through the bound GitHub account...";
@@ -1685,9 +1698,16 @@ export async function mountSettings(
               previewId: preview.preview_id,
             });
           } catch {
-            showError(
-              "Monitoring scope preview cleanup failed. Reopen the repository and cancel or replace the preview before confirming scope.",
-            );
+            if (modal.open) {
+              scopeStatus.textContent = "Repository changed during preview.";
+              scopeError.textContent =
+                "Monitoring scope preview cleanup failed. Save or Cancel repository changes, then configure scope again to cancel or replace the preview before confirming scope.";
+              scopeError.hidden = false;
+            } else
+              showError(
+                "Monitoring scope preview cleanup failed. Reopen the repository and cancel or replace the preview before confirming scope.",
+              );
+            return;
           }
           if (modal.open)
             scopeStatus.textContent =

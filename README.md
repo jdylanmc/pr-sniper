@@ -316,7 +316,9 @@ receives missing normal review work at the next global scan; saving is not a sca
 **Repository and connection** retains verification, metadata reads, edit,
 guarded account unbinding and removal. Unbinding preserves assignments,
 permissions and completed evidence, but provider operations need a new explicit
-binding. Manual binding never selects the first account automatically.
+binding. First **Save** or **Cancel** this repository's pending changes;
+unbinding never saves or discards them implicitly. Unrelated Preferences drafts
+do not block unbinding. Manual binding never selects the first account automatically.
 
 Back from repository settings retains that repository draft for the current
 session; **Cancel** discards only its unsaved repository changes.
@@ -325,7 +327,9 @@ pending fields. Back/Cancel from an assignment or binding form discards that
 form's unsaved fields without undoing earlier saves. Delayed scope-status reads
 cannot replace newer preview errors; **Refresh scope status** retries a read
 without clearing a rejected resource save. Scope selections survive filtering,
-and Enter in the scope search does not confirm monitoring.
+and Enter in the scope search does not confirm monitoring. Failed cleanup of a
+late preview is reported inside the open repository editor, independently of
+resource-save errors; after dismissal it uses the Settings alert.
 
 **Preferences** exposes one global five-field cron expression, default
 `*/15 * * * *` in `UTC`, an expression helper, explicit IANA time-zone semantics,

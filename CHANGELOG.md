@@ -34,6 +34,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- Require explicit repository Save/Cancel before account unbinding, without
+  consuming pending assignments, overrides or enablement. Label retained legacy
+  intervals as blocked until a global cron is chosen, and expose late-preview
+  cleanup failures in the active editor without replacing resource-save errors.
 - Keep late monitoring-scope status reads from replacing newer preview errors,
   cancel previews after repository edits or dismissal, and lock scope selection
   while confirmation is pending.
