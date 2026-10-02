@@ -29,6 +29,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run test:release:windows
+      - run: npm run test:regression
       - run: npm run test:packaging:windows
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
