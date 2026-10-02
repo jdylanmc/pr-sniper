@@ -227,8 +227,12 @@ test("Rust caching retains dependencies, not application artifacts or PR-written
     "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}",
   );
   assert.deepEqual(cache.with["cache-directories"].trim().split("\n"), [
-    "src-tauri\\target\\debug",
-    "src-tauri\\target\\release",
+    "src-tauri\\target\\debug\\.fingerprint",
+    "src-tauri\\target\\debug\\build",
+    "src-tauri\\target\\debug\\deps",
+    "src-tauri\\target\\release\\.fingerprint",
+    "src-tauri\\target\\release\\build",
+    "src-tauri\\target\\release\\deps",
   ]);
   assert.equal(cache.with["cache-provider"], undefined);
   assert.equal(cache.with["add-rust-environment-hash-key"], undefined);

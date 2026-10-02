@@ -45,9 +45,10 @@ evidence. Queue time is separate from execution time and is not a test hang.
 
 The pinned Rust cache action restores compiler/lockfile-keyed dependencies.
 Only successful `main` pushes save caches; PRs and manual runs only restore.
-Workspace crates are rebuilt, and only Cargo's debug/release dependency profiles
-and registry/git dependencies are cached. Installer artifacts, extracted payloads,
-upgrade-fixture directories and acceptance profiles are outside the cache paths.
+Workspace crates are rebuilt, and only Cargo's debug/release `.fingerprint`,
+`build` and `deps` directories plus registry/git dependencies are cached.
+Installer artifacts, extracted payloads, upgrade-fixture directories and
+acceptance profiles are outside the cache paths.
 A cache miss still runs the full cold build and every check; it is not a bypass.
 
 The build job retains a 60-minute limit and installer acceptance a 15-minute
