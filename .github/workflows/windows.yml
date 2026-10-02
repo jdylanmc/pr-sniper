@@ -1,9 +1,14 @@
 name: Windows native application
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -27,28 +32,61 @@ jobs:
         with:
           python-version: "3.13"
       - run: npm ci
+        timeout-minutes: 5
       - run: npm run build
+        timeout-minutes: 5
       - run: npm run test:release:windows
+        timeout-minutes: 3
       - run: npm run test:packaging:windows
+        timeout-minutes: 3
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
+        timeout-minutes: 5
+      - name: Cache Rust dependencies (main writes only)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        timeout-minutes: 10
+        with:
+          workspaces: src-tauri -> target
+          key: windows-2022
+          cache-bin: "false"
+          cache-targets: "false"
+          cache-directories: |
+            src-tauri\target\debug\.fingerprint
+            src-tauri\target\debug\build
+            src-tauri\target\debug\deps
+            src-tauri\target\release\.fingerprint
+            src-tauri\target\release\build
+            src-tauri\target\release\deps
+          cache-workspace-crates: "false"
+          cache-on-failure: "false"
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - run: npm run format:check
+        timeout-minutes: 5
       - name: Check all native application targets
         run: cargo check --manifest-path src-tauri\Cargo.toml --locked --all-targets
+        timeout-minutes: 10
       - name: Test native application with exact owned fixture claims
         run: cargo test --manifest-path src-tauri\Cargo.toml --locked --all-targets -- --nocapture
+        timeout-minutes: 15
       - name: Handshake with bundled Windows runtime (offline, no credentials or inference)
         run: cargo test --manifest-path src-tauri\Cargo.toml --locked --lib copilot::runtime::tests::bundled_runtime_handshakes_offline_without_credentials -- --exact --ignored --nocapture
+        timeout-minutes: 2
       - name: Lint all native application targets
         run: cargo clippy --manifest-path src-tauri\Cargo.toml --locked --all-targets -- -D warnings
+        timeout-minutes: 10
       - run: npm exec playwright install chromium
+        timeout-minutes: 5
       - run: npm run test:settings
+        timeout-minutes: 10
       - name: Build standalone executable with embedded frontend
         run: npm run build:windows
+        timeout-minutes: 20
       - name: Bundle unsigned current-user installer (never a public release)
         run: npm run bundle:windows
+        timeout-minutes: 5
       - name: Verify GUI executable and record artifact provenance
         run: .\scripts\windows-artifact.ps1
+        timeout-minutes: 3
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pr-sniper-windows-x64-${{ github.sha }}
@@ -59,6 +97,7 @@ jobs:
           if-no-files-found: error
       - name: Verify installer and record exact-source provenance
         run: .\scripts\windows-installer-artifact.ps1
+        timeout-minutes: 3
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pr-sniper-windows-unsigned-installer-${{ github.sha }}
@@ -66,6 +105,7 @@ jobs:
           if-no-files-found: error
       - name: Build disposable upgrade fixture without changing release versions
         run: .\scripts\windows-upgrade-fixture.ps1
+        timeout-minutes: 10
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pr-sniper-windows-upgrade-test-only-${{ github.sha }}
@@ -94,6 +134,7 @@ jobs:
           path: src-tauri/target/upgrade-fixture
       - name: Install, launch, upgrade and uninstall only on this fresh hosted VM
         run: .\scripts\windows-installer-acceptance.ps1 -Candidate src-tauri\target\candidate -Upgrade src-tauri\target\upgrade-fixture
+        timeout-minutes: 12
       - name: Retain native installer diagnostics
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

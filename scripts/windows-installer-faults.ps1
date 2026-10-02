@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or
     $env:PR_SNIPER_PACKAGING_ACCEPTANCE -ne '1') { throw 'Native fault fixtures require the owned hosted acceptance job.' }
 . (Join-Path $PSScriptRoot 'windows-registry-acl-fixture.ps1')
+. (Join-Path $PSScriptRoot 'windows-choco-test.ps1')
 $directory = Join-Path $env:LOCALAPPDATA 'PR Sniper'
 $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'PR Sniper.lnk'
 $keyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\PR Sniper'
@@ -28,6 +29,7 @@ function Snapshot {
     } | ConvertTo-Json -Depth 5 -Compress
 }
 function Invoke-ExpectedFailure([switch] $Direct) {
+    Write-Host "[Expected fault] $Phase lifecycle must refuse without changing the owned installation."
     if ($Phase -eq 'Install' -or $Direct) {
         $path = if ($Direct) { Join-Path $directory 'uninstall.exe' } else { $Installer }
         $arguments = if ($Direct) { "/S _?=$directory" } else { '/S' }
@@ -38,8 +40,8 @@ function Invoke-ExpectedFailure([switch] $Direct) {
         }
         if ($process.ExitCode -eq 0) { throw 'Faulted installer incorrectly succeeded.' }
     } else {
-        & choco uninstall pr-sniper-localtest --yes --limit-output --no-progress --execution-timeout=60
-        if ($LASTEXITCODE -eq 0) { throw 'Faulted Chocolatey uninstall incorrectly succeeded.' }
+        Invoke-PrSniperChocoTest -Name 'uninstall-refusal' -Arguments @('uninstall','pr-sniper-localtest') `
+            -ExpectFailure -TimeoutSeconds 60 | Out-Null
         if (-not (Test-Path "$env:ChocolateyInstall\lib\pr-sniper-localtest\tools\installation.json")) {
             throw 'Failed uninstall discarded its recovery receipt.'
         }
@@ -51,6 +53,7 @@ function Require-FailedAndPreserved {
     if ((Snapshot) -cne $before -or (Test-Path (Join-Path $directory '.pr-sniper-transaction'))) {
         throw 'Fault rollback did not preserve exact prior files/value types/version/shortcut.'
     }
+    Write-Host '[PASS] Expected lifecycle refusal preserved the exact installation snapshot.'
 }
 $before = Snapshot
 $exclusive = [IO.File]::Open($shortcut, 'Open', 'Read', 'None')
