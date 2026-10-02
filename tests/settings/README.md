@@ -59,6 +59,37 @@ visibility boundary are mocked. Tests do not prove OS focus/dismissal or
 notification activation; the isolated native harness and platform procedures
 remain required.
 
+`fixture-coordination.spec.mjs` checks the process-per-command panel fixture,
+not application persistence. A stable, per-root OS file lock owns the entire
+panel read/modify/write operation (including snapshots); acquisition fails
+explicitly after five seconds rather than stealing ownership. Only panel
+commands take this lock. Non-panel Store operations, separate fixture roots,
+and already-held IPC replies remain concurrent. Never remove the lock sidecar
+while its root is live. The normal fixture teardown drains operations before
+removing the root.
+
+Panel JSON is written to an existing-dependency `tempfile` in the same root,
+flushed with `sync_all`, then atomically replaced while ownership is held.
+Malformed JSON, read failures, invalid routes and write failures remain errors;
+missing destinations still persist their exact route before returning an error.
+Ordinary errors remove temporary files and close the lock handle. OS termination
+releases the lock and leaves the last complete JSON intact; abrupt death can
+leave an unreferenced temporary file for the root owner's teardown to remove.
+This is not a power-loss/directory-durability guarantee or production storage
+change. Rust standard file locking and `tempfile` replacement are cross-platform;
+hosted Windows and macOS browser checks remain required.
+
+Two opt-in bridge arguments, `--panel-probe=loaded` and
+`--panel-probe=staged`, pause after reading the session or halfway through writing
+the temporary file. Probe input is one JSON request line followed by
+`continue`; stderr reports `fixture-panel:loaded`, `fixture-panel:staged`, or
+`fixture-panel:waiting`. EOF without release is an error. Normal command input,
+output and error envelopes are unchanged. These test-only barriers exercise
+lost-update and torn-read prevention, process termination, replacement failure,
+cleanup and bounded contention deterministically, without timing sleeps as
+assertions. The test fixture reaps only the children it created, even on failure.
+The ordinary-command burst also requires every exact revision to survive.
+
 `completion-focus.spec.mjs` retains the pointer/keyboard/nonfocusing completion
 matrix, final-redraw identity checks, independent saved resources/drafts and
 delayed account verification. Held-frame variants run each real resource save
@@ -84,6 +115,12 @@ sessions; deterministic native capacity tests separately prove dispatch/refill.
 Final and conversation regressions cover all four work purposes and exact
 same-commit reopened iteration provenance. These captures are browser evidence,
 not installed-app or live-provider acceptance.
+
+The exact two-destination visual assertion explicitly waits for both asynchronous
+receipts before reading the full array; identities, order and full URLs remain
+strictly equal. Its controlled-completion variant holds the real second
+`queue_destination` reply across the assertion's browser turn before releasing
+it. No application link behavior, timeout, retry or global IPC helper is changed.
 
 `shared-editors.spec.mjs` covers compact shared libraries, saved Agent counts
 above AI capacity, explicit account/model selection, full editor text and
@@ -156,9 +193,10 @@ explicit synthetic boundaries, not live-provider or persisted-activation proof.
 The unchanged native `monitoring`, `iterations` and `resources` test targets
 separately exercise actual scope persistence, cancellation/staleness, independent
 older reviewer admission, sticky tracking, seven-way scan fan-out/deduplication,
-next-scan additions, primary authority and resource guards. No bridge fixture or
-native implementation is changed; browser captures are not installed-app,
-native focus, credential or provider-action acceptance.
+next-scan additions, primary authority and resource guards. The panel-fixture
+coordination exception above is test-only; no native implementation is changed.
+Browser captures are not installed-app, native focus, credential or
+provider-action acceptance.
 
 `policy-inheritance.spec.mjs` exercises reusable Agents with multiple
 independent per-repository assignments, comment permissions and removal/reset.
