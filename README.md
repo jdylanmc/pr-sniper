@@ -20,6 +20,17 @@ AI accounts with browser sign-in and per-Agent account/model selection; see
 [approved specification](docs/agent/specs/pr-sniper-mvp.nano.md), not this
 implementation summary.
 
+Integrations keeps GitHub repository/publication identity separate from Copilot
+AI identity. Choose **Add GitHub account** or **Connect Copilot account** to
+start that native flow; sign-in is not started or a model selected automatically.
+The compact panels retain actual device-code waiting, returned-identity
+confirmation, failure/retry and disconnected states. Expand each provider's
+**access and consent** disclosure for scope and storage details. Only explicit
+confirmation saves the returned identity; cancellation does not connect or
+assign it. Connecting does not assign repositories, configure an Agent's model,
+or enable automation. Direct Claude, Codex and Grok remain disabled future
+integrations, distinct from models returned through Copilot.
+
 ## vNext design prototype
 
 The [standalone vNext POC](prototypes/v2/README.md) includes configured and

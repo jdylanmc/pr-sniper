@@ -1,5 +1,42 @@
 # Settings behavioral tests
 
+`accounts-visual.spec.mjs` covers the V5 account panels with explicitly synthetic
+authentication transport responses using the existing native `GithubAuthView`
+and `copilot_view` shapes. It asserts exact command payloads (including the Tauri
+API's empty `{}` payload), explicit role/provider entry, confirmation before
+connection, cancellation, expiry/permission/wrong-identity failures, reconnect
+identity pins, read/deletion retries and genuinely disabled future providers.
+Both Windows and macOS consent wording are exercised. Account actions leave
+production-Store settings, stable Agent/repository references and models
+unchanged across fresh Store processes and reload. The existing Copilot,
+resource and focus suites retain the unrelated-draft, reference-guard and
+no-model-substitution assertions.
+
+Keyboard checks retain focus through unchanged polling, account reorder,
+confirmation and cancellation, while delayed reads cannot revive cancelled
+sign-in or steal newer focus. Screenshots use each test's output directory at
+408x744 and 408x500; controls must fit completely inside the scroll viewport.
+Failed attempts retain a screenshot and Playwright error context. These are
+production-renderer/browser and Store checks, not live sign-in, native credential
+storage, installed-app focus or provider acceptance. No fictional-handle form,
+real clipboard operation or system-browser handoff is used.
+
+After building the frontend and unchanged `settings_bridge`, a focused run is:
+
+```sh
+SETTINGS_TEST_PORT=1457 npm exec playwright -- test \
+  --config tests/settings/playwright.config.mjs --browser=chromium \
+  accounts-visual.spec.mjs github-auth.spec.mjs github-auth-layout.spec.mjs \
+  copilot.spec.mjs resources.spec.mjs completion-focus.spec.mjs \
+  panel-focus.spec.mjs platform.spec.mjs
+```
+
+Native fake-transport device OAuth and fake-backend confirmation/isolation tests
+separately cover the existing authentication boundary. Credential-store tests
+require separate native authorization; headless fixtures do not establish those
+results. WebKit must be validated separately on a functioning host, not inferred
+from Chromium or worked around with skipped assertions.
+
 `preferences.spec.mjs` covers the compact V8 Preferences surface with the existing
 test-owned Store bridge and explicit synthetic native registration/authorization
 responses. It checks exact global cron/time-zone persistence, the full positive
