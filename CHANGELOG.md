@@ -7,6 +7,12 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- Lead Integrations with compact repository cards and shared-style editors for
+  real account binding, scope previews, watched identities and assignments.
+  Expose the independent reviewer-request override, guarded account unbinding
+  and the saved global schedule without adding scoped polling controls.
+  Preserve separate Comment/Approve/Merge choices, primary roles, resource
+  save guards and session drafts; manual binding requires explicit account choice.
 - Match the approved compact Agent and doctrine libraries with shared-resource
   editors, full prompt/principles, explicit account/model choices, filter-retained
   doctrine selections and visible shared-use/deletion consequences. Save applies
@@ -28,6 +34,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- Keep late monitoring-scope status reads from replacing newer preview errors,
+  cancel previews after repository edits or dismissal, and lock scope selection
+  while confirmation is pending.
 - Keep evidence polling alive across Status and Diagnostics, including delayed
   or failed utility reads.
 - Match the approved Job details hero, facts and readable configuration cards;
