@@ -85,6 +85,16 @@ Final and conversation regressions cover all four work purposes and exact
 same-commit reopened iteration provenance. These captures are browser evidence,
 not installed-app or live-provider acceptance.
 
+`shared-editors.spec.mjs` covers compact shared libraries, saved Agent counts
+above AI capacity, explicit account/model selection, full editor text and
+signatures, keyboard-scrolled and filter-retained doctrine selections, resource
+Save/Back/Cancel, shared-use deletion guards, empty-library restart and failed
+write/retry at 320x300. Screenshots use Playwright's per-test output directory.
+Run with `--browser=chromium` or `--browser=webkit`; the existing
+`SETTINGS_TEST_PORT` variable selects an isolated preview port. This is headless
+browser and test-owned Store evidence, not native focus, installed-app or live
+authentication acceptance.
+
 `doctrine-seeding.spec.mjs` covers the complete 23-document canonical catalog
 (exact titles and bodies, with only frontmatter/H1 removed), durable first load,
 Agent choices before visiting Doctrines, and saving Integrations first. It
