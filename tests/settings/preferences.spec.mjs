@@ -372,26 +372,41 @@ test("startup, notification and pause commit independently while newer keyboard 
   ).toContainText("Paused;");
 });
 
-for (const registration of ["absent", "registered", "invalid", null]) {
-  test(`startup reports actual ${registration ?? "unavailable"} registration separately from saved request`, async ({
-    page,
-    store,
-  }) => {
-    const settings = (await store("snapshot")).settings;
-    settings.launch_at_login = true;
-    await store("seed_settings", settings);
-    await syntheticNative(page, { registration });
-    await ready(page, store);
-    await expect(page.locator("#login")).toBeChecked();
-    await expect(page.locator("#login-status")).toContainText(
-      `Saved request: On. Registration: ${registration ?? "unavailable"}.`,
-    );
-    await expect(page.locator("#login-status")).toContainText(
-      "not effective macOS launch state",
-    );
-    if (registration === null)
-      await expect(page.locator("#login")).toBeDisabled();
-    else await expect(page.locator("#login")).toBeEnabled();
+// Controlled user agents prove browser presentation, not native registration.
+for (const { os, userAgent, startupSettings } of [
+  {
+    os: "macOS",
+    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+    startupSettings: "macOS Login Items",
+  },
+  {
+    os: "Windows",
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    startupSettings: "Windows Startup Apps",
+  },
+]) {
+  test.describe(`${os} browser startup presentation`, () => {
+    test.use({ userAgent });
+
+    for (const registration of ["absent", "registered", "invalid", null]) {
+      test(`startup reports actual ${registration ?? "unavailable"} registration separately from saved request`, async ({
+        page,
+        store,
+      }) => {
+        const settings = (await store("snapshot")).settings;
+        settings.launch_at_login = true;
+        await store("seed_settings", settings);
+        await syntheticNative(page, { registration });
+        await ready(page, store);
+        await expect(page.locator("#login")).toBeChecked();
+        await expect(page.locator("#login-status")).toHaveText(
+          `Saved request: On. Registration: ${registration ?? "unavailable"}. Registration is not effective ${os} launch state; ${startupSettings} can disable a registered entry.`,
+        );
+        if (registration === null)
+          await expect(page.locator("#login")).toBeDisabled();
+        else await expect(page.locator("#login")).toBeEnabled();
+      });
+    }
   });
 }
 
