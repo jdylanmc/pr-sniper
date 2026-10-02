@@ -69,8 +69,18 @@ export const panelCases = [
       );
       await act("navigate", { destination: "Settings" });
       await act("newDoctrineDraft", draft);
-      await act("navigate", { destination: "Running" });
-      await act("navigate", { destination: "Settings" });
+      for (const [destination, heading] of [
+        ["Running", "Work queue"],
+        ["Settings", "Settings"],
+      ]) {
+        await act("navigate", { destination });
+        const panel = await observe("panel");
+        equal(panel.visible, true, "Destination is visible");
+        equal(panel.windowCount, 1, "No duplicate panel");
+        equal(panel.windowId, first.windowId, "Same native panel");
+        equal(panel.destination, destination, "Exact selected destination");
+        equal(panel.heading, heading, "Exact rendered heading");
+      }
       for (const dismissal of ["escape", "close-button"]) {
         equal(await observe("doctrineDraft"), draft, "Unsaved text retained");
         await act("dismissPanel", { dismissal });

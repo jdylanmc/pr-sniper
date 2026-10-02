@@ -223,7 +223,96 @@ for (const entry of cases) {
     assert.deepEqual(summary.counts, { PASS: 1, FAIL: 1, BLOCKED: 0 });
     assert.equal(summary.nativeStatus, "BLOCKED");
   });
+  test(`${entry.id}: draft-only refusal to leave Settings is detected`, async () => {
+    const fixture = fixtureDriver(entry);
+    const act = fixture.driver.act;
+    let destination = "Queue";
+    let hasDraft = false;
+    fixture.driver.act = async (action, args) => {
+      if (
+        action === "navigate" &&
+        destination === "Settings" &&
+        hasDraft &&
+        args.destination !== "Settings"
+      )
+        return;
+      await act(action, args);
+      if (action === "navigate") destination = args.destination;
+      if (action === "newDoctrineDraft") hasDraft = true;
+    };
+    const result = await exerciseFixture(
+      entry,
+      fixture.driver,
+      fixture.context,
+    );
+    assert.equal(result.nativeStatus, "BLOCKED");
+    assert.equal(result.evidenceKind, "fixture-contract");
+    assert.equal(result.cleanup, "restored-and-terminated");
+    assert.equal(fixture.restores(), 1);
+    assert.equal(
+      result.status,
+      entry.id === "panel-unsaved-draft" ? "FAIL" : "PASS",
+    );
+    assert.equal(
+      result.reason,
+      entry.id === "panel-unsaved-draft"
+        ? "observable-mismatch"
+        : "observable-expectations-met",
+    );
+  });
 }
+
+for (const phase of ["before", "after"]) {
+  for (const [name, value] of [
+    ["NaN", NaN],
+    ["undefined", undefined],
+    ["+Infinity", Infinity],
+    ["-Infinity", -Infinity],
+    ["numeric string", "200"],
+  ]) {
+    test(`unusable ${name} clock ${phase} observation blocks and restores`, async () => {
+      let observations = 0;
+      const fixture = fixtureDriver(cases[0], (receipt) => {
+        observations++;
+        return { ...receipt, observedAt: 150 };
+      });
+      let reads = 0;
+      const times = phase === "before" ? [value, 200] : [100, value];
+      fixture.context.now = () => times[reads++ % times.length];
+      const result = await exerciseFixture(
+        cases[0],
+        fixture.driver,
+        fixture.context,
+      );
+      assert.equal(result.nativeStatus, "BLOCKED");
+      assert.equal(result.evidenceKind, "fixture-contract");
+      assert.equal(result.cleanup, "restored-and-terminated");
+      assert.equal(fixture.restores(), 1);
+      assert.equal(result.status, "BLOCKED");
+      assert.equal(result.reason, "unusable-clock");
+      assert.equal(observations, phase === "before" ? 0 : 1);
+    });
+  }
+}
+
+test("valid request clock rejects observations newer than start but older than request", async () => {
+  const fixture = fixtureDriver(cases[0], (receipt) => ({
+    ...receipt,
+    observedAt: 150,
+  }));
+  fixture.context.now = () => 200;
+  const result = await exerciseFixture(
+    cases[0],
+    fixture.driver,
+    fixture.context,
+  );
+  assert.equal(result.status, "BLOCKED");
+  assert.equal(result.reason, "invalid-or-stale-observation");
+  assert.equal(result.nativeStatus, "BLOCKED");
+  assert.equal(result.evidenceKind, "fixture-contract");
+  assert.equal(result.cleanup, "restored-and-terminated");
+  assert.equal(fixture.restores(), 1);
+});
 
 for (const [name, mutate] of [
   [

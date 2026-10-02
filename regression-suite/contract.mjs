@@ -92,8 +92,10 @@ export async function exerciseFixture(entry, driver, context) {
       },
       observe: async (target) => {
         const requestedAt = context.now();
+        if (!Number.isFinite(requestedAt)) throw new Blocked("unusable-clock");
         const receipt = await driver.observe(target);
         const now = context.now();
+        if (!Number.isFinite(now)) throw new Blocked("unusable-clock");
         if (
           !receipt ||
           receipt.target !== target ||
