@@ -1,7 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test, expect } from "./fixtures.mjs";
-import { section, seedAgent } from "./navigation.mjs";
+import { newDoctrine, section, seedAgent } from "./navigation.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
 import { target } from "./paths.mjs";
 
@@ -95,6 +95,43 @@ async function syntheticNative(page, options = {}) {
       return value;
     };
   }, options);
+}
+
+const automationReadError = "Synthetic automation snapshot unavailable.";
+const automationActionError = "Synthetic native pause was rejected.";
+
+async function automationFailures(page) {
+  await page.addInitScript(
+    ({ readError, actionError }) => {
+      const original = window.__TAURI_INTERNALS__.invoke;
+      const control = (window.__automationFailures = {
+        failReads: 0,
+        readUnavailable: false,
+        rejectPause: false,
+        holdPause: false,
+        pauseRequests: [],
+      });
+      window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+        if (command === "automation_snapshot") {
+          const fail = control.readUnavailable || control.failReads > 0;
+          if (control.failReads > 0) control.failReads--;
+          const value = await original(command, args);
+          if (fail) throw readError;
+          return value;
+        }
+        if (command === "set_automation_paused") {
+          control.pauseRequests.push(args.paused);
+          if (control.holdPause)
+            return new Promise((_resolve, reject) => {
+              control.reject = () => reject(actionError);
+            });
+          if (control.rejectPause) throw actionError;
+        }
+        return original(command, args);
+      };
+    },
+    { readError: automationReadError, actionError: automationActionError },
+  );
 }
 
 async function capture(page, browserName, name) {
@@ -518,6 +555,260 @@ test("a pending pause and its rejection survive an unrelated preference save wit
     preferences(page).locator("[data-automation-error]"),
   ).toContainText("Synthetic native pause was rejected.");
   expect((await store("automation_snapshot")).paused).toBe(false);
+});
+
+for (const recovery of ["refresh", "remount"]) {
+  test(`automation read recovery by ${recovery} clears only the transient alert without a pause action`, async ({
+    page,
+    store,
+  }) => {
+    await automationFailures(page);
+    await page.clock.install();
+    await ready(page, store);
+    const before = (await store("snapshot")).settings;
+    const root = page.locator("#automation-settings");
+    const button = root.locator("[data-toggle-automation]");
+    const error = root.locator("[data-automation-error]");
+    await page.evaluate(() => {
+      window.__automationFailures.failReads = 1;
+    });
+    await page.clock.fastForward(5000);
+    await page.evaluate(() => window.__settingsIdle());
+    await expect(root.locator("[data-automation-status]")).toHaveText(
+      "Automation state unavailable; occupancy is unknown.",
+    );
+    await expect(button).toBeDisabled();
+    await expect(error).toBeVisible();
+    await expect(error).toHaveText(automationReadError);
+
+    if (recovery === "remount") {
+      await section(page, "Doctrines");
+      await section(page, "Preferences");
+    } else await page.clock.fastForward(5000);
+    await page.evaluate(() => window.__settingsIdle());
+    await expect(root.locator("[data-automation-status]")).toHaveText(
+      "Running; 0 occupied / 4 AI slots (0 stopping); 0 waiting; 0 blocked.",
+    );
+    await expect(button).toBeEnabled();
+    await expect(button).toHaveText("Pause automation");
+    await expect(error).toBeHidden();
+    await expect(error).toHaveText("");
+    await section(page, "Doctrines");
+    await section(page, "Preferences");
+    await page.evaluate(() => window.__settingsIdle());
+    await expect(button).toBeEnabled();
+    await expect(error).toBeHidden();
+    await expect(error).toHaveText("");
+    expect(
+      await page.evaluate(() => window.__automationFailures.pauseRequests),
+    ).toEqual([]);
+    expect((await store("snapshot")).settings).toEqual(before);
+    expect((await store("automation_snapshot")).paused).toBe(false);
+  });
+}
+
+test("automation read recovery retains a rejected pause until another pause action", async ({
+  page,
+  store,
+}) => {
+  await automationFailures(page);
+  await page.clock.install();
+  await ready(page, store);
+  const root = page.locator("#automation-settings");
+  const button = root.locator("[data-toggle-automation]");
+  const error = root.locator("[data-automation-error]");
+  await page.evaluate(() => {
+    window.__automationFailures.rejectPause = true;
+    window.__automationFailures.failReads = 1;
+  });
+  await button.click();
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(root.locator("[data-automation-status]")).toHaveText(
+    "Automation state unavailable; occupancy is unknown.",
+  );
+  await expect(button).toBeDisabled();
+  await expect(error).toBeVisible();
+  await expect(error).toHaveText(
+    `${automationActionError}\n${automationReadError}`,
+  );
+  await page.clock.fastForward(5000);
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(root.locator("[data-automation-status]")).toContainText(
+    "Running; 0 occupied / 4",
+  );
+  await expect(button).toBeEnabled();
+  await expect(error).toBeVisible();
+  await expect(error).toHaveText(automationActionError);
+  await section(page, "Doctrines");
+  await section(page, "Preferences");
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(error).toHaveText(automationActionError);
+  expect((await store("automation_snapshot")).paused).toBe(false);
+  await page.evaluate(() => {
+    window.__automationFailures.rejectPause = false;
+  });
+  await button.click();
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(root.locator("[data-automation-status]")).toContainText(
+    "Paused; 0 occupied / 4",
+  );
+  await expect(error).toBeHidden();
+  await expect(error).toHaveText("");
+  expect((await store("automation_snapshot")).paused).toBe(true);
+  expect(
+    await page.evaluate(() => window.__automationFailures.pauseRequests),
+  ).toEqual([true, true]);
+});
+
+test("automation read recovery preserves pending pause and rejection across unrelated resource saves", async ({
+  page,
+  store,
+}) => {
+  await automationFailures(page);
+  await ready(page, store);
+  const root = page.locator("#automation-settings");
+  const button = root.locator("[data-toggle-automation]");
+  const error = root.locator("[data-automation-error]");
+  await page.locator("#global-capacity").fill("31");
+  await page.evaluate(() => {
+    window.__automationFailures.holdPause = true;
+  });
+  await button.click();
+  await newDoctrine(page, "Pending pause", "A separate saved resource.");
+  await section(page, "Preferences");
+  await expect(button).toBeDisabled();
+  await expect(root.locator("[data-automation-status]")).toContainText(
+    "Automation change pending",
+  );
+  await page.evaluate(() => window.__automationFailures.reject());
+  await expect(error).toHaveText(automationActionError);
+  await expect(button).toBeEnabled();
+  await expect(root.locator("[data-automation-status]")).toContainText(
+    "Running; 0 occupied / 4",
+  );
+  await newDoctrine(page, "Rejected pause", "Another separate resource.");
+  await section(page, "Preferences");
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(error).toBeVisible();
+  await expect(error).toHaveText(automationActionError);
+  await expect(button).toBeEnabled();
+  await expect(page.locator("#global-capacity")).toHaveValue("31");
+  const settings = (await store("snapshot")).settings;
+  expect(settings.capacity).toBe(4);
+  expect(settings.doctrines).toContainEqual({
+    title: "Pending pause",
+    body: "A separate saved resource.",
+  });
+  expect(settings.doctrines).toContainEqual({
+    title: "Rejected pause",
+    body: "Another separate resource.",
+  });
+  expect((await store("automation_snapshot")).paused).toBe(false);
+  expect(
+    await page.evaluate(() => window.__automationFailures.pauseRequests),
+  ).toEqual([true]);
+});
+
+for (const staleRead of ["success", "failure"]) {
+  test(`automation read recovery ignores an older ${staleRead} after a rejected pause and current read failure`, async ({
+    page,
+    store,
+    ipc,
+  }) => {
+    await automationFailures(page);
+    await page.clock.install();
+    await ready(page, store);
+    const root = page.locator("#automation-settings");
+    const button = root.locator("[data-toggle-automation]");
+    const error = root.locator("[data-automation-error]");
+    await page.evaluate((staleRead) => {
+      window.__automationFailures.failReads = staleRead === "failure" ? 1 : 0;
+    }, staleRead);
+    const older = ipc.holdNext("automation_snapshot");
+    await page.clock.fastForward(5000);
+    await older.arrived;
+    await page.evaluate(() => {
+      window.__automationFailures.rejectPause = true;
+      window.__automationFailures.failReads = 1;
+    });
+    await button.click();
+    await expect(error).toHaveText(
+      `${automationActionError}\n${automationReadError}`,
+    );
+    older.release();
+    await page.evaluate(() => window.__settingsIdle());
+    await expect(root.locator("[data-automation-status]")).toHaveText(
+      "Automation state unavailable; occupancy is unknown.",
+    );
+    await expect(button).toBeDisabled();
+    await expect(error).toHaveText(
+      `${automationActionError}\n${automationReadError}`,
+    );
+    await page.clock.fastForward(5000);
+    await page.evaluate(() => window.__settingsIdle());
+    await expect(root.locator("[data-automation-status]")).toContainText(
+      "Running; 0 occupied / 4",
+    );
+    await expect(button).toBeEnabled();
+    await expect(error).toHaveText(automationActionError);
+    expect((await store("automation_snapshot")).paused).toBe(false);
+    expect(
+      await page.evaluate(() => window.__automationFailures.pauseRequests),
+    ).toEqual([true]);
+  });
+}
+
+test("automation read recovery restores compact header status without a pause action", async ({
+  page,
+  store,
+}) => {
+  await automationFailures(page);
+  await page.clock.install();
+  await store("snapshot");
+  await store("panel_snapshot");
+  await page.goto("/");
+  await page.evaluate(() => window.__settingsIdle());
+  const root = page.locator("#automation-controls");
+  const button = root.locator("[data-toggle-automation]");
+  const error = root.locator("[data-automation-error]");
+  await expect(button).toBeEnabled();
+  await expect(button).toHaveAccessibleName("Pause automation");
+  await expect(button).toHaveAttribute("aria-pressed", "true");
+  await page.evaluate(() => {
+    window.__automationFailures.readUnavailable = true;
+  });
+  await page.clock.fastForward(5000);
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(button).toBeDisabled();
+  await expect(button).toHaveAccessibleName("Monitoring unavailable");
+  await expect(button).not.toHaveAttribute("aria-pressed");
+  await expect(root.locator("[data-monitoring-label]")).toHaveText(
+    "Unavailable",
+  );
+  await expect(root.locator("[data-automation-status]")).toHaveText(
+    "Automation state unavailable; occupancy is unknown.",
+  );
+  await expect(error).toHaveText(automationReadError);
+  await page.evaluate(() => {
+    window.__automationFailures.readUnavailable = false;
+  });
+  await page.clock.fastForward(5000);
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(button).toBeEnabled();
+  await expect(button).toHaveAccessibleName("Pause automation");
+  await expect(button).toHaveAttribute("aria-pressed", "true");
+  await expect(root.locator("[data-monitoring-label]")).toHaveText(
+    "Monitoring",
+  );
+  await expect(root.locator("[data-automation-status]")).toContainText(
+    "Running; 0 occupied / 4",
+  );
+  await expect(error).toBeHidden();
+  await expect(error).toHaveText("");
+  expect((await store("automation_snapshot")).paused).toBe(false);
+  expect(
+    await page.evaluate(() => window.__automationFailures.pauseRequests),
+  ).toEqual([]);
 });
 
 test("unavailable stored preferences are not replaced and recovery stays reachable", async ({
