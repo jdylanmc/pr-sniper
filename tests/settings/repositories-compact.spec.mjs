@@ -1099,3 +1099,324 @@ test("verified watched people, draft cancellation and keyboard controls remain u
   parent = await repositorySettings(page, "fixture/compact");
   await expect(parent.locator(".watchlist")).toContainText("GitHub ID 77");
 });
+
+for (const resolution of ["Save", "Cancel"]) {
+  test(`R1 correction: dirty unbind requires explicit ${resolution} without consuming repository or Preferences drafts`, async ({
+    page,
+    store,
+    dataRoot,
+  }, testInfo) => {
+    const initial = await seed(store);
+    initial.repositories[0].assignments = [
+      {
+        id: id(200),
+        agent_id: id(100),
+        schedule: initial.defaults.schedule,
+        comment: true,
+        approve: false,
+        actions: { approve: true, merge: false },
+      },
+    ];
+    await store("seed_settings", initial);
+    await provider(page);
+    await start(page, store);
+    const settingsPath = join(dataRoot, "config/settings.json");
+    const before = await readFile(settingsPath);
+    await section(page, "Preferences");
+    await page.locator("#global-cron").fill("invalid unsaved cron");
+    await page.locator("#global-capacity").fill("9");
+    let editor = await repositorySettings(page, "fixture/compact");
+    await editor
+      .locator(".assignment-row")
+      .getByRole("button", { name: "Remove", exact: true })
+      .click();
+    await editor
+      .getByLabel("Reviewer requests", { exact: true })
+      .selectOption("off");
+    await editor.getByLabel("Enable repository monitoring").uncheck();
+    await editor
+      .getByText("Repository and connection", { exact: true })
+      .click();
+    const unbind = editor.getByRole("button", {
+      name: "Unbind account",
+      exact: true,
+    });
+    await unbind.focus();
+    await unbind.press("Enter");
+    await expect(modal(page, "Unbind repository account?")).toHaveCount(0);
+    await expect(editor.getByRole("alert")).toContainText(
+      "Save or Cancel repository changes before unbinding",
+    );
+    await expect(unbind).toBeFocused();
+    await expect(editor.locator(".assignment-row")).toHaveCount(0);
+    await expect(
+      editor.getByLabel("Reviewer requests", { exact: true }),
+    ).toHaveValue("off");
+    await expect(
+      editor.getByLabel("Enable repository monitoring"),
+    ).not.toBeChecked();
+    expect(await readFile(settingsPath)).toEqual(before);
+    expect((await store("snapshot")).settings).toEqual(initial);
+    await editor.getByRole("alert").scrollIntoViewIfNeeded();
+    await capture(page, testInfo, `dirty-unbind-${resolution}`);
+
+    await close(editor);
+    editor = await repositorySettings(page, "fixture/compact");
+    await expect(editor.locator(".assignment-row")).toHaveCount(0);
+    await expect(
+      editor.getByLabel("Reviewer requests", { exact: true }),
+    ).toHaveValue("off");
+    await expect(
+      editor.getByLabel("Enable repository monitoring"),
+    ).not.toBeChecked();
+    if (resolution === "Save") await save(editor);
+    else
+      await editor
+        .getByRole("button", { name: "Cancel repository changes" })
+        .click();
+    const explicitlySaved = (await store("snapshot")).settings;
+    if (resolution === "Cancel") {
+      expect(explicitlySaved).toEqual(initial);
+      expect(await readFile(settingsPath)).toEqual(before);
+    } else {
+      expect(explicitlySaved.repositories[0].assignments ?? []).toEqual([]);
+      expect(explicitlySaved.repositories[0].overrides).toEqual({
+        reviewer_assignment: false,
+      });
+      expect(explicitlySaved.repositories[0].enabled).toBe(false);
+    }
+    expect(explicitlySaved.defaults).toEqual(initial.defaults);
+    expect(explicitlySaved.capacity).toBe(initial.capacity);
+    editor = await repositorySettings(page, "fixture/compact");
+    await editor
+      .getByText("Repository and connection", { exact: true })
+      .click();
+    await editor
+      .getByRole("button", { name: "Unbind account", exact: true })
+      .click();
+    const confirmation = modal(page, "Unbind repository account?");
+    await expect(confirmation).toContainText(
+      "Assignments, permissions and completed evidence are retained",
+    );
+    await confirmation
+      .getByRole("button", { name: "Unbind account", exact: true })
+      .click();
+    await expect(confirmation).toHaveCount(0);
+    const expected = structuredClone(explicitlySaved);
+    delete expected.repositories[0].provider_account_id;
+    delete expected.repositories[0].provider_repository_id;
+    expect((await store("snapshot")).settings).toEqual(expected);
+    await section(page, "Preferences");
+    await expect(page.locator("#global-cron")).toHaveValue(
+      "invalid unsaved cron",
+    );
+    await expect(page.locator("#global-capacity")).toHaveValue("9");
+    await page.reload();
+    await page.evaluate(() => window.__settingsIdle());
+    expect((await store("snapshot")).settings).toEqual(expected);
+  });
+}
+
+test("R1 correction: concurrent saved repository changes still reject a clean unbind", async ({
+  page,
+  store,
+  dataRoot,
+}) => {
+  const initial = await seed(store);
+  await provider(page);
+  await start(page, store);
+  const editor = await repositorySettings(page, "fixture/compact");
+  await editor.getByText("Repository and connection", { exact: true }).click();
+  await editor
+    .getByRole("button", { name: "Unbind account", exact: true })
+    .click();
+  const confirmation = modal(page, "Unbind repository account?");
+  const concurrent = structuredClone(initial);
+  concurrent.repositories[0].enabled = false;
+  await store("seed_settings", concurrent);
+  const before = await readFile(join(dataRoot, "config/settings.json"));
+  await confirmation
+    .getByRole("button", { name: "Unbind account", exact: true })
+    .click();
+  await expect(confirmation.getByRole("alert")).toContainText(
+    "Resource changed",
+  );
+  expect(await readFile(join(dataRoot, "config/settings.json"))).toEqual(
+    before,
+  );
+  expect((await store("snapshot")).settings).toEqual(concurrent);
+  await close(confirmation);
+  await expect(editor.locator(".repository-identity")).toContainText("22");
+  await expect(editor.getByLabel("Enable repository monitoring")).toBeChecked();
+});
+
+test("R2 correction: saved legacy interval and timezone remain visible but explicitly block polling", async ({
+  page,
+  store,
+  dataRoot,
+}, testInfo) => {
+  const initial = await seed(store);
+  initial.defaults.schedule = {
+    kind: "interval",
+    minutes: 7,
+    timezone: "America/New_York",
+  };
+  await store("seed_settings", initial);
+  const before = await readFile(join(dataRoot, "config/settings.json"));
+  await provider(page);
+  await start(page, store);
+  const editor = await repositorySettings(page, "fixture/compact");
+  const schedule = editor.locator("[data-global-schedule]");
+  await expect(schedule).toContainText("Every 7 minutes");
+  await expect(schedule).toContainText("America/New_York");
+  await expect(schedule).toContainText(
+    "Polling is blocked until you choose a global five-field cron schedule in Preferences",
+  );
+  await expect(
+    editor.locator("[name=cron],[name=minutes],[name=timezone],#global-cron"),
+  ).toHaveCount(0);
+  await schedule.scrollIntoViewIfNeeded();
+  await capture(page, testInfo, "legacy-schedule-blocked");
+  const resources = await store("saved_resources");
+  expect(resources.readiness.configuration_ready).toBe(false);
+  expect(resources.settings).toEqual(initial);
+  expect(await readFile(join(dataRoot, "config/settings.json"))).toEqual(
+    before,
+  );
+});
+
+for (const state of [
+  "edited",
+  "edited with newer save rejection",
+  "dismissed",
+  "dismissed during cleanup",
+]) {
+  test(`R3 correction: failed late-preview cleanup is accessible after ${state}`, async ({
+    page,
+    store,
+    dataRoot,
+  }, testInfo) => {
+    const initial = await seed(store);
+    const before = await readFile(join(dataRoot, "config/settings.json"));
+    const arrived = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const cancelling = Promise.withResolvers();
+    const releaseCancellation = Promise.withResolvers();
+    let previews = 0;
+    let cancellations = 0;
+    const calls = await provider(page, async (command) => {
+      if (command === "preview_monitoring_activation") {
+        if (++previews === 1) {
+          arrived.resolve();
+          await release.promise;
+        }
+        return preview;
+      }
+      if (command === "cancel_monitoring_activation") {
+        if (++cancellations === 1) {
+          cancelling.resolve();
+          await releaseCancellation.promise;
+          throw "Synthetic preview cleanup failure";
+        }
+        return null;
+      }
+      throw "Unexpected provider command";
+    });
+    await start(page, store);
+    let editor = await repositorySettings(page, "fixture/compact");
+    await editor.getByRole("button", { name: "Configure scope" }).click();
+    await arrived.promise;
+    if (state === "dismissed") await close(editor);
+    else
+      await editor
+        .getByLabel("Reviewer requests", { exact: true })
+        .selectOption("off");
+    release.resolve();
+    await cancelling.promise;
+    let rejection;
+    if (state === "edited with newer save rejection") {
+      const temporary = join(dataRoot, "config/settings.json.tmp");
+      await mkdir(temporary);
+      await editor
+        .getByRole("button", { name: "Save repository", exact: true })
+        .click();
+      await expect(editor.locator("[data-resource-error]")).toBeVisible();
+      rejection = await editor.locator("[data-resource-error]").textContent();
+      await rm(temporary, { recursive: true });
+    }
+    if (state === "dismissed during cleanup") await close(editor);
+    const open = state.startsWith("edited");
+    const focus = open
+      ? editor.getByLabel("Reviewer requests", { exact: true })
+      : row(page).getByRole("button", { name: "Settings", exact: true });
+    await focus.focus();
+    releaseCancellation.resolve();
+    await page.evaluate(() => window.__settingsIdle());
+    const alert = (open ? editor : page).getByRole("alert").filter({
+      hasText: "Monitoring scope preview cleanup failed",
+    });
+    await expect(alert).toBeVisible();
+    await expect(alert).toContainText("cancel or replace the preview");
+    expect(
+      await alert.evaluate(
+        (element) => !!element.closest('[inert],[aria-hidden="true"]'),
+      ),
+    ).toBe(false);
+    await expect(focus).toBeFocused();
+    await expect(
+      modal(page, "Monitoring scope for fixture/compact"),
+    ).toHaveCount(0);
+    expect(
+      calls.filter(({ command }) => command === "apply_monitoring_activation"),
+    ).toEqual([]);
+    expect(
+      (await store("monitoring_activation_status", { repositoryId: id(1) }))
+        .active,
+    ).toBe(false);
+    expect((await store("snapshot")).settings).toEqual(initial);
+    expect(await readFile(join(dataRoot, "config/settings.json"))).toEqual(
+      before,
+    );
+    if (open) {
+      await expect(
+        editor.getByLabel("Reviewer requests", { exact: true }),
+      ).toHaveValue("off");
+      await editor
+        .getByRole("button", { name: "Refresh scope status" })
+        .click();
+      await page.evaluate(() => window.__settingsIdle());
+      await expect(alert).toBeVisible();
+      if (rejection)
+        await expect(editor.locator("[data-resource-error]")).toHaveText(
+          rejection,
+        );
+    }
+    await alert.scrollIntoViewIfNeeded();
+    await capture(page, testInfo, `cleanup-${state.replaceAll(" ", "-")}`);
+    if (open) await close(editor);
+    editor = await repositorySettings(page, "fixture/compact");
+    await expect(
+      editor.getByLabel("Reviewer requests", { exact: true }),
+    ).toHaveValue(state === "dismissed" ? "inherit" : "off");
+    await editor
+      .getByRole("button", { name: "Cancel repository changes" })
+      .click();
+    editor = await repositorySettings(page, "fixture/compact");
+    await editor.getByRole("button", { name: "Configure scope" }).click();
+    const scope = modal(page, "Monitoring scope for fixture/compact");
+    await expect(scope).toBeVisible();
+    await scope.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(scope).toHaveCount(0);
+    await expect(
+      editor.getByRole("button", { name: "Configure scope" }),
+    ).toBeFocused();
+    expect(previews).toBe(2);
+    expect(cancellations).toBe(2);
+    expect(
+      calls.filter(({ command }) => command === "apply_monitoring_activation"),
+    ).toEqual([]);
+    expect(await readFile(join(dataRoot, "config/settings.json"))).toEqual(
+      before,
+    );
+  });
+}
