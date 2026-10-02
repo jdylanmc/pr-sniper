@@ -7,6 +7,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- Match the approved compact Agent and doctrine libraries with shared-resource
+  editors, full prompt/principles, explicit account/model choices, filter-retained
+  doctrine selections and visible shared-use/deletion consequences. Save applies
+  only the resource; Back/Cancel preserves earlier saves and unrelated drafts.
 - Re-home global schedule, machine AI capacity and automation defaults in compact
   Preferences. Clearly separate draft-backed saves from immediate native pause,
   notification opt-in and startup; keep Status/recovery and redacted Diagnostics
