@@ -90,6 +90,17 @@ cleanup and bounded contention deterministically, without timing sleeps as
 assertions. The test fixture reaps only the children it created, even on failure.
 The ordinary-command burst also requires every exact revision to survive.
 
+The conversation state-presentation loop completes the initial native Job view
+and its reads, then completes the Queue UI navigation and its reads before
+directly requesting the exact Job again. IPC idle alone is not a route-completion
+contract: a queued UI command may not have dispatched yet, and the initial shell
+already says "Your queue". Controlled regressions hold the initial native reply
+and Queue either before dispatch or after its real Store response, requiring the
+persisted route/revision and response order to remain initial Job, Queue, Job.
+Their attached JSON is browser/test-bridge evidence, not native-app acceptance or
+proof of a particular hosted CI interleaving. Genuine concurrency tests and
+lower-revision rejection coverage remain unchanged.
+
 `completion-focus.spec.mjs` retains the pointer/keyboard/nonfocusing completion
 matrix, final-redraw identity checks, independent saved resources/drafts and
 delayed account verification. Held-frame variants run each real resource save
