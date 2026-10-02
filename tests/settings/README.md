@@ -1,5 +1,29 @@
 # Settings behavioral tests
 
+`preferences.spec.mjs` covers the compact V8 Preferences surface with the existing
+test-owned Store bridge and explicit synthetic native registration/authorization
+responses. It checks exact global cron/time-zone persistence, the full positive
+u32 capacity range, invalid and failed writes, legacy intervals, independent
+automatic-start/comment gates, immediate startup/notification/pause boundaries,
+pending/rejected operations across unrelated saves, missing settings, exact
+notification recovery routes, redacted diagnostics, drafts, Back focus and
+hide/reopen. At 320x300, the focused input must fit fully within the scroll
+viewport, not merely intersect it. No native application, login registration,
+OS notification, provider action or desktop browser is launched by this suite.
+
+After building the frontend and `settings_bridge` as described below, run the
+same tests in headless Chromium and WebKit:
+
+```sh
+SETTINGS_TEST_PORT=1450 npm exec playwright -- test \
+  --config tests/settings/playwright.config.mjs preferences.spec.mjs
+SETTINGS_TEST_PORT=1450 npm exec playwright -- test \
+  --config tests/settings/playwright.config.mjs --browser=webkit preferences.spec.mjs
+```
+
+Captures are under `<target>/visual-84-screenshots/{chromium,webkit}/`.
+They are browser/presentation evidence, not installed-app native acceptance.
+
 Run `npm ci`, then `npm run test:settings` with the repository's Rust toolchain
 on `PATH`. If Playwright reports a missing browser executable, install its
 matching Chromium build with `npm exec playwright install chromium`.
