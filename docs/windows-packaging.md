@@ -1,10 +1,39 @@
 # Windows installer and Chocolatey candidates
 
-This is the bounded unsigned packaging portion of [#62](https://github.com/jdylanmc/pr-sniper/issues/62)
-and [#63](https://github.com/jdylanmc/pr-sniper/issues/63), **not a trusted public
-Windows release**. Signing ownership, approved distribution/license metadata,
-the first real version/tag and [#64](https://github.com/jdylanmc/pr-sniper/issues/64)'s
-Chocolatey publisher/moderation remain external prerequisites.
+The unsigned installer and private Chocolatey package were delivered in
+[#87](https://github.com/jdylanmc/pr-sniper/pull/87), completing the local package
+scope of [#63](https://github.com/jdylanmc/pr-sniper/issues/63). This is **not a
+trusted public Windows release**. Signed Windows releases
+([#62](https://github.com/jdylanmc/pr-sniper/issues/62)) and public Chocolatey
+publication ([#64](https://github.com/jdylanmc/pr-sniper/issues/64)) remain open
+and explicitly deferred by the owner.
+
+## Delivery status
+
+**Status as of 2026-10-01:** Windows work is parked. GitHub's **Windows native
+application** workflow is manually disabled, including its `windows` and
+`windows-installer-acceptance` jobs. The workflow YAML and implementation remain
+in source; this is a repository setting, not a code removal. macOS CI and signed
+macOS release workflows remain enabled.
+
+The completed delivery is anchored to merged commit
+`513c1a3f5746450dfc3022a988634577901ed97e`:
+
+- [Post-merge Windows CI](https://github.com/jdylanmc/pr-sniper/actions/runs/36811769429)
+  passed application/build checks and the full hosted installer, upgrade,
+  uninstall, fault/retry, preservation and cleanup acceptance.
+- [Post-merge macOS CI](https://github.com/jdylanmc/pr-sniper/actions/runs/36811769439)
+  passed at the same commit.
+- [Authorized local VM verification](https://github.com/jdylanmc/pr-sniper/pull/87#issuecomment-5924655151)
+  separately proved actual tray/menu behavior, upgrade/uninstall, interrupted
+  removal recovery and clean reinstall. The original app and profile were
+  restored; hosted process readiness alone is not interactive GUI proof.
+
+These receipts establish acceptance for that delivery snapshot, not every later
+`main` commit. When Windows work resumes, re-enable the workflow and obtain fresh
+exact-commit evidence. Public Windows release preflight still requires a green
+Windows **main-push** run; the pause does not waive that gate or justify reusing
+an older pass for a newer release.
 
 ## Installer contract
 
@@ -116,9 +145,10 @@ not a crash-atomic ledger or a general repair framework.
 
 The retained-state assertion and read-only fault case remain mandatory. Pure
 tests cover repeated backup restoration and stale/foreign binding refusal;
-corrected real Chocolatey fault/retry and residue-free cleanup still need native
-validation. Historical clean install/uninstall/reinstall proof does not establish
-this repaired failure path.
+real Chocolatey fault/retry and residue-free cleanup passed for the
+[recorded delivery](#delivery-status). Changes to this protocol still require
+fresh native validation; clean install/uninstall/reinstall alone does not
+establish the failure path.
 `removal-after-chocolatey-failure.json`, in the existing failure-retained
 diagnostic artifact, records expected/observed app presence, exact uninstaller
 hash, completion status and the three exact receipt-file hashes/presence in
@@ -319,9 +349,11 @@ an arbitrary registry command or recursively delete a directory.
 
 Checked against the [official moderation requirements/guidelines](https://docs.chocolatey.org/en-us/community-repository/moderation/)
 and [validator guidance](https://docs.chocolatey.org/en-us/community-repository/moderation/package-validator/)
-on 2026-09-30. **Met** below means local source/pack evidence, not community
-approval. **Deferred** needs owner decisions or actual validation; **N/A** is
-limited to the stated variant. The service/moderator may enforce newer rules.
+on 2026-09-30; delivery status and native evidence were reconciled on 2026-10-01.
+**Met** below means the stated local evidence at the recorded delivery, not
+community approval or acceptance of later commits. **Deferred** needs owner
+decisions or public-distribution validation; **N/A** is limited to the stated
+variant. The service/moderator may enforce newer rules.
 
 | Check                                          | Official expectation / scope                                                                                                                                 | Status   | Evidence or remaining action                                                                                                                                                                                                                                                                              |
 | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -330,17 +362,18 @@ limited to the stated variant. The service/moderator may enforce newer rules.
 | License, attribution and acceptance            | Include an available license URL; use accurate copyright and applicable trial/license-required disclosures                                                   | Deferred | Owner must approve actual terms, attribution and public metadata. The generator's current `requireLicenseAcceptance=false` is not approval of future terms. Do not invent a license/copyright or add trial/license tags without facts.                                                                    |
 | Download contract                              | Project-origin download and package/installer version agreement; pinned checksum is this package's integrity contract                                        | Met      | Exact versioned project URL, SHA-256, version and public signature gates are implemented. This does not establish published signed bytes.                                                                                                                                                                 |
 | WebView2 / dependencies                        | Verifier checks that the package installs correctly with appropriate runtime dependencies; the cited guidance does not mandate a particular WebView2 package | Deferred | Local design intentionally declares and checks **pre-installed WebView2 Evergreen**, rather than installing a Chocolatey dependency/bootstrapper. Confirm clean-verifier compatibility before public submission; any dependency/provisioning change needs a reviewed owner choice, not a guessed package. |
-| Lifecycle / script behavior                    | Silent install and correct package install/uninstall; use appropriate Chocolatey helpers                                                                     | Deferred | Pack and focused source tests pass. Actual corrected install/upgrade/uninstall, rollback and GUI evidence await review and the authorized native handoff/hosted job.                                                                                                                                      |
+| Lifecycle / script behavior                    | Silent install and correct package install/uninstall; use appropriate Chocolatey helpers                                                                     | Met      | Private-feed pack/install/upgrade/uninstall, rollback/retry, preservation and clean reinstall passed in native validation. Interactive tray proof was verified separately on the authorized VM; see [delivery status](#delivery-status).                                                                  |
 | Public embedded-binary redistribution evidence | Required when distributing embedded binaries                                                                                                                 | N/A      | Public variant downloads the installer; it does not embed it. The embedded unsigned local-test package must never be submitted. Application distribution rights remain an owner prerequisite.                                                                                                             |
 | Additional architecture URLs                   | Include supported x86/x64 downloads when available                                                                                                           | N/A      | Only x64 is built for this delivery; no x86/ARM URL or architecture-dependent installer is invented.                                                                                                                                                                                                      |
 | Icon and release notes                         | `iconUrl` and useful release notes are recommendations, not blanket required fields; a supplied icon must meet hosting/format rules                          | Deferred | Select an owner-controlled compliant icon URL and real release notes when public metadata is approved; do not add arbitrary placeholders or raw GitHub icon links.                                                                                                                                        |
 | Public verification / moderation               | Validator/verifier checks and moderator approval are distinct from pack success                                                                              | Deferred | Trusted signing is additionally required by PR Sniper's release policy. Publisher identity/key, immutable public artifacts, submission and public-feed install/upgrade are not established.                                                                                                               |
 
 Public partial-asset/submission recovery remains in
-[trusted signing and publication](#trusted-signing-and-publication-still-blocked):
+[trusted signing and publication](#trusted-signing-and-publication-deferred):
 reconcile actual remote state, retain immutable bytes/tags and existing macOS
 assets, and distinguish pending/rejected submissions from public approval.
-This checklist does not authorize publication or complete #63's native criteria.
+The local-completion scope of #63 is closed; this checklist does not authorize
+publication or satisfy the remaining public-distribution criteria in #62/#64.
 
 ## Hosted-only acceptance and evidence
 
@@ -361,7 +394,7 @@ Missing traces are not success: the process may have failed before trace setup.
 The ordinary acceptance receipt remains success-only. A generic NSIS exit 2
 (`Setup was cancelled` in Chocolatey) alone does not identify which gate failed.
 
-The existing Windows workflow retains **all** full native, offline runtime,
+When enabled, the Windows workflow runs **all** full native, offline runtime,
 browser, formatting and frontend checks. It adds the unsigned installer artifact
 after those checks, then builds an explicitly named **test-only** next-patch
 version with a disposable Tauri JSON override. No checked-in release version or
@@ -390,8 +423,11 @@ from **actual interactive tray/menu acceptance**. A nonzero `MainWindowHandle`
 may belong to Tauri's internal single-instance window and is not rejected.
 That smoke cannot prove tray icon visibility, menu actions, real logon or
 notification delivery. The real later-release upgrade and public-feed install
-remain separate. Until this exact commit's hosted job has actually run green,
-install/upgrade/uninstall are **implemented but unverified**, not passed locally.
+remain separate. Each new candidate needs its own green hosted run; build/helper
+checks or an older run do not establish CI acceptance. The
+[recorded delivery](#delivery-status) has both successful
+hosted lifecycle acceptance and separate local interactive proof; the workflow
+is currently paused.
 
 Hosted fault fixtures lock only the owned uninstaller/shortcut, deny writes on
 only the owned installer key and exercise test-only injected failures after file
@@ -430,9 +466,11 @@ validation on a shared machine with an existing app. Pack-only tests do not
 prove installed behavior. Source/helper tests never execute their synthetic PE
 fixture or touch native application registrations/credentials.
 
-## Trusted signing and publication: still blocked
+## Trusted signing and publication: deferred
 
-No provider/account has been selected or provisioned. Retain the requirement for
+Public Windows distribution is deferred, not an unfinished local acceptance
+step. No provider/account was selected or provisioned by the Windows delivery.
+Retain the requirement for
 **publicly trusted Windows Authenticode signing and a trusted timestamp**.
 There is no self-signed/ad-hoc fallback, borrowed unrelated certificate, trust-root
 installation or credential upload in this delivery.
@@ -475,7 +513,9 @@ The human/external operator must:
    Respond to moderation requirements, reconcile failed submissions, and verify
    public-feed installation plus a subsequent approved release upgrade.
 
-No #62/#63/#64 completion is inferred from this bounded candidate.
+The completed private-package scope of #63 does not complete #62 or #64.
+Neither unsigned candidate acceptance nor the CI pause authorizes a signed
+Windows release or public Chocolatey submission.
 
 ## Primary contracts checked
 
