@@ -373,6 +373,8 @@ export async function mountSettings(
     disposeCopilot?.();
     disposeCopilot = undefined;
     app.querySelector("h1")!.textContent = sections[section][0];
+    app.dataset.resourceLibrary =
+      section === "agents" || section === "doctrines" ? section : "";
     app.querySelector(".settings-heading p")!.textContent =
       sections[section][1];
     app
@@ -415,16 +417,87 @@ export async function mountSettings(
 
   // ---------------------------------------------------------------- Doctrines
 
+  const doctrineUsers = (doctrine: Doctrine) =>
+    agents().filter((agent) =>
+      doctrineTitles(agent).some(
+        (title) =>
+          title.trim().toLowerCase() === doctrine.title.trim().toLowerCase(),
+      ),
+    );
+  const agentRepositories = (agent: Agent) =>
+    repositories().filter((repository) =>
+      (repository.assignments ?? []).some(
+        (assignment) => assignment.agent_id === agent.id,
+      ),
+    );
+
+  function resourceEditor(
+    modal: HTMLDialogElement,
+    deletion?: { edit: ResourceEdit; blocked: string },
+  ) {
+    modal.classList.add("shared-resource-editor");
+    if (modal.parentElement?.classList.contains("dialog-fallback"))
+      modal.parentElement.classList.add("shared-resource-host");
+    const back = modal.querySelector<HTMLButtonElement>(".dialog-head button")!;
+    back.classList.add("resource-back");
+    back.title = "Back to library; discard unsaved fields";
+    back.innerHTML =
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m14 6-6 6 6 6M8 12h12"/></svg>';
+    modal.querySelector<HTMLButtonElement>("[data-cancel-resource]")!.onclick =
+      () => modal.close();
+    if (!deletion) return;
+    const remove = modal.querySelector<HTMLButtonElement>(
+      "[data-delete-resource]",
+    )!;
+    const confirmation = modal.querySelector<HTMLElement>(
+      "[data-delete-confirmation]",
+    )!;
+    const alert = modal.querySelector<HTMLElement>("[role=alert]")!;
+    remove.onclick = () => {
+      if (deletion.blocked) {
+        alert.textContent = deletion.blocked;
+        alert.hidden = false;
+        alert.scrollIntoView({ block: "nearest" });
+        return;
+      }
+      confirmation.hidden = false;
+      confirmation.querySelector("button")!.focus();
+    };
+    confirmation.querySelector<HTMLButtonElement>(
+      "[data-keep-resource]",
+    )!.onclick = () => {
+      confirmation.hidden = true;
+      remove.focus();
+    };
+    confirmation.querySelector<HTMLButtonElement>(
+      "[data-confirm-delete]",
+    )!.onclick = async () => {
+      try {
+        await commitResource(deletion.edit, modal);
+        modal.close();
+        render();
+      } catch (cause) {
+        alert.textContent = reason(cause);
+        alert.hidden = false;
+        alert.scrollIntoView({ block: "nearest" });
+      }
+    };
+  }
+  const resourceActions = (kind: "agent" | "doctrine", existing: boolean) =>
+    `<p class="settings-hint">Save applies this shared ${kind} immediately. Back or Cancel discards only this editor's unsaved fields; earlier saves stay applied.</p>
+    <p role="alert" hidden></p><div class="resource-actions"><button class="primary">Save ${kind}</button><button type="button" data-cancel-resource>Cancel</button></div>
+    ${existing ? `<button type="button" class="resource-delete" data-delete-resource>Delete ${kind}</button><div data-delete-confirmation hidden><p>Delete this saved ${kind} and discard these unsaved fields? Completed review evidence is retained.</p><div class="resource-actions"><button type="button" data-confirm-delete>Confirm deletion</button><button type="button" data-keep-resource>Keep ${kind}</button></div></div>` : ""}`;
+
   function renderDoctrines() {
-    content.innerHTML = `<div class="section-actions"><h2>Your doctrines</h2><button class="primary" id="new-doctrine">New doctrine</button></div><p class="settings-hint">Doctrines are plain-text principles -- not commands. Select zero or more per Agent, composed in selection order. Around 500 words is a friendly length, never a limit.</p><div class="doctrine-list"></div>`;
+    content.innerHTML = `<div class="section-actions resource-toolbar"><p>Reusable principles, shared across Agents. Plain text, never commands.</p><button class="primary" id="new-doctrine">New doctrine</button></div><div class="doctrine-list resource-library"></div>`;
     const list = content.querySelector(".doctrine-list")!;
     if (!doctrines().length)
       list.innerHTML =
         '<div class="settings-empty"><strong>No doctrines yet</strong><p>Create a doctrine to add your own review principles.</p></div>';
     for (const doctrine of doctrines()) {
       const row = document.createElement("article");
-      row.className = "doctrine-card";
-      row.innerHTML = `<div><h3>${escape(doctrine.title)}</h3><p>${escape(doctrine.body)}</p><p class="word-count">${words(doctrine.body)} words</p></div><div class="card-actions"><button data-edit>Edit</button><button data-remove>Delete</button></div>`;
+      row.className = "doctrine-card resource-card";
+      row.innerHTML = `<span class="resource-symbol">${icon("doctrines")}</span><div class="resource-copy"><h3>${escape(doctrine.title)}</h3><p class="resource-preview">${escape(doctrine.body)}</p><p class="word-count">${words(doctrine.body)} words / ${doctrineUsers(doctrine).length} Agents</p></div><div class="card-actions"><button data-edit>Edit</button><button data-remove>Delete</button></div>`;
       for (const action of ["edit", "remove"])
         row.querySelector<HTMLElement>(`[data-${action}]`)!.dataset.focusKey =
           `doctrine:${doctrine.title}:${action}`;
@@ -434,13 +507,7 @@ export async function mountSettings(
         event,
       ) => {
         const opener = event.currentTarget as HTMLButtonElement;
-        const usedBy = agents().filter((a) =>
-          doctrineTitles(a).some(
-            (title) =>
-              title.trim().toLowerCase() ===
-              doctrine.title.trim().toLowerCase(),
-          ),
-        );
+        const usedBy = doctrineUsers(doctrine);
         if (usedBy.length) {
           showError(
             "This doctrine is used by an Agent. Remove or replace its references and save the Agent before deleting it.",
@@ -477,10 +544,30 @@ export async function mountSettings(
   }
 
   function editDoctrine(opener: HTMLElement, existing?: Doctrine) {
+    const users = existing ? doctrineUsers(existing) : [];
     const modal = dialog(
       existing ? "Edit doctrine" : "New doctrine",
-      `<form><label>Title<input name="title" required maxlength="100" value="${escape(existing?.title ?? "")}" placeholder="e.g. boundaries" /></label><label>Principles<textarea name="body" rows="12" required>${escape(existing?.body ?? "")}</textarea></label><p class="word-count" data-count>${words(existing?.body ?? "")} words</p><p class="settings-hint">Title doubles as this doctrine's slug -- keep it short and unique. Plain text only, never credentials.</p><p role="alert" hidden></p><button class="primary">Save doctrine</button></form>`,
+      `<form><label>Title<input name="title" required maxlength="100" value="${escape(existing?.title ?? "")}" placeholder="e.g. boundaries" /></label><label>Principles<textarea name="body" rows="10" required>${escape(existing?.body ?? "")}</textarea></label><p class="word-count" data-count>${words(existing?.body ?? "")} words</p><p class="settings-hint">Title doubles as this doctrine's slug -- keep it short and unique. Plain text only, never commands or credentials. Around 500 words is a friendly length, not a limit.</p>
+      <p class="resource-impact">${users.length ? `Shared by ${users.length} Agents: ${escape(users.map((agent) => agent.name).join(", "))}. Saving updates their shared principles; renaming preserves references. Remove these references and save the Agents before deleting.` : "Not used by any Agent. Select this doctrine from an Agent editor to share it."} Completed review evidence keeps its captured text.</p>${resourceActions("doctrine", !!existing)}</form>`,
       opener,
+    );
+    resourceEditor(
+      modal,
+      existing
+        ? {
+            edit: {
+              kind: "doctrine",
+              title: existing.title,
+              expected:
+                saved.doctrines?.find((d) => d.title === existing.title) ??
+                null,
+              value: null,
+            },
+            blocked: users.length
+              ? "This doctrine is used by an Agent. Remove or replace its references and save the Agent before deleting it."
+              : "",
+          }
+        : undefined,
     );
     const body = modal.querySelector<HTMLTextAreaElement>("[name=body]")!;
     const count = modal.querySelector<HTMLElement>("[data-count]")!;
@@ -526,7 +613,7 @@ export async function mountSettings(
   // -------------------------------------------------------------------- Agents
 
   function renderAgents(onReady: () => void) {
-    content.innerHTML = `<div class="section-actions"><h2>Your agents</h2><button class="primary" id="new-agent" disabled>New agent</button></div><p class="settings-hint">Each Agent chooses an AI account and a model returned by that account. Doctrine, prompt and saved signature stay reusable across repository assignments. Repository credentials, not the AI account, determine the acting identity for repository access and gated comment publication.</p><p class="settings-notice" data-copilot-status>Reading Copilot accounts...</p><button id="manage-copilot">Manage Copilot accounts</button><div class="agent-list"></div>`;
+    content.innerHTML = `<div class="section-actions resource-toolbar"><p>Unlimited saved configurations. AI capacity is set separately.</p><button class="primary" id="new-agent" disabled>New agent</button></div><div class="resource-account-notice"><p class="settings-hint" data-copilot-status>Reading Copilot accounts...</p><button id="manage-copilot">Manage Copilot accounts</button></div><div class="agent-list resource-library"></div>`;
     const list = content.querySelector(".agent-list")!;
     if (!agents().length)
       list.innerHTML =
@@ -536,14 +623,8 @@ export async function mountSettings(
         (a) => a.account_id === agent.ai_account?.account_id,
       );
       const row = document.createElement("article");
-      row.className = "agent-card";
-      row.innerHTML = `<div><h3>${escape(agent.name)}</h3><p>${escape(agent.prompt)}</p><p data-account-state>${escape(agent.ai_account ? `Copilot: ${account?.login ?? agent.ai_account.account_id}. ${account?.state === "connected" ? "Sign-in verified; model access checked in Edit." : "Reconnect required; Agent blocked."}` : "Unconfigured. Choose an AI account and an actual model; the legacy selection is retained.")}</p><div class="chip-row"><span class="chip">${escape(agent.model)}</span>${doctrineTitles(
-        agent,
-      )
-        .map((title) => `<span class="chip">${escape(title)}</span>`)
-        .join(
-          "",
-        )}<span class="chip">${escape(agent.signature)}</span></div></div><div class="card-actions"><button data-edit>Edit</button><button data-remove>Delete</button></div>`;
+      row.className = "agent-card resource-card";
+      row.innerHTML = `<span class="resource-symbol">${icon("agents")}</span><div class="resource-copy"><h3>${escape(agent.name)}</h3><p class="resource-meta">${escape(agent.model)} / ${agentRepositories(agent).length} repositories</p><p class="resource-preview">${escape(agent.prompt)}</p><p data-account-state>${escape(agent.ai_account ? `Copilot: ${account?.login ?? agent.ai_account.account_id}. ${account?.state === "connected" ? "Sign-in verified; model access checked in Edit." : "Reconnect required; Agent blocked."}` : "Unconfigured. Choose an AI account and an actual model; the legacy selection is retained.")}</p></div><div class="card-actions"><button data-edit>Edit</button><button data-remove>Delete</button></div>`;
       row.dataset.agentId = agent.id;
       for (const action of ["edit", "remove"])
         row.querySelector<HTMLElement>(`[data-${action}]`)!.dataset.focusKey =
@@ -554,9 +635,7 @@ export async function mountSettings(
         event,
       ) => {
         const opener = event.currentTarget as HTMLButtonElement;
-        const assigned = repositories().filter((r) =>
-          (r.assignments ?? []).some((a) => a.agent_id === agent.id),
-        );
+        const assigned = agentRepositories(agent);
         if (assigned.length) {
           showError(
             "This Agent is assigned to a repository. Remove or replace its assignments and save the repository before deleting it.",
@@ -634,25 +713,81 @@ export async function mountSettings(
   }
 
   function editAgent(opener: HTMLElement, existing?: Agent) {
+    const assigned = existing ? agentRepositories(existing) : [];
     const modal = dialog(
       existing ? "Edit agent" : "New agent",
       `<form><label>Name<input name="name" required maxlength="80" value="${escape(existing?.name ?? "")}" placeholder="e.g. The Nitpicker" /></label>
-        <p class="settings-hint">Provider: GitHub Copilot. Claude models offered through Copilot are allowed; the direct Claude integration remains unavailable.</p>
+        <div class="resource-intelligence"><h3>Intelligence</h3><p class="settings-hint">GitHub Copilot. The AI account is separate from the GitHub account used for repository actions.</p>
         <label>AI account<select name="ai-account" aria-label="AI account"><option value="">Choose a Copilot account</option>${copilotAccounts.map((a) => `<option value="${escape(a.account_id)}" ${a.account_id === existing?.ai_account?.account_id ? "selected" : ""} ${a.state === "connected" ? "" : "disabled"}>${escape(a.login)} (${escape(a.account_id)})${a.state === "connected" ? "" : " - reconnect required"}</option>`).join("")}${existing?.ai_account && !copilotAccounts.some((a) => a.account_id === existing.ai_account?.account_id) ? `<option selected disabled value="${escape(existing.ai_account.account_id)}">Copilot ${escape(existing.ai_account.account_id)} - reconnect required</option>` : ""}</select></label>
         <label>Model<select name="model" aria-label="Model" disabled><option value="${escape(existing?.model ?? "")}">${escape(existing?.model ?? "Choose an account first")}</option></select></label>
-        <p class="settings-hint" data-model-status role="status"></p><button type="button" data-retry-models>Retry model list</button><button type="button" data-cancel-models hidden>Cancel model lookup</button>
-        <fieldset><legend>Doctrines</legend><p class="settings-hint">Select zero or more. Existing order is retained; newly selected doctrines append in library order.</p>${doctrines()
+        <p class="settings-hint" data-model-status role="status"></p><button type="button" data-retry-models>Retry model list</button><button type="button" data-cancel-models hidden>Cancel model lookup</button></div>
+        <label>Prompt<textarea name="prompt" rows="4" required>${escape(existing?.prompt ?? "Review this pull request for correctness, risk, and readability.")}</textarea></label>
+        <fieldset class="resource-doctrines"><legend>Doctrines</legend><p class="settings-hint">Select zero, one or many. Existing order is retained; new selections append in library order. Filtering does not change selections.</p><label>Filter doctrines<input type="search" data-doctrine-filter placeholder="Find principles..." /></label><p class="settings-hint" data-selection-count aria-live="polite"></p><div class="doctrine-choices" tabindex="0" role="group" aria-label="Available doctrines">${doctrines()
           .map(
             (d) =>
-              `<label><input type="checkbox" name="doctrine" value="${escape(d.title)}" ${existing && doctrineTitles(existing).some((t) => t.trim().toLowerCase() === d.title.trim().toLowerCase()) ? "checked" : ""} />${escape(d.title)}</label>`,
+              `<label data-doctrine-choice><input type="checkbox" name="doctrine" value="${escape(d.title)}" ${existing && doctrineTitles(existing).some((t) => t.trim().toLowerCase() === d.title.trim().toLowerCase()) ? "checked" : ""} /><span>${escape(d.title)}</span></label>`,
           )
-          .join("")}</fieldset>
-        <label>Prompt<textarea name="prompt" rows="4" required>${escape(existing?.prompt ?? "Review this pull request for correctness, risk, and readability.")}</textarea></label>
+          .join(
+            "",
+          )}</div><p class="settings-hint" data-no-doctrines hidden></p></fieldset>
         <label>Signature<input name="signature" required maxlength="80" value="${escape(existing?.signature ?? "PR Sniper \u{1F3AF}")}" /></label>
         <p class="settings-hint">Custom signature is saved for the signature-customization follow-up. Current publication uses the canonical PR Sniper signature.</p>
-        <p class="settings-hint">No review or test prompt runs here. Saving an existing unconfigured Agent preserves its selection until you explicitly replace it.</p><p role="alert" hidden></p><button class="primary">Save agent</button></form>`,
+        <p class="settings-hint">No review or test prompt runs here. Saving an existing unconfigured Agent preserves its selection until you explicitly replace it.</p>
+        <p class="resource-impact">${assigned.length ? `Shared by ${assigned.length} repositories: ${escape(assigned.map((repository) => repository.name).join(", "))}. Remove or replace those assignments and save the repositories before deleting.` : "Not assigned to any repository."} Comment, Approve, Merge and primary designation belong to repository assignments, never this shared Agent. Completed evidence keeps its captured configuration.</p>${resourceActions("agent", !!existing)}</form>`,
       opener,
     );
+    resourceEditor(
+      modal,
+      existing
+        ? {
+            edit: {
+              kind: "agent",
+              id: existing.id,
+              expected: saved.agents?.find((a) => a.id === existing.id) ?? null,
+              value: null,
+            },
+            blocked: assigned.length
+              ? "This Agent is assigned to a repository. Remove or replace its assignments and save the repository before deleting it."
+              : "",
+          }
+        : undefined,
+    );
+    const filter = modal.querySelector<HTMLInputElement>(
+      "[data-doctrine-filter]",
+    )!;
+    const choices = [
+      ...modal.querySelectorAll<HTMLElement>("[data-doctrine-choice]"),
+    ];
+    const updateChoices = () => {
+      const query = filter.value.trim().toLowerCase();
+      let visible = 0;
+      let selected = 0;
+      let hiddenSelected = 0;
+      for (const choice of choices) {
+        const input = choice.querySelector<HTMLInputElement>("input")!;
+        choice.hidden = !input.value.toLowerCase().includes(query);
+        if (!choice.hidden) visible++;
+        if (input.checked) {
+          selected++;
+          if (choice.hidden) hiddenSelected++;
+        }
+      }
+      modal.querySelector("[data-selection-count]")!.textContent =
+        `${selected} selected${hiddenSelected ? ` (${hiddenSelected} hidden by filter)` : ""} / ${visible} shown`;
+      const empty = modal.querySelector<HTMLElement>("[data-no-doctrines]")!;
+      empty.hidden = visible > 0;
+      empty.textContent = choices.length
+        ? "No matching doctrines. Clear the filter to see the library."
+        : "No doctrines yet. Save or cancel this Agent, then add principles in Doctrines.";
+    };
+    filter.oninput = updateChoices;
+    filter.onkeydown = (event) => {
+      if (event.key === "Enter") event.preventDefault();
+    };
+    modal
+      .querySelector(".doctrine-choices")!
+      .addEventListener("change", updateChoices);
+    updateChoices();
     const accountSelect =
       modal.querySelector<HTMLSelectElement>("[name=ai-account]")!;
     const modelSelect = modal.querySelector<HTMLSelectElement>("[name=model]")!;
@@ -700,8 +835,9 @@ export async function mountSettings(
           (a) => a.account_id === accountId && a.state === "connected",
         )
       ) {
-        modelStatus.textContent =
-          "Connect or reconnect this account in Integrations. The saved model is retained, but this Agent is unconfigured.";
+        modelStatus.textContent = existing
+          ? "Connect or reconnect this account in Integrations. The saved model is retained, but this Agent is unconfigured."
+          : "Choose a verified Copilot account, then load its models.";
         return;
       }
       const lookup = { accountId, requestId: newIdentity() };
