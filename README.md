@@ -128,6 +128,24 @@ control, never another row. Background completion does not move focus out of
 the current destination. Repository monitoring checkboxes explicitly retain
 activation focus on WebKit as well as Chromium.
 
+Agents and Doctrines use compact shared libraries and one-level editors in the
+same panel. Saved Agent count has no application-defined cap; AI capacity limits
+concurrent work, not configurations. Each Agent explicitly selects its Copilot
+account and model. Missing, unavailable and legacy selections remain visible
+and are not silently replaced. Full prompts, principles and stored signatures
+remain editable.
+
+Filter and scroll the doctrine checklist with mouse or keyboard to select zero,
+one or many doctrines. Filtering retains selections, including hidden matches.
+Save applies only that resource immediately. Back or Cancel discards that
+editor's unsaved fields, not earlier saves or unrelated preference drafts.
+The editor shows shared users and refuses deletion while references remain;
+remove references and save their owning resources first. Unreferenced deletion
+requires confirmation and retains completed review evidence. Edited and empty
+doctrine libraries survive restart without replacing them with starter content.
+Comment, Approve, Merge and primary designation remain repository-assignment
+controls, never global Agent permissions.
+
 The [native acceptance procedure](tests/macos-acceptance.md) and compiled
 test-owned smoke harness cover the actual window boundary separately from
 browser/geometry tests. Bundle compilation alone is not native acceptance.
