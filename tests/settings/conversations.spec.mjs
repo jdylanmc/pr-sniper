@@ -1,5 +1,36 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { test, expect, captureInspector, nativeCapacity } from "./fixtures.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
+
+async function resetConversationInspector(page, kind, id, state) {
+  await page.goto("/");
+  // The shell initially says Queue before the native snapshot has been applied.
+  await expect(page.locator("[data-panel-heading]")).toHaveText("Job details");
+  await page.evaluate(() => window.__settingsIdle());
+  await page.evaluate(
+    ({ id, state }) => {
+      window.__activeIds = ["running", "stopping"].includes(state) ? [id] : [];
+      window.__stoppingIds = state === "stopping" ? [id] : [];
+    },
+    { id, state },
+  );
+  // This UI command is queued; idle alone can miss a not-yet-dispatched command.
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: "Queue", exact: true })
+    .click();
+  await expect(page.locator("[data-panel-heading]")).toHaveText("Your queue");
+  await page.evaluate(() => window.__settingsIdle());
+  // Reuse the retained monitor and read native capacity; no worker is launched.
+  await page.evaluate(
+    ({ kind, id }) =>
+      window.__TAURI_INTERNALS__.invoke("panel_navigate", {
+        route: { tab: "running", detail: { type: "job", kind, id } },
+      }),
+    { kind, id },
+  );
+}
 
 async function feedbackFixture(store) {
   const fixture = await queueFixture(store);
@@ -543,28 +574,7 @@ for (const kind of ["reply", "mention"]) {
       await store("panel_navigate", {
         route: { tab: "running", detail: { type: "job", kind, id: run.id } },
       });
-      await page.goto("/");
-      await page.evaluate(
-        ({ id, state }) => {
-          window.__activeIds = ["running", "stopping"].includes(state)
-            ? [id]
-            : [];
-          window.__stoppingIds = state === "stopping" ? [id] : [];
-        },
-        { id: run.id, state },
-      );
-      // Navigation reuses the retained monitor and reads native capacity; no worker is launched.
-      await page
-        .getByRole("navigation")
-        .getByRole("button", { name: "Queue", exact: true })
-        .click();
-      await page.evaluate(
-        ({ kind, id }) =>
-          window.__TAURI_INTERNALS__.invoke("panel_navigate", {
-            route: { tab: "running", detail: { type: "job", kind, id } },
-          }),
-        { kind, id: run.id },
-      );
+      await resetConversationInspector(page, kind, run.id, state);
       await expect(page.locator(".job-status strong")).toHaveText(label);
       await expect(page.locator(".job-hero .work-spin")).toHaveCount(
         state === "running" ? 1 : 0,
@@ -605,6 +615,161 @@ for (const kind of ["reply", "mention"]) {
       );
       if (["running", "failed", "unresolved"].includes(state))
         await captureInspector(page, `${kind}-${state}`);
+    }
+  });
+}
+
+for (const stage of ["before-dispatch", "after-response"]) {
+  test(`conversation setup awaits initial native Job and Queue ${stage}`, async ({
+    page,
+    store,
+    ipc,
+    dataRoot,
+  }, testInfo) => {
+    const fixture = await reopenedConversationFixture(store, "mention");
+    const route = {
+      tab: "running",
+      detail: { type: "job", kind: "mention", id: fixture.run.id },
+    };
+    const seeded = await store("panel_navigate", { route });
+    expect(seeded.missing).toBeNull();
+    await nativeCapacity(page, []);
+    await page.addInitScript((stage) => {
+      const original = window.__TAURI_INTERNALS__.invoke;
+      const gate = Promise.withResolvers();
+      window.__releaseQueueSetup = () => gate.resolve();
+      window.__setupRoutes = [];
+      window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+        if (command === "panel_navigate" && args.route.tab === "queue") {
+          window.__setupRoutes.push({ phase: "queue-entered" });
+          if (stage === "before-dispatch") await gate.promise;
+        }
+        const panel = ["panel_snapshot", "panel_navigate"].includes(command);
+        if (panel)
+          window.__setupRoutes.push({ phase: "dispatch", command, args });
+        const snapshot = await original(command, args);
+        if (panel)
+          window.__setupRoutes.push({ phase: "response", command, snapshot });
+        return snapshot;
+      };
+    }, stage);
+    const initial = ipc.holdNext("panel_snapshot");
+    const queue =
+      stage === "after-response" ? ipc.holdNext("panel_navigate") : null;
+    const evidence = [];
+    const record = async (phase) => {
+      const persisted = JSON.parse(
+        await readFile(join(dataRoot, "fixture-panel-session.json"), "utf8"),
+      );
+      const snapshot = await store("panel_snapshot");
+      const browser = await page.evaluate(() => ({
+        heading: document.querySelector("[data-panel-heading]").textContent,
+        routes: window.__setupRoutes,
+      }));
+      expect(persisted.route).toEqual(snapshot.route);
+      expect(persisted.revision).toBe(snapshot.revision);
+      evidence.push({ phase, persisted, snapshot, browser });
+      return { snapshot, browser };
+    };
+    const opening = resetConversationInspector(
+      page,
+      "mention",
+      fixture.run.id,
+      "queued",
+    );
+    try {
+      await initial.arrived;
+      const boot = await record("initial-native-read-held");
+      expect(boot.snapshot).toEqual(seeded);
+      expect(boot.browser.heading).toBe("Your queue");
+      expect(boot.browser.routes).toEqual([
+        { phase: "dispatch", command: "panel_snapshot", args: {} },
+      ]);
+      initial.release();
+      await expect
+        .poll(() =>
+          page.evaluate(() =>
+            window.__setupRoutes.some(
+              (entry) => entry.phase === "queue-entered",
+            ),
+          ),
+        )
+        .toBe(true);
+      if (queue) await queue.arrived;
+      else await page.evaluate(() => window.__settingsIdle());
+      const held = await record("queue-held");
+      expect(held.snapshot.route).toEqual(queue ? { tab: "queue" } : route);
+      expect(held.snapshot.revision).toBe(seeded.revision + (queue ? 2 : 0));
+      expect(held.browser.heading).toBe("Job details");
+      expect(
+        held.browser.routes.filter(
+          (entry) =>
+            entry.phase === "dispatch" && entry.command === "panel_navigate",
+        ),
+      ).toEqual(
+        queue
+          ? [
+              {
+                phase: "dispatch",
+                command: "panel_navigate",
+                args: { route: { tab: "queue" } },
+              },
+            ]
+          : [],
+      );
+      queue?.release();
+      await page.evaluate(() => window.__releaseQueueSetup());
+      await opening;
+      await page.evaluate(() => window.__settingsIdle());
+      const final = await record("setup-complete");
+      expect(final.snapshot).toEqual({
+        ...seeded,
+        revision: seeded.revision + 4,
+      });
+      expect(final.browser.heading).toBe("Job details");
+      expect(
+        final.browser.routes
+          .filter((entry) => entry.phase === "response")
+          .map(({ command, snapshot }) => ({
+            command,
+            route: snapshot.route,
+            revision: snapshot.revision,
+          })),
+      ).toEqual([
+        { command: "panel_snapshot", route, revision: seeded.revision },
+        {
+          command: "panel_navigate",
+          route: { tab: "queue" },
+          revision: seeded.revision + 2,
+        },
+        { command: "panel_navigate", route, revision: seeded.revision + 4 },
+      ]);
+      expect(final.browser.routes.map((entry) => entry.phase)).toEqual([
+        "dispatch",
+        "response",
+        "queue-entered",
+        "dispatch",
+        "response",
+        "dispatch",
+        "response",
+      ]);
+      await expect(page.locator("[data-work-context]")).toContainText(
+        "Primary mention",
+      );
+      await expect(page.locator("#thread-follow-ups article")).toHaveCount(1);
+      await expect(page.locator("#agent-reviews article")).toHaveCount(0);
+    } finally {
+      initial.release();
+      queue?.release();
+      await page.evaluate(() => window.__releaseQueueSetup());
+      try {
+        await opening;
+      } finally {
+        await testInfo.attach("conversation-route-sequence", {
+          body: JSON.stringify(evidence, null, 2),
+          contentType: "application/json",
+        });
+      }
     }
   });
 }

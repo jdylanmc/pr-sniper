@@ -1225,7 +1225,8 @@
   font-size: 13px;
 }
 .settings-window[data-resource-library="agents"],
-.settings-window[data-resource-library="doctrines"] {
+.settings-window[data-resource-library="doctrines"],
+.settings-window[data-resource-library="repositories"] {
   --resource-navy: var(--panel-navy, #243247);
   --resource-accent: var(--panel-accent, #f68743);
   --resource-ink: var(--panel-ink, #202b3b);
@@ -1482,6 +1483,248 @@
   margin-top: 8px;
   font-size: 12px;
 }
+.repository-library {
+  margin-bottom: 24px;
+}
+.settings-window[data-resource-library="repositories"] .settings-heading {
+  padding-block: 8px;
+}
+.repository-library .resource-toolbar > div {
+  flex: 1;
+  min-width: 0;
+}
+.settings-window .repository-library h2 {
+  margin: 0 0 4px;
+  font-size: 14px;
+}
+.settings-window .repository-library .resource-toolbar button {
+  max-width: 130px;
+}
+.settings-window .repository-library .resource-toolbar {
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.repository-library .resource-toolbar p {
+  font-size: 10px;
+}
+.settings-window .repository-library .repository-toolbar {
+  margin-top: 8px;
+}
+.settings-window .repository-library .repository-list {
+  display: grid;
+  gap: 10px;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+}
+.settings-window .repository-library .repository-row {
+  align-items: flex-start;
+  gap: 9px;
+  padding: 13px;
+  border: 1px solid #e3e9ee;
+  border-radius: 12px;
+  background: white;
+}
+.settings-window .repository-library .repository-row:hover {
+  background: #f8fafb;
+}
+.repository-library .repository-row > input {
+  margin-top: 6px;
+  accent-color: #327e84;
+}
+.repository-library .repo-symbol {
+  width: 27px;
+  height: 29px;
+  border: 0;
+  border-radius: 8px;
+  color: #58758b;
+  background: #f0f4f6;
+}
+.repository-library .repository-info strong {
+  font-size: 12px;
+}
+.settings-window .repository-library .repository-info p,
+.settings-window .repository-library .clone-paths,
+.settings-window .repository-library .settings-hint {
+  color: var(--resource-muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+.settings-window .repository-library .repository-summary {
+  margin-top: 5px;
+  color: #30586a;
+}
+.settings-window .repository-library button.configure {
+  flex: none;
+  padding: 5px 0;
+  font-size: 10px;
+}
+.settings-window .repository-library .repository-toolbar button,
+.settings-window .repository-library .folder-card button,
+.settings-window .repository-library .settings-actions button {
+  font-size: 11px;
+  white-space: normal;
+}
+.settings-window .repository-library .repository-toolbar input {
+  background: white !important;
+  border-color: #cdd8e2;
+  font-size: 12px;
+}
+.settings-window .repository-library .folder-card {
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  border-color: #e3e9ee;
+  background: white;
+}
+.repository-library .folder-card > div:not(.folder-symbol) {
+  min-width: 0;
+  flex: 1 1 130px;
+  overflow-wrap: anywhere;
+}
+.settings-window .repository-library .folder-card strong {
+  font-size: 11px;
+}
+.settings-window .repository-library .folder-card p {
+  font-size: 10px;
+  color: var(--resource-muted);
+}
+.settings-window .repository-editor {
+  overflow-wrap: anywhere;
+}
+.settings-window .repository-editor .resource-actions > button {
+  flex: 1 1 110px;
+}
+.settings-window .repository-editor h2 {
+  font-size: 13px;
+}
+.settings-window .repository-editor .dialog-head h2 {
+  font-size: 15px;
+  min-width: 0;
+}
+.repository-editor .repository-identity {
+  margin-bottom: 16px;
+}
+.repository-identity dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 0;
+  color: var(--resource-muted);
+  font-size: 10px;
+}
+.repository-identity dd {
+  margin: 0;
+}
+.settings-window .repository-editor .repository-group {
+  padding: 12px;
+  margin: 14px 0;
+  border: 1px solid #e0e6ec;
+  border-radius: 10px;
+}
+.settings-window .repository-editor .repository-group > h2 {
+  margin-bottom: 10px;
+}
+.settings-window .repository-editor .repository-group > :last-child {
+  margin-bottom: 0;
+}
+.repository-editor .section-actions {
+  flex-wrap: wrap;
+}
+.repository-editor .section-actions h2 {
+  flex: 1 1 110px;
+}
+.settings-window .repository-editor .repository-check,
+.settings-window .repository-editor .permission-row label,
+.settings-window .repository-editor .activation-choice label,
+.settings-window .repository-editor .activation-row {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.repository-editor .repository-check {
+  margin: 12px 0;
+}
+.settings-window .repository-editor small {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--resource-muted);
+}
+.settings-window .repository-editor .permission-row {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid #e0e6ec;
+  border-radius: 10px;
+}
+.settings-window .repository-editor input[type="radio"] {
+  flex: none;
+  width: 16px;
+  min-height: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: #327e84;
+}
+.settings-window .repository-editor .assignment-list {
+  gap: 0;
+  margin-bottom: 8px;
+}
+.settings-window .repository-editor .assignment-row {
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding: 12px 0;
+  border: 0;
+  border-bottom: 1px solid #e3e9ee;
+  border-radius: 0;
+}
+.repository-editor .assignment-row > div {
+  flex: 1 1 140px;
+}
+.settings-window .repository-editor .assignment-row strong {
+  font-size: 12px;
+}
+.settings-window .repository-editor .assignment-row p,
+.settings-window .repository-editor .watchlist-row > span {
+  color: var(--resource-muted);
+  font-size: 11px;
+}
+.settings-window .repository-editor .assignment-row button,
+.settings-window .repository-editor .watchlist-row button,
+.settings-window .repository-editor [data-refresh-scope] {
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: #176773;
+  font-size: 11px;
+}
+.settings-window .repository-editor .activation-choice {
+  padding: 12px 0;
+  gap: 12px;
+}
+.repository-editor .activation-list {
+  border-color: #e0e6ec;
+}
+.repository-editor [data-selection-count] {
+  flex: none;
+  white-space: nowrap;
+  color: var(--resource-muted);
+  font-size: 10px;
+}
+.repository-editor [data-global-schedule] {
+  background: #f0f6f7;
+  font-size: 11px;
+}
+.settings-window .repository-editor .settings-empty {
+  padding: 12px 0;
+  text-align: left;
+  font-size: 11px;
+}
 .panel-shell .shared-resource-host.dialog-fallback {
   padding: 12px;
   background: var(--panel-mist);
@@ -1529,6 +1772,16 @@
     .settings-savebar {
     background: white;
     border-color: #e3e9ee;
+  }
+}
+
+@media (max-width: 600px) and (max-height: 500px) {
+  .panel-shell
+    .settings-window[data-resource-library="repositories"]:has(
+      .account-connection
+    )
+    .settings-sidebar {
+    padding-block: 2px;
   }
 }
 

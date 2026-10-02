@@ -113,6 +113,48 @@ visibility boundary are mocked. Tests do not prove OS focus/dismissal or
 notification activation; the isolated native harness and platform procedures
 remain required.
 
+`fixture-coordination.spec.mjs` checks the process-per-command panel fixture,
+not application persistence. A stable, per-root OS file lock owns the entire
+panel read/modify/write operation (including snapshots); acquisition fails
+explicitly after five seconds rather than stealing ownership. Only panel
+commands take this lock. Non-panel Store operations, separate fixture roots,
+and already-held IPC replies remain concurrent. Never remove the lock sidecar
+while its root is live. The normal fixture teardown drains operations before
+removing the root.
+
+Panel JSON is written to an existing-dependency `tempfile` in the same root,
+flushed with `sync_all`, then atomically replaced while ownership is held.
+Malformed JSON, read failures, invalid routes and write failures remain errors;
+missing destinations still persist their exact route before returning an error.
+Ordinary errors remove temporary files and close the lock handle. OS termination
+releases the lock and leaves the last complete JSON intact; abrupt death can
+leave an unreferenced temporary file for the root owner's teardown to remove.
+This is not a power-loss/directory-durability guarantee or production storage
+change. Rust standard file locking and `tempfile` replacement are cross-platform;
+hosted Windows and macOS browser checks remain required.
+
+Two opt-in bridge arguments, `--panel-probe=loaded` and
+`--panel-probe=staged`, pause after reading the session or halfway through writing
+the temporary file. Probe input is one JSON request line followed by
+`continue`; stderr reports `fixture-panel:loaded`, `fixture-panel:staged`, or
+`fixture-panel:waiting`. EOF without release is an error. Normal command input,
+output and error envelopes are unchanged. These test-only barriers exercise
+lost-update and torn-read prevention, process termination, replacement failure,
+cleanup and bounded contention deterministically, without timing sleeps as
+assertions. The test fixture reaps only the children it created, even on failure.
+The ordinary-command burst also requires every exact revision to survive.
+
+The conversation state-presentation loop completes the initial native Job view
+and its reads, then completes the Queue UI navigation and its reads before
+directly requesting the exact Job again. IPC idle alone is not a route-completion
+contract: a queued UI command may not have dispatched yet, and the initial shell
+already says "Your queue". Controlled regressions hold the initial native reply
+and Queue either before dispatch or after its real Store response, requiring the
+persisted route/revision and response order to remain initial Job, Queue, Job.
+Their attached JSON is browser/test-bridge evidence, not native-app acceptance or
+proof of a particular hosted CI interleaving. Genuine concurrency tests and
+lower-revision rejection coverage remain unchanged.
+
 `completion-focus.spec.mjs` retains the pointer/keyboard/nonfocusing completion
 matrix, final-redraw identity checks, independent saved resources/drafts and
 delayed account verification. Held-frame variants run each real resource save
@@ -138,6 +180,12 @@ sessions; deterministic native capacity tests separately prove dispatch/refill.
 Final and conversation regressions cover all four work purposes and exact
 same-commit reopened iteration provenance. These captures are browser evidence,
 not installed-app or live-provider acceptance.
+
+The exact two-destination visual assertion explicitly waits for both asynchronous
+receipts before reading the full array; identities, order and full URLs remain
+strictly equal. Its controlled-completion variant holds the real second
+`queue_destination` reply across the assertion's browser turn before releasing
+it. No application link behavior, timeout, retry or global IPC helper is changed.
 
 `shared-editors.spec.mjs` covers compact shared libraries, saved Agent counts
 above AI capacity, explicit account/model selection, full editor text and
@@ -184,6 +232,36 @@ rename, duplicate add/rename rejection, disable/re-enable, and confirmed
 removal. Fresh reads protect immutable identity, the independent neighboring
 record, and the startup preference throughout. Both lifecycle commands call the
 same production Store operations as the native app.
+
+`repositories-compact.spec.mjs` covers the production 408x744 repository cards
+and editors, explicit overlapping acting-account bindings, provider selection,
+identity/access rejection, delayed-read cancellation, saved global schedule
+versus unsaved Preferences, every Comment/Approve/Merge combination, automatic
+and explicit primary roles, seven separate assignments and retained normal-job
+identities. It also checks guarded unbind/write/conflict recovery, scope-status
+ordering, filter-retained scope selections, non-submitting search Enter,
+watched-person identity, exact Back focus/scroll, hide/reopen, restart and
+320x300 keyboard access. Tests initialize their unique Store/panel fixture
+before concurrent readers and use explicit readiness rather than sleeps.
+Corrective regressions require explicit Save/Cancel before dirty unbind,
+preserving assignment permissions, reviewer overrides, enablement and unrelated
+Preferences drafts. They retain clean unbind cancellation/write/conflict checks,
+label saved legacy intervals as polling-blocked without changing their bytes,
+and assert accessible late-preview cleanup errors after edits or dismissal,
+including a newer resource-save rejection and retry without scope confirmation.
+
+Run the suite headlessly with either `--browser=chromium` or `--browser=webkit`;
+screenshots use Playwright's per-test output directory. Repository, assignment,
+permission and preference assertions read fresh production Store processes.
+Provider identity, repository lookup and scope-preview/apply transports are
+explicit synthetic boundaries, not live-provider or persisted-activation proof.
+The unchanged native `monitoring`, `iterations` and `resources` test targets
+separately exercise actual scope persistence, cancellation/staleness, independent
+older reviewer admission, sticky tracking, seven-way scan fan-out/deduplication,
+next-scan additions, primary authority and resource guards. The panel-fixture
+coordination exception above is test-only; no native implementation is changed.
+Browser captures are not installed-app, native focus, credential or
+provider-action acceptance.
 
 `policy-inheritance.spec.mjs` exercises reusable Agents with multiple
 independent per-repository assignments, comment permissions and removal/reset.
@@ -272,6 +350,16 @@ For an isolated `CARGO_TARGET_DIR`, build the bridge there or copy the compiled
 bridge from the same native source revision into its `debug/examples` directory.
 Install the matching WebKit build only if it is missing. Playwright WebKit is
 browser regression evidence, not native WKWebView/installed-app acceptance.
+The additive [`macos-webkit.yml`](../../.github/workflows/macos-webkit.yml) gate
+runs on fresh hosted `macos-15` runners for every pull request and main push.
+It installs the locked npm dependencies and their matching WebKit build, then
+uses `npm run test:settings -- --browser=webkit` to build the frontend and
+Store bridge and run the **full unchanged browser suite**. It does not filter
+tests, relax retries/timeouts, override the user agent or launch a native app.
+Existing macOS and Windows gates remain separate and unchanged. Hosted browser
+proof neither establishes native Tart readiness nor replaces isolated guest
+acceptance for installed-app windows, focus, credentials or live providers.
+No developer-host unlock, wake, permission change or local VM setup is required.
 Keep screenshots in the owned target and generate hash manifests only after
 all capture runs finish. Tests run serially. Port 1421 must
 be free, or select another port with `SETTINGS_TEST_PORT=1422 npm run test:settings`

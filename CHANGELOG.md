@@ -11,6 +11,12 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   account panels with native device-code waiting, explicit identity confirmation,
   consent details and visible retry/disconnect states. Keep future direct
   providers disabled and existing account/model choices and references intact.
+- Lead Integrations with compact repository cards and shared-style editors for
+  real account binding, scope previews, watched identities and assignments.
+  Expose the independent reviewer-request override, guarded account unbinding
+  and the saved global schedule without adding scoped polling controls.
+  Preserve separate Comment/Approve/Merge choices, primary roles, resource
+  save guards and session drafts; manual binding requires explicit account choice.
 - Match the approved compact Agent and doctrine libraries with shared-resource
   editors, full prompt/principles, explicit account/model choices, filter-retained
   doctrine selections and visible shared-use/deletion consequences. Save applies
@@ -40,6 +46,13 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   reads after account actions, and expose retry for unavailable account reads
   and failed GitHub credential deletion. Device-code controls remain fully
   scrollable in compact windows without changing native authentication.
+- Require explicit repository Save/Cancel before account unbinding, without
+  consuming pending assignments, overrides or enablement. Label retained legacy
+  intervals as blocked until a global cron is chosen, and expose late-preview
+  cleanup failures in the active editor without replacing resource-save errors.
+- Keep late monitoring-scope status reads from replacing newer preview errors,
+  cancel previews after repository edits or dismissal, and lock scope selection
+  while confirmation is pending.
 - Keep native pending operations and rejection messages visible across unrelated
   preference saves, distinguish startup registration from the saved request, and
   label unreadable notification authorization as unknown rather than stale success.
