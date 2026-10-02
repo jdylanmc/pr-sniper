@@ -25,6 +25,7 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run test:release
+      - run: npm run test:regression
       - run: npm exec playwright install chromium
       - run: npm run test:settings
       - run: npm run bundle

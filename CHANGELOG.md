@@ -5,6 +5,13 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+### Added
+
+- Prepare shared panel regression cases, canonical ignored runtime discovery
+  and three repository-owned setup, authoring and independent-runner workflows
+  for #91. Fixture contracts and read-only reports are available; VM setup,
+  native driver execution and independent native proof remain blocked.
+
 ### Changed
 
 - Harden Windows CI with main-owned Rust dependency caching, superseded-PR

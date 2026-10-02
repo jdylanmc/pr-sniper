@@ -128,9 +128,15 @@ control, never another row. Background completion does not move focus out of
 the current destination. Repository monitoring checkboxes explicitly retain
 activation focus on WebKit as well as Chromium.
 
-The [native acceptance procedure](tests/macos-acceptance.md) and compiled
-test-owned smoke harness cover the actual window boundary separately from
-browser/geometry tests. Bundle compilation alone is not native acceptance.
+The [native acceptance procedure](tests/macos-acceptance.md) and compile-only
+test-owned smoke harness describe the actual window boundary separately from
+browser/geometry tests. Routine native regression now requires a dedicated
+headless guest, never host desktop automation or a missing-VM fallback.
+The [#91 preparation guide](docs/agents/vm-regression.md) documents shared
+executable cases, three owned workflows and read-only preparation reports.
+VM setup and the Tauri guest driver are not delivered; native execution remains
+**BLOCKED**. `npm run test:regression` checks fixtures/contracts only.
+Bundle compilation alone is not native acceptance.
 The local frontend server is only for development; terminate the development
 command too when finished.
 
@@ -162,8 +168,9 @@ npm run bundle
 `npm run format` formats owned application sources. `npm run build` checks and
 builds the frontend. CI executes the checks and builds a real macOS `.app`;
 native interactive proof is separate from compile and filesystem tests.
-See [native acceptance](tests/macos-acceptance.md) for reproducible
-install/launch/close/quit and scoped visual checks, including capability limits.
+See [native acceptance](tests/macos-acceptance.md) for the historical
+install/launch/close/quit and scoped visual contract; routine execution is
+guest-only and remains unproved in the new preparation.
 
 The bundle is `src-tauri/target/release/bundle/macos/PR Sniper.app`.
 For a local user installation, copy it with Finder to `~/Applications` (create

@@ -6,6 +6,15 @@ and the unified-panel host/navigation slice of #70, not distribution or live
 provider execution.
 Automated storage tests do not establish native window or menu-bar behavior.
 
+**Routine regression now requires the dedicated guest direction in
+[SPEC-PR-SNIPER-VM-REGRESSION](../docs/agent/specs/pr-sniper-vm-regression.nano.md).**
+Do not run the native smoke harness or the historical UI commands below on the
+host desktop as a routine test or missing-VM fallback. They remain reference and
+compile-only material until separately adapted/proven inside the guest.
+The [setup-independent preparation](../docs/agents/vm-regression.md) does not
+provision or operate a VM; native execution remains BLOCKED. Earlier parent-only
+launch instructions below do not override this boundary.
+
 ## Safety and evidence
 
 - Coordinate one native app session at a time. Do not launch over another

@@ -37,6 +37,8 @@ jobs:
         timeout-minutes: 5
       - run: npm run test:release:windows
         timeout-minutes: 3
+      - run: npm run test:regression
+        timeout-minutes: 3
       - run: npm run test:packaging:windows
         timeout-minutes: 3
       - name: Install pinned Rust toolchain

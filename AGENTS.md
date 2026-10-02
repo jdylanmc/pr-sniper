@@ -51,6 +51,21 @@ doctrines are selected. PR-producing work requires `worktrees`; code Roast
 requires `solid`. Orchestrators supply scoped selections and source digests;
 workers load the full selected texts before applying them.
 
+### Development regression preparation
+
+For #91, use the [approved testing specification](docs/agent/specs/pr-sniper-vm-regression.nano.md)
+and [preparation guide](docs/agents/vm-regression.md). The repository-owned
+[setup-regression-suite-mac](.github/skills/setup-regression-suite-mac/SKILL.md),
+[regression-test](.github/skills/regression-test/SKILL.md) and
+[regression-suite-mac](.github/skills/regression-suite-mac/SKILL.md) separate
+human-consented setup, shared case authoring and independent execution.
+The guest driver/setup remain unimplemented or unverified: report BLOCKED,
+never a fixture result as native proof. No routine host desktop automation or
+existing Swift smoke fallback. Keep private runtime at the primary canonical
+repository's ignored `.regression-suite/`, shared across feature worktrees.
+These development workflows do not expand product review-Agent permissions,
+replace existing gates, grant tracker writes or complete #28/#33/#91.
+
 ### Delivery coordination
 
 The human merges PRs by default. Exception: Dylan's explicitly designated
