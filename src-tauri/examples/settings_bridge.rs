@@ -1,8 +1,9 @@
 use pr_sniper_lib::storage::{Settings, Store};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -17,10 +18,66 @@ fn recorded_settings(store: &Store, settings: Settings) -> Result<Value, String>
         .map_err(|_| "Cannot encode settings.".into())
 }
 
+// Opt-in barriers for cross-process tests; normal commands still read stdin to EOF.
+fn panel_probe(probe: Option<&str>, stage: &str) -> Result<(), String> {
+    if probe != Some(stage) {
+        return Ok(());
+    }
+    writeln!(io::stderr(), "fixture-panel:{stage}")
+        .map_err(|_| "Cannot report panel fixture probe.")?;
+    let mut release = String::new();
+    io::stdin()
+        .read_line(&mut release)
+        .map_err(|_| "Cannot read panel fixture probe release.")?;
+    if release.trim_end() != "continue" {
+        return Err("Panel fixture probe was not released.".into());
+    }
+    Ok(())
+}
+
 // Only the process-per-command browser bridge serializes the native navigation
-// session. The application retains this same state in memory, not a second store.
-fn panel_dispatch(store: &Store, root: &Path, request: &Request) -> Result<Value, String> {
+// session. The application retains this same state under a mutex in memory.
+fn panel_dispatch(
+    store: &Store,
+    root: &Path,
+    request: &Request,
+    probe: Option<&str>,
+) -> Result<Value, String> {
     use pr_sniper_lib::panel::{Route, Session, Tab};
+    // Lock a stable sidecar, not the session inode replaced at commit. Never unlink
+    // it while the root is live: waiting processes must share the same OS lock.
+    std::fs::create_dir_all(root).map_err(|_| "Cannot lock panel fixture session.")?;
+    let _ownership = {
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(root.join("fixture-panel-session.lock"))
+            .map_err(|_| "Cannot lock panel fixture session.")?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut reported = false;
+        loop {
+            match lock.try_lock() {
+                Ok(()) => break,
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    if Instant::now() >= deadline {
+                        return Err("Timed out waiting for panel fixture session.".into());
+                    }
+                    if probe.is_some() && !reported {
+                        writeln!(io::stderr(), "fixture-panel:waiting")
+                            .map_err(|_| "Cannot report panel fixture probe.")?;
+                        reported = true;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(std::fs::TryLockError::Error(_)) => {
+                    return Err("Cannot lock panel fixture session.".into());
+                }
+            }
+        }
+        lock
+    };
     let path = root.join("fixture-panel-session.json");
     let mut session: Session = match std::fs::read(&path) {
         Ok(bytes) => {
@@ -34,6 +91,7 @@ fn panel_dispatch(store: &Store, root: &Path, request: &Request) -> Result<Value
         }
         Err(_) => return Err("Cannot read panel fixture session.".into()),
     };
+    panel_probe(probe, "loaded")?;
     let route = match request.command.as_str() {
         "panel_navigate" => Some(
             serde_json::from_value(request.args["route"].clone())
@@ -57,11 +115,27 @@ fn panel_dispatch(store: &Store, root: &Path, request: &Request) -> Result<Value
     }
     let snapshot = session.snapshot(store);
     if request.command != "panel_snapshot" {
-        std::fs::write(
-            &path,
-            serde_json::to_vec(&session).map_err(|_| "Cannot encode panel fixture.")?,
-        )
-        .map_err(|_| "Cannot save panel fixture session.")?;
+        let bytes = serde_json::to_vec(&session).map_err(|_| "Cannot encode panel fixture.")?;
+        let mut file = tempfile::Builder::new()
+            .prefix(".fixture-panel-session-")
+            .tempfile_in(root)
+            .map_err(|_| "Cannot save panel fixture session.")?;
+        if probe == Some("staged") {
+            let split = bytes.len() / 2;
+            file.write_all(&bytes[..split])
+                .map_err(|_| "Cannot save panel fixture session.")?;
+            panel_probe(probe, "staged")?;
+            file.write_all(&bytes[split..])
+                .map_err(|_| "Cannot save panel fixture session.")?;
+        } else {
+            file.write_all(&bytes)
+                .map_err(|_| "Cannot save panel fixture session.")?;
+        }
+        file.as_file()
+            .sync_all()
+            .map_err(|_| "Cannot save panel fixture session.")?;
+        file.persist(&path)
+            .map_err(|_| "Cannot save panel fixture session.")?;
     }
     if request.command == "open_queue_item" {
         if let Some(reason) = &snapshot.missing {
@@ -395,8 +469,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !root.is_absolute() {
         return Err("Test data root must be absolute".into());
     }
+    let probe_arg = std::env::args().nth(2);
+    let probe = match probe_arg.as_deref() {
+        None => None,
+        Some("--panel-probe=loaded") => Some("loaded"),
+        Some("--panel-probe=staged") => Some("staged"),
+        Some(_) => return Err("Unsupported panel fixture probe".into()),
+    };
     let mut input = String::new();
-    io::stdin().read_to_string(&mut input)?;
+    if probe.is_some() {
+        io::stdin().read_line(&mut input)?;
+    } else {
+        io::stdin().read_to_string(&mut input)?;
+    }
     let request: Request = serde_json::from_str(&input)?;
     let store = Store::new(root.clone());
     let result = if matches!(
@@ -409,7 +494,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             | "open_queue_item"
             | "fixture_show_panel"
     ) {
-        panel_dispatch(&store, &root, &request)
+        panel_dispatch(&store, &root, &request, probe)
+    } else if probe.is_some() {
+        Err("Panel fixture probes require a panel command.".into())
     } else {
         dispatch(&store, request)
     };
