@@ -176,6 +176,7 @@ test("publication consumes only this run's verified artifact and contract tests 
 test("Windows native application checks run on every PR and main push with read-only access", () => {
   assert.equal(windows.name, "Windows native application");
   assert.deepEqual(windows.on, {
+    workflow_dispatch: null,
     pull_request: null,
     push: { branches: ["main"] },
   });
@@ -186,6 +187,55 @@ test("Windows native application checks run on every PR and main push with read-
   ]);
   assert.equal(windows.jobs.windows["runs-on"], "windows-2022");
   assert.ok(windows.jobs.windows["timeout-minutes"] > 0);
+});
+
+test("Windows cancels superseded PR runs without cancelling main release evidence", () => {
+  assert.equal(
+    windows.concurrency.group,
+    "${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}",
+  );
+  assert.equal(
+    windows.concurrency["cancel-in-progress"],
+    "${{ github.event_name == 'pull_request' }}",
+  );
+  for (const job of Object.values(windows.jobs)) {
+    for (const step of job.steps.filter((step) => step.run)) {
+      assert.ok(step["timeout-minutes"] > 0, step.name || step.run);
+      assert.ok(step["timeout-minutes"] < job["timeout-minutes"]);
+    }
+  }
+});
+
+test("Rust caching retains dependencies, not application artifacts or PR-written cache entries", () => {
+  const steps = windows.jobs.windows.steps;
+  const cache = steps.find((step) =>
+    step.uses?.startsWith("Swatinem/rust-cache@"),
+  );
+  assert.ok(cache);
+  assert.match(cache.uses, /^Swatinem\/rust-cache@[a-f0-9]{40}$/);
+  assert.ok(
+    steps.indexOf(cache) >
+      steps.findIndex((step) => step.run === "rustup show active-toolchain"),
+  );
+  assert.equal(cache.with.workspaces, "src-tauri -> target");
+  assert.equal(cache.with["cache-targets"], "false");
+  assert.equal(cache.with["cache-bin"], "false");
+  assert.equal(cache.with["cache-workspace-crates"], "false");
+  assert.equal(cache.with["cache-on-failure"], "false");
+  assert.equal(
+    cache.with["save-if"],
+    "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}",
+  );
+  assert.deepEqual(cache.with["cache-directories"].trim().split("\n"), [
+    "src-tauri\\target\\debug\\.fingerprint",
+    "src-tauri\\target\\debug\\build",
+    "src-tauri\\target\\debug\\deps",
+    "src-tauri\\target\\release\\.fingerprint",
+    "src-tauri\\target\\release\\build",
+    "src-tauri\\target\\release\\deps",
+  ]);
+  assert.equal(cache.with["cache-provider"], undefined);
+  assert.equal(cache.with["add-rust-environment-hash-key"], undefined);
 });
 
 test("Windows checks have no release credentials, privileged environment or failure bypass", () => {
@@ -216,13 +266,17 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       "actions/checkout",
       "actions/setup-node",
       "actions/setup-python",
+      "Swatinem/rust-cache",
       "actions/upload-artifact",
       "actions/upload-artifact",
       "actions/upload-artifact",
     ],
   );
   for (const step of actions) {
-    assert.match(step.uses, /^actions\/[a-z-]+@[a-f0-9]{40}$/);
+    assert.match(
+      step.uses,
+      /^(?:actions\/[a-z-]+|Swatinem\/rust-cache)@[a-f0-9]{40}$/,
+    );
   }
   const node = job.steps.find((step) =>
     step.uses?.startsWith("actions/setup-node@"),
@@ -405,6 +459,35 @@ test("native diagnostics retain the refusal without weakening operation status o
     acceptance,
     /chocolatey\.log|Start-Transcript|Get-ChildItem Env:/,
   );
+});
+
+test("expected Chocolatey failures are labelled and logged without hiding real failures", () => {
+  const helper = readFileSync("scripts/windows-choco-test.ps1", "utf8");
+  assert.match(
+    helper,
+    /& choco @Arguments[\s\S]*?> \$log\s+\$code = \$LASTEXITCODE/,
+  );
+  assert.match(helper, /--execution-timeout=\$TimeoutSeconds/);
+  assert.match(helper, /\$ExpectFailure -and \$code -eq 0/);
+  assert.match(helper, /-not \$ExpectFailure -and \$code -ne 0/);
+  assert.match(helper, /Get-Content -LiteralPath \$log -Tail 80/);
+  assert.match(helper, /expected exit \$expectation/);
+  for (const path of [
+    "scripts/windows-installer-acceptance.ps1",
+    "scripts/windows-installer-faults.ps1",
+    "scripts/windows-removal-retry.ps1",
+  ]) {
+    const source = readFileSync(path, "utf8");
+    assert.match(source, /windows-choco-test\.ps1/);
+    assert.match(source, /Invoke-PrSniperChocoTest/);
+    assert.doesNotMatch(source, /& choco (?:install|upgrade|uninstall)\b/);
+  }
+  const retry = readFileSync("scripts/windows-removal-retry.ps1", "utf8");
+  assert.match(retry, /\$failedExit = \$injected\.exit_code/);
+  assert.match(retry, /-ExpectFailure/);
+  assert.match(retry, /-not \$completed/);
+  assert.match(retry, /Assert-BusyCleanupRefusal \$true/);
+  assert.match(retry, /Assert-BusyCleanupRefusal \$false/);
 });
 
 test("registry string data and byte counts use paired System register sources", () => {

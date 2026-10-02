@@ -7,6 +7,7 @@ $originalTemp = $env:TEMP
 $originalTmp = $env:TMP
 $originalActions = $env:GITHUB_ACTIONS
 $originalLocalConsent = $env:PR_SNIPER_UNSIGNED_LOCAL_TEST_SHA256
+$originalDiagnostics = $env:PR_SNIPER_INSTALLER_DIAGNOSTICS
 $env:TEMP = $fixture
 $env:TMP = $fixture
 $env:GITHUB_ACTIONS = ''
@@ -27,6 +28,33 @@ try {
     . (Join-Path $repository 'scripts\windows-installer-payload.ps1')
     . (Join-Path $repository 'scripts\windows-registry-acl-fixture.ps1')
     . (Join-Path $repository 'scripts\windows-removal-diagnostics.ps1')
+    . (Join-Path $repository 'scripts\windows-choco-test.ps1')
+    $env:PR_SNIPER_INSTALLER_DIAGNOSTICS = Join-Path $fixture 'choco-logs'
+    New-Item -ItemType Directory $env:PR_SNIPER_INSTALLER_DIAGNOSTICS | Out-Null
+    $script:chocoExit = 0
+    $script:chocoThrow = $false
+    function choco {
+        if ($script:chocoThrow) { throw 'Fixture command could not start.' }
+        $script:chocoArguments = @($args)
+        Write-Output 'Fixture Chocolatey output, not an actual package operation.'
+        $global:LASTEXITCODE = $script:chocoExit
+    }
+    $result = Invoke-PrSniperChocoTest -Name 'fixture-success' -Arguments @('install', 'fixture-only')
+    Check ($result.exit_code -eq 0 -and (Get-Content $result.log -Raw) -match 'Fixture Chocolatey output') 'Successful commands preserve their raw output.'
+    Check ($script:chocoArguments -contains '--execution-timeout=180') 'Chocolatey script execution remains bounded.'
+    $script:chocoExit = 2
+    $expected = Invoke-PrSniperChocoTest -Name 'fixture-expected-failure' -Arguments @('uninstall','fixture-only') -ExpectFailure -TimeoutSeconds 60
+    Check ($expected.exit_code -eq 2 -and $expected.log -ne $result.log) 'Expected failure is explicit and uses a unique retained log.'
+    Check ($script:chocoArguments -contains '--execution-timeout=60') 'Fault-specific command timeout is retained.'
+    Reject { Invoke-PrSniperChocoTest -Name 'fixture-unexpected-failure' -Arguments @('install','fixture-only') } 'expected zero, got 2'
+    $script:chocoExit = 0
+    Reject { Invoke-PrSniperChocoTest -Name 'fixture-unexpected-success' -Arguments @('uninstall','fixture-only') -ExpectFailure } 'expected nonzero.*got 0'
+    $script:chocoThrow = $true
+    Reject { Invoke-PrSniperChocoTest -Name 'fixture-launch-failure' -Arguments @('install','fixture-only') -ExpectFailure } 'could not start'
+    $env:PR_SNIPER_INSTALLER_DIAGNOSTICS = ''
+    Reject { Invoke-PrSniperChocoTest -Name 'fixture-no-logs' -Arguments @('install','fixture-only') } 'owned diagnostics directory'
+    Remove-Item Function:\choco
+    $env:PR_SNIPER_INSTALLER_DIAGNOSTICS = $originalDiagnostics
     function New-MemoryAclKey([switch] $Unprotected, [switch] $NormalizeNative) {
         $descriptor = [Security.AccessControl.RegistrySecurity]::new()
         $prefix = if ($Unprotected) { 'D:' } else { 'D:P' }
@@ -503,5 +531,6 @@ public class PackagingFixture { public static void Main() {} }
     $env:TMP = $originalTmp
     $env:GITHUB_ACTIONS = $originalActions
     $env:PR_SNIPER_UNSIGNED_LOCAL_TEST_SHA256 = $originalLocalConsent
+    $env:PR_SNIPER_INSTALLER_DIAGNOSTICS = $originalDiagnostics
     Remove-Item -LiteralPath $fixture -Recurse -Force
 }
