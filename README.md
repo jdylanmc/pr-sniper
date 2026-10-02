@@ -290,7 +290,10 @@ If configuration commits but recording diagnostics fails, Settings shows the
 committed state with a separate warning, rather than reporting a failed save.
 
 Settings retains the compact sidebar design, with **Integrations**, **Doctrines**,
-**Agents**, and **Preferences**. In Integrations, choose a local root folder to discover GitHub remotes and select
+**Agents**, and **Preferences**. Integrations leads with compact repository
+cards showing the acting account, enablement and assignment count. Existing
+GitHub account/provider selection and AI integrations remain below the list.
+Choose a local root folder to discover GitHub remotes and select
 repositories with searchable checkboxes, or add a repository manually. Discovery
 reads bounded Git metadata only: no Git commands, hooks, includes or repository
 code execute. It skips nested symlinks, stops descending at repositories, and
@@ -331,6 +334,28 @@ into actions. Legacy inert `approve` flags remain preserved but are not grants;
 new choices live in assignment `actions`. Merge is effective only for the
 primary, and no primary means no effective approval or merge. Opted-in provider
 actions require aggregate clearance and the primary final-review path below.
+Its compact editor exposes the stable account/repository IDs, enablement,
+real monitoring-scope preview, independent reviewer-request override, verified
+watched people and the **saved global schedule** (not an unsaved Preferences
+draft). No repository or Agent polling builder is exposed. Each new assignment
+receives missing normal review work at the next global scan; saving is not a scan.
+**Repository and connection** retains verification, metadata reads, edit,
+guarded account unbinding and removal. Unbinding preserves assignments,
+permissions and completed evidence, but provider operations need a new explicit
+binding. First **Save** or **Cancel** this repository's pending changes;
+unbinding never saves or discards them implicitly. Unrelated Preferences drafts
+do not block unbinding. Manual binding never selects the first account automatically.
+
+Back from repository settings retains that repository draft for the current
+session; **Cancel** discards only its unsaved repository changes.
+Assignment saves apply immediately to the owning repository, including its
+pending fields. Back/Cancel from an assignment or binding form discards that
+form's unsaved fields without undoing earlier saves. Delayed scope-status reads
+cannot replace newer preview errors; **Refresh scope status** retries a read
+without clearing a rejected resource save. Scope selections survive filtering,
+and Enter in the scope search does not confirm monitoring. Failed cleanup of a
+late preview is reported inside the open repository editor, independently of
+resource-save errors; after dismissal it uses the Settings alert.
 
 **Preferences** exposes one global five-field cron expression, default
 `*/15 * * * *` in `UTC`, an expression helper, explicit IANA time-zone semantics,

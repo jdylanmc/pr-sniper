@@ -621,3 +621,71 @@ test("both repository release runners execute workflow contracts without weakeni
     "python -B -m unittest discover -s tests/release -p test_release.py && node --test tests/release/workflow.test.mjs",
   );
 });
+
+test("hosted macOS WebKit adds a read-only pinned full-engine gate without native operations", () => {
+  const webkit = parse(
+    readFileSync(".github/workflows/macos-webkit.yml", "utf8"),
+  );
+  assert.deepEqual(webkit.on, {
+    pull_request: null,
+    push: { branches: ["main"] },
+  });
+  assert.deepEqual(webkit.permissions, { contents: "read" });
+  assert.deepEqual(Object.keys(webkit.jobs), ["webkit"]);
+  const job = webkit.jobs.webkit;
+  assert.equal(job["runs-on"], "macos-15");
+  assert.equal(job["runs-on"], ci.jobs.macos["runs-on"]);
+  assert.equal(job["timeout-minutes"], 30);
+  assert.equal(job.environment, undefined);
+  assert.equal(job.permissions, undefined);
+  assert.equal(job.needs, undefined);
+  assert.equal(job.strategy, undefined);
+  for (const scope of [webkit, job, ...job.steps]) {
+    assert.equal(scope.env, undefined);
+    assert.equal(scope.if, undefined);
+    assert.equal(scope["continue-on-error"], undefined);
+    assert.equal(scope.defaults, undefined);
+  }
+  assert.doesNotMatch(JSON.stringify(webkit), /secrets\.|github\.token/);
+  const actions = job.steps.filter((step) => step.uses);
+  assert.deepEqual(
+    actions.map((step) => step.uses),
+    [
+      "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+      "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+    ],
+  );
+  for (const action of actions) {
+    assert.ok(
+      windows.jobs.windows.steps.some((step) => step.uses === action.uses),
+      "Reuse the trusted Windows workflow's immutable action pins",
+    );
+  }
+  assert.deepEqual(actions[0].with, { "persist-credentials": false });
+  assert.deepEqual(actions[1].with, {
+    "node-version-file": ".node-version",
+    cache: "npm",
+  });
+  assert.equal(job.steps.length, 6);
+  assert.deepEqual(
+    job.steps.filter((step) => step.run).map((step) => step.run),
+    [
+      "rustup show active-toolchain",
+      "npm ci",
+      "npm exec playwright install webkit",
+      "npm run test:settings -- --browser=webkit",
+    ],
+  );
+  for (const step of job.steps.filter((step) => step.run)) {
+    assert.ok(step["timeout-minutes"] > 0);
+    assert.ok(step["timeout-minutes"] < job["timeout-minutes"]);
+  }
+  assert.equal(
+    scripts["test:settings"],
+    "npm run build && cargo build --manifest-path src-tauri/Cargo.toml --locked --example settings_bridge && playwright test --config tests/settings/playwright.config.mjs",
+  );
+  assert.match(
+    readFileSync("rust-toolchain.toml", "utf8"),
+    /\[toolchain\]\s+channel = "\d+\.\d+\.\d+"/,
+  );
+});
