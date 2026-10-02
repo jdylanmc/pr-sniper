@@ -15,7 +15,24 @@ no-model-substitution assertions.
 Keyboard checks retain focus through unchanged polling, account reorder,
 confirmation and cancellation, while delayed reads cannot revive cancelled
 sign-in or steal newer focus. Screenshots use each test's output directory at
-408x744 and 408x500; controls must fit completely inside the scroll viewport.
+408x744 and 408x500. The account geometry matrix additionally crosses widths
+320, 400 and 408 with heights 300, 400, 439, 440, 441, 460, 499, 500, 501 and 744. Both providers' saved-account actions, requesting, device waiting,
+confirmation and failure/retry states use Tab and Shift+Tab navigation, including
+opening and closing consent with Enter. Every focused control must fit completely
+inside the actual scroll viewport and its clipping ancestors, retain a visible
+focus outline and avoid horizontal clipping. Geometry JSON and forward/reverse
+screenshots are retained per test; native command and saved-resource assertions
+remain unchanged.
+
+The account-scoped `:has(.account-connection)` chrome stays compact through 500px,
+independently of the outer panel's 440px treatment. The 439/440/441 and 499/500/501
+neighbors guard both transitions; consent uses the same scroll margin as account
+buttons to prevent fractional edge clipping. For #83 integration, this selector
+applies to the shared embedded Integrations chrome while account cards are
+mounted, not to repository content/order or Preferences' separate
+`[data-preferences]` rules. Preserve that scope and recheck the matrix after
+integration rather than copying the account breakpoint into unrelated surfaces.
+
 Failed attempts retain a screenshot and Playwright error context. These are
 production-renderer/browser and Store checks, not live sign-in, native credential
 storage, installed-app focus or provider acceptance. No fictional-handle form,

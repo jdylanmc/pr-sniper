@@ -1048,6 +1048,7 @@
   font-size: 11px;
 }
 .account-consent summary {
+  scroll-margin-block: 6px;
   width: fit-content;
   max-width: 100%;
   cursor: pointer;
@@ -1142,7 +1143,8 @@
     font-size: 11px;
   }
 }
-@media (max-height: 440px) {
+/* Account chrome stays compact beyond the outer panel's 440px breakpoint. */
+@media (max-height: 500px) {
   .panel-shell .settings-window:has(.account-connection) .settings-sidebar {
     padding-block: 2px;
   }

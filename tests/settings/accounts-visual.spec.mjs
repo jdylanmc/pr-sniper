@@ -1,5 +1,6 @@
 import { test, expect } from "./fixtures.mjs";
 import { section } from "./navigation.mjs";
+import { writeFile } from "node:fs/promises";
 
 test.afterEach(async ({ page }, testInfo) => {
   if (testInfo.status !== testInfo.expectedStatus)
@@ -705,6 +706,184 @@ for (const [provider, role] of Object.entries(roles)) {
       await page.screenshot({
         path: testInfo.outputPath(`${provider}-disconnected.png`),
       });
+    });
+  }
+}
+
+for (const width of [320, 400, 408]) {
+  for (const height of [300, 400, 439, 440, 441, 460, 499, 500, 501, 744]) {
+    test(`all compact account controls fit the scroll viewport at ${width}x${height}`, async ({
+      page,
+      store,
+    }, testInfo) => {
+      await page.setViewportSize({ width, height });
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      const fixture = await syntheticAuth(page);
+      await page.goto("/");
+      await page.getByRole("button", { name: "Settings", exact: true }).click();
+      const navigation = page.getByLabel("Settings section", { exact: true });
+      await expect(navigation).toBeVisible();
+      await section(page, "Integrations");
+      await page.evaluate(() => window.__settingsIdle());
+      const before = (await store("snapshot")).settings;
+      const observations = [];
+      for (const [provider, role] of Object.entries(roles)) {
+        const accounts = [
+          identity(provider, "202"),
+          {
+            ...identity(provider),
+            state: "reconnect_required",
+            reason: "expired",
+          },
+        ];
+        for (const [state, flow] of [
+          ["saved", { state: "idle" }],
+          ["requesting", { state: "connecting" }],
+          ["waiting", connecting],
+          ["confirmation", pending(provider)],
+          ["failed", { state: "failed", reason: "wrong_identity" }],
+        ]) {
+          fixture.states[provider] = { accounts, flow };
+          await refresh(page, provider);
+          const card = page.locator(role.card);
+          const controls = await card.locator("button:enabled, summary").all();
+          const tabStops = await page
+            .locator("button, input, select, textarea, summary, a[href]")
+            .count();
+          // Bootstrap at navigation, then reach every account control by Tab.
+          await navigation.focus();
+          for (const direction of ["Tab", "Shift+Tab"]) {
+            const ordered =
+              direction === "Tab" ? controls : controls.toReversed();
+            for (const control of ordered) {
+              for (let step = 0; step <= tabStops; step++) {
+                if (
+                  await control.evaluate(
+                    (element) => element === document.activeElement,
+                  )
+                )
+                  break;
+                await page.keyboard.press(direction);
+              }
+              await expect(control).toBeFocused();
+              const bounds = await control.evaluate((element) => {
+                const box = element.getBoundingClientRect();
+                const content = document.querySelector("#content");
+                let top = 0;
+                let bottom = innerHeight;
+                let left = 0;
+                let right = innerWidth;
+                for (
+                  let ancestor = element.parentElement;
+                  ancestor;
+                  ancestor = ancestor.parentElement
+                ) {
+                  const style = getComputedStyle(ancestor);
+                  const rect = ancestor.getBoundingClientRect();
+                  if (style.overflowY !== "visible") {
+                    top = Math.max(
+                      top,
+                      rect.top + parseFloat(style.borderTopWidth),
+                    );
+                    bottom = Math.min(
+                      bottom,
+                      rect.bottom - parseFloat(style.borderBottomWidth),
+                    );
+                  }
+                  if (style.overflowX !== "visible") {
+                    left = Math.max(
+                      left,
+                      rect.left + parseFloat(style.borderLeftWidth),
+                    );
+                    right = Math.min(
+                      right,
+                      rect.right - parseFloat(style.borderRightWidth),
+                    );
+                  }
+                }
+                const style = getComputedStyle(element);
+                const card = element.closest(".account-connection");
+                const cardBox = card.getBoundingClientRect();
+                return {
+                  label:
+                    element.getAttribute("aria-label") || element.textContent,
+                  control: box.toJSON(),
+                  viewport: { top, bottom, left, right, height: bottom - top },
+                  contentHeight: content.getBoundingClientRect().height,
+                  fullyVisible:
+                    box.top >= top &&
+                    box.bottom <= bottom &&
+                    box.left >= left &&
+                    box.right <= right,
+                  focusVisible: element.matches(":focus-visible"),
+                  outlineWidth: style.outlineWidth,
+                  outlineStyle: style.outlineStyle,
+                  horizontallyClipped:
+                    document.documentElement.scrollWidth > innerWidth ||
+                    content.scrollWidth > content.clientWidth ||
+                    card.scrollWidth > card.clientWidth ||
+                    [...card.querySelectorAll("button, summary, code")].some(
+                      (control) => {
+                        const rect = control.getBoundingClientRect();
+                        return (
+                          rect.left < cardBox.left ||
+                          rect.right > cardBox.right ||
+                          control.scrollWidth > control.clientWidth + 1
+                        );
+                      },
+                    ),
+                };
+              });
+              observations.push({ provider, state, direction, ...bounds });
+              if (
+                await control.evaluate(
+                  (element) => element.tagName === "SUMMARY",
+                )
+              ) {
+                await page.keyboard.press("Enter");
+                if (direction === "Tab")
+                  await expect(card.locator("details")).toHaveAttribute(
+                    "open",
+                    "",
+                  );
+                else
+                  await expect(card.locator("details")).not.toHaveAttribute(
+                    "open",
+                    "",
+                  );
+              }
+              if (direction === "Tab" && bounds.label === role.confirmLabel)
+                await page.screenshot({
+                  path: testInfo.outputPath(
+                    `${provider}-confirmation-focused.png`,
+                  ),
+                });
+            }
+            await page.screenshot({
+              path: testInfo.outputPath(
+                `${provider}-${state}-${direction === "Tab" ? "forward" : "reverse"}.png`,
+              ),
+            });
+          }
+          expect(fixture.states[provider].accounts).toEqual(accounts);
+        }
+      }
+      await writeFile(
+        testInfo.outputPath("geometry.json"),
+        JSON.stringify(observations, null, 2) + "\n",
+      );
+      expect(effects(fixture.calls)).toEqual([]);
+      expect((await store("snapshot")).settings).toEqual(before);
+      expect(
+        observations.filter(
+          (row) =>
+            !row.fullyVisible ||
+            !row.focusVisible ||
+            row.outlineWidth !== "3px" ||
+            row.outlineStyle !== "solid" ||
+            row.horizontallyClipped,
+        ),
+      ).toEqual([]);
     });
   }
 }
