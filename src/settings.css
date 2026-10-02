@@ -1311,3 +1311,233 @@
     border-color: #e3e9ee;
   }
 }
+
+/* Preferences keeps saved resources separate from immediate native operations. */
+.settings-window[data-preferences] {
+  color: #202b3b;
+  background: #eff2f5;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.settings-window[data-preferences] .settings-heading h1 {
+  font-family: inherit;
+  font-weight: 650;
+}
+.settings-window[data-preferences] .settings-heading p,
+.settings-window[data-preferences] #save-status {
+  color: #52647b;
+}
+.settings-window[data-preferences] .settings-savebar {
+  background: white;
+  border-color: #e1e8ed;
+}
+.settings-window[data-preferences] button {
+  color: #243247;
+  border-color: #cdd8e2;
+}
+.settings-window[data-preferences] button.primary:not(:disabled) {
+  background: #243247;
+  border-color: #243247;
+  color: white;
+}
+.settings-window[data-preferences] button:hover:not(:disabled) {
+  background: #e7f3f1;
+  color: #243247;
+}
+.settings-window[data-preferences] button:disabled {
+  background: #eff2f5;
+  border-color: #d5dfe8;
+  color: #637286;
+}
+.settings-window[data-preferences]
+  :is(button, input, select, summary):focus-visible {
+  outline-color: #096d7c;
+}
+.settings-window[data-preferences] input[role="switch"] {
+  border-color: #7a8797;
+  background: #7a8797;
+}
+.settings-window[data-preferences] input[role="switch"]:checked {
+  border-color: #327c84;
+  background: #327c84;
+}
+.settings-window[data-preferences] input[role="switch"]:disabled {
+  opacity: 0.55;
+}
+.preferences-view {
+  max-width: 680px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.preferences-view .preferences-boundary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 8px 0;
+}
+.preferences-view .preferences-boundary h2 {
+  font-size: 14px;
+}
+.preferences-boundary > span {
+  color: #52647b;
+  font-size: 10px;
+}
+.preferences-view .settings-group {
+  margin: 0 0 14px;
+  border-color: #e1e8ed;
+  border-radius: 12px;
+  background: white;
+  overflow-wrap: anywhere;
+}
+.preferences-view fieldset {
+  padding: 12px 14px;
+}
+.preferences-view legend {
+  padding: 8px 0 0;
+  font-size: 12px;
+  color: #243247;
+}
+.preferences-view .settings-hint,
+.preferences-view .setting-row small {
+  color: #52647b;
+  font-size: 11px;
+  margin: 6px 0;
+}
+.preferences-view .setting-row {
+  flex-wrap: nowrap;
+  gap: 14px;
+}
+.preferences-view .setting-row > span {
+  min-width: 0;
+}
+.preferences-view .preferences-saved fieldset + fieldset {
+  border-top: 1px solid #e1e8ed;
+}
+.preferences-view .preferences-permissions {
+  margin: 0;
+  padding: 0 14px 12px;
+}
+.preferences-view .preferences-capacity {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  font-size: 14px;
+  font-weight: 650;
+}
+.preferences-view #global-capacity {
+  width: 180px;
+  min-width: 0;
+  margin: 0;
+  font-size: 20px;
+  font-weight: 650;
+  color: #243247;
+  background: #e7f3f1;
+  border-color: #64b8be;
+}
+.preferences-view .preferences-warning {
+  padding: 8px 10px;
+  margin: 10px 0;
+  border-left: 3px solid #f68743;
+  background: #fff4eb;
+  color: #7b421f;
+  font-size: 11px;
+}
+.preferences-view .preferences-schedule {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 10px;
+}
+.preferences-schedule > label:first-child {
+  grid-column: 1 / -1;
+}
+.settings-window .preferences-view :is(input:not([type="checkbox"]), select) {
+  margin: 5px 0;
+  padding: 7px 9px;
+  min-height: 34px;
+  border-color: #cdd8e2;
+  background: #fbfcfd;
+  font-size: 12px;
+}
+.preferences-view button {
+  white-space: normal;
+  max-width: 100%;
+  min-height: 32px;
+  font-size: 12px;
+}
+.preferences-view [data-automation-status],
+.preferences-view #notification-permission {
+  padding: 8px 10px;
+  margin: 6px 0 10px;
+  border-radius: 7px;
+  background: #eff2f5;
+  color: #243247;
+  font-size: 11px;
+}
+.preferences-view summary {
+  padding: 8px 0;
+  font-size: 11px;
+  color: #243247;
+}
+.preferences-view [data-ai-work] {
+  padding-left: 18px;
+  font-size: 11px;
+}
+.preferences-view .preferences-readiness {
+  margin-top: 10px;
+  border-top: 1px solid #e1e8ed;
+}
+.panel-shell .settings-window[data-preferences] #content {
+  padding: 0 12px 12px;
+}
+@media (max-width: 600px) {
+  .panel-shell .settings-window[data-preferences] .settings-sidebar {
+    padding: 5px 12px;
+    background: white;
+    border-color: #e1e8ed;
+  }
+  .panel-shell .settings-window[data-preferences] .settings-brand {
+    display: none;
+  }
+  .panel-shell .settings-window[data-preferences] .mobile-section {
+    margin: 0;
+    color: #52647b;
+  }
+  .panel-shell .settings-window[data-preferences] .mobile-section select {
+    margin: 2px 0;
+    border-color: #cdd8e2;
+  }
+  .panel-shell .settings-window[data-preferences] .settings-heading p {
+    font-size: 11px;
+    margin-top: 3px;
+  }
+  .panel-shell .settings-window[data-preferences] .settings-savebar button {
+    font-size: 11px;
+    min-height: 30px;
+  }
+}
+@media (max-height: 440px) {
+  .panel-shell .settings-window[data-preferences] .settings-sidebar {
+    padding-block: 2px;
+  }
+  .panel-shell .settings-window[data-preferences] .mobile-section select {
+    padding: 3px 8px;
+    min-height: 26px;
+    margin: 0;
+    font-size: 11px;
+  }
+  .panel-shell .settings-window[data-preferences] .settings-heading {
+    padding: 3px 12px;
+  }
+  .panel-shell .settings-window[data-preferences] .settings-heading h1 {
+    font-size: 12px;
+  }
+  .panel-shell .settings-window[data-preferences] .settings-heading p {
+    display: none;
+  }
+  .panel-shell .settings-window[data-preferences] .settings-savebar {
+    padding: 4px 8px;
+    gap: 2px 5px;
+  }
+}
