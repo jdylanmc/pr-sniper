@@ -192,7 +192,7 @@ test("Windows native application checks run on every PR and main push with read-
 test("Windows cancels superseded PR runs without cancelling main release evidence", () => {
   assert.equal(
     windows.concurrency.group,
-    "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}",
+    "${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}",
   );
   assert.equal(
     windows.concurrency["cancel-in-progress"],
