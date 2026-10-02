@@ -14,6 +14,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- Harden Windows CI with main-owned Rust dependency caching, superseded-PR
+  cancellation, bounded command steps and labelled Chocolatey fault logs while
+  retaining all native, installer and recovery checks.
 - Apply the approved compact navy/orange/teal shell, supplied header artwork
   and persistent four-destination bottom navigation. Monitoring uses native
   pause state; unavailable snapshots never retain a successful work badge.
