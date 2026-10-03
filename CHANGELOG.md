@@ -51,6 +51,11 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   Keep missing human-closed roots unavailable and settle full/compact replies
   consistently without hiding uncertain writes. Revalidate legacy terminal
   records explicitly and count saved mention intent once in result ordering.
+- Keep save success aligned with the replacement commit point; recover ownership
+  housekeeping separately without rolling back a committed login preference.
+  Capture mentions from tracked iterations without requiring jobs, retain their
+  cleanup deduplication keys, and prevent superseded unstarted intent from
+  blocking current clearance. Expose ambiguous legacy result associations.
 - Keep account keyboard focus through native state updates, reject stale GitHub
   reads after account actions, and expose retry for unavailable account reads
   and failed GitHub credential deletion. Device-code controls remain fully

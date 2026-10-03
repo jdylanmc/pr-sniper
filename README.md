@@ -121,8 +121,20 @@ Legacy data is indexed deterministically at first access; it does not acquire
 invented historical completion timestamps. An interrupted index update is
 rebuilt from durable operational evidence before a page is returned.
 Saved top-level mention intent belongs to its exact iteration and advances that
-result even when primary routing is blocked. Repeated scans and later execution
-linkage do not count it twice; actual execution progress remains new activity.
+result even when primary routing is blocked. Tracking, not an incidental job,
+supplies that identity, including when no Agents are assigned. Deferred routing
+requires a job on that exact current iteration; superseded unstarted intent
+stays retained without blocking a later iteration's handoff or being replayed.
+Uncertain writes, missing execution history and outstanding human concerns
+still block clearance. Repeated scans and later execution linkage do not count
+intent twice; actual execution progress remains new activity.
+Baseline unlinked mentions have no revision evidence. Only an unchanged first
+tracked iteration, with no contradictory history, can safely associate them;
+intervening revisions are explicitly unavailable, never assigned by latest job
+or timestamp. Summary queries report unavailability while any mention cannot be
+associated or lacks a real job-backed row, rather than returning incomplete
+counts or inventing a job. Exact mention detail remains available. Cleanup
+retains mention keys and work identities even when no job ever existed.
 
 Only explicit provider-confirmed closure or merge admits automatic detail
 cleanup. Missing scan results, disabled/deleted configuration, lost accounts
@@ -157,6 +169,12 @@ permission. Abrupt bootstrap interruption can leave an empty stage and a small
 incomplete ownership record: these have no deletion proof and contain no PR
 detail. They do not obstruct retry or become a bulky archive. Payload handles
 close before replacement on Windows; existing private ACLs remain required.
+Rename is the save commit point: a successful replacement cannot subsequently
+report an uncommitted failure to resource or login-registration rollback callers.
+The small ownership claim remains for deferred directory sync and unlink on the
+next read/write (or operational startup recovery); no payload remains after
+rename. Recovery failures are explicit, retain the claim where still needed,
+and block that read/write without undoing previously committed data.
 These are process-interruption guarantees, not a portable power-loss guarantee.
 
 Minimal iteration/work/operation/publication/action receipts survive, including

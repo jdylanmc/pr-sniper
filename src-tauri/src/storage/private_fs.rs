@@ -204,8 +204,12 @@ pub(super) fn recover(directory: &Path, target: Option<&str>) -> io::Result<()> 
             continue;
         }
         discard_stage(&stage)?;
+        #[cfg(test)]
+        recovery_fault::check(&directory.join(file), "sync")?;
         sync_directory(directory)?;
         drop(owner);
+        #[cfg(test)]
+        recovery_fault::check(&directory.join(file), "unlink")?;
         fs::remove_file(marker)?;
         sync_directory(directory)?;
     }
@@ -243,6 +247,7 @@ pub(super) fn replace(path: &Path, bytes: &[u8], label: &str) -> Result<(), Stri
             return Err(format!("Cannot claim staged {label}."));
         }
     };
+    let mut claimed = false;
     let flushed = (|| {
         owner.try_lock().map_err(io::Error::other)?;
         #[cfg(test)]
@@ -257,9 +262,12 @@ pub(super) fn replace(path: &Path, bytes: &[u8], label: &str) -> Result<(), Stri
         owner.write_all(&proof.as_bytes()[..middle])?;
         #[cfg(test)]
         crash_test::boundary(path, &temporary, "owner-partial");
+        #[cfg(test)]
+        recovery_fault::check(path, "claim")?;
         owner.write_all(&proof.as_bytes()[middle..])?;
         owner.sync_all()?;
         sync_directory(directory)?;
+        claimed = true;
         #[cfg(test)]
         crash_test::boundary(path, &temporary, "created");
         #[cfg(test)]
@@ -267,6 +275,7 @@ pub(super) fn replace(path: &Path, bytes: &[u8], label: &str) -> Result<(), Stri
             let middle = bytes.len() / 2;
             file.write_all(&bytes[..middle])?;
             crash_test::boundary(path, &temporary, "partial");
+            recovery_fault::check(path, "payload")?;
             file.write_all(&bytes[middle..])?;
         }
         #[cfg(not(test))]
@@ -290,15 +299,47 @@ pub(super) fn replace(path: &Path, bytes: &[u8], label: &str) -> Result<(), Stri
             crash_test::boundary(path, &temporary, "pre-rename");
             fs::rename(&temporary, path).map_err(|_| format!("Cannot replace {label}."))
         });
-    if result.is_err() {
+    // Before the full claim is flushed, keep the empty bootstrap stage:
+    // removing it alone leaves a partial claim recovery cannot verify.
+    if result.is_err() && claimed {
         discard_stage(&temporary)
             .map_err(|_| format!("Cannot replace or clean up staged {label}."))?;
     }
-    sync_directory(directory).map_err(|_| format!("Cannot sync staged {label}."))?;
+    // Rename is the commit point. No fallible housekeeping may turn a committed
+    // save into Err: callers use Err to roll back related configuration. Keep
+    // the private claim for recovery on the next read/write or startup; after
+    // rename it owns no payload. Recovery reports its own failures explicitly.
     drop(owner);
-    fs::remove_file(marker).map_err(|_| format!("Cannot clean up ownership for {label}."))?;
-    sync_directory(directory).map_err(|_| format!("Cannot sync ownership for {label}."))?;
     result
+}
+
+#[cfg(test)]
+pub(crate) mod recovery_fault {
+    use super::*;
+    use std::{cell::RefCell, path::PathBuf};
+
+    thread_local! {
+        static FAIL: RefCell<Option<(PathBuf, &'static str)>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn arm(path: PathBuf, point: &'static str) {
+        FAIL.with(|fault| *fault.borrow_mut() = Some((path, point)));
+    }
+
+    pub(super) fn check(path: &Path, point: &str) -> io::Result<()> {
+        FAIL.with(|fault| {
+            let mut fault = fault.borrow_mut();
+            if fault
+                .as_ref()
+                .is_some_and(|(p, at)| p == path && *at == point)
+            {
+                *fault = None;
+                Err(io::Error::other("injected deferred recovery failure"))
+            } else {
+                Ok(())
+            }
+        })
+    }
 }
 
 #[cfg(test)]

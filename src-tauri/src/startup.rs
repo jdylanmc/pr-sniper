@@ -12,6 +12,10 @@ mod windows;
 #[cfg(windows)]
 pub use windows::LoginRegistration;
 
+#[cfg(test)]
+#[path = "startup/retention_tests.rs"]
+mod retention_tests;
+
 #[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RegistrationStatus {

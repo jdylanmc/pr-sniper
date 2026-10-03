@@ -78,6 +78,117 @@ fn recovery_cannot_reclaim_a_live_writers_claim() {
     assert!(!marker.exists());
 }
 
+fn claims(directory: &Path) -> Vec<PathBuf> {
+    fs::read_dir(directory)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| {
+            p.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains(WRITE_MARKER)
+        })
+        .collect()
+}
+
+#[test]
+fn r6_rename_commits_before_deferred_sync_or_unlink_and_recovery_remains_explicit() {
+    for point in ["sync", "unlink"] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("state.json");
+        recovery_fault::arm(path.clone(), point);
+        replace(&path, b"committed", "fixture").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"committed");
+        let owners = claims(root.path());
+        assert_eq!(owners.len(), 1);
+        assert_eq!(owners[0].extension().unwrap(), "owner");
+        assert!(recover(root.path(), None).is_err(), "{point}");
+        assert_eq!(fs::read(&path).unwrap(), b"committed");
+        assert_eq!(
+            claims(root.path()),
+            owners,
+            "Recovery retains ownership on {point} failure"
+        );
+        recover(root.path(), None).unwrap();
+        assert!(claims(root.path()).is_empty());
+        replace(&path, b"next commit", "fixture").unwrap();
+        recover(root.path(), None).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"next commit");
+    }
+}
+
+#[test]
+fn r6_precommit_failures_keep_old_data_and_recover_without_bulky_or_unprovable_payloads() {
+    for point in ["claim", "payload"] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("state.json");
+        replace(&path, b"old committed data", "fixture").unwrap();
+        recover(root.path(), None).unwrap();
+        recovery_fault::arm(path.clone(), point);
+        assert!(replace(&path, b"new bulky payload", "fixture").is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"old committed data");
+        recover(root.path(), None).unwrap();
+        for remnant in claims(root.path()) {
+            if remnant.extension().unwrap() == "stage" {
+                assert_eq!(fs::metadata(remnant).unwrap().len(), 0);
+            }
+        }
+        replace(&path, b"safe retry", "fixture").unwrap();
+        recover(root.path(), None).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"safe retry");
+    }
+}
+
+#[test]
+fn r6_resource_save_reports_commit_and_keeps_the_next_expected_snapshot_truthful() {
+    use crate::storage::{ResourceEdit, Settings, Store};
+    for point in ["sync", "unlink"] {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::new(root.path().into());
+        store.load_settings().unwrap();
+        let before = store.load_settings().unwrap();
+        let path = root.path().join("config/settings.json");
+        let mut value = before.global_preferences();
+        value.capacity += 1;
+        recovery_fault::arm(path.clone(), point);
+        let saved = store
+            .save_resource(ResourceEdit::Preferences {
+                expected: before.global_preferences(),
+                value,
+            })
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Settings>(&fs::read(&path).unwrap()).unwrap(),
+            saved
+        );
+        assert!(store
+            .load_settings()
+            .unwrap_err()
+            .contains("recover staged settings"));
+        assert_eq!(
+            serde_json::from_slice::<Settings>(&fs::read(&path).unwrap()).unwrap(),
+            saved
+        );
+        assert_eq!(store.load_settings().unwrap(), saved);
+        assert!(claims(path.parent().unwrap()).is_empty());
+        assert!(store
+            .save_resource(ResourceEdit::Preferences {
+                expected: before.global_preferences(),
+                value: before.global_preferences(),
+            })
+            .unwrap_err()
+            .contains("Resource changed"));
+        store
+            .save_resource(ResourceEdit::Preferences {
+                expected: saved.global_preferences(),
+                value: saved.global_preferences(),
+            })
+            .unwrap();
+        assert_eq!(store.load_settings().unwrap(), saved);
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn recovery_rejects_links_and_nonprivate_claims_without_touching_their_targets() {

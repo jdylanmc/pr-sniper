@@ -56,6 +56,13 @@ impl Store {
     }
     pub fn save_feedback(&self, ledger: &crate::feedback::Ledger) -> Result<(), String> {
         crate::retention::reject_cleaned(self, ledger.records.iter().map(|r| r.job.clone()))?;
+        for mention in &ledger.mentions {
+            if crate::retention::known_key(self, &mention.key)? {
+                return Err(
+                    "A stale operation attempted to restore cleaned mention intent.".into(),
+                );
+            }
+        }
         self.commit_operational("feedback.json", ledger)
     }
     pub fn load_automation(&self) -> Result<crate::capacity::Automation, String> {
