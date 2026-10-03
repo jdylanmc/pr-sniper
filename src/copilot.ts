@@ -45,6 +45,11 @@ export const copilotFailure = (reason?: string) =>
     expired: "The credential is missing or expired. Reconnect this account.",
     denied: "GitHub authorization was denied. Try again when ready.",
     network: "Cannot reach GitHub to verify sign-in. Retry verification.",
+    rate_limited: "GitHub rate limited verification. Retry later.",
+    missing_scope:
+      "GitHub no longer grants the required scope. Reconnect and review consent.",
+    authentication_changed:
+      "Reconnect through the PR Sniper OAuth App. Superseded credentials are not reused.",
     provider:
       "GitHub could not verify this identity. Retry verification or reconnect.",
     invalid_response: "GitHub returned an invalid response. Retry.",
@@ -65,7 +70,8 @@ export function renderCopilotAuth(
   root: HTMLElement,
   accountsChanged: (accounts: CopilotAccount[]) => void,
 ) {
-  root.innerHTML = `<div class="copilot-auth-card"><h3>GitHub Copilot</h3><p class="settings-hint">Supplies AI credentials only. Repository access and gated comment publication use the separate GitHub repository connection. Sign-in requests profile access and refresh, not repository access; GitHub may retain permissions you previously granted this OAuth App.${isWindows ? "" : " Model lookup requires macOS 13.5 or later."}</p><p role="status">Reading Copilot accounts...</p><p class="copilot-error" role="alert" hidden></p><div class="copilot-flow"></div><div class="copilot-accounts"></div><p class="settings-hint">A check means verified sign-in, not a subscription, seat or model test. Connections save immediately in ${secureStoreName}, independently of Save changes. Disconnect removes this role's local credential, not your GitHub authorization or repository connection.</p></div>`;
+  root.innerHTML = `<div class="copilot-auth-card account-connection" data-account-role="ai"><header class="account-connection-heading"><h3>GitHub Copilot</h3><p>AI identity for Agent reviews</p></header><p class="account-scope">Supplies AI credentials only. Does not grant repository access or permission to publish.</p><div class="account-connection-state"><p role="status" tabindex="-1">Reading Copilot accounts...</p><p class="copilot-error" role="alert" hidden></p><div class="copilot-flow"></div></div><details class="account-consent"><summary>Copilot access and consent</summary><p>Repository access and gated comment publication use the separate GitHub repository connection. Sign-in requests profile access and refresh, not repository access; GitHub may retain permissions you previously granted this OAuth App.${isWindows ? "" : " Model lookup requires macOS 13.5 or later."}</p><p>Only confirming the returned identity saves this connection in ${secureStoreName}, independently of Save changes. A check means verified sign-in, not a subscription, seat or model test. Disconnect removes this role's local credential, not your GitHub authorization or repository connection.</p></details><div class="copilot-accounts"></div></div>`;
+  const card = root.querySelector<HTMLElement>(".account-connection")!;
   const status = root.querySelector<HTMLElement>("[role=status]")!;
   const error = root.querySelector<HTMLElement>("[role=alert]")!;
   const flow = root.querySelector<HTMLElement>(".copilot-flow")!;
@@ -101,6 +107,7 @@ export function renderCopilotAuth(
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = label;
+    button.dataset.accountAction = `${command}:${args?.accountId ?? args?.expectedAccountId ?? ""}`;
     const isCancel = command === "cancel_copilot_auth";
     const isAccountAction =
       command === "verify_copilot_account" ||
@@ -109,6 +116,7 @@ export function renderCopilotAuth(
     button.disabled = isCancel ? cancelling : busy || cancelling;
     button.onclick = async () => {
       if (cancelling || (!isCancel && busy)) return;
+      status.focus({ preventScroll: true });
       if (isCancel) cancelling = true;
       else busy = true;
       const request = ++actionGeneration;
@@ -155,7 +163,13 @@ export function renderCopilotAuth(
     )
       timer = setTimeout(() => void refresh(), 350);
     if (serialized === lastView) return;
+    const focused = document.activeElement;
+    const focusKey =
+      focused instanceof HTMLElement && root.contains(focused)
+        ? focused.dataset.accountAction
+        : undefined;
     lastView = serialized;
+    card.dataset.flowState = view.flow.state;
     accountsChanged(view.accounts);
     accounts.replaceChildren();
     flow.replaceChildren();
@@ -165,6 +179,7 @@ export function renderCopilotAuth(
     for (const account of view.accounts) {
       const row = document.createElement("article");
       row.className = "github-account";
+      row.dataset.accountState = account.state;
       row.setAttribute("aria-label", `Copilot account ${account.login}`);
       const description = document.createElement("div");
       const title = document.createElement("strong");
@@ -219,6 +234,7 @@ export function renderCopilotAuth(
         const copy = document.createElement("button");
         copy.type = "button";
         copy.textContent = "Copy code";
+        copy.dataset.accountAction = "copy-code";
         const feedback = document.createElement("p");
         feedback.setAttribute("aria-live", "polite");
         copy.onclick = async () => {
@@ -239,12 +255,23 @@ export function renderCopilotAuth(
       status.textContent = `Confirm ${current.login} (${current.account_id}) for AI. Credentials are not saved until you confirm.`;
       if (current.confirmation_error)
         showError(copilotFailure(current.confirmation_error));
-      button(flow, "Confirm Copilot account", "confirm_copilot_account");
+      button(
+        flow,
+        "Confirm Copilot account",
+        "confirm_copilot_account",
+      ).className = "primary";
       // Keep the expected identity on reconnect; cancelling never changes its pin.
       button(flow, "Cancel Copilot sign-in", "cancel_copilot_auth");
     } else {
       if (current.state === "failed") showError(copilotFailure(current.reason));
-      button(flow, "Connect Copilot account", "start_copilot_auth");
+      button(flow, "Connect Copilot account", "start_copilot_auth").className =
+        "primary";
+    }
+    if (focusKey && focused instanceof HTMLElement && !focused.isConnected) {
+      const replacement = root.querySelector<HTMLElement>(
+        `[data-account-action="${CSS.escape(focusKey)}"]`,
+      );
+      (replacement ?? status).focus({ preventScroll: true });
     }
   }
   async function refresh() {
@@ -259,6 +286,7 @@ export function renderCopilotAuth(
       if (!alive() || request !== actionGeneration || read !== stateRead)
         return;
       lastView = "";
+      card.dataset.flowState = "failed";
       if (error.hidden) showError(cause);
       status.textContent =
         "Copilot account state is unavailable. No connection is assumed.";
