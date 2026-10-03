@@ -4,8 +4,8 @@
 - Subject: https://github.com/jdylanmc/pr-sniper/issues/51
 - Slug: pr-sniper-vnext
 - Alignment: confirmed
-- Aligned Findings Digest: 1a0c0b86021d11159f71c6a68e5a0ab154451e2eeb027b30c0124108ffd73ec4
-- Domain Model Basis Digest: 1a0c0b86021d11159f71c6a68e5a0ab154451e2eeb027b30c0124108ffd73ec4
+- Aligned Findings Digest: 907afc1cb0f77287a2935da40959246d4c669ab0e2f2e860580e49286289ac2d
+- Domain Model Basis Digest: 907afc1cb0f77287a2935da40959246d4c669ab0e2f2e860580e49286289ac2d
 - Domain Model Digest: e7d8c722cbc3c451cffa1de73f72c2932a31b740da2c45e09084e8971c0d2849
 - Frontier Basis Digest: e7d8c722cbc3c451cffa1de73f72c2932a31b740da2c45e09084e8971c0d2849
 - Frontier Digest: fe270c4c0261dc02432072471cf345ad6b8a39ef1610008a6bbc48a92a1d4f6e
@@ -83,6 +83,7 @@
 - Keep active references and unsettled provider operations recoverable. Cleanup must not enable duplicate comments/approvals, resurrect human-closed concerns or suppress a genuinely reopened review iteration.
 - No production data cleanup, desktop automation, host configuration change or VM provisioning is authorized by this discovery. The manually launched app and unrelated #81 delivery remain separate.
 - Storage layout, journaling/atomicity, exact receipt fields and migration mechanics are engineering decisions rather than new human product questions; their safety still needs implementation evidence.
+- D18 approves scoped #51/#76/#80 alignment in intent. Exact tracker edits remain a separate guarded operation; this foundation records neither their execution nor implementation completion.
 
 ## Assumptions
 
@@ -102,7 +103,7 @@ _None recorded._
 
 ## Open Questions
 
-- Specification workflow: reconcile the approved vNext decisions with current MVP documents and affected issue text; no tracker write is authorized yet.
+- Specification workflow: reconcile the approved vNext decisions with current MVP documents and affected issue text. D18 approves scoped #51/#76/#80 alignment in intent; exact tracker edits remain a separate guarded operation.
 - Implementation and verification owners: establish provider-capability and required-policy observations, final-review invalidation/race handling, cancellation, persistence and native UI behavior. No acceptance claim is supplied by this discovery.
 - Engineering owner: choose the smallest current-Store-compatible storage and cleanup approach, establish lifecycle revalidation, concurrency, crash/restart recovery, safe operation settlement and required receipt contents. Physical format is delegated, not a product blocker.
 - Specification/design owner: reconcile affected existing clauses, revise the POC's active-results/terminal-cleanup behavior and captures, and apply the approved scoped #51/#76/#80 updates before implementation. None of these downstream changes is completed by this foundation write.
@@ -192,8 +193,10 @@ Hand this verified retention foundation to scoped specification reconciliation a
 - frontier: ready | origin: loop | Polling, primary designation, iteration/reopen behavior, mention routing, separate approval/merge permissions, final review, human-closed concerns, artwork and Genie entry have human decisions. — Superseded by the 2026-10-02 aligned retention follow-up; earlier product decisions remain retained and this cycle records current downstream work explicitly.
 - frontier: deferred to specification and implementation | origin: loop | Provider policy observations, final-review race handling, cancellation, persistence and native behavior still require their own evidence; no native or provider acceptance is claimed. — Superseded by the 2026-10-02 aligned retention follow-up; earlier product decisions remain retained and this cycle records current downstream work explicitly.
 - frontier: tracker boundary | origin: loop | No tracker update requested; exact proposed updates need human approval. — Superseded by the 2026-10-02 aligned retention follow-up; earlier product decisions remain retained and this cycle records current downstream work explicitly.
+- openQuestions: Specification workflow: reconcile the approved vNext decisions with current MVP documents and affected issue text; no tracker write is authorized yet. — Clarify the September 30 tracker restriction using the already-confirmed D18 direction and existing frontier boundary. Scoped alignment is approved in intent; exact tracker edits remain a separate guarded operation. No product requirement or execution authority is added.
 
 ## History
 
 - vnext-human-alignment-2026-09-30 | 2026-09-30T20:57:54.610Z | verified | succeeds none
 - 2026-10-02-active-pr-retention | 2026-10-02T17:20:36.438Z | corrected | succeeds fb869d7c9888691c3d3a7777220f542e82e694875c10bb1170c0336fa7b34cb7
+- 2026-10-03-retention-tracker-clarification | 2026-10-03T02:52:45.653Z | corrected | succeeds 290fcfefcf3d89f6120cd7e02af27a7d81d175bb5b3db9b85bcbb190e9f291e7
