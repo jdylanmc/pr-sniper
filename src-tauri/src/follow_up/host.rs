@@ -174,7 +174,8 @@ pub(crate) fn admit_scan(
     now: i64,
 ) -> Result<(), String> {
     let settings = store.load_settings()?;
-    let jobs = store.load_queue()?;
+    let queue = store.load_queue_state()?;
+    let jobs = &queue.jobs;
     let mut ledger = store.load_feedback()?;
     for observation in &observations.feedback {
         ledger.observe(&observation.origin, &observation.head, &observation.threads)?;
@@ -192,7 +193,7 @@ pub(crate) fn admit_scan(
         }) {
             continue;
         }
-        let Some(job) = super::current_owner_job(&jobs, &origin.review) else {
+        let Some(job) = super::current_owner_job(jobs, &origin.review) else {
             continue;
         };
         let Ok(selection) = Selection::resolve(&settings, job, &origin.review.assignment_id) else {
@@ -263,15 +264,15 @@ pub(crate) fn admit_scan(
                     now,
                 )
             };
-            let item_id = existing
-                .map(|run| crate::queue::item_id(&run.context.job))
-                .or_else(|| {
-                    jobs.iter()
-                        .filter(|job| binding.matches(job))
-                        .max_by_key(|job| job.work.as_ref().map(|w| w.iteration).unwrap_or(0))
-                        .map(crate::queue::item_id)
-                })
-                .ok_or("The observed mention's exact iteration is unavailable.")?;
+            let item_id = if let Some(run) = existing {
+                crate::queue::item_id(&run.context.job)
+            } else {
+                let tracked = binding.tracked(&queue.tracked)?;
+                if tracked.lifecycle != github::metadata::Lifecycle::Open {
+                    return Err("The observed mention's tracked PR is no longer open.".into());
+                }
+                tracked.item_id.clone()
+            };
             ledger.mentions.push(crate::feedback::Mention {
                 item_id: Some(item_id),
                 key,
@@ -293,37 +294,29 @@ pub(crate) fn admit_scan(
             && m.binding.account_id == ticket.provider_account_id
             && m.binding.repository_id == ticket.provider_repository_id
     }) {
+        let item_id = match mention.association(&queue.tracked, jobs, &runs) {
+            Ok(id) => id,
+            Err(reason) => {
+                mention.blocked = Some(reason.into());
+                continue;
+            }
+        };
+        mention.item_id = Some(item_id.clone());
         let binding = &mention.binding;
         if let Some(run) = runs
             .iter()
             .find(|r| r.key == mention.key || r.id == mention.work_id)
         {
-            if run.key != mention.key
-                || run.id != mention.work_id
-                || run.enqueue_order != Some(mention.enqueue_order)
-                || run.enqueued_at != Some(mention.enqueued_at)
-                || mention
-                    .item_id
-                    .as_ref()
-                    .is_some_and(|id| id != &crate::queue::item_id(&run.context.job))
-                || mention
-                    .follow_up_id
-                    .as_ref()
-                    .is_some_and(|id| id != &run.id)
-            {
-                return Err("Mention execution identity or order conflicts with its saved intent; no replacement was created.".into());
-            }
-            mention.item_id = Some(crate::queue::item_id(&run.context.job));
             mention.follow_up_id = Some(run.id.clone());
             mention.blocked = None;
             continue;
         }
-        if mention.follow_up_id.is_some() {
-            mention.blocked =
-                Some("Mention history is unavailable; no replacement response is created.".into());
-            continue;
-        }
         let route = (|| -> Result<FollowUp, String> {
+            let tracked = binding.tracked(&queue.tracked)?;
+            if tracked.item_id != item_id || tracked.lifecycle != github::metadata::Lifecycle::Open
+            {
+                return Err("Mention belongs to a superseded or terminal iteration; retained without replay.".into());
+            }
             let repository = settings
                 .repositories
                 .iter()
@@ -352,10 +345,7 @@ pub(crate) fn admit_scan(
                 .rev()
                 .find(|j| {
                     binding.matches(j)
-                        && mention
-                            .item_id
-                            .as_ref()
-                            .is_none_or(|id| id == &crate::queue::item_id(j))
+                        && item_id == crate::queue::item_id(j)
                         && j.assignment_id.as_deref() == Some(primary)
                         && monitoring::review_policy(&settings, j, None).is_ok()
                 })

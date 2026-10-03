@@ -37,8 +37,12 @@ pub struct Page {
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Index {
+    #[serde(default)]
+    version: u8,
     sequence: u64,
     rows: BTreeMap<String, Stamp>,
+    #[serde(default)]
+    unavailable: BTreeMap<String, String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -100,6 +104,7 @@ pub(super) fn refresh(store: &Store) -> Result<(), String> {
     let feedback = store.load_feedback()?;
     let mut rows = BTreeMap::new();
     let mut parts = BTreeMap::new();
+    let mut unavailable = BTreeMap::new();
     let mut completed: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for job in state.jobs.iter().chain(reviews.iter().map(|r| &r.job)) {
         let id = crate::queue::item_id(job);
@@ -153,21 +158,30 @@ pub(super) fn refresh(store: &Store) -> Result<(), String> {
             row.conversations += 1;
         }
     }
-    for mention in &feedback.mentions {
-        let id = mention.item_id.clone().or_else(|| {
-            follows
-                .iter()
-                .find(|f| f.key == mention.key && f.id == mention.work_id)
-                .map(|f| crate::queue::item_id(&f.context.job))
-        });
-        if let Some(id) = id {
-            add(
-                &mut parts,
-                id.clone(),
-                &(&mention.key, &mention.work_id, &mention.comment),
-            )?;
-            if let Some(row) = rows.get_mut(&id) {
-                row.conversations += 1;
+    for mention in feedback.mentions.iter().filter(|m| {
+        !state
+            .tracked
+            .iter()
+            .any(|p| m.binding.matches_tracked(p) && p.lifecycle != Lifecycle::Open)
+    }) {
+        match mention.association(&state.tracked, &state.jobs, &follows) {
+            Ok(id) => {
+                add(
+                    &mut parts,
+                    id.clone(),
+                    &(&mention.key, &mention.work_id, &mention.comment),
+                )?;
+                if let Some(row) = rows.get_mut(&id) {
+                    row.conversations += 1;
+                } else {
+                    unavailable.insert(
+                    mention.work_id.clone(),
+                    format!("Mention is retained for exact iteration {id}, but no review job exists; no job was invented."),
+                );
+                }
+            }
+            Err(reason) => {
+                unavailable.insert(mention.work_id.clone(), reason.into());
             }
         }
     }
@@ -237,7 +251,14 @@ pub(super) fn refresh(store: &Store) -> Result<(), String> {
             projection_changed = true;
         }
     }
-    if changed || removed || projection_changed {
+    if changed
+        || removed
+        || projection_changed
+        || index.version != 2
+        || index.unavailable != unavailable
+    {
+        index.version = 2;
+        index.unavailable = unavailable;
         store.write_state("result-index.json", &index)?;
     }
     store.write_state("result-index-pending.json", &false)
@@ -258,11 +279,17 @@ pub fn page(store: &Store, request: PageRequest) -> Result<Page, String> {
     }
     guard(store)?;
     let mut index = load_index(store)?;
-    if index.is_none() || pending(store)? {
+    if index.as_ref().is_none_or(|index| index.version != 2) || pending(store)? {
         refresh(store)?;
         index = load_index(store)?;
     }
     let index = index.unwrap_or_default();
+    if let Some((id, reason)) = index.unavailable.first_key_value() {
+        return Err(format!(
+            "Result summaries are unavailable for {} retained mention(s). Mention {id}: {reason}",
+            index.unavailable.len()
+        ));
+    }
     if request
         .cursor
         .as_ref()

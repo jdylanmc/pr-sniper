@@ -26,6 +26,8 @@ use std::collections::BTreeMap;
 const REPO: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const NOW: i64 = 1_800_000_000;
 
+mod retention_identity;
+
 fn pull(head: char) -> PullRequest {
     PullRequest {
         id: "9".into(),
@@ -78,7 +80,7 @@ fn poll(store: &Store, head: char, now: i64) -> PollTicket {
     ticket
 }
 
-fn fixture(count: usize) -> (tempfile::TempDir, Store, Publication, Thread) {
+fn tracking_fixture(count: usize) -> (tempfile::TempDir, Store) {
     let root = tempfile::tempdir().unwrap();
     let store = Store::new(root.path().into());
     let mut settings: Settings = serde_json::from_value(json!({"launch_at_login":false,"doctrines":[],
@@ -114,6 +116,12 @@ fn fixture(count: usize) -> (tempfile::TempDir, Store, Publication, Thread) {
     );
     store.save_monitoring_state(&state).unwrap();
     poll(&store, 'a', NOW);
+    (root, store)
+}
+
+fn fixture(count: usize) -> (tempfile::TempDir, Store, Publication, Thread) {
+    let (root, store) = tracking_fixture(count);
+    let settings = store.load_settings().unwrap();
     let jobs = store.load_queue().unwrap();
     let reviews=jobs.iter().enumerate().map(|(i,job)| {
         let mut operation=JobOperation::review(job,NOW+2);operation.state=OperationState::Completed;

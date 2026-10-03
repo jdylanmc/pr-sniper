@@ -511,6 +511,20 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             }
         }
         for mention in snapshot.mentions.iter().filter(|m| m.binding.matches(job)) {
+            match mention.association(
+                &snapshot.tracked,
+                &snapshot.jobs,
+                snapshot.follow_ups.iter().map(|f| &f.run),
+            ) {
+                Ok(mention_item) if mention_item != id => continue,
+                Ok(_) => {}
+                Err(reason) => {
+                    // Missing execution or ambiguous legacy evidence is not
+                    // proof that an old operation or human concern is settled.
+                    states.push(State::Blocked);
+                    warnings.insert(reason.into());
+                }
+            }
             if mention.follow_up_id.is_none() {
                 states.push(State::Blocked);
                 warnings.insert("Observed mention is awaiting durable execution admission.".into());

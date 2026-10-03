@@ -1,7 +1,7 @@
 use crate::{
     follow_up::{ConversationTarget, FollowUp, ReplyDecision},
     github::{conversation::TopComment, threads::Thread},
-    monitoring::{OperationState, QueueJob},
+    monitoring::{OperationState, QueueJob, TrackedPullRequest},
     publication::{Publication, RemoteState},
     review::{Failure, Finding, ReviewOutput},
     storage::Store,
@@ -60,10 +60,30 @@ pub struct MentionBinding {
 
 impl MentionBinding {
     pub fn matches(&self, job: &QueueJob) -> bool {
-        self.configuration_id == job.configuration_id
+        job.provider == "github"
+            && self.configuration_id == job.configuration_id
             && self.account_id == job.account_id
             && self.repository_id == job.repository_id
             && self.pull_request_id == job.pull_request_id
+    }
+    pub fn matches_tracked(&self, pr: &TrackedPullRequest) -> bool {
+        pr.provider == "github"
+            && self.configuration_id == pr.configuration_id
+            && self.account_id == pr.account_id
+            && self.repository_id == pr.repository_id
+            && self.pull_request_id == pr.pull_request_id
+    }
+
+    pub fn tracked<'a>(
+        &self,
+        tracked: &'a [TrackedPullRequest],
+    ) -> Result<&'a TrackedPullRequest, &'static str> {
+        let mut matches = tracked.iter().filter(|pr| self.matches_tracked(pr));
+        let pr = matches.next().ok_or("Mention tracking is unavailable.")?;
+        if matches.next().is_some() || pr.item_id.is_empty() {
+            return Err("Mention tracking is ambiguous; no iteration was selected.");
+        }
+        Ok(pr)
     }
     pub fn key(&self, comment: &str) -> String {
         serde_json::json!([
@@ -76,6 +96,71 @@ impl MentionBinding {
             comment
         ])
         .to_string()
+    }
+}
+
+impl Mention {
+    /// Prefer captured identity or its exact execution. Baseline unlinked intent
+    /// has no revision evidence: only an unchanged first tracked iteration can
+    /// establish it. FIFO order or timestamps cannot distinguish a revision
+    /// observed while no Agents were assigned.
+    pub fn association<'a>(
+        &self,
+        tracked: &[TrackedPullRequest],
+        jobs: &[QueueJob],
+        runs: impl IntoIterator<Item = &'a FollowUp>,
+    ) -> Result<String, &'static str> {
+        let mut matches = runs.into_iter().filter(|run| {
+            run.key == self.key
+                || run.id == self.work_id
+                || self.follow_up_id.as_ref() == Some(&run.id)
+        });
+        if let Some(run) = matches.next() {
+            let id = crate::queue::item_id(&run.context.job);
+            if matches.next().is_some()
+                || run.key != self.key
+                || run.id != self.work_id
+                || !self.binding.matches(&run.context.job)
+                || run.kind() != crate::capacity::Kind::Mention
+                || run.enqueue_order != Some(self.enqueue_order)
+                || run.enqueued_at != Some(self.enqueued_at)
+                || self.item_id.as_ref().is_some_and(|saved| saved != &id)
+                || self
+                    .follow_up_id
+                    .as_ref()
+                    .is_some_and(|saved| saved != &run.id)
+            {
+                return Err("Mention execution conflicts with saved intent; no replacement or clearance inferred.");
+            }
+            return Ok(id);
+        }
+        if self.follow_up_id.is_some() {
+            return Err(
+                "Mention execution history is unavailable; no replacement or clearance inferred.",
+            );
+        }
+        if let Some(id) = &self.item_id {
+            if id.is_empty() {
+                return Err("Saved mention iteration is invalid; no replacement was selected.");
+            }
+            return Ok(id.clone());
+        }
+        let pr = self.binding.tracked(tracked)?;
+        if pr.iteration != 1
+            || pr.admitted_at > self.enqueued_at
+            || jobs.iter().filter(|j| self.binding.matches(j)).any(|j| {
+                j.head_sha != pr.head_sha
+                    || j.work.is_none() && crate::queue::item_id(j) != pr.item_id
+                    || j.work.as_ref().is_some_and(|w| {
+                        w.iteration != 1
+                            || w.iteration_id != pr.iteration_id
+                            || w.item_id != pr.item_id
+                    })
+            })
+        {
+            return Err("Legacy mention iteration is unavailable after intervening or ambiguous history; no later iteration was selected.");
+        }
+        Ok(pr.item_id.clone())
     }
 }
 

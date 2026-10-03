@@ -68,6 +68,28 @@ impl State {
             .iter()
             .filter(|f| matches(&f.context.job))
             .collect();
+        let mentions: Vec<_> = self
+            .feedback
+            .mentions
+            .iter()
+            .filter(|m| m.binding.matches_tracked(scope))
+            .collect();
+        for mention in &mentions {
+            if mention.follow_up_id.is_some()
+                || self
+                    .follow_ups
+                    .iter()
+                    .any(|f| f.key == mention.key || f.id == mention.work_id)
+            {
+                mention
+                    .association(&self.queue.tracked, &self.queue.jobs, &self.follow_ups)
+                    .map_err(|reason| {
+                        format!(
+                            "Terminal cleanup requires the original mention execution. {reason}"
+                        )
+                    })?;
+            }
+        }
         let review_origins: BTreeMap<_, _> = publications
             .iter()
             .map(|p| &p.review)
@@ -93,6 +115,15 @@ impl State {
             .map(crate::queue::item_id)
             .collect();
         items.insert(scope.item_id.clone());
+        for mention in &mentions {
+            // Legacy unlinked ambiguity has no exact item to retire. Its
+            // definite PR binding still retains the work/key receipt below.
+            if let Ok(id) =
+                mention.association(&self.queue.tracked, &self.queue.jobs, &self.follow_ups)
+            {
+                items.insert(id);
+            }
+        }
         for job in self.queue.jobs.iter().filter(|j| matches(j)) {
             if let Some(alias) = job.work.as_ref().and_then(|w| w.legacy_item_id.clone()) {
                 items.insert(alias);
@@ -186,21 +217,10 @@ impl State {
                 .or_default();
             *ordinal = (*ordinal).max(follow.reply_ordinal.unwrap_or(0));
         }
-        work.extend(
-            self.feedback
-                .mentions
-                .iter()
-                .filter(|m| {
-                    self.queue
-                        .jobs
-                        .iter()
-                        .any(|j| matches(j) && m.binding.matches(j))
-                })
-                .map(|m| WorkId {
-                    kind: crate::capacity::Kind::Mention,
-                    id: m.work_id.clone(),
-                }),
-        );
+        work.extend(mentions.iter().map(|m| WorkId {
+            kind: crate::capacity::Kind::Mention,
+            id: m.work_id.clone(),
+        }));
         let mut operations = BTreeMap::new();
         for op in reviews
             .iter()
@@ -282,18 +302,7 @@ impl State {
             follow_up_keys: follows
                 .iter()
                 .map(|f| f.key.clone())
-                .chain(
-                    self.feedback
-                        .mentions
-                        .iter()
-                        .filter(|m| {
-                            self.queue
-                                .jobs
-                                .iter()
-                                .any(|j| matches(j) && m.binding.matches(j))
-                        })
-                        .map(|m| m.key.clone()),
-                )
+                .chain(mentions.iter().map(|m| m.key.clone()))
                 .collect(),
             owned,
             notices: BTreeMap::new(),
@@ -317,12 +326,9 @@ impl State {
             .observations
             .retain(|o| !receipt.items.contains(&o.item_id));
         self.feedback.records.retain(|r| !binding.matches(&r.job));
-        self.feedback.mentions.retain(|m| {
-            !(m.binding.configuration_id == binding.configuration_id
-                && m.binding.account_id == binding.account_id
-                && m.binding.repository_id == binding.repository_id
-                && m.binding.pull_request_id == binding.pull_request_id)
-        });
+        self.feedback
+            .mentions
+            .retain(|m| !m.binding.matches_tracked(&receipt.scope));
         self.notifications
             .notices
             .retain(|n| !receipt.notices.contains_key(&n.id));
