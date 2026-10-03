@@ -177,7 +177,19 @@ pub(crate) fn admit_scan(
     let queue = store.load_queue_state()?;
     let jobs = &queue.jobs;
     let mut ledger = store.load_feedback()?;
+    let publications = store.load_publications()?;
     for observation in &observations.feedback {
+        let proof = observation
+            .origin
+            .ownership()
+            .map_err(|_| "Invalid owned feedback provenance.")?;
+        if !publications
+            .iter()
+            .any(|p| p.ownership().is_ok_and(|saved| saved == proof))
+        {
+            return Err("Owned feedback provenance changed during the scan.".into());
+        }
+        crate::feedback::observed_pr(&queue.tracked, &proof, &observation.head)?;
         ledger.observe(&observation.origin, &observation.head, &observation.threads)?;
     }
     store.save_feedback(&ledger)?;
@@ -196,6 +208,11 @@ pub(crate) fn admit_scan(
         let Some(job) = super::current_owner_job(jobs, &origin.review) else {
             continue;
         };
+        if job.head_sha != observation.head
+            || monitoring::review_policy(&settings, job, None).is_err()
+        {
+            continue;
+        }
         let Ok(selection) = Selection::resolve(&settings, job, &origin.review.assignment_id) else {
             continue;
         };

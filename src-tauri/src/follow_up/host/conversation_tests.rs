@@ -879,6 +879,7 @@ fn r5_blocked_mention_moves_only_its_exact_result_once() {
         PageRequest {
             limit: 1,
             cursor: None,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -899,6 +900,7 @@ fn r5_blocked_mention_moves_only_its_exact_result_once() {
         PageRequest {
             limit: 1,
             cursor: None,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -919,7 +921,8 @@ fn r5_blocked_mention_moves_only_its_exact_result_once() {
                     &store,
                     PageRequest {
                         limit: 1,
-                        cursor: None
+                        cursor: None,
+                        ..Default::default()
                     }
                 )
                 .unwrap()
@@ -932,7 +935,8 @@ fn r5_blocked_mention_moves_only_its_exact_result_once() {
         &store,
         PageRequest {
             limit: 1,
-            cursor: first.next_cursor
+            cursor: first.next_cursor,
+            ..Default::default()
         }
     )
     .unwrap()
@@ -943,6 +947,7 @@ fn r5_blocked_mention_moves_only_its_exact_result_once() {
         PageRequest {
             limit: 1,
             cursor: newest.next_cursor,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -961,7 +966,8 @@ fn r5_blocked_mention_moves_only_its_exact_result_once() {
                 &store,
                 PageRequest {
                     limit: 1,
-                    cursor: None
+                    cursor: None,
+                    ..Default::default()
                 }
             )
             .unwrap()

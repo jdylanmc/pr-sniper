@@ -106,9 +106,12 @@ notification history and recovery; Diagnostics remains redacted.
 
 Open PR jobs, completed passes, earlier iterations and owned feedback remain
 durable across unchanged scans and restarts. The native `result_page` command
-accepts `{ request: { limit, cursor } }`: `limit` is 1–200, `cursor` is initially
-`null`. It returns bounded `results` and `next_cursor`; there is no total result
-cap. Each row identifies an exact iteration, its job, activity sequence,
+accepts `{ request: { limit, cursor, unavailable_cursor } }`: `limit` is 1–200,
+both cursors are initially `null` (omitted `unavailable_cursor` also starts at
+the beginning). It returns bounded `results` and `next_cursor`, plus separately
+bounded `unavailable`, `unavailable_count` and `next_unavailable_cursor`.
+Each array contains at most `limit` entries; there is no total result or
+diagnostic cap. Each result row identifies an exact iteration, its job, activity sequence,
 completed normal-pass count, review-attempt count and conversation count.
 Completed retries remain separate attempts, not additional normal passes.
 
@@ -131,9 +134,30 @@ intent twice; actual execution progress remains new activity.
 Baseline unlinked mentions have no revision evidence. Only an unchanged first
 tracked iteration, with no contradictory history, can safely associate them;
 intervening revisions are explicitly unavailable, never assigned by latest job
-or timestamp. Summary queries report unavailability while any mention cannot be
-associated or lacks a real job-backed row, rather than returning incomplete
-counts or inventing a job. Exact mention detail remains available. Cleanup
+or timestamp. A successful feedback load durably pins provable identity before
+returning it, including on an index query. Queue replacement also passes that
+load boundary before overwriting the old tracking proof. Migration failure is
+an explicit error, not permission to advance tracking or infer a later identity.
+
+An ambiguous mention or one lacking a real job-backed row does not disable
+healthy results. `unavailable_count` reports the current total on every page;
+`unavailable` entries identify exact mention destinations and explain their
+account/repository/PR scope and missing evidence. Counts on job-backed rows do
+not claim to include unassociated intent. Fetch an entry's `destination` with
+`result_detail` to inspect its retained intent, not a fabricated execution.
+Diagnostics sort by immutable mention work ID ascending, independently of
+result activity. Continue either stream with its own returned cursor; a `null`
+next cursor ends only that stream. Passing `null` again explicitly restarts it.
+Changed availability removes resolved entries without invalidating older keyset
+positions; newly unavailable entries before a cursor appear on a new traversal.
+Neither stream consumes the other's page budget.
+
+For example, start both with
+`{ request: { limit: 25, cursor: null, unavailable_cursor: null } }`.
+Continue results using `next_cursor`, and diagnostics using
+`next_unavailable_cursor`, until each independently returns `null`; do not
+append a restarted stream after it has finished. Even if there are more
+diagnostics than results, every healthy older result remains reachable. Cleanup
 retains mention keys and work identities even when no job ever existed.
 
 Only explicit provider-confirmed closure or merge admits automatic detail
@@ -172,9 +196,14 @@ close before replacement on Windows; existing private ACLs remain required.
 Rename is the save commit point: a successful replacement cannot subsequently
 report an uncommitted failure to resource or login-registration rollback callers.
 The small ownership claim remains for deferred directory sync and unlink on the
-next read/write (or operational startup recovery); no payload remains after
-rename. Recovery failures are explicit, retain the claim where still needed,
-and block that read/write without undoing previously committed data.
+next write (or explicit operational startup recovery); no payload remains after
+rename. Ordinary committed reads neither acquire the claim's writer lock nor
+require housekeeping writes, including in read-only configuration directories.
+Only a missing committed file requires recovery before a read may report
+absence/defaults. Recovery failures remain explicit at that boundary and at
+write/startup recovery, retain the claim where needed, and never undo committed
+data. Corrupt committed data and applying cleanup journals still block reads;
+staged bytes are never substituted for a committed file.
 These are process-interruption guarantees, not a portable power-loss guarantee.
 
 Minimal iteration/work/operation/publication/action receipts survive, including
@@ -183,7 +212,10 @@ concerns. Full prompts, configuration snapshots, findings, guides, thread bodies
 and provider observations are not retained as a terminal archive. On reopening,
 the existing paginated GitHub adapter verifies old roots from compact provenance
 before admitting owner-only follow-ups or new review feedback. Later human
-closure remains authoritative; missing or changed roots block instead of
+closure is persisted against the current tracked binding/head even with no
+assigned Agents or jobs. Only real eligible jobs materialize execution context
+or replies; closure remains monotonic through restart and reassignment.
+Missing or changed roots block instead of
 inventing clearance. New conversations retain their actual execution context
 and compact original provenance, never a fabricated historical review.
 Missing roots remain unavailable even when their human closure is sticky.

@@ -162,7 +162,7 @@ fn discard_stage(path: &Path) -> io::Result<()> {
 
 /// Discard only payloads with a complete, private ownership record. The writer
 /// locks that record until it has renamed or discarded its payload.
-pub(super) fn recover(directory: &Path, target: Option<&str>) -> io::Result<()> {
+pub(crate) fn recover(directory: &Path, target: Option<&str>) -> io::Result<()> {
     match existing_directory(directory) {
         Ok(()) => {}
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
@@ -307,8 +307,8 @@ pub(super) fn replace(path: &Path, bytes: &[u8], label: &str) -> Result<(), Stri
     }
     // Rename is the commit point. No fallible housekeeping may turn a committed
     // save into Err: callers use Err to roll back related configuration. Keep
-    // the private claim for recovery on the next read/write or startup; after
-    // rename it owns no payload. Recovery reports its own failures explicitly.
+    // the private claim for the next write or explicit recovery; after rename
+    // it owns no payload. Committed reads never perform this housekeeping.
     drop(owner);
     result
 }

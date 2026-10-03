@@ -169,7 +169,8 @@ fn r1_abrupt_replacement_interruption_recovers_terminal_cleanup() {
                     &fresh,
                     PageRequest {
                         limit: 10,
-                        cursor: None
+                        cursor: None,
+                        ..Default::default()
                     }
                 )
                 .unwrap()

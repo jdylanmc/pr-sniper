@@ -6,14 +6,20 @@ fn claimed(root: &Path) -> (PathBuf, PathBuf) {
     let nonce = uuid::Uuid::new_v4().to_string();
     let stage = root.join(format!("state.json{WRITE_MARKER}{nonce}.stage"));
     let marker = root.join(format!("state.json{WRITE_MARKER}{nonce}.owner"));
-    create_stage(&stage)
-        .unwrap()
-        .write_all(b"abandoned bulky payload")
-        .unwrap();
-    create_stage(&marker)
-        .unwrap()
+    let mut payload = create_stage(&stage).unwrap();
+    let mut owner = create_stage(&marker).unwrap();
+    #[cfg(windows)]
+    {
+        windows::protect(&stage, false).unwrap();
+        windows::protect(&marker, false).unwrap();
+    }
+    owner
         .write_all(ownership("state.json", &nonce).as_bytes())
         .unwrap();
+    owner.sync_all().unwrap();
+    sync_directory(root).unwrap();
+    payload.write_all(b"abandoned bulky payload").unwrap();
+    payload.sync_all().unwrap();
     (stage, marker)
 }
 
@@ -149,6 +155,7 @@ fn r6_resource_save_reports_commit_and_keeps_the_next_expected_snapshot_truthful
         store.load_settings().unwrap();
         let before = store.load_settings().unwrap();
         let path = root.path().join("config/settings.json");
+        recover(path.parent().unwrap(), None).unwrap();
         let mut value = before.global_preferences();
         value.capacity += 1;
         recovery_fault::arm(path.clone(), point);
@@ -162,14 +169,13 @@ fn r6_resource_save_reports_commit_and_keeps_the_next_expected_snapshot_truthful
             serde_json::from_slice::<Settings>(&fs::read(&path).unwrap()).unwrap(),
             saved
         );
-        assert!(store
-            .load_settings()
-            .unwrap_err()
-            .contains("recover staged settings"));
+        assert_eq!(store.load_settings().unwrap(), saved);
+        assert!(recover(path.parent().unwrap(), None).is_err());
         assert_eq!(
             serde_json::from_slice::<Settings>(&fs::read(&path).unwrap()).unwrap(),
             saved
         );
+        recover(path.parent().unwrap(), None).unwrap();
         assert_eq!(store.load_settings().unwrap(), saved);
         assert!(claims(path.parent().unwrap()).is_empty());
         assert!(store
@@ -186,6 +192,101 @@ fn r6_resource_save_reports_commit_and_keeps_the_next_expected_snapshot_truthful
             })
             .unwrap();
         assert_eq!(store.load_settings().unwrap(), saved);
+    }
+}
+
+#[test]
+fn committed_reads_do_not_contend_with_live_or_abandoned_claims() {
+    use crate::storage::Store;
+    let root = tempfile::tempdir().unwrap();
+    let state = root.path().join("state");
+    directory(&state).unwrap();
+    let path = state.join("state.json");
+    replace(&path, br#"{"committed":1}"#, "fixture").unwrap();
+    recover(&state, None).unwrap();
+    let nonce = uuid::Uuid::new_v4().to_string();
+    let stage = state.join(format!("state.json{WRITE_MARKER}{nonce}.stage"));
+    let marker = state.join(format!("state.json{WRITE_MARKER}{nonce}.owner"));
+    let mut payload = Some(create_stage(&stage).unwrap());
+    let mut owner = create_stage(&marker).unwrap();
+    owner.lock().unwrap();
+    #[cfg(windows)]
+    {
+        windows::protect(&stage, false).unwrap();
+        windows::protect(&marker, false).unwrap();
+    }
+    let proof = ownership("state.json", &nonce);
+    for phase in ["partial-claim", "payload", "renamed", "abandoned"] {
+        match phase {
+            "partial-claim" => owner.write_all(&proof.as_bytes()[..8]).unwrap(),
+            "payload" => {
+                owner.write_all(&proof.as_bytes()[8..]).unwrap();
+                owner.sync_all().unwrap();
+                payload
+                    .as_mut()
+                    .unwrap()
+                    .write_all(br#"{"committed":2}"#)
+                    .unwrap();
+                payload.as_ref().unwrap().sync_all().unwrap();
+            }
+            "renamed" => {
+                // Drop the payload handle before Windows replacement.
+                drop(payload.take());
+                fs::rename(&stage, &path).unwrap();
+            }
+            _ => owner.unlock().unwrap(),
+        }
+        let expected = fs::read(&path).unwrap();
+        let proof_before = fs::read(&marker).unwrap();
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    let store = Store::new(root.path().into());
+                    for _ in 0..8 {
+                        assert_eq!(store.read_state("state.json").unwrap(), expected);
+                    }
+                });
+            }
+        });
+        assert_eq!(fs::read(&marker).unwrap(), proof_before);
+        if phase != "abandoned" {
+            assert!(recover(&state, None).is_err(), "live claim: {phase}");
+        }
+    }
+    drop(owner);
+    drop(payload);
+    recover(&state, None).unwrap();
+    assert!(claims(&state).is_empty());
+    assert_eq!(fs::read(path).unwrap(), br#"{"committed":2}"#);
+}
+
+#[test]
+fn missing_committed_reads_never_turn_recovery_failure_into_not_found() {
+    use crate::storage::Store;
+    for invalid in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let state = root.path().join("state");
+        let (stage, marker) = claimed(&state);
+        if invalid {
+            fs::write(&marker, b"corrupt ownership").unwrap();
+        } else {
+            recovery_fault::arm(state.join("state.json"), "sync");
+        }
+        let store = Store::new(root.path().into());
+        let error = store.read_state("state.json").unwrap_err();
+        assert_ne!(error.kind(), ErrorKind::NotFound);
+        assert!(marker.exists());
+        assert!(!state.join("state.json").exists());
+        if invalid {
+            assert_eq!(fs::read(stage).unwrap(), b"abandoned bulky payload");
+            assert!(store.recover_state_writes().is_err());
+        } else {
+            store.recover_state_writes().unwrap();
+            assert_eq!(
+                store.read_state("state.json").unwrap_err().kind(),
+                ErrorKind::NotFound
+            );
+        }
     }
 }
 

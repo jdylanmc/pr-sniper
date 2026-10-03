@@ -46,13 +46,30 @@ impl Store {
     }
     pub fn load_feedback(&self) -> Result<crate::feedback::Ledger, String> {
         crate::retention::guard(self)?;
-        match self.read_state("feedback.json") {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
-                "Owned feedback state is invalid; no clearance may be inferred.".into()
-            }),
-            Err(e) if e.kind() == ErrorKind::NotFound => Ok(Default::default()),
-            Err(_) => Err("Cannot read owned feedback state.".into()),
+        let mut ledger: crate::feedback::Ledger = match self.read_state("feedback.json") {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|_| "Owned feedback state is invalid; no clearance may be inferred.")?,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Default::default()),
+            Err(_) => return Err("Cannot read owned feedback state.".into()),
+        };
+        if ledger.mentions.iter().any(|m| m.item_id.is_none()) {
+            let queue = self.load_queue_state()?;
+            let runs = self.load_follow_ups()?;
+            let mut migrated = false;
+            for mention in ledger.mentions.iter_mut().filter(|m| m.item_id.is_none()) {
+                if let Ok(id) = mention.association(&queue.tracked, &queue.jobs, &runs) {
+                    mention.item_id = Some(id);
+                    migrated = true;
+                }
+            }
+            if migrated {
+                // Pin proof before returning it, including index reads. Do not
+                // recursively refresh the index that may have requested this load.
+                crate::retention::mark_activity_pending(self)?;
+                self.write_state("feedback.json", &ledger)?;
+            }
         }
+        Ok(ledger)
     }
     pub fn save_feedback(&self, ledger: &crate::feedback::Ledger) -> Result<(), String> {
         crate::retention::reject_cleaned(self, ledger.records.iter().map(|r| r.job.clone()))?;
@@ -112,6 +129,9 @@ impl Store {
                 "A reopened PR requires a new iteration; retired work cannot be restored.".into(),
             );
         }
+        // The currently committed tracking is legacy mention proof. Migrate
+        // before replacing it; failure must leave that proof available to retry.
+        self.load_feedback()?;
         self.commit_operational("queue.json", state)
     }
 

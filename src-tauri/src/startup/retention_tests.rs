@@ -1,5 +1,8 @@
 use super::{LoginRegistration, RegistrationStatus};
-use crate::storage::{private_fs::recovery_fault, Settings, Store};
+use crate::storage::{
+    private_fs::{recover, recovery_fault},
+    Settings, Store,
+};
 use std::fs;
 
 struct RegistrationFixture {
@@ -95,6 +98,7 @@ fn r6_native_login_caller_keeps_committed_registration_and_rolls_back_only_faile
         store.load_settings().unwrap();
         store.load_settings().unwrap();
         let path = fixture.root.path().join("storage/config/settings.json");
+        recover(path.parent().unwrap(), None).unwrap();
         recovery_fault::arm(path.clone(), point);
         fixture.registration.set_enabled(&store, true).unwrap();
         assert_eq!(
@@ -106,14 +110,13 @@ fn r6_native_login_caller_keeps_committed_registration_and_rolls_back_only_faile
                 .unwrap()
                 .launch_at_login
         );
-        assert!(store
-            .load_settings()
-            .unwrap_err()
-            .contains("recover staged settings"));
+        assert!(store.load_settings().unwrap().launch_at_login);
+        assert!(recover(path.parent().unwrap(), None).is_err());
         assert_eq!(
             fixture.registration.status().unwrap(),
             RegistrationStatus::Registered
         );
+        recover(path.parent().unwrap(), None).unwrap();
         assert!(store.load_settings().unwrap().launch_at_login);
         assert!(fs::read_dir(path.parent().unwrap()).unwrap().all(|entry| {
             !entry
