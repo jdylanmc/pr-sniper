@@ -2,7 +2,7 @@
 
 - Spec ID: SPEC-PR-SNIPER-VNEXT
 - Source: docs/agent/discovery/pr-sniper-vnext.md
-- Source revision: 290fcfefcf3d89f6120cd7e02af27a7d81d175bb5b3db9b85bcbb190e9f291e7
+- Source revision: db70d5f0ce7ea3510d17cd34beba8d74fb1b7b61d0dc1b2479b2ac0b0e5f72d4
 - Nano authority: [PR Sniper vNext Experience](./pr-sniper-vnext.nano.md)
 
 ## Authority
