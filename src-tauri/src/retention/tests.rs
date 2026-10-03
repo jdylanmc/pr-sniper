@@ -215,6 +215,7 @@ fn thousands_of_open_results_have_bounded_stable_tie_pages_and_no_poll_duplicate
             PageRequest {
                 limit: 37,
                 cursor: None,
+                ..Default::default()
             },
         )
         .unwrap(),
@@ -234,7 +235,8 @@ fn thousands_of_open_results_have_bounded_stable_tie_pages_and_no_poll_duplicate
                 &restarted,
                 PageRequest {
                     limit: 37,
-                    cursor: None
+                    cursor: None,
+                    ..Default::default()
                 }
             )
             .unwrap()
@@ -244,7 +246,15 @@ fn thousands_of_open_results_have_bounded_stable_tie_pages_and_no_poll_duplicate
     let mut cursor = None;
     let mut found = BTreeSet::new();
     loop {
-        let result = page(&store, PageRequest { limit: 37, cursor }).unwrap();
+        let result = page(
+            &store,
+            PageRequest {
+                limit: 37,
+                cursor,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert!(result.results.len() <= 37);
         for row in &result.results {
             assert_eq!(row.completed_passes, 1);
@@ -261,7 +271,8 @@ fn thousands_of_open_results_have_bounded_stable_tie_pages_and_no_poll_duplicate
         &store,
         PageRequest {
             limit: 0,
-            cursor: None
+            cursor: None,
+            ..Default::default()
         }
     )
     .is_err());
@@ -269,7 +280,8 @@ fn thousands_of_open_results_have_bounded_stable_tie_pages_and_no_poll_duplicate
         &store,
         PageRequest {
             limit: 201,
-            cursor: None
+            cursor: None,
+            ..Default::default()
         }
     )
     .is_err());
@@ -289,6 +301,7 @@ fn meaningful_completion_moves_only_its_result_and_cursor_never_repeats_it() {
         PageRequest {
             limit: 1,
             cursor: None,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -297,6 +310,7 @@ fn meaningful_completion_moves_only_its_result_and_cursor_never_repeats_it() {
         PageRequest {
             limit: 1,
             cursor: first.next_cursor.clone(),
+            ..Default::default()
         },
     )
     .unwrap();
@@ -307,6 +321,7 @@ fn meaningful_completion_moves_only_its_result_and_cursor_never_repeats_it() {
         PageRequest {
             limit: 1,
             cursor: None,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -315,7 +330,8 @@ fn meaningful_completion_moves_only_its_result_and_cursor_never_repeats_it() {
         &store,
         PageRequest {
             limit: 1,
-            cursor: first.next_cursor
+            cursor: first.next_cursor,
+            ..Default::default()
         }
     )
     .unwrap()
@@ -788,7 +804,8 @@ fn legacy_queue_and_evidence_reconstruction_preserve_earlier_open_iterations() {
             &fresh,
             PageRequest {
                 limit: 10,
-                cursor: None
+                cursor: None,
+                ..Default::default()
             }
         )
         .unwrap()
@@ -819,6 +836,7 @@ fn failed_activity_index_write_is_visible_and_rebuilds_from_durable_state() {
         PageRequest {
             limit: 1,
             cursor: None,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -838,6 +856,7 @@ fn completed_retries_remain_evidence_not_duplicate_normal_pass_counts() {
         PageRequest {
             limit: 1,
             cursor: None,
+            ..Default::default()
         },
     )
     .unwrap();

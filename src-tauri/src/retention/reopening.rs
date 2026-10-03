@@ -77,18 +77,28 @@ pub(crate) fn admit_observations(
     if observed.is_empty() {
         return Ok(());
     }
-    let jobs = store.load_queue()?;
+    let queue = store.load_queue_state()?;
+    let jobs = &queue.jobs;
     let settings = store.load_settings()?;
     let mut receipts = load(store)?;
     let mut feedback = store.load_feedback()?;
     let mut eligible = Vec::new();
     for observation in observed {
-        let origin = receipts
+        let (scope, origin) = receipts
             .receipts
             .iter_mut()
-            .flat_map(|r| r.owned.iter_mut())
-            .find(|o| o.proof == observation.origin.proof)
+            .find_map(|r| {
+                r.owned
+                    .iter_mut()
+                    .find(|o| o.proof == observation.origin.proof)
+                    .map(|origin| (&r.scope, origin))
+            })
             .ok_or("Retained feedback provenance changed during the scan.")?;
+        let tracked =
+            crate::feedback::observed_pr(&queue.tracked, &origin.proof, &observation.head)?;
+        if Binding::tracked(tracked) != Binding::tracked(scope) {
+            return Err("Retained feedback binding changed; no observation accepted.".into());
+        }
         if observation
             .threads
             .iter()
@@ -96,20 +106,22 @@ pub(crate) fn admit_observations(
         {
             return Err("Retained root provenance changed; no observation accepted.".into());
         }
-        let Some(job) = jobs
-            .iter()
-            .filter(|j| {
-                origin.matches(j)
-                    && j.head_sha == observation.head
-                    && !matches!(
-                        j.waiting.as_str(),
-                        crate::monitoring::WAITING_CLOSED
-                            | crate::monitoring::WAITING_MERGED
-                            | crate::monitoring::WAITING_SUPERSEDED
-                    )
-            })
-            .max_by_key(|j| j.work.as_ref().map(|w| w.iteration).unwrap_or(0))
-        else {
+        // Closure is authenticated provider evidence, not Agent work. Keep it
+        // even when a reopened iteration has no assignments or jobs.
+        origin.closed_roots.extend(
+            observation
+                .threads
+                .iter()
+                .filter(|t| t.resolved)
+                .filter_map(|t| t.root().ok())
+                .map(|root| root.id.clone()),
+        );
+        let Some(job) = jobs.iter().find(|j| {
+            origin.matches(j)
+                && crate::queue::item_id(j) == tracked.item_id
+                && j.head_sha == observation.head
+                && crate::monitoring::review_policy(&settings, j, None).is_ok()
+        }) else {
             continue;
         };
         for root_id in &origin.proof.root_ids {
@@ -117,9 +129,6 @@ pub(crate) fn admit_observations(
                 .threads
                 .iter()
                 .find(|t| t.root().is_ok_and(|r| &r.id == root_id));
-            if thread.is_some_and(|t| t.resolved) {
-                origin.closed_roots.insert(root_id.clone());
-            }
             let closed = origin.closed_roots.contains(root_id);
             let id = crate::feedback::root_key(job, root_id);
             let old = feedback.records.iter().find(|r| r.context.id == id);
@@ -171,14 +180,16 @@ pub(crate) fn admit_observations(
                 feedback.records.push(record);
             }
         }
-        eligible.push((origin.clone(), observation.threads));
+        eligible.push((origin.clone(), tracked, observation.threads));
     }
     save(store, &receipts)?;
     store.save_feedback(&feedback)?;
     let mut runs = store.load_follow_ups()?;
-    for (origin, threads) in eligible {
+    for (origin, tracked, threads) in eligible {
         let Some(job) = jobs.iter().rev().find(|j| {
             origin.matches(j)
+                && crate::queue::item_id(j) == tracked.item_id
+                && j.head_sha == tracked.head_sha
                 && j.assignment_id.as_deref() == Some(&origin.proof.assignment_id)
                 && j.work
                     .as_ref()

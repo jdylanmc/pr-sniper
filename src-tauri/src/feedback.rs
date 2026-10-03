@@ -227,6 +227,35 @@ pub fn root_key(job: &QueueJob, root: &str) -> String {
     .to_string()
 }
 
+pub(crate) fn observed_pr<'a>(
+    tracked: &'a [TrackedPullRequest],
+    proof: &crate::github::threads::Ownership,
+    head: &str,
+) -> Result<&'a TrackedPullRequest, String> {
+    let mut matches = tracked.iter().filter(|pr| {
+        pr.provider == "github"
+            && (proof.configuration_id.is_empty() || proof.configuration_id == pr.configuration_id)
+            && proof.account_id == pr.account_id
+            && proof.repository_id == pr.repository_id
+            && proof.pull_request_id == pr.pull_request_id
+    });
+    let pr = matches
+        .next()
+        .ok_or("Owned feedback tracking is unavailable.")?;
+    if matches.next().is_some()
+        || pr.number != proof.number
+        || pr.lifecycle != crate::github::metadata::Lifecycle::Open
+        || pr.head_sha != head
+        || pr.item_id.is_empty()
+        || pr.iteration_id.is_empty()
+    {
+        return Err(
+            "Owned feedback tracking changed or is ambiguous; no observation accepted.".into(),
+        );
+    }
+    Ok(pr)
+}
+
 impl Ledger {
     pub fn observe(
         &mut self,

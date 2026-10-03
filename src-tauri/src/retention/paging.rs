@@ -13,9 +13,17 @@ pub struct Cursor {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct UnavailableCursor {
+    version: u8,
+    work_id: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PageRequest {
     pub limit: usize,
     pub cursor: Option<Cursor>,
+    pub unavailable_cursor: Option<UnavailableCursor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,9 +37,18 @@ pub struct Row {
 }
 
 #[derive(Debug, Serialize)]
+pub struct Unavailable {
+    pub destination: Detail,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize)]
 pub struct Page {
     pub results: Vec<Row>,
     pub next_cursor: Option<Cursor>,
+    pub unavailable: Vec<Unavailable>,
+    pub unavailable_count: usize,
+    pub next_unavailable_cursor: Option<UnavailableCursor>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -164,7 +181,7 @@ pub(super) fn refresh(store: &Store) -> Result<(), String> {
             .iter()
             .any(|p| m.binding.matches_tracked(p) && p.lifecycle != Lifecycle::Open)
     }) {
-        match mention.association(&state.tracked, &state.jobs, &follows) {
+        let reason = match mention.association(&state.tracked, &state.jobs, &follows) {
             Ok(id) => {
                 add(
                     &mut parts,
@@ -173,16 +190,23 @@ pub(super) fn refresh(store: &Store) -> Result<(), String> {
                 )?;
                 if let Some(row) = rows.get_mut(&id) {
                     row.conversations += 1;
+                    None
                 } else {
-                    unavailable.insert(
-                    mention.work_id.clone(),
-                    format!("Mention is retained for exact iteration {id}, but no review job exists; no job was invented."),
-                );
+                    Some(format!("Mention is retained for exact iteration {id}, but no review job exists; no job was invented."))
                 }
             }
-            Err(reason) => {
-                unavailable.insert(mention.work_id.clone(), reason.into());
-            }
+            Err(reason) => Some(reason.into()),
+        };
+        if let Some(reason) = reason {
+            unavailable.insert(
+                mention.work_id.clone(),
+                format!(
+                "GitHub account {}, repository {} ({}), PR #{} ({}), configuration {}: {reason}",
+                mention.binding.account_id, mention.binding.repository_name,
+                mention.binding.repository_id, mention.binding.number,
+                mention.binding.pull_request_id, mention.binding.configuration_id,
+            ),
+            );
         }
     }
     for f in actions.finals {
@@ -254,10 +278,10 @@ pub(super) fn refresh(store: &Store) -> Result<(), String> {
     if changed
         || removed
         || projection_changed
-        || index.version != 2
+        || index.version != 3
         || index.unavailable != unavailable
     {
-        index.version = 2;
+        index.version = 3;
         index.unavailable = unavailable;
         store.write_state("result-index.json", &index)?;
     }
@@ -277,19 +301,20 @@ pub fn page(store: &Store, request: PageRequest) -> Result<Page, String> {
     {
         return Err("Result cursor is invalid; restart paging explicitly.".into());
     }
+    if request
+        .unavailable_cursor
+        .as_ref()
+        .is_some_and(|c| c.version != 1 || c.work_id.is_empty() || c.work_id.len() > 16_384)
+    {
+        return Err("Unavailable cursor is invalid; restart diagnostics explicitly.".into());
+    }
     guard(store)?;
     let mut index = load_index(store)?;
-    if index.as_ref().is_none_or(|index| index.version != 2) || pending(store)? {
+    if index.as_ref().is_none_or(|index| index.version != 3) || pending(store)? {
         refresh(store)?;
         index = load_index(store)?;
     }
     let index = index.unwrap_or_default();
-    if let Some((id, reason)) = index.unavailable.first_key_value() {
-        return Err(format!(
-            "Result summaries are unavailable for {} retained mention(s). Mention {id}: {reason}",
-            index.unavailable.len()
-        ));
-    }
     if request
         .cursor
         .as_ref()
@@ -297,6 +322,38 @@ pub fn page(store: &Store, request: PageRequest) -> Result<Page, String> {
     {
         return Err("Result cursor belongs to an unavailable activity generation.".into());
     }
+    let unavailable_count = index.unavailable.len();
+    let mut unavailable = index
+        .unavailable
+        .iter()
+        .filter(|(id, _)| {
+            request
+                .unavailable_cursor
+                .as_ref()
+                .is_none_or(|c| *id > &c.work_id)
+        })
+        .take(request.limit + 1)
+        .collect::<Vec<_>>();
+    let more_unavailable = unavailable.len() > request.limit;
+    unavailable.truncate(request.limit);
+    let next_unavailable_cursor = more_unavailable
+        .then(|| {
+            unavailable.last().map(|(id, _)| UnavailableCursor {
+                version: 1,
+                work_id: (*id).clone(),
+            })
+        })
+        .flatten();
+    let unavailable = unavailable
+        .into_iter()
+        .map(|(id, message)| Unavailable {
+            destination: Detail::Job {
+                kind: Kind::Mention,
+                id: id.clone(),
+            },
+            message: message.clone(),
+        })
+        .collect();
     let mut rows: Vec<_> = index.rows.into_values().filter_map(|s| s.row).collect();
     rows.sort_by(|a, b| {
         b.activity_sequence
@@ -323,6 +380,9 @@ pub fn page(store: &Store, request: PageRequest) -> Result<Page, String> {
     Ok(Page {
         results: rows,
         next_cursor,
+        unavailable,
+        unavailable_count,
+        next_unavailable_cursor,
     })
 }
 

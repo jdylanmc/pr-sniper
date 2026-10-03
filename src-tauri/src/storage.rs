@@ -742,10 +742,18 @@ impl Store {
         private_fs::existing_directory(&self.root)?;
         let directory = self.root.join(directory);
         private_fs::existing_directory(&directory)?;
+        let path = directory.join(name);
+        match private_fs::read(&path) {
+            Ok(bytes) => return Ok(bytes),
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        // A committed file needs no housekeeping or writer lock. Only absence
+        // requires recovery before callers may infer a fresh/default resource.
         private_fs::recover(&directory, Some(name)).map_err(|error| {
             std::io::Error::other(format!("Cannot recover staged storage: {error}"))
         })?;
-        private_fs::read(&directory.join(name))
+        private_fs::read(&path)
     }
 
     pub fn has_saved_settings(&self) -> bool {
