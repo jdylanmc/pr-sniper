@@ -198,6 +198,18 @@ fn r6_resource_save_reports_commit_and_keeps_the_next_expected_snapshot_truthful
 #[test]
 fn committed_reads_do_not_contend_with_live_or_abandoned_claims() {
     use crate::storage::Store;
+    use std::io::{Seek, SeekFrom};
+
+    fn read_proof(owner: &mut File) -> Vec<u8> {
+        // A second handle cannot read through the owner's Windows lock.
+        let position = owner.stream_position().unwrap();
+        owner.rewind().unwrap();
+        let mut bytes = Vec::new();
+        owner.read_to_end(&mut bytes).unwrap();
+        assert_eq!(owner.seek(SeekFrom::Start(position)).unwrap(), position);
+        bytes
+    }
+
     let root = tempfile::tempdir().unwrap();
     let state = root.path().join("state");
     directory(&state).unwrap();
@@ -237,7 +249,7 @@ fn committed_reads_do_not_contend_with_live_or_abandoned_claims() {
             _ => owner.unlock().unwrap(),
         }
         let expected = fs::read(&path).unwrap();
-        let proof_before = fs::read(&marker).unwrap();
+        let proof_before = read_proof(&mut owner);
         std::thread::scope(|scope| {
             for _ in 0..4 {
                 scope.spawn(|| {
@@ -248,7 +260,7 @@ fn committed_reads_do_not_contend_with_live_or_abandoned_claims() {
                 });
             }
         });
-        assert_eq!(fs::read(&marker).unwrap(), proof_before);
+        assert_eq!(read_proof(&mut owner), proof_before);
         if phase != "abandoned" {
             assert!(recover(&state, None).is_err(), "live claim: {phase}");
         }

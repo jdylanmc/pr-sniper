@@ -106,8 +106,13 @@ override only their provider responses. Other unknown commands still fail.
 Initial host preferences
 are seeded through `Store::save_settings`; assertions read through a separate
 Store process and reload the UI. Persistence is not a JavaScript imitation.
-The fixture drains accepted Store operations before removing its own temporary
-data, even when an assertion fails. Native bridge lookup honors `CARGO_TARGET_DIR`
+The fixture serializes native Store operations per test-owned root, matching
+the production `Host.store` mutex. Rejections reach their original callers
+without blocking later accepted operations; closing rejects new work and drains
+all accepted queued operations before removing temporary data, even when an
+assertion fails. `fixture-lifecycle.spec.mjs` covers FIFO order, errors, closing,
+independent roots and held IPC replies. Reply holds begin after Store completion
+and do not retain the transaction queue. Native bridge lookup honors `CARGO_TARGET_DIR`
 and the Windows `.exe` suffix; temporary profiles and browser output remain under
 that target. The default target is `src-tauri/target`.
 
@@ -132,8 +137,10 @@ remain required.
 not application persistence. A stable, per-root OS file lock owns the entire
 panel read/modify/write operation (including snapshots); acquisition fails
 explicitly after five seconds rather than stealing ownership. Only panel
-commands take this lock. Non-panel Store operations, separate fixture roots,
-and already-held IPC replies remain concurrent. Never remove the lock sidecar
+commands take this cross-process lock. Direct probe processes remain concurrent
+to exercise native contention, while ordinary Store calls share the per-root
+fixture queue. Separate fixture roots and already-held IPC replies remain
+independent. Never remove the lock sidecar
 while its root is live. The normal fixture teardown drains operations before
 removing the root.
 
