@@ -18,6 +18,123 @@ fn recorded_settings(store: &Store, settings: Settings) -> Result<Value, String>
         .map_err(|_| "Cannot encode settings.".into())
 }
 
+fn setup_fixture_preview(
+    monitor: &mut pr_sniper_lib::monitoring::Monitor,
+    settings: &Settings,
+    id: &str,
+) -> Result<pr_sniper_lib::monitoring::ActivationPreviewView, String> {
+    use pr_sniper_lib::{
+        github::{
+            metadata::{Lifecycle, PullRequest},
+            provider::{Capabilities, CommentCapability, Connection, RemoteRepository},
+            Identity,
+        },
+        monitoring::{ActivationPreviewEvidence, Monitor},
+    };
+    let context = Monitor::activation_context(settings, id)
+        .map_err(|_| "Invalid synthetic setup configuration.")?;
+    let connection = Connection {
+        identity: Identity {
+            id: context.account_id.clone(),
+            login: "fixture-code".into(),
+        },
+        repository: RemoteRepository {
+            id: context.provider_repository_id.clone(),
+            name: context.name.clone(),
+        },
+        capabilities: Capabilities {
+            read: true,
+            comment: CommentCapability::Available,
+        },
+    };
+    let pulls = (1..=2)
+        .map(|number| PullRequest {
+            id: number.to_string(),
+            number,
+            title: format!("Synthetic PR {number}"),
+            author: Some(Identity {
+                id: "11".into(),
+                login: "fixture-author".into(),
+            }),
+            requested_reviewers: Vec::new(),
+            requested_teams: Vec::new(),
+            state: Lifecycle::Open,
+            draft: false,
+            head_sha: format!("{number:040x}"),
+            base_sha: "b".repeat(40),
+            head_repository_id: Some(context.provider_repository_id.clone()),
+            base_repository_id: context.provider_repository_id.clone(),
+            updated_at: "2026-10-03T12:00:00Z".into(),
+            files: Vec::new(),
+        })
+        .collect();
+    monitor
+        .stage_activation_preview(
+            settings,
+            ActivationPreviewEvidence {
+                context,
+                connection,
+                pull_requests: pulls,
+                creation_watermark: 2,
+                account_generation: 0,
+            },
+            0,
+        )
+        .map_err(|_| "Synthetic setup preview failed.".into())
+}
+
+fn setup_fixture(store: &Store, request: &Request) -> Result<Value, String> {
+    use pr_sniper_lib::monitoring::{AccountAvailability, Monitor, SetupActivation};
+    use std::collections::BTreeMap;
+    let mut monitor = Monitor::restore(store)?;
+    let accounts = |key: &str| -> Result<BTreeMap<String, AccountAvailability>, String> {
+        serde_json::from_value(request.args.get(key).cloned().unwrap_or(json!({})))
+            .map_err(|_| "Invalid synthetic setup account state.".into())
+    };
+    if request.command == "fixture_setup_preview" {
+        let settings = store.load_settings()?;
+        let id = request.args["repositoryId"]
+            .as_str()
+            .ok_or("Repository ID required.")?;
+        let preview = setup_fixture_preview(&mut monitor, &settings, id)?;
+        return Ok(json!({ "preview": preview, "settings": settings }));
+    }
+    let review = monitor.setup_review(
+        store,
+        accounts("repositoryAccounts")?,
+        accounts("aiAccounts")?,
+        &BTreeMap::new(),
+    )?;
+    if request.command == "fixture_apply_setup" {
+        let mut requests: Vec<SetupActivation> =
+            serde_json::from_value(request.args["requests"].clone())
+                .map_err(|_| "Invalid synthetic scope choices.")?;
+        // Browser IPC is process-per-command. Reconstruct only its synthetic,
+        // originally previewed evidence; native tests exercise in-memory races.
+        for application in &mut requests {
+            let settings: Settings = serde_json::from_value(
+                request.args["previews"][&application.preview_id]["settings"].clone(),
+            )
+            .map_err(|_| "Synthetic preview expired.")?;
+            application.preview_id =
+                setup_fixture_preview(&mut monitor, &settings, &application.repository_id)?
+                    .preview_id;
+        }
+        monitor.apply_setup(
+            store,
+            &review,
+            request.args["confirmation"]
+                .as_str()
+                .ok_or("Confirmation required.")?,
+            &requests,
+            &BTreeMap::new(),
+            1_800_000_000,
+        )?;
+        return Ok(Value::Null);
+    }
+    serde_json::to_value(review).map_err(|_| "Cannot encode synthetic setup state.".into())
+}
+
 // Opt-in barriers for cross-process tests; normal commands still read stdin to EOF.
 fn panel_probe(probe: Option<&str>, stage: &str) -> Result<(), String> {
     if probe != Some(stage) {
@@ -147,6 +264,10 @@ fn panel_dispatch(
 
 fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
     match request.command.as_str() {
+        "monitoring_setup_review"
+        | "fixture_setup_review"
+        | "fixture_setup_preview"
+        | "fixture_apply_setup" => setup_fixture(store, &request),
         "diagnostics" => serde_json::to_value(store.diagnostics()?)
             .map_err(|_| "Cannot encode diagnostics.".into()),
         "seed_action_observation" => {

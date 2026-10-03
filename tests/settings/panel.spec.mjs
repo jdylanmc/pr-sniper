@@ -488,6 +488,8 @@ test("approved shell keeps bottom destinations, authoritative pause and unavaila
   });
 
   await page.goto("/");
+  await expect(page.locator("[data-setup-needed]")).toBeVisible();
+  await tab(page, "Running").click();
   const toggle = page.locator(".panel-header [data-toggle-automation]");
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("[data-running-count]")).toHaveText("0");

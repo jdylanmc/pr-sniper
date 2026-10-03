@@ -65,6 +65,53 @@ export interface SavedResources {
   readiness: ResourceReadiness;
 }
 
+export interface MonitoringActivationStatus {
+  repository_id: string;
+  active: boolean;
+  reason: string | null;
+  mode: "new_only" | "selected_existing" | null;
+  selected_existing: number;
+  creation_watermark: number | null;
+}
+
+export interface MonitoringActivationPreview {
+  preview_id: string;
+  repository_id: string;
+  name: string;
+  account_id: string;
+  account_login: string;
+  creation_watermark: number;
+  candidates: {
+    pull_request_id: string;
+    number: number;
+    title: string;
+    head_sha: string;
+    author_id: string | null;
+    author_login: string | null;
+    watched_author: boolean;
+    all_authors: boolean;
+    requested_reviewer: boolean;
+    trust_confirmation_required: boolean;
+  }[];
+}
+
+export interface PendingActivation {
+  preview: MonitoringActivationPreview;
+  repository: Repository;
+  defaults: Policy;
+  mode: "new_only" | "selected_existing";
+  selectedPullRequestIds: string[];
+}
+
+export interface SetupReview {
+  resources: SavedResources;
+  repository_accounts: Record<string, { login: string; connected: boolean }>;
+  ai_accounts: Record<string, { login: string; connected: boolean }>;
+  scopes: MonitoringActivationStatus[];
+  paused: boolean;
+  confirmation: string;
+}
+
 export const savedResources = () => invoke<SavedResources>("saved_resources");
 export function sameResource(left: unknown, right: unknown): boolean {
   const ordered = (value: unknown): unknown => {

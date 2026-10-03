@@ -1,0 +1,781 @@
+import { test, expect } from "./fixtures.mjs";
+import { target } from "./paths.mjs";
+import { mkdir, readFile, rename, rmdir } from "node:fs/promises";
+import { join } from "node:path";
+
+const tab = (page, name) =>
+  page
+    .getByRole("navigation", { name: "Application destinations" })
+    .getByRole("button", { name, exact: true });
+const modal = (page, name) => page.getByRole("dialog", { name, exact: true });
+const back = (page) =>
+  page.getByRole("button", { name: "Back to Genie", exact: true }).click();
+const close = (dialog) =>
+  dialog.getByRole("button", { name: "Close dialog", exact: true }).click();
+const confirmation = (page) => page.locator("[data-genie-confirm]");
+const activate = (page) => page.locator("[data-genie-activate]");
+const repositoryId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const screenshots = (page) =>
+  join(
+    target,
+    "genie-41-delivery/screenshots",
+    page.context().browser().browserType().name(),
+  );
+const nextControl = (page) =>
+  page.keyboard.press(
+    page.context().browser().browserType().name() === "webkit" &&
+      process.platform === "darwin"
+      ? "Alt+Tab"
+      : "Tab",
+  );
+
+async function fullyVisible(control) {
+  const clipping = await control.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    const ring = element.matches(":focus-visible")
+      ? parseFloat(style.outlineWidth) + parseFloat(style.outlineOffset)
+      : 0;
+    const failures = [];
+    for (
+      let parent = element.parentElement;
+      parent;
+      parent = parent.parentElement
+    ) {
+      const css = getComputedStyle(parent);
+      if (
+        !/(auto|scroll|hidden|clip)/.test(`${css.overflowX} ${css.overflowY}`)
+      )
+        continue;
+      const bounds = parent.getBoundingClientRect();
+      if (
+        rect.left - ring < bounds.left + parent.clientLeft - 1 ||
+        rect.right + ring >
+          bounds.left + parent.clientLeft + parent.clientWidth + 1 ||
+        rect.top - ring < bounds.top + parent.clientTop - 1 ||
+        rect.bottom + ring >
+          bounds.top + parent.clientTop + parent.clientHeight + 1
+      )
+        failures.push({
+          parent: parent.className,
+          rect: rect.toJSON(),
+          bounds: bounds.toJSON(),
+          ring,
+        });
+    }
+    return failures;
+  });
+  expect(clipping).toEqual([]);
+}
+
+async function synthetic(page, store, connected = false) {
+  const state = {
+    ai: connected,
+    code: connected,
+    models: [{ id: "fixture-model", name: "Fixture model" }],
+    previews: {},
+    applied: [],
+    immediate: 0,
+    beforeApply: undefined,
+    aiFlow: { state: "idle" },
+    codeFlow: { state: "idle" },
+    commands: [],
+  };
+  const account = (role) => ({
+    provider: role === "ai" ? "copilot" : "github",
+    account_id: role === "ai" ? "33" : "22",
+    login: role === "ai" ? "fixture-ai" : "fixture-code",
+    state: "connected",
+  });
+  const view = (role) => ({
+    accounts: state[role] ? [account(role)] : [],
+    flow: state[`${role}Flow`],
+  });
+  const context = () => ({
+    repositoryAccounts: state.code
+      ? { 22: { login: "fixture-code", connected: true } }
+      : {},
+    aiAccounts: state.ai
+      ? { 33: { login: "fixture-ai", connected: true } }
+      : {},
+  });
+  await page.exposeFunction("__genieFixture", async (command, args = {}) => {
+    state.commands.push(command);
+    if (command === "github_auth_state") return view("code");
+    if (command === "copilot_auth_state") return view("ai");
+    if (
+      command === "start_copilot_auth" ||
+      command === "start_github_browser_auth"
+    ) {
+      const role = command.includes("copilot") ? "ai" : "code";
+      state[`${role}Flow`] = {
+        ...account(role),
+        state: "pending_account_confirmation",
+      };
+      return view(role);
+    }
+    if (
+      command === "confirm_copilot_account" ||
+      command === "confirm_github_account"
+    ) {
+      const role = command.includes("copilot") ? "ai" : "code";
+      state[role] = true;
+      state[`${role}Flow`] = { state: "idle" };
+      return view(role);
+    }
+    if (command === "list_copilot_models") return state.models;
+    if (
+      command === "cancel_copilot_models" ||
+      command === "cancel_monitoring_activation"
+    )
+      return null;
+    if (command === "resolve_provider_repository")
+      return {
+        identity: { id: args.accountId, login: "fixture-code" },
+        repository: { id: "100", name: args.repository },
+      };
+    if (command === "monitoring_setup_review")
+      return store("fixture_setup_review", context());
+    if (command === "preview_monitoring_activation") {
+      const evidence = await store("fixture_setup_preview", args);
+      state.previews[evidence.preview.preview_id] = evidence;
+      return evidence.preview;
+    }
+    if (command === "apply_monitoring_setup") {
+      state.applied.push(args);
+      await state.beforeApply?.();
+      return store("fixture_apply_setup", {
+        ...args,
+        ...context(),
+        previews: state.previews,
+      });
+    }
+    if (command === "apply_monitoring_activation") {
+      state.immediate++;
+      throw "Immediate monitoring activation is not allowed in a guided fixture.";
+    }
+    throw new Error(`Unexpected Genie fixture command: ${command}`);
+  });
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = (command, args) =>
+      [
+        "github_auth_state",
+        "copilot_auth_state",
+        "start_copilot_auth",
+        "start_github_browser_auth",
+        "confirm_copilot_account",
+        "confirm_github_account",
+        "list_copilot_models",
+        "cancel_copilot_models",
+        "resolve_provider_repository",
+        "monitoring_setup_review",
+        "preview_monitoring_activation",
+        "cancel_monitoring_activation",
+        "apply_monitoring_setup",
+        "apply_monitoring_activation",
+      ].includes(command)
+        ? window.__genieFixture(command, args)
+        : original(command, args);
+  });
+  return state;
+}
+
+async function seed(store) {
+  const settings = (await store("snapshot")).settings;
+  settings.agents = [
+    {
+      id: agentId,
+      name: "My reviewer",
+      model: "fixture-model",
+      ai_account: { provider: "copilot", account_id: "33" },
+      doctrines: [],
+      prompt: "Review correctness.",
+      signature: "machine",
+    },
+  ];
+  settings.repositories = [
+    {
+      id: repositoryId,
+      provider: "github",
+      name: "fixture/genie",
+      enabled: true,
+      provider_account_id: "22",
+      provider_repository_id: "100",
+      assignments: [
+        {
+          id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          agent_id: agentId,
+          schedule: settings.defaults.schedule,
+          comment: false,
+          actions: { approve: false, merge: false },
+        },
+      ],
+    },
+  ];
+  await store("seed_settings", settings);
+  return (await store("snapshot")).settings;
+}
+
+async function chooseScope(page, selected = false) {
+  await page.locator('[data-genie-edit="repositories"]').first().click();
+  await page
+    .getByRole("article", { name: "fixture/genie", exact: true })
+    .getByRole("button", { name: "Settings", exact: true })
+    .click();
+  const repository = modal(page, "Settings for fixture/genie");
+  await repository
+    .getByRole("button", { name: "Configure scope", exact: true })
+    .click();
+  const scope = modal(page, "Monitoring scope for fixture/genie");
+  await expect(scope.locator(".activation-row")).toHaveCount(2);
+  await expect(scope.locator(".activation-row input:checked")).toHaveCount(0);
+  if (selected) {
+    await scope
+      .getByLabel("Selected existing pull requests plus new pull requests", {
+        exact: true,
+      })
+      .check();
+    await scope.getByLabel("Include pull request 1").check();
+  }
+  await scope
+    .getByRole("button", { name: "Use scope in final check", exact: true })
+    .click();
+  await expect(repository.locator("[data-scope-status]")).toContainText(
+    "not monitoring yet",
+  );
+  await close(repository);
+  await back(page);
+  await expect(page.getByRole("progressbar")).toHaveAttribute(
+    "aria-valuenow",
+    "4",
+  );
+  await page.locator("[data-genie-next]").click();
+  await expect(confirmation(page)).toBeEnabled();
+}
+
+async function capture(page, name, size = { width: 408, height: 744 }) {
+  await page.setViewportSize(size);
+  await mkdir(screenshots(page), {
+    recursive: true,
+  });
+  await expect(page.locator(".panel-art")).toBeVisible();
+  await expect(page.locator("[data-panel-navigation]")).toBeInViewport();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: join(screenshots(page), `${name}.png`),
+  });
+}
+
+test.use({ viewport: { width: 408, height: 744 } });
+
+test("fresh setup uses explicit shared choices and activates only after the combined final check", async ({
+  page,
+  store,
+}) => {
+  const state = await synthetic(page, store);
+  const initial = (await store("snapshot")).settings;
+  await page.goto("/");
+  await expect(page.locator("[data-panel-heading]")).toHaveText("Welcome");
+  await expect(page.locator("[data-setup-needed]")).toBeVisible();
+  expect(initial.agents ?? []).toEqual([]);
+  expect(initial.repositories ?? []).toEqual([]);
+  await capture(page, "welcome");
+  await page
+    .getByRole("button", { name: "Set up with Genie", exact: true })
+    .click();
+  await capture(page, "genie");
+  await page.locator("[data-genie-next]").click();
+  const ai = page.locator(".copilot-auth");
+  await expect(ai.locator(":focus")).toHaveCount(1);
+  await expect(
+    ai.getByRole("button", { name: "Connect Copilot account", exact: true }),
+  ).toBeInViewport();
+  await ai
+    .getByRole("button", { name: "Connect Copilot account", exact: true })
+    .click();
+  expect(state.ai).toBe(false);
+  await ai
+    .getByRole("button", { name: "Confirm Copilot account", exact: true })
+    .click();
+  expect(state.code).toBe(false);
+  await back(page);
+  await expect(page.getByRole("progressbar")).toHaveAttribute(
+    "aria-valuenow",
+    "1",
+  );
+  await page.locator("[data-genie-next]").click();
+  const code = page.locator(".github-auth");
+  await code
+    .getByRole("button", { name: "Add GitHub account", exact: true })
+    .click();
+  await code.getByRole("button", { name: "Confirm", exact: true }).click();
+  await back(page);
+  await page.locator("[data-genie-next]").click();
+  await page.getByRole("button", { name: "New agent", exact: true }).click();
+  const agent = modal(page, "New agent");
+  await expect(agent.getByLabel("AI account", { exact: true })).toHaveValue("");
+  await expect(agent.getByLabel("Model", { exact: true })).toHaveValue("");
+  await agent.getByLabel("Name", { exact: true }).fill("My reviewer");
+  await agent.getByLabel("AI account", { exact: true }).selectOption("33");
+  await expect(agent.getByLabel("Model", { exact: true })).toBeEnabled();
+  await expect(agent.getByLabel("Model", { exact: true })).toHaveValue("");
+  await agent
+    .getByLabel("Model", { exact: true })
+    .selectOption("fixture-model");
+  await agent.getByRole("button", { name: "Save agent", exact: true }).click();
+  await back(page);
+  await page.locator("[data-genie-next]").click();
+  await page
+    .getByRole("button", { name: "Add repository manually...", exact: true })
+    .click();
+  const add = modal(page, "Add repository");
+  await expect(
+    add.getByLabel("Acting GitHub account", { exact: true }),
+  ).toHaveValue("");
+  await add
+    .getByLabel("GitHub repository", { exact: true })
+    .fill("fixture/genie");
+  await add
+    .getByLabel("Acting GitHub account", { exact: true })
+    .selectOption("22");
+  await add
+    .getByRole("button", { name: "Save repository", exact: true })
+    .click();
+  await page
+    .getByRole("article", { name: "fixture/genie", exact: true })
+    .getByRole("button", { name: "Settings", exact: true })
+    .click();
+  const repository = modal(page, "Settings for fixture/genie");
+  await repository
+    .getByLabel("Enable repository monitoring", { exact: true })
+    .check();
+  await repository
+    .getByRole("button", { name: "Assign agent", exact: true })
+    .click();
+  const assignment = modal(page, "Assign agent");
+  await expect(assignment.getByLabel("Agent", { exact: true })).toHaveValue("");
+  await expect(assignment.locator('[name="comment"]')).not.toBeChecked();
+  await expect(assignment.locator('[name="approve"]')).not.toBeChecked();
+  await expect(assignment.locator('[name="merge"]')).not.toBeChecked();
+  await assignment
+    .getByLabel("Agent", { exact: true })
+    .selectOption((await store("snapshot")).settings.agents[0].id);
+  await assignment
+    .getByRole("button", { name: "Assign agent", exact: true })
+    .click();
+  await repository
+    .getByRole("button", { name: "Save repository", exact: true })
+    .click();
+  expect(
+    (
+      await store("monitoring_activation_status", {
+        repositoryId: (await store("snapshot")).settings.repositories[0].id,
+      })
+    ).active,
+  ).toBe(false);
+  await back(page);
+  await chooseScope(page, true);
+  await expect(page.locator(".genie-page")).toContainText("fixture-code (22)");
+  await expect(page.locator(".genie-page")).toContainText(
+    "Copilot: fixture-ai (33)",
+  );
+  await expect(page.locator(".genie-page")).toContainText(
+    "Primary (sole Agent)",
+  );
+  await expect(page.locator(".genie-page")).toContainText(
+    "Comment: off / Approve: off / Merge: off",
+  );
+  await expect(page.locator(".genie-page")).toContainText("*/15 * * * *");
+  await expect(page.locator(".genie-page")).toContainText("4 AI tasks");
+  await page.locator(".panel-content").evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  await capture(page, "review-setup");
+  for (const [width, height] of [
+    [320, 300],
+    [408, 441],
+    [408, 744],
+    [1000, 800],
+  ]) {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.setViewportSize({ width, height });
+    await confirmation(page).focus();
+    await expect(confirmation(page)).toBeInViewport();
+    await confirmation(page).check();
+    await nextControl(page);
+    await expect(activate(page)).toBeFocused();
+    await expect(activate(page)).toBeInViewport();
+    await fullyVisible(activate(page));
+    await capture(page, `final-controls-${width}x${height}`, { width, height });
+  }
+  expect(state.immediate).toBe(0);
+  expect(state.applied).toHaveLength(0);
+  await activate(page).click();
+  await expect(page.locator("[data-panel-heading]")).toHaveText("Your queue");
+  await expect(page.locator(".queue-item")).toHaveCount(0);
+  expect(state.applied).toHaveLength(1);
+  const saved = (await store("snapshot")).settings;
+  expect(saved.doctrines).toEqual(initial.doctrines);
+  const scope = await store("monitoring_activation_status", {
+    repositoryId: saved.repositories[0].id,
+  });
+  expect(scope.active).toBe(true);
+  expect(scope.selected_existing).toBe(1);
+  await page.reload();
+  await expect(page.locator("[data-panel-heading]")).toHaveText("Your queue");
+});
+
+test("a stale native final check and later model or account loss never activate", async ({
+  page,
+  store,
+}) => {
+  const state = await synthetic(page, store, true);
+  await seed(store);
+  await page.goto("/");
+  await page.locator("[data-genie-next]").click();
+  await chooseScope(page);
+  state.beforeApply = async () => {
+    const settings = (await store("snapshot")).settings;
+    settings.capacity = 7;
+    await store("seed_settings", settings);
+  };
+  await confirmation(page).check();
+  await activate(page).click();
+  await expect(page.locator(".genie-error")).toContainText("Setup changed");
+  expect(
+    (await store("monitoring_activation_status", { repositoryId })).active,
+  ).toBe(false);
+  state.beforeApply = undefined;
+  await page
+    .getByRole("button", { name: "Refresh saved setup", exact: true })
+    .click();
+  await expect(confirmation(page)).toBeEnabled();
+  await expect(page.locator(".genie-page")).toContainText("7 AI tasks");
+  state.models = [];
+  await confirmation(page).check();
+  await activate(page).click();
+  await expect(page.locator(".genie-error")).toContainText(
+    "model is unavailable",
+  );
+  expect(state.applied).toHaveLength(1);
+  state.models = [{ id: "fixture-model", name: "Fixture model" }];
+  await page
+    .getByRole("button", { name: "Refresh saved setup", exact: true })
+    .click();
+  await expect(confirmation(page)).toBeEnabled();
+  state.code = false;
+  await confirmation(page).check();
+  await activate(page).click();
+  await expect(page.locator(".genie-error")).toContainText("Setup changed");
+  expect(state.applied).toHaveLength(1);
+  expect(
+    (await store("monitoring_activation_status", { repositoryId })).active,
+  ).toBe(false);
+});
+
+test("shared drafts, save failures, cancellation and hide/reopen retain exact ownership", async ({
+  page,
+  store,
+  dataRoot,
+}) => {
+  await synthetic(page, store, true);
+  await seed(store);
+  await page.goto("/");
+  await tab(page, "Settings").click();
+  await page
+    .getByLabel("Settings section", { exact: true })
+    .selectOption("preferences");
+  await page.getByLabel("AI capacity", { exact: true }).fill("9");
+  await page
+    .getByRole("button", { name: "Set up with Genie", exact: true })
+    .click();
+  await page.locator('[data-genie-edit="agents"]').click();
+  await page.getByRole("button", { name: "New agent", exact: true }).click();
+  let agent = modal(page, "New agent");
+  await agent.getByLabel("Name", { exact: true }).fill("Unsaved reviewer");
+  await agent.getByLabel("AI account", { exact: true }).selectOption("33");
+  await agent
+    .getByLabel("Model", { exact: true })
+    .selectOption("fixture-model");
+  await agent
+    .getByRole("textbox", { name: "Prompt", exact: true })
+    .fill("Retained across hiding.");
+  await agent.getByRole("textbox", { name: "Prompt", exact: true }).focus();
+  const scroll = await agent
+    .locator(".dialog-body")
+    .evaluate((e) => e.scrollTop);
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".panel-shell")).toHaveAttribute(
+    "data-native-visible",
+    "false",
+  );
+  await page.evaluate(() =>
+    window.__TAURI_INTERNALS__.invoke("fixture_show_panel", {}),
+  );
+  await expect(
+    agent.getByRole("textbox", { name: "Prompt", exact: true }),
+  ).toBeFocused();
+  expect(await agent.locator(".dialog-body").evaluate((e) => e.scrollTop)).toBe(
+    scroll,
+  );
+  const file = join(dataRoot, "config/settings.json");
+  const backup = join(dataRoot, "config/settings.saved.json");
+  await rename(file, backup);
+  await mkdir(file);
+  try {
+    await agent
+      .getByRole("button", { name: "Save agent", exact: true })
+      .click();
+    await expect(agent.getByRole("alert")).toContainText(
+      "Cannot read settings",
+    );
+    await expect(agent.getByLabel("Name", { exact: true })).toHaveValue(
+      "Unsaved reviewer",
+    );
+  } finally {
+    await rmdir(file);
+    await rename(backup, file);
+  }
+  await agent.getByRole("button", { name: "Save agent", exact: true }).click();
+  await expect(agent).toHaveCount(0);
+  expect((await store("snapshot")).settings.agents).toHaveLength(2);
+  expect((await store("snapshot")).settings.capacity).toBe(4);
+  await back(page);
+  await expect(page.locator('[data-genie-edit="agents"]')).toBeFocused();
+  await page.locator('[data-genie-edit="preferences"]').click();
+  await expect(page.getByLabel("AI capacity", { exact: true })).toHaveValue(
+    "9",
+  );
+  await back(page);
+  await page.locator('[data-genie-edit="agents"]').click();
+  await page.getByRole("button", { name: "New agent", exact: true }).click();
+  agent = modal(page, "New agent");
+  await agent.getByLabel("Name", { exact: true }).fill("Cancelled");
+  await agent.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect((await store("snapshot")).settings.agents).toHaveLength(2);
+  await page.reload();
+  expect((await store("snapshot")).settings.agents).toHaveLength(2);
+});
+
+test("existing authorized re-entry leaves scope bytes and global pause unchanged", async ({
+  page,
+  store,
+  dataRoot,
+}) => {
+  await synthetic(page, store, true);
+  await seed(store);
+  await store("set_automation_paused", { paused: true });
+  await page.goto("/");
+  await page.locator("[data-genie-next]").click();
+  await chooseScope(page);
+  await confirmation(page).check();
+  await activate(page).click();
+  await expect(page.locator("[data-panel-heading]")).toHaveText("Your queue");
+  const file = join(dataRoot, "state/monitoring.json");
+  const before = await readFile(file, "utf8");
+  await tab(page, "Settings").click();
+  await page
+    .getByRole("button", { name: "Set up with Genie", exact: true })
+    .click();
+  await page.locator("[data-genie-next]").click();
+  await expect(confirmation(page)).toBeEnabled();
+  await expect(page.locator(".genie-page")).toContainText(
+    "Already authorized; unchanged",
+  );
+  await expect(activate(page)).toHaveText("Finish without changing monitoring");
+  await confirmation(page).check();
+  await activate(page).click();
+  await expect(page.locator("[data-panel-heading]")).toHaveText("Your queue");
+  expect(await readFile(file, "utf8")).toBe(before);
+  expect((await store("automation_snapshot")).paused).toBe(true);
+});
+
+test("legacy Settings offers the same Genie and editor save path", async ({
+  page,
+  store,
+}) => {
+  await synthetic(page, store, true);
+  await seed(store);
+  await page.setViewportSize({ width: 1000, height: 800 });
+  await page.goto("/?view=settings");
+  await page
+    .getByRole("button", { name: "Set up with Genie", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Genie", exact: true }),
+  ).toBeVisible();
+  await page.locator('[data-genie-edit="doctrines"]').click();
+  await page.getByRole("button", { name: "New doctrine", exact: true }).click();
+  const doctrine = modal(page, "New doctrine");
+  await doctrine
+    .getByLabel("Title", { exact: true })
+    .fill("Genie shared principles");
+  await doctrine
+    .getByLabel("Principles", { exact: true })
+    .fill("Preserve account boundaries.");
+  await doctrine
+    .getByRole("button", { name: "Save doctrine", exact: true })
+    .click();
+  await back(page);
+  await page
+    .getByRole("button", { name: "Back to Settings", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Genie shared principles", exact: true }),
+  ).toBeVisible();
+});
+
+test("late shared-save replies cannot return from a newer destination", async ({
+  page,
+  store,
+  ipc,
+}) => {
+  await synthetic(page, store, true);
+  await seed(store);
+  await page.goto("/");
+  await page.locator('[data-genie-edit="agents"]').click();
+  await page.getByRole("button", { name: "New agent", exact: true }).click();
+  const editor = modal(page, "New agent");
+  await editor.getByLabel("Name", { exact: true }).fill("Saved while away");
+  await editor.getByLabel("AI account", { exact: true }).selectOption("33");
+  await editor
+    .getByLabel("Model", { exact: true })
+    .selectOption("fixture-model");
+  const hold = ipc.holdNext("save_resource");
+  try {
+    await editor
+      .getByRole("button", { name: "Save agent", exact: true })
+      .click();
+    await hold.arrived;
+    await tab(page, "Running").click();
+    await expect(page.locator("[data-panel-heading]")).toHaveText("Work queue");
+    await tab(page, "Running").focus();
+    hold.release();
+    await page.evaluate(() => window.__settingsIdle());
+    await expect(page.locator("[data-panel-heading]")).toHaveText("Work queue");
+    await expect(tab(page, "Running")).toBeFocused();
+    expect((await store("snapshot")).settings.agents).toHaveLength(2);
+    await tab(page, "Settings").click();
+    await expect(page.locator("[data-return-genie]")).toBeHidden();
+  } finally {
+    hold.release();
+  }
+});
+
+test("scope cancellation and restart lose only unconfirmed choices", async ({
+  page,
+  store,
+}) => {
+  const state = await synthetic(page, store, true);
+  const original = await seed(store);
+  await page.goto("/");
+  await page.locator("[data-genie-next]").click();
+  await page.locator('[data-genie-edit="repositories"]').click();
+  await page
+    .getByRole("article", { name: "fixture/genie", exact: true })
+    .getByRole("button", { name: "Settings", exact: true })
+    .click();
+  const repository = modal(page, "Settings for fixture/genie");
+  await repository
+    .getByRole("button", { name: "Configure scope", exact: true })
+    .click();
+  await modal(page, "Monitoring scope for fixture/genie")
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
+  await expect(
+    repository.getByRole("button", { name: "Configure scope", exact: true }),
+  ).toBeFocused();
+  await close(repository);
+  await back(page);
+  await expect(page.getByRole("progressbar")).toHaveAttribute(
+    "aria-valuenow",
+    "3",
+  );
+  await chooseScope(page);
+  await page.reload();
+  await expect(page.getByRole("progressbar")).toHaveAttribute(
+    "aria-valuenow",
+    "3",
+  );
+  expect((await store("snapshot")).settings).toEqual(original);
+  expect(
+    (await store("monitoring_activation_status", { repositoryId })).active,
+  ).toBe(false);
+  expect(state.applied).toHaveLength(0);
+});
+
+test("repository saves keep mounted account confirmation ownership", async ({
+  page,
+  store,
+}) => {
+  const state = await synthetic(page, store, true);
+  await seed(store);
+  await page.goto("/");
+  await page.locator('[data-genie-edit="repositories"]').click();
+  const ai = page.locator(".copilot-auth");
+  await ai
+    .getByRole("button", { name: "Connect Copilot account", exact: true })
+    .click();
+  await expect(
+    ai.getByRole("button", { name: "Confirm Copilot account", exact: true }),
+  ).toBeVisible();
+  await ai.evaluate((element) => {
+    element.dataset.ownership = "original-flow";
+  });
+  await page
+    .getByRole("article", { name: "fixture/genie", exact: true })
+    .getByRole("button", { name: "Settings", exact: true })
+    .click();
+  await modal(page, "Settings for fixture/genie")
+    .getByRole("button", { name: "Save repository", exact: true })
+    .click();
+  await expect(modal(page, "Settings for fixture/genie")).toHaveCount(0);
+  await expect(ai).toHaveAttribute("data-ownership", "original-flow");
+  await back(page);
+  await page.locator('[data-genie-edit="repository-account"]').click();
+  await expect(ai).toHaveAttribute("data-ownership", "original-flow");
+  await expect(
+    ai.getByRole("button", { name: "Confirm Copilot account", exact: true }),
+  ).toBeVisible();
+  expect(
+    state.commands.filter((command) => command === "start_copilot_auth"),
+  ).toHaveLength(1);
+});
+
+test("guided account controls keep full keyboard focus inside compact scrollports", async ({
+  page,
+  store,
+}) => {
+  await synthetic(page, store, true);
+  await seed(store);
+  await page.goto("/");
+  for (const [width, height] of [
+    [320, 300],
+    [408, 441],
+    [408, 744],
+  ]) {
+    await page.setViewportSize({ width, height });
+    await page.locator('[data-genie-edit="ai"]').click();
+    await expect(page.locator("[data-return-genie]")).toBeVisible();
+    const buttons = page.locator(".copilot-auth button, .copilot-auth summary");
+    await expect(buttons).toHaveCount(5);
+    await buttons.first().focus();
+    for (let index = 0; index < 5; index++) {
+      if (index) await nextControl(page);
+      await expect(buttons.nth(index)).toBeFocused();
+      await fullyVisible(buttons.nth(index));
+    }
+    await mkdir(screenshots(page), { recursive: true });
+    await page.screenshot({
+      path: join(screenshots(page), `shared-ai-${width}x${height}.png`),
+    });
+    await back(page);
+    await expect(page.locator('[data-genie-edit="ai"]')).toBeFocused();
+  }
+});
