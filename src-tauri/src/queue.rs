@@ -460,15 +460,11 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             {
                 continue;
             }
-            if let Ok(origin) = follow_up.run.owned() {
+            if follow_up.run.thread().is_ok() {
                 let feedback = snapshot.feedback.get(&id).and_then(|values| {
-                    values.iter().find(|f| {
-                        f.context.publication_id == origin.publication_id
-                            && origin
-                                .thread
-                                .root()
-                                .is_ok_and(|r| r.id == f.context.root_id)
-                    })
+                    values
+                        .iter()
+                        .find(|f| follow_up.run.owns_feedback(&f.context))
                 });
                 let needs_reconciliation = follow_up.run.uncertain
                     || follow_up
@@ -515,6 +511,20 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             }
         }
         for mention in snapshot.mentions.iter().filter(|m| m.binding.matches(job)) {
+            match mention.association(
+                &snapshot.tracked,
+                &snapshot.jobs,
+                snapshot.follow_ups.iter().map(|f| &f.run),
+            ) {
+                Ok(mention_item) if mention_item != id => continue,
+                Ok(_) => {}
+                Err(reason) => {
+                    // Missing execution or ambiguous legacy evidence is not
+                    // proof that an old operation or human concern is settled.
+                    states.push(State::Blocked);
+                    warnings.insert(reason.into());
+                }
+            }
             if mention.follow_up_id.is_none() {
                 states.push(State::Blocked);
                 warnings.insert("Observed mention is awaiting durable execution admission.".into());
@@ -650,6 +660,11 @@ fn current_job<'a>(job: &'a QueueJob, jobs: &'a [QueueJob]) -> &'a QueueJob {
 }
 
 pub fn destination(store: &Store, id: &str, file: Option<&str>) -> Result<url::Url, String> {
+    if let Some(message) =
+        crate::retention::cleaned(store, &crate::panel::Detail::Item { item_id: id.into() })?
+    {
+        return Err(message.into());
+    }
     let snapshot = snapshot(store, vec![])?;
     let item = snapshot
         .items

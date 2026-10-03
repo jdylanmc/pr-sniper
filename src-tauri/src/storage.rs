@@ -725,10 +725,26 @@ impl Store {
         self.read_file("state", name)
     }
 
+    /// Recover abandoned operational stages before restoring workers, with
+    /// exclusive access to this Store. Configuration is deliberately excluded.
+    pub fn recover_state_writes(&self) -> Result<(), String> {
+        match private_fs::existing_directory(&self.root) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err("Cannot access state for staged-write recovery.".into()),
+        }
+        private_fs::recover(&self.root.join("state"), None).map_err(|_| {
+            "Cannot recover owned state stages; operational recovery is blocked.".into()
+        })
+    }
+
     fn read_file(&self, directory: &str, name: &str) -> std::io::Result<Vec<u8>> {
         private_fs::existing_directory(&self.root)?;
         let directory = self.root.join(directory);
         private_fs::existing_directory(&directory)?;
+        private_fs::recover(&directory, Some(name)).map_err(|error| {
+            std::io::Error::other(format!("Cannot recover staged storage: {error}"))
+        })?;
         private_fs::read(&directory.join(name))
     }
 
@@ -910,7 +926,7 @@ impl Store {
                 self.write_settings(&settings)?;
                 return Ok(settings);
             }
-            Err(_) => return Err("Cannot read settings. Check local file permissions.".into()),
+            Err(_) => return Err("Cannot read settings or recover staged settings writes. Check local file permissions; committed data was not rolled back.".into()),
         };
         let mut settings: Settings = serde_json::from_slice(&bytes)
             .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.")?;

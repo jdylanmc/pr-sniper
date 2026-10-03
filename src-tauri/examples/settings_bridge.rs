@@ -147,6 +147,22 @@ fn panel_dispatch(
 
 fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
     match request.command.as_str() {
+        "result_page" => serde_json::to_value(pr_sniper_lib::retention::page(
+            store,
+            serde_json::from_value(request.args["request"].clone())
+                .map_err(|_| "Invalid result page request.")?,
+        )?)
+        .map_err(|_| "Cannot encode result page.".into()),
+        "result_detail" => serde_json::to_value(pr_sniper_lib::retention::detail(
+            store,
+            serde_json::from_value(request.args["destination"].clone())
+                .map_err(|_| "Invalid result destination.")?,
+        )?)
+        .map_err(|_| "Cannot encode result detail.".into()),
+        "fixture_retention" => {
+            pr_sniper_lib::retention::recover(store)?;
+            Ok(json!({"cleaned": pr_sniper_lib::retention::maintain(store, true)?}))
+        }
         "diagnostics" => serde_json::to_value(store.diagnostics()?)
             .map_err(|_| "Cannot encode diagnostics.".into()),
         "seed_action_observation" => {

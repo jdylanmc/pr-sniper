@@ -479,7 +479,7 @@ pub fn synchronize(
     }
     store.save_actions(&ledger)?;
     if let Some(observation) = terminal {
-        record_terminal(store, &observation, now)?;
+        record_terminal(store, item_id, &observation, now)?;
     }
     Ok(())
 }
@@ -813,9 +813,10 @@ pub fn finish_effect(
             observation.merge_commit = receipt.merge_commit.clone();
             observation
         });
+    let terminal_item = effect.item_id.clone();
     store.save_actions(&ledger)?;
     if let Some(observation) = merged {
-        record_terminal(store, &observation, crate::now_seconds()?)?;
+        record_terminal(store, &terminal_item, &observation, crate::now_seconds()?)?;
     }
     Ok(())
 }
@@ -864,13 +865,35 @@ pub fn verify_after_effect(
     checked.map_err(Failure::permanent)
 }
 
-fn record_terminal(store: &Store, observation: &Observation, now: i64) -> Result<(), String> {
+fn record_terminal(
+    store: &Store,
+    item_id: &str,
+    observation: &Observation,
+    now: i64,
+) -> Result<(), String> {
     let mut queue = store.load_queue_state()?;
-    for tracked in queue.tracked.iter_mut().filter(|p| {
-        p.account_id == observation.account_id
-            && p.repository_id == observation.repository_id
-            && p.pull_request_id == observation.pull_request_id
-    }) {
+    let Some(scope) = queue
+        .tracked
+        .iter()
+        .find(|p| {
+            p.item_id == item_id
+                && p.account_id == observation.account_id
+                && p.repository_id == observation.repository_id
+                && p.pull_request_id == observation.pull_request_id
+                && p.head_sha == observation.head
+        })
+        .cloned()
+    else {
+        // An old action observation cannot close a new same-head incarnation.
+        return Err("Terminal observation belongs to an unavailable or newer PR incarnation; no current work was retired.".into());
+    };
+    let binding = crate::retention::Binding::tracked(&scope);
+    for tracked in queue
+        .tracked
+        .iter_mut()
+        .filter(|p| crate::retention::Binding::tracked(p) == binding)
+    {
+        tracked.terminal_observed = true;
         tracked.lifecycle = if observation.state == "MERGED" {
             crate::github::metadata::Lifecycle::Merged
         } else {
@@ -879,11 +902,7 @@ fn record_terminal(store: &Store, observation: &Observation, now: i64) -> Result
         tracked.head_sha = observation.head.clone();
         tracked.observed_at = now;
     }
-    for job in queue.jobs.iter_mut().filter(|j| {
-        j.account_id == observation.account_id
-            && j.repository_id == observation.repository_id
-            && j.pull_request_id == observation.pull_request_id
-    }) {
+    for job in queue.jobs.iter_mut().filter(|j| binding.matches(j)) {
         if !matches!(
             job.waiting.as_str(),
             monitoring::WAITING_CLOSED | monitoring::WAITING_MERGED

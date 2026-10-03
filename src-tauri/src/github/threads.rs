@@ -9,7 +9,72 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
+
+/// Enough to authenticate the original roots without retaining their text or
+/// pretending a compact receipt is a historical execution configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Ownership {
+    pub publication_id: String,
+    pub configuration_id: String,
+    pub account_id: String,
+    pub repository_id: String,
+    pub repository_name: String,
+    pub pull_request_id: String,
+    pub number: u64,
+    pub head_sha: String,
+    pub assignment_id: String,
+    pub agent_id: String,
+    pub review_id: String,
+    pub root_ids: Vec<String>,
+    pub body_hashes: BTreeSet<String>,
+}
+
+pub trait Provenance {
+    fn ownership(&self) -> Result<Ownership, ConnectionError>;
+}
+
+impl Provenance for Ownership {
+    fn ownership(&self) -> Result<Ownership, ConnectionError> {
+        Ok(self.clone())
+    }
+}
+
+impl Provenance for Publication {
+    fn ownership(&self) -> Result<Ownership, ConnectionError> {
+        let receipt = self
+            .receipts
+            .last()
+            .filter(|r| r.state == RemoteState::Commented)
+            .ok_or(ConnectionError::InvalidResponse)?;
+        let batch = self
+            .batch
+            .as_ref()
+            .ok_or(ConnectionError::InvalidResponse)?;
+        let job = &self.review.job;
+        Ok(Ownership {
+            publication_id: self.id.clone(),
+            configuration_id: job.configuration_id.clone(),
+            account_id: job.account_id.clone(),
+            repository_id: job.repository_id.clone(),
+            repository_name: job.repository_name.clone(),
+            pull_request_id: job.pull_request_id.clone(),
+            number: job.number,
+            head_sha: job.head_sha.clone(),
+            assignment_id: self.review.assignment_id.clone(),
+            agent_id: self.review.selection.agent.id.clone(),
+            review_id: receipt.review_id.clone(),
+            root_ids: receipt.comment_ids.clone(),
+            body_hashes: batch.comments.iter().map(|c| body_hash(&c.body)).collect(),
+        })
+    }
+}
+
+fn body_hash(body: &str) -> String {
+    format!("{:x}", Sha256::digest(body.as_bytes()))
+}
 
 pub trait QueryTransport: Transport {
     fn query(&self, query: &str, variables: Value) -> Result<Response, ConnectionError>;
@@ -67,25 +132,18 @@ impl Thread {
             .map(|(_, comment)| comment)
     }
 
-    pub fn owned_by(&self, publication: &Publication) -> bool {
+    pub fn owned_by(&self, publication: &impl Provenance) -> bool {
         let Ok(root) = self.root() else {
             return false;
         };
-        let Some(receipt) = publication
-            .receipts
-            .last()
-            .filter(|r| r.state == RemoteState::Commented)
-        else {
+        let Ok(proof) = publication.ownership() else {
             return false;
         };
-        let Some(batch) = publication.batch.as_ref() else {
-            return false;
-        };
-        receipt.comment_ids.contains(&root.id)
-            && root.author_id.as_deref() == Some(&publication.review.job.account_id)
-            && root.review_id.as_deref() == Some(&receipt.review_id)
-            && root.original_commit.as_deref() == Some(&publication.review.job.head_sha)
-            && batch.comments.iter().any(|c| c.body == root.body)
+        proof.root_ids.contains(&root.id)
+            && root.author_id.as_deref() == Some(&proof.account_id)
+            && root.review_id.as_deref() == Some(&proof.review_id)
+            && root.original_commit.as_deref() == Some(&proof.head_sha)
+            && proof.body_hashes.contains(&body_hash(&root.body))
     }
 }
 
@@ -115,16 +173,20 @@ impl<T: QueryTransport> GithubClient<T> {
         Ok(value["data"].clone())
     }
 
-    pub fn owned_threads(&self, publication: &Publication) -> Result<Vec<Thread>, ConnectionError> {
-        self.owned_threads_at(publication, &publication.review.job.head_sha)
+    pub fn owned_threads(
+        &self,
+        publication: &impl Provenance,
+    ) -> Result<Vec<Thread>, ConnectionError> {
+        self.owned_threads_at(publication, &publication.ownership()?.head_sha)
     }
 
     pub fn owned_threads_at(
         &self,
-        publication: &Publication,
+        publication: &impl Provenance,
         current_head: &str,
     ) -> Result<Vec<Thread>, ConnectionError> {
-        let name = crate::storage::canonical_repository(&publication.review.job.repository_name)
+        let publication = publication.ownership()?;
+        let name = crate::storage::canonical_repository(&publication.repository_name)
             .map_err(|_| ConnectionError::InvalidRepository)?;
         let (owner, name) = name
             .split_once('/')
@@ -147,13 +209,13 @@ impl<T: QueryTransport> GithubClient<T> {
         loop {
             let data = self.graph(
                 &query,
-                json!({"owner":owner,"name":name,"number":publication.review.job.number,
+                json!({"owner":owner,"name":name,"number":publication.number,
                 "cursor":cursor,"commentCursor":Value::Null}),
             )?;
             let repo = &data["repository"];
             let pull = &repo["pullRequest"];
-            if number(&repo["databaseId"])? != publication.review.job.repository_id
-                || number(&pull["fullDatabaseId"])? != publication.review.job.pull_request_id
+            if number(&repo["databaseId"])? != publication.repository_id
+                || number(&pull["fullDatabaseId"])? != publication.pull_request_id
             {
                 return Err(ConnectionError::RepositoryChanged);
             }
@@ -177,15 +239,11 @@ impl<T: QueryTransport> GithubClient<T> {
                     continue;
                 };
                 let root_id = number(&first["fullDatabaseId"])?;
-                if !publication
-                    .receipts
-                    .last()
-                    .is_some_and(|r| r.comment_ids.contains(&root_id))
-                {
+                if !publication.root_ids.contains(&root_id) {
                     continue;
                 }
                 let thread = self.complete_thread(node)?;
-                if !thread.owned_by(publication) {
+                if !thread.owned_by(&publication) {
                     return Err(ConnectionError::InvalidResponse);
                 }
                 result.push(thread);
@@ -203,9 +261,10 @@ impl<T: QueryTransport> GithubClient<T> {
 
     pub fn owned_thread(
         &self,
-        publication: &Publication,
+        publication: &impl Provenance,
         id: &str,
     ) -> Result<Option<Thread>, ConnectionError> {
+        let publication = publication.ownership()?;
         let query = format!(
             r#"query($id:ID!,$commentCursor:String) {{
           node(id:$id) {{ ... on PullRequestReviewThread {{
@@ -219,14 +278,13 @@ impl<T: QueryTransport> GithubClient<T> {
         if node.is_null() {
             return Ok(None);
         }
-        if number(&node["repository"]["databaseId"])? != publication.review.job.repository_id
-            || number(&node["pullRequest"]["fullDatabaseId"])?
-                != publication.review.job.pull_request_id
+        if number(&node["repository"]["databaseId"])? != publication.repository_id
+            || number(&node["pullRequest"]["fullDatabaseId"])? != publication.pull_request_id
         {
             return Err(ConnectionError::RepositoryChanged);
         }
         let thread = self.complete_thread(node)?;
-        if thread.id != id || !thread.owned_by(publication) {
+        if thread.id != id || !thread.owned_by(&publication) {
             return Err(ConnectionError::InvalidResponse);
         }
         Ok(Some(thread))
@@ -311,20 +369,23 @@ impl<T: QueryTransport> GithubClient<T> {
 impl<T: MutationTransport> GithubClient<T> {
     pub fn reply_to_thread(
         &self,
-        publication: &Publication,
+        publication: &impl Provenance,
         root_id: &str,
         body: &str,
     ) -> Result<String, WriteFailure> {
+        let publication = publication.ownership().map_err(|error| WriteFailure {
+            failure: error.into(),
+            uncertain: false,
+        })?;
         let request = (|| {
-            let name =
-                crate::storage::canonical_repository(&publication.review.job.repository_name)
-                    .map_err(Failure::permanent)?;
+            let name = crate::storage::canonical_repository(&publication.repository_name)
+                .map_err(Failure::permanent)?;
             if root_id.parse::<u64>().is_err() || root_id == "0" {
                 return Err(Failure::permanent("Invalid owned root comment identity."));
             }
             Ok(format!(
                 "/repos/{name}/pulls/{}/comments/{root_id}/replies",
-                publication.review.job.number
+                publication.number
             ))
         })()
         .map_err(|failure| WriteFailure {
@@ -352,12 +413,12 @@ impl<T: MutationTransport> GithubClient<T> {
             let value: Value = serde_json::from_slice(&response.body)
                 .map_err(|_| ConnectionError::InvalidResponse)?;
             if value["body"].as_str() != Some(body)
-                || number(&value["user"]["id"])? != publication.review.job.account_id
+                || number(&value["user"]["id"])? != publication.account_id
                 || number(&value["in_reply_to_id"])? != root_id
                 || value["pull_request_url"].as_str()
                     != Some(&format!(
                         "https://api.github.com/repos/{}/pulls/{}",
-                        publication.review.job.repository_name, publication.review.job.number
+                        publication.repository_name, publication.number
                     ))
             {
                 return Err(ConnectionError::InvalidResponse);

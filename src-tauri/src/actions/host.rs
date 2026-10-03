@@ -587,7 +587,7 @@ impl ActionEnvironment for Native {
 
 #[derive(Default)]
 pub(crate) struct Coordinator {
-    active: Mutex<bool>,
+    pub(crate) active: Mutex<bool>,
 }
 impl Coordinator {
     pub(crate) fn finished(&self) -> bool {

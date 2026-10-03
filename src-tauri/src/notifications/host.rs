@@ -18,7 +18,7 @@ const PERMISSION_GUIDANCE: &str = "Check Windows Settings > System > Notificatio
 
 pub(crate) struct Coordinator {
     native: Result<Native, String>,
-    active: AtomicBool,
+    pub(crate) active: AtomicBool,
     configuration: AtomicU64,
     configuration_gate: Mutex<()>,
 }
@@ -343,19 +343,22 @@ pub(crate) async fn open(app: &tauri::AppHandle, id: &str) -> Result<(), String>
             .lock()
             .map_err(|_| "Notification storage unavailable.")?;
         let mut ledger = store.load_notifications()?;
-        let notice = ledger
-            .notices
-            .iter_mut()
-            .find(|n| n.id == id)
-            .ok_or("Notification disappeared during navigation.")?;
-        match &outcome {
-            Ok(()) => {
-                notice.opened_at = Some(now);
-                notice.navigation_error = None;
+        if let Some(notice) = ledger.notices.iter_mut().find(|n| n.id == id) {
+            match &outcome {
+                Ok(()) => {
+                    notice.opened_at = Some(now);
+                    notice.navigation_error = None;
+                }
+                Err(error) => notice.navigation_error = Some(error.clone()),
             }
-            Err(error) => notice.navigation_error = Some(error.clone()),
+            store.save_notifications(&ledger)?;
+        } else if !crate::retention::load(&store)?
+            .receipts
+            .iter()
+            .any(|r| r.notices.contains_key(id))
+        {
+            return Err("Notification disappeared during navigation.".into());
         }
-        store.save_notifications(&ledger)?;
     }
     crate::record(
         app,

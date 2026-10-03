@@ -11,7 +11,7 @@ use tauri::Manager;
 
 #[derive(Default)]
 pub(crate) struct Coordinator {
-    active: Mutex<Option<String>>,
+    pub(crate) active: Mutex<Option<String>>,
 }
 
 #[derive(Serialize)]
