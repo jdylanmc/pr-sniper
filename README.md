@@ -31,6 +31,35 @@ assign it. Connecting does not assign repositories, configure an Agent's model,
 or enable automation. Direct Claude, Codex and Grok remain disabled future
 integrations, distinct from models returned through Copilot.
 
+## Onboarding Genie
+
+An empty installation opens **Welcome**, with no invented accounts, Agents,
+repositories or pull requests. Existing shared doctrine libraries remain intact.
+Choose **Set up with Genie**, or **I'll set it up myself** for manual Settings.
+Genie is also available from Settings after setup, including the legacy Settings
+surface. Its four readiness rows use saved resources and native account/scope
+state, not visited steps.
+
+Genie opens the same account, Agent, doctrine, repository and Preferences
+editors as Settings. Each resource save applies immediately. Closing hides the
+mounted editor without rolling back saves; Back and Cancel explain which
+unsaved fields they retain or discard. Unsaved editor fields and unconfirmed
+scope choices do not survive quitting the application. Reopening does not reset
+libraries or existing monitoring.
+
+New assignments require an explicit Agent choice and start with Comment,
+Approve and Merge off. Existing saved permissions are unchanged. In Genie,
+**Use scope in final check** stages the selected backlog without activating a
+pending repository. The final check shows both identities, effective
+assignments/primary/independent permissions, scope, the single cron/time zone,
+AI capacity and global pause. It checks assigned models' current catalogs,
+not subscriptions or inference. An explicit checkbox and confirmation enable
+the pending scopes together; changed configuration, accounts or scope reject a
+stale confirmation. Failed writes retain saved resources and can be retried.
+Already-authorized scopes are not replayed, and global pause is never resumed
+implicitly. The existing scheduler admits only real work through its normal
+trust, execution and publication gates.
+
 ## vNext design prototype
 
 The [standalone vNext POC](prototypes/v2/README.md) includes configured and

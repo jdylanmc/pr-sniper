@@ -4,9 +4,10 @@ use crate::github::{
     ConnectionError,
 };
 use crate::policy::{Policy, Schedule, WatchedIdentity};
-use crate::storage::{ProviderId, Settings, Store};
+use crate::storage::{ProviderId, SavedResources, Settings, Store};
 use chrono::TimeZone;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 
 pub const WAITING_TRUST_CONFIRMATION: &str = "trust_confirmation";
@@ -87,7 +88,7 @@ pub struct AttemptBudget {
     pub failure: Option<OperationFailure>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountAvailability {
     pub login: String,
     pub connected: bool,
@@ -426,6 +427,25 @@ pub struct ActivationApplication<'a> {
     pub now: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetupActivation {
+    pub repository_id: String,
+    pub preview_id: String,
+    pub mode: ActivationMode,
+    pub selected_pull_request_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SetupReview {
+    pub resources: SavedResources,
+    pub repository_accounts: BTreeMap<String, AccountAvailability>,
+    pub ai_accounts: BTreeMap<String, AccountAvailability>,
+    pub scopes: Vec<ActivationStatus>,
+    pub paused: bool,
+    pub confirmation: String,
+}
+
 #[derive(Clone)]
 struct ActivationPreview {
     context: ActivationContext,
@@ -739,6 +759,24 @@ impl Monitor {
         settings: &Settings,
         application: ActivationApplication<'_>,
     ) -> Result<ActivationStatus, String> {
+        let activation = self.activation_for_application(settings, &application)?;
+        let previous = self.state.clone();
+        self.state
+            .activations
+            .insert(application.repository_id.into(), activation);
+        if let Err(error) = store.save_monitoring_state(&self.state) {
+            self.state = previous;
+            return Err(error);
+        }
+        self.previews.remove(application.preview_id);
+        Ok(self.activation_status(settings, application.repository_id))
+    }
+
+    fn activation_for_application(
+        &mut self,
+        settings: &Settings,
+        application: &ActivationApplication<'_>,
+    ) -> Result<MonitoringActivation, String> {
         let preview = self
             .previews
             .get(application.preview_id)
@@ -774,7 +812,6 @@ impl Monitor {
         {
             return Err("Choose a valid monitoring scope from the current preview.".into());
         }
-        let previous = self.state.clone();
         let mut baseline = preview.baseline;
         for selected_id in &selected {
             let candidate = preview
@@ -787,28 +824,149 @@ impl Monitor {
             entry.initially_selected = true;
             entry.admitted_head_sha = Some(candidate.head_sha.clone());
         }
-        self.state.activations.insert(
-            context.repository_id.clone(),
-            MonitoringActivation {
-                version: uuid::Uuid::new_v4().to_string(),
-                repository_id: context.repository_id.clone(),
-                name: context.name,
-                account_id: context.account_id,
-                provider_repository_id: context.provider_repository_id,
-                trigger_policy: context.trigger_policy,
-                creation_watermark: preview.creation_watermark,
-                mode: application.mode,
-                selected_existing: selected.len(),
-                baseline,
-                confirmed_at: application.now,
-            },
-        );
+        Ok(MonitoringActivation {
+            version: uuid::Uuid::new_v4().to_string(),
+            repository_id: context.repository_id.clone(),
+            name: context.name,
+            account_id: context.account_id,
+            provider_repository_id: context.provider_repository_id,
+            trigger_policy: context.trigger_policy,
+            creation_watermark: preview.creation_watermark,
+            mode: application.mode.clone(),
+            selected_existing: selected.len(),
+            baseline,
+            confirmed_at: application.now,
+        })
+    }
+
+    /// The caller holds the account, Store and Monitor locks through review/apply.
+    /// Hash only activation versions, not scan progress, so existing work can continue.
+    pub fn setup_review(
+        &self,
+        store: &Store,
+        repository_accounts: BTreeMap<String, AccountAvailability>,
+        ai_accounts: BTreeMap<String, AccountAvailability>,
+        generations: &BTreeMap<String, u64>,
+    ) -> Result<SetupReview, String> {
+        let resources = store.saved_resources()?;
+        let paused = store.load_automation()?.paused;
+        let versions: BTreeMap<_, _> = self
+            .state
+            .activations
+            .iter()
+            .map(|(id, activation)| (id, &activation.version))
+            .collect();
+        let evidence = serde_json::to_vec(&(
+            &resources.settings,
+            &repository_accounts,
+            &ai_accounts,
+            generations,
+            versions,
+            paused,
+        ))
+        .map_err(|_| "Cannot prepare the final monitoring confirmation.")?;
+        let confirmation = format!("{:x}", Sha256::digest(evidence));
+        let scopes = resources
+            .settings
+            .repositories
+            .iter()
+            .map(|repository| self.activation_status(&resources.settings, &repository.id))
+            .collect();
+        Ok(SetupReview {
+            resources,
+            repository_accounts,
+            ai_accounts,
+            scopes,
+            paused,
+            confirmation,
+        })
+    }
+
+    pub fn apply_setup(
+        &mut self,
+        store: &Store,
+        review: &SetupReview,
+        expected_confirmation: &str,
+        requests: &[SetupActivation],
+        generations: &BTreeMap<String, u64>,
+        now: i64,
+    ) -> Result<(), String> {
+        if review.confirmation != expected_confirmation {
+            return Err("Setup changed. Review the current accounts, permissions, scope, schedule and capacity again.".into());
+        }
+        let settings = &review.resources.settings;
+        if !review.resources.readiness.configuration_ready {
+            return Err(
+                "Complete the saved repository and Agent configuration before confirming.".into(),
+            );
+        }
+        let connected = |accounts: &BTreeMap<String, AccountAvailability>, id: &str| {
+            accounts.get(id).is_some_and(|account| account.connected)
+        };
+        let mut pending = HashSet::new();
+        for repository in settings.repositories.iter().filter(|r| r.enabled) {
+            if !connected(
+                &review.repository_accounts,
+                repository.provider_account_id.as_deref().unwrap_or(""),
+            ) {
+                return Err("Reconnect the acting GitHub account, then review setup again.".into());
+            }
+            for assignment in &repository.assignments {
+                let account = settings
+                    .agents
+                    .iter()
+                    .find(|agent| agent.id == assignment.agent_id)
+                    .and_then(|agent| agent.ai_account.as_ref());
+                if !account.is_some_and(|a| connected(&review.ai_accounts, &a.account_id)) {
+                    return Err(
+                        "Reconnect the assigned Copilot account, then review setup again.".into(),
+                    );
+                }
+            }
+            if !self.activation_status(settings, &repository.id).active {
+                pending.insert(repository.id.as_str());
+            }
+        }
+        if requests.len() != pending.len()
+            || requests
+                .iter()
+                .any(|request| !pending.remove(request.repository_id.as_str()))
+        {
+            return Err("Choose scope for each pending repository. Already-authorized monitoring is not replayed.".into());
+        }
+        let mut activations = Vec::new();
+        for request in requests {
+            let context = Self::activation_context(settings, &request.repository_id)
+                .map_err(|_| "Repository monitoring configuration changed. Preview again.")?;
+            activations.push(self.activation_for_application(
+                settings,
+                &ActivationApplication {
+                    repository_id: &request.repository_id,
+                    preview_id: &request.preview_id,
+                    mode: request.mode.clone(),
+                    selected_pull_request_ids: &request.selected_pull_request_ids,
+                    account_generation: generations.get(&context.account_id).copied().unwrap_or(0),
+                    now,
+                },
+            )?);
+        }
+        if activations.is_empty() {
+            return Ok(());
+        }
+        let previous = self.state.clone();
+        for activation in activations {
+            self.state
+                .activations
+                .insert(activation.repository_id.clone(), activation);
+        }
         if let Err(error) = store.save_monitoring_state(&self.state) {
             self.state = previous;
             return Err(error);
         }
-        self.previews.remove(application.preview_id);
-        Ok(self.activation_status(settings, &context.repository_id))
+        for request in requests {
+            self.previews.remove(&request.preview_id);
+        }
+        Ok(())
     }
 
     pub fn prepare_checks(

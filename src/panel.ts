@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { mountSettings } from "./settings";
+import { mountGenie } from "./genie";
+import type { SetupReview } from "./resources";
 import { renderMonitoring, type MonitoringSnapshot } from "./monitoring";
 import type { AutomationSnapshot } from "./automation";
 import crosshair from "./crosshair.svg";
@@ -65,7 +67,7 @@ const icon = (path: string) =>
 
 export async function mountPanel(app: HTMLElement) {
   app.className = "panel-shell";
-  app.innerHTML = `<header class="panel-header"><img src="${crosshair}" alt="" /><strong>PR Sniper</strong><div data-header-automation></div><button type="button" data-panel-hide aria-label="Hide PR Sniper panel" title="Close hides only; background work continues">${icon("m7 7 10 10M7 17 17 7")}</button></header>
+  app.innerHTML = `<header class="panel-header"><img src="${crosshair}" alt="" /><strong>PR Sniper</strong><span data-setup-needed hidden>Setup needed</span><div data-header-automation></div><button type="button" data-panel-hide aria-label="Hide PR Sniper panel" title="Close hides only; background work continues">${icon("m7 7 10 10M7 17 17 7")}</button></header>
     <div class="panel-context"><button type="button" data-panel-back aria-label="Back" hidden>${icon("m14 6-6 6 6 6M8 12h12")}</button><h1 tabindex="-1" data-panel-heading>Your queue</h1><img class="panel-art" src="${sniperArt}" alt="" /></div>
     <div class="panel-summary" data-panel-summary><strong data-summary-main>Reading queue...</strong><span data-summary-detail></span></div>
     <p class="panel-error" role="alert" data-panel-error hidden></p>
@@ -74,6 +76,7 @@ export async function mountPanel(app: HTMLElement) {
       <section data-panel-view="running" hidden><div data-running-list></div></section>
       <section data-panel-view="reviewed" hidden></section>
       <div data-panel-view="settings" hidden></div>
+      <div data-panel-view="genie" hidden></div>
       <section data-panel-view="utility" hidden></section>
     </div>
     <nav class="panel-tabs" data-panel-navigation aria-label="Application destinations">${(
@@ -94,12 +97,17 @@ export async function mountPanel(app: HTMLElement) {
     running: app.querySelector<HTMLElement>('[data-panel-view="running"]')!,
     reviewed: app.querySelector<HTMLElement>('[data-panel-view="reviewed"]')!,
     settings: app.querySelector<HTMLElement>('[data-panel-view="settings"]')!,
+    genie: app.querySelector<HTMLElement>('[data-panel-view="genie"]')!,
     utility: app.querySelector<HTMLElement>('[data-panel-view="utility"]')!,
   };
   let route: PanelRoute = { tab: "queue" };
   let revision = -1;
   let returnTo: PanelRoute = { tab: "queue" };
-  let settingsMounted = false;
+  let settingsController: ReturnType<typeof mountSettings> | undefined;
+  let settingsNavigation: Awaited<ReturnType<typeof mountSettings>> | undefined;
+  let setupOwner: PanelTab | undefined;
+  let setupTitle = "Welcome";
+  let intent = 0;
   let snapshot: MonitoringSnapshot | undefined;
   let automation: AutomationSnapshot | undefined;
   let navigating = Promise.resolve();
@@ -110,13 +118,16 @@ export async function mountPanel(app: HTMLElement) {
   const positions = new Map<string, Position>();
   const listSignatures = new Map<PanelTab, string>();
   const key = (value: PanelRoute) => JSON.stringify(value);
+  const positionKey = () =>
+    setupVisible() ? `${key(route)}:genie` : key(route);
+  const setupVisible = () => setupOwner === route.tab && !route.detail;
   const showError = (message: string) => {
     error.textContent = message;
     error.hidden = false;
   };
   const remember = (opener?: HTMLElement) => {
     if (!opener && navigationOrigin === key(route)) return;
-    const previous = positions.get(key(route));
+    const previous = positions.get(positionKey());
     const focus =
       opener ??
       (document.activeElement instanceof HTMLElement &&
@@ -132,7 +143,7 @@ export async function mountPanel(app: HTMLElement) {
           ["auto", "scroll"].includes(getComputedStyle(element).overflowY),
       )
       .map((element): [HTMLElement, number] => [element, element.scrollTop]);
-    positions.set(key(route), {
+    positions.set(positionKey(), {
       scroll: content.scrollTop,
       focus,
       nested,
@@ -146,13 +157,19 @@ export async function mountPanel(app: HTMLElement) {
   content.addEventListener("focusin", () => remember());
   app.addEventListener("focusin", () => focusRevision++);
   function restorePosition(focus: boolean) {
-    const saved = positions.get(key(route));
+    const saved = positions.get(positionKey());
     content.scrollTop = saved?.scroll ?? 0;
     for (const [element, scroll] of saved?.nested ?? [])
       if (element.isConnected && !element.closest("[hidden]"))
         element.scrollTop = scroll;
     if (!focus) return;
-    const target = saved?.focus;
+    const oldTarget = saved?.focus;
+    const target =
+      setupVisible() && oldTarget?.dataset.genieFocus
+        ? views.genie.querySelector<HTMLElement>(
+            `[data-genie-focus="${CSS.escape(oldTarget.dataset.genieFocus)}"]`,
+          )
+        : oldTarget;
     if (target?.isConnected && !target.closest("[hidden]"))
       target.focus({ preventScroll: true });
     else if (saved?.row) {
@@ -169,6 +186,16 @@ export async function mountPanel(app: HTMLElement) {
           row.scrollIntoView({ block: "nearest" });
       }
     } else heading.focus({ preventScroll: true });
+  }
+  let initialSetup: SetupReview | undefined;
+  try {
+    initialSetup = await invoke<SetupReview>("monitoring_setup_review");
+  } catch (cause) {
+    showError(
+      typeof cause === "string"
+        ? cause
+        : "Saved setup is unavailable. Open Settings to retry.",
+    );
   }
   const monitor = renderMonitoring(views.monitor, showError, {
     panel: true,
@@ -196,16 +223,101 @@ export async function mountPanel(app: HTMLElement) {
         : "Active work unavailable";
       drawSummary();
       drawLists();
+      void invoke<SetupReview>("monitoring_setup_review").then(
+        setupState,
+        (cause) => {
+          showError(
+            typeof cause === "string"
+              ? cause
+              : "Monitoring setup status is unavailable.",
+          );
+        },
+      );
     },
   });
   monitor.automation(
     app.querySelector<HTMLElement>("[data-header-automation]")!,
   );
+  const setupState = (value: SetupReview) => {
+    const empty =
+      !value.scopes.some((scope) => scope.active) && !snapshot?.items?.length;
+    app.dataset.setupEmpty = String(empty);
+    app.querySelector<HTMLElement>("[data-setup-needed]")!.hidden = !empty;
+  };
+  const ensureSettings = () =>
+    (settingsController ??= mountSettings(views.settings, {
+      embedded: true,
+      openGenie: (opener) => void showSetup("settings", opener),
+    }).then((controller) => (settingsNavigation = controller)));
+  const genie = mountGenie(views.genie, {
+    title: (value) => {
+      setupTitle = value;
+      if (setupVisible()) {
+        heading.textContent = value;
+        back.hidden = value === "Welcome";
+      }
+    },
+    state: setupState,
+    manual: (opener) => {
+      remember(opener);
+      setupOwner = undefined;
+      genie.leave();
+      void navigate({ tab: "settings" });
+    },
+    complete: (paused) => {
+      setupOwner = undefined;
+      genie.leave();
+      app.dataset.setupEmpty = "false";
+      app.querySelector<HTMLElement>("[data-setup-needed]")!.hidden = true;
+      const navigation = navigate({ tab: "queue" });
+      const expected = intent;
+      void navigation.then(() => {
+        if (paused && intent === expected)
+          showError(
+            "Monitoring scope confirmed. Global automation remains paused; resume it explicitly in Settings.",
+          );
+        void monitor.refresh();
+      });
+    },
+    edit: (target, opener, origin) => {
+      const owner = setupOwner ?? "settings";
+      remember(opener);
+      setupOwner = undefined;
+      genie.leave();
+      const task = navigate({ tab: "settings" });
+      const expected = intent;
+      void task.then(async () => {
+        const controller = await ensureSettings();
+        if (intent !== expected || route.tab !== "settings" || route.detail)
+          return;
+        controller.open(target, {
+          stage: origin.stage,
+          back: () => void showSetup(owner, undefined, origin.back),
+        });
+      });
+    },
+  });
+  async function showSetup(
+    owner: PanelTab,
+    opener?: HTMLElement,
+    reopen?: () => void,
+  ) {
+    remember(opener);
+    setupOwner = owner;
+    const navigation = navigate({ tab: owner });
+    const expected = intent;
+    await navigation;
+    if (intent !== expected || !setupVisible()) return;
+    if (reopen) reopen();
+    else await genie.open("genie");
+  }
 
   function drawSummary() {
     const summary = app.querySelector<HTMLElement>("[data-panel-summary]")!;
     summary.hidden =
-      !!route.detail || ["settings", "reviewed"].includes(route.tab);
+      setupVisible() ||
+      !!route.detail ||
+      ["settings", "reviewed"].includes(route.tab);
     const main = summary.querySelector<HTMLElement>("[data-summary-main]")!;
     const detail = summary.querySelector<HTMLElement>("[data-summary-detail]")!;
     if (route.tab === "running") {
@@ -508,6 +620,12 @@ export async function mountPanel(app: HTMLElement) {
     const focusAtStart = focusRevision;
     lastVisible = state.visible;
     if (changed || !state.visible) remember();
+    if (changed && (state.route.tab !== setupOwner || state.route.detail)) {
+      if (setupOwner !== undefined) genie.leave();
+      setupOwner = undefined;
+    }
+    if (changed && (state.route.tab !== "settings" || state.route.detail))
+      settingsNavigation?.leaveGuidance();
     if (changed && state.route.detail && !route.detail) returnTo = route;
     if (
       changed &&
@@ -520,18 +638,22 @@ export async function mountPanel(app: HTMLElement) {
     revision = state.revision;
     app.dataset.nativeVisible = String(state.visible);
     if (state.placement_warning) showError(state.placement_warning);
-    back.hidden = !route.detail;
-    heading.textContent = route.detail
-      ? route.detail.type === "status"
-        ? "Status"
-        : route.detail.type === "diagnostics"
-          ? "Diagnostics"
-          : route.detail.type === "job"
-            ? "Job details"
-            : "Saved evidence"
-      : destinations[route.tab].title;
+    back.hidden =
+      !route.detail && (!setupVisible() || setupTitle === "Welcome");
+    heading.textContent = setupVisible()
+      ? setupTitle
+      : route.detail
+        ? route.detail.type === "status"
+          ? "Status"
+          : route.detail.type === "diagnostics"
+            ? "Diagnostics"
+            : route.detail.type === "job"
+              ? "Job details"
+              : "Saved evidence"
+        : destinations[route.tab].title;
     app.dataset.detail = String(!!route.detail);
     app.dataset.evidence = route.detail?.type ?? "";
+    app.dataset.setup = String(setupVisible());
     drawSummary();
     for (const button of app.querySelectorAll<HTMLButtonElement>(
       "[data-panel-tab]",
@@ -542,11 +664,13 @@ export async function mountPanel(app: HTMLElement) {
     }
     const utilityDetail =
       route.detail?.type === "status" || route.detail?.type === "diagnostics";
-    const visible = utilityDetail
-      ? "utility"
-      : route.detail || route.tab === "queue"
-        ? "monitor"
-        : route.tab;
+    const visible = setupVisible()
+      ? "genie"
+      : utilityDetail
+        ? "utility"
+        : route.detail || route.tab === "queue"
+          ? "monitor"
+          : route.tab;
     for (const [name, view] of Object.entries(views))
       view.hidden = name !== visible;
     views.settings.dispatchEvent(
@@ -554,9 +678,8 @@ export async function mountPanel(app: HTMLElement) {
         detail: visible === "settings",
       }),
     );
-    if (visible === "settings" && !settingsMounted) {
-      settingsMounted = true;
-      await mountSettings(views.settings, { embedded: true });
+    if (visible === "settings" && !settingsController) {
+      await ensureSettings();
       if (state.revision !== revision) return;
     }
     if (visible === "monitor") monitor.detail(route.detail, state.missing);
@@ -580,6 +703,7 @@ export async function mountPanel(app: HTMLElement) {
     }
   }
   function navigate(next: PanelRoute, opener?: HTMLElement) {
+    intent++;
     // Capture activation before a queue redraw detaches the actual row button.
     remember(opener);
     navigating = navigating.then(async () => {
@@ -601,13 +725,21 @@ export async function mountPanel(app: HTMLElement) {
     });
     return navigating;
   }
-  back.onclick = () =>
-    void navigate(returnTo.detail ? { tab: route.tab } : returnTo);
+  back.onclick = () => {
+    if (setupVisible()) void genie.back();
+    else void navigate(returnTo.detail ? { tab: route.tab } : returnTo);
+  };
   for (const button of app.querySelectorAll<HTMLButtonElement>(
     "[data-panel-tab]",
   ))
-    button.onclick = () =>
+    button.onclick = () => {
+      if (setupVisible()) {
+        remember();
+        genie.leave();
+        setupOwner = undefined;
+      }
       void navigate({ tab: button.dataset.panelTab as PanelTab });
+    };
   app.querySelector<HTMLButtonElement>("[data-panel-status]")!.onclick = () =>
     void navigate({ tab: route.tab, detail: { type: "status" } });
   app.querySelector<HTMLButtonElement>("[data-panel-diagnostics]")!.onclick =
@@ -637,6 +769,25 @@ export async function mountPanel(app: HTMLElement) {
   );
   window.addEventListener("blur", () => remember());
   window.addEventListener("focus", () => restorePosition(true));
+  try {
+    initialSetup ??= await invoke<SetupReview>("monitoring_setup_review");
+    const initialWork = await invoke<MonitoringSnapshot>("monitoring_snapshot");
+    setupState(initialSetup);
+    if (
+      !initialSetup.scopes.some((scope) => scope.active) &&
+      initialWork.items &&
+      !initialWork.items.length
+    ) {
+      setupOwner = "queue";
+      await genie.open("welcome");
+    }
+  } catch (cause) {
+    showError(
+      typeof cause === "string"
+        ? cause
+        : "Saved setup is unavailable. Open Settings to retry; no configuration was assumed.",
+    );
+  }
   try {
     await listen<PanelSnapshot>(
       "pr-sniper:panel",

@@ -1,5 +1,34 @@
 # Settings behavioral tests
 
+`genie.spec.mjs` covers R41's fresh/partial/existing flows through the production
+Welcome, Genie and shared Settings editors. Repository and AI sign-in/model
+transport is explicitly synthetic; saved resources, readiness, scope validation
+and final expected-state checks use the isolated native Store bridge. It covers
+explicit account/model/Agent choices and safe-off new permissions, no activation
+before combined confirmation, selected-existing scope, stale configuration,
+model/account loss, failed saves, unrelated drafts, cancellation, restart,
+late replies, mounted account ownership and already-authorized re-entry.
+The bridge reconstructs only its originally staged synthetic preview between
+processes; `src-tauri/tests/genie.rs` separately checks real in-memory previews,
+batch atomicity, failed writes and changed resource/account/scope guards.
+
+The four readiness rows are saved-configuration evidence, not an inference or
+subscription test. No fixture starts reviews, uses human credentials, calls a
+provider or automates the native desktop. Screenshots from the real renderer
+are written to `<target>/genie-41-delivery/screenshots`, including Welcome,
+Genie, effective review and compact final controls at 320x300, 408x441 and
+408x744. These are candidate evidence, not independent or release acceptance.
+After building the frontend and `settings_bridge`, a focused run is:
+
+```sh
+SETTINGS_TEST_PORT=1481 npm exec playwright -- test \
+  --config tests/settings/playwright.config.mjs genie.spec.mjs \
+  shared-editors.spec.mjs resources.spec.mjs monitoring-activation.spec.mjs \
+  panel.spec.mjs panel-focus.spec.mjs
+cargo test --manifest-path src-tauri/Cargo.toml --locked \
+  --test genie --test resources --test monitoring
+```
+
 `accounts-visual.spec.mjs` covers the V5 account panels with explicitly synthetic
 authentication transport responses using the existing native `GithubAuthView`
 and `copilot_view` shapes. It asserts exact command payloads (including the Tauri
