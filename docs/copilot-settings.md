@@ -51,7 +51,12 @@ an application restart, preview pending scope again. Final confirmation shows
 the effective repository and AI accounts separately, assignment permissions
 and primary designation, the global cron/time zone and capacity. It rechecks
 assigned model availability and rejects changed native configuration or account
-state. This does not grant trust, publication, approval or merge permissions,
+state, including same-identity AI reconnects after an earlier catalog completes.
+The local commit locks connection generations before auth state; catalog and
+network work run outside those locks. Back invalidates pending final reads and
+cancels their catalog lookups, but does not pretend to undo an already-dispatched
+native commit. A late commit reply cannot navigate away from a newer destination.
+This does not grant trust, publication, approval or merge permissions,
 resume global pause, or replay an already-authorized scope.
 
 **Verify sign-in** rechecks GitHub `/user`, not a subscription or inference

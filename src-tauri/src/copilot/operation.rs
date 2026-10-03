@@ -16,6 +16,12 @@ pub struct AccountWork {
 }
 
 impl AccountWork {
+    pub(super) fn generation(&self) -> Result<std::sync::MutexGuard<'_, u64>, String> {
+        self.generation
+            .lock()
+            .map_err(|_| "Copilot account state is unavailable.".into())
+    }
+
     pub fn invalidate<T>(&self, change: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
         let mut generation = self
             .generation

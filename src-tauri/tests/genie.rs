@@ -1,12 +1,13 @@
 use pr_sniper_lib::{
     capacity::Automation,
     github::{
+        metadata::{Lifecycle, PullRequest},
         provider::{Capabilities, CommentCapability, Connection, RemoteRepository},
         Identity,
     },
     monitoring::{
-        AccountAvailability, ActivationMode, ActivationPreviewEvidence, Monitor, SetupActivation,
-        SetupReview,
+        AccountAvailability, ActivationMode, ActivationPreviewEvidence, Monitor, PollResult,
+        SetupActivation, SetupReview,
     },
     storage::{Settings, Store},
 };
@@ -53,7 +54,13 @@ fn accounts(id: &str) -> BTreeMap<String, AccountAvailability> {
 
 fn review(store: &Store, monitor: &Monitor) -> SetupReview {
     monitor
-        .setup_review(store, accounts("22"), accounts("33"), &BTreeMap::new())
+        .setup_review(
+            store,
+            accounts("22"),
+            accounts("33"),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
         .unwrap()
 }
 
@@ -183,13 +190,21 @@ fn final_confirmation_rejects_every_changed_effective_resource() {
 
 #[test]
 fn disconnected_or_changed_accounts_and_pause_invalidate_confirmation() {
-    for role in ["repository", "ai", "login", "generation", "pause"] {
+    for role in [
+        "repository",
+        "ai",
+        "login",
+        "generation",
+        "ai-generation",
+        "pause",
+    ] {
         let (_root, store, mut monitor) = fixture();
         let request = preview(&store, &mut monitor, REPO);
         let shown = review(&store, &monitor);
         let mut repository = accounts("22");
         let mut ai = accounts("33");
         let mut generations = BTreeMap::new();
+        let mut ai_generations = BTreeMap::new();
         match role {
             "repository" => repository.get_mut("22").unwrap().connected = false,
             "ai" => ai.get_mut("33").unwrap().connected = false,
@@ -197,11 +212,14 @@ fn disconnected_or_changed_accounts_and_pause_invalidate_confirmation() {
             "generation" => {
                 generations.insert("22".into(), 1);
             }
+            "ai-generation" => {
+                ai_generations.insert("33".into(), 1);
+            }
             "pause" => store.save_automation(&Automation { paused: true }).unwrap(),
             _ => unreachable!(),
         }
         let current = monitor
-            .setup_review(&store, repository, ai, &generations)
+            .setup_review(&store, repository, ai, &generations, &ai_generations)
             .unwrap();
         assert!(monitor
             .apply_setup(
@@ -451,4 +469,182 @@ fn rejected_stale_preview_cannot_be_reused_after_configuration_roundtrip() {
         .unwrap()
         .activations
         .is_empty());
+}
+
+#[test]
+fn final_authors_equal_preview_poll_and_actual_admission_for_all_inheritance_cases() {
+    for (inherited, local, overrides, expected) in [
+        (vec!["11"], vec![], None, vec!["11"]),
+        (vec![], vec!["12"], None, vec!["12"]),
+        (vec!["11"], vec!["12"], None, vec!["11", "12"]),
+        (vec!["11"], vec!["11", "12"], None, vec!["11", "12"]),
+        (vec!["11"], vec!["12"], Some(vec!["13"]), vec!["12", "13"]),
+        (vec!["11"], vec![], Some(vec![]), vec![]),
+    ] {
+        let (_root, store, mut monitor) = fixture();
+        let identities = |ids: Vec<&str>| {
+            ids.into_iter()
+                .map(|id| {
+                    serde_json::from_value(json!({"id": id, "login": format!("author-{id}")}))
+                        .unwrap()
+                })
+                .collect()
+        };
+        let mut settings = store.load_settings().unwrap();
+        settings.defaults.reviewer_assignment = false;
+        settings.defaults.watched_authors = identities(inherited);
+        settings.repositories[0].watched_authors = identities(local);
+        settings.repositories[0].overrides.watched_authors = overrides.map(identities);
+        store.save_settings(&settings).unwrap();
+        let shown = review(&store, &monitor);
+        let context = Monitor::activation_context(&settings, REPO).unwrap();
+        assert_eq!(shown.watched_authors[REPO], context.watched_authors);
+        assert_eq!(
+            shown.watched_authors[REPO]
+                .iter()
+                .map(|a| a.id.as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let connection = Connection {
+            identity: Identity {
+                id: "22".into(),
+                login: "fixture-22".into(),
+            },
+            repository: RemoteRepository {
+                id: "100".into(),
+                name: "fixture/genie".into(),
+            },
+            capabilities: Capabilities {
+                read: true,
+                comment: CommentCapability::Available,
+            },
+        };
+        let pulls: Vec<_> = ["11", "12", "13", "99"]
+            .into_iter()
+            .map(|id| PullRequest {
+                id: id.into(),
+                number: id.parse().unwrap(),
+                title: format!("PR {id}"),
+                author: Some(Identity {
+                    id: id.into(),
+                    login: format!("renamed-{id}"),
+                }),
+                requested_reviewers: Vec::new(),
+                requested_teams: Vec::new(),
+                state: Lifecycle::Open,
+                draft: false,
+                head_sha: "a".repeat(40),
+                base_sha: "b".repeat(40),
+                head_repository_id: Some("100".into()),
+                base_repository_id: "100".into(),
+                updated_at: "2026-09-25T10:00:00Z".into(),
+                files: Vec::new(),
+            })
+            .collect();
+        let staged = monitor
+            .stage_activation_preview(
+                &settings,
+                ActivationPreviewEvidence {
+                    context,
+                    connection: connection.clone(),
+                    pull_requests: pulls.clone(),
+                    creation_watermark: 100,
+                    account_generation: 0,
+                },
+                0,
+            )
+            .unwrap();
+        let admitted: Vec<_> = if expected.is_empty() {
+            vec!["11", "12", "13", "99"]
+        } else {
+            expected
+        };
+        assert_eq!(
+            staged
+                .candidates
+                .iter()
+                .map(|c| c.author_id.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            admitted
+        );
+        let request = SetupActivation {
+            repository_id: REPO.into(),
+            preview_id: staged.preview_id,
+            mode: ActivationMode::SelectedExisting,
+            selected_pull_request_ids: staged
+                .candidates
+                .iter()
+                .map(|c| c.pull_request_id.clone())
+                .collect(),
+        };
+        monitor
+            .apply_setup(
+                &store,
+                &shown,
+                &shown.confirmation,
+                &[request],
+                &BTreeMap::new(),
+                1_799_999_999,
+            )
+            .unwrap();
+        let mut tickets = monitor.prepare_checks(&store, 1_800_000_000, true).unwrap();
+        assert_eq!(tickets.len(), 1);
+        let ticket = tickets.remove(0);
+        assert_eq!(ticket.watched_authors, shown.watched_authors[REPO]);
+        monitor
+            .finish(
+                &store,
+                ticket,
+                Ok(PollResult {
+                    connection,
+                    pull_requests: pulls,
+                }),
+                1_800_000_001,
+            )
+            .unwrap();
+        let mut actual: Vec<_> = store
+            .load_queue()
+            .unwrap()
+            .into_iter()
+            .map(|job| job.author_id.unwrap())
+            .collect();
+        actual.sort();
+        assert_eq!(actual, admitted);
+    }
+}
+
+#[test]
+fn deliberately_inactive_saved_configuration_survives_reconciliation_and_restart() {
+    let (_root, store, mut monitor) = fixture();
+    let request = preview(&store, &mut monitor, REPO);
+    let shown = review(&store, &monitor);
+    monitor
+        .apply_setup(
+            &store,
+            &shown,
+            &shown.confirmation,
+            &[request],
+            &BTreeMap::new(),
+            100,
+        )
+        .unwrap();
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].enabled = false;
+    store.save_settings(&settings).unwrap();
+    monitor
+        .synchronize_configuration(&store, &accounts("22"), 101)
+        .unwrap();
+    let restarted = Monitor::restore(&store).unwrap();
+    let inactive = review(&store, &restarted);
+    assert!(inactive.configured_inactive);
+    assert!(!inactive.scopes.iter().any(|scope| scope.active));
+    assert!(store.load_queue().unwrap().is_empty());
+    assert_eq!(store.load_settings().unwrap(), settings);
+    settings.repositories[0].assignments.clear();
+    store.save_settings(&settings).unwrap();
+    assert!(
+        !review(&store, &restarted).configured_inactive,
+        "Incomplete saved resources are still partial setup"
+    );
 }

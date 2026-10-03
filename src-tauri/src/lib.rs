@@ -1302,22 +1302,21 @@ fn monitoring_setup_review(host: State<'_, Host>) -> Result<monitoring::SetupRev
         .github_auth
         .lock()
         .map_err(|_| "GitHub connection state is unavailable.")?;
-    let ai = host
-        .copilot
-        .auth
-        .lock()
-        .map_err(|_| "Copilot connection state is unavailable.")?;
-    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
-    let monitor = host
-        .monitor
-        .lock()
-        .map_err(|_| "Monitoring is unavailable.")?;
-    monitor.setup_review(
-        &store,
-        auth.setup_accounts(),
-        ai.setup_accounts(),
-        &generations,
-    )
+    host.copilot
+        .with_setup_accounts(|ai_accounts, ai_generations| {
+            let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+            let monitor = host
+                .monitor
+                .lock()
+                .map_err(|_| "Monitoring is unavailable.")?;
+            monitor.setup_review(
+                &store,
+                auth.setup_accounts(),
+                ai_accounts,
+                &generations,
+                &ai_generations,
+            )
+        })
 }
 
 #[tauri::command]
@@ -1337,30 +1336,29 @@ async fn apply_monitoring_setup(
             .github_auth
             .lock()
             .map_err(|_| "GitHub connection state is unavailable.")?;
-        let ai = host
-            .copilot
-            .auth
-            .lock()
-            .map_err(|_| "Copilot connection state is unavailable.")?;
-        let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
-        let mut monitor = host
-            .monitor
-            .lock()
-            .map_err(|_| "Monitoring is unavailable.")?;
-        let review = monitor.setup_review(
-            &store,
-            auth.setup_accounts(),
-            ai.setup_accounts(),
-            &generations,
-        )?;
-        monitor.apply_setup(
-            &store,
-            &review,
-            &confirmation,
-            &requests,
-            &generations,
-            now_seconds()?,
-        )
+        host.copilot
+            .with_setup_accounts(|ai_accounts, ai_generations| {
+                let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+                let mut monitor = host
+                    .monitor
+                    .lock()
+                    .map_err(|_| "Monitoring is unavailable.")?;
+                let review = monitor.setup_review(
+                    &store,
+                    auth.setup_accounts(),
+                    ai_accounts,
+                    &generations,
+                    &ai_generations,
+                )?;
+                monitor.apply_setup(
+                    &store,
+                    &review,
+                    &confirmation,
+                    &requests,
+                    &generations,
+                    now_seconds()?,
+                )
+            })
     })
     .await
     .map_err(|_| "Monitoring setup could not be applied.".to_string())??;

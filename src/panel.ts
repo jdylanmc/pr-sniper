@@ -115,6 +115,7 @@ export async function mountPanel(app: HTMLElement) {
   let utilityRevision = 0;
   let lastVisible = false;
   let focusRevision = 0;
+  let setupRead = 0;
   const positions = new Map<string, Position>();
   const listSignatures = new Map<PanelTab, string>();
   const key = (value: PanelRoute) => JSON.stringify(value);
@@ -187,16 +188,6 @@ export async function mountPanel(app: HTMLElement) {
       }
     } else heading.focus({ preventScroll: true });
   }
-  let initialSetup: SetupReview | undefined;
-  try {
-    initialSetup = await invoke<SetupReview>("monitoring_setup_review");
-  } catch (cause) {
-    showError(
-      typeof cause === "string"
-        ? cause
-        : "Saved setup is unavailable. Open Settings to retry.",
-    );
-  }
   const monitor = renderMonitoring(views.monitor, showError, {
     panel: true,
     navigate: (detail, opener) =>
@@ -214,6 +205,7 @@ export async function mountPanel(app: HTMLElement) {
     },
     onAutomation: (value) => {
       automation = value;
+      app.dataset.automationUnavailable = String(!value);
       app.querySelector<HTMLElement>("[data-running-count]")!.textContent =
         value ? String(value.active) : "?";
       app.querySelector<HTMLButtonElement>(
@@ -223,9 +215,17 @@ export async function mountPanel(app: HTMLElement) {
         : "Active work unavailable";
       drawSummary();
       drawLists();
+      const read = ++setupRead;
+      const owner = intent;
+      const destination = key(route);
+      const current = () =>
+        read === setupRead && owner === intent && destination === key(route);
       void invoke<SetupReview>("monitoring_setup_review").then(
-        setupState,
+        (value) => {
+          if (current()) setupState(value);
+        },
         (cause) => {
+          if (!current()) return;
           showError(
             typeof cause === "string"
               ? cause
@@ -238,9 +238,15 @@ export async function mountPanel(app: HTMLElement) {
   monitor.automation(
     app.querySelector<HTMLElement>("[data-header-automation]")!,
   );
+  const needsSetup = (value: SetupReview, work: MonitoringSnapshot) =>
+    !value.configured_inactive &&
+    !value.scopes.some((scope) => scope.active) &&
+    Array.isArray(work.items) &&
+    !work.items.length;
   const setupState = (value: SetupReview) => {
-    const empty =
-      !value.scopes.some((scope) => scope.active) && !snapshot?.items?.length;
+    setupRead++;
+    if (!snapshot?.items) return;
+    const empty = needsSetup(value, snapshot);
     app.dataset.setupEmpty = String(empty);
     app.querySelector<HTMLElement>("[data-setup-needed]")!.hidden = !empty;
   };
@@ -770,31 +776,41 @@ export async function mountPanel(app: HTMLElement) {
   window.addEventListener("blur", () => remember());
   window.addEventListener("focus", () => restorePosition(true));
   try {
-    initialSetup ??= await invoke<SetupReview>("monitoring_setup_review");
-    const initialWork = await invoke<MonitoringSnapshot>("monitoring_snapshot");
-    setupState(initialSetup);
-    if (
-      !initialSetup.scopes.some((scope) => scope.active) &&
-      initialWork.items &&
-      !initialWork.items.length
-    ) {
-      setupOwner = "queue";
-      await genie.open("welcome");
-    }
-  } catch (cause) {
-    showError(
-      typeof cause === "string"
-        ? cause
-        : "Saved setup is unavailable. Open Settings to retry; no configuration was assumed.",
-    );
-  }
-  try {
     await listen<PanelSnapshot>(
       "pr-sniper:panel",
       (event) => void apply(event.payload),
       { target: "panel" },
     );
-    await apply(await invoke<PanelSnapshot>("panel_snapshot"));
+    const native = await invoke<PanelSnapshot>("panel_snapshot");
+    await apply(native);
+    const owner = intent;
+    const current = () => intent === owner && revision === native.revision;
+    try {
+      const [initialSetup, initialWork] = await Promise.all([
+        invoke<SetupReview>("monitoring_setup_review"),
+        invoke<MonitoringSnapshot>("monitoring_snapshot"),
+      ]);
+      if (!current()) return;
+      snapshot = initialWork;
+      setupState(initialSetup);
+      if (
+        owner === 0 &&
+        route.tab === "queue" &&
+        !route.detail &&
+        needsSetup(initialSetup, initialWork)
+      ) {
+        setupOwner = "queue";
+        await apply(native);
+        await genie.open("welcome");
+      }
+    } catch (cause) {
+      if (current())
+        showError(
+          typeof cause === "string"
+            ? cause
+            : "Saved setup is unavailable. Open Settings to retry; no configuration was assumed.",
+        );
+    }
   } catch (cause) {
     showError(
       typeof cause === "string"

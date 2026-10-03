@@ -442,6 +442,8 @@ pub struct SetupReview {
     pub repository_accounts: BTreeMap<String, AccountAvailability>,
     pub ai_accounts: BTreeMap<String, AccountAvailability>,
     pub scopes: Vec<ActivationStatus>,
+    pub watched_authors: BTreeMap<String, Vec<WatchedIdentity>>,
+    pub configured_inactive: bool,
     pub paused: bool,
     pub confirmation: String,
 }
@@ -847,6 +849,7 @@ impl Monitor {
         repository_accounts: BTreeMap<String, AccountAvailability>,
         ai_accounts: BTreeMap<String, AccountAvailability>,
         generations: &BTreeMap<String, u64>,
+        ai_generations: &BTreeMap<String, u64>,
     ) -> Result<SetupReview, String> {
         let resources = store.saved_resources()?;
         let paused = store.load_automation()?.paused;
@@ -861,6 +864,7 @@ impl Monitor {
             &repository_accounts,
             &ai_accounts,
             generations,
+            ai_generations,
             versions,
             paused,
         ))
@@ -872,11 +876,45 @@ impl Monitor {
             .iter()
             .map(|repository| self.activation_status(&resources.settings, &repository.id))
             .collect();
+        let watched_authors = resources
+            .settings
+            .repositories
+            .iter()
+            .map(|repository| {
+                let policy = repository.overrides.effective(&resources.settings.defaults);
+                (
+                    repository.id.clone(),
+                    effective_watched_authors(repository, &policy),
+                )
+            })
+            .collect();
+        // Saved, bound, assigned repositories deliberately switched off are not
+        // a fresh install, even after reconciliation removes their active scopes.
+        let settings = &resources.settings;
+        let configured_inactive = !settings.repositories.is_empty()
+            && settings
+                .repositories
+                .iter()
+                .all(|repository| !repository.enabled)
+            && settings.repositories.iter().any(|repository| {
+                repository.provider_account_id.is_some()
+                    && repository.provider_repository_id.is_some()
+                    && !repository.assignments.is_empty()
+                    && repository.assignments.iter().all(|assignment| {
+                        settings.agents.iter().any(|agent| {
+                            agent.id == assignment.agent_id
+                                && agent.ai_account.is_some()
+                                && !agent.model.trim().is_empty()
+                        })
+                    })
+            });
         Ok(SetupReview {
             resources,
             repository_accounts,
             ai_accounts,
             scopes,
+            watched_authors,
+            configured_inactive,
             paused,
             confirmation,
         })

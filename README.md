@@ -38,7 +38,9 @@ repositories or pull requests. Existing shared doctrine libraries remain intact.
 Choose **Set up with Genie**, or **I'll set it up myself** for manual Settings.
 Genie is also available from Settings after setup, including the legacy Settings
 surface. Its four readiness rows use saved resources and native account/scope
-state, not visited steps.
+state, not visited steps. A configured installation with all repositories
+deliberately disabled retains the empty Queue; saved Settings destinations and
+newer navigation are not replaced by a late onboarding read.
 
 Genie opens the same account, Agent, doctrine, repository and Preferences
 editors as Settings. Each resource save applies immediately. Closing hides the
@@ -53,7 +55,12 @@ Approve and Merge off. Existing saved permissions are unchanged. In Genie,
 pending repository. The final check shows both identities, effective
 assignments/primary/independent permissions, scope, the single cron/time zone,
 AI capacity and global pause. It checks assigned models' current catalogs,
-not subscriptions or inference. An explicit checkbox and confirmation enable
+not subscriptions or inference. Watched authors use monitoring's effective
+inherited/override-plus-local union, deduplicated by stable ID. Both repository
+and AI connection generations fence final confirmation, including reconnects
+with unchanged identity. Back cancels final preflight; it cannot roll back a
+native commit already dispatched, whose reply cannot replace newer navigation.
+An explicit checkbox and confirmation enable
 the pending scopes together; changed configuration, accounts or scope reject a
 stale confirmation. Failed writes retain saved resources and can be retried.
 Already-authorized scopes are not replayed, and global pause is never resumed

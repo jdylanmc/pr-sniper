@@ -66,8 +66,9 @@ export function mountGenie(
   let state: SetupReview | undefined;
   let active = false;
   let request = 0;
-  let applying = false;
+  let applying: { dispatched: boolean } | undefined;
   let message = "";
+  let commitFailure = "";
   let lastError = "";
   let checkedModelsFor: string | undefined;
   const pending = new Map<string, PendingActivation>();
@@ -158,7 +159,8 @@ export function mountGenie(
           : "Genie",
     );
     const { settings } = state?.resources ?? {};
-    root.innerHTML = `<p class="genie-error" role="alert" ${message ? "" : "hidden"}>${escape(message)}</p>
+    const notice = [message, commitFailure].filter(Boolean).join(" ");
+    root.innerHTML = `<p class="genie-error" role="alert" ${notice ? "" : "hidden"}>${escape(notice)}</p>
       ${
         mode === "review"
           ? reviewMarkup()
@@ -223,7 +225,7 @@ export function mountGenie(
     );
     if (confirm && activate) {
       confirm.onchange = () => {
-        activate.disabled = !confirm.checked || applying;
+        activate.disabled = !confirm.checked || !!applying;
       };
       activate.onclick = () => void apply();
     }
@@ -252,9 +254,7 @@ export function mountGenie(
             settings.defaults,
             repository.overrides ?? {},
           );
-          const watched = repository.watched_authors?.length
-            ? repository.watched_authors
-            : policy.watched_authors;
+          const watched = state!.watched_authors[repository.id];
           const authority = readiness.repositories.find(
             (r) => r.repository_id === repository.id,
           );
@@ -397,9 +397,11 @@ export function mountGenie(
     )
       return;
     const expected = state;
-    applying = true;
     const current = ++request;
+    const operation = { dispatched: false };
+    applying = operation;
     message = "";
+    commitFailure = "";
     render();
     try {
       if (!(await checkModels(expected, current))) return;
@@ -407,35 +409,48 @@ export function mountGenie(
       if (!active || current !== request) return;
       if (latest.confirmation !== expected.confirmation)
         throw "Setup changed. Refresh and review the current configuration before confirming again.";
+      const choices = new Map(pending);
+      const requests = (expected.resources.settings.repositories ?? [])
+        .filter((r) => r.enabled && !scopeFor(r.id)?.active)
+        .map((r) => {
+          const choice = validPending(r.id);
+          if (!choice)
+            throw "Choose current scope for each pending repository.";
+          return {
+            repositoryId: r.id,
+            previewId: choice.preview.preview_id,
+            mode: choice.mode,
+            selectedPullRequestIds: choice.selectedPullRequestIds,
+          };
+        });
+      operation.dispatched = true;
       await invoke("apply_monitoring_setup", {
         confirmation: expected.confirmation,
-        requests: (expected.resources.settings.repositories ?? [])
-          .filter((r) => r.enabled && !scopeFor(r.id)?.active)
-          .map((r) => {
-            const choice = validPending(r.id);
-            if (!choice)
-              throw "Choose current scope for each pending repository.";
-            return {
-              repositoryId: r.id,
-              previewId: choice.preview.preview_id,
-              mode: choice.mode,
-              selectedPullRequestIds: choice.selectedPullRequestIds,
-            };
-          }),
+        requests,
       });
-      pending.clear();
+      for (const [id, choice] of choices)
+        if (pending.get(id) === choice) pending.delete(id);
       if (active && current === request) options.complete(expected.paused);
     } catch (cause) {
+      if (operation.dispatched && (!active || current !== request)) {
+        commitFailure = `The earlier monitoring confirmation failed: ${failure(cause)}`;
+        lastError = commitFailure;
+        console.error(commitFailure);
+      }
       if (active && current === request) {
         message = failure(cause);
         checkedModelsFor = undefined;
       }
     } finally {
-      applying = false;
-      if (active && current === request) render();
+      if (applying === operation) {
+        applying = undefined;
+        if (active && current === request) render();
+        else if (active) void refresh();
+      }
     }
   }
   async function open(next: SetupMode = "genie") {
+    invalidateWork();
     mode = next;
     active = true;
     render();
@@ -457,11 +472,19 @@ export function mountGenie(
       scroll: scrollParent()?.scrollTop ?? window.scrollY,
     });
     active = false;
+    invalidateWork();
+  }
+  function invalidateWork() {
     request++;
+    checkedModelsFor = undefined;
+    // Navigation cancels preflight, not an already-dispatched native commit.
+    if (applying && !applying.dispatched) applying = undefined;
     for (const [requestId, accountId] of lookups)
       void invoke("cancel_copilot_models", { accountId, requestId }).catch(
         (cause) => {
           message = `Model lookup cancellation could not be confirmed. ${failure(cause)}`;
+          console.error(message);
+          if (active) render();
         },
       );
   }
@@ -478,6 +501,7 @@ export function mountGenie(
 
 /** The legacy Settings URL shares the same mounted editors, too. */
 export async function mountSettingsWithGenie(app: HTMLElement) {
+  app.className = "legacy-settings-host";
   const settings = document.createElement("div");
   const setup = document.createElement("section");
   setup.className = "legacy-genie";

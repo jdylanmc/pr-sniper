@@ -104,6 +104,14 @@ fn setup_fixture(store: &Store, request: &Request) -> Result<Value, String> {
         accounts("repositoryAccounts")?,
         accounts("aiAccounts")?,
         &BTreeMap::new(),
+        &serde_json::from_value(
+            request
+                .args
+                .get("aiGenerations")
+                .cloned()
+                .unwrap_or(json!({})),
+        )
+        .map_err(|_| "Invalid synthetic AI connection generations.")?,
     )?;
     if request.command == "fixture_apply_setup" {
         let mut requests: Vec<SetupActivation> =
