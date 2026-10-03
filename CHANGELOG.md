@@ -7,6 +7,11 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- Preserve active PR evidence with stable, bounded native result paging. Clean
+  provider-confirmed terminal detail automatically only after workers and
+  uncertain writes settle; retain compact ownership/action receipts, safe
+  same-head reopening and exact cleaned destinations. Reviewed renderer wiring
+  remains a separate delivery.
 - Re-home GitHub repository and Copilot AI connections in compact, role-labelled
   account panels with native device-code waiting, explicit identity confirmation,
   consent details and visible retry/disconnect states. Keep future direct

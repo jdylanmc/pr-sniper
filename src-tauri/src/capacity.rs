@@ -453,6 +453,58 @@ impl Coordinator {
         self.active.lock().is_ok_and(|a| a.is_empty())
     }
 
+    pub(crate) fn settle_terminal(&self, store: &Store) -> Result<bool, String> {
+        let terminal: Vec<_> = store
+            .load_queue_state()?
+            .tracked
+            .into_iter()
+            .filter(|p| {
+                p.terminal_observed && p.lifecycle != crate::github::metadata::Lifecycle::Open
+            })
+            .map(|p| crate::retention::Binding::tracked(&p))
+            .collect();
+        let matches = |job: &crate::monitoring::QueueJob| terminal.iter().any(|b| b.matches(job));
+        let mut work = std::collections::BTreeSet::new();
+        work.extend(
+            store
+                .load_reviews()?
+                .into_iter()
+                .filter(|r| matches(&r.job))
+                .map(|r| WorkId {
+                    kind: Kind::Normal,
+                    id: r.key,
+                }),
+        );
+        work.extend(
+            store
+                .load_follow_ups()?
+                .into_iter()
+                .filter(|f| matches(&f.context.job))
+                .map(|f| WorkId {
+                    kind: f.kind(),
+                    id: f.id,
+                }),
+        );
+        work.extend(
+            store
+                .load_actions()?
+                .finals
+                .into_iter()
+                .filter(|f| matches(&f.basis.job))
+                .map(|f| WorkId {
+                    kind: Kind::PrimaryFinal,
+                    id: f.id,
+                }),
+        );
+        let active = self.active.lock().map_err(|_| "AI capacity unavailable.")?;
+        let mut settled = true;
+        for reservation in active.values().filter(|r| work.contains(&r.key)) {
+            reservation.cancelled.store(true, Ordering::SeqCst);
+            settled = false;
+        }
+        Ok(settled)
+    }
+
     pub(crate) fn shutdown(&self, store: &Store) -> Result<(), String> {
         let mut active = self.active.lock().map_err(|_| "AI capacity unavailable.")?;
         for reservation in active.values_mut() {

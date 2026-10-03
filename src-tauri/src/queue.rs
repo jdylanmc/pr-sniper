@@ -650,6 +650,11 @@ fn current_job<'a>(job: &'a QueueJob, jobs: &'a [QueueJob]) -> &'a QueueJob {
 }
 
 pub fn destination(store: &Store, id: &str, file: Option<&str>) -> Result<url::Url, String> {
+    if let Some(message) =
+        crate::retention::cleaned(store, &crate::panel::Detail::Item { item_id: id.into() })?
+    {
+        return Err(message.into());
+    }
     let snapshot = snapshot(store, vec![])?;
     let item = snapshot
         .items
