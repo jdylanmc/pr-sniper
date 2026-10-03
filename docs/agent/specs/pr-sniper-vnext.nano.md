@@ -2,7 +2,7 @@
 
 - Spec ID: SPEC-PR-SNIPER-VNEXT
 - Source: docs/agent/discovery/pr-sniper-vnext.md
-- Source revision: db70d5f0ce7ea3510d17cd34beba8d74fb1b7b61d0dc1b2479b2ac0b0e5f72d4
+- Source revision: 6092326a4f7718384942bf6d72a573a780b3c7a6417cab46fa1a0b8e14460950
 - Full specification: [Supporting requirements](./pr-sniper-vnext.full.md)
 
 ## Intention
