@@ -826,6 +826,167 @@ fn cleared_fixture() -> (tempfile::TempDir, Store, Publication, Thread) {
 }
 
 #[test]
+fn r5_blocked_mention_moves_only_its_exact_result_once() {
+    use crate::retention::{page, PageRequest};
+    let (root, store, origin, thread) = fixture(2);
+    let mut feedback = store.load_feedback().unwrap();
+    feedback
+        .observe(&origin, &"a".repeat(40), &[thread])
+        .unwrap();
+    store.save_feedback(&feedback).unwrap();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let ticket = monitor
+        .prepare_checks(&store, NOW + 10, true)
+        .unwrap()
+        .remove(0);
+    let mut newer = pull('a');
+    newer.id = "10".into();
+    newer.number = 2;
+    monitor
+        .finish(
+            &store,
+            ticket.clone(),
+            Ok(PollResult {
+                connection: Connection {
+                    identity: Identity {
+                        id: "22".into(),
+                        login: "actor".into(),
+                    },
+                    repository: RemoteRepository {
+                        id: "100".into(),
+                        name: "example/repo".into(),
+                    },
+                    capabilities: Capabilities {
+                        read: true,
+                        comment: CommentCapability::Available,
+                    },
+                },
+                pull_requests: vec![pull('a'), newer],
+            }),
+            NOW + 11,
+        )
+        .unwrap();
+    let first = page(
+        &store,
+        PageRequest {
+            limit: 1,
+            cursor: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(first.results[0].job.pull_request_id, "10");
+    admit_scan(
+        &store,
+        &ticket,
+        mention_scan(vec![mention("501", "@actor explain")]),
+        NOW + 12,
+    )
+    .unwrap();
+    assert!(
+        store.load_follow_ups().unwrap().is_empty(),
+        "no primary, no execution"
+    );
+    let newest = page(
+        &store,
+        PageRequest {
+            limit: 1,
+            cursor: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(newest.results[0].job.pull_request_id, "9");
+    let stable = serde_json::to_value(&newest).unwrap();
+    let store = Store::new(root.path().into());
+    for _ in 0..2 {
+        admit_scan(
+            &store,
+            &ticket,
+            mention_scan(vec![mention("501", "@actor explain")]),
+            NOW + 13,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(
+                page(
+                    &store,
+                    PageRequest {
+                        limit: 1,
+                        cursor: None
+                    }
+                )
+                .unwrap()
+            )
+            .unwrap(),
+            stable
+        );
+    }
+    assert!(page(
+        &store,
+        PageRequest {
+            limit: 1,
+            cursor: first.next_cursor
+        }
+    )
+    .unwrap()
+    .results
+    .is_empty());
+    let tail = page(
+        &store,
+        PageRequest {
+            limit: 1,
+            cursor: newest.next_cursor,
+        },
+    )
+    .unwrap();
+    assert_eq!(tail.results[0].job.pull_request_id, "10");
+    assert_eq!(newest.results[0].conversations, 1);
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].primary_assignment_id =
+        Some(settings.repositories[0].assignments[0].id.clone());
+    store.save_settings(&settings).unwrap();
+    admit_scan(&store, &ticket, Scan::default(), NOW + 15).unwrap();
+    let runs = store.load_follow_ups().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(
+        serde_json::to_value(
+            page(
+                &store,
+                PageRequest {
+                    limit: 1,
+                    cursor: None
+                }
+            )
+            .unwrap()
+        )
+        .unwrap(),
+        stable
+    );
+    let intent = store.load_feedback().unwrap().mentions.remove(0);
+    assert_eq!(
+        intent.item_id.as_deref(),
+        Some(newest.results[0].item_id.as_str())
+    );
+    assert_eq!(intent.follow_up_id.as_deref(), Some(runs[0].id.as_str()));
+    let ticket = poll(&store, 'c', NOW + 20);
+    admit_scan(
+        &store,
+        &ticket,
+        mention_scan(vec![mention("501", "@actor explain")]),
+        NOW + 22,
+    )
+    .unwrap();
+    assert_eq!(
+        store.load_feedback().unwrap().mentions[0].item_id,
+        intent.item_id
+    );
+    assert_eq!(store.load_follow_ups().unwrap(), runs);
+    assert_ne!(
+        crate::queue::item_id(store.load_queue().unwrap().last().unwrap()),
+        intent.item_id.unwrap()
+    );
+}
+
+#[test]
 fn r73_follow_up_write_failure_retains_mention_intent_and_recovers_without_rediscovery() {
     let (root, store, _, _) = cleared_fixture();
     let order = store.load_queue_state().unwrap().next_enqueue_order + 1;

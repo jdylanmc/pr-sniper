@@ -47,6 +47,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- Recover owned interrupted retention stages without deleting unowned files.
+  Keep missing human-closed roots unavailable and settle full/compact replies
+  consistently without hiding uncertain writes. Revalidate legacy terminal
+  records explicitly and count saved mention intent once in result ordering.
 - Keep account keyboard focus through native state updates, reject stale GitHub
   reads after account actions, and expose retry for unavailable account reads
   and failed GitHub credential deletion. Device-code controls remain fully

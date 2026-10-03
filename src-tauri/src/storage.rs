@@ -725,6 +725,19 @@ impl Store {
         self.read_file("state", name)
     }
 
+    /// Recover abandoned operational stages before restoring workers, with
+    /// exclusive access to this Store. Configuration is deliberately excluded.
+    pub fn recover_state_writes(&self) -> Result<(), String> {
+        match private_fs::existing_directory(&self.root) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err("Cannot access state for staged-write recovery.".into()),
+        }
+        private_fs::recover(&self.root.join("state"), None).map_err(|_| {
+            "Cannot recover owned state stages; operational recovery is blocked.".into()
+        })
+    }
+
     fn read_file(&self, directory: &str, name: &str) -> std::io::Result<Vec<u8>> {
         private_fs::existing_directory(&self.root)?;
         let directory = self.root.join(directory);

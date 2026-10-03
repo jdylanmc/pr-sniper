@@ -164,6 +164,8 @@ fn occupied_stage_is_not_truncated_or_removed_and_saved_state_is_unchanged() {
     let stage = fixture.path().join("state/queue-selection.json.tmp");
     fs::write(&stage, b"unowned stage").unwrap();
 
+    fixture.store().recover_state_writes().unwrap();
+    assert_eq!(fs::read(&stage).unwrap(), b"unowned stage");
     assert!(fixture.store().save_queue_selection(Some("new")).is_err());
     assert_eq!(fs::read(stage).unwrap(), b"unowned stage");
     assert_eq!(

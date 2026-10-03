@@ -129,11 +129,46 @@ pub(super) fn refresh(store: &Store) -> Result<(), String> {
     for p in publications {
         add(&mut parts, crate::queue::item_id(&p.review.job), &p)?;
     }
-    for f in follows {
+    for f in &follows {
         let id = crate::queue::item_id(&f.context.job);
+        let intent = feedback
+            .mentions
+            .iter()
+            .any(|m| m.key == f.key && m.work_id == f.id);
+        // Execution linkage is bookkeeping, not another conversation or activity.
+        if intent
+            && f.phase == crate::follow_up::Phase::WaitingStart
+            && f.analysis.is_none()
+            && f.publication.is_none()
+            && f.history.is_empty()
+            && f.result.is_none()
+            && f.error.is_none()
+            && !f.cancelled
+            && !f.uncertain
+        {
+            continue;
+        }
         add(&mut parts, id.clone(), &f)?;
-        if let Some(row) = rows.get_mut(&id) {
+        if let Some(row) = rows.get_mut(&id).filter(|_| !intent) {
             row.conversations += 1;
+        }
+    }
+    for mention in &feedback.mentions {
+        let id = mention.item_id.clone().or_else(|| {
+            follows
+                .iter()
+                .find(|f| f.key == mention.key && f.id == mention.work_id)
+                .map(|f| crate::queue::item_id(&f.context.job))
+        });
+        if let Some(id) = id {
+            add(
+                &mut parts,
+                id.clone(),
+                &(&mention.key, &mention.work_id, &mention.comment),
+            )?;
+            if let Some(row) = rows.get_mut(&id) {
+                row.conversations += 1;
+            }
         }
     }
     for f in actions.finals {
