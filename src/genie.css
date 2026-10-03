@@ -147,6 +147,10 @@
   border-radius: 0;
   text-align: left;
 }
+.genie-page .genie-checklist button:focus-visible {
+  outline-offset: -6px;
+  border-radius: 12px;
+}
 .genie-checklist button > span:nth-child(2) {
   flex: 1;
   min-width: 0;
@@ -257,6 +261,10 @@
   margin: 0 auto;
   padding: 16px;
 }
+.legacy-settings-host {
+  max-width: none;
+  padding: 0;
+}
 .panel-shell[data-setup="true"] .panel-content {
   margin-top: -23px;
   z-index: 1;
@@ -264,7 +272,9 @@
 .panel-shell[data-setup="true"] [data-panel-view="genie"] {
   padding-top: 0;
 }
-.panel-shell[data-setup="true"][data-setup-empty="true"]
+.panel-shell[data-setup="true"][data-setup-empty="true"]:not(
+    [data-automation-unavailable="true"]
+  )
   [data-header-automation] {
   display: none;
 }

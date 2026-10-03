@@ -2188,6 +2188,7 @@ export async function mountSettings(
             "signed_out",
             "wrong_identity",
             "network",
+            "rate_limited",
             "timeout",
             "provider_failure",
             "invalid_response",

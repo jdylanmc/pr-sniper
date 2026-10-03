@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Agent, Doctrine, Policy } from "./policy";
+import type { Agent, Doctrine, Policy, WatchedIdentity } from "./policy";
 import type { Repository } from "./repositories";
 
 export interface Settings {
@@ -108,6 +108,8 @@ export interface SetupReview {
   repository_accounts: Record<string, { login: string; connected: boolean }>;
   ai_accounts: Record<string, { login: string; connected: boolean }>;
   scopes: MonitoringActivationStatus[];
+  watched_authors: Record<string, WatchedIdentity[]>;
+  configured_inactive: boolean;
   paused: boolean;
   confirmation: string;
 }

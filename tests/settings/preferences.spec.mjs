@@ -783,6 +783,9 @@ test("automation read recovery restores compact header status without a pause ac
   await store("panel_snapshot");
   await page.goto("/");
   await page.evaluate(() => window.__settingsIdle());
+  // This exercises the monitoring header, not Welcome's setup-only header.
+  await tab(page, "Queue").click();
+  await page.evaluate(() => window.__settingsIdle());
   const root = page.locator("#automation-controls");
   const button = root.locator("[data-toggle-automation]");
   const error = root.locator("[data-automation-error]");
