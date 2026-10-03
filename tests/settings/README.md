@@ -1,5 +1,74 @@
 # Settings behavioral tests
 
+`accounts-visual.spec.mjs` covers the V5 account panels with explicitly synthetic
+authentication transport responses using the existing native `GithubAuthView`
+and `copilot_view` shapes. It asserts exact command payloads (including the Tauri
+API's empty `{}` payload), explicit role/provider entry, confirmation before
+connection, cancellation, expiry/permission/wrong-identity failures, reconnect
+identity pins, read/deletion retries and genuinely disabled future providers.
+Both Windows and macOS consent wording are exercised. Account actions leave
+production-Store settings, stable Agent/repository references and models
+unchanged across fresh Store processes and reload. The existing Copilot,
+resource and focus suites retain the unrelated-draft, reference-guard and
+no-model-substitution assertions.
+
+Keyboard checks retain focus through unchanged polling, account reorder,
+confirmation and cancellation, while delayed reads cannot revive cancelled
+sign-in or steal newer focus. Screenshots use each test's output directory at
+408x744 and 408x500. The account geometry matrix additionally crosses widths
+320, 400 and 408 with heights 300, 400, 439, 440, 441, 460, 499, 500, 501 and 744. Both providers' saved-account actions, requesting, device waiting,
+confirmation and failure/retry states use real sequential keyboard navigation,
+including opening and closing consent with Enter. On a native macOS host,
+Playwright WebKit uses Option+Tab / Option+Shift+Tab to include buttons; other
+browser/host combinations retain Tab / Shift+Tab. The local helper checks
+`browserName` and Node's `process.platform`, not the deliberately spoofed user
+agents used for consent wording. A neutral HTML test checks buttons and a summary
+in both directions using the same selected chords. No host keyboard preference
+is changed, and no per-control focus replaces sequential traversal.
+
+All 30 dimensions and 4,200 geometry observations remain: every focused control
+must fit completely inside the actual scroll viewport and its clipping ancestors,
+retain a visible solid 3px focus outline and avoid horizontal clipping. Geometry
+JSON is retained for every dimension, including observations collected before an
+assertion failure. Routine matrix screenshots cover 320x300 (smallest viewport),
+408x441 (just above the outer chrome breakpoint) and 408x744 (full-height panel):
+22 forward/reverse and confirmation-focus captures each, 66 rather than 660.
+Every failed test still captures a failure screenshot, including dimensions
+outside that representative set. Existing compact-flow screenshots, native
+command/effect checks and persisted-settings assertions remain unchanged.
+Screenshot reduction is not proof of a hosted timing budget; complete hosted
+gates remain required.
+
+The account-scoped `:has(.account-connection)` chrome stays compact through 500px,
+independently of the outer panel's 440px treatment. The 439/440/441 and 499/500/501
+neighbors guard both transitions; consent uses the same scroll margin as account
+buttons to prevent fractional edge clipping. For #83 integration, this selector
+applies to the shared embedded Integrations chrome while account cards are
+mounted, not to repository content/order or Preferences' separate
+`[data-preferences]` rules. Preserve that scope and recheck the matrix after
+integration rather than copying the account breakpoint into unrelated surfaces.
+
+Failed attempts retain a screenshot and Playwright error context. These are
+production-renderer/browser and Store checks, not live sign-in, native credential
+storage, installed-app focus or provider acceptance. No fictional-handle form,
+real clipboard operation or system-browser handoff is used.
+
+After building the frontend and unchanged `settings_bridge`, a focused run is:
+
+```sh
+SETTINGS_TEST_PORT=1457 npm exec playwright -- test \
+  --config tests/settings/playwright.config.mjs --browser=chromium \
+  accounts-visual.spec.mjs github-auth.spec.mjs github-auth-layout.spec.mjs \
+  copilot.spec.mjs resources.spec.mjs completion-focus.spec.mjs \
+  panel-focus.spec.mjs platform.spec.mjs
+```
+
+Native fake-transport device OAuth and fake-backend confirmation/isolation tests
+separately cover the existing authentication boundary. Credential-store tests
+require separate native authorization; headless fixtures do not establish those
+results. WebKit must be validated separately on a functioning host, not inferred
+from Chromium or worked around with skipped assertions.
+
 `preferences.spec.mjs` covers the compact V8 Preferences surface with the existing
 test-owned Store bridge and explicit synthetic native registration/authorization
 responses. It checks exact global cron/time-zone persistence, the full positive

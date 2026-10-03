@@ -1075,7 +1075,7 @@ export async function mountSettings(
         .filter((m) => !m.available)
         .map(
           (m) =>
-            `<div class="integration-card" data-disabled="true"><strong>Direct ${escape(m.label)}</strong><p>Coming soon.</p></div>`,
+            `<button type="button" class="integration-card" data-disabled="true" disabled aria-disabled="true"><strong>Direct ${escape(m.label)}</strong><span>Coming soon</span></button>`,
         )
         .join("")}</div></div>`;
     disposeCopilot = renderCopilotAuth(
@@ -2437,10 +2437,19 @@ export async function mountSettings(
         );
         return;
       }
+      const retainAccounts =
+        section === "integrations" &&
+        content.querySelector(".account-connection") !== null &&
+        sameResource(saved, state.settings);
       saved = clone(state.settings);
       draft = clone(saved);
       conflict = false;
       if (state.error) showError(state.error);
+      if (retainAccounts) {
+        changed();
+        window.dispatchEvent(new Event("pr-sniper:refresh-provider-accounts"));
+        return;
+      }
       render();
     } catch {
       if (
