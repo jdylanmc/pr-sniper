@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 
 type GithubAuthFailure =
+  | "disconnected"
+  | "disconnect_pending"
+  | "disconnect_failed"
   | "expired"
   | "denied"
   | "device_flow_disabled"
@@ -57,7 +60,8 @@ export function renderGithubAuth(
   ) => void,
   accountsChanged?: (accounts: GithubAccount[]) => void,
 ) {
-  root.innerHTML = `<div class="github-auth-card"><h2>GitHub accounts</h2><p role="status">Reading connection state...</p><div class="github-auth-flow"></div><p class="settings-hint">GitHub's broad <code>repo</code> scope grants access to public and private repositories available to the account. PR Sniper lists them for explicit selection and never starts monitoring every accessible repository automatically.</p><div class="github-auth-accounts"></div><div class="github-auth-repositories"></div></div>`;
+  root.innerHTML = `<div class="github-auth-card account-connection" data-account-role="repository"><header class="account-connection-heading"><h2>GitHub accounts</h2><p>Repository access and publication identity</p></header><p class="account-scope">Requests broad public/private repository access, not Copilot AI access.</p><div class="account-connection-state"><p role="status" tabindex="-1">Reading connection state...</p><div class="github-auth-flow"></div></div><details class="account-consent"><summary>GitHub access and consent</summary><p>GitHub's broad <code>repo</code> scope grants access to public and private repositories available to the account. PR Sniper lists them for explicit selection and never starts monitoring every accessible repository automatically.</p><p>Only confirming the returned identity saves this connection. Repository selection and action permissions stay separate. Disconnect removes this role's local credential, not your GitHub authorization or Copilot connection.</p></details><div class="github-auth-accounts"></div><div class="github-auth-repositories"></div></div>`;
+  const card = root.querySelector<HTMLElement>(".account-connection")!;
   const status = root.querySelector<HTMLElement>("[role=status]")!;
   const actions = root.querySelector<HTMLElement>(".github-auth-flow")!;
   const accountList = root.querySelector<HTMLElement>(".github-auth-accounts")!;
@@ -67,8 +71,12 @@ export function renderGithubAuth(
   let renderedAccountIds = new Set<string>();
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let renderedView: string | undefined;
+  let busy = false;
+  let actionGeneration = 0;
+  let stateRead = 0;
 
-  function setBusy(busy: boolean) {
+  function setBusy(value: boolean) {
+    busy = value;
     root
       .querySelectorAll<HTMLButtonElement>("button")
       .forEach((control) => (control.disabled = busy));
@@ -76,11 +84,33 @@ export function renderGithubAuth(
 
   async function refreshAfterFailure(cause: unknown) {
     const failure = String(cause).toLowerCase();
+    const request = actionGeneration;
+    const read = ++stateRead;
     try {
-      render(await invoke<GithubAuthView>("github_auth_state"));
+      const view = await invoke<GithubAuthView>("github_auth_state");
+      if (
+        !root.isConnected ||
+        request !== actionGeneration ||
+        read !== stateRead
+      )
+        return;
+      render(view);
     } catch {
+      if (
+        !root.isConnected ||
+        request !== actionGeneration ||
+        read !== stateRead
+      )
+        return;
+      card.dataset.flowState = "failed";
       status.textContent =
         "GitHub connection state is unavailable after the failed operation. No connection is assumed.";
+      actions.replaceChildren();
+      commandButton(
+        actions,
+        "Retry reading GitHub accounts",
+        "github_auth_state",
+      );
       return;
     }
     const currentState = status.textContent ?? "";
@@ -101,11 +131,16 @@ export function renderGithubAuth(
     container: HTMLElement,
     label: string,
     action: () => Promise<void>,
+    key = label,
   ) {
     const control = document.createElement("button");
     control.type = "button";
     control.textContent = label;
+    control.dataset.accountAction = key;
     control.addEventListener("click", async () => {
+      if (busy || !root.isConnected) return;
+      actionGeneration++;
+      status.focus({ preventScroll: true });
       setBusy(true);
       try {
         await action();
@@ -125,8 +160,15 @@ export function renderGithubAuth(
     command: string,
     args?: Record<string, unknown>,
   ) {
-    return actionButton(container, label, async () =>
-      render(await invoke<GithubAuthView>(command, args)),
+    return actionButton(
+      container,
+      label,
+      async () => {
+        const view = await invoke<GithubAuthView>(command, args);
+        stateRead++;
+        if (root.isConnected) render(view);
+      },
+      `${command}:${args?.accountId ?? args?.expectedAccountId ?? ""}`,
     );
   }
 
@@ -157,6 +199,7 @@ export function renderGithubAuth(
   }
 
   function render(view: GithubAuthView) {
+    if (!root.isConnected) return;
     clearTimeout(refreshTimer);
     const snapshot = JSON.stringify(view);
     if (view.flow.state === "connecting") {
@@ -164,7 +207,13 @@ export function renderGithubAuth(
       // Keep keyboard focus and clipboard feedback while the provider is pending.
       if (snapshot === renderedView) return;
     }
+    const focused = document.activeElement;
+    const focusKey =
+      focused instanceof HTMLElement && root.contains(focused)
+        ? focused.dataset.accountAction
+        : undefined;
     renderedView = snapshot;
+    card.dataset.flowState = view.flow.state;
     actions.replaceChildren();
     accountList.replaceChildren();
     repositories.replaceChildren();
@@ -178,6 +227,7 @@ export function renderGithubAuth(
     for (const account of view.accounts) {
       const item = document.createElement("article");
       item.className = "github-account";
+      item.dataset.accountState = account.state;
       item.setAttribute("aria-label", `GitHub account ${account.login}`);
       const description = document.createElement("div");
       const heading = document.createElement("strong");
@@ -203,35 +253,41 @@ export function renderGithubAuth(
             "start_github_browser_auth",
             { expectedAccountId: account.account_id },
           ).setAttribute("aria-label", `Reconnect ${account.login}`);
-        actionButton(accountActions, "Load repositories", async () => {
-          const result = await invoke<{
-            identity: { id: string; login: string };
-            repositories: GithubAccessibleRepository[];
-          }>("list_provider_repositories", {
-            provider: "github",
-            accountId: account.account_id,
-          });
-          if (result.identity.id !== account.account_id)
-            throw new Error("GitHub account changed");
-          repositories.replaceChildren();
-          if (!result.repositories.length) {
-            repositories.textContent = `No repositories are available to ${account.login} with the granted GitHub OAuth scope.`;
-            return;
-          }
-          const list = document.createElement("ul");
-          for (const repository of result.repositories) {
-            const row = document.createElement("li");
-            const use = document.createElement("button");
-            use.type = "button";
-            use.textContent = `Use ${repository.name} as ${account.login}`;
-            use.addEventListener("click", () =>
-              selectRepository?.(account, repository),
-            );
-            row.append(use);
-            list.append(row);
-          }
-          repositories.append(list);
-        }).setAttribute("aria-label", `Load repositories for ${account.login}`);
+        actionButton(
+          accountActions,
+          "Load repositories",
+          async () => {
+            const result = await invoke<{
+              identity: { id: string; login: string };
+              repositories: GithubAccessibleRepository[];
+            }>("list_provider_repositories", {
+              provider: "github",
+              accountId: account.account_id,
+            });
+            if (!root.isConnected) return;
+            if (result.identity.id !== account.account_id)
+              throw new Error("GitHub account changed");
+            repositories.replaceChildren();
+            if (!result.repositories.length) {
+              repositories.textContent = `No repositories are available to ${account.login} with the granted GitHub OAuth scope.`;
+              return;
+            }
+            const list = document.createElement("ul");
+            for (const repository of result.repositories) {
+              const row = document.createElement("li");
+              const use = document.createElement("button");
+              use.type = "button";
+              use.textContent = `Use ${repository.name} as ${account.login}`;
+              use.addEventListener("click", () =>
+                selectRepository?.(account, repository),
+              );
+              row.append(use);
+              list.append(row);
+            }
+            repositories.append(list);
+          },
+          `repositories:${account.account_id}`,
+        ).setAttribute("aria-label", `Load repositories for ${account.login}`);
       } else {
         commandButton(
           accountActions,
@@ -239,6 +295,13 @@ export function renderGithubAuth(
           "start_github_browser_auth",
           { expectedAccountId: account.account_id },
         ).setAttribute("aria-label", `Reconnect ${account.login}`);
+        if (account.reason === "disconnect_failed")
+          commandButton(
+            accountActions,
+            "Retry disconnect",
+            "disconnect_github_auth",
+            { accountId: account.account_id },
+          ).setAttribute("aria-label", `Retry disconnect ${account.login}`);
       }
       item.append(description, accountActions);
       accountList.append(item);
@@ -263,6 +326,7 @@ export function renderGithubAuth(
         feedback.setAttribute("aria-live", "polite");
         const copy = document.createElement("button");
         copy.type = "button";
+        copy.dataset.accountAction = "copy-code";
         copy.className = "primary";
         copy.textContent = "Copy code";
         let copying = false;
@@ -295,8 +359,9 @@ export function renderGithubAuth(
       status.textContent =
         view.flow.confirmation_error === "credentials_unavailable"
           ? `GitHub credentials could not be saved securely. Confirm ${view.flow.login} (${view.flow.account_id}) again or cancel without connecting it.`
-          : `Confirm ${view.flow.login} (${view.flow.account_id}). Credentials are not saved until you confirm.`;
-      commandButton(actions, "Confirm", "confirm_github_account");
+          : `Confirm ${view.flow.login} (${view.flow.account_id}) for repository access and publication. Credentials are not saved until you confirm.`;
+      commandButton(actions, "Confirm", "confirm_github_account").className =
+        "primary";
       commandButton(
         actions,
         "Use a different account",
@@ -312,7 +377,17 @@ export function renderGithubAuth(
         "start_github_browser_auth",
       );
     } else {
-      commandButton(actions, "Add GitHub account", "start_github_browser_auth");
+      commandButton(
+        actions,
+        "Add GitHub account",
+        "start_github_browser_auth",
+      ).className = "primary";
+    }
+    if (focusKey && focused instanceof HTMLElement && !focused.isConnected) {
+      const replacement = root.querySelector<HTMLElement>(
+        `[data-account-action="${CSS.escape(focusKey)}"]`,
+      );
+      (replacement ?? status).focus({ preventScroll: true });
     }
   }
 
@@ -325,12 +400,32 @@ export function renderGithubAuth(
       );
       return;
     }
-    void invoke<GithubAuthView>("github_auth_state").then(render, () => {
-      renderedView = undefined;
-      status.textContent =
-        "GitHub connection state is unavailable. No connection is assumed.";
-      actions.replaceChildren();
-    });
+    if (busy) {
+      refreshTimer = setTimeout(refresh, 250);
+      return;
+    }
+    const request = actionGeneration;
+    const read = ++stateRead;
+    const current = () =>
+      root.isConnected && request === actionGeneration && read === stateRead;
+    void invoke<GithubAuthView>("github_auth_state").then(
+      (view) => {
+        if (current()) render(view);
+      },
+      () => {
+        if (!current()) return;
+        renderedView = undefined;
+        card.dataset.flowState = "failed";
+        status.textContent =
+          "GitHub connection state is unavailable. No connection is assumed.";
+        actions.replaceChildren();
+        commandButton(
+          actions,
+          "Retry reading GitHub accounts",
+          "github_auth_state",
+        );
+      },
+    );
   };
   window.addEventListener("pr-sniper:refresh-provider-accounts", refresh);
   refresh();
@@ -339,6 +434,11 @@ export function renderGithubAuth(
 function failureMessage(reason?: GithubAuthFailure) {
   return (
     {
+      disconnected: "Disconnected. Reconnect to use this account again.",
+      disconnect_pending:
+        "Disconnecting. Secure credential deletion is not yet confirmed.",
+      disconnect_failed:
+        "Credential deletion could not be confirmed. Retry disconnect.",
       expired: "The authorization expired or can no longer be refreshed.",
       denied: "GitHub authorization was denied.",
       device_flow_disabled:

@@ -7,6 +7,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- Re-home GitHub repository and Copilot AI connections in compact, role-labelled
+  account panels with native device-code waiting, explicit identity confirmation,
+  consent details and visible retry/disconnect states. Keep future direct
+  providers disabled and existing account/model choices and references intact.
 - Lead Integrations with compact repository cards and shared-style editors for
   real account binding, scope previews, watched identities and assignments.
   Expose the independent reviewer-request override, guarded account unbinding
@@ -38,6 +42,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- Keep account keyboard focus through native state updates, reject stale GitHub
+  reads after account actions, and expose retry for unavailable account reads
+  and failed GitHub credential deletion. Device-code controls remain fully
+  scrollable in compact windows without changing native authentication.
 - Require explicit repository Save/Cancel before account unbinding, without
   consuming pending assignments, overrides or enablement. Label retained legacy
   intervals as blocked until a global cron is chosen, and expose late-preview
