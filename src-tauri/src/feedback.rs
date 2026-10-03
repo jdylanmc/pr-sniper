@@ -267,7 +267,9 @@ fn contexts_excluding(
             contexts.push(record.context.clone());
         }
     }
+    contexts.extend(crate::retention::retained_contexts(store, job).map_err(Failure::permanent)?);
     contexts.sort_by(|a, b| a.id.cmp(&b.id));
+    contexts.dedup_by(|a, b| a.id == b.id);
     if serde_json::to_vec(&contexts)
         .map_err(|_| Failure::permanent("Cannot encode feedback context."))?
         .len()
@@ -593,8 +595,8 @@ pub fn owned_reply_assessment(run: &FollowUp) -> Result<(), Failure> {
             "Human judgment cannot be converted into automated clearance.",
         ));
     }
-    if let ConversationTarget::Owned(origin) = &run.target {
-        let id = root_key(&run.context.job, &origin.thread.root()?.id);
+    if let Ok(thread) = run.thread() {
+        let id = root_key(&run.context.job, &thread.root()?.id);
         if result
             .output
             .feedback_assessments

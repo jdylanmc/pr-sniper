@@ -1,10 +1,29 @@
 use crate::storage::Store;
 use std::io::ErrorKind;
 
+pub(crate) fn decode_queue(bytes: &[u8]) -> Result<crate::monitoring::QueueState, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum SavedQueue {
+        Current(crate::monitoring::QueueState),
+        Legacy(Vec<crate::monitoring::QueueJob>),
+    }
+    serde_json::from_slice::<SavedQueue>(bytes)
+        .map(|saved| match saved {
+            SavedQueue::Current(state) => state,
+            SavedQueue::Legacy(jobs) => crate::monitoring::QueueState {
+                jobs,
+                ..Default::default()
+            },
+        })
+        .map_err(|_| "Review queue is invalid; no polling result was saved.".into())
+}
+
 // Typed application state stays attached to Store without coupling settings,
 // policy and filesystem tests to the native host and provider runtimes.
 impl Store {
     pub fn load_actions(&self) -> Result<crate::actions::Ledger, String> {
+        crate::retention::guard(self)?;
         match self.read_state("actions.json") {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
                 "Final review/action state is invalid; no provider action allowed.".into()
@@ -14,9 +33,19 @@ impl Store {
         }
     }
     pub fn save_actions(&self, ledger: &crate::actions::Ledger) -> Result<(), String> {
-        self.write_state("actions.json", ledger)
+        crate::retention::reject_cleaned(self, ledger.finals.iter().map(|f| f.basis.job.clone()))?;
+        crate::retention::reject_items(
+            self,
+            ledger
+                .effects
+                .iter()
+                .map(|e| e.item_id.as_str())
+                .chain(ledger.observations.iter().map(|o| o.item_id.as_str())),
+        )?;
+        self.commit_operational("actions.json", ledger)
     }
     pub fn load_feedback(&self) -> Result<crate::feedback::Ledger, String> {
+        crate::retention::guard(self)?;
         match self.read_state("feedback.json") {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
                 "Owned feedback state is invalid; no clearance may be inferred.".into()
@@ -26,7 +55,8 @@ impl Store {
         }
     }
     pub fn save_feedback(&self, ledger: &crate::feedback::Ledger) -> Result<(), String> {
-        self.write_state("feedback.json", ledger)
+        crate::retention::reject_cleaned(self, ledger.records.iter().map(|r| r.job.clone()))?;
+        self.commit_operational("feedback.json", ledger)
     }
     pub fn load_automation(&self) -> Result<crate::capacity::Automation, String> {
         match self.read_state("automation.json") {
@@ -46,22 +76,9 @@ impl Store {
     }
 
     pub fn load_queue_state(&self) -> Result<crate::monitoring::QueueState, String> {
-        #[derive(serde::Deserialize)]
-        #[serde(untagged)]
-        enum SavedQueue {
-            Current(crate::monitoring::QueueState),
-            Legacy(Vec<crate::monitoring::QueueJob>),
-        }
+        crate::retention::guard(self)?;
         match self.read_state("queue.json") {
-            Ok(bytes) => serde_json::from_slice::<SavedQueue>(&bytes)
-                .map(|saved| match saved {
-                    SavedQueue::Current(state) => state,
-                    SavedQueue::Legacy(jobs) => crate::monitoring::QueueState {
-                        jobs,
-                        ..Default::default()
-                    },
-                })
-                .map_err(|_| "Review queue is invalid; no polling result was saved.".into()),
+            Ok(bytes) => decode_queue(&bytes),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(Default::default()),
             Err(_) => Err("Cannot read the review queue. Check local file permissions.".into()),
         }
@@ -74,7 +91,21 @@ impl Store {
     }
 
     pub fn save_queue_state(&self, state: &crate::monitoring::QueueState) -> Result<(), String> {
-        self.write_state("queue.json", state)
+        crate::retention::reject_cleaned(self, state.jobs.iter().cloned())?;
+        let retention = crate::retention::load(self)?;
+        if state.tracked.iter().any(|p| {
+            p.lifecycle == crate::github::metadata::Lifecycle::Open
+                && retention.receipts.iter().any(|r| {
+                    crate::retention::Binding::tracked(&r.scope)
+                        == crate::retention::Binding::tracked(p)
+                        && p.iteration <= r.scope.iteration
+                })
+        }) {
+            return Err(
+                "A reopened PR requires a new iteration; retired work cannot be restored.".into(),
+            );
+        }
+        self.commit_operational("queue.json", state)
     }
 
     pub fn allocate_enqueue_order(&self) -> Result<u64, String> {
@@ -86,6 +117,7 @@ impl Store {
     }
 
     pub fn load_notifications(&self) -> Result<crate::notifications::Ledger, String> {
+        crate::retention::guard(self)?;
         let ledger = match self.read_state("notifications.json") {
             Ok(bytes) => serde_json::from_slice::<crate::notifications::Ledger>(&bytes)
                 .map_err(|_| "Notification history is invalid; no notices can be sent.")?,
@@ -103,11 +135,14 @@ impl Store {
     }
 
     pub fn save_notifications(&self, ledger: &crate::notifications::Ledger) -> Result<(), String> {
+        crate::retention::guard(self)?;
+        crate::retention::reject_items(self, ledger.notices.iter().map(|n| n.id.as_str()))?;
         ledger.validate()?;
         self.write_state("notifications.json", ledger)
     }
 
     pub fn load_reviews(&self) -> Result<Vec<crate::review::ReviewRun>, String> {
+        crate::retention::guard(self)?;
         match self.read_state("reviews.json") {
             Ok(bytes) => serde_json::from_slice(&bytes)
                 .map_err(|_| "Review state is invalid; execution cannot resume.".into()),
@@ -117,7 +152,8 @@ impl Store {
     }
 
     pub fn save_reviews(&self, reviews: &[crate::review::ReviewRun]) -> Result<(), String> {
-        self.write_state("reviews.json", reviews)
+        crate::retention::reject_cleaned(self, reviews.iter().map(|r| r.job.clone()))?;
+        self.commit_operational("reviews.json", reviews)
     }
 
     /// Publication records retain their immutable originating review even if an
@@ -145,6 +181,7 @@ impl Store {
     }
 
     pub fn load_publications(&self) -> Result<Vec<crate::publication::Publication>, String> {
+        crate::retention::guard(self)?;
         match self.read_state("publications.json") {
             Ok(bytes) => serde_json::from_slice(&bytes)
                 .map_err(|_| "Publication state is invalid; no GitHub mutation is allowed.".into()),
@@ -157,10 +194,12 @@ impl Store {
         &self,
         publications: &[crate::publication::Publication],
     ) -> Result<(), String> {
-        self.write_state("publications.json", publications)
+        crate::retention::reject_cleaned(self, publications.iter().map(|p| p.review.job.clone()))?;
+        self.commit_operational("publications.json", publications)
     }
 
     pub fn load_follow_ups(&self) -> Result<Vec<crate::follow_up::FollowUp>, String> {
+        crate::retention::guard(self)?;
         match self.read_state("follow-ups.json") {
             Ok(bytes) => crate::follow_up::decode_with_origins(&bytes, &self.load_publications()?)
                 .map_err(|_| "Thread follow-up state is invalid; automation is blocked.".into()),
@@ -172,10 +211,12 @@ impl Store {
     }
 
     pub fn save_follow_ups(&self, runs: &[crate::follow_up::FollowUp]) -> Result<(), String> {
-        self.write_state("follow-ups.json", runs)
+        crate::retention::reject_cleaned(self, runs.iter().map(|f| f.context.job.clone()))?;
+        self.commit_operational("follow-ups.json", runs)
     }
 
     pub fn load_monitoring_state(&self) -> Result<crate::monitoring::MonitoringState, String> {
+        crate::retention::guard(self)?;
         match self.read_state("monitoring.json") {
             Ok(bytes) => serde_json::from_slice(&bytes)
                 .map_err(|_| "Monitoring state is invalid; polling cannot resume.".into()),
@@ -190,6 +231,18 @@ impl Store {
         &self,
         state: &crate::monitoring::MonitoringState,
     ) -> Result<(), String> {
+        crate::retention::guard(self)?;
         self.write_state("monitoring.json", state)
+    }
+
+    fn commit_operational<T: serde::Serialize + ?Sized>(
+        &self,
+        name: &str,
+        value: &T,
+    ) -> Result<(), String> {
+        crate::retention::guard(self)?;
+        crate::retention::mark_activity_pending(self)?;
+        self.write_state(name, value)?;
+        crate::retention::refresh(self)
     }
 }

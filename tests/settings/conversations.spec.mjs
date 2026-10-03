@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { test, expect, captureInspector, nativeCapacity } from "./fixtures.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
@@ -1007,6 +1008,62 @@ test("owned conversation exposes original provenance separately from current ite
   const saved = (await store("monitoring_snapshot")).follow_ups[0].run;
   expect(saved.target.review.job.head_sha).toBe("a".repeat(40));
   expect(saved.context.job.head_sha).toBe("c".repeat(40));
+});
+
+test("retained compact provenance renders its actual conversation without a fabricated historical review", async ({
+  page,
+  store,
+}) => {
+  const fixture = await feedbackFixture(store);
+  const run = reply(fixture);
+  const job = run.context.job;
+  run.target = {
+    kind: "retained",
+    proof: {
+      publication_id: fixture.origin.id,
+      configuration_id: job.configuration_id,
+      account_id: job.account_id,
+      repository_id: job.repository_id,
+      repository_name: job.repository_name,
+      pull_request_id: job.pull_request_id,
+      number: job.number,
+      head_sha: job.head_sha,
+      assignment_id: run.context.assignment_id,
+      agent_id: run.context.selection.agent.id,
+      review_id: fixture.origin.receipts[0].review_id,
+      root_ids: ["100"],
+      body_hashes: [
+        createHash("sha256")
+          .update(fixture.thread.comments[0].body)
+          .digest("hex"),
+      ],
+    },
+    thread: fixture.thread,
+  };
+  run.context.feedback = [];
+  run.context.feedback_checked = false;
+  fixture.state.reviews = [];
+  fixture.state.publications = [];
+  fixture.state.feedback.records = [];
+  fixture.state.follow_ups = [run];
+  await store("seed_queue_state", fixture.state);
+  await page.goto("/?view=queue");
+  const conversations = page.locator("#thread-follow-ups");
+  await expect(conversations).toContainText("Thread thread-1");
+  await conversations
+    .getByText("Conversation (2 comments)", { exact: true })
+    .click();
+  await expect(conversations).toContainText(
+    "The caller intentionally expects 42.",
+  );
+  await expect(conversations.locator("script")).toHaveCount(0);
+  expect(await page.evaluate(() => window.injected)).toBeUndefined();
+  const saved = (await store("monitoring_snapshot")).follow_ups[0].run;
+  expect(saved.target.kind).toBe("retained");
+  expect(saved.target.review).toBeUndefined();
+  expect(saved.thread).toEqual(fixture.thread);
+  expect(saved.context).toMatchObject(run.context);
+  expect(saved.analysis).toBeNull();
 });
 
 test("quiet analysis does not clear feedback without an explicit assessment and never rewrites findings", async ({

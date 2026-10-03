@@ -257,6 +257,118 @@ fn completed_final(store: &Store, item: &str) -> FinalReview {
         .unwrap();
     store.load_actions().unwrap().finals.remove(0)
 }
+
+#[test]
+fn retention_waits_for_uncertain_actions_then_discards_all_final_detail_copies() {
+    let (root, store, item) = fixture(1, true, false);
+    let run = completed_final(&store, &item);
+    let effect = prepare_effect(&store, &run.id, Action::Approve, &observed(), NOW + 20).unwrap();
+    mark_intent(&store, &effect.id, NOW + 21).unwrap();
+    finish_effect(
+        &store,
+        &effect.id,
+        &effect.operation.id,
+        Err(crate::publication::WriteFailure {
+            failure: Failure::permanent("Synthetic lost response"),
+            uncertain: true,
+        }),
+    )
+    .unwrap();
+    let mut closed = observed();
+    closed.state = "CLOSED".into();
+    synchronize(&store, &item, Ok(closed.clone()), NOW + 22).unwrap();
+    assert_eq!(crate::retention::maintain(&store, true).unwrap(), 0);
+    assert!(!store.load_actions().unwrap().finals.is_empty());
+    let receipt = Receipt {
+        id: "confirmed-fixture-vote".into(),
+        actor_id: "22".into(),
+        head: observed().head,
+        action: Action::Approve,
+        merge_commit: None,
+    };
+    finish_effect(
+        &store,
+        &effect.id,
+        &effect.operation.id,
+        Ok(receipt.clone()),
+    )
+    .unwrap();
+    let mut ledger = store.load_actions().unwrap();
+    ledger.finals[0]
+        .execution
+        .result
+        .as_mut()
+        .unwrap()
+        .output
+        .synopsis = "RETENTION-BULK-ONLY".into();
+    ledger.finals[0].basis.peers[0]
+        .result
+        .as_mut()
+        .unwrap()
+        .output
+        .synopsis = "RETENTION-BULK-ONLY".into();
+    ledger.effects[0].body = "RETENTION-BULK-ONLY".into();
+    store.save_actions(&ledger).unwrap();
+    assert_eq!(crate::retention::maintain(&store, true).unwrap(), 1);
+    let actions = store.load_actions().unwrap();
+    assert!(
+        actions.finals.is_empty() && actions.effects.is_empty() && actions.observations.is_empty()
+    );
+    let retained = crate::retention::load(&store).unwrap();
+    assert_eq!(
+        retained.receipts[0].effects[0].receipt.as_ref(),
+        Some(&receipt)
+    );
+    for file in std::fs::read_dir(root.path().join("state")).unwrap() {
+        assert!(
+            !String::from_utf8(std::fs::read(file.unwrap().path()).unwrap())
+                .unwrap()
+                .contains("RETENTION-BULK-ONLY")
+        );
+    }
+    assert!(finish_effect(&store, &effect.id, &effect.operation.id, Ok(receipt)).is_err());
+    assert!(crate::actions::prepare_effect(
+        &store,
+        &run.id,
+        Action::Approve,
+        &observed(),
+        NOW + 25
+    )
+    .is_err());
+}
+
+#[test]
+fn retention_does_not_treat_a_running_final_as_settled() {
+    let (_root, store, item) = fixture(1, true, false);
+    let run = completed_final(&store, &item);
+    let mut ledger = store.load_actions().unwrap();
+    ledger.finals[0].execution.operation.state = OperationState::Running;
+    store.save_actions(&ledger).unwrap();
+    let mut closed = observed();
+    closed.state = "CLOSED".into();
+    synchronize(&store, &item, Ok(closed), NOW + 20).unwrap();
+    assert_eq!(crate::retention::maintain(&store, true).unwrap(), 0);
+    assert_eq!(store.load_actions().unwrap().finals[0].id, run.id);
+}
+
+#[test]
+fn retention_stale_same_head_action_observation_cannot_retire_reopened_iteration() {
+    let (_root, store, item) = fixture(1, true, false);
+    completed_final(&store, &item);
+    let mut queue = store.load_queue_state().unwrap();
+    queue.tracked[0].iteration = 2;
+    queue.tracked[0].iteration_id = "reopened-iteration".into();
+    queue.tracked[0].item_id = "reopened-item".into();
+    store.save_queue_state(&queue).unwrap();
+    let mut closed = observed();
+    closed.state = "CLOSED".into();
+    assert!(synchronize(&store, &item, Ok(closed), NOW + 20).is_err());
+    let queue = store.load_queue_state().unwrap();
+    assert_eq!(queue.tracked[0].lifecycle, Lifecycle::Open);
+    assert!(!queue.tracked[0].terminal_observed);
+    assert_eq!(crate::retention::maintain(&store, true).unwrap(), 0);
+}
+
 struct NoReads;
 impl Transport for NoReads {
     fn get(&self, _: &str) -> Result<Response, ConnectionError> {

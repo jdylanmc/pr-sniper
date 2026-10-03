@@ -51,9 +51,17 @@ pub struct OwnedTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetainedTarget {
+    pub proof: crate::github::threads::Ownership,
+    pub thread: Thread,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ConversationTarget {
     Owned(Box<OwnedTarget>),
+    Retained(Box<RetainedTarget>),
     Mention { comment: TopComment },
 }
 
@@ -96,6 +104,27 @@ pub struct FollowUp {
 }
 
 impl FollowUp {
+    pub fn thread(&self) -> Result<&Thread, String> {
+        match &self.target {
+            ConversationTarget::Owned(origin) => Ok(&origin.thread),
+            ConversationTarget::Retained(origin) => Ok(&origin.thread),
+            _ => Err("This is not an owned-thread target.".into()),
+        }
+    }
+    pub fn thread_mut(&mut self) -> Result<&mut Thread, String> {
+        match &mut self.target {
+            ConversationTarget::Owned(origin) => Ok(&mut origin.thread),
+            ConversationTarget::Retained(origin) => Ok(&mut origin.thread),
+            _ => Err("This is not an owned-thread target.".into()),
+        }
+    }
+    pub fn owner_agent_id(&self) -> Option<&str> {
+        match &self.target {
+            ConversationTarget::Owned(origin) => Some(&origin.review.selection.agent.id),
+            ConversationTarget::Retained(origin) => Some(&origin.proof.agent_id),
+            _ => None,
+        }
+    }
     pub fn owned(&self) -> Result<&OwnedTarget, String> {
         match &self.target {
             ConversationTarget::Owned(value) => Ok(value),
@@ -110,7 +139,9 @@ impl FollowUp {
     }
     pub fn kind(&self) -> crate::capacity::Kind {
         match self.target {
-            ConversationTarget::Owned(_) => crate::capacity::Kind::Reply,
+            ConversationTarget::Owned(_) | ConversationTarget::Retained(_) => {
+                crate::capacity::Kind::Reply
+            }
             ConversationTarget::Mention { .. } => crate::capacity::Kind::Mention,
         }
     }
@@ -124,6 +155,9 @@ impl FollowUp {
             ConversationTarget::Owned(origin) => ConversationInput::Owned {
                 thread: origin.thread.clone(),
             },
+            ConversationTarget::Retained(origin) => ConversationInput::Owned {
+                thread: origin.thread.clone(),
+            },
             ConversationTarget::Mention { comment } => ConversationInput::Mention {
                 comment: comment.clone(),
             },
@@ -131,7 +165,10 @@ impl FollowUp {
     }
     pub fn fresh_observation(&self, observed: &Observation) -> bool {
         match (&self.target, observed) {
-            (ConversationTarget::Owned(_), Observation::Owned(thread)) => self.fresh_thread(thread),
+            (
+                ConversationTarget::Owned(_) | ConversationTarget::Retained(_),
+                Observation::Owned(thread),
+            ) => self.fresh_thread(thread),
             (
                 ConversationTarget::Mention { comment },
                 Observation::Mention {
@@ -226,8 +263,8 @@ impl FollowUp {
         job: &crate::monitoring::QueueJob,
     ) -> Result<bool, String> {
         if self
-            .owned()
-            .is_ok_and(|origin| origin.review.selection.agent.id != self.context.selection.agent.id)
+            .owner_agent_id()
+            .is_some_and(|owner| owner != self.context.selection.agent.id)
         {
             return Err("The original feedback owner differs from this analysis Agent; ownership cannot transfer.".into());
         }
@@ -342,16 +379,68 @@ impl FollowUp {
         }
     }
 
+    pub fn retained(
+        receipt: &crate::retention::OwnedReceipt,
+        thread: Thread,
+        context: ConversationContext,
+    ) -> Result<Self, String> {
+        if thread.resolved
+            || !thread.can_reply
+            || !thread.owned_by(&receipt.proof)
+            || receipt.proof.agent_id != context.selection.agent.id
+            || receipt.proof.assignment_id != context.assignment_id
+            || !receipt.matches(&context.job)
+        {
+            return Err("Retained thread ownership or execution binding changed.".into());
+        }
+        let trigger_id = thread
+            .latest_external(&receipt.proof.account_id)
+            .ok_or("No new external comment in retained thread.")?
+            .id
+            .clone();
+        let key = serde_json::json!([
+            "github",
+            receipt.proof.account_id,
+            receipt.proof.configuration_id,
+            thread.id,
+            trigger_id,
+            receipt.proof.head_sha
+        ])
+        .to_string();
+        Ok(Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            key,
+            target: ConversationTarget::Retained(Box::new(RetainedTarget {
+                proof: receipt.proof.clone(),
+                thread,
+            })),
+            context,
+            trigger_id,
+            phase: Phase::WaitingStart,
+            analysis: None,
+            publication: None,
+            history: Vec::new(),
+            manual_start: false,
+            confirmed: false,
+            automatic_publication: false,
+            cancelled: false,
+            error: None,
+            result: None,
+            body: None,
+            uncertain: false,
+            receipt: None,
+            reply_ordinal: None,
+            enqueue_order: None,
+            enqueued_at: None,
+        })
+    }
+
     pub fn operation(&self, kind: &str, now: i64) -> JobOperation {
         let mut operation = JobOperation::review(&self.context.job, now);
         operation.operation_type = kind.into();
-        if let ConversationTarget::Owned(origin) = &self.target {
-            operation.pending_review_id = origin
-                .thread
-                .comments
-                .first()
-                .and_then(|c| c.review_id.clone());
-            operation.owned_thread_id = Some(origin.thread.id.clone());
+        if let Ok(thread) = self.thread() {
+            operation.pending_review_id = thread.comments.first().and_then(|c| c.review_id.clone());
+            operation.owned_thread_id = Some(thread.id.clone());
         }
         operation.triggering_external_comment_id = Some(self.trigger_id.clone());
         operation
@@ -406,10 +495,10 @@ impl FollowUp {
     }
 
     pub fn fresh_thread(&self, current: &Thread) -> bool {
-        let Ok(origin) = self.owned() else {
+        let Ok(thread) = self.thread() else {
             return false;
         };
-        if current.id != origin.thread.id || current.resolved || !current.can_reply {
+        if current.id != thread.id || current.resolved || !current.can_reply {
             return false;
         }
         let comments: Vec<_> = current
@@ -420,7 +509,7 @@ impl FollowUp {
                     && comment.author_id.as_deref() == Some(&self.context.job.account_id))
             })
             .collect();
-        comments == origin.thread.comments.iter().collect::<Vec<_>>()
+        comments == thread.comments.iter().collect::<Vec<_>>()
     }
 
     pub fn reconcile_observation(
@@ -428,7 +517,10 @@ impl FollowUp {
         observation: &Observation,
     ) -> Result<Option<String>, Failure> {
         match (observation, &self.target) {
-            (Observation::Owned(thread), ConversationTarget::Owned(_)) => self.reconcile(thread),
+            (
+                Observation::Owned(thread),
+                ConversationTarget::Owned(_) | ConversationTarget::Retained(_),
+            ) => self.reconcile(thread),
             (Observation::Mention { replies, .. }, ConversationTarget::Mention { .. }) => {
                 let matches = replies
                     .iter()
@@ -453,7 +545,7 @@ impl FollowUp {
         let Some(body) = &self.body else {
             return Ok(None);
         };
-        let root = self.owned().map_err(Failure::permanent)?.thread.root()?;
+        let root = self.thread().map_err(Failure::permanent)?.root()?;
         let matches: Vec<_> = current
             .comments
             .iter()
@@ -531,19 +623,57 @@ pub fn admit_run(runs: &mut Vec<FollowUp>, mut run: FollowUp) -> Result<bool, St
     if runs.iter().any(|previous| previous.key == run.key) {
         return Ok(false);
     }
+    let previous: Vec<_> = runs
+        .iter()
+        .filter(|previous| {
+            previous.context.job.account_id == run.context.job.account_id
+                && previous.context.job.configuration_id == run.context.job.configuration_id
+                && previous.context.job.repository_id == run.context.job.repository_id
+                && previous.context.job.pull_request_id == run.context.job.pull_request_id
+                && previous.context.selection.agent.id == run.context.selection.agent.id
+        })
+        .collect();
     run.reply_ordinal = Some(
-        runs.iter()
-            .filter(|previous| {
-                previous.context.job.account_id == run.context.job.account_id
-                    && previous.context.job.configuration_id == run.context.job.configuration_id
-                    && previous.context.job.repository_id == run.context.job.repository_id
-                    && previous.context.job.pull_request_id == run.context.job.pull_request_id
-                    && previous.context.selection.agent.id == run.context.selection.agent.id
-            })
-            .count() as u64
-            + 1,
+        previous
+            .iter()
+            .filter_map(|previous| previous.reply_ordinal)
+            .max()
+            .unwrap_or(0)
+            .max(previous.len() as u64)
+            .checked_add(1)
+            .ok_or("Conversation ordinal exhausted.")?,
     );
     runs.push(run);
+    Ok(true)
+}
+
+pub(crate) fn admit_stored(
+    store: &Store,
+    runs: &mut Vec<FollowUp>,
+    run: FollowUp,
+) -> Result<bool, String> {
+    if crate::retention::known_key(store, &run.key)? {
+        return Ok(false);
+    }
+    let previous = crate::retention::ordinal(
+        store,
+        &crate::retention::Binding::job(&run.context.job),
+        &run.context.selection.agent.id,
+        true,
+    )?;
+    if !admit_run(runs, run)? {
+        return Ok(false);
+    }
+    let latest = runs
+        .last_mut()
+        .ok_or("Admitted conversation disappeared.")?;
+    latest.reply_ordinal = Some(
+        latest.reply_ordinal.unwrap_or(0).max(
+            previous
+                .checked_add(1)
+                .ok_or("Conversation ordinal exhausted.")?,
+        ),
+    );
     Ok(true)
 }
 

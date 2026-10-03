@@ -6,6 +6,7 @@ use crate::{
         metadata::PullRequest,
         provider::{CommentCapability, GithubClient, RemoteRepository},
         review::GuardedTransport,
+        threads::{Ownership, Provenance},
     },
     monitoring::{self, PollTicket},
     now_seconds,
@@ -27,6 +28,7 @@ pub(crate) struct Observed {
 
 #[derive(Default)]
 pub(crate) struct Scan {
+    retained: Vec<crate::retention::Observed>,
     feedback: Vec<Observed>,
     mentions: Vec<(
         crate::feedback::MentionBinding,
@@ -40,7 +42,7 @@ pub(crate) fn scan(
     pulls: &[PullRequest],
     identity: &github::Identity,
 ) -> Result<Scan, github::ConnectionError> {
-    let (origins, tracked) = {
+    let (origins, tracked, retained) = {
         let host = app.state::<Host>();
         let store = host
             .store
@@ -53,6 +55,8 @@ pub(crate) fn scan(
                 .load_queue_state()
                 .map_err(|_| github::ConnectionError::Configuration)?
                 .tracked,
+            crate::retention::scan_origins(&store, ticket, pulls)
+                .map_err(|_| github::ConnectionError::Configuration)?,
         )
     };
     let guard_app = app.clone();
@@ -104,6 +108,18 @@ pub(crate) fn scan(
     }
     let client = client.guarded(guard);
     let mut result = Scan::default();
+    for origin in retained {
+        let pull = pulls
+            .iter()
+            .find(|p| p.id == origin.proof.pull_request_id)
+            .ok_or(github::ConnectionError::IncompleteRead)?;
+        let threads = client.owned_threads_at(&origin.proof, &pull.head_sha)?;
+        result.retained.push(crate::retention::Observed {
+            origin,
+            head: pull.head_sha.clone(),
+            threads,
+        });
+    }
     for origin in origins {
         let pull = pulls
             .iter()
@@ -164,6 +180,8 @@ pub(crate) fn admit_scan(
         ledger.observe(&observation.origin, &observation.head, &observation.threads)?;
     }
     store.save_feedback(&ledger)?;
+    crate::retention::admit_observations(store, observations.retained, now)?;
+    ledger = store.load_feedback()?;
     let mut runs = store.load_follow_ups()?;
     let before = runs.len();
     for observation in observations.feedback {
@@ -197,6 +215,9 @@ pub(crate) fn admit_scan(
                 continue;
             }
             let mut run = FollowUp::new(origin, thread)?;
+            if crate::retention::known_key(store, &run.key)? {
+                continue;
+            }
             run.context = ConversationContext {
                 assignment_id: origin.review.assignment_id.clone(),
                 job: job.clone(),
@@ -206,7 +227,7 @@ pub(crate) fn admit_scan(
                     .map_err(|e| e.message)?,
                 feedback_checked: true,
             };
-            if super::admit_run(&mut runs, run)? {
+            if super::admit_stored(store, &mut runs, run)? {
                 let work = runs
                     .last_mut()
                     .ok_or("The admitted follow-up was not retained.")?;
@@ -221,7 +242,9 @@ pub(crate) fn admit_scan(
                 continue;
             }
             let key = binding.key(&comment.id);
-            if ledger.mentions.iter().any(|m| m.key == key) {
+            if ledger.mentions.iter().any(|m| m.key == key)
+                || crate::retention::known_key(store, &key)?
+            {
                 continue;
             }
             let existing = runs.iter().find(|run| run.key == key);
@@ -358,6 +381,7 @@ pub(crate) fn admit_scan(
 
 #[derive(Serialize)]
 pub(crate) struct Candidate {
+    #[serde(serialize_with = "serialize_run")]
     pub(crate) run: FollowUp,
     pub(crate) planned_selection: Option<Selection>,
     pub(crate) blocked: Option<String>,
@@ -367,10 +391,31 @@ pub(crate) struct Candidate {
     pub(crate) trust_required: bool,
 }
 
+fn serialize_run<S: serde::Serializer>(run: &FollowUp, serializer: S) -> Result<S::Ok, S::Error> {
+    use serde::{ser::Error, Serialize};
+    let mut value = serde_json::to_value(run).map_err(S::Error::custom)?;
+    if let ConversationTarget::Retained(origin) = &run.target {
+        // Keep the existing inspector's thread fallback without fabricating a
+        // historical ReviewRun. Execution context remains the actual new job.
+        value["thread"] = serde_json::to_value(&origin.thread).map_err(S::Error::custom)?;
+    }
+    value.serialize(serializer)
+}
+
 pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
     let runs = store.load_follow_ups()?;
     let settings = store.load_settings()?;
     let jobs = store.load_queue()?;
+    let human_threads: std::collections::BTreeSet<_> = crate::retention::load(store)?
+        .receipts
+        .into_iter()
+        .flat_map(|r| r.owned)
+        .flat_map(|o| {
+            o.human_input_threads
+                .into_iter()
+                .map(move |id| (o.proof.account_id.clone(), id))
+        })
+        .collect();
     Ok(runs
         .iter()
         .map(|run| {
@@ -391,7 +436,7 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
                     run.authority(&settings, job)?;
                     if run.context.feedback_checked {
                         let feedback = crate::feedback::contexts(store,job,&selection.agent.id).map_err(|e|e.message)?;
-                        if run.owned().is_ok_and(|origin| origin.thread.root().is_ok_and(|root|
+                        if run.thread().is_ok_and(|thread| thread.root().is_ok_and(|root|
                             feedback.iter().any(|c|c.root_id==root.id && c.closed))) {
                             return Err("This owned discussion was closed externally; no new analysis or reply is authorized.".into());
                         }
@@ -407,12 +452,14 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
                     }
                     Ok(selection)
                 });
-            let human_gate = runs.iter().any(|other| {
+            let human_gate = run.thread().is_ok_and(|t|
+                human_threads.contains(&(run.context.job.account_id.clone(), t.id.clone())))
+                || runs.iter().any(|other| {
                 other
-                    .owned()
+                    .thread()
                     .ok()
-                    .zip(run.owned().ok())
-                    .is_some_and(|(a, b)| a.thread.id == b.thread.id)
+                    .zip(run.thread().ok())
+                    .is_some_and(|(a, b)| a.id == b.id)
                     && other.context.job.account_id == run.context.job.account_id
                     && other.phase == Phase::HumanInputRequired
             });
@@ -442,7 +489,7 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
 
 #[derive(Default)]
 pub(crate) struct Coordinator {
-    active: Mutex<Option<(String, Arc<AtomicBool>)>>,
+    pub(crate) active: Mutex<Option<(String, Arc<AtomicBool>)>>,
 }
 
 impl Coordinator {
@@ -895,17 +942,13 @@ impl Native {
             error.into()
         }
     }
-    fn origin(&self, run: &FollowUp) -> Result<Publication, Failure> {
-        self.app
-            .state::<Host>()
+    fn origin(&self, run: &FollowUp) -> Result<Ownership, Failure> {
+        let host = self.app.state::<Host>();
+        let store = host
             .store
             .lock()
-            .map_err(|_| Failure::permanent("Thread storage unavailable."))?
-            .load_publications()
-            .map_err(Failure::permanent)?
-            .into_iter()
-            .find(|p| run.owned().is_ok_and(|o| p.id == o.publication_id))
-            .ok_or_else(|| Failure::permanent("The owned review receipt is unavailable."))
+            .map_err(|_| Failure::permanent("Thread storage unavailable."))?;
+        self.origin_without_lock(&store, run)
     }
     fn client(&self, run: &FollowUp) -> Result<GithubClient<HttpTransport>, Failure> {
         let host = self.app.state::<Host>();
@@ -1052,14 +1095,19 @@ impl Environment for Native {
     fn observe(&mut self, run: &FollowUp) -> Result<Observation, Failure> {
         let client = self.read_client(run)?;
         match &run.target {
-            ConversationTarget::Owned(origin) => Ok(Observation::Owned(
-                client
-                    .owned_thread(&self.origin(run)?, &origin.thread.id)
-                    .map_err(|e| self.read_failure(e))?
-                    .ok_or_else(|| {
-                        Failure::permanent("The owned review thread is no longer available.")
-                    })?,
-            )),
+            ConversationTarget::Owned(_) | ConversationTarget::Retained(_) => {
+                Ok(Observation::Owned(
+                    client
+                        .owned_thread(
+                            &self.origin(run)?,
+                            &run.thread().map_err(Failure::permanent)?.id,
+                        )
+                        .map_err(|e| self.read_failure(e))?
+                        .ok_or_else(|| {
+                            Failure::permanent("The owned review thread is no longer available.")
+                        })?,
+                ))
+            }
             ConversationTarget::Mention { comment } => {
                 let replies = client
                     .top_comments(
@@ -1171,21 +1219,26 @@ impl Environment for Native {
             uncertain: false,
         })?;
         match &run.target {
-            ConversationTarget::Owned(origin) => prepared.0.reply_to_thread(
-                &self.origin(run).map_err(|failure| WriteFailure {
-                    failure,
-                    uncertain: false,
-                })?,
-                &origin
-                    .thread
-                    .root()
-                    .map_err(|e| WriteFailure {
-                        failure: e.into(),
+            ConversationTarget::Owned(_) | ConversationTarget::Retained(_) => {
+                prepared.0.reply_to_thread(
+                    &self.origin(run).map_err(|failure| WriteFailure {
+                        failure,
                         uncertain: false,
-                    })?
-                    .id,
-                body,
-            ),
+                    })?,
+                    &run.thread()
+                        .map_err(|message| WriteFailure {
+                            failure: Failure::permanent(message),
+                            uncertain: false,
+                        })?
+                        .root()
+                        .map_err(|e| WriteFailure {
+                            failure: e.into(),
+                            uncertain: false,
+                        })?
+                        .id,
+                    body,
+                )
+            }
             ConversationTarget::Mention { .. } => prepared.0.reply_to_mention(
                 &RemoteRepository {
                     id: run.context.job.repository_id.clone(),
@@ -1239,13 +1292,27 @@ fn save_progress(store: &Store, run: &mut FollowUp, now: i64) -> Result<(), Fail
 }
 
 impl Native {
-    fn origin_without_lock(&self, store: &Store, run: &FollowUp) -> Result<Publication, Failure> {
+    fn origin_without_lock(&self, store: &Store, run: &FollowUp) -> Result<Ownership, Failure> {
+        if let ConversationTarget::Retained(origin) = &run.target {
+            return crate::retention::load(store)
+                .map_err(Failure::permanent)?
+                .receipts
+                .into_iter()
+                .flat_map(|r| r.owned)
+                .find(|r| r.proof == origin.proof)
+                .map(|r| r.proof)
+                .ok_or_else(|| {
+                    Failure::permanent("Retained owned-review provenance unavailable.")
+                });
+        }
         store
             .load_publications()
             .map_err(Failure::permanent)?
             .into_iter()
             .find(|p| run.owned().is_ok_and(|o| p.id == o.publication_id))
-            .ok_or_else(|| Failure::permanent("Owned review receipt unavailable."))
+            .ok_or_else(|| Failure::permanent("Owned review receipt unavailable."))?
+            .ownership()
+            .map_err(Failure::from)
     }
 }
 
@@ -1271,7 +1338,7 @@ async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure>
             let mut current = snapshot.clone();
             if current.manual_start {
                 if let Observation::Owned(thread) = &observation {
-                    current.owned_mut().map_err(Failure::permanent)?.thread = thread.clone();
+                    *current.thread_mut().map_err(Failure::permanent)? = thread.clone();
                 }
             }
             if let Some(reason) = worker.gate(&current, &observation)? {
@@ -1304,7 +1371,7 @@ async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure>
         .await
         .map_err(|_| Failure::permanent("Follow-up preparation failed."))??;
         if let Observation::Owned(thread) = observation {
-            run.owned_mut().map_err(Failure::permanent)?.thread = thread;
+            *run.thread_mut().map_err(Failure::permanent)? = thread;
         }
         let expected_base = context.pull.base_sha.clone();
         run.context.job.observed_base_sha = Some(expected_base.clone());

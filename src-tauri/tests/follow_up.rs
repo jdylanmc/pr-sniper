@@ -491,6 +491,102 @@ fn current_head_thread_observation_keeps_original_commit_provenance_and_rejects_
 }
 
 #[test]
+fn retention_compact_provenance_preserves_full_thread_and_comment_pagination() {
+    use pr_sniper_lib::github::threads::Provenance;
+    let mut fixture = Fixture::new();
+    let threads: Vec<_> = (0..205)
+        .map(|index| {
+            let mut value = thread();
+            value.id = format!("thread-{index}");
+            let root = (100 + index * 1000).to_string();
+            value.comments[0].id = root.clone();
+            value.comments[1].reply_to = Some(root.clone());
+            value.comments[1].id = (101 + index * 1000).to_string();
+            if index == 0 {
+                for next in 2..207 {
+                    value.comments.push(comment(
+                        &(100 + next).to_string(),
+                        "External evidence",
+                        Some(&root),
+                    ));
+                }
+            }
+            value
+        })
+        .collect();
+    fixture.origin.receipts[0].comment_ids =
+        threads.iter().map(|t| t.comments[0].id.clone()).collect();
+    fixture.wire.0.lock().unwrap().threads = threads.clone();
+    let proof = fixture.origin.ownership().unwrap();
+    let client = GithubClient::new(fixture.wire.clone());
+    assert_eq!(client.owned_threads(&fixture.origin).unwrap(), threads);
+    assert_eq!(client.owned_threads(&proof).unwrap(), threads);
+    assert_eq!(
+        client
+            .owned_thread(&proof, "thread-0")
+            .unwrap()
+            .unwrap()
+            .comments
+            .len(),
+        207
+    );
+    assert!(fixture.wire.0.lock().unwrap().queries >= 10);
+    fixture.wire.0.lock().unwrap().threads[204].comments[0].body = "Changed root".into();
+    assert!(client.owned_threads(&proof).is_err());
+}
+
+#[test]
+fn retention_compact_provenance_never_weakens_identity_or_body_checks() {
+    use pr_sniper_lib::github::threads::Provenance;
+    let fixture = Fixture::new();
+    let client = GithubClient::new(fixture.wire.clone());
+    let proof = fixture.origin.ownership().unwrap();
+    assert_eq!(
+        client.owned_thread(&proof, "thread-node").unwrap(),
+        Some(thread())
+    );
+    for field in ["account", "repository", "pull", "review", "commit", "body"] {
+        let mut changed = proof.clone();
+        match field {
+            "account" => changed.account_id = "44".into(),
+            "repository" => changed.repository_id = "200".into(),
+            "pull" => changed.pull_request_id = "10".into(),
+            "review" => changed.review_id = "43".into(),
+            "commit" => changed.head_sha = "c".repeat(40),
+            "body" => changed.body_hashes.clear(),
+            _ => unreachable!(),
+        }
+        assert!(
+            client.owned_thread(&changed, "thread-node").is_err(),
+            "{field}"
+        );
+    }
+    fixture.wire.0.lock().unwrap().wrong_count = true;
+    assert!(client.owned_threads(&proof).is_err());
+}
+
+#[test]
+fn retention_compact_origin_reconciles_a_lost_reply_without_reposting() {
+    use pr_sniper_lib::github::threads::Provenance;
+    let fixture = Fixture::new();
+    let proof = fixture.origin.ownership().unwrap();
+    fixture.wire.0.lock().unwrap().fault = Some(Fault::After);
+    let client = GithubClient::new(fixture.wire.clone());
+    let body = "Evidence-backed reply <!-- pr-sniper:reply:retention-fixture -->";
+    assert!(client.reply_to_thread(&proof, "100", body).is_err());
+    let current = client.owned_thread(&proof, "thread-node").unwrap().unwrap();
+    assert_eq!(
+        current
+            .comments
+            .iter()
+            .filter(|c| c.body == body && c.author_id.as_deref() == Some("22"))
+            .count(),
+        1
+    );
+    assert_eq!(fixture.writes(), 1);
+}
+
+#[test]
 fn last_local_check_rejects_withdrawn_or_changed_publication_grants() {
     let mut run = prepared(&origin());
     let mut current = run.clone();

@@ -211,6 +211,7 @@ fn observe(
         store,
         &ticket,
         Scan {
+            retained: vec![],
             feedback: vec![Observed {
                 origin: origin.clone(),
                 head: head.to_string().repeat(40),
@@ -684,6 +685,7 @@ fn r73_completed_second_publication_allows_validated_same_head_reply_clearance()
 
 fn mention_scan(comments: Vec<TopComment>) -> Scan {
     Scan {
+        retained: vec![],
         feedback: vec![],
         mentions: vec![(
             MentionBinding {
@@ -698,6 +700,65 @@ fn mention_scan(comments: Vec<TopComment>) -> Scan {
             comments,
         )],
     }
+}
+
+#[test]
+fn retention_mixed_old_and_new_publications_observe_all_feedback_before_admitting_replies() {
+    let (_root, store, origin, mut old_thread) = fixture(1);
+    let mut queue = store.load_queue_state().unwrap();
+    queue.tracked[0].lifecycle = Lifecycle::Closed;
+    queue.tracked[0].terminal_observed = true;
+    queue.jobs[0].waiting = monitoring::WAITING_CLOSED.into();
+    store.save_queue_state(&queue).unwrap();
+    crate::retention::maintain(&store, true).unwrap();
+    let retained = crate::retention::load(&store).unwrap().receipts[0].owned[0].clone();
+    let ticket = poll(&store, 'a', NOW + 10);
+    let job = store.load_queue().unwrap().pop().unwrap();
+    let mut current = origin;
+    current.id = "new-iteration-publication".into();
+    current.review.job = job.clone();
+    current.review.key = crate::review::key(&job, &current.review.assignment_id);
+    current.review.operation = JobOperation::review(&job, NOW + 11);
+    current.review.operation.state = OperationState::Completed;
+    current.operation = JobOperation::review(&job, NOW + 11);
+    current.operation.state = OperationState::Completed;
+    current.receipts[0].review_id = "43".into();
+    current.receipts[0].comment_ids = vec!["200".into()];
+    current.batch.as_mut().unwrap().comments[0].body = "New iteration finding".into();
+    store
+        .save_reviews(std::slice::from_ref(&current.review))
+        .unwrap();
+    store
+        .save_publications(std::slice::from_ref(&current))
+        .unwrap();
+    let mut new_thread = old_thread.clone();
+    new_thread.id = "new-thread".into();
+    new_thread.comments[0].id = "200".into();
+    new_thread.comments[0].review_id = Some("43".into());
+    new_thread.comments[0].body = current.batch.as_ref().unwrap().comments[0].body.clone();
+    explanation(&mut old_thread, "11");
+    let observations = || Scan {
+        retained: vec![crate::retention::Observed {
+            origin: retained.clone(),
+            head: "a".repeat(40),
+            threads: vec![old_thread.clone()],
+        }],
+        feedback: vec![Observed {
+            origin: current.clone(),
+            head: "a".repeat(40),
+            threads: vec![new_thread.clone()],
+        }],
+        mentions: vec![],
+    };
+    admit_scan(&store, &ticket, observations(), NOW + 12).unwrap();
+    admit_scan(&store, &ticket, observations(), NOW + 13).unwrap();
+    let contexts =
+        crate::feedback::contexts(&store, &job, &current.review.selection.agent.id).unwrap();
+    assert_eq!(contexts.len(), 2);
+    let runs = store.load_follow_ups().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert!(matches!(runs[0].target, ConversationTarget::Retained(_)));
+    assert_eq!(runs[0].context.feedback.len(), 2);
 }
 
 fn finish_scan(store: Store, observations: Scan, now: i64) -> (Store, Result<(), String>) {
@@ -1225,6 +1286,7 @@ fn observing_removed_owners_does_not_transfer_or_erase_feedback() {
         &store,
         &ticket,
         Scan {
+            retained: vec![],
             feedback: vec![Observed {
                 origin: origin.clone(),
                 head: "c".repeat(40),
@@ -1406,6 +1468,7 @@ fn legacy_missing_local_configuration_does_not_orphan_verified_owned_roots() {
         &store,
         &ticket,
         Scan {
+            retained: vec![],
             feedback: vec![Observed {
                 origin: origin.clone(),
                 head: "c".repeat(40),
