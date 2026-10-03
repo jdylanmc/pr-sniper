@@ -125,6 +125,30 @@ impl FollowUp {
             _ => None,
         }
     }
+    pub(crate) fn owns_feedback(&self, feedback: &crate::feedback::Context) -> bool {
+        let (publication, agent, assignment, head) = match &self.target {
+            ConversationTarget::Owned(origin) => (
+                &origin.publication_id,
+                &origin.review.selection.agent.id,
+                &origin.review.assignment_id,
+                &origin.review.job.head_sha,
+            ),
+            ConversationTarget::Retained(origin) => (
+                &origin.proof.publication_id,
+                &origin.proof.agent_id,
+                &origin.proof.assignment_id,
+                &origin.proof.head_sha,
+            ),
+            ConversationTarget::Mention { .. } => return false,
+        };
+        publication == &feedback.publication_id
+            && agent == &feedback.owner_agent_id
+            && assignment == &feedback.owner_assignment_id
+            && head == &feedback.original_head
+            && self
+                .thread()
+                .is_ok_and(|t| t.root().is_ok_and(|r| r.id == feedback.root_id))
+    }
     pub fn owned(&self) -> Result<&OwnedTarget, String> {
         match &self.target {
             ConversationTarget::Owned(value) => Ok(value),

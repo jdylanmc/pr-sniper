@@ -349,6 +349,7 @@ impl State {
 /// Startup-only, before any operational restore or worker. An applying journal
 /// is a local serialization fence, not a claim of provider/server atomicity.
 pub fn recover(store: &Store) -> Result<(), String> {
+    store.recover_state_writes()?;
     let mut ledger = load(store)?;
     let Some(pending) = ledger.pending.clone() else {
         return Ok(());

@@ -16,6 +16,8 @@ use crate::{
 };
 use serde_json::json;
 
+mod remediation;
+
 const REPO: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const AGENT: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const ASSIGNMENT: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";

@@ -120,6 +120,9 @@ above a cursor is available on a new traversal, never repeated in older pages.
 Legacy data is indexed deterministically at first access; it does not acquire
 invented historical completion timestamps. An interrupted index update is
 rebuilt from durable operational evidence before a page is returned.
+Saved top-level mention intent belongs to its exact iteration and advances that
+result even when primary routing is blocked. Repeated scans and later execution
+linkage do not count it twice; actual execution progress remains new activity.
 
 Only explicit provider-confirmed closure or merge admits automatic detail
 cleanup. Missing scan results, disabled/deleted configuration, lost accounts
@@ -129,6 +132,9 @@ excludes live publication, reply, action, notification and scan snapshots.
 Pending reviews and uncertain external writes keep their original recovery
 records and existing reconciliation controls. A stopped local job alone is not
 proof of a settled provider mutation.
+Legacy closed/merged records without explicit cleanup authority are revalidated
+through the same gated provider scan. Missing, rejected or failed reads retain
+detail; migration never invents terminal confirmation.
 
 Cleanup uses the existing typed JSON collections, not a database, per-PR store
 or archive. A small `retention.json` journal first records safety receipts,
@@ -142,6 +148,17 @@ holds the Store lock; this is local serialization, not atomicity with GitHub.
 A reopen observed afterward starts a new iteration, including at the same SHA,
 without restoring discarded local detail.
 
+File replacement uses a unique private stage and a locked ownership record,
+flushed before any payload bytes are written. Startup discards only proven
+abandoned state stages, then repeats the cleanup journal; a partial stage is
+never promoted as committed data. Unowned fixed `.tmp` occupants, links,
+inaccessible stages and corrupt ownership remain visible errors, not cleanup
+permission. Abrupt bootstrap interruption can leave an empty stage and a small
+incomplete ownership record: these have no deletion proof and contain no PR
+detail. They do not obstruct retry or become a bulky archive. Payload handles
+close before replacement on Windows; existing private ACLs remain required.
+These are process-interruption guarantees, not a portable power-loss guarantee.
+
 Minimal iteration/work/operation/publication/action receipts survive, including
 provider ownership IDs, root-body SHA-256 fingerprints and sticky human-closed
 concerns. Full prompts, configuration snapshots, findings, guides, thread bodies
@@ -151,6 +168,9 @@ before admitting owner-only follow-ups or new review feedback. Later human
 closure remains authoritative; missing or changed roots block instead of
 inventing clearance. New conversations retain their actual execution context
 and compact original provenance, never a fabricated historical review.
+Missing roots remain unavailable even when their human closure is sticky.
+Settled closed or superseded conversations use the same full/compact provenance
+checks; uncertain or incomplete replies continue blocking readiness.
 
 `result_detail` accepts `{ destination }` using the existing exact panel item/job
 identity. Its tagged result is `available`, `cleaned` or `missing`; storage

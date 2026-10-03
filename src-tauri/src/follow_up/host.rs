@@ -263,7 +263,17 @@ pub(crate) fn admit_scan(
                     now,
                 )
             };
+            let item_id = existing
+                .map(|run| crate::queue::item_id(&run.context.job))
+                .or_else(|| {
+                    jobs.iter()
+                        .filter(|job| binding.matches(job))
+                        .max_by_key(|job| job.work.as_ref().map(|w| w.iteration).unwrap_or(0))
+                        .map(crate::queue::item_id)
+                })
+                .ok_or("The observed mention's exact iteration is unavailable.")?;
             ledger.mentions.push(crate::feedback::Mention {
+                item_id: Some(item_id),
                 key,
                 work_id,
                 enqueue_order,
@@ -293,12 +303,17 @@ pub(crate) fn admit_scan(
                 || run.enqueue_order != Some(mention.enqueue_order)
                 || run.enqueued_at != Some(mention.enqueued_at)
                 || mention
+                    .item_id
+                    .as_ref()
+                    .is_some_and(|id| id != &crate::queue::item_id(&run.context.job))
+                || mention
                     .follow_up_id
                     .as_ref()
                     .is_some_and(|id| id != &run.id)
             {
                 return Err("Mention execution identity or order conflicts with its saved intent; no replacement was created.".into());
             }
+            mention.item_id = Some(crate::queue::item_id(&run.context.job));
             mention.follow_up_id = Some(run.id.clone());
             mention.blocked = None;
             continue;
@@ -337,6 +352,10 @@ pub(crate) fn admit_scan(
                 .rev()
                 .find(|j| {
                     binding.matches(j)
+                        && mention
+                            .item_id
+                            .as_ref()
+                            .is_none_or(|id| id == &crate::queue::item_id(j))
                         && j.assignment_id.as_deref() == Some(primary)
                         && monitoring::review_policy(&settings, j, None).is_ok()
                 })
@@ -360,6 +379,7 @@ pub(crate) fn admit_scan(
         })();
         match route {
             Ok(run) => {
+                mention.item_id = Some(crate::queue::item_id(&run.context.job));
                 let id = run.id.clone();
                 if super::admit_run(&mut runs, run)? {
                     let work = runs.last_mut().ok_or("Mention admission disappeared.")?;
@@ -436,8 +456,7 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
                     run.authority(&settings, job)?;
                     if run.context.feedback_checked {
                         let feedback = crate::feedback::contexts(store,job,&selection.agent.id).map_err(|e|e.message)?;
-                        if run.thread().is_ok_and(|thread| thread.root().is_ok_and(|root|
-                            feedback.iter().any(|c|c.root_id==root.id && c.closed))) {
+                        if feedback.iter().any(|c| run.owns_feedback(c) && c.closed) {
                             return Err("This owned discussion was closed externally; no new analysis or reply is authorized.".into());
                         }
                     }

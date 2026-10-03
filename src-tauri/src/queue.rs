@@ -460,15 +460,11 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             {
                 continue;
             }
-            if let Ok(origin) = follow_up.run.owned() {
+            if follow_up.run.thread().is_ok() {
                 let feedback = snapshot.feedback.get(&id).and_then(|values| {
-                    values.iter().find(|f| {
-                        f.context.publication_id == origin.publication_id
-                            && origin
-                                .thread
-                                .root()
-                                .is_ok_and(|r| r.id == f.context.root_id)
-                    })
+                    values
+                        .iter()
+                        .find(|f| follow_up.run.owns_feedback(&f.context))
                 });
                 let needs_reconciliation = follow_up.run.uncertain
                     || follow_up

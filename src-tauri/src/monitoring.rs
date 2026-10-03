@@ -1578,7 +1578,7 @@ impl Monitor {
                     .tracked
                     .iter()
                     .filter(|p| {
-                        p.lifecycle == Lifecycle::Open
+                        (p.lifecycle == Lifecycle::Open || !p.terminal_observed)
                             && p.configuration_id == configuration.repository_id
                             && p.account_id == *account_id
                             && p.repository_id == *repository_id

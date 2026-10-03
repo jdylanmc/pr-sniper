@@ -156,7 +156,8 @@ pub(crate) fn admit_observations(
                     thread
                 }),
                 closed,
-                unavailable: (thread.is_none() && !closed)
+                unavailable: thread
+                    .is_none()
                     .then(|| "Retained published root is missing; no closure inferred.".into()),
             };
             let record = Record {
