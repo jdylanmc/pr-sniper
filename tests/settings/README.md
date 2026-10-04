@@ -33,6 +33,14 @@ IPC replies do not hold the Store queue. Lifecycle regressions cover queued
 rejections, first notification writes and delayed replies; this does not relax
 production filesystem checks or browser assertions.
 
+Hosted CI reserves 15 minutes for the Windows frontend/Store build and full
+browser suite. The macOS foundation job has 45 minutes for its cold native build,
+all checks and bundle/archive steps. The expanded suite reached the previous
+10-minute Windows step limit, and macOS reached its 30-minute job limit during
+bundling after its checks passed. These are bounded infrastructure budgets, not
+changes to individual test timeouts, application deadlines, assertions or
+fail-fast behavior. WebKit retains its 20-minute step and 30-minute job limits.
+
 The four readiness rows are saved-configuration evidence, not an inference or
 subscription test. No fixture starts reviews, uses human credentials, calls a
 provider or automates the native desktop. Screenshots from the real renderer
