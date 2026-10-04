@@ -1198,6 +1198,7 @@ for (const failed of [false, true]) {
   }) => {
     await store("snapshot");
     const held = ipc.holdNext("monitoring_setup_review");
+    const mounting = ipc.holdNext("snapshot");
     if (failed)
       await page.addInitScript(() => {
         const original = window.__TAURI_INTERNALS__.invoke;
@@ -1215,7 +1216,15 @@ for (const failed of [false, true]) {
       await expect(
         page.getByLabel("Settings section", { exact: true }),
       ).toBeVisible();
+      await mounting.arrived;
+      mounting.release();
+      await expect(page.locator("#save-status")).toHaveText(
+        "All changes saved",
+      );
+      // Visible controls precede mount completion and its navigation focus.
+      await expect(page.locator("[data-panel-heading]")).toBeFocused();
       await tab(page, "Settings").focus();
+      await expect(tab(page, "Settings")).toBeFocused();
       held.release();
       await page.evaluate(() => window.__settingsIdle());
       await expect(page.locator("[data-panel-heading]")).toHaveText("Settings");
@@ -1223,6 +1232,7 @@ for (const failed of [false, true]) {
       await expect(page.locator("[data-header-automation]")).toBeVisible();
       await expect(page.locator('[data-panel-view="genie"]')).toBeHidden();
     } finally {
+      mounting.release();
       held.release();
     }
   });

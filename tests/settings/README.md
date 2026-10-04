@@ -21,6 +21,18 @@ runtime changes. Completion-focus fixtures explicitly opt in to Comment for
 their comment-authorized assignment scenario and dispatch the real account
 refresh event rather than assuming a resource redraw remounts account widgets.
 
+The initial-setup race cases hold Settings' first snapshot independently of the
+setup reply. They finish the normal Settings mount/navigation focus before
+establishing newer keyboard focus, then release the old setup success or failure.
+Visible section controls alone do not mean that initial navigation is complete.
+
+Each fixture root serializes native Store commands, matching the production
+`Host.store` mutex. Original results and errors reach their callers, teardown
+drains accepted commands, and independent roots remain independent. Held external
+IPC replies do not hold the Store queue. Lifecycle regressions cover queued
+rejections, first notification writes and delayed replies; this does not relax
+production filesystem checks or browser assertions.
+
 The four readiness rows are saved-configuration evidence, not an inference or
 subscription test. No fixture starts reviews, uses human credentials, calls a
 provider or automates the native desktop. Screenshots from the real renderer
