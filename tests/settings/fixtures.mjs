@@ -35,25 +35,25 @@ function invokeStore(root, command, args = {}) {
 }
 
 export function createStoreScope(invoke) {
-  const pending = new Set();
+  let tail = Promise.resolve();
   let closing = false;
   return {
     invoke(...args) {
       if (closing)
         return Promise.reject(new Error("Store fixture is shutting down."));
-      const request = Promise.resolve().then(() => invoke(...args));
-      pending.add(request);
-      void request.then(
-        () => pending.delete(request),
-        () => pending.delete(request),
+      // Match Host.store's mutex, independently for each fixture root.
+      const request = tail.then(() => invoke(...args));
+      tail = request.then(
+        () => {},
+        () => {},
       );
       return request;
     },
     async close() {
       closing = true;
-      // Drain native operations, including calls whose browser already navigated
-      // away. Their errors still go to the original callers.
-      await Promise.allSettled([...pending]);
+      // The tail drains every accepted operation, even after rejection or
+      // navigation. Each original request still carries its own result/error.
+      await tail;
     },
   };
 }

@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import crosshair from "./crosshair.svg";
 import "./style.css";
 import { renderMonitoring } from "./monitoring";
-import { mountSettings } from "./settings";
+import { mountSettingsWithGenie } from "./genie";
 import { mountPanel } from "./panel";
 import { isWindows, trayAdjective, trayLocation } from "./platform";
 
@@ -89,7 +89,7 @@ async function load() {
 }
 
 if (view === "panel") void mountPanel(app);
-else if (view === "settings") void mountSettings(app);
+else if (view === "settings") void mountSettingsWithGenie(app);
 else if (view === "queue") void load();
 else void load();
 window.addEventListener("focus", () => {
