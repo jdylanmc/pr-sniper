@@ -102,6 +102,10 @@ test("new assignments use the global policy while cancelled drafts never opt int
   await closeDialog(page);
   expect((await store("snapshot")).settings).toEqual(initial);
   modal = await assignment(page, "fixture/local-time");
+  await expect(
+    modal.getByRole("checkbox", { name: /^Comment/ }),
+  ).not.toBeChecked();
+  await modal.getByRole("checkbox", { name: /^Comment/ }).check();
   await expect(modal.getByRole("checkbox", { name: /^Comment/ })).toBeChecked();
   await modal.getByRole("checkbox", { name: /^Comment/ }).uncheck();
   await saveAssignment(page, modal);

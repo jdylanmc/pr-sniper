@@ -32,13 +32,40 @@ publication gate. See [owned-thread follow-ups](../README.md#owned-thread-follow
    then choose a **Model** from the catalog returned for that account. No account
    or model is auto-selected. Claude models through Copilot are supported;
    direct Claude, Codex and Grok integrations remain unavailable.
-4. Save the Agent, then **Save changes** to persist the Settings draft.
-   Authentication changes are immediate and separate from the Settings draft.
+4. Choose **Save agent** to persist that shared Agent immediately. No later
+   whole-Settings save is required. Doctrine and repository saves are likewise
+   resource-scoped; **Save preferences** commits only global preferences.
+   Authentication confirmation is immediate and independent of all those saves.
+
+**Set up with Genie** in Welcome or Settings opens these same editors. Back to
+Genie re-reads saved resources; unsaved preference or repository drafts do not
+become final-review evidence. Completed saves survive closing the flow or
+restarting the app. Agent/doctrine editor Back or Cancel discards only that
+editor's unsaved fields; repository Back retains its in-session draft and
+repository Cancel resets only that draft. Hiding the panel retains mounted
+editors and account flows; quitting loses unsaved fields.
+
+Genie's repository scope choice remains unconfirmed until the combined final
+check. Scope choices are transient, not a second saved resource library: after
+an application restart, preview pending scope again. Final confirmation shows
+the effective repository and AI accounts separately, assignment permissions
+and primary designation, the global cron/time zone and capacity. It rechecks
+assigned model availability and rejects changed native configuration or account
+state, including same-identity AI reconnects after an earlier catalog completes.
+The local commit locks connection generations before auth state; catalog and
+network work run outside those locks. Back invalidates pending final reads and
+cancels their catalog lookups, but does not pretend to undo an already-dispatched
+native commit. A late commit reply cannot navigate away from a newer destination.
+If that dispatched confirmation fails, its error remains visible on Genie
+re-entry; a successful dispatched commit is not reported as rolled back.
+This does not grant trust, publication, approval or merge permissions,
+resume global pause, or replay an already-authorized scope.
 
 **Verify sign-in** rechecks GitHub `/user`, not a subscription or inference
-endpoint. Models are fetched only when editing an Agent with a connected
-account, explicitly retrying its model list, or checking the exact configured
-model before an authorized review. Network, provider, access and
+endpoint. Models are fetched when editing an Agent with a connected account,
+retrying its model list, checking assigned models in Genie's final confirmation,
+or checking the exact configured model before an authorized review.
+Network, provider, access and
 policy failures are shown separately from verified sign-in. An empty returned
 catalog is described as empty, not replaced by built-in model choices.
 Unavailable/disabled saved models remain visible until explicitly changed.
