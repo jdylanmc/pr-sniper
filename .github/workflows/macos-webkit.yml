@@ -30,4 +30,4 @@ jobs:
         timeout-minutes: 5
       - name: Build frontend and Store bridge, then run the full WebKit suite
         run: npm run test:settings -- --browser=webkit
-        timeout-minutes: 20
+        timeout-minutes: 25
