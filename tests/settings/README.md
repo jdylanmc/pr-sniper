@@ -1,5 +1,10 @@
 # Settings behavioral tests
 
+The hosted WebKit build/suite step has a 25-minute budget within the unchanged
+30-minute job limit. This includes cold Store-bridge compilation as well as the
+complete browser suite; individual test timeouts, assertions and fail-fast
+behavior are unchanged.
+
 `accounts-visual.spec.mjs` covers the V5 account panels with explicitly synthetic
 authentication transport responses using the existing native `GithubAuthView`
 and `copilot_view` shapes. It asserts exact command payloads (including the Tauri
