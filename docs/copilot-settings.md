@@ -56,6 +56,8 @@ The local commit locks connection generations before auth state; catalog and
 network work run outside those locks. Back invalidates pending final reads and
 cancels their catalog lookups, but does not pretend to undo an already-dispatched
 native commit. A late commit reply cannot navigate away from a newer destination.
+If that dispatched confirmation fails, its error remains visible on Genie
+re-entry; a successful dispatched commit is not reported as rolled back.
 This does not grant trust, publication, approval or merge permissions,
 resume global pause, or replay an already-authorized scope.
 

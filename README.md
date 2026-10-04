@@ -38,9 +38,10 @@ repositories or pull requests. Existing shared doctrine libraries remain intact.
 Choose **Set up with Genie**, or **I'll set it up myself** for manual Settings.
 Genie is also available from Settings after setup, including the legacy Settings
 surface. Its four readiness rows use saved resources and native account/scope
-state, not visited steps. A configured installation with all repositories
-deliberately disabled retains the empty Queue; saved Settings destinations and
-newer navigation are not replaced by a late onboarding read.
+state, not visited steps. When all repositories are disabled, saved repository
+bindings with configured Agent assignments distinguish an intentionally inactive
+installation from incomplete setup. It retains the empty Queue; saved Settings
+destinations and newer navigation are not replaced by a late onboarding read.
 
 Genie opens the same account, Agent, doctrine, repository and Preferences
 editors as Settings. Each resource save applies immediately. Closing hides the
