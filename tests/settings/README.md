@@ -1,9 +1,76 @@
 # Settings behavioral tests
 
-The hosted WebKit build/suite step has a 25-minute budget within the unchanged
-30-minute job limit. This includes cold Store-bridge compilation as well as the
-complete browser suite; individual test timeouts, assertions and fail-fast
-behavior are unchanged.
+`genie.spec.mjs` covers R41's fresh/partial/existing flows through the production
+Welcome, Genie and shared Settings editors. Repository and AI sign-in/model
+transport is explicitly synthetic; saved resources, readiness, scope validation
+and final expected-state checks use the isolated native Store bridge. It covers
+explicit account/model/Agent choices and safe-off new permissions, no activation
+before combined confirmation, selected-existing scope, stale configuration,
+model/account loss, failed saves, unrelated drafts, cancellation, restart,
+late replies, mounted account ownership and already-authorized re-entry.
+The bridge reconstructs only its originally staged synthetic preview between
+processes; `src-tauri/tests/genie.rs` separately checks real in-memory previews,
+batch atomicity, failed writes and changed resource/account/scope guards.
+Remediation cases compare displayed authors with native preview, poll-ticket and
+actual admission scope; hold final catalog/read/commit replies across Back;
+replace an AI connection after its catalog completes while another waits; and
+preserve deliberately inactive installs and newer/manual Settings destinations.
+The scoped Copilot unit case exercises the existing generation-before-auth
+boundary and rejects a reconnect racing native commit, without provider or SDK
+runtime changes. Completion-focus fixtures explicitly opt in to Comment for
+their comment-authorized assignment scenario and dispatch the real account
+refresh event rather than assuming a resource redraw remounts account widgets.
+
+The initial-setup race cases hold Settings' first snapshot independently of the
+setup reply. They finish the normal Settings mount/navigation focus before
+establishing newer keyboard focus, then release the old setup success or failure.
+Visible section controls alone do not mean that initial navigation is complete.
+
+Each fixture root serializes native Store commands, matching the production
+`Host.store` mutex. Original results and errors reach their callers, teardown
+drains accepted commands, and independent roots remain independent. Held external
+IPC replies do not hold the Store queue. Lifecycle regressions cover queued
+rejections, first notification writes and delayed replies; this does not relax
+production filesystem checks or browser assertions.
+
+Hosted CI reserves 15 minutes for the Windows frontend/Store build and full
+browser suite. The macOS foundation job has 45 minutes for its cold native build,
+all checks and bundle/archive steps. The expanded suite reached the previous
+10-minute Windows step limit, and macOS reached its 30-minute job limit during
+bundling after its checks passed. These are bounded infrastructure budgets, not
+changes to individual test timeouts, application deadlines, assertions or
+fail-fast behavior. WebKit's cold Store-bridge build and full browser suite have
+a 25-minute step budget inside the unchanged 30-minute job limit.
+
+The four readiness rows are saved-configuration evidence, not an inference or
+subscription test. No fixture starts reviews, uses human credentials, calls a
+provider or automates the native desktop. Screenshots from the real renderer
+are written to each test's Playwright `outputPath("screenshots", browser)`,
+including Welcome,
+Genie, effective review and compact final controls at 320x300, 408x441 and
+408x744. Sequential Tab traversal checks all four checklist rows, their complete
+focus outlines and every clipping ancestor at these sizes, with reduced motion
+both off and on. Each capture has source, built-renderer, synthetic-fixture,
+browser/version, viewport, timestamp and image hashes. Use a unique `--output`
+directory per run and archive immutable copies after that run; later full-suite
+runs must not write into archived delivery screenshots.
+
+The original R41 review recorded `shared-ai-408x744.png` changing from
+`14429f81de64447bea3783404c9729827a724dc03b327aafdf168de598ecd9e0` to
+`706c9fccc850a1e7aa7314f824cc97bcd79a063514f862336f02699b76d01c25`
+when the parent full suite reused the fixed delivery path. That mismatch remains
+historical evidence; later captures do not reconstruct or replace the lost
+original bytes. These are candidate evidence, not independent or release acceptance.
+After building the frontend and `settings_bridge`, a focused run is:
+
+```sh
+SETTINGS_TEST_PORT=1481 npm exec playwright -- test \
+  --config tests/settings/playwright.config.mjs genie.spec.mjs \
+  shared-editors.spec.mjs resources.spec.mjs monitoring-activation.spec.mjs \
+  panel.spec.mjs panel-focus.spec.mjs
+cargo test --manifest-path src-tauri/Cargo.toml --locked \
+  --test genie --test resources --test monitoring
+```
 
 `accounts-visual.spec.mjs` covers the V5 account panels with explicitly synthetic
 authentication transport responses using the existing native `GithubAuthView`

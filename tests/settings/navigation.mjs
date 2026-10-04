@@ -146,10 +146,17 @@ export async function assignment(page, repository, index) {
       .nth(index)
       .getByRole("button", { name: "Edit", exact: true })
       .click();
-  return page.getByRole("dialog", {
+  const editor = page.getByRole("dialog", {
     name: index === undefined ? "Assign agent" : "Edit assignment",
     exact: true,
   });
+  if (index === undefined) {
+    await expect(editor.getByLabel("Agent", { exact: true })).toHaveValue("");
+    await editor
+      .getByLabel("Agent", { exact: true })
+      .selectOption(fixtureAgent.id);
+  }
+  return editor;
 }
 
 export async function saveAssignment(page, modal) {

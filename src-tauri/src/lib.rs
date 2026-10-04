@@ -381,6 +381,17 @@ impl GithubAuth {
             .collect()
     }
 
+    fn setup_accounts(&self) -> BTreeMap<String, monitoring::AccountAvailability> {
+        let mut accounts = self.monitoring_accounts();
+        for (id, account) in &mut accounts {
+            account.connected = matches!(
+                self.accounts.get(id),
+                Some(GithubAccountState::Connected(_))
+            );
+        }
+        accounts
+    }
+
     fn start_attempt(
         &mut self,
         expected_account_id: Option<String>,
@@ -1359,6 +1370,81 @@ async fn apply_monitoring_activation(
     Ok(status)
 }
 
+#[tauri::command]
+fn monitoring_setup_review(host: State<'_, Host>) -> Result<monitoring::SetupReview, String> {
+    let generations = host
+        .github_generations
+        .lock()
+        .map_err(|_| "Monitoring coordination is unavailable.")?;
+    let auth = host
+        .github_auth
+        .lock()
+        .map_err(|_| "GitHub connection state is unavailable.")?;
+    host.copilot
+        .with_setup_accounts(|ai_accounts, ai_generations| {
+            let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+            let monitor = host
+                .monitor
+                .lock()
+                .map_err(|_| "Monitoring is unavailable.")?;
+            monitor.setup_review(
+                &store,
+                auth.setup_accounts(),
+                ai_accounts,
+                &generations,
+                &ai_generations,
+            )
+        })
+}
+
+#[tauri::command]
+async fn apply_monitoring_setup(
+    app: tauri::AppHandle,
+    confirmation: String,
+    requests: Vec<monitoring::SetupActivation>,
+) -> Result<(), String> {
+    let app_for_apply = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app_for_apply.state::<Host>();
+        let generations = host
+            .github_generations
+            .lock()
+            .map_err(|_| "Monitoring coordination is unavailable.")?;
+        let auth = host
+            .github_auth
+            .lock()
+            .map_err(|_| "GitHub connection state is unavailable.")?;
+        host.copilot
+            .with_setup_accounts(|ai_accounts, ai_generations| {
+                let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+                let mut monitor = host
+                    .monitor
+                    .lock()
+                    .map_err(|_| "Monitoring is unavailable.")?;
+                let review = monitor.setup_review(
+                    &store,
+                    auth.setup_accounts(),
+                    ai_accounts,
+                    &generations,
+                    &ai_generations,
+                )?;
+                monitor.apply_setup(
+                    &store,
+                    &review,
+                    &confirmation,
+                    &requests,
+                    &generations,
+                    now_seconds()?,
+                )
+            })
+    })
+    .await
+    .map_err(|_| "Monitoring setup could not be applied.".to_string())??;
+    // The existing scheduler observes the committed scope. Re-entry must not
+    // force a scan of unrelated already-authorized repositories or resume pause.
+    Ok(())
+}
+
 #[derive(Serialize)]
 struct GithubRepositories {
     identity: github::Identity,
@@ -2308,7 +2394,9 @@ pub fn run() {
             monitoring_activation_status,
             preview_monitoring_activation,
             cancel_monitoring_activation,
-            apply_monitoring_activation
+            apply_monitoring_activation,
+            monitoring_setup_review,
+            apply_monitoring_setup
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]

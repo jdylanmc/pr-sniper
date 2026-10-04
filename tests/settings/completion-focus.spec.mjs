@@ -486,6 +486,10 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       await create
         .getByRole("combobox", { name: "Agent", exact: true })
         .selectOption(targetAgentId);
+      await expect(
+        create.getByRole("checkbox", { name: /^Comment/ }),
+      ).not.toBeChecked();
+      await create.getByRole("checkbox", { name: /^Comment/ }).check();
       await create
         .locator("form")
         .getByRole("button", { name: "Assign agent", exact: true })
@@ -795,6 +799,13 @@ for (const mode of ["panel", "legacy"]) {
     await settled(page);
     await expect(opener).toBeFocused();
     const original = await opener.elementHandle();
+    // Resource redraws retain the account widgets; exercise their real refresh.
+    await page.evaluate(() =>
+      window.dispatchEvent(new Event("pr-sniper:refresh-provider-accounts")),
+    );
+    await expect
+      .poll(() => page.evaluate(() => typeof window.__releaseAccountRefresh))
+      .toBe("function");
     await page.evaluate(() => window.__releaseAccountRefresh());
     await afterRedraw(page, original, opener);
     expect((await store("snapshot")).settings).toEqual(settings);
