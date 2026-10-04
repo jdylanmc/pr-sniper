@@ -116,6 +116,32 @@ fn create_stage(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
+struct ClaimGuard {
+    file: File,
+}
+
+impl ClaimGuard {
+    fn acquire(file: File) -> io::Result<Self> {
+        file.try_lock().map_err(io::Error::other)?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for ClaimGuard {
+    fn drop(&mut self) {
+        // A concurrent spawn can inherit the descriptor before exec closes it.
+        // End this scope's ownership instead of waiting for the last descriptor.
+        if let Err(error) = self.file.unlock() {
+            // A diagnostic write must not panic after a committed rename.
+            let _ = writeln!(
+                io::stderr(),
+                "[storage] stage=claim_unlock outcome=failed kind={:?}",
+                error.kind()
+            );
+        }
+    }
+}
+
 fn sync_directory(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     File::open(path)?.sync_all()?;
@@ -183,11 +209,11 @@ pub(crate) fn recover(directory: &Path, target: Option<&str>) -> io::Result<()> 
         }
         let marker = entry.path();
         owned_file(&marker)?;
-        let mut owner = OpenOptions::new().read(true).write(true).open(&marker)?;
-        owner.try_lock().map_err(io::Error::other)?;
+        let owner = OpenOptions::new().read(true).write(true).open(&marker)?;
+        let mut owner = ClaimGuard::acquire(owner)?;
         let expected = ownership(file, nonce);
         let mut actual = Vec::new();
-        (&mut owner)
+        (&mut owner.file)
             .take(expected.len() as u64 + 1)
             .read_to_end(&mut actual)?;
         let stage = directory.join(format!("{file}{WRITE_MARKER}{nonce}.stage"));
@@ -239,7 +265,7 @@ pub(super) fn replace(path: &Path, bytes: &[u8], label: &str) -> Result<(), Stri
     crash_test::boundary(path, &temporary, "bootstrap-stage");
     // Claim only a stage this invocation created successfully. Before the claim
     // is durable, the stage stays empty, including every bootstrap crash window.
-    let mut owner = match create_stage(&marker) {
+    let owner = match create_stage(&marker) {
         Ok(owner) => owner,
         Err(_) => {
             drop(file);
@@ -247,9 +273,9 @@ pub(super) fn replace(path: &Path, bytes: &[u8], label: &str) -> Result<(), Stri
             return Err(format!("Cannot claim staged {label}."));
         }
     };
+    let mut owner = ClaimGuard::acquire(owner).map_err(|_| format!("Cannot flush {label}."))?;
     let mut claimed = false;
     let flushed = (|| {
-        owner.try_lock().map_err(io::Error::other)?;
         #[cfg(test)]
         crash_test::boundary(path, &temporary, "owner-created");
         #[cfg(windows)]
@@ -259,13 +285,13 @@ pub(super) fn replace(path: &Path, bytes: &[u8], label: &str) -> Result<(), Stri
         }
         let proof = ownership(name, &nonce);
         let middle = proof.len() / 2;
-        owner.write_all(&proof.as_bytes()[..middle])?;
+        owner.file.write_all(&proof.as_bytes()[..middle])?;
         #[cfg(test)]
         crash_test::boundary(path, &temporary, "owner-partial");
         #[cfg(test)]
         recovery_fault::check(path, "claim")?;
-        owner.write_all(&proof.as_bytes()[middle..])?;
-        owner.sync_all()?;
+        owner.file.write_all(&proof.as_bytes()[middle..])?;
+        owner.file.sync_all()?;
         sync_directory(directory)?;
         claimed = true;
         #[cfg(test)]

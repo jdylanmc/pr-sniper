@@ -195,6 +195,10 @@ detail. They do not obstruct retry or become a bulky archive. Payload handles
 close before replacement on Windows; existing private ACLs remain required.
 Rename is the save commit point: a successful replacement cannot subsequently
 report an uncommitted failure to resource or login-registration rollback callers.
+Claim locks are explicitly released when writing or recovery leaves its scope,
+so duplicated or inherited descriptors do not prolong completed ownership.
+Unlock errors use best-effort diagnostics without turning a committed save into
+an uncommitted failure.
 The small ownership claim remains for deferred directory sync and unlink on the
 next write (or explicit operational startup recovery); no payload remains after
 rename. Ordinary committed reads neither acquire the claim's writer lock nor

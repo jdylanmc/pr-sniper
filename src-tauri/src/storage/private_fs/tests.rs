@@ -78,8 +78,30 @@ fn recovery_cannot_reclaim_a_live_writers_claim() {
     assert!(recover(root.path(), None).is_err());
     assert!(stage.exists());
     assert!(marker.exists());
+    owner.unlock().unwrap();
     drop(owner);
     recover(root.path(), None).unwrap();
+    assert!(!stage.exists());
+    assert!(!marker.exists());
+}
+
+#[test]
+fn completed_claim_releases_its_lock_before_inherited_descriptors_close() {
+    let root = tempfile::tempdir().unwrap();
+    let (stage, marker) = claimed(root.path());
+    let owner = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&marker)
+        .unwrap();
+    let owner = ClaimGuard::acquire(owner).unwrap();
+    let inherited = owner.file.try_clone().unwrap();
+    assert!(recover(root.path(), None).is_err());
+    assert!(stage.exists());
+    assert!(marker.exists());
+    drop(owner);
+    recover(root.path(), None).unwrap();
+    drop(inherited);
     assert!(!stage.exists());
     assert!(!marker.exists());
 }
