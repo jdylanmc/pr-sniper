@@ -127,8 +127,11 @@ build command. Windows icon regeneration, when artwork changes:
 
 The existing [Windows workflow](../.github/workflows/windows.yml) runs on pull
 requests and main pushes with read-only repository permission and no signing,
-publication or provider credentials. macOS workflow/release gates remain
-unchanged. Failures stop the job; stdout/stderr remains in the Actions logs.
+publication or provider credentials. The combined frontend/Store build and full
+browser suite has a 15-minute step budget within the existing 60-minute job
+limit. Individual tests, application deadlines and required checks are unchanged;
+macOS release credentials and publication gates remain separate. Failures stop
+the job; stdout/stderr remains in the Actions logs.
 Native credential tests log only exact synthetic target claims and fixed
 outcomes, never token contents. No application profile, native credential store,
 browser state directory or entire build target is uploaded.
