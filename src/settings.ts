@@ -14,6 +14,9 @@ import { doctrineTitles } from "./policy";
 import {
   type Settings,
   type ResourceEdit,
+  type MonitoringActivationStatus,
+  type MonitoringActivationPreview,
+  type PendingActivation,
   acceptResource,
   globalPreferences,
   savedResources,
@@ -46,36 +49,19 @@ interface Discovery {
   repositories: Discovered[];
   warnings: string[];
 }
-interface MonitoringActivationStatus {
-  repository_id: string;
-  active: boolean;
-  reason: string | null;
-  mode: "new_only" | "selected_existing" | null;
-  selected_existing: number;
-  creation_watermark: number | null;
-}
-interface MonitoringActivationCandidate {
-  pull_request_id: string;
-  number: number;
-  title: string;
-  head_sha: string;
-  author_id: string | null;
-  author_login: string | null;
-  watched_author: boolean;
-  all_authors: boolean;
-  requested_reviewer: boolean;
-  trust_confirmation_required: boolean;
-}
-interface MonitoringActivationPreview {
-  preview_id: string;
-  repository_id: string;
-  name: string;
-  account_id: string;
-  account_login: string;
-  creation_watermark: number;
-  candidates: MonitoringActivationCandidate[];
-}
 type Section = "doctrines" | "agents" | "integrations" | "preferences";
+
+export type SetupTarget =
+  | "ai"
+  | "repository-account"
+  | "agents"
+  | "doctrines"
+  | "repositories"
+  | "preferences";
+export interface GuidedReturn {
+  back: () => void;
+  stage: (selection: PendingActivation) => void;
+}
 
 // Direct integrations, distinct from the models available through Copilot.
 const modelProviders: { id: string; label: string; available: boolean }[] = [
@@ -162,7 +148,10 @@ const reason = (error: unknown) => {
 
 export async function mountSettings(
   app: HTMLElement,
-  options: { embedded?: boolean } = {},
+  options: {
+    embedded?: boolean;
+    openGenie?: (opener: HTMLElement) => void;
+  } = {},
 ) {
   if (options.embedded) app.className = "settings-window settings-page";
   else {
@@ -181,7 +170,7 @@ export async function mountSettings(
     )
       .map(([key, [title]]) => option(key, title, "integrations"))
       .join("")}</select></label></aside>
-    <div class="settings-main"><header class="settings-heading"><h1 tabindex="-1">Integrations</h1><p>Sign in to an AI subscription, then connect the repositories it should watch.</p></header>
+    <div class="settings-main"><div class="settings-genie-entry"><button type="button" data-open-genie>Set up with Genie</button><button type="button" data-return-genie hidden>Back to Genie</button><p data-genie-save-note hidden>Each save is applied immediately. Close hides this editor; Back and Cancel follow the unsaved-field guidance below. Unconfirmed scope choices need a final check.</p></div><header class="settings-heading"><h1 tabindex="-1">Integrations</h1><p>Sign in to an AI subscription, then connect the repositories it should watch.</p></header>
     <p id="error" role="alert" hidden></p><section id="content"></section>
     <footer class="settings-savebar"><span role="status" id="save-status">Loading settings...</span><button id="reload-settings" hidden>Discard draft and reload</button><button id="reset-settings" disabled>Reset changes</button><button class="primary" id="save-settings" disabled>Save preferences</button></footer></div>`;
   const content = app.querySelector<HTMLElement>("#content")!;
@@ -205,7 +194,29 @@ export async function mountSettings(
   let copilotAccounts: CopilotAccount[] = [];
   let disposeCopilot: (() => void) | undefined;
   let updateAgentAccounts: (() => void) | undefined;
+  let updateRepositoryAccounts: (() => void) | undefined;
   let refreshAgentAccounts: (() => void) | undefined;
+  let guidance: GuidedReturn | undefined;
+  const returnGenie = app.querySelector<HTMLButtonElement>(
+    "[data-return-genie]",
+  )!;
+  const openGenie = app.querySelector<HTMLButtonElement>("[data-open-genie]")!;
+  const genieNote = app.querySelector<HTMLElement>("[data-genie-save-note]")!;
+  genieNote.className = "settings-hint";
+  const settingsHeading = app.querySelector<HTMLElement>(".settings-heading")!;
+  settingsHeading.classList.add("settings-heading-with-genie");
+  settingsHeading
+    .querySelector("h1")!
+    .after(app.querySelector(".settings-genie-entry")!);
+  openGenie.hidden = !options.openGenie;
+  openGenie.onclick = () => options.openGenie?.(openGenie);
+  returnGenie.onclick = () => guidance?.back();
+  const leaveGuidance = () => {
+    guidance = undefined;
+    returnGenie.hidden = true;
+    app.querySelector<HTMLElement>("[data-genie-save-note]")!.hidden = true;
+    openGenie.hidden = !options.openGenie;
+  };
   const dialogs = createDialogs(
     content,
     () => revision++,
@@ -370,9 +381,18 @@ export async function mountSettings(
       document.activeElement === content.querySelector("#new-agent");
     let focusAfterRender: Element | null;
     updateAgentAccounts = undefined;
+    updateRepositoryAccounts = undefined;
     refreshAgentAccounts = undefined;
-    disposeCopilot?.();
-    disposeCopilot = undefined;
+    const github = content.querySelector<HTMLElement>(".github-auth");
+    const copilot = content.querySelector<HTMLElement>(".copilot-auth");
+    const connections =
+      section === "integrations" && github && copilot
+        ? { github, copilot }
+        : undefined;
+    if (!connections) {
+      disposeCopilot?.();
+      disposeCopilot = undefined;
+    }
     app.querySelector("h1")!.textContent = sections[section][0];
     app.dataset.resourceLibrary =
       section === "integrations"
@@ -393,7 +413,7 @@ export async function mountSettings(
     app.querySelector<HTMLSelectElement>(".mobile-section select")!.value =
       section;
     content.replaceChildren();
-    if (section === "integrations") renderIntegrations();
+    if (section === "integrations") renderIntegrations(connections);
     if (section === "doctrines") renderDoctrines();
     if (section === "agents")
       renderAgents(() => {
@@ -401,6 +421,7 @@ export async function mountSettings(
           restoreFocus();
       });
     if (section === "preferences") renderPreferences();
+    content.prepend(genieNote);
     changed();
     restoreFocus();
     focusAfterRender = document.activeElement;
@@ -1060,7 +1081,10 @@ export async function mountSettings(
     }
   }
 
-  function renderIntegrations() {
+  function renderIntegrations(connections?: {
+    github: HTMLElement;
+    copilot: HTMLElement;
+  }) {
     content.innerHTML = `<section class="repository-library" aria-label="Repositories">
       <div class="section-actions resource-toolbar"><div><h2>Repositories</h2><p>Acting accounts and review assignments.</p></div><button class="primary" id="add-repository" aria-label="Add repository manually...">Add repository</button></div>
       <div class="folder-card"><div><strong>${escape(draft.root_folder ?? "Local discovery")}</strong><p>${discovery ? `${discovery.repositories.length} local repositories discovered` : "Scan only a folder you choose."}</p></div><button id="choose-folder">Choose folder...</button></div>
@@ -1078,52 +1102,58 @@ export async function mountSettings(
             `<button type="button" class="integration-card" data-disabled="true" disabled aria-disabled="true"><strong>Direct ${escape(m.label)}</strong><span>Coming soon</span></button>`,
         )
         .join("")}</div></div>`;
-    disposeCopilot = renderCopilotAuth(
-      content.querySelector(".copilot-auth")!,
-      (accounts) => {
-        copilotAccounts = accounts;
-      },
-    );
-    renderGithubAuth(
-      content.querySelector(".github-auth")!,
-      (account, accessible) => {
-        let repository = repositories().find(
-          (candidate) =>
-            candidate.provider === "github" &&
-            candidate.provider_account_id === account.account_id &&
-            candidate.provider_repository_id === accessible.id,
-        );
-        repository ??= repositories().find(
-          (candidate) =>
-            candidate.provider === "github" &&
-            candidate.name === accessible.name &&
-            !candidate.provider_account_id &&
-            !candidate.provider_repository_id,
-        );
-        if (repository) {
-          repository.name = accessible.name;
-          repository.enabled = true;
-          repository.provider_account_id = account.account_id;
-          repository.provider_repository_id = accessible.id;
-        } else {
-          repository = {
-            id: newIdentity(),
-            name: accessible.name,
-            enabled: true,
-            provider: "github",
-            provider_account_id: account.account_id,
-            provider_repository_id: accessible.id,
-          };
-          (draft.repositories ??= []).push(repository);
-        }
-        changed();
-        rows();
-      },
-      (accounts) => {
-        githubAccounts = accounts;
-        if (content.querySelector(".repository-list")) rows();
-      },
-    );
+    if (connections) {
+      content.querySelector(".github-auth")!.replaceWith(connections.github);
+      content.querySelector(".copilot-auth")!.replaceWith(connections.copilot);
+    } else {
+      disposeCopilot = renderCopilotAuth(
+        content.querySelector(".copilot-auth")!,
+        (accounts) => {
+          copilotAccounts = accounts;
+        },
+      );
+      renderGithubAuth(
+        content.querySelector(".github-auth")!,
+        (account, accessible) => {
+          let repository = repositories().find(
+            (candidate) =>
+              candidate.provider === "github" &&
+              candidate.provider_account_id === account.account_id &&
+              candidate.provider_repository_id === accessible.id,
+          );
+          repository ??= repositories().find(
+            (candidate) =>
+              candidate.provider === "github" &&
+              candidate.name === accessible.name &&
+              !candidate.provider_account_id &&
+              !candidate.provider_repository_id,
+          );
+          if (repository) {
+            repository.name = accessible.name;
+            repository.enabled = true;
+            repository.provider_account_id = account.account_id;
+            repository.provider_repository_id = accessible.id;
+          } else {
+            repository = {
+              id: newIdentity(),
+              name: accessible.name,
+              enabled: true,
+              provider: "github",
+              provider_account_id: account.account_id,
+              provider_repository_id: accessible.id,
+            };
+            (draft.repositories ??= []).push(repository);
+          }
+          changed();
+          rows();
+        },
+        (accounts) => {
+          githubAccounts = accounts;
+          updateRepositoryAccounts?.();
+          if (content.querySelector(".repository-list")) rows();
+        },
+      );
+    }
     content.querySelector<HTMLButtonElement>("#choose-folder")!.onclick =
       () => {
         if (!busy) void scan(true);
@@ -1313,11 +1343,32 @@ export async function mountSettings(
     const selectedAccount = repository?.provider_account_id ?? "";
     const modal = dialog(
       repository ? "Edit repository" : "Add repository",
-      `<form><label>GitHub repository<input name="repository" required value="${escape(repository?.name ?? "")}" placeholder="owner/repository or https://github.com/owner/repository" /></label>${githubAccounts.length || selectedAccount ? `<label>Acting GitHub account<select name="account" required>${option("", "Choose a GitHub account", selectedAccount)}${githubAccounts.map((account) => `<option value="${escape(account.account_id)}" ${account.account_id === selectedAccount ? "selected" : ""} ${account.state === "connected" ? "" : "disabled"}>${escape(account.login)} (${escape(account.account_id)})${account.state === "connected" ? "" : " - reconnect required"}</option>`).join("")}${selectedAccount && !githubAccounts.some((account) => account.account_id === selectedAccount) ? `<option value="${escape(selectedAccount)}" selected disabled>${escape(selectedAccount)} - reconnect required</option>` : ""}</select></label>` : ""}<p class="settings-hint">${githubAccounts.length || selectedAccount ? "PR Sniper validates this repository with the selected account before binding its stable identity. No account is chosen for you; reconnect unavailable accounts in Integrations." : "Connect a GitHub account to validate and bind this repository. Until then it remains explicitly unbound."} Save persists this repository only. Monitoring scope still requires separate confirmation.</p><p role="alert" hidden></p><div class="resource-actions"><button type="button" data-cancel-resource>Cancel</button><button type="submit" class="primary">Save repository</button></div></form>`,
+      `<form><label>GitHub repository<input name="repository" required value="${escape(repository?.name ?? "")}" placeholder="owner/repository or https://github.com/owner/repository" /></label><label>Acting GitHub account<select name="account">${option(selectedAccount, selectedAccount || "Choose a GitHub account", selectedAccount)}</select></label><p class="settings-hint">PR Sniper validates this repository with the selected account before binding its stable identity. No account is chosen for you; reconnect unavailable accounts in Integrations. Without any account, a saved repository remains explicitly unbound. Save persists this repository only. Monitoring scope still requires separate confirmation.</p><p role="alert" hidden></p><div class="resource-actions"><button type="button" data-cancel-resource>Cancel</button><button type="submit" class="primary">Save repository</button></div></form>`,
       opener,
     );
     resourceEditor(modal);
     modal.classList.add("repository-editor");
+    const accountControl =
+      modal.querySelector<HTMLSelectElement>("[name=account]")!;
+    accountControl.setAttribute("aria-label", "Acting GitHub account");
+    updateRepositoryAccounts = () => {
+      if (!modal.isConnected) return;
+      const selected = accountControl.value;
+      accountControl.innerHTML =
+        option("", "Choose a GitHub account", selected) +
+        githubAccounts
+          .map(
+            (candidate) =>
+              `<option value="${escape(candidate.account_id)}" ${candidate.account_id === selected ? "selected" : ""} ${candidate.state === "connected" ? "" : "disabled"}>${escape(candidate.login)} (${escape(candidate.account_id)})${candidate.state === "connected" ? "" : " - reconnect required"}</option>`,
+          )
+          .join("") +
+        (selected &&
+        !githubAccounts.some((candidate) => candidate.account_id === selected)
+          ? `<option selected disabled value="${escape(selected)}">${escape(selected)} - reconnect required</option>`
+          : "");
+      accountControl.required = githubAccounts.length > 0 || !!selectedAccount;
+    };
+    updateRepositoryAccounts();
     let submitting = false;
     const originDraft = draft;
     modal.querySelector("form")!.onsubmit = async (event) => {
@@ -1343,7 +1394,7 @@ export async function mountSettings(
       button.disabled = true;
       try {
         if (
-          account &&
+          (accountId || account?.required) &&
           !githubAccounts.some(
             (candidate) =>
               candidate.account_id === accountId &&
@@ -1409,6 +1460,9 @@ export async function mountSettings(
     repository: ConfiguredRepository,
     opener: HTMLElement,
   ) {
+    // A dialog opened from Genie must never fall back to immediate activation
+    // when its caller navigates away while a preview/save is in flight.
+    const scopeGuidance = guidance;
     const schedule = saved.defaults.schedule;
     const modal = dialog(
       `Settings for ${repository.name}`,
@@ -1658,6 +1712,12 @@ export async function mountSettings(
           { repositoryId: repository.id },
         );
         if (!modal.open || current !== scopeRead) return;
+        if (scopeGuidance && status.active) {
+          configureScope.disabled = true;
+          scopeStatus.textContent =
+            "Already authorized. Genie leaves this monitoring scope intact; use manual Settings to replace it.";
+          return;
+        }
         scopeStatus.textContent = status.active
           ? status.mode === "selected_existing"
             ? `Active for new pull requests and ${status.selected_existing} selected existing pull request${status.selected_existing === 1 ? "" : "s"}.`
@@ -1741,7 +1801,8 @@ export async function mountSettings(
         <div class="repository-toolbar"><input type="search" data-scope-search aria-label="Find matching pull request" placeholder="Find by number, title or author..." /><span data-selection-count>0 selected</span></div>
         <div class="activation-list" data-scope-list></div>
         <p role="alert" hidden></p>
-        <div class="settings-actions"><button class="primary" data-confirm-scope>Confirm monitoring scope</button><button data-cancel-scope>Cancel</button></div>`,
+        ${scopeGuidance ? '<p class="settings-hint">This choice is not activation. Monitoring remains off for this pending repository until the combined final confirmation. Closing the application loses unconfirmed scope choices, not saved resources.</p>' : ""}
+        <div class="settings-actions"><button class="primary" data-confirm-scope>${scopeGuidance ? "Use scope in final check" : "Confirm monitoring scope"}</button><button data-cancel-scope>Cancel</button></div>`,
         configureScope,
       );
       compactEditor(scope, "Back to repository; cancel this scope preview");
@@ -1869,6 +1930,23 @@ export async function mountSettings(
         ].map((input) => ({ input, disabled: input.disabled }));
         inputs.forEach(({ input }) => (input.disabled = true));
         try {
+          if (scopeGuidance) {
+            if (guidance !== scopeGuidance)
+              throw "This guided step is no longer active. Return to Genie and preview scope again.";
+            scopeGuidance.stage({
+              preview,
+              repository: clone(repository),
+              defaults: clone(saved.defaults),
+              mode: mode(),
+              selectedPullRequestIds: [...selected],
+            });
+            previewActive = false;
+            delete scope.dataset.closeLocked;
+            scope.close();
+            scopeStatus.textContent =
+              "Scope chosen for Genie's final check. This pending repository is not monitoring yet.";
+            return;
+          }
           await invoke<MonitoringActivationStatus>(
             "apply_monitoring_activation",
             {
@@ -2000,13 +2078,11 @@ export async function mountSettings(
     const isPrimary = sole || primaryAssignmentId(repository) === assignmentId;
     const modal = dialog(
       existing ? "Edit assignment" : "Assign agent",
-      `<form><label>Agent<select name="agent" required>${agents()
-        .map((a) =>
-          option(a.id, a.name, existing?.agent_id ?? agents()[0]?.id ?? ""),
-        )
+      `<form><label>Agent<select name="agent" aria-label="Agent" required>${option("", "Choose an Agent", existing?.agent_id ?? "")}${agents()
+        .map((a) => option(a.id, a.name, existing?.agent_id ?? ""))
         .join("")}</select></label>
         <label class="repository-check"><input type="checkbox" name="primary" ${isPrimary ? "checked" : ""} ${sole ? "disabled" : ""} /><span>Primary<small>${sole ? "The sole assignment is primary automatically." : "At most one explicit primary per repository. Uncheck to leave none."}</small></span></label>
-        <div class="permission-row"><label><input type="checkbox" name="comment" ${(existing?.comment ?? true) ? "checked" : ""} /><span>Comment<small>Allow comment publication, independently of approval and merge.</small></span></label><label><input type="checkbox" name="approve" ${existing?.actions?.approve ? "checked" : ""} /><span>Approve<small>Opt in to the acting GitHub account's approval after current Agent clearance and a primary final full review. Never self-approval or policy bypass.</small></span></label><label><input type="checkbox" name="merge" ${existing?.actions?.merge ? "checked" : ""} ${isPrimary ? "" : "disabled"} /><span>Merge<small>Independent opt-in; primary only, after final review, green CI and verified provider policies. Does not require Approve or personal acknowledgment.</small></span></label></div>
+        <div class="permission-row"><label><input type="checkbox" name="comment" ${existing?.comment ? "checked" : ""} /><span>Comment<small>Allow comment publication, independently of approval and merge.</small></span></label><label><input type="checkbox" name="approve" ${existing?.actions?.approve ? "checked" : ""} /><span>Approve<small>Opt in to the acting GitHub account's approval after current Agent clearance and a primary final full review. Never self-approval or policy bypass.</small></span></label><label><input type="checkbox" name="merge" ${existing?.actions?.merge ? "checked" : ""} ${isPrimary ? "" : "disabled"} /><span>Merge<small>Independent opt-in; primary only, after final review, green CI and verified provider policies. Does not require Approve or personal acknowledgment.</small></span></label></div>
         <p class="settings-hint">Primary selection never enables permissions. Polling is configured globally in Preferences. Saving commits this repository, not unrelated drafts.</p><p role="alert" hidden></p><div class="resource-actions"><button class="primary">${existing ? "Save assignment" : "Assign agent"}</button><button type="button" data-cancel-resource>Cancel</button></div></form>`,
       opener,
     );
@@ -2112,6 +2188,7 @@ export async function mountSettings(
             "signed_out",
             "wrong_identity",
             "network",
+            "rate_limited",
             "timeout",
             "provider_failure",
             "invalid_response",
@@ -2466,10 +2543,60 @@ export async function mountSettings(
     }
   }
   window.addEventListener("focus", () => {
+    if (app.closest("[hidden]")) return;
     refreshAgentAccounts?.();
     if (!dirty() && !busy && !startupPending && !dialogs.hasOpen()) void load();
   });
   await load();
+  return {
+    leaveGuidance,
+    open(target: SetupTarget, origin: GuidedReturn) {
+      if (!draft || busy) {
+        showError(
+          "Settings is not ready to navigate. Finish the current save or retry loading Settings.",
+        );
+        return false;
+      }
+      if (dialogs.hasOpen()) {
+        showError(
+          "An editor is already open. Its unsaved fields are intact; finish or cancel it before choosing another setup step.",
+        );
+        return false;
+      }
+      guidance = origin;
+      returnGenie.hidden = false;
+      openGenie.hidden = true;
+      app.querySelector<HTMLElement>("[data-genie-save-note]")!.hidden = false;
+      const next: Section =
+        target === "ai" ||
+        target === "repository-account" ||
+        target === "repositories"
+          ? "integrations"
+          : target;
+      if (section !== next) navigate(next);
+      const selector =
+        target === "ai"
+          ? ".copilot-auth"
+          : target === "repository-account"
+            ? ".github-auth"
+            : target === "repositories"
+              ? ".repository-library"
+              : target === "agents"
+                ? ".resource-toolbar"
+                : target === "doctrines"
+                  ? ".resource-toolbar"
+                  : "#content";
+      const destination =
+        content.querySelector<HTMLElement>(selector) ?? content;
+      destination.scrollIntoView({ block: "start" });
+      (
+        destination.querySelector<HTMLElement>(
+          "button:not(:disabled),input,select,[role=status][tabindex]",
+        ) ?? returnGenie
+      ).focus({ preventScroll: true });
+      return true;
+    },
+  };
 }
 import {
   isWindows,

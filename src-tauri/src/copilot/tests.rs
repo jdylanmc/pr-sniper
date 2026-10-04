@@ -132,6 +132,9 @@ struct FakeBackend {
     identity_failure: Mutex<Option<GithubAuthFailure>>,
     model_calls: Mutex<Vec<String>>,
     fail_models: AtomicBool,
+    held_model_account: Mutex<Option<String>>,
+    entered_models: tokio::sync::Notify,
+    release_models: tokio::sync::Notify,
     entered_identity: tokio::sync::Notify,
     entered_refresh: tokio::sync::Notify,
     release_identity: tokio::sync::Notify,
@@ -227,7 +230,12 @@ impl Backend for FakeBackend {
         _pair: TokenPair,
         _operation: Operation,
     ) -> Result<Vec<github_copilot_sdk::Model>, String> {
-        self.model_calls.lock().unwrap().push(identity.id);
+        self.model_calls.lock().unwrap().push(identity.id.clone());
+        let held = self.held_model_account.lock().unwrap().as_deref() == Some(&identity.id);
+        if held {
+            self.entered_models.notify_one();
+            self.release_models.notified().await;
+        }
         if self.fail_models.load(Ordering::SeqCst) {
             Err("Fixture catalog lookup failed.".into())
         } else {
@@ -244,6 +252,212 @@ fn account_view(integration: &Integration<FakeBackend>, id: &str) -> serde_json:
         .find(|account| account["account_id"] == id)
         .unwrap()
         .clone()
+}
+
+#[tokio::test]
+async fn genie_setup_generation_fences_completed_catalogs_and_the_native_commit_race() {
+    use crate::github::provider::{Capabilities, CommentCapability, Connection, RemoteRepository};
+    use crate::monitoring::{
+        AccountAvailability, ActivationMode, ActivationPreviewEvidence, Monitor, SetupActivation,
+    };
+    use crate::storage::Store;
+    use serde_json::json;
+    let integration = fake_integration();
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().to_path_buf());
+    let mut settings = store.load_settings().unwrap();
+    settings.agents = serde_json::from_value(json!([
+        {"id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "name":"A", "model":"fixture",
+         "ai_account":{"provider":"copilot","account_id":"101"}, "prompt":"Review.", "signature":"machine"},
+        {"id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "name":"B", "model":"fixture",
+         "ai_account":{"provider":"copilot","account_id":"202"}, "prompt":"Review.", "signature":"machine"}
+    ])).unwrap();
+    settings.repositories = serde_json::from_value(json!([{
+        "id":"cccccccc-cccc-4ccc-8ccc-cccccccccccc", "provider":"github", "name":"fixture/genie",
+        "enabled":true, "provider_account_id":"101", "provider_repository_id":"100",
+        "assignments": settings.agents.iter().enumerate().map(|(index, agent)| json!({
+            "id":format!("dddddddd-dddd-4ddd-8ddd-{:012}", index + 1), "agent_id":agent.id,
+            "schedule":settings.defaults.schedule, "comment":false
+        })).collect::<Vec<_>>()
+    }]))
+    .unwrap();
+    store.save_settings(&settings).unwrap();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let repository_accounts = BTreeMap::from([(
+        "101".into(),
+        AccountAvailability {
+            login: "fixture-101".into(),
+            connected: true,
+        },
+    )]);
+    let repo_generations = BTreeMap::from([("101".into(), 0)]);
+    let context = Monitor::activation_context(&settings, &settings.repositories[0].id).unwrap();
+    let preview = monitor
+        .stage_activation_preview(
+            &settings,
+            ActivationPreviewEvidence {
+                context,
+                connection: Connection {
+                    identity: github::Identity {
+                        id: "101".into(),
+                        login: "fixture-101".into(),
+                    },
+                    repository: RemoteRepository {
+                        id: "100".into(),
+                        name: "fixture/genie".into(),
+                    },
+                    capabilities: Capabilities {
+                        read: true,
+                        comment: CommentCapability::Available,
+                    },
+                },
+                pull_requests: Vec::new(),
+                creation_watermark: 0,
+                account_generation: 0,
+            },
+            0,
+        )
+        .unwrap();
+    let requests = [SetupActivation {
+        repository_id: settings.repositories[0].id.clone(),
+        preview_id: preview.preview_id,
+        mode: ActivationMode::NewOnly,
+        selected_pull_request_ids: Vec::new(),
+    }];
+    let shown = integration
+        .with_setup_accounts(|accounts, generations| {
+            monitor.setup_review(
+                &store,
+                repository_accounts.clone(),
+                accounts,
+                &repo_generations,
+                &generations,
+            )
+        })
+        .unwrap();
+    let a = integration
+        .operation("101", Instant::now() + OPERATION_LIMIT)
+        .unwrap();
+    integration.models("101", &a).await.unwrap();
+    *integration.backend.held_model_account.lock().unwrap() = Some("202".into());
+    let b = integration
+        .operation("202", Instant::now() + OPERATION_LIMIT)
+        .unwrap();
+    let waiting = {
+        let integration = integration.clone();
+        tokio::spawn(async move { integration.models("202", &b).await })
+    };
+    integration.backend.entered_models.notified().await;
+    // A's completed catalog cannot survive a same-ID/login reconnect while B waits.
+    integration.invalidate("101").unwrap();
+    integration
+        .with_setup_accounts(|accounts, generations| {
+            assert_eq!(accounts, shown.ai_accounts);
+            assert_eq!(generations["101"], 1);
+            assert_eq!(generations["202"], 0);
+            assert_eq!(repo_generations["101"], 0, "Repository role is independent");
+            let current = monitor.setup_review(
+                &store,
+                repository_accounts.clone(),
+                accounts,
+                &repo_generations,
+                &generations,
+            )?;
+            assert_ne!(current.confirmation, shown.confirmation);
+            Ok(())
+        })
+        .unwrap();
+    integration.backend.release_models.notify_one();
+    waiting.await.unwrap().unwrap();
+    integration
+        .backend
+        .fail_models
+        .store(true, Ordering::SeqCst);
+    let replacement = integration
+        .operation("101", Instant::now() + OPERATION_LIMIT)
+        .unwrap();
+    assert_eq!(
+        integration.models("101", &replacement).await.unwrap_err(),
+        "Fixture catalog lookup failed."
+    );
+    integration
+        .backend
+        .fail_models
+        .store(false, Ordering::SeqCst);
+
+    let last_read = integration
+        .with_setup_accounts(|accounts, generations| {
+            monitor.setup_review(
+                &store,
+                repository_accounts.clone(),
+                accounts,
+                &repo_generations,
+                &generations,
+            )
+        })
+        .unwrap();
+    // Reconnect has already entered generation ownership when the native commit arrives.
+    let account = integration.account("101").unwrap();
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let changing = {
+        let integration = integration.clone();
+        tokio::task::spawn_blocking(move || {
+            account.invalidate(|| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                let mut auth = integration.auth.lock().unwrap();
+                auth.accounts.insert(
+                    "101".into(),
+                    GithubAccountState::Connected(github::Identity {
+                        id: "101".into(),
+                        login: "fixture-101".into(),
+                    }),
+                );
+                Ok(())
+            })
+        })
+    };
+    entered_rx.await.unwrap();
+    let (attempt_tx, attempt_rx) = tokio::sync::oneshot::channel();
+    let committing = {
+        let integration = integration.clone();
+        tokio::task::spawn_blocking(move || {
+            attempt_tx.send(()).unwrap();
+            let result = integration.with_setup_accounts(|accounts, generations| {
+                let current = monitor.setup_review(
+                    &store,
+                    repository_accounts,
+                    accounts,
+                    &repo_generations,
+                    &generations,
+                )?;
+                monitor.apply_setup(
+                    &store,
+                    &current,
+                    &last_read.confirmation,
+                    &requests,
+                    &repo_generations,
+                    100,
+                )
+            });
+            assert!(result.unwrap_err().contains("Setup changed"));
+            assert!(store
+                .load_monitoring_state()
+                .unwrap()
+                .activations
+                .is_empty());
+            assert_eq!(store.load_settings().unwrap(), settings);
+        })
+    };
+    attempt_rx.await.unwrap();
+    release_tx.send(()).unwrap();
+    tokio::time::timeout(OPERATION_LIMIT, async {
+        changing.await.unwrap().unwrap();
+        committing.await.unwrap();
+    })
+    .await
+    .expect("Generation-before-auth ordering must complete");
 }
 
 #[tokio::test]

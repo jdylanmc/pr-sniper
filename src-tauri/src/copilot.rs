@@ -115,6 +115,42 @@ impl<B: Backend> Integration<B> {
         Operation::new(self.account(id)?, self.quitting.clone(), deadline)
     }
 
+    pub(super) fn with_setup_accounts<T>(
+        &self,
+        commit: impl FnOnce(
+            BTreeMap<String, crate::monitoring::AccountAvailability>,
+            BTreeMap<String, u64>,
+        ) -> Result<T, String>,
+    ) -> Result<T, String> {
+        // Local snapshot/commit only. Match publish/invalidate: generations
+        // before auth. Registry ownership prevents a new connection escaping
+        // the snapshot. Never take the async credential gate or call a provider.
+        let accounts = self
+            .accounts
+            .lock()
+            .map_err(|_| "Copilot account state is unavailable.")?;
+        let generations = accounts
+            .iter()
+            .map(|(id, work)| work.generation().map(|generation| (id, generation)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let auth = self
+            .auth
+            .lock()
+            .map_err(|_| "Copilot connection state is unavailable.")?;
+        let availability = auth.setup_accounts();
+        let versions = availability
+            .keys()
+            .map(|id| {
+                let generation = generations
+                    .iter()
+                    .find(|(account, _)| *account == id)
+                    .map_or(0, |(_, generation)| **generation);
+                (id.clone(), generation)
+            })
+            .collect();
+        commit(availability, versions)
+    }
+
     async fn restore(self: &Arc<Self>) -> Result<(), String> {
         // Only registry metadata is shared initialization. No network request
         // holds this barrier; each saved identity verifies independently.
