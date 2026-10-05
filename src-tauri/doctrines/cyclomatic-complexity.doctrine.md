@@ -6,7 +6,7 @@ scope: default-pr-sniper-doctrine
 
 # Cyclomatic Complexity Doctrine
 
-Control-flow paths cost understanding and proof. Aim for cyclomatic complexity of five or less per routine. Above ten is a red flag to raise in review, not an approval gate.
+Control-flow paths cost understanding and proof. Aim for cyclomatic complexity of five or less per routine. Above ten is a red flag to raise in review.
 
 Review changed routines for added paths and increased reasoning burden. Humans and agents share one standard; an agent's ability to enumerate branches does not justify harder code.
 
