@@ -1381,6 +1381,69 @@ fn transient_poll_failures_stop_after_three_retries_and_manual_retry_resets_budg
 }
 
 #[test]
+fn valid_global_cron_clears_stale_schedule_error_while_manual_retry_remains() {
+    let (_root, store) = store();
+    let accounts = available_accounts(&[(ACCOUNT_ID, "current-login")]);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let mut now = 1_800_000_000;
+
+    for attempt in 1..=4 {
+        let mut tickets = monitor.prepare_checks(&store, now, attempt == 1).unwrap();
+        assert_eq!(tickets.len(), 1);
+        monitor
+            .finish(
+                &store,
+                tickets.remove(0),
+                Err(ConnectionError::Network),
+                now + 1,
+            )
+            .unwrap_err();
+        if attempt < 4 {
+            now = monitor.snapshot()[0]
+                .operation
+                .as_ref()
+                .unwrap()
+                .next_attempt_at
+                .unwrap();
+        }
+    }
+    assert_eq!(
+        monitor.snapshot()[0].operation.as_ref().unwrap().state,
+        OperationState::ManualRetry
+    );
+
+    let mut settings = store.load_settings().unwrap();
+    settings.defaults.schedule = Schedule::Interval {
+        minutes: 15,
+        timezone: "UTC".into(),
+    };
+    set_settings(&store, &settings);
+    monitor
+        .synchronize_configuration(&store, &accounts, now + 2)
+        .unwrap();
+    assert_eq!(
+        monitor.snapshot()[0].last_failure.as_deref(),
+        Some("invalid_global_cron")
+    );
+
+    settings.defaults.schedule = Schedule::Cron {
+        expression: "*/10 * * * *".into(),
+        timezone: "UTC".into(),
+    };
+    set_settings(&store, &settings);
+    monitor
+        .synchronize_configuration(&store, &accounts, now + 3)
+        .unwrap();
+    let health = monitor.snapshot().remove(0);
+    assert_eq!(
+        health.operation.as_ref().unwrap().state,
+        OperationState::ManualRetry
+    );
+    assert_ne!(health.last_failure.as_deref(), Some("invalid_global_cron"));
+    assert!(!health.schedule_available);
+}
+
+#[test]
 fn publication_revision_recheck_is_durable_scoped_and_preserves_poll_backoff() {
     let (_root, store) = store();
     let mut monitor = Monitor::restore(&store).unwrap();
