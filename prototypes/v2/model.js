@@ -1024,7 +1024,7 @@
           start: "inherit",
           comments: "inherit",
         });
-        break;
+        return validate(state);
       }
       case "save-repo": {
         const repo = { ...payload.repo, id: payload.repo.id || uid("repo") };
