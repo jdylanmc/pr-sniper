@@ -161,12 +161,15 @@ async function check(engine, name) {
 
     await click('.genie-card [data-step="repo"]');
     current = await state();
-    await page.locator('input[name="name"]').fill("onboard/new-demo");
+    await click('[data-page="repo-url"]');
+    await page.locator('input[name="repository"]').fill("onboard/new-demo");
     await page
       .locator('select[name="accountId"]')
       .selectOption(
         current.accounts.find((account) => account.kind === "github").id,
       );
+    await click('[data-form="repo-url"] button[type="submit"]');
+    await page.locator('input[name="enabled"]').check();
     await page.locator('input[name="scope"]').check();
     await page
       .locator(`input[name="agentIds"][value="${current.agents[0].id}"]`)
@@ -181,6 +184,7 @@ async function check(engine, name) {
     await page.locator('select[name="start"]').selectOption("on");
     await page.locator('select[name="comments"]').selectOption("off");
     await click('[data-form="repo"] button[type="submit"]');
+    await click("#back-button");
     assert.equal(
       await page.locator('[role="progressbar"]').getAttribute("aria-valuenow"),
       "4",

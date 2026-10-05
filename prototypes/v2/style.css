@@ -1591,6 +1591,53 @@ button:disabled {
   border-radius: 12px;
   margin-bottom: 12px;
 }
+.repository-heading,
+.repository-account {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.app-view[data-page="repos"] .page-scroll,
+.app-view[data-page="repo-browser"] .page-scroll,
+.app-view[data-page="repo-url"] .page-scroll {
+  padding-top: 35px;
+}
+.repository-heading {
+  justify-content: space-between;
+  margin: 2px 0 12px;
+}
+.repository-heading h2,
+.repository-section-title {
+  font-size: 12px;
+  font-weight: 650;
+}
+.repository-section-title {
+  margin: 22px 0 10px;
+}
+.repository-account {
+  padding: 12px;
+}
+.repository-account + .repository-account {
+  border-top: 1px solid #edf1f4;
+}
+.repository-browse {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  border: 1px solid #d5dfe5;
+  color: var(--navy);
+  background: var(--paper);
+}
+.repository-browse:hover:not(:disabled) {
+  background: var(--mist);
+}
+.repository-browse .icon {
+  width: 18px;
+  height: 18px;
+}
 .section-toolbar p {
   color: var(--muted);
   font-size: 11px;
