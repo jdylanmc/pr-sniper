@@ -83,7 +83,7 @@ test("new assignments use the global policy while cancelled drafts never opt int
   store,
   dataRoot,
 }) => {
-  await seedAgent(store);
+  await seedAgent(store, "33");
   await store("save_repository", { repository: "fixture/local-time" });
   await page.goto("/?view=settings");
   const initial = (await store("snapshot")).settings;
@@ -132,6 +132,7 @@ test("repository People resolves stable identity, isolates neighbors and reports
   const initial = (await store("snapshot")).settings;
   initial.repositories[0].provider_account_id = "101";
   initial.repositories[0].provider_repository_id = "1";
+  initial.repositories.forEach((repository) => (repository.enabled = false));
   await store("seed_settings", initial);
   let disconnected = false;
   const calls = [];
@@ -350,7 +351,7 @@ test("assignment comment choice stays independent of opt-in Approve and preserve
   page,
   store,
 }) => {
-  await seedAgent(store);
+  await seedAgent(store, "33");
   await store("save_repository", { repository: "fixture/project" });
   const initial = (await store("snapshot")).settings;
   initial.defaults.reviewer_assignment = false;

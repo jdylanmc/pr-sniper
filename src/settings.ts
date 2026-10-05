@@ -52,7 +52,6 @@ type Section =
   | "capacity"
   | "doctrines"
   | "agents"
-  | "integrations"
   | "preferences";
 
 export type SetupTarget =
@@ -88,10 +87,6 @@ const sections: Record<Section, [string, string]> = {
   capacity: [
     "Concurrent reviews",
     "A limit on running work, not saved agents.",
-  ],
-  integrations: [
-    "Integrations",
-    "Sign in to an AI subscription, then connect the repositories it should watch.",
   ],
   doctrines: [
     "Doctrines",
@@ -169,6 +164,8 @@ const reason = (error: unknown) => {
       "GitHub organization policy or single sign-on denied access. Authorize this app for that organization, then retry.",
     repository_changed:
       "The repository identity changed. Refresh the owner or check the URL, then retry.",
+    authentication_changed:
+      "The GitHub connection changed during this request. Retry with the current connected account.",
     provider_failure:
       "GitHub lookup failed. Check provider health and try again.",
   };
@@ -206,10 +203,10 @@ export async function mountSettings(
       )
       .join("")}</nav>
     <label class="mobile-section">Section<select aria-label="Settings section">${legacySections
-      .map(([key, [title]]) => option(key, title, "integrations"))
+      .map(([key, [title]]) => option(key, title, "accounts"))
       .join("")}</select></label></aside>`
   }
-    <div class="settings-main"><div class="settings-genie-entry"><button type="button" data-open-genie>Set up with Genie</button><button type="button" data-return-genie hidden>Back to Genie</button><p data-genie-save-note hidden>Each save is applied immediately. Close hides this editor; Back and Cancel follow the unsaved-field guidance below. Repository Save is authorization; no further scope confirmation is needed.</p></div><header class="settings-heading"><h1 tabindex="-1">Integrations</h1><p>Sign in to an AI subscription, then connect the repositories it should watch.</p></header>
+    <div class="settings-main"><div class="settings-genie-entry"><button type="button" data-open-genie>Set up with Genie</button><button type="button" data-return-genie hidden>Back to Genie</button><p data-genie-save-note hidden>Each save is applied immediately. Close hides this editor; Back and Cancel follow the unsaved-field guidance below. Repository Save is authorization; no further scope confirmation is needed.</p></div><header class="settings-heading"><h1 tabindex="-1">Settings</h1><p>Sign in to an AI subscription, then connect the repositories it should watch.</p></header>
     <p id="error" role="alert" hidden></p><section id="content"></section>
     <footer class="settings-savebar"><span role="status" id="save-status">Loading settings...</span><button id="reload-settings" hidden>Discard draft and reload</button><button id="reset-settings" disabled>Reset changes</button><button class="primary" id="save-settings" disabled>Save preferences</button></footer></div>`;
   const content = app.querySelector<HTMLElement>("#content")!;
@@ -479,11 +476,10 @@ export async function mountSettings(
     settingsBack.title = `Back to ${sections[parent][0]}; retain unsaved changes`;
     app.querySelector<HTMLElement>(".settings-savebar")!.hidden =
       section === "repositories" ||
-      section === "integrations" ||
       (!!options.embedded && (section === "home" || accountOverview));
     settingsHeading.hidden = section === "home";
     app.dataset.resourceLibrary =
-      section === "integrations" || section === "repositories"
+      section === "repositories"
         ? "repositories"
         : section === "agents" || section === "doctrines"
           ? section
@@ -512,8 +508,7 @@ export async function mountSettings(
       else renderAccountOverview();
     }
     if (section === "copilot" || section === "github") renderAccounts();
-    if (section === "integrations" || section === "repositories")
-      renderIntegrations();
+    if (section === "repositories") renderRepositories();
     if (section === "doctrines") renderDoctrines();
     if (section === "agents")
       renderAgents(() => {
@@ -922,7 +917,7 @@ export async function mountSettings(
     content.innerHTML = `<div class="section-actions resource-toolbar"><p>Unlimited saved configurations. AI capacity is set separately.</p><button class="primary" id="new-agent" disabled>New agent</button></div><div class="resource-account-notice"><p class="settings-hint" data-copilot-status>Reading Copilot accounts...</p><button id="manage-copilot">Manage Copilot accounts</button></div><div class="agent-list resource-library"></div>`;
     const list = content.querySelector(".agent-list")!;
     if (!agents().length)
-      list.innerHTML = `<div class="settings-empty"><strong>No agents yet</strong><p>Create one to start assigning it to repositories in ${options.embedded ? "Repositories" : "Integrations"}.</p></div>`;
+      list.innerHTML = `<div class="settings-empty"><strong>No agents yet</strong><p>Create one to start assigning it to repositories in Repositories.</p></div>`;
     for (const agent of agents()) {
       const account = copilotAccounts.find(
         (a) => a.account_id === agent.ai_account?.account_id,
@@ -974,7 +969,7 @@ export async function mountSettings(
       editAgent(event.currentTarget as HTMLButtonElement);
     content.querySelector<HTMLButtonElement>("#manage-copilot")!.onclick =
       () => {
-        navigate(options.embedded ? "accounts" : "integrations");
+        navigate(options.embedded ? "copilot" : "accounts");
         if (options.embedded) {
           homeOpener = "accounts";
           settingsHeading.querySelector<HTMLElement>("h1")!.focus();
@@ -1337,7 +1332,7 @@ export async function mountSettings(
     };
   }
 
-  // ------------------------------------------------------------- Integrations
+  // --------------------------------------------------- Accounts / repositories
 
   function renderAccounts() {
     if (accountContent) {
@@ -1383,7 +1378,7 @@ export async function mountSettings(
       });
   }
 
-  function renderIntegrations() {
+  function renderRepositories() {
     content.innerHTML = `<section class="repository-library" aria-label="Repositories">
       <div class="section-actions"><h2>Your repositories</h2><button class="primary" id="add-repository" aria-label="Add repository by URL">+ URL</button></div>
       <div class="repository-list native-repository-list"></div>
@@ -1507,6 +1502,8 @@ export async function mountSettings(
         r.provider_account_id === accountId &&
         r.provider_repository_id === resolved.repository.id,
     );
+    if (previous && repository && previous.id !== repository.id)
+      throw `${resolved.repository.name} is already configured on another row under this account. Choose a different repository or cancel this edit.`;
     if (
       !repository ||
       (previous?.id === repository.id &&
@@ -1860,13 +1857,6 @@ export async function mountSettings(
     modal.querySelector<HTMLButtonElement>("[data-save-repository]")!.onclick =
       async () => {
         try {
-          if (
-            pendingSetup.has(repository.id) &&
-            !repository.assignments?.length &&
-            modal.querySelector<HTMLInputElement>("[data-repository-enabled]")!
-              .checked
-          )
-            throw "Assign an Agent before enabling repository monitoring.";
           repository.enabled = modal.querySelector<HTMLInputElement>(
             "[data-repository-enabled]",
           )!.checked;
@@ -2556,7 +2546,7 @@ export async function mountSettings(
         return;
       }
       const retainAccounts =
-        (section === "integrations" ||
+        (section === "accounts" ||
           section === "copilot" ||
           section === "github") &&
         content.querySelector(".account-connection") !== null &&

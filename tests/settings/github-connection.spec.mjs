@@ -68,6 +68,7 @@ async function saveBoundRepository(
   Object.assign(
     settings.repositories.find((repository) => repository.name === name),
     {
+      enabled: false,
       provider_account_id: accountId,
       provider_repository_id: repositoryId,
     },

@@ -28,7 +28,7 @@ async function seed(page, store, assignments = false) {
   await store("save_repository", { repository: "fixture/target" });
   const settings = (await store("snapshot")).settings;
   settings.agents = [
-    fixtureAgent,
+    { ...fixtureAgent, ai_account: { provider: "copilot", account_id: "101" } },
     {
       ...fixtureAgent,
       id: targetAgentId,
@@ -48,6 +48,7 @@ async function seed(page, store, assignments = false) {
       provider_repository_id: String(99 + index),
     }),
   );
+  settings.repositories[1].enabled = assignments;
   if (assignments) {
     settings.repositories[1].assignments = settings.agents.map(
       (agent, index) => ({
@@ -570,6 +571,16 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
           remaining - 1,
         );
       }
+      await parent
+        .getByRole("button", { name: "Save repository", exact: true })
+        .click();
+      await expect(parent.locator("[data-resource-error]")).toContainText(
+        "assign at least one saved Agent",
+      );
+      expect(
+        (await store("snapshot")).settings.repositories[1].assignments,
+      ).toEqual(saved.repositories[1].assignments);
+      await parent.getByLabel("Enable repository monitoring on Save").uncheck();
       await parent
         .getByRole("button", { name: "Save repository", exact: true })
         .click();

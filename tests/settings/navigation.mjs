@@ -172,9 +172,16 @@ export const fixtureAgent = {
   signature: "Fixture signature",
 };
 
-export async function seedAgent(store) {
+export async function seedAgent(store, aiAccountId) {
   const settings = (await store("snapshot")).settings;
-  settings.agents = [structuredClone(fixtureAgent)];
+  settings.agents = [
+    {
+      ...structuredClone(fixtureAgent),
+      ...(aiAccountId
+        ? { ai_account: { provider: "copilot", account_id: aiAccountId } }
+        : {}),
+    },
+  ];
   await store("seed_settings", settings);
   return settings;
 }

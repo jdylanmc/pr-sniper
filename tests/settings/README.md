@@ -1,5 +1,15 @@
 # Settings behavioral tests
 
+`repository-review-fixes.spec.mjs` follows the actual Manage Copilot accounts
+button in retained and standalone Settings, rejects rename/rebind collisions
+without leaving the originating editor, and checks incomplete enabled saves
+alongside explicit disabled repair. Legacy incomplete settings remain loadable.
+Enabled-save fixtures use explicit saved AI accounts/models; clearing the final
+assignment requires disabling monitoring before saving. Native
+`repository_read_tests` exercises all three intake commands' shared completion
+boundary with held provider successes/auth failures and real confirmation
+generation changes, both with and without an earlier disconnect.
+
 `settings-overview.spec.mjs` covers the grouped retained-panel Settings home:
 saved resource counts, separate Accounts/Repositories, all six destinations,
 Accounts category/provider drill-down at 408x744 and 320x300, inert coming-soon

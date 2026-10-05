@@ -46,9 +46,10 @@ test("reusable Agents keep independent repository assignments and preserve legac
     },
   ];
   initial.agents = [
-    fixtureAgent,
+    { ...fixtureAgent, ai_account: { provider: "copilot", account_id: "33" } },
     {
       ...fixtureAgent,
+      ai_account: { provider: "copilot", account_id: "33" },
       id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
       name: "Second reviewer",
       prompt: "Second Agent instructions.",

@@ -85,7 +85,7 @@ for (const viewport of [
       await route.fulfill({ response, body });
     });
     await store("save_repository", { repository: "octo/legacy-viewport" });
-    const settings = await seedAgent(store);
+    const settings = await seedAgent(store, "33");
     settings.repositories[0].assignments = Array.from(
       { length: 12 },
       (_, index) => ({

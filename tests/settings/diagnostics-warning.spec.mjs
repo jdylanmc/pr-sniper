@@ -19,15 +19,27 @@ for (const action of ["add", "enable", "remove", "agent", "assignment"]) {
     dataRoot,
   }) => {
     await store("seed_settings", { launch_at_login: true });
-    await seedAgent(store);
+    await seedAgent(store, "33");
     await store("save_repository", { repository: "octo/hello-world" });
     const repository = (await store("snapshot")).settings.repositories[0];
-    if (action === "enable")
+    if (action === "enable") {
       await store("update_repository", {
         id: repository.id,
         repository: repository.name,
         enabled: false,
       });
+      const configured = (await store("snapshot")).settings;
+      configured.repositories[0].assignments = [
+        {
+          id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          agent_id: configured.agents[0].id,
+          schedule: configured.defaults.schedule,
+          comment: false,
+          approve: false,
+        },
+      ];
+      await store("seed_settings", configured);
+    }
     const before = (await store("snapshot")).settings;
     await page.goto("/?view=settings");
     const log = join(dataRoot, "state/diagnostics.jsonl");

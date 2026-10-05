@@ -11,6 +11,9 @@ test("publication permission is independent, inherited and persisted", async ({
   store,
 }) => {
   await store("save_repository", { repository: "fixture/publication-policy" });
+  const setup = (await store("snapshot")).settings;
+  setup.repositories[0].enabled = false;
+  await store("seed_settings", setup);
   await page.goto("/?view=settings");
   await section(page, "Preferences");
   const automatic = page.getByRole("switch", {
@@ -53,6 +56,9 @@ test("publication permission is independent, inherited and persisted", async ({
     (await store("snapshot")).settings.repositories[0].overrides
       ?.automatic_comment_publication,
   ).toBeUndefined();
+  expect((await store("snapshot")).settings.repositories[0].enabled).toBe(
+    false,
+  );
 });
 
 function snapshot(phase = null) {
