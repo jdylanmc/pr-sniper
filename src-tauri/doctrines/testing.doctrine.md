@@ -1,7 +1,7 @@
 ---
 name: testing
 description: "Protect behavior at the smallest trustworthy scope, through a seam that hides irrelevant implementation."
-scope: shared-engineering-doctrine
+scope: default-pr-sniper-doctrine
 ---
 
 # Testing Doctrine

@@ -1,7 +1,7 @@
 ---
 name: data
 description: "Make stored data and durable computation authoritative, replayable, visible, and shaped by real access."
-scope: shared-engineering-doctrine
+scope: default-pr-sniper-doctrine
 ---
 
 # Data Doctrine

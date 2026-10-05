@@ -1,7 +1,7 @@
 ---
 name: machine
 description: "Use small rerunnable levers when they are cheaper and safer than repeated manual work."
-scope: shared-engineering-doctrine
+scope: default-pr-sniper-doctrine
 ---
 
 # Machine Doctrine

@@ -1,7 +1,7 @@
 ---
 name: laziness
 description: "Disciplined economy for high-impact changes with low maintenance burden."
-scope: shared-engineering-doctrine
+scope: default-pr-sniper-doctrine
 ---
 
 # Laziness Doctrine
