@@ -17,7 +17,6 @@ That tactical strength does not create strategic authority. Humans decide where 
 - Keep strategy human-owned. Product direction, architecture, priorities, system boundaries, enduring tradeoffs, accepted risk, and the shape of the delegation remain human responsibilities.
 - Escalate changes of meaning. A choice becomes strategic when it changes the objective, crosses a boundary, commits the system to a durable direction, or requires context and authority not contained in the delegation.
 - Make authority visible. Workflows should reveal who may decide, what the agent may change, which evidence supports continuation, and where human judgment resumes.
-- Use Nimble inside the delegation. This doctrine answers who owns the decision. Nimble answers whether authorized tactical work should continue, notify, ask, or stop as consequences emerge.
 - Preserve the next layer. Strategic stewardship means leaving a system that can continue evolving. Tactical success is incomplete when it quietly makes future direction harder to change.
 
 Human ownership does not require humans to type the solution or approve every implementation detail. Agent autonomy does not grant authority over purpose. The partnership works when humans choose the direction and agents are trusted to make disciplined progress within it.
