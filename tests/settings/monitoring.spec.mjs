@@ -52,6 +52,11 @@ test("Review Queue renders acting schedule identity and every persisted detectio
   page,
 }) => {
   const snapshot = {
+    global_scan: {
+      schedule_key: "cron:*/5 * * * *:America/New_York",
+      next_run: 1_800_000_300,
+      pending: [],
+    },
     health: [
       {
         repository_id: "scheduled",
@@ -205,21 +210,40 @@ test("Review Queue renders acting schedule identity and every persisted detectio
     })),
   };
   await page.addInitScript((value) => {
-    const invoke = window.__TAURI_INTERNALS__.invoke;
+    const wrap = (internals) => {
+      const invoke = internals.invoke;
+      internals.invoke = (command, args) => {
+        if (command === "monitoring_snapshot")
+          return Promise.resolve(window.__monitoringSnapshot);
+        if (command === "check_now") {
+          window.__monitoringChecks++;
+          return Promise.resolve();
+        }
+        if (command === "retry_monitoring_operation") {
+          window.__monitoringRetries.push(args.operationId);
+          return Promise.resolve();
+        }
+        return invoke(command, args);
+      };
+      return internals;
+    };
     window.__monitoringChecks = 0;
     window.__monitoringRetries = [];
-    window.__TAURI_INTERNALS__.invoke = (command, args) => {
-      if (command === "monitoring_snapshot") return Promise.resolve(value);
-      if (command === "check_now") {
-        window.__monitoringChecks++;
-        return Promise.resolve();
-      }
-      if (command === "retry_monitoring_operation") {
-        window.__monitoringRetries.push(args.operationId);
-        return Promise.resolve();
-      }
-      return invoke(command, args);
-    };
+    window.__monitoringSnapshot = value;
+    if (window.__TAURI_INTERNALS__) {
+      window.__TAURI_INTERNALS__ = wrap(window.__TAURI_INTERNALS__);
+      return;
+    }
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      set(internals) {
+        Object.defineProperty(window, "__TAURI_INTERNALS__", {
+          configurable: true,
+          value: wrap(internals),
+          writable: true,
+        });
+      },
+    });
   }, snapshot);
 
   await page.goto("/?view=queue");
@@ -272,4 +296,37 @@ test("Review Queue renders acting schedule identity and every persisted detectio
   await expect
     .poll(() => page.evaluate(() => window.__monitoringChecks))
     .toBe(1);
+  await page.evaluate(() => {
+    for (const repository of window.__monitoringSnapshot.health) {
+      repository.enabled = false;
+      repository.schedule_available = false;
+      repository.next_run = 0;
+    }
+    window.__monitoringSnapshot.global_scan.pending = [];
+    window.__monitoringSnapshot.global_scan.next_run = 0;
+    const invalidCron = window.__monitoringSnapshot.health.find(
+      (repository) => repository.repository_id === "disabled",
+    );
+    invalidCron.enabled = true;
+    invalidCron.last_failure = "invalid_global_cron";
+  });
+  await page.getByRole("button", { name: "Check Now", exact: true }).click();
+  await expect(
+    health.locator("p").filter({ hasText: "Global scan:" }),
+  ).toContainText(
+    "Unavailable; configure a valid global cron schedule in Settings.",
+  );
+  await page.evaluate(() => {
+    const invalidCron = window.__monitoringSnapshot.health.find(
+      (repository) => repository.repository_id === "disabled",
+    );
+    invalidCron.enabled = false;
+  });
+  await page.getByRole("button", { name: "Check Now", exact: true }).click();
+  await expect(
+    health.locator("p").filter({ hasText: "Global scan:" }),
+  ).toContainText("No eligible repositories; no provider scan is scheduled.");
+  await expect
+    .poll(() => page.evaluate(() => window.__monitoringChecks))
+    .toBe(3);
 });

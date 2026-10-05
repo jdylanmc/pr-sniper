@@ -563,6 +563,10 @@ global scan; repeated requests during a read coalesce. Bindings addressing the
 same remote repository drain serially. Check Now never bypasses Retry-After or
 an existing retry budget.
 
+When no enabled repository is schedulable, the next global scan is suspended
+instead of repeatedly running empty ticks. The schedule resumes at its next
+occurrence when a repository becomes eligible again.
+
 Each repository poll persists its provider/account/repository/policy identity,
 attempt count and 15-minute retry deadline before the provider read begins.
 Timeout, rate-limit, network and provider-server failures receive at most three
