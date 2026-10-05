@@ -25,7 +25,7 @@ The cycle body is read-only: acquire evidence, draft findings in conversation, a
 
 ## Scout the meaningful design space
 
-Follow [doctrine selection and application](../doctrine/APPLY.md), preserving this inquiry's selections. For consequential uncertainty, use the Scout skill. Do not require a missing doctrine. A coordinator may select from catalog metadata; the agent applying Scout loads its verified full text. Missing or mismatched doctrine is an explicit coverage gap, not permission to invent rules. Load no unrelated doctrine merely because it exists.
+Follow [doctrine selection and application](../doctrine/APPLY.md), preserving this inquiry's selections. For consequential uncertainty, **require `scout`** through [Doctrine](../doctrine/SKILL.md). A coordinator may select from catalog metadata; the agent applying Scout loads its verified full text. Missing or mismatched doctrine is an explicit coverage gap, not permission to invent rules. Load no unrelated doctrine merely because it exists.
 
 Use Scout within the evidence cycle, not as a second workflow skipping alignment or persistence:
 

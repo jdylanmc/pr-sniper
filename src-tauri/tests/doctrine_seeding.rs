@@ -5,11 +5,7 @@ mod support;
 use support::Fixture;
 
 fn canonical_doctrines() -> Vec<Doctrine> {
-    let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .map(|root| root.join(".agents/skills/doctrine/doctrines"))
-        .find(|directory| directory.is_dir())
-        .expect("canonical doctrines in this repository");
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("doctrines");
     let mut doctrines: Vec<_> = fs::read_dir(directory)
         .unwrap()
         .map(|entry| entry.unwrap().path())

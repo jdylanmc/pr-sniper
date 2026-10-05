@@ -1,11 +1,12 @@
 use crate::storage::Doctrine;
 
-// Embed the canonical documents, not a second generated copy of their content.
+// Shipped user library. Skill doctrines under `.agents/skills/doctrine` are a
+// separate catalog and must not be embedded here.
 macro_rules! sources {
     ($($title:literal),+ $(,)?) => {
         [$(
             ($title, include_str!(concat!(
-                "../../.agents/skills/doctrine/doctrines/", $title, ".doctrine.md"
+                "../doctrines/", $title, ".doctrine.md"
             )))
         ),+]
     };

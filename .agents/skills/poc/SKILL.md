@@ -9,7 +9,7 @@ user-invocable: true
 
 **Entry:** Machine-first; human invocation also allowed. Run bounded, isolated experiments for feasibility, compatibility, performance, logic, or UI questions. Return observed findings, not product promotion. Follow the [invocation contract](../setup/INVOCATION.md).
 
-Use [doctrine selection and application](../doctrine/APPLY.md), preserving the inquiry's choices. With none, consider `machine` for evidence-buying experiments; add testing guidance only where the agreed experiment warrants it. Apply loaded rules within scratch isolation: they neither make throwaway work production code nor waive the human's learning budget.
+Use [doctrine selection and application](../doctrine/APPLY.md), preserving the inquiry's choices. With none, consider `scout` and `machine` for evidence-buying experiments; add testing guidance only where the agreed experiment warrants it. Apply loaded rules within scratch isolation: they neither make throwaway work production code nor waive the human's learning budget.
 
 Buy real information cheaply. The prototype is usually throwaway; the learning is not. The retained [intent](intent.md) defines the purpose.
 

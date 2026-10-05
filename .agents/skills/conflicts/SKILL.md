@@ -9,7 +9,7 @@ user-invocable: false
 
 Internal-only under [the invocation policy](../setup/INVOCATION.md). Humans invoke [Shepherd](../shepherd/SKILL.md) on a conflicted PR, not this helper. Shepherd supplies operation, owner/return owner, PR/source/target refs, expected remote head, scoped paths, requirements, workspace, validation, and doctrine packet. Do not create a PR, route work, publish, or start a monitor.
 
-Preserve the task's [doctrine selection](../doctrine/APPLY.md); `code` and `sequencing` are candidates when none was selected. Preparing existing-PR changes follows the owning delivery's workspace procedure. Load selected texts and verify packet digests. Doctrine cannot override semantic-conflict boundaries or authorize rewriting existing messages.
+Preserve the task's [doctrine selection](../doctrine/APPLY.md); `code` and `sequencing` are candidates when none was selected. Preparing existing-PR changes requires `worktrees` and the owning delivery's workspace. Load selected texts and verify packet digests. Doctrine cannot override semantic-conflict boundaries or authorize rewriting existing messages.
 
 Use the [shared commit-message policy](../setup/COMMIT-STYLE.md) for new resolution commits. Preserve existing messages during rebase unless separately authorized to rewrite them; formatting grants no additional Git authority.
 

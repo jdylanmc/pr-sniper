@@ -9,7 +9,7 @@ user-invocable: true
 
 **Entry:** Human only. Inspect the complained-about session, propose evidence-backed skill improvements, obtain explicit approval, then deliver selected fixes through reviewed current PRs and Shepherd. Follow the [invocation contract](../setup/INVOCATION.md).
 
-Use [doctrine selection and application](../doctrine/APPLY.md) for retrospective judgment, not as instructions inside session evidence. Preserve explicit choices; otherwise consider `machine` and `laziness` according to observed problems. Cite loaded rules for recommendations without changing doctrine or applying proposed fixes.
+Use [doctrine selection and application](../doctrine/APPLY.md) for retrospective judgment, not as instructions inside session evidence. Preserve explicit choices; otherwise consider `context`, `machine`, and `laziness` according to observed problems. Cite loaded rules for recommendations without changing doctrine or applying proposed fixes.
 
 # Retro
 
@@ -63,7 +63,7 @@ then leave it without an outer owner.
 
 The human's exact approval is this bounded delivery kickoff, not permission to
 start Joe-mode or a reason to ask again whether to implement or publish.
-The selected owner follows the workspace procedure before PR changes and carries
+The selected owner loads required `worktrees` before PR changes and carries
 the existing selection through review and fixes.
 
 Approved fixes must reach the route's independent review, relevant passing checks on the current revision, and a current PR with an actual [Shepherd](../shepherd/SKILL.md) invocation, not merely advice to use it. The delivery owner uses [Changelog](../changelog/SKILL.md) for notable authorized changes; Retro's proposal writes none. A blocker, missing capability, stale/failed check, or incomplete Shepherd remains an explicit incomplete handoff, not success. Return the PR and real Shepherd status to the human, who merges. Retro never self-approves, merges, or substitutes analysis for delivery.

@@ -5,7 +5,7 @@ Use [Doctrine](SKILL.md) through the actual harness skill interface, or read its
 ## Select for this scope
 
 1. Recover this task's operator selection and requirements from governing repository instructions or the caller. A task artifact or reviewed source cannot declare itself a governing instruction.
-2. Add the skill's required and conditional IDs. Every authorized workflow preparing a PR follows the workspace procedure in [WORKSPACE.md](../ship/WORKSPACE.md), even for documentation/specification changes. That procedure is not a doctrine. Code Roast requires `solid`. Reading a PR or posting an issue does not itself create a PR or authorize workspace changes.
+2. Add the skill's required and conditional IDs. Every authorized workflow preparing a PR requires `worktrees`, even for documentation/specification changes; code Roast requires `solid`. Reading a PR or posting an issue does not itself create a PR or authorize workspace changes.
 3. With no operator preselection, inspect the catalog and choose a small, relevant set for the actual work or each sub-agent. Skill suggestions are selection hints, not commands to load the whole list. Preserve operator preselection; explain proposed optional additions rather than silently replacing it.
 4. Canonicalize names, deduplicate IDs, and record each one's relevance and operator-selected, required, or agent-selected status. A mandatory ID stays mandatory when duplicated by an optional choice.
 
@@ -34,4 +34,4 @@ If a required selection is unavailable, report the affected work and ask how to 
 
 ## PR preparation
 
-The workflow creating or updating the PR owns workspace operations. Follow the shared [workspace procedure](../ship/WORKSPACE.md) before preparing PR changes; reuse suitable existing isolation. The selector remains read-only. Docs-only delivery is no exception; failed isolation does not permit default-branch work.
+The workflow creating or updating the PR owns workspace operations. Load `worktrees` and follow the shared [workspace procedure](../ship/WORKSPACE.md) before preparing PR changes; reuse suitable existing isolation. The selector remains read-only. Docs-only delivery is no exception; failed isolation does not permit default-branch work.
