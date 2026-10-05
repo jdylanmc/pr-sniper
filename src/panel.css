@@ -644,9 +644,13 @@
   background: transparent;
   color: inherit;
 }
-.panel-footer span {
+.panel-footer .panel-hide-hint {
   flex: 1;
   text-align: right;
+}
+.panel-footer [data-panel-version] {
+  font-size: 9px;
+  overflow-wrap: anywhere;
 }
 .panel-error {
   flex: none;
@@ -761,9 +765,6 @@
   .panel-summary {
     margin: 0 10px 5px;
     padding: 6px 10px;
-  }
-  .panel-footer span {
-    display: none;
   }
   .panel-shell .dialog-body {
     max-height: calc(100vh - 185px);

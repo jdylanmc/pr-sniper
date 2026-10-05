@@ -1,5 +1,16 @@
 # Settings behavioral tests
 
+`settings-overview.spec.mjs` covers the grouped retained-panel Settings home:
+saved resource counts, separate Accounts/Repositories, all six destinations,
+keyboard entry, Back focus/scroll, unrelated drafts and Genie reuse. Existing
+shared-editor and panel suites exercise resource saves, explicit discard and
+hide/tab retention through those rows. Footer cases compare the version with the
+native Store bridge's compiled metadata, cover missing/rejected metadata and
+Status retry, and retain utility controls and hide-only guidance on all tabs.
+Screenshots use 408x744 logical pixels at 2x device scale; footer geometry also
+covers 320x300 and 408x441, reduced motion and 2x text enlargement. These are
+browser/isolated-bridge results, not acceptance of the running native tray app.
+
 `genie.spec.mjs` covers R41's fresh/partial/existing flows through the production
 Welcome, Genie and shared Settings editors. Repository and AI sign-in/model
 transport is explicitly synthetic; saved resources, readiness, scope validation

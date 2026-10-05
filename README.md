@@ -20,7 +20,16 @@ AI accounts with browser sign-in and per-Agent account/model selection; see
 [approved specification](docs/agent/specs/pr-sniper-mvp.nano.md), not this
 implementation summary.
 
-Integrations keeps GitHub repository/publication identity separate from Copilot
+Settings opens a grouped **Your review setup** overview with saved resource
+counts. **Accounts**, **Agents**, **Repositories** and **Doctrines** open their
+existing resource editors; **Concurrent reviews** focuses AI capacity in the
+shared Preferences editor. **Preferences** retains the global schedule,
+automation, notification and startup controls. Back restores the overview's
+row and scroll position without saving or resetting other drafts. Resource
+editors retain their explicit Save/Cancel behavior; the overview has no global
+save bar. **Set up with Genie** remains available.
+
+**Accounts** keeps GitHub repository/publication identity separate from Copilot
 AI identity. Choose **Add GitHub account** or **Connect Copilot account** to
 start that native flow; sign-in is not started or a model selected automatically.
 The compact panels retain actual device-code waiting, returned-identity
@@ -132,6 +141,9 @@ The approved navy header and supplied artwork frame persistent bottom navigation
 The Monitoring control uses the existing machine-wide pause gate; Close remains
 hide-only. Unknown automation state disables that control and clears the active
 work badge rather than retaining stale availability. Native
+application metadata supplies the running version beside **Status** and
+**Diagnostics** on every tab. Unavailable metadata is labelled explicitly;
+opening Status retries the read without inventing a version. Native
 folder selection holds focus dismissal until it returns. External browser
 sign-in may hide the panel; reopening retains the connecting flow and draft.
 Running shows the native shared-capacity jobs (including stopping work);
