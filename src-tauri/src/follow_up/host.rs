@@ -415,7 +415,6 @@ pub(crate) struct Candidate {
     pub(crate) automatic_start: bool,
     pub(crate) automatic_publication: bool,
     pub(crate) human_gate: bool,
-    pub(crate) trust_required: bool,
 }
 
 fn serialize_run<S: serde::Serializer>(run: &FollowUp, serializer: S) -> Result<S::Ok, S::Error> {
@@ -489,21 +488,14 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
                     && other.context.job.account_id == run.context.job.account_id
                     && other.phase == Phase::HumanInputRequired
             });
-            let trust_required = jobs
-                .iter()
-                .find(|j| run.matches_job(j))
-                .is_some_and(|j| j.waiting == monitoring::WAITING_TRUST_CONFIRMATION)
-                && !run.context.trust_confirmed;
             Candidate {
                 planned_selection: policy.as_ref().ok().cloned(),
-                trust_required,
                 run: run.clone(),
                 blocked: policy.as_ref().err().cloned(),
                 automatic_start: policy
                     .as_ref()
                     .is_ok_and(|s| s.policy.automatic_agent_start)
-                    && !human_gate
-                    && !trust_required,
+                    && !human_gate,
                 automatic_publication: policy
                     .as_ref()
                     .is_ok_and(|s| s.policy.automatic_comment_publication),
@@ -567,18 +559,12 @@ impl Coordinator {
             })
         };
         if let Some((id, publish)) = next {
-            Self::launch(app, &id, publish, false, false)?;
+            Self::launch(app, &id, publish, false)?;
         }
         Ok(())
     }
 
-    fn launch(
-        app: &tauri::AppHandle,
-        id: &str,
-        publish: bool,
-        manual: bool,
-        confirm_trust: bool,
-    ) -> Result<(), String> {
+    fn launch(app: &tauri::AppHandle, id: &str, publish: bool, manual: bool) -> Result<(), String> {
         let host = app.state::<Host>();
         if host.quitting.load(Ordering::SeqCst) {
             return Err("PR Sniper is quitting.".into());
@@ -589,22 +575,6 @@ impl Coordinator {
                     .store
                     .lock()
                     .map_err(|_| "Thread storage unavailable.")?;
-                if manual && confirm_trust {
-                    let mut runs = store.load_follow_ups()?;
-                    let run = runs
-                        .iter_mut()
-                        .find(|r| r.id == id)
-                        .ok_or("Conversation unavailable.")?;
-                    let settings = store.load_settings()?;
-                    let jobs = store.load_queue()?;
-                    let job = jobs
-                        .iter()
-                        .find(|j| run.matches_job(j))
-                        .ok_or("Conversation iteration unavailable.")?;
-                    run.authority(&settings, job)?;
-                    run.context.trust_confirmed = true;
-                    store.save_follow_ups(&runs)?;
-                }
                 request_analysis(&store, id, manual, now_seconds()?)?;
             }
             return crate::capacity::Coordinator::pump(app);
@@ -808,9 +778,6 @@ pub(crate) fn request_analysis(
         .into_iter()
         .find(|c| c.run.id == id)
         .ok_or("Thread follow-up disappeared.")?;
-    if candidate.trust_required {
-        return Err("Confirm trust for this exact conversation revision before starting.".into());
-    }
     let mut run = candidate.run;
     prepare_analysis(
         store,
@@ -1566,13 +1533,10 @@ pub(crate) async fn start_follow_up(
     app: tauri::AppHandle,
     id: String,
     publish: bool,
-    confirm_trust: Option<bool>,
 ) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        Coordinator::launch(&app, &id, publish, true, confirm_trust.unwrap_or(false))
-    })
-    .await
-    .map_err(|_| "Follow-up action could not finish.".to_string())?
+    tauri::async_runtime::spawn_blocking(move || Coordinator::launch(&app, &id, publish, true))
+        .await
+        .map_err(|_| "Follow-up action could not finish.".to_string())?
 }
 
 #[tauri::command]

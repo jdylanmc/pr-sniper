@@ -24,6 +24,8 @@ pub struct Basis {
     pub feedback: Vec<feedback::Context>,
     pub conversations: Vec<crate::follow_up::FollowUp>,
     pub permissions: ActionPermissions,
+    /// Retained for historical decoding only, not a permission.
+    #[serde(default)]
     pub trust_confirmed: bool,
 }
 
@@ -521,15 +523,6 @@ pub fn ready(
             && e.error.is_some()
     }) {
         return Err("The preceding confirmed action still needs post-action verification before another action.".into());
-    }
-    if (!monitoring::currently_watched(
-        &store.load_settings()?,
-        &run.basis.job,
-        Some(&observation.author_id),
-    ) || observation.head_repository_id.as_deref() != Some(&run.basis.job.repository_id))
-        && !run.execution.trust_confirmed
-    {
-        return Err("Current author/fork trust requires exact-revision confirmation.".into());
     }
     if store.load_actions()?.effects.iter().any(|e| {
         same_scope(e, &run.basis.job)
@@ -1126,7 +1119,7 @@ pub fn restore(store: &Store) -> Result<(), String> {
     Ok(())
 }
 
-pub fn request_final(store: &Store, id: &str, confirm_trust: bool, now: i64) -> Result<(), String> {
+pub fn request_final(store: &Store, id: &str, now: i64) -> Result<(), String> {
     let mut ledger = store.load_actions()?;
     let run = ledger
         .finals
@@ -1150,7 +1143,6 @@ pub fn request_final(store: &Store, id: &str, confirm_trust: bool, now: i64) -> 
         run.execution.operation.operation_type = "primary_final_review".into();
     }
     run.execution.manual_start = true;
-    run.execution.trust_confirmed |= confirm_trust;
     store.save_actions(&ledger)
 }
 

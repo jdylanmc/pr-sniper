@@ -259,6 +259,31 @@ fn completed_final(store: &Store, item: &str) -> FinalReview {
 }
 
 #[test]
+fn fork_final_review_and_permitted_action_need_no_revision_consent() {
+    let (_root, store, item) = fixture(1, true, true);
+    let mut observation = observed();
+    observation.head_repository_id = Some("fork-repository".into());
+    observation.author_id = "unwatched-author".into();
+    synchronize(&store, &item, Ok(observation.clone()), NOW + 10).unwrap();
+    let coordinator = Capacity::default();
+    let mut batch = coordinator.dispatch(&store, NOW + 11).unwrap();
+    assert!(batch.errors.is_empty(), "{:?}", batch.errors);
+    assert_eq!(batch.dispatched.len(), 1);
+    let dispatch = batch.dispatched.remove(0);
+    assert_eq!(dispatch.key().kind, Kind::PrimaryFinal);
+    let Dispatch::Review(run, _) = dispatch else {
+        panic!("Expected final review")
+    };
+    assert!(!run.trust_confirmed);
+    host::complete(&store, &run, Ok(output()), NOW + 12).unwrap();
+    let final_review = store.load_actions().unwrap().finals.remove(0);
+    assert!(ready(&store, &final_review, &observation, Action::Approve).is_ok());
+    assert!(ready(&store, &final_review, &observation, Action::Merge).is_ok());
+    observation.head = "c".repeat(40);
+    assert!(ready(&store, &final_review, &observation, Action::Approve).is_err());
+}
+
+#[test]
 fn retention_waits_for_uncertain_actions_then_discards_all_final_detail_copies() {
     let (root, store, item) = fixture(1, true, false);
     let run = completed_final(&store, &item);
@@ -430,7 +455,7 @@ fn correction_cancel_retry_final_teardown_releases_only_old_owner_and_refills_ca
             assert!(token.load(std::sync::atomic::Ordering::SeqCst));
             let cancelled = store.load_actions().unwrap().finals.remove(0);
             assert_eq!(cancelled.execution.operation.state, OperationState::Failed);
-            request_final(&store, &key.id, false, NOW + 13).unwrap();
+            request_final(&store, &key.id, NOW + 13).unwrap();
             let accepted = store.load_actions().unwrap().finals.remove(0);
             assert_ne!(accepted.execution.operation.id, old_id);
             assert_eq!(accepted.execution.operation.state, OperationState::Queued);

@@ -265,9 +265,9 @@ export function mountGenie(
           <dt>Repository ID</dt><dd>${escape(repository.provider_repository_id ?? "Not bound")}</dd>
           <dt>Monitoring</dt><dd>${!repository.enabled ? "Disabled; unchanged" : scope?.active ? "Already authorized; unchanged" : "Pending final confirmation"}</dd>
           <dt>Scope</dt><dd>${scope?.active ? `${scope.mode === "selected_existing" ? `${scope.selected_existing} selected existing PRs plus new PRs` : "New PRs only"}; watermark #${scope.creation_watermark}` : selection ? `${selection.mode === "selected_existing" ? `${selection.selectedPullRequestIds.length} selected existing PRs plus new PRs` : "New PRs only"}; preview watermark #${selection.preview.creation_watermark}` : "Not chosen"}</dd>
-          <dt>Authors</dt><dd>${watched.length ? escape(watched.map((a) => `${a.login} (${a.id})`).join(", ")) : "All authors; not blanket trust"}</dd>
+          <dt>Authors</dt><dd>${watched.length ? escape(watched.map((a) => `${a.login} (${a.id})`).join(", ")) : "All authors in confirmed scope"}</dd>
           <dt>Review requests</dt><dd>${policy.reviewer_assignment ? "Acting-account requests can admit older or unwatched PRs" : "Off"}</dd>
-          <dt>Review start</dt><dd>${policy.automatic_agent_start ? "Automatic when trusted and eligible" : "Manual start required"}</dd>
+          <dt>Review start</dt><dd>${policy.automatic_agent_start ? "Automatic when eligible" : "Manual start required"}</dd>
           <dt>Comment gate</dt><dd>${policy.automatic_comment_publication ? "Automatic only with assignment permission" : "Local-only until separately authorized"}</dd></dl>
           ${(repository.assignments ?? [])
             .map((assignment) => {
@@ -305,7 +305,7 @@ export function mountGenie(
       <h3>Room to work</h3><p>At most <strong>${settings.capacity} AI tasks</strong> on this computer. Full passes, primary final reviews and targeted replies share capacity.</p>
       <p>Global automation: <strong>${state.paused ? "Paused; confirmation will not resume it" : "Running when scope and execution gates allow"}</strong>.</p>
       <button type="button" class="genie-text" data-genie-edit="preferences" data-genie-focus="preferences">Edit schedule and capacity</button></section>
-      <section class="genie-card"><p class="genie-note">Catalog availability is not a subscription, seat or inference test. No review runs in this check. Forks and untrusted authors still need confirmation; provider policies and revision checks still apply.</p>
+      <section class="genie-card"><p class="genie-note">Catalog availability is not a subscription, seat or inference test. No review runs in this check. Saved Agent assignments and confirmed monitoring scope authorize ongoing read-only reviews; provider policies and revision checks still apply.</p>
       <label class="genie-confirm"><input type="checkbox" data-genie-confirm data-genie-focus="confirm" ${!allReady || applying ? "disabled" : ""} /><span>I’ve reviewed these identities, assignments, permissions, scope, global schedule and capacity.</span></label>
       <button type="button" class="genie-action" data-genie-activate data-genie-focus="activate" disabled>${applying ? "Checking current setup..." : pendingCount ? (state.paused ? "Confirm scope; keep automation paused" : "Confirm and enable monitoring") : "Finish without changing monitoring"}</button></section>`;
   }

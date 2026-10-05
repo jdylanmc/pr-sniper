@@ -13,6 +13,24 @@ Agent provide a final review before separately permitted approval or merge.
 This amendment governs vNext Experience #51; unchanged MVP requirements and
 separately approved platform/distribution work remain in force.
 
+## October 5, 2026 consent amendment
+
+Dylan explicitly authorized removing per-revision trust approval throughout the
+app. Saving an Agent assignment and confirming the repository's monitoring
+scope authorize ongoing read-only reviews under the saved start policy,
+including forks, unwatched/reviewer-requested authors, later revisions, retries,
+owned-thread replies, mentions and primary final reviews. No additional
+revision-trust checkbox or trust flag gates execution or provider actions.
+Existing confirmed setups do not require reapproval on upgrade.
+
+This supersedes the trust-confirmation clauses of MVP AC-011, PR-021/022/025,
+the "without establishing trust" clauses of AC-005/PR-056, and vNext references
+to execution/revision trust gates. Explicit manual-start preferences,
+cancellation/retry behavior, account/model selection, read-only tool enforcement,
+scope activation, current-revision validation, independent Comment/Approve/Merge
+permissions, provider policy, human-closed concerns and uncertain-write recovery
+remain effective. PR content remains untrusted input, not executable instructions.
+
 ## Acceptance Criteria
 
 - AC-001: Queue, Running, Reviewed and Settings remain inside one compact tray-anchored experience with the approved navy/orange/teal, system-sans visual language, supplied header artwork and crosshair identity. Closing hides the panel without stopping background work; explicit Quit stops it. Back navigation, exact notification destinations, drafts, keyboard focus and reduced-motion behavior remain usable.

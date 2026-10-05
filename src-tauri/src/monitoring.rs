@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 
+// Old queue records remain actionable without requiring per-revision consent.
 pub const WAITING_TRUST_CONFIRMATION: &str = "trust_confirmation";
 pub const WAITING_HUMAN_START: &str = "human_start";
 pub const WAITING_AGENT_UNAVAILABLE: &str = "agent_unavailable";
@@ -392,7 +393,6 @@ pub struct ActivationCandidate {
     pub watched_author: bool,
     pub all_authors: bool,
     pub requested_reviewer: bool,
-    pub trust_confirmation_required: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -719,9 +719,6 @@ impl Monitor {
                 watched_author: eligibility.watched_author,
                 all_authors: eligibility.all_authors,
                 requested_reviewer: eligibility.requested_reviewer,
-                trust_confirmation_required: !eligibility.watched_author
-                    || pull.head_repository_id.as_deref()
-                        != Some(current.provider_repository_id.as_str()),
             };
             if candidates
                 .insert(candidate.pull_request_id.clone(), candidate)
@@ -1642,9 +1639,6 @@ impl Monitor {
                     job.watched_author = job.author_id.as_ref().is_some_and(|id| {
                         configuration.watched_authors.iter().any(|a| &a.id == id)
                     });
-                    if !job.watched_author {
-                        job.waiting = WAITING_TRUST_CONFIRMATION.into();
-                    }
                 }
             }
             job.configuration_id = configuration.repository_id.clone();
@@ -2351,12 +2345,7 @@ impl Monitor {
                     watched_author: eligibility.watched_author,
                     all_authors: eligibility.all_authors,
                     requested_reviewer: eligibility.requested_reviewer,
-                    waiting: waiting_state(
-                        eligibility.watched_author,
-                        pull.head_repository_id.as_deref(),
-                        ticket,
-                    )
-                    .into(),
+                    waiting: waiting_state(ticket).into(),
                     detected_at: existing.map(|i| queue.jobs[i].detected_at).unwrap_or(now),
                 };
                 if let Some(index) = existing {
@@ -2830,14 +2819,8 @@ fn actionable(job: &QueueJob) -> bool {
     )
 }
 
-fn waiting_state(
-    watched_author: bool,
-    head_repository_id: Option<&str>,
-    ticket: &PollTicket,
-) -> &'static str {
-    if !watched_author || head_repository_id != Some(ticket.provider_repository_id.as_str()) {
-        WAITING_TRUST_CONFIRMATION
-    } else if !ticket.policy.automatic_agent_start {
+fn waiting_state(ticket: &PollTicket) -> &'static str {
+    if !ticket.policy.automatic_agent_start {
         WAITING_HUMAN_START
     } else {
         WAITING_AGENT_UNAVAILABLE
@@ -2981,13 +2964,6 @@ pub fn new_revision_eligible(settings: &Settings, job: &QueueJob, pull: &PullReq
     current.trigger_policy = trigger;
     current.waiting = WAITING_HUMAN_START.into();
     review_policy(settings, &current, Some(pull)).is_ok()
-}
-
-pub fn currently_watched(settings: &Settings, job: &QueueJob, author_id: Option<&str>) -> bool {
-    configured_schedules(settings)
-        .iter()
-        .find(|c| c.repository_id == job.configuration_id)
-        .is_some_and(|c| author_id.is_some_and(|id| c.watched_authors.iter().any(|a| a.id == id)))
 }
 
 fn schedule_key(schedule: &Schedule) -> String {

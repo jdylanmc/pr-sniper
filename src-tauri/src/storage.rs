@@ -217,7 +217,7 @@ pub struct ResourceReadiness {
 #[derive(Debug, Serialize)]
 pub struct SavedResources {
     pub settings: Settings,
-    /// Saved configuration only; account verification, scope confirmation, trust
+    /// Saved configuration only; account verification, scope confirmation
     /// and provider capabilities remain separate execution gates.
     pub readiness: ResourceReadiness,
 }

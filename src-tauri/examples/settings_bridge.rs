@@ -310,9 +310,6 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
                 request.args["id"]
                     .as_str()
                     .ok_or("Final identity required.")?,
-                request.args["confirmTrust"]
-                    .as_bool()
-                    .ok_or("Trust flag required.")?,
                 1_800_000_110,
             )?;
             Ok(Value::Null)

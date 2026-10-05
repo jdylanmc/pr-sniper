@@ -221,7 +221,7 @@ fn selection_is_assignment_bound_and_keeps_account_prompt_and_doctrine() {
 }
 
 #[test]
-fn invocation_revalidates_head_lifecycle_trigger_and_trust() {
+fn invocation_revalidates_head_lifecycle_and_trigger_without_revision_consent() {
     let settings = settings();
     let job = job();
     let pull = pull();
@@ -237,13 +237,13 @@ fn invocation_revalidates_head_lifecycle_trigger_and_trust() {
         }
         assert!(pr_sniper_lib::monitoring::review_policy(&settings, &job, Some(&changed)).is_err());
     }
-    assert!(!review::requires_trust(&settings, &job, &pull));
+    assert!(pr_sniper_lib::monitoring::review_policy(&settings, &job, Some(&pull)).is_ok());
     let mut fork = pull.clone();
     fork.head_repository_id = Some("200".into());
-    assert!(review::requires_trust(&settings, &job, &fork));
+    assert!(pr_sniper_lib::monitoring::review_policy(&settings, &job, Some(&fork)).is_ok());
     let mut all_authors = job;
     all_authors.watched_author = false;
-    assert!(review::requires_trust(&settings, &all_authors, &pull));
+    assert!(pr_sniper_lib::monitoring::review_policy(&settings, &all_authors, Some(&pull)).is_ok());
 }
 
 #[test]

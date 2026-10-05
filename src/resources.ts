@@ -91,7 +91,6 @@ export interface MonitoringActivationPreview {
     watched_author: boolean;
     all_authors: boolean;
     requested_reviewer: boolean;
-    trust_confirmation_required: boolean;
   }[];
 }
 
