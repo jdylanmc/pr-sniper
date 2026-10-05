@@ -69,37 +69,9 @@ export interface MonitoringActivationStatus {
   repository_id: string;
   active: boolean;
   reason: string | null;
-  mode: "new_only" | "selected_existing" | null;
+  mode: "all_open_and_future" | "new_only" | "selected_existing" | null;
   selected_existing: number;
   creation_watermark: number | null;
-}
-
-export interface MonitoringActivationPreview {
-  preview_id: string;
-  repository_id: string;
-  name: string;
-  account_id: string;
-  account_login: string;
-  creation_watermark: number;
-  candidates: {
-    pull_request_id: string;
-    number: number;
-    title: string;
-    head_sha: string;
-    author_id: string | null;
-    author_login: string | null;
-    watched_author: boolean;
-    all_authors: boolean;
-    requested_reviewer: boolean;
-  }[];
-}
-
-export interface PendingActivation {
-  preview: MonitoringActivationPreview;
-  repository: Repository;
-  defaults: Policy;
-  mode: "new_only" | "selected_existing";
-  selectedPullRequestIds: string[];
 }
 
 export interface SetupReview {
@@ -129,9 +101,10 @@ export function sameResource(left: unknown, right: unknown): boolean {
 }
 export const validateResource = (edit: ResourceEdit) =>
   invoke<ResourceReadiness>("validate_resource", { edit });
-export const saveResource = (edit: ResourceEdit) =>
+export const saveResource = (edit: ResourceEdit, accountGeneration?: number) =>
   invoke<{ settings: Settings; warning: string | null }>("save_resource", {
     edit,
+    accountGeneration,
   });
 export const globalPreferences = (settings: Settings): GlobalPreferences => ({
   defaults: settings.defaults,

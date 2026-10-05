@@ -593,52 +593,6 @@ pub(crate) fn lost_focus(app: &tauri::AppHandle) {
     });
 }
 
-pub(crate) struct NativeFocus {
-    app: tauri::AppHandle,
-}
-impl NativeFocus {
-    pub(crate) fn acquire(app: &tauri::AppHandle) -> Result<Self, String> {
-        let host = app.state::<Host>();
-        let mut session = host
-            .panel
-            .session
-            .lock()
-            .map_err(|_| "Panel focus unavailable.")?;
-        session.focus_holds += 1;
-        session.revision += 1;
-        Ok(Self { app: app.clone() })
-    }
-}
-impl Drop for NativeFocus {
-    fn drop(&mut self) {
-        let visible = (|| -> Result<bool, String> {
-            let host = self.app.state::<Host>();
-            let mut session = host
-                .panel
-                .session
-                .lock()
-                .map_err(|_| "Panel focus unavailable.")?;
-            session.focus_holds = session.focus_holds.saturating_sub(1);
-            session.revision += 1;
-            Ok(session.visible)
-        })();
-        match visible {
-            Ok(true) => {
-                if let Some(window) = self.app.get_webview_window(LABEL) {
-                    if window.set_focus().is_err() {
-                        crate::report(
-                            &self.app,
-                            "Cannot restore focus after native dialog.".into(),
-                        );
-                    }
-                }
-            }
-            Ok(false) => {}
-            Err(error) => crate::report(&self.app, error),
-        }
-    }
-}
-
 #[tauri::command]
 pub(crate) fn panel_snapshot(app: tauri::AppHandle) -> Result<Snapshot, String> {
     snapshot(&app)

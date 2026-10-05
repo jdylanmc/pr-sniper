@@ -556,15 +556,6 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             let scratch = pr_sniper_lib::storage::canonical_repository(repository)?;
             Ok(json!(scratch))
         }
-        "discover_repositories" => {
-            let root = request.args["root"]
-                .as_str()
-                .ok_or("Root folder required.")?;
-            serde_json::to_value(pr_sniper_lib::discovery::discover(std::path::Path::new(
-                root,
-            ))?)
-            .map_err(|_| "Cannot encode discovery.".into())
-        }
         "save_repository" => {
             let repository = request.args["repository"]
                 .as_str()

@@ -182,6 +182,7 @@ const blockingFailures = new Set([
   "invalid_global_cron",
   "provider_unavailable",
   "scope_confirmation_required",
+  "repository_configuration_required",
   "settings_unavailable",
 ]);
 

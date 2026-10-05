@@ -1,6 +1,6 @@
 use crate::policy::{Policy, PolicyOverrides, Schedule, WatchedIdentity};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::path::PathBuf;
@@ -46,6 +46,8 @@ pub struct Settings {
     pub defaults: Policy,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repositories: Vec<Repository>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub repository_authorizations: BTreeMap<String, Option<RepositoryAuthorization>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_folder: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -71,6 +73,7 @@ impl Default for Settings {
             launch_at_login: false,
             defaults: Policy::default(),
             repositories: Vec::new(),
+            repository_authorizations: BTreeMap::new(),
             root_folder: None,
             presets: Vec::new(),
             default_review_preset: None,
@@ -273,6 +276,26 @@ pub struct Repository {
     pub assignments: Vec<Assignment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary_assignment_id: Option<String>,
+}
+
+/// Committed with configuration, not with the recoverable polling cache.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepositoryAuthorization {
+    pub version: String,
+    pub name: String,
+    pub account_id: String,
+    pub repository_id: String,
+}
+
+impl RepositoryAuthorization {
+    pub fn matches(&self, repository: &Repository) -> bool {
+        repository.enabled
+            && repository.provider == ProviderId::Github
+            && self.name == repository.name
+            && Some(&self.account_id) == repository.provider_account_id.as_ref()
+            && Some(&self.repository_id) == repository.provider_repository_id.as_ref()
+    }
 }
 
 impl Settings {
@@ -898,7 +921,69 @@ impl Store {
     }
 
     pub fn save_resource(&self, edit: ResourceEdit) -> Result<Settings, String> {
-        let settings = self.validate_resource(edit)?;
+        let edited_existing_repository = match &edit {
+            ResourceEdit::Repository {
+                id,
+                expected: Some(_),
+                ..
+            } => Some(id.clone()),
+            _ => None,
+        };
+        let unchanged_repository = matches!(&edit,
+            ResourceEdit::Repository { expected: Some(expected), value: Some(value), .. }
+                if expected == value);
+        let authorizing_id = match &edit {
+            ResourceEdit::Repository {
+                id,
+                value: Some(value),
+                ..
+            } if value.enabled
+                && value.provider == ProviderId::Github
+                && value.account_binding().is_some()
+                && !value.assignments.is_empty() =>
+            {
+                Some(id.clone())
+            }
+            _ => None,
+        };
+        let mut settings = self.validate_resource(edit)?;
+        for (id, authorization) in &mut settings.repository_authorizations {
+            if !settings
+                .repositories
+                .iter()
+                .any(|r| r.id == *id && authorization.as_ref().is_some_and(|a| a.matches(r)))
+            {
+                *authorization = None;
+            }
+        }
+        if authorizing_id.is_none() {
+            if let Some(id) = edited_existing_repository {
+                // A null receipt revokes legacy polling-cache authority even
+                // when that cache cannot be written during this Save.
+                settings.repository_authorizations.insert(id, None);
+            }
+        }
+        if let Some(id) = authorizing_id.filter(|id| {
+            !unchanged_repository
+                || settings
+                    .repository_authorizations
+                    .get(id)
+                    .is_none_or(Option::is_none)
+        }) {
+            let repository = settings.repositories.iter().find(|r| r.id == id).unwrap();
+            let binding = repository
+                .account_binding()
+                .ok_or("Bind a connected GitHub account before enabling repository monitoring.")?;
+            settings.repository_authorizations.insert(
+                id,
+                Some(RepositoryAuthorization {
+                    version: uuid::Uuid::new_v4().to_string(),
+                    name: repository.name.clone(),
+                    account_id: binding.account.account_id,
+                    repository_id: binding.repository.repository_id,
+                }),
+            );
+        }
         // Callers hold the existing Host Store mutex across compare and commit.
         self.save_settings(&settings)?;
         Ok(settings)
@@ -915,6 +1000,21 @@ impl Store {
         }
         if settings.launch_at_login != current.launch_at_login {
             return Err("Change launch at login using the separate startup control.".into());
+        }
+        if settings.repository_authorizations != current.repository_authorizations {
+            return Err("Repository authorization changes require saving that repository.".into());
+        }
+        for old in &current.repositories {
+            if !settings.repositories.iter().any(|r| {
+                r.id == old.id
+                    && (r.enabled || !old.enabled)
+                    && r.name == old.name
+                    && r.account_binding() == old.account_binding()
+            }) {
+                settings
+                    .repository_authorizations
+                    .insert(old.id.clone(), None);
+            }
         }
         settings.validate()?;
         settings.materialize_presets();

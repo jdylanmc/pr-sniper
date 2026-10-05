@@ -11,6 +11,7 @@ import {
   seedAgent,
   setAgentPrompt,
   editAgent,
+  repositorySettings,
 } from "./navigation.mjs";
 
 test.beforeEach(async ({ page, store }) => {
@@ -31,13 +32,11 @@ for (const action of ["add", "disable"]) {
     await setAgentPrompt(page, prompt);
     if (action === "add") await addRepository(page, "third/new");
     else {
-      await section(page, "Integrations");
-      await page
-        .getByRole("checkbox", {
-          name: "Monitor octo/hello-world",
-          exact: true,
-        })
+      const repository = await repositorySettings(page, "octo/hello-world");
+      await repository
+        .getByLabel("Enable repository monitoring on Save")
         .uncheck();
+      await closeDialog(page);
     }
     const modal = await editAgent(page);
     await expect(

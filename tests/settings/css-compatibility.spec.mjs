@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { test, expect } from "./fixtures.mjs";
-import { saveChanges, seedAgent } from "./navigation.mjs";
+import { saveChanges, seedAgent, section } from "./navigation.mjs";
 
 test("production CSS retains all five Settings and three panel viewport fallbacks", async () => {
   const html = await readFile(
@@ -98,9 +98,11 @@ for (const viewport of [
     );
     await store("seed_settings", settings);
     await page.goto("/?view=settings");
-    const opener = page
-      .getByRole("article", { name: "octo/legacy-viewport", exact: true })
-      .getByRole("button", { name: "Settings", exact: true });
+    await section(page, "Repositories");
+    const opener = page.getByRole("button", {
+      name: "octo/legacy-viewport",
+      exact: true,
+    });
     await opener.click();
     expect(unsupportedDeclarations).toBe(8);
     const modal = page.getByRole("dialog", {
@@ -215,6 +217,8 @@ for (const viewport of [
     });
     await close.click();
     await expect(opener).toBeFocused();
+    await expect(page.locator(".settings-savebar")).toBeHidden();
+    await section(page, "Preferences");
 
     const save = page.getByRole("button", {
       name: "Reset changes",
@@ -240,6 +244,7 @@ for (const viewport of [
     expect(
       (await store("snapshot")).settings.repositories[0].assignments,
     ).toHaveLength(11);
+    await section(page, "Repositories");
     await opener.click();
     await page.keyboard.press("Escape");
     await expect(modal).toHaveCount(0);

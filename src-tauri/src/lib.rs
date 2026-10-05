@@ -1,7 +1,6 @@
 pub mod actions;
 pub mod capacity;
 mod copilot;
-pub mod discovery;
 mod doctrine_seeds;
 pub mod feedback;
 pub mod follow_up;
@@ -822,6 +821,64 @@ fn github_session(
     result
 }
 
+#[cfg(test)]
+mod repository_save_account_tests {
+    use super::*;
+
+    #[test]
+    fn resolved_binding_generation_and_connected_identity_are_checked_at_commit() {
+        let mut auth = GithubAuth::new();
+        auth.accounts.insert(
+            "22".into(),
+            GithubAccountState::Connected(github::Identity {
+                id: "22".into(),
+                login: "actor".into(),
+            }),
+        );
+        let generations = BTreeMap::from([("22".into(), 3)]);
+        let repository: storage::Repository = serde_json::from_value(serde_json::json!({
+            "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "provider":"github",
+            "name":"owner/repo", "enabled":false,
+            "provider_account_id":"22", "provider_repository_id":"100"
+        }))
+        .unwrap();
+        let mut edit = storage::ResourceEdit::Repository {
+            id: repository.id.clone(),
+            expected: None,
+            value: Some(Box::new(repository.clone())),
+        };
+        assert!(validate_repository_save_account(&auth, &generations, &edit, None).is_err());
+        assert!(validate_repository_save_account(&auth, &generations, &edit, Some(2)).is_err());
+        assert!(validate_repository_save_account(&auth, &generations, &edit, Some(3)).is_ok());
+        for invalid in ["unbound", "enabled", "unsupported"] {
+            let mut value = repository.clone();
+            match invalid {
+                "unbound" => {
+                    value.provider_account_id = None;
+                    value.provider_repository_id = None;
+                }
+                "enabled" => value.enabled = true,
+                _ => value.provider = storage::ProviderId::AzureDevops,
+            }
+            let rejected = storage::ResourceEdit::Repository {
+                id: value.id.clone(),
+                expected: None,
+                value: Some(Box::new(value)),
+            };
+            assert!(
+                validate_repository_save_account(&auth, &generations, &rejected, Some(3)).is_err()
+            );
+        }
+        auth.accounts.clear();
+        assert!(validate_repository_save_account(&auth, &generations, &edit, Some(3)).is_err());
+        if let storage::ResourceEdit::Repository { expected, .. } = &mut edit {
+            *expected = Some(Box::new(repository));
+        }
+        // Pausing an existing binding remains possible while disconnected.
+        assert!(validate_repository_save_account(&auth, &generations, &edit, None).is_ok());
+    }
+}
+
 #[derive(Serialize)]
 struct Snapshot {
     settings: Option<Settings>,
@@ -840,6 +897,7 @@ struct GithubMetadata {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg(test)]
 struct ApplyMonitoringActivation {
     repository_id: String,
     preview_id: String,
@@ -847,6 +905,7 @@ struct ApplyMonitoringActivation {
     selected_pull_request_ids: Vec<String>,
 }
 
+#[cfg(test)]
 fn stage_monitoring_activation(
     generations: &Mutex<BTreeMap<String, u64>>,
     auth: &Mutex<GithubAuth>,
@@ -873,6 +932,7 @@ fn stage_monitoring_activation(
         .stage_activation_preview(&settings, evidence, current_generation)
 }
 
+#[cfg(test)]
 fn apply_staged_monitoring_activation(
     generations: &Mutex<BTreeMap<String, u64>>,
     auth: &Mutex<GithubAuth>,
@@ -1283,100 +1343,6 @@ async fn monitoring_activation_status(
 }
 
 #[tauri::command]
-async fn preview_monitoring_activation(
-    app: tauri::AppHandle,
-    repository_id: String,
-) -> Result<monitoring::ActivationPreviewView, ConnectionError> {
-    let app_for_read = app.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        let host = app_for_read.state::<Host>();
-        let (account_generation, context) = {
-            let generations = host
-                .github_generations
-                .lock()
-                .map_err(|_| ConnectionError::Configuration)?;
-            let store = host
-                .store
-                .lock()
-                .map_err(|_| ConnectionError::Configuration)?;
-            let settings = store
-                .load_settings()
-                .map_err(|_| ConnectionError::Configuration)?;
-            let context = monitoring::Monitor::activation_context(&settings, &repository_id)?;
-            (
-                generations.get(&context.account_id).copied().unwrap_or(0),
-                context,
-            )
-        };
-        let account_for_failure = context.account_id.clone();
-        let result = (|| {
-            let (identity, client) = github_session(&host, &context.account_id)?;
-            let connection = client.connect(&context.name, Some(&context.account_id))?;
-            if connection.repository.id != context.provider_repository_id {
-                return Err(ConnectionError::RepositoryChanged);
-            }
-            let pull_requests = client.poll_pull_requests(&connection.repository)?;
-            let creation_watermark = client.latest_pull_request_number(&connection.repository)?;
-            stage_monitoring_activation(
-                &host.github_generations,
-                &host.github_auth,
-                &host.store,
-                &host.monitor,
-                monitoring::ActivationPreviewEvidence {
-                    context,
-                    connection: Connection {
-                        identity,
-                        ..connection
-                    },
-                    pull_requests,
-                    creation_watermark,
-                    account_generation,
-                },
-            )
-        })();
-        apply_account_connection_failure(&host, &account_for_failure, &result);
-        result
-    })
-    .await
-    .map_err(|_| ConnectionError::ProviderFailure)?;
-    result
-}
-
-#[tauri::command]
-fn cancel_monitoring_activation(host: State<'_, Host>, preview_id: String) -> Result<(), String> {
-    host.monitor
-        .lock()
-        .map_err(|_| "Monitoring is unavailable.")?
-        .cancel_activation_preview(&preview_id);
-    Ok(())
-}
-
-#[tauri::command]
-async fn apply_monitoring_activation(
-    app: tauri::AppHandle,
-    request: ApplyMonitoringActivation,
-) -> Result<monitoring::ActivationStatus, String> {
-    let app_for_apply = app.clone();
-    let status = tauri::async_runtime::spawn_blocking(move || {
-        let host = app_for_apply.state::<Host>();
-        apply_staged_monitoring_activation(
-            &host.github_generations,
-            &host.github_auth,
-            &host.store,
-            &host.monitor,
-            request,
-            now_seconds()?,
-        )
-    })
-    .await
-    .map_err(|_| "Monitoring scope could not be applied.".to_string())??;
-    if let Err(error) = start_checks(&app, true) {
-        report(&app, error);
-    }
-    Ok(status)
-}
-
-#[tauri::command]
 fn monitoring_setup_review(host: State<'_, Host>) -> Result<monitoring::SetupReview, String> {
     let generations = host
         .github_generations
@@ -1403,54 +1369,6 @@ fn monitoring_setup_review(host: State<'_, Host>) -> Result<monitoring::SetupRev
         })
 }
 
-#[tauri::command]
-async fn apply_monitoring_setup(
-    app: tauri::AppHandle,
-    confirmation: String,
-    requests: Vec<monitoring::SetupActivation>,
-) -> Result<(), String> {
-    let app_for_apply = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let host = app_for_apply.state::<Host>();
-        let generations = host
-            .github_generations
-            .lock()
-            .map_err(|_| "Monitoring coordination is unavailable.")?;
-        let auth = host
-            .github_auth
-            .lock()
-            .map_err(|_| "GitHub connection state is unavailable.")?;
-        host.copilot
-            .with_setup_accounts(|ai_accounts, ai_generations| {
-                let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
-                let mut monitor = host
-                    .monitor
-                    .lock()
-                    .map_err(|_| "Monitoring is unavailable.")?;
-                let review = monitor.setup_review(
-                    &store,
-                    auth.setup_accounts(),
-                    ai_accounts,
-                    &generations,
-                    &ai_generations,
-                )?;
-                monitor.apply_setup(
-                    &store,
-                    &review,
-                    &confirmation,
-                    &requests,
-                    &generations,
-                    now_seconds()?,
-                )
-            })
-    })
-    .await
-    .map_err(|_| "Monitoring setup could not be applied.".to_string())??;
-    // The existing scheduler observes the committed scope. Re-entry must not
-    // force a scan of unrelated already-authorized repositories or resume pause.
-    Ok(())
-}
-
 #[derive(Serialize)]
 struct GithubRepositories {
     identity: github::Identity,
@@ -1461,6 +1379,7 @@ struct GithubRepositories {
 struct GithubRepositoryResolution {
     identity: github::Identity,
     repository: github::provider::RemoteRepository,
+    account_generation: u64,
 }
 
 fn record(app: &tauri::AppHandle, event: DiagnosticEvent) {
@@ -1577,11 +1496,25 @@ fn save_resource(
     app: tauri::AppHandle,
     host: State<'_, Host>,
     edit: storage::ResourceEdit,
+    account_generation: Option<u64>,
 ) -> Result<SavedSettings, String> {
+    let intake_only = matches!(&edit,
+        storage::ResourceEdit::Repository { expected: None, value: Some(repository), .. }
+            if !repository.enabled);
     let (saved, dispatched) = {
+        let generations = host
+            .github_generations
+            .lock()
+            .map_err(|_| "Account coordination is unavailable.")?;
+        let auth = host
+            .github_auth
+            .lock()
+            .map_err(|_| "GitHub connection state is unavailable.")?;
+        validate_repository_save_account(&auth, &generations, &edit, account_generation)?;
         let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
         let saved = store.save_resource(edit)?;
-        let dispatched = now_seconds().and_then(|now| host.ai.dispatch(&store, now));
+        let dispatched =
+            (!intake_only).then(|| now_seconds().and_then(|now| host.ai.dispatch(&store, now)));
         (saved, dispatched)
     };
     let mut result = finish_committed_settings(
@@ -1592,46 +1525,63 @@ fn save_resource(
         saved,
     );
     match dispatched {
-        Ok(batch) => capacity::launch_batch(&app, batch),
-        Err(error) => {
+        Some(Ok(batch)) => capacity::launch_batch(&app, batch),
+        Some(Err(error)) => {
             result.warning = Some(format!(
                 "Settings saved; AI coordination requires attention: {error}"
             ))
         }
+        None => {}
     }
     Ok(result)
 }
 
-#[tauri::command]
-async fn choose_repository_folder(
-    app: tauri::AppHandle,
-) -> Result<Option<discovery::Discovery>, String> {
-    use tauri_plugin_dialog::DialogExt;
-    tauri::async_runtime::spawn_blocking(move || {
-        let _focus = panel::NativeFocus::acquire(&app)?;
-        let window = app
-            .get_webview_window(panel::LABEL)
-            .ok_or("Application panel is unavailable.")?;
-        let Some(folder) = app
-            .dialog()
-            .file()
-            .set_parent(&window)
-            .blocking_pick_folder()
-        else {
-            return Ok(None);
-        };
-        let path = folder.into_path().map_err(|_| "Choose a local folder.")?;
-        discovery::discover(&path).map(Some)
-    })
-    .await
-    .map_err(|_| "Folder selection failed. Try again.".to_string())?
-}
-
-#[tauri::command]
-async fn discover_repositories(root: String) -> Result<discovery::Discovery, String> {
-    tauri::async_runtime::spawn_blocking(move || discovery::discover(std::path::Path::new(&root)))
-        .await
-        .map_err(|_| "Folder discovery failed. Choose the folder again.".to_string())?
+fn validate_repository_save_account(
+    auth: &GithubAuth,
+    generations: &BTreeMap<String, u64>,
+    edit: &storage::ResourceEdit,
+    resolved_generation: Option<u64>,
+) -> Result<(), String> {
+    if let storage::ResourceEdit::Repository {
+        expected,
+        value: Some(repository),
+        ..
+    } = edit
+    {
+        if repository.provider != storage::ProviderId::Github {
+            return Err("Azure DevOps repository configuration is coming soon.".into());
+        }
+        if expected.is_none() && repository.account_binding().is_none() {
+            return Err(
+                "Choose a connected GitHub account and resolve this repository before adding it."
+                    .into(),
+            );
+        }
+        if expected.is_none() && (repository.enabled || !repository.assignments.is_empty()) {
+            return Err(
+                "Add this repository with monitoring disabled, then save its configuration.".into(),
+            );
+        }
+        let changed_binding = expected.as_ref().is_none_or(|old| {
+            old.account_binding() != repository.account_binding() || old.name != repository.name
+        });
+        if let Some(account_id) = &repository.provider_account_id {
+            if repository.enabled || changed_binding || resolved_generation.is_some() {
+                auth.account_session_allowed(account_id).map_err(|_| {
+                    "Reconnect the acting GitHub account before saving this repository."
+                })?;
+            }
+            let current_generation = generations.get(account_id).copied().unwrap_or(0);
+            if (changed_binding && resolved_generation.is_none())
+                || resolved_generation.is_some_and(|generation| generation != current_generation)
+            {
+                return Err(
+                    "GitHub connection changed. Resolve the repository again before saving.".into(),
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1657,6 +1607,7 @@ async fn list_provider_repositories(
     app: tauri::AppHandle,
     provider: storage::ProviderId,
     account_id: String,
+    owner: String,
 ) -> Result<GithubRepositories, ConnectionError> {
     if !matches!(provider, storage::ProviderId::Github) {
         return Err(ConnectionError::Configuration);
@@ -1665,11 +1616,45 @@ async fn list_provider_repositories(
     let app_for_read = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let host = app_for_read.state::<Host>();
+        let generation = github_read_generation(&host, &account_id)?;
         let (identity, client) = github_session(&host, &account_id)?;
+        let repositories = client.owner_repositories(&owner)?;
+        validate_github_read(&host, &account_id, generation)?;
         Ok(GithubRepositories {
             identity,
-            repositories: client.accessible_repositories()?,
+            repositories,
         })
+    })
+    .await
+    .map_err(|_| ConnectionError::ProviderFailure)?;
+    apply_account_connection_failure(&app.state::<Host>(), &account_for_failure, &result);
+    result
+}
+
+#[derive(Serialize)]
+struct GithubRepositoryOwners {
+    identity: github::Identity,
+    owners: Vec<github::provider::RepositoryOwner>,
+}
+
+#[tauri::command]
+async fn list_provider_repository_owners(
+    app: tauri::AppHandle,
+    provider: storage::ProviderId,
+    account_id: String,
+) -> Result<GithubRepositoryOwners, ConnectionError> {
+    if provider != storage::ProviderId::Github {
+        return Err(ConnectionError::Configuration);
+    }
+    let account_for_failure = account_id.clone();
+    let app_for_read = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let host = app_for_read.state::<Host>();
+        let generation = github_read_generation(&host, &account_id)?;
+        let (identity, client) = github_session(&host, &account_id)?;
+        let owners = client.repository_owners(&identity)?;
+        validate_github_read(&host, &account_id, generation)?;
+        Ok(GithubRepositoryOwners { identity, owners })
     })
     .await
     .map_err(|_| ConnectionError::ProviderFailure)?;
@@ -1691,17 +1676,48 @@ async fn resolve_provider_repository(
     let app_for_read = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let host = app_for_read.state::<Host>();
+        let generation = github_read_generation(&host, &account_id)?;
         let (identity, client) = github_session(&host, &account_id)?;
         let connection = client.connect(&repository, Some(&identity.id))?;
+        validate_github_read(&host, &account_id, generation)?;
         Ok(GithubRepositoryResolution {
             identity,
             repository: connection.repository,
+            account_generation: generation,
         })
     })
     .await
     .map_err(|_| ConnectionError::ProviderFailure)?;
     apply_account_connection_failure(&app.state::<Host>(), &account_for_failure, &result);
     result
+}
+
+fn github_read_generation(host: &Host, account_id: &str) -> Result<u64, ConnectionError> {
+    Ok(host
+        .github_generations
+        .lock()
+        .map_err(|_| ConnectionError::Configuration)?
+        .get(account_id)
+        .copied()
+        .unwrap_or(0))
+}
+
+fn validate_github_read(
+    host: &Host,
+    account_id: &str,
+    expected: u64,
+) -> Result<(), ConnectionError> {
+    let generations = host
+        .github_generations
+        .lock()
+        .map_err(|_| ConnectionError::Configuration)?;
+    if generations.get(account_id).copied().unwrap_or(0) != expected {
+        return Err(ConnectionError::SignedOut);
+    }
+    host.github_auth
+        .lock()
+        .map_err(|_| ConnectionError::Configuration)?
+        .account_session_allowed(account_id)
 }
 
 #[tauri::command]
@@ -1713,56 +1729,6 @@ fn save_login(host: State<'_, Host>, enabled: bool) -> Result<(), String> {
     host.registration.set_enabled(&store, enabled)?;
     store.record(DiagnosticEvent::SettingsSaved)?;
     Ok(())
-}
-
-#[tauri::command]
-fn save_repository(host: State<'_, Host>, repository: String) -> Result<SavedSettings, String> {
-    let settings = {
-        let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
-        store.add_repository(&repository)?
-    };
-    Ok(finish_committed_settings(
-        &host.github_generations,
-        &host.github_auth,
-        &host.store,
-        &host.monitor,
-        settings,
-    ))
-}
-
-#[tauri::command]
-fn update_repository(
-    host: State<'_, Host>,
-    id: String,
-    repository: String,
-    enabled: bool,
-) -> Result<SavedSettings, String> {
-    let settings = {
-        let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
-        store.update_repository(&id, &repository, enabled)?
-    };
-    Ok(finish_committed_settings(
-        &host.github_generations,
-        &host.github_auth,
-        &host.store,
-        &host.monitor,
-        settings,
-    ))
-}
-
-#[tauri::command]
-fn remove_repository(host: State<'_, Host>, id: String) -> Result<SavedSettings, String> {
-    let settings = {
-        let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
-        store.remove_repository(&id)?
-    };
-    Ok(finish_committed_settings(
-        &host.github_generations,
-        &host.github_auth,
-        &host.store,
-        &host.monitor,
-        settings,
-    ))
 }
 
 #[tauri::command]
@@ -2327,7 +2293,6 @@ pub fn run() {
         }
     }
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|_app, _args, _| {
             #[cfg(windows)]
             notifications::windows::forward(_app, &_args);
@@ -2348,15 +2313,11 @@ pub fn run() {
             actions::host::reconcile_provider_action,
             actions::host::retry_action_observation,
             canonical_repository_name,
-            choose_repository_folder,
-            discover_repositories,
             resolve_provider_person,
             list_provider_repositories,
+            list_provider_repository_owners,
             resolve_provider_repository,
             save_login,
-            save_repository,
-            update_repository,
-            remove_repository,
             save_defaults,
             save_repository_policy,
             verify_provider_connection,
@@ -2398,11 +2359,7 @@ pub fn run() {
             follow_up::host::cancel_follow_up,
             check_now,
             monitoring_activation_status,
-            preview_monitoring_activation,
-            cancel_monitoring_activation,
-            apply_monitoring_activation,
             monitoring_setup_review,
-            apply_monitoring_setup
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]

@@ -1,11 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { modelSelectable, type CopilotModel } from "./copilot";
 import { doctrineTitles, effectivePolicy } from "./policy";
-import {
-  sameResource,
-  type PendingActivation,
-  type SetupReview,
-} from "./resources";
+import { type SetupReview } from "./resources";
 import { mountSettings, type SetupTarget, type GuidedReturn } from "./settings";
 import "./genie.css";
 
@@ -39,12 +35,12 @@ const guidance = [
   "Pick the provider that will power your reviewers, then connect an account. Repository access comes separately.",
   "Connect the identity that can access your repositories. Connecting it does not connect or select an AI account.",
   "Choose an AI account and a returned model. Add zero, one or many shared doctrines.",
-  "Choose the acting account, assign an Agent and set independent permissions. Save the repository, then choose scope for the final check.",
+  "Choose the acting account, assign an Agent and set independent permissions. Save authorizes all currently open and future matching pull requests.",
 ];
 const failure = (cause: unknown) =>
   typeof cause === "string"
     ? cause
-    : "Setup could not be read or confirmed. Retry; saved resources are unchanged.";
+    : "Setup could not be read. Retry; saved resources are unchanged.";
 type SetupMode = "welcome" | "genie" | "review";
 
 export function mountGenie(
@@ -66,12 +62,10 @@ export function mountGenie(
   let state: SetupReview | undefined;
   let active = false;
   let request = 0;
-  let applying: { dispatched: boolean } | undefined;
+  let applying: object | undefined;
   let message = "";
-  let commitFailure = "";
   let lastError = "";
   let checkedModelsFor: string | undefined;
-  const pending = new Map<string, PendingActivation>();
   const lookups = new Map<string, string>();
   const positions = new Map<SetupMode, { focus?: string; scroll: number }>();
   const scrollParent = () => root.closest<HTMLElement>(".panel-content");
@@ -87,19 +81,6 @@ export function mountGenie(
     !!id && accounts[id]?.connected === true;
   const scopeFor = (id: string) =>
     state?.scopes.find((scope) => scope.repository_id === id);
-  function validPending(id: string) {
-    const selection = pending.get(id);
-    const settings = state?.resources.settings;
-    return selection &&
-      settings &&
-      sameResource(
-        selection.repository,
-        settings.repositories?.find((r) => r.id === id),
-      ) &&
-      sameResource(selection.defaults, settings.defaults)
-      ? selection
-      : undefined;
-  }
   function progress() {
     if (!state) return [false, false, false, false];
     const { settings, readiness } = state.resources;
@@ -122,7 +103,7 @@ export function mountGenie(
             connected(state!.repository_accounts, r.provider_account_id) &&
             r.assignments?.length &&
             r.assignments.every((a) => agentReady(a.agent_id)) &&
-            (scopeFor(r.id)?.active || validPending(r.id)),
+            scopeFor(r.id)?.active,
         ),
     ];
   }
@@ -134,10 +115,6 @@ export function mountGenie(
     options.edit(target, opener, {
       back: () => {
         void open(mode);
-      },
-      stage: (selection) => {
-        pending.set(selection.repository.id, selection);
-        checkedModelsFor = undefined;
       },
     });
   }
@@ -159,7 +136,7 @@ export function mountGenie(
           : "Genie",
     );
     const { settings } = state?.resources ?? {};
-    const notice = [message, commitFailure].filter(Boolean).join(" ");
+    const notice = message;
     root.innerHTML = `<p class="genie-error" role="alert" ${notice ? "" : "hidden"}>${escape(notice)}</p>
       ${
         mode === "review"
@@ -167,7 +144,7 @@ export function mountGenie(
           : `
       <section class="genie-card"><div class="genie-card-heading"><span class="genie-symbol">${spark}</span><span>${mode === "welcome" ? "A fresh start" : "Onboarding Genie"}<small>${mode === "welcome" ? "" : count === 4 ? "Ready for your final check" : `Step ${next + 1} of 4`}</small></span></div>
       <h2>${mode === "welcome" ? "A second set of eyes.<br />Let's set yours up." : count === 4 ? "Your setup is ready." : titles[next]}</h2>
-      <p>${mode === "welcome" ? "Connect your accounts, create a reviewer, and choose what to watch." : count === 4 ? "Review the effective identities, authority, scope and global schedule before confirming monitoring." : guidance[next]}</p>
+      <p>${mode === "welcome" ? "Connect your accounts, create a reviewer, and choose what to watch." : count === 4 ? "Review your saved identities, permissions, filters and global schedule. Repository Save already authorized monitoring." : guidance[next]}</p>
       <button type="button" class="genie-action" data-genie-next data-genie-focus="next" ${!state ? "disabled" : ""}>${mode === "welcome" ? (count ? "Continue with Genie" : "Set up with Genie") : count === 4 ? "Review setup" : titles[next]}</button>
       ${mode === "welcome" ? '<button type="button" class="genie-text" data-genie-manual data-genie-focus="manual">I’ll set it up myself</button>' : ""}
       </section>
@@ -187,13 +164,13 @@ export function mountGenie(
                   ? "Saved account and model; catalog checked at final review"
                   : "Explicit account, model and shared principles",
                 steps[3]
-                  ? "Saved assignments and chosen or authorized scope"
-                  : "Save assignments, enable the repository and choose scope",
+                  ? "Repository configuration saved and authorized"
+                  : "Assign an Agent and save repository configuration",
               ][i]
             }</small></span><span aria-hidden="true">›</span></button></li>`,
         )
         .join("")}</ol>
-      <p class="genie-note">Each save updates shared Settings. Closing keeps saved resources and mounted drafts. Back and Cancel explain unsaved fields in each editor. Unconfirmed scope choices are not saved across an application restart. ${settings?.doctrines?.length ?? 0} shared doctrines available.</p>
+      <p class="genie-note">Each repository save authorizes its configuration immediately. Closing keeps saved resources and mounted drafts. Back and Cancel explain unsaved fields in each editor. ${settings?.doctrines?.length ?? 0} shared doctrines available.</p>
       <button type="button" class="genie-text" data-genie-edit="doctrines" data-genie-focus="doctrines">Manage shared doctrines</button>
       <button type="button" class="genie-text" data-genie-edit="preferences" data-genie-focus="preferences">Edit global schedule and capacity</button>`
       }
@@ -217,16 +194,10 @@ export function mountGenie(
     ))
       button.onclick = () =>
         edit(button.dataset.genieEdit as SetupTarget, button);
-    const confirm = root.querySelector<HTMLInputElement>(
-      "[data-genie-confirm]",
-    );
     const activate = root.querySelector<HTMLButtonElement>(
       "[data-genie-activate]",
     );
-    if (confirm && activate) {
-      confirm.onchange = () => {
-        activate.disabled = !confirm.checked || !!applying;
-      };
+    if (activate) {
       activate.onclick = () => void apply();
     }
     if (scrollParent && scroll !== undefined) scrollParent.scrollTop = scroll;
@@ -242,14 +213,11 @@ export function mountGenie(
     const schedule = settings.defaults.schedule;
     const allReady =
       progress().every(Boolean) && checkedModelsFor === state.confirmation;
-    const enabled = settings.repositories?.filter((r) => r.enabled) ?? [];
-    const pendingCount = enabled.filter((r) => !scopeFor(r.id)?.active).length;
     return `<section class="genie-card"><span class="genie-review-label">${spark} Genie’s final check</span><h2>Your app. Your call.</h2><p>Monitoring does not grant extra review or publication permissions. Saved changes already apply to authorized work.</p></section>
-      ${!allReady ? '<p class="genie-note" role="status">Complete all four essentials and check the current model catalogs before confirming.</p>' : ""}
+      ${!allReady ? '<p class="genie-note" role="status">Complete all four essentials and check the current model catalogs before finishing setup.</p>' : ""}
       ${(settings.repositories ?? [])
         .map((repository) => {
           const scope = scopeFor(repository.id);
-          const selection = validPending(repository.id);
           const policy = effectivePolicy(
             settings.defaults,
             repository.overrides ?? {},
@@ -263,9 +231,9 @@ export function mountGenie(
           return `<section class="genie-card genie-repository"><h3>${escape(repository.name)}</h3><dl>
           <dt>GitHub identity</dt><dd>${escape(account?.login ?? "Not connected")} (${escape(repository.provider_account_id ?? "unbound")})${account?.connected ? "" : " / reconnect required"}</dd>
           <dt>Repository ID</dt><dd>${escape(repository.provider_repository_id ?? "Not bound")}</dd>
-          <dt>Monitoring</dt><dd>${!repository.enabled ? "Disabled; unchanged" : scope?.active ? "Already authorized; unchanged" : "Pending final confirmation"}</dd>
-          <dt>Scope</dt><dd>${scope?.active ? `${scope.mode === "selected_existing" ? `${scope.selected_existing} selected existing PRs plus new PRs` : "New PRs only"}; watermark #${scope.creation_watermark}` : selection ? `${selection.mode === "selected_existing" ? `${selection.selectedPullRequestIds.length} selected existing PRs plus new PRs` : "New PRs only"}; preview watermark #${selection.preview.creation_watermark}` : "Not chosen"}</dd>
-          <dt>Authors</dt><dd>${watched.length ? escape(watched.map((a) => `${a.login} (${a.id})`).join(", ")) : "All authors in confirmed scope"}</dd>
+          <dt>Monitoring</dt><dd>${!repository.enabled ? "Disabled; unchanged" : scope?.active ? "Authorized by saved configuration" : "Save repository configuration to authorize"}</dd>
+          <dt>Pull requests</dt><dd>${scope?.mode === "all_open_and_future" ? "All currently open and future matching PRs" : scope?.active ? "Legacy saved admission retained; Save repository to include all currently open and future matching PRs" : "Not configured"}</dd>
+          <dt>Authors</dt><dd>${watched.length ? escape(watched.map((a) => `${a.login} (${a.id})`).join(", ")) : "All authors"}</dd>
           <dt>Review requests</dt><dd>${policy.reviewer_assignment ? "Acting-account requests can admit older or unwatched PRs" : "Off"}</dd>
           <dt>Review start</dt><dd>${policy.automatic_agent_start ? "Automatic when eligible" : "Manual start required"}</dd>
           <dt>Comment gate</dt><dd>${policy.automatic_comment_publication ? "Automatic only with assignment permission" : "Local-only until separately authorized"}</dd></dl>
@@ -283,31 +251,15 @@ export function mountGenie(
             })
             .join("")}
           ${!authority?.primary_assignment_id ? '<p class="genie-note">No primary: automatic approval and merge are unavailable.</p>' : ""}
-          ${
-            selection?.mode === "selected_existing"
-              ? `<p class="genie-note">Selected: ${selection.preview.candidates
-                  .filter((c) =>
-                    selection.selectedPullRequestIds.includes(
-                      c.pull_request_id,
-                    ),
-                  )
-                  .map(
-                    (c) =>
-                      `#${c.number} ${escape(c.title)} (${escape(c.head_sha)})`,
-                  )
-                  .join(", ")}</p>`
-              : ""
-          }
-          <button class="genie-text" type="button" data-genie-edit="repositories" data-genie-focus="repository-${escape(repository.id)}">Edit repositories and scope</button></section>`;
+          <button class="genie-text" type="button" data-genie-edit="repositories" data-genie-focus="repository-${escape(repository.id)}">Edit repositories</button></section>`;
         })
         .join("")}
       <section class="genie-card"><h3>One global schedule</h3><p>${schedule.kind === "cron" ? `<code>${escape(schedule.expression)}</code>` : `Legacy interval: ${schedule.minutes} minutes; choose a global cron`} / ${escape(schedule.timezone)}</p>
       <h3>Room to work</h3><p>At most <strong>${settings.capacity} AI tasks</strong> on this computer. Full passes, primary final reviews and targeted replies share capacity.</p>
-      <p>Global automation: <strong>${state.paused ? "Paused; confirmation will not resume it" : "Running when scope and execution gates allow"}</strong>.</p>
+      <p>Global automation: <strong>${state.paused ? "Paused; finishing setup will not resume it" : "Running when saved configuration and execution gates allow"}</strong>.</p>
       <button type="button" class="genie-text" data-genie-edit="preferences" data-genie-focus="preferences">Edit schedule and capacity</button></section>
-      <section class="genie-card"><p class="genie-note">Catalog availability is not a subscription, seat or inference test. No review runs in this check. Saved Agent assignments and confirmed monitoring scope authorize ongoing read-only reviews; provider policies and revision checks still apply.</p>
-      <label class="genie-confirm"><input type="checkbox" data-genie-confirm data-genie-focus="confirm" ${!allReady || applying ? "disabled" : ""} /><span>I’ve reviewed these identities, assignments, permissions, scope, global schedule and capacity.</span></label>
-      <button type="button" class="genie-action" data-genie-activate data-genie-focus="activate" disabled>${applying ? "Checking current setup..." : pendingCount ? (state.paused ? "Confirm scope; keep automation paused" : "Confirm and enable monitoring") : "Finish without changing monitoring"}</button></section>`;
+      <section class="genie-card"><p class="genie-note">Catalog availability is not a subscription, seat or inference test. No review runs in this check. Repository Save already authorized monitoring; there is no further repository confirmation.</p>
+      <button type="button" class="genie-action" data-genie-activate data-genie-focus="activate" ${!allReady || applying ? "disabled" : ""}>${applying ? "Checking current setup..." : "Finish setup"}</button></section>`;
   }
   async function read() {
     // Restore native account metadata through the existing widgets' API. Neither
@@ -390,53 +342,21 @@ export function mountGenie(
     }
   }
   async function apply() {
-    if (
-      !state ||
-      applying ||
-      !root.querySelector<HTMLInputElement>("[data-genie-confirm]")?.checked
-    )
-      return;
+    if (!state || applying) return;
     const expected = state;
     const current = ++request;
-    const operation = { dispatched: false };
+    const operation = {};
     applying = operation;
     message = "";
-    commitFailure = "";
     render();
     try {
       if (!(await checkModels(expected, current))) return;
       const latest = await read();
       if (!active || current !== request) return;
       if (latest.confirmation !== expected.confirmation)
-        throw "Setup changed. Refresh and review the current configuration before confirming again.";
-      const choices = new Map(pending);
-      const requests = (expected.resources.settings.repositories ?? [])
-        .filter((r) => r.enabled && !scopeFor(r.id)?.active)
-        .map((r) => {
-          const choice = validPending(r.id);
-          if (!choice)
-            throw "Choose current scope for each pending repository.";
-          return {
-            repositoryId: r.id,
-            previewId: choice.preview.preview_id,
-            mode: choice.mode,
-            selectedPullRequestIds: choice.selectedPullRequestIds,
-          };
-        });
-      operation.dispatched = true;
-      await invoke("apply_monitoring_setup", {
-        confirmation: expected.confirmation,
-        requests,
-      });
-      for (const [id, choice] of choices)
-        if (pending.get(id) === choice) pending.delete(id);
+        throw "Setup changed. Refresh and review the current configuration before finishing setup.";
       if (active && current === request) options.complete(expected.paused);
     } catch (cause) {
-      if (operation.dispatched && (!active || current !== request)) {
-        commitFailure = `The earlier monitoring confirmation failed: ${failure(cause)}`;
-        lastError = commitFailure;
-        console.error(commitFailure);
-      }
       if (active && current === request) {
         message = failure(cause);
         checkedModelsFor = undefined;
@@ -477,8 +397,7 @@ export function mountGenie(
   function invalidateWork() {
     request++;
     checkedModelsFor = undefined;
-    // Navigation cancels preflight, not an already-dispatched native commit.
-    if (applying && !applying.dispatched) applying = undefined;
+    applying = undefined;
     for (const [requestId, accountId] of lookups)
       void invoke("cancel_copilot_models", { accountId, requestId }).catch(
         (cause) => {
@@ -532,7 +451,6 @@ export async function mountSettingsWithGenie(app: HTMLElement) {
     edit: (target, _button, origin) => {
       showSettings();
       controller.open(target, {
-        stage: origin.stage,
         back: () => {
           showGenie();
           origin.back();

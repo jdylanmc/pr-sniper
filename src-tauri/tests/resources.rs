@@ -61,6 +61,51 @@ fn agent_edit(expected: &Settings, name: &str) -> ResourceEdit {
 }
 
 #[test]
+fn legacy_folder_and_cas_survive_upgrade_without_implicit_repository_authorization() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let mut original = settings();
+    original.root_folder = Some("/retired/local/clones".into());
+    original.repositories[0].enabled = false;
+    store.save_settings(&original).unwrap();
+    let loaded = store.load_settings().unwrap();
+    let mut preferences = loaded.global_preferences();
+    preferences.capacity = 7;
+    let saved = store
+        .save_resource(ResourceEdit::Preferences {
+            expected: loaded.global_preferences(),
+            value: preferences,
+        })
+        .unwrap();
+    assert_eq!(saved.root_folder, original.root_folder);
+    assert!(!saved.repositories[0].enabled);
+    assert!(saved.repository_authorizations.is_empty());
+    let mut repo = saved.repositories[0].clone();
+    repo.enabled = true;
+    let edit = ResourceEdit::Repository {
+        id: REPO.into(),
+        expected: Some(Box::new(saved.repositories[0].clone())),
+        value: Some(Box::new(repo)),
+    };
+    let bytes = std::fs::read(fixture.path().join("config/settings.json")).unwrap();
+    std::fs::create_dir(fixture.path().join("config/settings.json.tmp")).unwrap();
+    assert!(store.save_resource(edit.clone()).is_err());
+    assert_eq!(
+        std::fs::read(fixture.path().join("config/settings.json")).unwrap(),
+        bytes
+    );
+    std::fs::remove_dir(fixture.path().join("config/settings.json.tmp")).unwrap();
+    let authorized = store.save_resource(edit.clone()).unwrap();
+    assert_eq!(authorized.repository_authorizations.len(), 1);
+    assert!(store
+        .save_resource(edit)
+        .unwrap_err()
+        .contains("Resource changed"));
+    assert_eq!(store.load_settings().unwrap(), authorized);
+    assert_eq!(authorized.root_folder, original.root_folder);
+}
+
+#[test]
 fn resource_saves_merge_unrelated_commits_and_reject_same_resource_conflicts() {
     let fixture = Fixture::new();
     let store = fixture.store();

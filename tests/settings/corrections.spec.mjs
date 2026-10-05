@@ -1,6 +1,7 @@
 import { expect, test } from "./fixtures.mjs";
 import {
   section,
+  installRepositoryFixture,
   repositorySettings,
   closeDialog,
   saveChanges,
@@ -22,18 +23,27 @@ for (const api of ["showModal", "close"]) {
     }, api);
     await store("seed_settings", { launch_at_login: false });
     await page.goto("/?view=settings");
+    await installRepositoryFixture(page);
+    await section(page, "Repositories");
     await page
-      .getByRole("button", { name: "Add repository manually...", exact: true })
+      .getByRole("button", { name: "Add repository by URL", exact: true })
       .click();
     const modal = page.getByRole("dialog", {
-      name: "Add repository",
+      name: "Add repository by URL",
       exact: true,
     });
     await modal
-      .getByLabel("GitHub repository", { exact: true })
+      .getByLabel("Repository URL", { exact: true })
       .fill("octo/fallback");
+    await page
+      .getByLabel("Acting GitHub account", { exact: true })
+      .selectOption("22");
     await modal
-      .getByRole("button", { name: "Save repository", exact: true })
+      .getByRole("button", { name: "Add & configure", exact: true })
+      .click();
+    await page
+      .getByRole("dialog", { name: "Settings for octo/fallback", exact: true })
+      .getByRole("button", { name: "Cancel repository changes" })
       .click();
     await saveChanges(page);
     expect((await store("snapshot")).settings.repositories[0].name).toBe(
@@ -60,21 +70,23 @@ test("R1 missing dialog and inert APIs retain a true keyboard modal", async ({
     delete HTMLElement.prototype.inert;
   });
   await page.goto("/?view=settings");
+  await installRepositoryFixture(page);
+  await section(page, "Repositories");
   const opener = page.getByRole("button", {
-    name: "Add repository manually...",
+    name: "Add repository by URL",
     exact: true,
   });
   await opener.click();
   const modal = page.getByRole("dialog", {
-    name: "Add repository",
+    name: "Add repository by URL",
     exact: true,
   });
   await expect(modal).toBeVisible({ timeout: 1500 });
   await modal
-    .getByLabel("GitHub repository", { exact: true })
+    .getByLabel("Repository URL", { exact: true })
     .fill("octo/project");
   const last = modal.getByRole("button", {
-    name: "Save repository",
+    name: "Add & configure",
     exact: true,
   });
   const first = modal.getByRole("button", {
@@ -119,17 +131,22 @@ test("R2 dismissed repository reply cannot resurrect a reset draft", async ({
   await store("seed_settings", { launch_at_login: false });
   await seedAgent(store);
   await page.goto("/?view=settings");
+  await installRepositoryFixture(page);
+  await section(page, "Repositories");
   const before = (await store("snapshot")).settings;
   const hold = ipc.holdNext("canonical_repository_name");
   try {
     await page
-      .getByRole("button", { name: "Add repository manually...", exact: true })
+      .getByRole("button", { name: "Add repository by URL", exact: true })
       .click();
     await page
-      .getByLabel("GitHub repository", { exact: true })
+      .getByLabel("Repository URL", { exact: true })
       .fill("octo/cancelled");
     await page
-      .getByRole("button", { name: "Save repository", exact: true })
+      .getByLabel("Acting GitHub account", { exact: true })
+      .selectOption("22");
+    await page
+      .getByRole("button", { name: "Add & configure", exact: true })
       .click();
     await hold.arrived;
     await closeDialog(page);
@@ -169,9 +186,11 @@ test("R3 a held focus reply preserves newly opened repository text and focus", a
 }) => {
   await store("seed_settings", { launch_at_login: false });
   await page.goto("/?view=settings");
+  await installRepositoryFixture(page);
+  await section(page, "Repositories");
   await expect(
     page.getByRole("button", {
-      name: "Add repository manually...",
+      name: "Add repository by URL",
       exact: true,
     }),
   ).toBeVisible();
@@ -180,9 +199,9 @@ test("R3 a held focus reply preserves newly opened repository text and focus", a
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await hold.arrived;
     await page
-      .getByRole("button", { name: "Add repository manually...", exact: true })
+      .getByRole("button", { name: "Add repository by URL", exact: true })
       .click();
-    const input = page.getByLabel("GitHub repository", { exact: true });
+    const input = page.getByLabel("Repository URL", { exact: true });
     await input.fill("octo/unsubmitted");
     hold.release();
     await page.evaluate(() => window.__settingsIdle());
@@ -191,85 +210,6 @@ test("R3 a held focus reply preserves newly opened repository text and focus", a
   } finally {
     hold.release();
   }
-});
-
-test("R4 canonical clones share one selection with every path searchable", async ({
-  page,
-  store,
-  dataRoot,
-}) => {
-  await store("save_repository", { repository: "octo/project" });
-  const original = (await store("snapshot")).settings.repositories[0];
-  const root = join(dataRoot, "clones");
-  for (const name of ["first-clone", "second-clone"]) {
-    await mkdir(join(root, name, ".git"), { recursive: true });
-    await writeFile(
-      join(root, name, ".git/config"),
-      '[remote "origin"]\nurl = git@github.com:Octo/Project.git\n',
-    );
-  }
-  await mkdir(join(root, "local-only/.git"), { recursive: true });
-  await writeFile(
-    join(root, "local-only/.git/config"),
-    "[core]\nrepositoryformatversion = 0\n",
-  );
-  await page.exposeFunction("__chooseClones", () =>
-    store("discover_repositories", { root }),
-  );
-  await page.addInitScript(() => {
-    const invoke = window.__TAURI_INTERNALS__.invoke;
-    window.__TAURI_INTERNALS__.invoke = (command, args) =>
-      command === "choose_repository_folder"
-        ? window.__chooseClones()
-        : invoke(command, args);
-  });
-  await page.goto("/?view=settings");
-  await page
-    .getByRole("button", { name: "Choose folder...", exact: true })
-    .click();
-  await expect(
-    page.getByText("3 local repositories discovered", { exact: true }),
-  ).toBeVisible();
-  const selection = page.getByRole("checkbox", {
-    name: "Monitor octo/project",
-    exact: true,
-  });
-  await expect(selection).toHaveCount(1, { timeout: 1500 });
-  await selection.uncheck();
-  await expect(page.locator("#selected-count")).toHaveText("0 selected");
-  await page
-    .getByLabel("Find a repository", { exact: true })
-    .fill("second-clone");
-  await expect(selection).not.toBeChecked();
-  await selection.check();
-  await page
-    .getByLabel("Find a repository", { exact: true })
-    .fill("first-clone");
-  await expect(selection).toBeChecked();
-  await page.getByLabel("Find a repository", { exact: true }).fill("");
-  await expect(
-    page.getByRole("checkbox", { name: "Monitor local-only", exact: true }),
-  ).toBeDisabled();
-  await saveChanges(page);
-  expect((await store("snapshot")).settings.repositories).toEqual([original]);
-  await page.reload();
-  await expect(selection).toBeChecked();
-  await page
-    .getByRole("button", { name: "Scan chosen folder", exact: true })
-    .click();
-  await expect(
-    page.getByText("3 local repositories discovered", { exact: true }),
-  ).toBeVisible();
-  await expect(selection).toHaveCount(1);
-  const clones = page.getByRole("article", {
-    name: "octo/project",
-    exact: true,
-  });
-  await clones.getByText("2 local clones", { exact: true }).click();
-  await expect(clones.locator("li")).toHaveCount(2);
-  await expect(clones.locator("li").nth(0)).toContainText("first-clone");
-  await expect(clones.locator("li").nth(1)).toContainText("second-clone");
-  expect((await store("snapshot")).settings.repositories).toEqual([original]);
 });
 
 for (const kind of ["add", "rename"]) {
@@ -283,6 +223,8 @@ for (const kind of ["add", "rename"]) {
       await seedAgent(store);
       const before = (await store("snapshot")).settings;
       await page.goto("/?view=settings");
+      await installRepositoryFixture(page);
+      await section(page, "Repositories");
       if (kind === "rename") {
         const repository = await repositorySettings(page, "octo/original");
         await repository
@@ -294,17 +236,20 @@ for (const kind of ["add", "rename"]) {
       } else
         await page
           .getByRole("button", {
-            name: "Add repository manually...",
+            name: "Add repository by URL",
             exact: true,
           })
           .click();
       const hold = ipc.holdNext("canonical_repository_name");
       try {
         await page
-          .getByLabel("GitHub repository", { exact: true })
+          .getByLabel("Repository URL", { exact: true })
           .fill(completion === "valid" ? "octo/dismissed" : "invalid");
         await page
-          .getByRole("button", { name: "Save repository", exact: true })
+          .getByLabel("Acting GitHub account", { exact: true })
+          .selectOption("22");
+        await page
+          .getByRole("button", { name: "Add & configure", exact: true })
           .click();
         await hold.arrived;
         await closeDialog(page);
@@ -316,25 +261,25 @@ for (const kind of ["add", "rename"]) {
         await section(page, "Integrations");
         await page
           .getByRole("button", {
-            name: "Add repository manually...",
+            name: "Add repository by URL",
             exact: true,
           })
           .click();
         const replacement = page.getByRole("dialog", {
-          name: "Add repository",
+          name: "Add repository by URL",
           exact: true,
         });
         await replacement
-          .getByLabel("GitHub repository", { exact: true })
+          .getByLabel("Repository URL", { exact: true })
           .fill("octo/new-draft");
         hold.release();
         await page.evaluate(() => window.__settingsIdle());
         await expect(replacement).toBeVisible();
         await expect(
-          replacement.getByLabel("GitHub repository", { exact: true }),
+          replacement.getByLabel("Repository URL", { exact: true }),
         ).toHaveValue("octo/new-draft");
         await expect(
-          replacement.getByLabel("GitHub repository", { exact: true }),
+          replacement.getByLabel("Repository URL", { exact: true }),
         ).toBeFocused();
         await expect(replacement.getByRole("alert")).toBeHidden();
         await closeDialog(page);
@@ -360,24 +305,28 @@ test("R2 repeated submit dispatch cannot start a second repository request", asy
 }) => {
   await store("seed_settings", { launch_at_login: false });
   await page.goto("/?view=settings");
+  await installRepositoryFixture(page);
+  await section(page, "Repositories");
   await page.evaluate(() => {
     const invoke = window.__TAURI_INTERNALS__.invoke;
     window.repositoryRequests = 0;
     window.__TAURI_INTERNALS__.invoke = (command, args) => {
-      if (command === "canonical_repository_name") window.repositoryRequests++;
+      if (command === "resolve_provider_repository")
+        window.repositoryRequests++;
       return invoke(command, args);
     };
   });
   const hold = ipc.holdNext("canonical_repository_name");
   try {
     await page
-      .getByRole("button", { name: "Add repository manually...", exact: true })
+      .getByRole("button", { name: "Add repository by URL", exact: true })
       .click();
+    await page.getByLabel("Repository URL", { exact: true }).fill("octo/once");
     await page
-      .getByLabel("GitHub repository", { exact: true })
-      .fill("octo/once");
+      .getByLabel("Acting GitHub account", { exact: true })
+      .selectOption("22");
     await page
-      .getByRole("button", { name: "Save repository", exact: true })
+      .getByRole("button", { name: "Add & configure", exact: true })
       .click();
     await hold.arrived;
     await page
@@ -391,6 +340,10 @@ test("R2 repeated submit dispatch cannot start a second repository request", asy
     expect(await page.evaluate(() => window.repositoryRequests)).toBe(1);
     hold.release();
     await page.evaluate(() => window.__settingsIdle());
+    await page
+      .getByRole("dialog", { name: "Settings for octo/once", exact: true })
+      .getByRole("button", { name: "Cancel repository changes" })
+      .click();
     await saveChanges(page);
     expect((await store("snapshot")).settings.repositories).toHaveLength(1);
   } finally {
@@ -420,6 +373,8 @@ for (const editor of [
     ];
     await store("seed_settings", before);
     await page.goto("/?view=settings");
+    await installRepositoryFixture(page);
+    await section(page, "Repositories");
     await section(
       page,
       editor === "edit-repository"
@@ -441,7 +396,7 @@ for (const editor of [
         await repository
           .getByRole("button", { name: "Edit repository", exact: true })
           .click();
-        label = "GitHub repository";
+        label = "Repository URL";
       } else if (editor === "new-doctrine") {
         await page
           .getByRole("button", { name: "New doctrine", exact: true })
@@ -505,9 +460,10 @@ for (const viewport of [
     });
     await store("save_repository", { repository: "octo/project" });
     await page.goto("/?view=settings");
+    await installRepositoryFixture(page);
+    await section(page, "Repositories");
     await page
-      .getByRole("article", { name: "octo/project", exact: true })
-      .getByRole("button", { name: "Settings", exact: true })
+      .getByRole("button", { name: "octo/project", exact: true })
       .click();
     let modal = page.getByRole("dialog", {
       name: "Settings for octo/project",

@@ -10,57 +10,6 @@ import {
   section,
 } from "./navigation.mjs";
 
-test("discovery preserves the fetch URL and reports ambiguous remotes", async ({
-  store,
-  dataRoot,
-}) => {
-  const repeated = join(dataRoot, "repeated");
-  await mkdir(join(repeated, ".git"), { recursive: true });
-  await writeFile(
-    join(repeated, ".git/config"),
-    [
-      '[remote "origin"]',
-      "url = https://github.com/octo/first.git",
-      "url = https://github.com/octo/second.git",
-      "",
-    ].join("\n"),
-  );
-
-  const repeatedResult = await store("discover_repositories", {
-    root: repeated,
-  });
-  expect(repeatedResult.repositories).toEqual([
-    expect.objectContaining({
-      name: "octo/first",
-      unavailable: null,
-    }),
-  ]);
-
-  const ambiguous = join(dataRoot, "ambiguous");
-  await mkdir(join(ambiguous, ".git"), { recursive: true });
-  await writeFile(
-    join(ambiguous, ".git/config"),
-    [
-      '[remote "upstream"]',
-      "url = https://github.com/octo/first.git",
-      '[remote "backup"]',
-      "url = https://github.com/octo/second.git",
-      "",
-    ].join("\n"),
-  );
-
-  const ambiguousResult = await store("discover_repositories", {
-    root: ambiguous,
-  });
-  expect(ambiguousResult.repositories).toEqual([
-    expect.objectContaining({
-      name: null,
-      unavailable:
-        "Multiple GitHub remotes without an origin. Add the intended repository manually.",
-    }),
-  ]);
-});
-
 test("a settings conflict keeps the draft until explicit discard and reload", async ({
   page,
   store,
