@@ -378,7 +378,7 @@ fn start_and_retry_states_are_distinct_from_handoff_and_survive_restoration() {
     let mut untrusted = run.job.clone();
     untrusted.waiting = "trust_confirmation".into();
     store.save_queue(&[untrusted]).unwrap();
-    assert_eq!(state(&store), State::ConfirmationRequired);
+    assert_eq!(state(&store), State::Queued);
     store.save_queue(&[run.job.clone()]).unwrap();
     run.result = None;
     run.operation.state = OperationState::Running;

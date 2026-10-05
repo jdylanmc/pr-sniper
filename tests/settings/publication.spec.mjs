@@ -287,7 +287,7 @@ test("confirmed publication with failed final checks offers reconciliation, neve
   ).toBeDisabled();
 });
 
-test("legacy untrusted result requires renewed trust before another review", async ({
+test("legacy result retries without renewed trust while publication stays blocked", async ({
   page,
 }) => {
   const state = snapshot();
@@ -300,17 +300,15 @@ test("legacy untrusted result requires renewed trust before another review", asy
     page.getByRole("button", { name: "Publish review", exact: true }),
   ).toHaveCount(0);
   const again = page.getByRole("button", { name: "Review again" });
-  await expect(again).toBeDisabled();
-  await page
-    .getByRole("checkbox", { name: /I trust this exact revision for another/ })
-    .check();
+  await expect(again).toBeEnabled();
+  await expect(page.getByRole("checkbox", { name: /trust/i })).toHaveCount(0);
   await again.click();
   await expect
     .poll(() => page.evaluate(() => window.__publicationActions))
     .toEqual([
       {
         command: "start_review",
-        args: { candidateKey: "exact-head", confirmTrust: true },
+        args: { candidateKey: "exact-head" },
       },
     ]);
 });

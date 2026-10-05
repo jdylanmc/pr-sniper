@@ -203,9 +203,8 @@ fn review_state(
         return State::Blocked;
     }
     let Some(run) = &candidate.run else {
-        return if candidate.trust_required
-            || Selection::resolve(settings, &candidate.job, &candidate.assignment_id)
-                .is_ok_and(|s| !s.policy.automatic_agent_start)
+        return if Selection::resolve(settings, &candidate.job, &candidate.assignment_id)
+            .is_ok_and(|s| !s.policy.automatic_agent_start)
         {
             State::ConfirmationRequired
         } else {

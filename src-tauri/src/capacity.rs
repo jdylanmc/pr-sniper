@@ -167,9 +167,6 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                             .unwrap_or_else(|| "Manual retry required.".into()),
                     )
                 }
-                Some(run) if candidate.trust_required && !run.trust_confirmed => {
-                    Some("Trust confirmation required.".into())
-                }
                 Some(run)
                     if !run.manual_start
                         && candidate
@@ -185,7 +182,6 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                 {
                     Some("Waiting for retry backoff.".into())
                 }
-                None if candidate.trust_required => Some("Trust confirmation required.".into()),
                 None if candidate
                     .planned_selection
                     .as_ref()
@@ -221,9 +217,6 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
             continue;
         }
         let mut reason = candidate.blocked;
-        if reason.is_none() && candidate.trust_required {
-            reason = Some("Trust confirmation required for this conversation revision.".into());
-        }
         if reason.is_none() {
             reason = if run.cancelled {
                 Some("Follow-up cancelled; manual retry required.".into())

@@ -215,13 +215,13 @@ fn production_dispatch_enforces_four_of_seven_and_positive_limits_independent_of
 #[test]
 fn mixed_fifo_skips_blocked_work_and_completion_refills_without_a_poll() {
     let (_root, store) = fixture(7, 1, true);
+    let reply = add_reply(&store, 1);
     let mut jobs = store.load_queue().unwrap();
-    jobs[0].waiting = crate::monitoring::WAITING_TRUST_CONFIRMATION.into();
+    jobs[0].waiting = crate::monitoring::WAITING_ACCOUNT_DISCONNECTED.into();
     for job in &mut jobs {
         job.work.as_mut().unwrap().enqueue_order += 1;
     }
     store.save_queue(&jobs).unwrap();
-    let reply = add_reply(&store, 1);
     let coordinator = Coordinator::default();
     let mut workers = dispatch(&coordinator, &store, 100);
     assert_eq!(
@@ -239,7 +239,10 @@ fn mixed_fifo_skips_blocked_work_and_completion_refills_without_a_poll() {
         .find(|w| w.key.id == "normal-1")
         .unwrap();
     assert_eq!(blocked.enqueue_order, 2);
-    assert!(blocked.reason.unwrap().contains("Trust"));
+    assert_eq!(
+        blocked.reason.unwrap(),
+        "Review eligibility or repository configuration changed."
+    );
     let refilled = finish(&coordinator, &store, workers.remove(0), None, 101);
     assert_eq!(refilled.len(), 1);
     assert_eq!(refilled[0].key().id, "normal-2");
@@ -285,7 +288,7 @@ fn accepted_manual_intent_survives_restart_and_long_first_queue_wait() {
     let coordinator = Coordinator::default();
     assert!(dispatch(&coordinator, &store, 100).is_empty());
     for index in 1..=7 {
-        review::host::request(&store, &format!("normal-{index}"), true, false, 100).unwrap();
+        review::host::request(&store, &format!("normal-{index}"), true, 100).unwrap();
     }
     let ids: Vec<_> = store
         .load_reviews()
@@ -330,8 +333,7 @@ fn rapid_concurrent_requests_share_one_reservation_owner() {
             let workers = workers.clone();
             scope.spawn(move || {
                 let store = store.lock().unwrap();
-                review::host::request(&store, &format!("normal-{index}"), true, false, 100)
-                    .unwrap();
+                review::host::request(&store, &format!("normal-{index}"), true, 100).unwrap();
                 workers
                     .lock()
                     .unwrap()
@@ -519,7 +521,7 @@ fn pause_discards_successful_but_uncommitted_reply_output_and_preserves_original
 #[test]
 fn failed_dispatch_does_not_lose_previously_reserved_workers() {
     let (_root, store) = fixture(2, 4, true);
-    review::host::request(&store, "normal-2", true, false, 100).unwrap();
+    review::host::request(&store, "normal-2", true, 100).unwrap();
     let mut settings = store.load_settings().unwrap();
     settings.agents[1].prompt = "Changed input.".into();
     store.save_settings(&settings).unwrap();
@@ -551,8 +553,7 @@ fn future_final_and_mention_adapters_reserve_the_same_pool_as_normal_and_reply_w
         };
         let run = coordinator
             .reserve(&store, &work, |_| {
-                let mut run =
-                    review::host::request(&store, &format!("normal-{index}"), true, false, 100)?;
+                let mut run = review::host::request(&store, &format!("normal-{index}"), true, 100)?;
                 run.operation.operation_type = if kind == Kind::PrimaryFinal {
                     "primary_final_review"
                 } else {
@@ -599,13 +600,13 @@ fn future_final_and_mention_adapters_reserve_the_same_pool_as_normal_and_reply_w
 #[test]
 fn blocked_first_request_retains_order_and_new_work_joins_the_tail() {
     let (_root, store) = fixture(3, 1, true);
-    let mut jobs = store.load_queue().unwrap();
-    jobs[0].waiting = crate::monitoring::WAITING_TRUST_CONFIRMATION.into();
-    store.save_queue(&jobs).unwrap();
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].overrides.automatic_agent_start = Some(false);
+    store.save_settings(&settings).unwrap();
     let coordinator = Coordinator::default();
     let first = dispatch(&coordinator, &store, 100).remove(0);
     assert_eq!(first.key().id, "normal-2");
-    review::host::request(&store, "normal-1", true, true, 101).unwrap();
+    review::host::request(&store, "normal-1", true, 101).unwrap();
     let mut jobs = store.load_queue().unwrap();
     let mut new = jobs[2].clone();
     new.pull_request_id = "4".into();
@@ -623,6 +624,29 @@ fn blocked_first_request_retains_order_and_new_work_joins_the_tail() {
         finish(&coordinator, &store, next, None, 104)[0].key().id,
         "new-tail"
     );
+}
+
+#[test]
+fn legacy_trust_waits_resume_under_saved_assignment_without_a_confirmation() {
+    let (root, store) = fixture(2, 4, true);
+    let mut jobs = store.load_queue().unwrap();
+    for job in &mut jobs {
+        job.waiting = crate::monitoring::WAITING_TRUST_CONFIRMATION.into();
+        job.watched_author = false;
+        job.author_id = Some("unwatched-author".into());
+    }
+    store.save_queue(&jobs).unwrap();
+    let restored = Store::new(root.path().into());
+    let coordinator = Coordinator::default();
+    let workers = dispatch(&coordinator, &restored, 100);
+    assert_eq!(workers.len(), 2);
+    assert!(restored
+        .load_reviews()
+        .unwrap()
+        .iter()
+        .all(|run| !run.trust_confirmed
+            && !run.manual_start
+            && run.operation.state == OperationState::Running));
 }
 
 #[test]

@@ -563,7 +563,7 @@ fn a_filter_edit_discards_an_inflight_read_then_resumes_on_the_next_global_scan(
 }
 
 #[test]
-fn older_reviewer_admission_is_sticky_but_never_grants_trust_start_or_publication() {
+fn older_reviewer_admission_is_sticky_without_overriding_start_or_publication() {
     let (_fixture, store, mut monitor) = configured(1);
     let mut observed = pull('a');
     observed.number = 5;
@@ -574,14 +574,14 @@ fn older_reviewer_admission_is_sticky_but_never_grants_trust_start_or_publicatio
     });
     scan(&mut monitor, &store, vec![observed.clone()], NOW);
     let original = store.load_queue().unwrap().remove(0);
-    assert_eq!(original.waiting, monitoring::WAITING_TRUST_CONFIRMATION);
+    assert_eq!(original.waiting, monitoring::WAITING_HUMAN_START);
     let mut settings = store.load_settings().unwrap();
     assert!(
         !monitoring::review_policy(&settings, &original, Some(&observed))
             .unwrap()
             .automatic_agent_start
     );
-    assert!(review::requires_trust(&settings, &original, &observed));
+    assert!(monitoring::review_policy(&settings, &original, Some(&observed)).is_ok());
     let run = completed(&settings, &original);
     let gate = publication::evaluate_review_gate(
         &settings,
@@ -596,7 +596,7 @@ fn older_reviewer_admission_is_sticky_but_never_grants_trust_start_or_publicatio
             confirmed: true,
         },
     );
-    assert!(gate.stop.unwrap().contains("Trust confirmation"));
+    assert!(gate.stop.is_none());
     settings.defaults.reviewer_assignment = false;
     settings.repositories[0].watched_authors[0].id = "55".into();
     store.save_settings(&settings).unwrap();
@@ -607,7 +607,7 @@ fn older_reviewer_admission_is_sticky_but_never_grants_trust_start_or_publicatio
     assert!(!current.requested_reviewer);
     assert!(current.work.as_ref().unwrap().admission.requested_reviewer);
     assert!(monitoring::review_policy(&settings, &current, Some(&observed)).is_ok());
-    assert!(review::requires_trust(&settings, &current, &observed));
+    assert!(!current.watched_author);
     let accounts = BTreeMap::from([(
         "22".into(),
         monitoring::AccountAvailability {
@@ -1113,7 +1113,7 @@ fn tracking_with_zero_assignments_survives_restart_and_creates_work_only_at_a_la
     assert_eq!(store.load_queue().unwrap().len(), 1);
     assert_eq!(
         store.load_queue().unwrap()[0].waiting,
-        monitoring::WAITING_TRUST_CONFIRMATION
+        monitoring::WAITING_HUMAN_START
     );
 }
 

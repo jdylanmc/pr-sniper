@@ -126,7 +126,6 @@ export interface ReviewCandidate {
   assignment_id: string;
   agent_name: string;
   job: Job;
-  trust_required: boolean;
   blocked: string | null;
   planned_selection?: import("./resources").ReviewSelection | null;
   run: {
@@ -139,7 +138,6 @@ export interface ReviewCandidate {
           original_head: string;
         }[]
       | null;
-    trust_confirmed?: boolean;
     phase: string;
     error: string | null;
     selection: import("./resources").ReviewSelection;
@@ -207,7 +205,7 @@ function healthLabel(item: Health) {
 function waitingLabel(waiting: string) {
   switch (waiting) {
     case "trust_confirmation":
-      return "Waiting for explicit trust confirmation; no review has started.";
+      return "Waiting for review under the saved Agent assignment.";
     case "human_start":
       return "Automatic start is disabled; start an assigned Agent below.";
     case "agent_unavailable":
@@ -320,7 +318,6 @@ export function renderMonitoring(
   const health = root.querySelector<HTMLElement>("#schedule-health")!;
   const jobs = root.querySelector<HTMLElement>("#review-jobs")!;
   const reviews = root.querySelector<HTMLElement>("#agent-reviews")!;
-  const trust = new Set<string>();
   const expanded = new Set<string>();
   const pending = new Set<string>();
   const publishConsent = new Set<string>();
@@ -616,9 +613,7 @@ export function renderMonitoring(
       } else {
         await invoke("start_review", {
           candidateKey: candidate.key,
-          confirmTrust: trust.has(candidate.key),
         });
-        trust.delete(candidate.key);
       }
     } catch (error) {
       showError(
@@ -763,25 +758,7 @@ export function renderMonitoring(
       const retry = document.createElement("button");
       retry.type = "button";
       retry.textContent = "Review again";
-      retry.disabled =
-        pending.has(candidate.key) ||
-        (candidate.trust_required && !trust.has(candidate.key));
-      if (candidate.trust_required) {
-        const label = document.createElement("label");
-        const consent = document.createElement("input");
-        consent.type = "checkbox";
-        consent.checked = trust.has(candidate.key);
-        label.append(
-          consent,
-          "I trust this exact revision for another read-only AI review.",
-        );
-        consent.onchange = () => {
-          if (consent.checked) trust.add(candidate.key);
-          else trust.delete(candidate.key);
-          retry.disabled = pending.has(candidate.key) || !consent.checked;
-        };
-        row.append(label);
-      }
+      retry.disabled = pending.has(candidate.key);
       retry.onclick = () => {
         retry.disabled = true;
         void act(candidate, false);
@@ -821,9 +798,7 @@ export function renderMonitoring(
       state.textContent = run
         ? `${run.phase}. State: ${run.operation.state}; attempt ${run.operation.attempt_count}; deadline ${run.operation.attempt_count === 0 ? "starts at first execution" : time(run.operation.retry_deadline)}. Copilot account: ${run.selection.agent.ai_account?.account_id ?? "not captured"}; model: ${run.selection.agent.model}.`
         : (candidate.blocked ??
-          (candidate.trust_required
-            ? "Trust confirmation required for this exact revision."
-            : "Waiting for manual start or the automatic start gate."));
+          "Waiting for manual start or the automatic start gate.");
       row.append(state);
       const singleJob = options.panel && panelDetail?.type === "job";
       if (!singleJob && run && run.operation.attempt_count > 0)
@@ -939,18 +914,6 @@ export function renderMonitoring(
         const isRunning = run?.operation.state === "running";
         const isQueued =
           !!run && ["queued", "interrupted"].includes(run.operation.state);
-        let consent: HTMLInputElement | undefined;
-        if (candidate.trust_required && !isRunning) {
-          const label = document.createElement("label");
-          consent = document.createElement("input");
-          consent.type = "checkbox";
-          consent.checked = trust.has(candidate.key);
-          label.append(
-            consent,
-            "I trust this exact revision for read-only AI review. This does not allow code execution or publication.",
-          );
-          row.append(label);
-        }
         const button = document.createElement("button");
         button.type = "button";
         button.textContent = isRunning
@@ -960,21 +923,7 @@ export function renderMonitoring(
             : run
               ? "Retry review"
               : "Start review";
-        const updateDisabled = () => {
-          button.disabled =
-            pending.has(candidate.key) ||
-            (!isRunning &&
-              !isQueued &&
-              candidate.trust_required &&
-              !run?.trust_confirmed &&
-              !trust.has(candidate.key));
-        };
-        consent?.addEventListener("change", () => {
-          if (consent.checked) trust.add(candidate.key);
-          else trust.delete(candidate.key);
-          updateDisabled();
-        });
-        updateDisabled();
+        button.disabled = pending.has(candidate.key);
         button.addEventListener("click", () => {
           button.disabled = true;
           void act(candidate, isRunning || isQueued);
