@@ -92,6 +92,12 @@
 .settings-window .settings-home-row:focus-visible {
   outline-offset: -3px;
 }
+.settings-window[data-account-overview] {
+  background: #f0f3f6;
+}
+.settings-window .settings-provider-planned:hover {
+  background: transparent;
+}
 .settings-row-copy {
   flex: 1;
   min-width: 0;
