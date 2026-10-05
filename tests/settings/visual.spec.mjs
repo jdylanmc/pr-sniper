@@ -622,30 +622,45 @@ test("failed before first attempt retains readable planned configuration after q
   await expect(planned).not.toContainText("Updated planned doctrine.");
   fixture.state.reviews[0].operation.state = "completed";
   fixture.state.reviews[0].result = fixture.base.result;
+  fixture.state.reviews[0].phase = "Automated review complete";
   await store("seed_queue_state", fixture.state);
   await page.evaluate(() => {
     window.__activeIds = ["visual-work-2"];
   });
   await tab(page, "Queue").click();
   await tab(page, "Reviewed").click();
-  await page
-    .locator(
-      '[data-panel-view="reviewed"] [data-job-id="normal:visual-work-1"]',
-    )
-    .getByRole("button")
+  const result = page
+    .locator(".reviewed-list .reviewed-entry")
+    .filter({ hasText: "example/repo #9" });
+  await expect(result).toHaveCount(1);
+  await expect(result.locator(".reviewed-meta")).toContainText(
+    "1 completed pass",
+  );
+  await result
+    .getByRole("button", {
+      name: "Open evidence for example/repo #9",
+      exact: true,
+    })
     .click();
-  await expect(page.locator(".job-status strong")).toHaveText("Done");
-  await expect(planned).toContainText(
+  await expect(page.locator("[data-panel-heading]")).toHaveText(
+    "Saved evidence",
+  );
+  const completedPass = page
+    .locator("#agent-reviews article")
+    .filter({ hasText: "work ID visual-work-1" });
+  await expect(completedPass).toContainText("Automated review complete");
+  await expect(completedPass.locator(".work-configuration")).toContainText(
+    "Captured execution configuration",
+  );
+  await expect(completedPass.locator(".work-configuration")).toContainText(
     "Captured doctrine: read every changed file.",
   );
-  const snapshot = await store("monitoring_snapshot");
-  const parent = snapshot.items.find((item) =>
-    item.review_keys.includes("visual-work-1"),
+  await expect(completedPass.locator(".work-configuration")).not.toContainText(
+    "Updated planned doctrine.",
   );
-  await expect(page.locator("[data-work-context]")).not.toContainText(
-    parent.summary,
-  );
-  await captureInspector(page, "normal-done-active-sibling");
+  await page.screenshot({
+    path: join(screenshots, "normal-done-reviewed-result.png"),
+  });
 });
 
 test("completed jobs do not adopt aggregate author-wait or ready-for-personal-review states", async ({
@@ -740,7 +755,7 @@ test("polling preserves selected inspector controls on unrelated work and keyed 
   await expect(raw).toHaveAttribute("open", "");
 });
 
-test("seven failed Agents produce one human PR card; superseded and completed jobs stay distinct", async ({
+test("seven failed Agents remain one PR result with one completed pass", async ({
   page,
   store,
 }) => {
@@ -770,14 +785,27 @@ test("seven failed Agents produce one human PR card; superseded and completed jo
     page.locator('[data-job-id="normal:visual-work-7"] .work-state'),
   ).toHaveText("Superseded");
   await tab(page, "Reviewed").click();
-  const completed = page.locator(
-    '[data-panel-view="reviewed"] [data-job-id="normal:visual-work-1"]',
+  const result = page
+    .locator(".reviewed-list .reviewed-entry")
+    .filter({ hasText: "example/repo #9" });
+  await expect(result).toHaveCount(1);
+  await expect(result.locator(".reviewed-meta")).toContainText(
+    "1 completed pass, 7 review attempts",
   );
-  await expect(completed).toContainText("Automated review complete");
-  await completed.getByRole("button", { name: "Open job" }).click();
-  await expect(page.locator("#agent-reviews article")).toHaveCount(1);
+  await result
+    .getByRole("button", {
+      name: "Open evidence for example/repo #9",
+      exact: true,
+    })
+    .click();
+  await expect(page.locator("#agent-reviews article")).toHaveCount(7);
+  await expect(
+    page
+      .locator("#agent-reviews article")
+      .filter({ hasText: "work ID visual-work-1" }),
+  ).toContainText("Automated review complete");
   await expect(page.locator("#agent-reviews")).toContainText("Scout");
-  await expect(page.locator("#agent-reviews")).not.toContainText(
+  await expect(page.locator("#agent-reviews")).toContainText(
     "Synthetic failure for Pathfinder",
   );
 });
