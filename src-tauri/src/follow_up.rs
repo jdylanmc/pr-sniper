@@ -35,6 +35,8 @@ pub struct ConversationContext {
     pub assignment_id: String,
     pub job: crate::monitoring::QueueJob,
     pub selection: Selection,
+    /// Retained for historical decoding only, not a permission.
+    #[serde(default)]
     pub trust_confirmed: bool,
     #[serde(default)]
     pub feedback: Vec<crate::feedback::Context>,
@@ -233,11 +235,6 @@ impl FollowUp {
         if !can_comment {
             return Err(Failure::permanent(
                 "The acting account cannot publish to this repository.",
-            ));
-        }
-        if crate::review::requires_trust(settings, job, pull) && !self.context.trust_confirmed {
-            return Err(Failure::permanent(
-                "Trust confirmation for this conversation's exact revision is required.",
             ));
         }
         if self.publication.is_some()

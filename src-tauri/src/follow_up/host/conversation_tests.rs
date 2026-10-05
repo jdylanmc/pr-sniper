@@ -1918,7 +1918,7 @@ fn r72_primary_mention_retry_survives_stale_production_phase_save_and_completion
 }
 
 #[test]
-fn unavailable_owner_and_fork_trust_do_not_gain_authority_from_comments() {
+fn unavailable_owner_stays_blocked_but_assigned_fork_conversation_needs_no_consent() {
     let (_root, store, origin, mut thread) = fixture(1);
     explanation(&mut thread, "11");
     let mut settings = store.load_settings().unwrap();
@@ -1949,7 +1949,7 @@ fn unavailable_owner_and_fork_trust_do_not_gain_authority_from_comments() {
         vec![mention("501", "@actor investigate")],
         NOW + 20,
     );
-    let mut run = store
+    let run = store
         .load_follow_ups()
         .unwrap()
         .into_iter()
@@ -1957,12 +1957,7 @@ fn unavailable_owner_and_fork_trust_do_not_gain_authority_from_comments() {
         .unwrap();
     let mut fork = pull('a');
     fork.head_repository_id = Some("200".into());
-    assert!(run
-        .validate_current(&settings, &run.context.job, &fork, true, true)
-        .unwrap_err()
-        .message
-        .contains("Trust"));
-    run.context.trust_confirmed = true;
+    assert!(!run.context.trust_confirmed);
     assert!(run
         .validate_current(&settings, &run.context.job, &fork, true, true)
         .is_ok());

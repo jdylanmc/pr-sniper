@@ -72,10 +72,6 @@ pub(crate) fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                 && !run.execution.selection.policy.automatic_agent_start
             {
                 Some("Explicit start of the primary final full review is required.".into())
-            } else if run.basis.job.waiting == monitoring::WAITING_TRUST_CONFIRMATION
-                && !run.execution.trust_confirmed
-            {
-                Some("Final review requires exact-revision trust confirmation.".into())
             } else if run.execution.operation.state != OperationState::Running
                 && run
                     .execution
@@ -789,18 +785,14 @@ impl Coordinator {
 }
 
 #[tauri::command]
-pub(crate) fn start_final_review(
-    app: tauri::AppHandle,
-    id: String,
-    confirm_trust: bool,
-) -> Result<(), String> {
+pub(crate) fn start_final_review(app: tauri::AppHandle, id: String) -> Result<(), String> {
     let host = app.state::<Host>();
     {
         let store = host
             .store
             .lock()
             .map_err(|_| "Action storage unavailable.")?;
-        request_final(&store, &id, confirm_trust, now_seconds()?)?;
+        request_final(&store, &id, now_seconds()?)?;
     }
     crate::capacity::Coordinator::pump(&app)
 }

@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 async function actionFixture(store, observe = true) {
   const fixture = await queueFixture(store);
   const review = fixture.review(9);
+  review.trust_confirmed = false;
   const repository = fixture.settings.repositories[0];
   repository.assignments[0].actions = { approve: true, merge: true };
   review.job.work = {
@@ -426,6 +427,8 @@ test("current normal clearance hands off personally and exposes a distinct durab
   await expect(page.locator("#handoff-queue")).toContainText(
     "Primary final full review",
   );
+  await expect(page.getByRole("checkbox", { name: /trust/i })).toHaveCount(0);
+  expect(fixture.actions.finals[0].execution.trust_confirmed).toBe(false);
   await page
     .getByRole("button", { name: "Start / retry final full review" })
     .click();

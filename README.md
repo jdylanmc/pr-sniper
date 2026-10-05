@@ -84,7 +84,7 @@ the pending scopes together; changed configuration, accounts or scope reject a
 stale confirmation. Failed writes retain saved resources and can be retried.
 Already-authorized scopes are not replayed, and global pause is never resumed
 implicitly. The existing scheduler admits only real work through its normal
-trust, execution and publication gates.
+execution and publication permissions.
 
 ## vNext design prototype
 
@@ -588,7 +588,7 @@ and `save_resource` over the existing Store. `ResourceEdit` addresses one Agent,
 doctrine, repository or global-preference resource with its expected value;
 `value: null` deletes, and `expected: null` creates. Readiness describes saved
 configuration only: account verification, current model access, monitoring
-scope, trust and provider capability remain independent gates. No setup wizard
+scope and provider capability remain independent gates. No setup wizard
 or monitoring activation is added by this surface.
 
 Saving validates the effective policy on the Rust storage boundary, including
@@ -754,10 +754,11 @@ results.
 Polling reads paginated open pull-request metadata through the repository's
 connected OAuth account. A populated watched-author filter or a request for the
 signed-in account as reviewer admits a non-draft revision. An empty effective
-watched-author filter matches all authors only after scope activation; it does
-not establish trust. Reviewer-only, all-author, fork and otherwise untrusted
-work waits for explicit confirmation. Admission then remains sticky after
-watchlist/reviewer removal, without granting trust or bypassing current account,
+watched-author filter matches all authors after scope activation. Saved Agent
+assignment and confirmed monitoring scope authorize ongoing read-only reviews,
+including forks, reviewer-requested PRs and later revisions, without a separate
+revision-trust prompt. Admission remains sticky after
+watchlist/reviewer removal, without bypassing current account,
 repository, start or publication gates. Repeated scans reuse each assignment's
 normal job for the same PR iteration, regardless of later filter changes. Adding
 an Agent creates its missing job at the next scan without repeating completed
@@ -794,10 +795,10 @@ silently start legacy work.
 
 **Start review** is explicit when automatic start is disabled. Enabling the
 **Preferences > Start eligible reviews automatically** default (or **Review
-start** in a repository's Settings) admits trusted, eligible assignment detections
-to the shared-capacity review runner. Forks and authors outside the trusted watchlist
-always require a checkbox confirmation for that exact revision. All-author
-monitoring is not trust. **Cancel review** stops inference and requires an
+start** in a repository's Settings) admits eligible assignment detections
+to the shared-capacity review runner. Setup/assignment and monitoring activation
+are the consent boundary; no additional revision-trust checkbox is required.
+**Cancel review** stops inference and requires an
 explicit retry; changing the account, Agent, prompt, doctrine, repository or
 start gate invalidates affected in-flight work.
 
@@ -807,12 +808,12 @@ tools: batch changed-file reads, exact source reads, and literal path search.
 No repository is checked out, no symlink is followed, and no target commands,
 builds, tests, hooks, installs, or provider mutations are exposed. Before
 inference, the pinned runtime's actual tool catalog must exactly match that
-allowlist. Missing enforcement blocks the review even after trust confirmation.
+allowlist. Missing enforcement blocks the review regardless of setup consent.
 This is a constrained current-user process, **not an operating-system sandbox**.
 
 The independent AI account/model and configured review lens are pinned for the
-attempt. Head/base revisions, lifecycle, triggers, repository state and start/
-trust gates are rechecked before invocation; stale results are rejected.
+attempt. Head/base revisions, lifecycle, triggers, repository state and start
+permissions are rechecked before invocation; stale results are rejected.
 Validated results contain a one-sentence synopsis, an ordered guide for every
 changed file, structured findings, a machine decision, and runtime/session/
 token metadata. Every changed file must actually have been read. Missing,
@@ -896,7 +897,7 @@ It reads every changed file and sees the peer results, owned feedback, complete
 bounded human discussion/review evidence and actual policy observations.
 `state/actions.json` retains its own immutable basis, FIFO identity, operation,
 attempt history and result without replacing normal review history.
-It uses shared AI capacity, start/trust gates, pause accounting and worker
+It uses shared AI capacity, start permissions, pause accounting and worker
 teardown. Findings or human judgment stop actions; they require human handling
 or a new iteration rather than repeated same-iteration AI attempts to obtain a
 different answer.
@@ -984,7 +985,7 @@ path above. Owned-thread replies use the conversation workflow below.
 
 Before and after mutations the host rechecks account/repository identity, head
 and reviewed target base, open/non-draft lifecycle, eligibility, active monitoring
-scope, trust and current publication permission. Disabling Comment or changing
+scope and current publication permission. Disabling Comment or changing
 the publication gate stops the attempt; a queued confirmation is not a permanent
 grant. **Withdraw publication confirmation** revokes that attempt and removes
 only its exact owned pending batch when it can be verified. Cleanup can remove
@@ -1060,7 +1061,9 @@ comment can be started explicitly after the human decision. Quiet and human-inpu
 results have no publication action. Resolved, changed, superseded or stale
 threads stop rather than responding to an outdated conversation. Each follow-up
 stores an immutable `target` (original publication/review/root) separately from
-its `context` (current iteration, captured selection and trust). A new author
+its `context` (current iteration and captured selection). Legacy `trust_confirmed`
+fields remain readable as historical evidence only, never an execution or
+publication gate. A new author
 reply may analyze a later admitted iteration through the same original Agent;
 it never rewrites the old review/head or transfers ownership to a replacement.
 Normal passes on that iteration still fan out independently.
@@ -1068,7 +1071,7 @@ Normal passes on that iteration still fan out independently.
 Replies are posted only to the verified root comment, end with ` PR Sniper`,
 and never resolve a thread, approve a PR or merge. Before and after the mutation,
 the host revalidates the live thread, revision, lifecycle, eligibility, account,
-trust, scope and publication gate. A late change preserves the confirmed receipt
+scope and publication gate. A late change preserves the confirmed receipt
 as **stale after publication**, without posting again.
 
 Private atomic `state/follow-ups.json` records frozen input/output, both operation
@@ -1131,7 +1134,7 @@ Signed machine output cannot loop; legitimate same-account human comments remain
 eligible. Edited/deleted triggers block new replies, but an existing uncertain
 reply can still reconcile its exact signed body and acting-account receipt.
 Top-level responses link the original comment and reuse the constrained reply
-schema, shared `Kind::Mention` AI capacity, explicit trust/start/comment gates,
+schema, shared `Kind::Mention` AI capacity, explicit start/comment permissions,
 serial reply publication, pause handling and no-blind-repost recovery. No fake
 review or publication is created for a mention.
 

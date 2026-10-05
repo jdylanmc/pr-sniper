@@ -3,7 +3,7 @@ import { expect, test } from "./fixtures.mjs";
 const waitingStates = [
   [
     "trust_confirmation",
-    "Waiting for explicit trust confirmation; no review has started.",
+    "Waiting for review under the saved Agent assignment.",
   ],
   [
     "human_start",

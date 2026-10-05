@@ -1,10 +1,51 @@
 import { expect, test } from "./fixtures.mjs";
+import { queueFixture } from "./queue-fixture.mjs";
 import {
   section,
   saveChanges,
   repositorySettings,
   closeDialog,
 } from "./navigation.mjs";
+
+test("retained job inspector restores a legacy trust wait without a consent control", async ({
+  page,
+  store,
+}, testInfo) => {
+  const fixture = await queueFixture(store);
+  const review = fixture.review(9);
+  review.job.waiting = "trust_confirmation";
+  fixture.settings.defaults.automatic_agent_start = true;
+  await store("seed_settings", fixture.settings);
+  await store("seed_queue_state", {
+    jobs: [review.job],
+    reviews: [],
+    publications: [],
+    follow_ups: [],
+  });
+  const capacity = await store("automation_snapshot");
+  const work = capacity.work.find((entry) => entry.key.id === review.key);
+  expect(work).toMatchObject({ state: "waiting", reason: null });
+  await page.setViewportSize({ width: 408, height: 744 });
+  await store("panel_navigate", {
+    route: {
+      tab: "running",
+      detail: { type: "job", kind: "normal", id: review.key },
+    },
+  });
+  await page.goto("/");
+  await expect(page.locator("[data-panel-heading]")).toHaveText("Job details");
+  await expect(page.getByRole("checkbox", { name: /trust/i })).toHaveCount(0);
+  await expect(page.getByText(/Trust confirmation required/i)).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Start review", exact: true }),
+  ).toBeEnabled();
+  await page
+    .getByRole("button", { name: "Start review", exact: true })
+    .scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: testInfo.outputPath("job-without-trust-prompt.png"),
+  });
+});
 
 test("automatic review start is explicit, inherited and saved without enabling publication", async ({
   page,
@@ -203,7 +244,7 @@ for (const mode of ["planned", "captured", "legacy", "queued", "failed-zero"]) {
   });
 }
 
-test("review start is explicit, revision-bound and requires trust consent", async ({
+test("review start uses the exact candidate without an extra trust prompt", async ({
   page,
 }) => {
   await page.addInitScript((review) => {
@@ -221,9 +262,7 @@ test("review start is explicit, revision-bound and requires trust consent", asyn
   }, candidate());
   await page.goto("/?view=queue");
   const start = page.getByRole("button", { name: "Start review", exact: true });
-  await expect(start).toBeDisabled();
-  const trust = page.getByRole("checkbox");
-  await trust.check();
+  await expect(page.getByRole("checkbox")).toHaveCount(0);
   await expect(start).toBeEnabled();
   await start.click();
   await expect
@@ -231,10 +270,10 @@ test("review start is explicit, revision-bound and requires trust consent", asyn
     .toEqual([
       {
         command: "start_review",
-        args: { candidateKey: "exact-revision-key", confirmTrust: true },
+        args: { candidateKey: "exact-revision-key" },
       },
     ]);
-  await expect(start).toBeDisabled();
+  await expect(start).toBeEnabled();
 });
 
 test("running review exposes cancellation and safe visible failures", async ({

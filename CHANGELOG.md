@@ -7,6 +7,11 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- Use saved Agent assignments and confirmed monitoring scope as ongoing review
+  consent. Remove repeated revision-trust prompts from normal/retry, conversation
+  and final reviews without changing read-only execution, revision validation or
+  separate publication/approval/merge permissions. Existing blocked queue records
+  can proceed under their saved automatic-start policy.
 - Group Accounts into AI Tooling and Git Repository provider lists before
   showing individual integration details. Preserve sign-in flows and nested
   Back focus; label unavailable providers Coming soon without setup actions.

@@ -1434,7 +1434,7 @@ export async function mountSettings(
       <p class="settings-hint">PR Sniper polls scope-confirmed configured repositories while the ${trayAdjective} app is active. Detection does not run reviews or publish comments.</p>
       ${draft.root_folder ? '<div class="settings-actions"><button id="rescan">Scan chosen folder</button></div>' : ""}
       ${discovery?.warnings.map((warning) => `<p class="settings-notice">${escape(warning)}</p>`).join("") ?? ""}
-      <p class="settings-hint">For provider selection or account access, use ${options.embedded ? "Accounts in Settings" : "GitHub accounts below"}. Choosing a repository never grants trust.</p></section>`;
+      <p class="settings-hint">For provider selection or account access, use ${options.embedded ? "Accounts in Settings" : "GitHub accounts below"}. Assign an Agent and confirm monitoring scope to authorize ongoing read-only reviews.</p></section>`;
     refreshRepositoryRows = rows;
     renderAccounts();
     if (options.embedded && accountContent)
@@ -1758,10 +1758,10 @@ export async function mountSettings(
         <p role="alert" data-scope-error hidden></p>
         <button data-refresh-scope>Refresh scope status</button>
         <label for="repository-reviewer-trigger">Reviewer requests</label><select id="repository-reviewer-trigger" data-reviewer-trigger><option value="inherit">Use default (${saved.defaults.reviewer_assignment ? "on" : "off"})</option><option value="on">Include PRs explicitly requesting the acting account</option><option value="off">Do not admit through reviewer requests</option></select>
-        <p class="settings-hint">Reviewer requests independently admit older or unwatched PRs. Once admitted, work stays tracked until verified closure or merge. Scope is not trust; disablement and execution gates still apply.</p></section>
+        <p class="settings-hint">Reviewer requests independently admit older or unwatched PRs. Once admitted, work stays tracked until verified closure or merge. Disablement and execution permissions still apply.</p></section>
         <section class="repository-group"><h2>Automation overrides</h2>
-        <label for="repository-review-start">Review start</label><select id="repository-review-start" data-review-start><option value="inherit">Use default (${saved.defaults.automatic_agent_start ? "automatic" : "manual"})</option><option value="automatic">Start automatically when trusted and eligible</option><option value="manual">Require manual start</option></select>
-        <p class="settings-hint">Save repository commits this resource only. Forks and untrusted authors always require confirmation. Review start does not enable publication.</p>
+        <label for="repository-review-start">Review start</label><select id="repository-review-start" data-review-start><option value="inherit">Use default (${saved.defaults.automatic_agent_start ? "automatic" : "manual"})</option><option value="automatic">Start automatically when eligible</option><option value="manual">Require manual start</option></select>
+        <p class="settings-hint">Save repository commits this resource only. Agent assignments and confirmed scope authorize ongoing read-only reviews, including forks and later revisions. Review start does not enable publication.</p>
         <label for="repository-publication">Comment publication</label><select id="repository-publication" data-publication><option value="inherit">Use default (${saved.defaults.automatic_comment_publication ? "automatic" : "local-only"})</option><option value="automatic">Publish automatically after revalidation</option><option value="manual">Off: retain normal findings locally</option></select>
         <p class="settings-hint">The assignment must also allow Comment. Uses the repository's GitHub account, never the Copilot account. This cannot approve or merge a pull request.</p>
         </section><section class="repository-group"><div class="section-actions"><h2>Agents on this repository</h2><button class="primary" data-assign-agent ${agents().length ? "" : "disabled"}>Assign agent</button></div>
@@ -1770,7 +1770,7 @@ export async function mountSettings(
         <p class="settings-hint">Each assignment receives its own normal pass. Newly assigned Agents get missing work at the next global scan; adding one does not start a scan. Primary routes top-level mentions of the acting account, without enabling Approve or Merge.</p>
         </section><section class="repository-group"><div class="section-actions"><h2>People you watch</h2><button data-add-people>Add people</button></div>
         <div class="watchlist"></div>
-        <p class="settings-hint">Optional. A nonempty effective watched-author filter qualifies those authors. An empty effective author filter means all authors only after scope confirmation and never establishes trust. Pull requests requesting the signed-in account also qualify when the effective inherited reviewer-assignment trigger is enabled. Exact GitHub login, no wildcards.</p>
+        <p class="settings-hint">Optional. A nonempty effective watched-author filter qualifies those authors. An empty effective author filter means all authors after scope confirmation. Pull requests requesting the signed-in account also qualify when the effective inherited reviewer-assignment trigger is enabled. Exact GitHub login, no wildcards.</p>
         </section><section class="repository-group" data-global-schedule><h2>Saved global schedule</h2><p>${schedule.kind === "cron" ? `<code>${escape(schedule.expression)}</code>` : `Every ${schedule.minutes} minutes (saved legacy schedule)`} / ${escape(schedule.timezone)}</p><p class="settings-hint">${schedule.kind === "cron" ? "One schedule scans enabled repositories. Change it in Preferences;" : "Polling is blocked until you choose a global five-field cron schedule in Preferences. The saved legacy interval is retained;"} repository and Agent assignments have no separate polling controls.</p></section>
         <details class="repository-group"><summary>Repository and connection</summary><div class="settings-actions"><button id="rename-repository">Edit repository</button><button data-unbind-repository ${repository.provider_account_id ? "" : "disabled"}>Unbind account</button><button id="remove-repository">Remove repository</button></div><div class="connection"></div></details>
         <p class="settings-hint">Save applies only this repository. Back retains its draft for this session; Cancel discards it. Earlier assignment saves stay applied.</p>
@@ -2078,7 +2078,7 @@ export async function mountSettings(
       const scope = dialog(
         `Monitoring scope for ${repository.name}`,
         `<p>Found <strong data-matching-count>${preview.candidates.length}</strong> matching open, non-draft pull request${preview.candidates.length === 1 ? "" : "s"} through ${escape(preview.account_login)} (${escape(preview.account_id)}).</p>
-        <p class="settings-hint">Choose the initial author-matched backlog. Explicit reviewer requests can admit older PRs. Once admitted, a PR stays tracked until verified closure or merge; trust and execution gates still apply. All-author matching does not establish trust.</p>
+        <p class="settings-hint">Choose the initial author-matched backlog. Explicit reviewer requests can admit older PRs. Confirming scope authorizes assigned Agents to review matching PRs and later revisions without further trust prompts. Once admitted, a PR stays tracked until verified closure or merge. Execution and publication permissions still apply.</p>
         <fieldset class="activation-choice"><legend>Initial scope</legend>
           <label><input type="radio" name="scope-mode" value="new_only" checked />New pull requests only</label>
           <label><input type="radio" name="scope-mode" value="selected_existing" />Selected existing pull requests plus new pull requests</label>
@@ -2157,7 +2157,7 @@ export async function mountSettings(
           ]
             .filter(Boolean)
             .join(" and ");
-          details.innerHTML = `<strong>#${candidate.number} ${escape(candidate.title)}</strong><small>${escape(author)} \u00b7 ${escape(triggers)}${candidate.trust_confirmation_required ? " \u00b7 trust confirmation required" : ""}</small>`;
+          details.innerHTML = `<strong>#${candidate.number} ${escape(candidate.title)}</strong><small>${escape(author)} \u00b7 ${escape(triggers)}</small>`;
           row.append(checkbox, details);
           list.append(row);
         }
@@ -2327,7 +2327,7 @@ export async function mountSettings(
       const people = repository.watched_authors ?? [];
       if (!people.length) {
         list.innerHTML =
-          '<p class="settings-empty">No people added for this repository. Inherited watched authors still apply; if the effective author filter is empty, all authors qualify only after scope confirmation and are not trusted. Reviewer requests qualify when that trigger is enabled.</p>';
+          '<p class="settings-empty">No people added for this repository. Inherited watched authors still apply; if the effective author filter is empty, all authors qualify after scope confirmation. Reviewer requests qualify when that trigger is enabled.</p>';
         restoreFocus();
         return;
       }
@@ -2368,7 +2368,7 @@ export async function mountSettings(
         .join("")}</select></label>
         <label class="repository-check"><input type="checkbox" name="primary" ${isPrimary ? "checked" : ""} ${sole ? "disabled" : ""} /><span>Primary<small>${sole ? "The sole assignment is primary automatically." : "At most one explicit primary per repository. Uncheck to leave none."}</small></span></label>
         <div class="permission-row"><label><input type="checkbox" name="comment" ${existing?.comment ? "checked" : ""} /><span>Comment<small>Allow comment publication, independently of approval and merge.</small></span></label><label><input type="checkbox" name="approve" ${existing?.actions?.approve ? "checked" : ""} /><span>Approve<small>Opt in to the acting GitHub account's approval after current Agent clearance and a primary final full review. Never self-approval or policy bypass.</small></span></label><label><input type="checkbox" name="merge" ${existing?.actions?.merge ? "checked" : ""} ${isPrimary ? "" : "disabled"} /><span>Merge<small>Independent opt-in; primary only, after final review, green CI and verified provider policies. Does not require Approve or personal acknowledgment.</small></span></label></div>
-        <p class="settings-hint">Primary selection never enables permissions. Polling is configured globally in Preferences. Saving commits this repository, not unrelated drafts.</p><p role="alert" hidden></p><div class="resource-actions"><button class="primary">${existing ? "Save assignment" : "Assign agent"}</button><button type="button" data-cancel-resource>Cancel</button></div></form>`,
+        <p class="settings-hint">Saving this assignment authorizes the selected Agent to review this repository's confirmed monitoring scope and later revisions under its review-start setting. Primary selection never enables publication permissions. Polling is configured globally in Preferences. Saving commits this repository, not unrelated drafts.</p><p role="alert" hidden></p><div class="resource-actions"><button class="primary">${existing ? "Save assignment" : "Assign agent"}</button><button type="button" data-cancel-resource>Cancel</button></div></form>`,
       opener,
     );
     resourceEditor(modal);
@@ -2525,8 +2525,8 @@ export async function mountSettings(
       <label>Schedule helper<select id="cron-helper"><option value="">Custom five-field expression</option><option value="*/15 * * * *">Every 15 minutes</option><option value="0 * * * *">Every hour</option><option value="0 9 * * MON-FRI">Weekdays at 09:00</option></select></label>
       <label>Time zone<input id="global-timezone" value="${escape(schedule.timezone)}" /></label>
       </div><p class="settings-hint">Five fields: minute, hour, day, month, weekday. Evaluated in this IANA time zone, including its daylight-saving rules. One global scan covers enabled, scope-confirmed repositories. Shared AI capacity drains admitted work independently of polling.${schedule.kind === "interval" ? ` Saved legacy interval: ${schedule.minutes} minutes. Polling is blocked until you explicitly choose a cron expression; no automatic conversion.` : ""}</p></fieldset>
-      <fieldset aria-label="Review execution"><legend>Review execution</legend><label class="setting-row"><span>Start eligible reviews automatically<small>Default for assigned repositories. Forks and untrusted authors still require confirmation; publication has its own gate.</small></span><input id="automatic-review-start" type="checkbox" role="switch" ${draft.defaults.automatic_agent_start ? "checked" : ""} /></label></fieldset>
-      <fieldset aria-label="Comment publication"><legend>Comment publication</legend><label class="setting-row"><span>Publish review comments automatically<small>Default for assigned repositories that allow Comment. Revalidates revision, trust and eligibility before publication. Never approves or merges.</small></span><input id="automatic-publication" type="checkbox" role="switch" ${draft.defaults.automatic_comment_publication ? "checked" : ""} /></label></fieldset>
+      <fieldset aria-label="Review execution"><legend>Review execution</legend><label class="setting-row"><span>Start eligible reviews automatically<small>Default for assigned repositories with confirmed monitoring scope. No per-revision confirmation; publication has its own gate.</small></span><input id="automatic-review-start" type="checkbox" role="switch" ${draft.defaults.automatic_agent_start ? "checked" : ""} /></label></fieldset>
+      <fieldset aria-label="Comment publication"><legend>Comment publication</legend><label class="setting-row"><span>Publish review comments automatically<small>Default for assigned repositories that allow Comment. Revalidates revision, permissions and eligibility before publication. Never approves or merges.</small></span><input id="automatic-publication" type="checkbox" role="switch" ${draft.defaults.automatic_comment_publication ? "checked" : ""} /></label></fieldset>
       <p class="settings-hint preferences-permissions">Approve and Merge remain separate repository-assignment permissions, never global grants.</p></div>
       <div class="preferences-boundary"><h2>Immediate controls</h2><span>Applied separately</span></div>
       <p class="settings-hint">Pause, notification opt-in and startup commit immediately. Save preferences and Reset changes do not apply or undo them.</p>
