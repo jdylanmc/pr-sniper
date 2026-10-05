@@ -46,6 +46,132 @@ async function bridge(page, handler) {
   });
 }
 
+for (const surface of ["panel", "standalone"]) {
+  for (const failedRead of [false, true]) {
+    test(`${surface} Copilot re-entry refreshes model-invalidated identity${failedRead ? " with failed read and retry" : ""} without window focus`, async ({
+      page,
+      store,
+    }) => {
+      const settings = (await store("snapshot")).settings;
+      settings.agents = [
+        {
+          id: agentId,
+          name: "Retained reviewer",
+          ai_account: { provider: "copilot", account_id: first.account_id },
+          model: "fixture-model",
+          prompt: "Keep the saved prompt.",
+          signature: "Fixture",
+        },
+      ];
+      await store("seed_settings", settings);
+      let currentAccount = first;
+      let failStateRead = false;
+      let stateReads = 0;
+      await bridge(page, (command) => {
+        if (command === "copilot_auth_state") {
+          stateReads++;
+          if (failStateRead) throw "Synthetic re-entry account read failed.";
+          return idle([currentAccount]);
+        }
+        if (command === "list_copilot_models") {
+          currentAccount = {
+            ...first,
+            state: "reconnect_required",
+            reason: "expired",
+          };
+          throw "Synthetic model lookup: credential expired.";
+        }
+        if (command === "cancel_copilot_models") return null;
+        throw new Error(`Unexpected Copilot command: ${command}`);
+      });
+      await page.addInitScript(() => {
+        window.__accountWindowFocus = 0;
+        window.addEventListener("focus", () => window.__accountWindowFocus++);
+      });
+      await page.goto(surface === "panel" ? "/" : "/?view=settings");
+      if (surface === "panel") {
+        await page
+          .getByRole("navigation", { name: "Application destinations" })
+          .getByRole("button", { name: "Settings", exact: true })
+          .click();
+        await section(page, "Accounts");
+      }
+      const card = page.locator(".copilot-auth-card");
+      await expect(card.locator(".copilot-check")).toHaveCount(1);
+      const retained = await card.elementHandle();
+      await section(page, "Agents");
+      await page
+        .locator(".agent-card")
+        .filter({
+          has: page.getByRole("heading", {
+            name: "Retained reviewer",
+            exact: true,
+          }),
+        })
+        .getByRole("button", { name: "Edit", exact: true })
+        .click();
+      const editor = page.getByRole("dialog", {
+        name: "Edit agent",
+        exact: true,
+      });
+      await expect(editor).toContainText(
+        "Synthetic model lookup: credential expired.",
+      );
+      await editor.getByRole("button", { name: "Cancel", exact: true }).click();
+      if (surface === "panel") {
+        await page
+          .getByRole("button", { name: "Back to Settings", exact: true })
+          .click();
+        await expect(
+          page.locator('[data-settings-count="accounts"]'),
+        ).toHaveText("1 connected / 1 need attention");
+      }
+      await page.evaluate(() => window.__copilotIdle());
+      const readsBefore = stateReads;
+      const focusBefore = await page.evaluate(
+        () => window.__accountWindowFocus,
+      );
+      failStateRead = failedRead;
+      await section(page, surface === "panel" ? "Accounts" : "Integrations");
+      await expect.poll(() => stateReads).toBeGreaterThan(readsBefore);
+      await page.evaluate(() => window.__copilotIdle());
+      expect(await page.evaluate(() => window.__accountWindowFocus)).toBe(
+        focusBefore,
+      );
+      expect(await retained.evaluate((element) => element.isConnected)).toBe(
+        true,
+      );
+      await expect(card.locator(".copilot-check")).toHaveCount(0);
+      await expect(card.locator(".copilot-signed-in")).toHaveCount(0);
+      if (failedRead) {
+        await expect(card.getByRole("alert")).toHaveText(
+          "Synthetic re-entry account read failed.",
+        );
+        await expect(card.getByRole("status")).toContainText(
+          "Copilot account state is unavailable. No connection is assumed.",
+        );
+        failStateRead = false;
+        await card
+          .getByRole("button", {
+            name: "Retry reading Copilot accounts",
+            exact: true,
+          })
+          .click();
+      }
+      await expect(card).toContainText(
+        "The credential is missing or expired. Reconnect this account.",
+      );
+      await expect(
+        card.getByRole("button", {
+          name: "Reconnect Copilot fixture-ai-one",
+          exact: true,
+        }),
+      ).toBeEnabled();
+      expect((await store("snapshot")).settings).toEqual(settings);
+    });
+  }
+}
+
 test("Copilot UI keeps unverified transient accounts blocked while verified accounts remain selectable", async ({
   page,
 }) => {

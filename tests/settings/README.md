@@ -11,6 +11,11 @@ Screenshots use 408x744 logical pixels at 2x device scale; footer geometry also
 covers 320x300 and 408x441, reduced motion and 2x text enlargement. These are
 browser/isolated-bridge results, not acceptance of the running native tray app.
 
+`copilot.spec.mjs` also checks retained account re-entry in the panel and standalone
+Settings after model lookup invalidates an identity, without a window-focus event.
+Failed re-entry reads remove stale verified claims and expose an explicit retry;
+the mounted card and persisted resources remain intact.
+
 `genie.spec.mjs` covers R41's fresh/partial/existing flows through the production
 Welcome, Genie and shared Settings editors. Repository and AI sign-in/model
 transport is explicitly synthetic; saved resources, readiness, scope validation
