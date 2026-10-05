@@ -13,6 +13,7 @@ import {
   purposes,
   type WorkPresentation,
 } from "./work-presentation";
+import { mountReviewed } from "./reviewed";
 import "./panel.css";
 
 export type PanelTab = "queue" | "running" | "reviewed" | "settings";
@@ -36,7 +37,11 @@ interface Position {
   scroll: number;
   focus: HTMLElement | null;
   nested: [HTMLElement, number][];
-  row?: { type: "item" | "job"; id: string };
+  row?: {
+    type: "item" | "job" | "reviewed";
+    id: string;
+    reviewedAction?: "evidence" | "final";
+  };
 }
 interface Row {
   id: string;
@@ -122,6 +127,11 @@ export async function mountPanel(app: HTMLElement) {
   const positionKey = () =>
     setupVisible() ? `${key(route)}:genie` : key(route);
   const setupVisible = () => setupOwner === route.tab && !route.detail;
+  const reviewed = mountReviewed(
+    views.reviewed,
+    (destination, opener) =>
+      void navigate({ tab: "reviewed", detail: destination }, opener),
+  );
   const showError = (message: string) => {
     error.textContent = message;
     error.hidden = false;
@@ -135,7 +145,9 @@ export async function mountPanel(app: HTMLElement) {
       content.contains(document.activeElement)
         ? document.activeElement
         : (previous?.focus ?? null));
-    const row = focus?.closest<HTMLElement>("[data-item-id],[data-job-id]");
+    const row = focus?.closest<HTMLElement>(
+      "[data-item-id],[data-job-id],[data-reviewed-item]",
+    );
     const nested = [...content.querySelectorAll<HTMLElement>("*")]
       .filter(
         (element) =>
@@ -152,7 +164,15 @@ export async function mountPanel(app: HTMLElement) {
         ? { type: "item", id: row.dataset.itemId }
         : row?.dataset.jobId
           ? { type: "job", id: row.dataset.jobId }
-          : previous?.row,
+          : row?.dataset.reviewedItem
+            ? {
+                type: "reviewed",
+                id: row.dataset.reviewedItem,
+                reviewedAction: focus?.hasAttribute("data-reviewed-final-open")
+                  ? "final"
+                  : "evidence",
+              }
+            : previous?.row,
     });
   };
   content.addEventListener("focusin", () => remember());
@@ -175,9 +195,17 @@ export async function mountPanel(app: HTMLElement) {
       target.focus({ preventScroll: true });
     else if (saved?.row) {
       const row = app.querySelector<HTMLElement>(
-        `[data-${saved.row.type}-id="${CSS.escape(saved.row.id)}"]`,
+        saved.row.type === "reviewed"
+          ? `[data-reviewed-item="${CSS.escape(saved.row.id)}"]`
+          : `[data-${saved.row.type}-id="${CSS.escape(saved.row.id)}"]`,
       );
-      (row?.querySelector<HTMLElement>("button") ?? heading).focus({
+      const action =
+        saved.row.type === "reviewed"
+          ? saved.row.reviewedAction === "final"
+            ? "[data-reviewed-final-open]"
+            : "[data-reviewed-open]"
+          : "button";
+      (row?.querySelector<HTMLElement>(action) ?? heading).focus({
         preventScroll: true,
       });
       if (row) {
@@ -355,14 +383,13 @@ export async function mountPanel(app: HTMLElement) {
       ? { title: `${work.reference} / ${work.agent}`, state: work.state }
       : undefined;
   }
-  function draw(tab: "running" | "reviewed", rows: Row[]) {
+  function drawRunning(rows: Row[]) {
     const signature = JSON.stringify(rows);
-    if (listSignatures.get(tab) === signature) return;
-    listSignatures.set(tab, signature);
-    const root =
-      tab === "running"
-        ? views.running.querySelector<HTMLElement>("[data-running-list]")!
-        : views.reviewed;
+    if (listSignatures.get("running") === signature) return;
+    listSignatures.set("running", signature);
+    const root = views.running.querySelector<HTMLElement>(
+      "[data-running-list]",
+    )!;
     const activeId =
       document.activeElement instanceof HTMLElement
         ? document.activeElement.closest<HTMLElement>("[data-job-id]")?.dataset
@@ -370,34 +397,22 @@ export async function mountPanel(app: HTMLElement) {
         : undefined;
     root.replaceChildren();
     const hint = document.createElement("p");
-    hint.textContent =
-      tab === "running"
-        ? "Running at the top. New work joins the bottom."
-        : "Completed evidence available in the current native projection. This foundation does not add paged history or storage purge.";
+    hint.textContent = "Running at the top. New work joins the bottom.";
     root.append(hint);
     hint.className = "work-caption";
     const list = document.createElement("ol");
-    if (tab === "running") {
-      list.className = "work-list";
-      list.setAttribute("aria-label", "Agent work queue");
-      root.append(list);
-    }
+    list.className = "work-list";
+    list.setAttribute("aria-label", "Agent work queue");
+    root.append(list);
     if (!rows.length) {
       const empty = document.createElement("p");
-      empty.textContent =
-        tab === "running"
-          ? "No active, waiting or blocked AI jobs."
-          : "No completed evidence is available yet.";
+      empty.textContent = "No active, waiting or blocked AI jobs.";
       root.append(empty);
     }
     for (const row of rows) {
       const article = document.createElement("article");
       article.dataset.jobId = `${row.kind}:${row.id}`;
       article.dataset.workState = row.state;
-      const title = document.createElement("h2");
-      title.textContent = row.title;
-      const status = document.createElement("p");
-      status.textContent = `${row.kind.replaceAll("_", " ")}: ${row.state}. ${row.reason ?? ""}`;
       const button = document.createElement("button");
       button.type = "button";
       button.textContent =
@@ -405,7 +420,7 @@ export async function mountPanel(app: HTMLElement) {
       button.onclick = () =>
         void navigate(
           {
-            tab,
+            tab: "running",
             detail:
               row.kind === "item"
                 ? { type: "item", item_id: row.id }
@@ -413,71 +428,65 @@ export async function mountPanel(app: HTMLElement) {
           },
           button,
         );
-      if (tab === "running") {
-        const displayState =
-          row.state === "active"
-            ? "Running"
-            : row.state === "stopping"
-              ? "Stopping"
-              : row.work?.state === "superseded"
-                ? "Superseded"
-                : ["failed", "manual_retry"].includes(row.work?.state ?? "")
-                  ? "Failed"
-                  : row.state === "blocked"
-                    ? "Blocked"
-                    : "Queued";
-        button.className = "work-row";
-        button.setAttribute("aria-label", "Open job");
-        button.title = `${row.title}; ${displayState}`;
-        button.replaceChildren();
-        const marker = document.createElement("span");
-        marker.className = row.state === "active" ? "work-spin" : "work-marker";
-        marker.setAttribute("aria-hidden", "true");
-        if (row.state !== "active")
-          marker.innerHTML = icon(destinations.queue.icon);
-        const copy = document.createElement("span");
-        copy.className = "work-copy";
-        const top = document.createElement("span");
-        top.className = "work-heading";
-        const agent = document.createElement("strong");
-        agent.textContent = row.work?.agent ?? "Job evidence unavailable";
-        const state = document.createElement("span");
-        state.className = "work-state";
-        state.textContent = displayState;
-        top.append(agent, state);
-        const subject = document.createElement("span");
-        subject.className = "work-subject";
-        subject.textContent = row.work?.subject ?? row.title;
-        const reference = document.createElement("span");
-        reference.className = "work-reference";
-        reference.textContent = row.work?.reference ?? "Repository unavailable";
-        const purpose = document.createElement("span");
-        purpose.textContent =
-          row.work?.ordinal ??
-          (row.kind === "item" ? "PR" : purposes[row.kind]);
-        reference.append(purpose);
-        copy.append(top, subject, reference);
-        if (row.reason) {
-          const reason = document.createElement("span");
-          reason.className = "work-blocker";
-          reason.textContent = row.reason;
-          copy.append(reason);
-        }
-        const chevron = document.createElement("span");
-        chevron.className = "work-chevron";
-        chevron.setAttribute("aria-hidden", "true");
-        button.append(marker, copy, chevron);
-        article.append(button);
-        const entry = document.createElement("li");
-        entry.append(article);
-        list.append(entry);
-      } else {
-        article.append(title, status, button);
-        root.append(article);
+      const displayState =
+        row.state === "active"
+          ? "Running"
+          : row.state === "stopping"
+            ? "Stopping"
+            : row.work?.state === "superseded"
+              ? "Superseded"
+              : ["failed", "manual_retry"].includes(row.work?.state ?? "")
+                ? "Failed"
+                : row.state === "blocked"
+                  ? "Blocked"
+                  : "Queued";
+      button.className = "work-row";
+      button.setAttribute("aria-label", "Open job");
+      button.title = `${row.title}; ${displayState}`;
+      button.replaceChildren();
+      const marker = document.createElement("span");
+      marker.className = row.state === "active" ? "work-spin" : "work-marker";
+      marker.setAttribute("aria-hidden", "true");
+      if (row.state !== "active")
+        marker.innerHTML = icon(destinations.queue.icon);
+      const copy = document.createElement("span");
+      copy.className = "work-copy";
+      const top = document.createElement("span");
+      top.className = "work-heading";
+      const agent = document.createElement("strong");
+      agent.textContent = row.work?.agent ?? "Job evidence unavailable";
+      const state = document.createElement("span");
+      state.className = "work-state";
+      state.textContent = displayState;
+      top.append(agent, state);
+      const subject = document.createElement("span");
+      subject.className = "work-subject";
+      subject.textContent = row.work?.subject ?? row.title;
+      const reference = document.createElement("span");
+      reference.className = "work-reference";
+      reference.textContent = row.work?.reference ?? "Repository unavailable";
+      const purpose = document.createElement("span");
+      purpose.textContent =
+        row.work?.ordinal ?? (row.kind === "item" ? "PR" : purposes[row.kind]);
+      reference.append(purpose);
+      copy.append(top, subject, reference);
+      if (row.reason) {
+        const reason = document.createElement("span");
+        reason.className = "work-blocker";
+        reason.textContent = row.reason;
+        copy.append(reason);
       }
+      const chevron = document.createElement("span");
+      chevron.className = "work-chevron";
+      chevron.setAttribute("aria-hidden", "true");
+      button.append(marker, copy, chevron);
+      article.append(button);
+      const entry = document.createElement("li");
+      entry.append(article);
+      list.append(entry);
       if (
         activeId === article.dataset.jobId &&
-        route.tab === tab &&
+        route.tab === "running" &&
         !route.detail
       ) {
         button.focus({ preventScroll: true });
@@ -494,8 +503,7 @@ export async function mountPanel(app: HTMLElement) {
         "Work state unavailable. No active or waiting jobs can be confirmed. Retry from Status or inspect Diagnostics.";
       listSignatures.delete("running");
     } else
-      draw(
-        "running",
+      drawRunning(
         [...automation.work]
           .sort((a, b) => {
             const rank = (state: string) =>
@@ -521,54 +529,8 @@ export async function mountPanel(app: HTMLElement) {
               workPresentation(snapshot, work.key.kind, work.key.id),
           })),
       );
-    if (!snapshot) {
-      views.reviewed.textContent =
-        "Saved evidence unavailable; no completed state is inferred.";
-      listSignatures.delete("reviewed");
-      return;
-    }
-    const rows: Row[] = [];
-    for (const review of snapshot.reviews ?? [])
-      if (review.run?.operation.state === "completed") {
-        rows.push({
-          id: review.key,
-          kind: "normal",
-          title: metadata("normal", review.key)!.title,
-          state: review.run.phase,
-        });
-      }
-    for (const follow of snapshot.follow_ups ?? [])
-      if (follow.run.result) {
-        const kind =
-          follow.run.target?.kind === "mention" ? "mention" : "reply";
-        const meta = metadata(kind, follow.run.id);
-        if (meta)
-          rows.push({
-            id: follow.run.id,
-            kind,
-            title: meta.title,
-            state: follow.run.phase,
-          });
-      }
-    for (const item of snapshot.items ?? []) {
-      const final = item.action_status?.final_review;
-      if (final?.execution.operation.state === "completed")
-        rows.push({
-          id: final.id,
-          kind: "primary_final",
-          title: `${item.job.repository_name} #${item.job.number} / Primary final review`,
-          state: final.execution.phase,
-        });
-      if (["closed", "merged"].includes(item.state)) {
-        rows.push({
-          id: item.id,
-          kind: "item",
-          title: `${item.job.repository_name} #${item.job.number}: ${item.job.title}`,
-          state: item.state,
-        });
-      }
-    }
-    draw("reviewed", rows);
+    reviewed.setSnapshot(snapshot);
+    if (route.tab === "reviewed" && !route.detail) reviewed.activate();
   }
   async function utility(type: "status" | "diagnostics") {
     const request = ++utilityRevision;
@@ -679,6 +641,7 @@ export async function mountPanel(app: HTMLElement) {
           : route.tab;
     for (const [name, view] of Object.entries(views))
       view.hidden = name !== visible;
+    if (route.tab === "reviewed" && !route.detail) reviewed.activate();
     views.settings.dispatchEvent(
       new CustomEvent("pr-sniper:section-active", {
         detail: visible === "settings",
