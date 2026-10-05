@@ -1001,7 +1001,25 @@ export function renderMonitoring(
       jobs.replaceChildren();
       if (snapshot.global_scan) {
         const scan = document.createElement("p");
-        scan.textContent = `Global scan: ${snapshot.global_scan.schedule_key}. Next scan: ${snapshot.global_scan.next_run > 0 ? time(snapshot.global_scan.next_run) : "Unavailable; choose a global cron schedule in Settings"}. Pending repositories: ${snapshot.global_scan.pending.length}.`;
+        const hasSchedulableRepository = snapshot.health.some(
+          (item) => item.enabled && item.schedule_available,
+        );
+        const hasInvalidGlobalCron = snapshot.health.some(
+          (item) =>
+            item.enabled &&
+            ["invalid_global_cron", "invalid_schedule"].includes(
+              item.last_failure ?? "",
+            ),
+        );
+        const nextScan =
+          snapshot.global_scan.next_run > 0
+            ? time(snapshot.global_scan.next_run)
+            : hasInvalidGlobalCron
+              ? "Unavailable; configure a valid global cron schedule in Settings"
+              : hasSchedulableRepository
+                ? "Unavailable; choose a global cron schedule in Settings"
+                : "No eligible repositories; no provider scan is scheduled";
+        scan.textContent = `Global scan: ${snapshot.global_scan.schedule_key}. Next scan: ${nextScan}. Pending repositories: ${snapshot.global_scan.pending.length}.`;
         health.append(scan);
       }
       if (!snapshot.health.length) {
