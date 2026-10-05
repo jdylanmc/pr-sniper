@@ -290,17 +290,20 @@ export function renderCopilotAuth(
       if (error.hidden) showError(cause);
       status.textContent =
         "Copilot account state is unavailable. No connection is assumed.";
+      accounts.replaceChildren();
       flow.replaceChildren();
       button(flow, "Retry reading Copilot accounts", "copilot_auth_state");
     }
   }
   window.addEventListener("focus", refresh);
+  window.addEventListener("pr-sniper:refresh-provider-accounts", refresh);
   void refresh();
   return () => {
     disposed = true;
     actionGeneration++;
     clearTimeout(timer);
     window.removeEventListener("focus", refresh);
+    window.removeEventListener("pr-sniper:refresh-provider-accounts", refresh);
   };
 }
 import { isWindows, secureStoreName } from "./platform";
