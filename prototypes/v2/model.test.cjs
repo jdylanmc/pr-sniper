@@ -16,6 +16,92 @@ const first = (state, status = "running") =>
   state.reviews.find((review) => review.state === status);
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
+test("repository browsing is scoped to a personal or organization owner", () => {
+  const account = M.seed().accounts[0];
+  assert.deepEqual(plain(M.repositoryOwners(account)), [
+    { name: "alex-demo", kind: "Personal" },
+    { name: "orbit", kind: "Organization" },
+  ]);
+  assert(
+    M.repositoryCatalog(account, "alex-demo").every((name) =>
+      name.startsWith("alex-demo/"),
+    ),
+  );
+  assert(
+    M.repositoryCatalog(account, "orbit").every((name) =>
+      name.startsWith("orbit/"),
+    ),
+  );
+  assert.throws(
+    () => M.repositoryCatalog(account, "unrelated"),
+    /Choose an owner/,
+  );
+  assert.throws(
+    () => M.repositoryCatalog({ ...account, connected: false }, "orbit"),
+    /Connect/,
+  );
+});
+
+test("URL intake binds the chosen account and starts with no monitoring authority", () => {
+  const before = M.seed();
+  const next = M.update(before, "add-repo", {
+    accountId: "github-personal",
+    name: "https://github.com/alex-demo/new-repo.git/",
+  });
+  const repo = next.repos.at(-1);
+  assert.equal(repo.name, "alex-demo/new-repo");
+  assert.equal(repo.accountId, "github-personal");
+  assert.equal(repo.enabled, false);
+  assert.equal(repo.scope, false);
+  assert.equal(repo.agentIds.length, 0);
+  assert.deepEqual(plain(next.reviews), plain(before.reviews));
+  assert.throws(
+    () =>
+      M.update(next, "add-repo", {
+        accountId: repo.accountId,
+        name: "Alex-Demo/NEW-REPO",
+      }),
+    /already added/,
+  );
+  assert.throws(
+    () =>
+      M.update(before, "add-repo", {
+        accountId: "copilot-demo",
+        name: "alex-demo/new-repo",
+      }),
+    /connected GitHub/,
+  );
+  for (const name of [
+    "https://example.com/a/b",
+    "/Users/demo/git/repo",
+    "https://github.com/a/b/pull/1",
+    "https://user:secret@github.com/a/b",
+    "https://dev.azure.com/org/project/_git/repo",
+    "a/..",
+  ])
+    assert.throws(() => M.repositoryName(name));
+  assert.equal(M.repositoryName("owner/repo"), "owner/repo");
+});
+
+test("repository intake does not dispatch existing queued work into free capacity", () => {
+  const state = M.seed();
+  state.reviews
+    .filter((review) => review.state === "running")
+    .forEach((review) => {
+      review.state = "queued";
+      review.run = null;
+      review.stage = 0;
+    });
+  M.validate(state);
+  const next = M.update(state, "add-repo", {
+    accountId: "github-personal",
+    name: "alex-demo/new-repo",
+  });
+  assert.equal(count(next, "running"), 0);
+  assert.deepEqual(plain(next.reviews), plain(state.reviews));
+  assert.equal(next.repos.at(-1).enabled, false);
+});
+
 test("seed has six configurations, four active reviews, eighteen waiting and three human items", () => {
   const state = M.validate(M.seed());
   assert.equal(state.agents.length, 6);
