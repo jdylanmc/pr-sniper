@@ -87,7 +87,7 @@ test("new assignments use the global policy while cancelled drafts never opt int
   await store("save_repository", { repository: "fixture/local-time" });
   await page.goto("/?view=settings");
   const initial = (await store("snapshot")).settings;
-  expect(initial.doctrines).toHaveLength(23);
+  expect(initial.doctrines).toHaveLength(10);
   expect(initial.launch_at_login).toBe(false);
   expect(initial.defaults.automatic_agent_start).toBe(false);
   expect(initial.defaults.automatic_comment_publication).toBe(false);

@@ -555,10 +555,14 @@ replaced, never silently converted. The global scheduler consumes this saved
 cron; the shared AI dispatcher consumes the positive capacity independently.
 
 **Doctrines** manages plain-text review principles. A fresh configuration
-persists all 23 bundled doctrines on first load, before any Settings tab is
-visited. The canonical local doctrine documents are embedded in the app; no
-download or local source checkout is needed at runtime. Edits, additions and
-deletions (including deleting the whole library) survive restart. Existing
+persists ten bundled doctrines on first load, before any Settings tab is
+visited. The app-owned catalog in `src-tauri/doctrines` is independent of
+`.agents/skills/doctrine`. Its `default-pr-sniper-doctrine` sources frame
+engineering principles as concise review guidance, targeting 250 words with
+a 500-word ceiling. They are embedded in the app; no download or local source
+checkout is needed at runtime. This ceiling applies to shipped defaults, not
+user-authored text. Edits, additions and deletions (including deleting the whole
+library) survive restart. Existing
 libraries are never topped up or replaced. Legacy settings without a doctrine
 field remain empty, since the older format also omitted deliberately empty
 libraries; subsequent saves record an explicit empty list.

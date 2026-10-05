@@ -837,7 +837,7 @@ export async function mountSettings(
     const users = existing ? doctrineUsers(existing) : [];
     const modal = dialog(
       existing ? "Edit doctrine" : "New doctrine",
-      `<form><label>Title<input name="title" required maxlength="100" value="${escape(existing?.title ?? "")}" placeholder="e.g. boundaries" /></label><label>Principles<textarea name="body" rows="10" required>${escape(existing?.body ?? "")}</textarea></label><p class="word-count" data-count>${words(existing?.body ?? "")} words</p><p class="settings-hint">Title doubles as this doctrine's slug -- keep it short and unique. Plain text only, never commands or credentials. Around 500 words is a friendly length, not a limit.</p>
+      `<form><label>Title<input name="title" required maxlength="100" value="${escape(existing?.title ?? "")}" placeholder="e.g. bounded-context" /></label><label>Principles<textarea name="body" rows="10" required>${escape(existing?.body ?? "")}</textarea></label><p class="word-count" data-count>${words(existing?.body ?? "")} words</p><p class="settings-hint">Title doubles as this doctrine's slug -- keep it short and unique. Plain text only, never commands or credentials. Around 500 words is a friendly length, not a limit.</p>
       <p class="resource-impact">${users.length ? `Shared by ${users.length} Agents: ${escape(users.map((agent) => agent.name).join(", "))}. Saving updates their shared principles; renaming preserves references. Remove these references and save the Agents before deleting.` : "Not used by any Agent. Select this doctrine from an Agent editor to share it."} Completed review evidence keeps its captured text.</p>${resourceActions("doctrine", !!existing)}</form>`,
       opener,
     );

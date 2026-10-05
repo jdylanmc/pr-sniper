@@ -1,11 +1,12 @@
 use crate::storage::Doctrine;
 
-// Embed the canonical documents, not a second generated copy of their content.
+// Shipped user library. Skill doctrines under `.agents/skills/doctrine` are a
+// separate catalog and must not be embedded here.
 macro_rules! sources {
     ($($title:literal),+ $(,)?) => {
         [$(
             ($title, include_str!(concat!(
-                "../../.agents/skills/doctrine/doctrines/", $title, ".doctrine.md"
+                "../doctrines/", $title, ".doctrine.md"
             )))
         ),+]
     };
@@ -13,29 +14,16 @@ macro_rules! sources {
 
 pub fn doctrines() -> Vec<Doctrine> {
     sources![
-        "boundaries",
+        "bounded-context",
         "code",
-        "context",
         "cyclomatic-complexity",
         "data",
-        "data-processing",
-        "debugging",
-        "distributed-data",
         "documentation",
-        "domain",
-        "idempotency",
-        "integration-testing",
         "laziness",
         "machine",
-        "nimble",
-        "pragmatic",
-        "scout",
-        "sequencing",
         "solid",
         "tactical-strategic",
-        "test-seams",
         "testing",
-        "worktrees",
     ]
     .into_iter()
     .map(|(title, source)| {
