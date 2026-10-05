@@ -1381,6 +1381,69 @@ fn transient_poll_failures_stop_after_three_retries_and_manual_retry_resets_budg
 }
 
 #[test]
+fn valid_global_cron_clears_stale_schedule_error_while_manual_retry_remains() {
+    let (_root, store) = store();
+    let accounts = available_accounts(&[(ACCOUNT_ID, "current-login")]);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let mut now = 1_800_000_000;
+
+    for attempt in 1..=4 {
+        let mut tickets = monitor.prepare_checks(&store, now, attempt == 1).unwrap();
+        assert_eq!(tickets.len(), 1);
+        monitor
+            .finish(
+                &store,
+                tickets.remove(0),
+                Err(ConnectionError::Network),
+                now + 1,
+            )
+            .unwrap_err();
+        if attempt < 4 {
+            now = monitor.snapshot()[0]
+                .operation
+                .as_ref()
+                .unwrap()
+                .next_attempt_at
+                .unwrap();
+        }
+    }
+    assert_eq!(
+        monitor.snapshot()[0].operation.as_ref().unwrap().state,
+        OperationState::ManualRetry
+    );
+
+    let mut settings = store.load_settings().unwrap();
+    settings.defaults.schedule = Schedule::Interval {
+        minutes: 15,
+        timezone: "UTC".into(),
+    };
+    set_settings(&store, &settings);
+    monitor
+        .synchronize_configuration(&store, &accounts, now + 2)
+        .unwrap();
+    assert_eq!(
+        monitor.snapshot()[0].last_failure.as_deref(),
+        Some("invalid_global_cron")
+    );
+
+    settings.defaults.schedule = Schedule::Cron {
+        expression: "*/10 * * * *".into(),
+        timezone: "UTC".into(),
+    };
+    set_settings(&store, &settings);
+    monitor
+        .synchronize_configuration(&store, &accounts, now + 3)
+        .unwrap();
+    let health = monitor.snapshot().remove(0);
+    assert_eq!(
+        health.operation.as_ref().unwrap().state,
+        OperationState::ManualRetry
+    );
+    assert_ne!(health.last_failure.as_deref(), Some("invalid_global_cron"));
+    assert!(!health.schedule_available);
+}
+
+#[test]
 fn publication_revision_recheck_is_durable_scoped_and_preserves_poll_backoff() {
     let (_root, store) = store();
     let mut monitor = Monitor::restore(&store).unwrap();
@@ -2485,6 +2548,14 @@ fn disable_reenable_and_rebind_reset_health_and_cursor_honestly() {
     assert!(!disabled.enabled);
     assert!(!disabled.schedule_available);
     assert_eq!(disabled.next_run, 0);
+    let global_scan = store.load_monitoring_state().unwrap().global_scan.unwrap();
+    assert_eq!(global_scan.next_run, 0);
+    assert!(global_scan.pending.is_empty());
+    assert!(!global_scan.requested);
+    assert!(monitor
+        .prepare_checks(&store, 1_800_000_700, false)
+        .unwrap()
+        .is_empty());
 
     settings.repositories[0].enabled = true;
     set_settings(&store, &settings);
@@ -2496,12 +2567,24 @@ fn disable_reenable_and_rebind_reset_health_and_cursor_honestly() {
         monitor.snapshot()[0].last_failure.as_deref(),
         Some(SCOPE_CONFIRMATION_REQUIRED)
     );
+    assert_eq!(
+        store
+            .load_monitoring_state()
+            .unwrap()
+            .global_scan
+            .unwrap()
+            .next_run,
+        0,
+        "enabled but unconfirmed scope is not eligible for a provider scan"
+    );
     activate(&store, 0, BTreeMap::new());
     monitor = Monitor::restore(&store).unwrap();
     monitor
         .synchronize_configuration(&store, &accounts, 1_800_000_021)
         .unwrap();
     assert!(monitor.snapshot()[0].schedule_available);
+    let global_scan = store.load_monitoring_state().unwrap().global_scan.unwrap();
+    assert!(global_scan.next_run > 1_800_000_021);
 
     settings.repositories[0].provider_account_id = Some("23".into());
     set_settings(&store, &settings);

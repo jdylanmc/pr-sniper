@@ -1239,9 +1239,13 @@ impl Monitor {
         now: i64,
     ) {
         let schedule = configured.first().map(|c| &c.schedule);
+        let any_enabled = configured.iter().any(|configuration| configuration.enabled);
+        let valid_global_cron = schedule.is_some_and(|schedule| {
+            matches!(schedule, Schedule::Cron { .. }) && next_run(schedule, now).is_ok()
+        });
         if let Some(schedule) = schedule {
             let key = schedule_key(schedule);
-            let next = if matches!(schedule, Schedule::Cron { .. }) {
+            let next = if any_enabled && matches!(schedule, Schedule::Cron { .. }) {
                 next_run(schedule, now).unwrap_or(0)
             } else {
                 0
@@ -1254,6 +1258,8 @@ impl Monitor {
             });
             if scan.schedule_key != key {
                 scan.schedule_key = key;
+                scan.next_run = next;
+            } else if any_enabled && scan.next_run == 0 {
                 scan.next_run = next;
             }
         }
@@ -1405,6 +1411,14 @@ impl Monitor {
             let key = schedule_key(&configuration.schedule);
             let schedule_changed = health.schedule_key != key;
             health.schedule_key = key;
+            if valid_global_cron
+                && matches!(
+                    health.last_failure.as_deref(),
+                    Some("invalid_global_cron") | Some("invalid_schedule")
+                )
+            {
+                health.last_failure = None;
+            }
             if binding_changed {
                 health.last_success = None;
                 health.next_run = 0;
@@ -1535,7 +1549,22 @@ impl Monitor {
                 health.last_failure = None;
             }
         }
+        let has_schedulable_repository = self
+            .state
+            .health
+            .values()
+            .any(|health| health.enabled && health.schedule_available);
         if let Some(scan) = &mut self.state.global_scan {
+            if has_schedulable_repository {
+                if scan.next_run == 0 {
+                    scan.next_run = schedule
+                        .and_then(|schedule| next_run(schedule, now).ok())
+                        .unwrap_or(0);
+                }
+            } else {
+                scan.next_run = 0;
+                scan.requested = false;
+            }
             scan.pending.retain(|id| {
                 self.state
                     .health
