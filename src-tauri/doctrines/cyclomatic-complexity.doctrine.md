@@ -6,7 +6,7 @@ scope: default-pr-sniper-doctrine
 
 # Cyclomatic Complexity Doctrine
 
-Control-flow paths cost understanding and proof. Aim for cyclomatic complexity of five or less per routine. Above ten requires explicit human approval.
+Control-flow paths cost understanding and proof. Aim for cyclomatic complexity of five or less per routine. Above ten is a red flag to raise in review, not an approval gate.
 
 Review changed routines for added paths and increased reasoning burden. Humans and agents share one standard; an agent's ability to enumerate branches does not justify harder code.
 
@@ -17,7 +17,7 @@ Look for:
 - **Accumulating decisions.** New branches may reveal mixed responsibilities, tangled policy and mechanism, or a missing domain concept. Explain which decisions deserve separate ownership.
 - **Hidden complexity.** Shared state, side effects, vague names, and scattered context can make low-scoring code difficult. A lower number alone does not establish clarity.
 - **Meaningful decomposition.** Extract cohesive behavior or concepts. Moving branches into tiny forwarding functions merely relocates the mental burden.
-- **Earned exceptions.** Above ten, look for explicit human approval and evidence that decomposition harms a cohesive domain rule, invariant, safety boundary, or compatibility obligation. Do not infer an exception from existing code.
+- **Elevated complexity.** Always flag changed routines above ten and explain their reasoning and verification burden. If cohesive domain rules, invariants, safety boundaries, or compatibility obligations justify complexity, present that tradeoff alongside the flag. Justification does not erase the concern.
 - **Preserved guarantees.** A numerical improvement must not weaken correctness, cohesion, types, validation, diagnostics, security, accessibility, compatibility, or behavioral tests.
 
 Describe the affected routine, changed paths, and consequence for understanding or verification. Recommend the smallest meaningful simplification. Keep necessary complexity and its justification visible.
