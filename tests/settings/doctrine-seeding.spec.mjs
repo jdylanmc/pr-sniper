@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { closeDialog, saveChanges, section, editAgent } from "./navigation.mjs";
 
 const canonicalDirectory = new URL(
-  "../../.agents/skills/doctrine/doctrines/",
+  "../../src-tauri/doctrines/",
   import.meta.url,
 );
 const canonical = await Promise.all(
@@ -91,8 +91,8 @@ test("first open persists exact canonical content and offers every doctrine to A
   store,
   dataRoot,
 }) => {
-  expect(canonical).toHaveLength(23);
-  expect(new Set(canonical.map(({ title }) => title)).size).toBe(23);
+  expect(canonical).toHaveLength(10);
+  expect(new Set(canonical.map(({ title }) => title)).size).toBe(10);
   await expect(
     readFile(join(dataRoot, "config/settings.json")),
   ).rejects.toMatchObject({ code: "ENOENT" });

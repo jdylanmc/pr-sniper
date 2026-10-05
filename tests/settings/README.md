@@ -9,6 +9,9 @@ shared-editor and panel suites exercise resource saves, explicit discard and
 hide/tab retention through those rows. Footer cases compare the version with the
 native Store bridge's compiled metadata, cover missing/rejected metadata and
 Status retry, and retain utility controls and hide-only guidance on all tabs.
+The footer keyboard case holds the Settings navigation reply, then waits for
+the mounted overview and pending IPC before focusing Status. Persistent footer
+text alone does not establish that route focus restoration has finished.
 Screenshots use 408x744 logical pixels at 2x device scale; footer geometry also
 covers 320x300 and 408x441, reduced motion and 2x text enlargement. These are
 browser/isolated-bridge results, not acceptance of the running native tray app.
@@ -26,6 +29,8 @@ explicit account/model/Agent choices and safe-off new permissions, no activation
 before combined confirmation, selected-existing scope, stale configuration,
 model/account loss, failed saves, unrelated drafts, cancellation, restart,
 late replies, mounted account ownership and already-authorized re-entry.
+Re-entry holds the saved-setup refresh and waits for the explicit Review setup
+action afterward, rather than clicking a next button with cached step state.
 The bridge reconstructs only its originally staged synthetic preview between
 processes; `src-tauri/tests/genie.rs` separately checks real in-memory previews,
 batch atomicity, failed writes and changed resource/account/scope guards.
@@ -309,15 +314,18 @@ Run with `--browser=chromium` or `--browser=webkit`; the existing
 browser and test-owned Store evidence, not native focus, installed-app or live
 authentication acceptance.
 
-`doctrine-seeding.spec.mjs` covers the complete 23-document canonical catalog
-(exact titles and bodies, with only frontmatter/H1 removed), durable first load,
-Agent choices before visiting Doctrines, and saving Integrations first. It
+`doctrine-seeding.spec.mjs` covers the ten app defaults in `src-tauri/doctrines`,
+not the skill catalog: exact titles and bodies with only frontmatter/H1 removed,
+durable first load, Agent choices before visiting Doctrines, and saving
+Integrations first. It
 checks edited/custom/deleted and delete-all libraries across fresh Store
 processes and UI reload, conservative handling of legacy missing fields,
 visible initialization write errors, and conflicting drafts with explicit
 discard/reload. `src-tauri/tests/doctrine_seeding.rs` independently checks the
-same storage and canonical-content contracts. Fresh settings now persist the
-starter library immediately; startup and automation remain opted out.
+same storage and canonical-content contracts in the application and foundation
+harnesses, including the app-specific scope and 500-word body ceiling.
+Fresh settings persist the starter library immediately; startup and automation
+remain opted out.
 
 `copilot.spec.mjs` covers the four-tab Settings Copilot surface: multiple
 confirmed identities, cancel/reconnect/disconnect, repository-role separation,

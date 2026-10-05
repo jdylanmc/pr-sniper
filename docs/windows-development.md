@@ -71,9 +71,10 @@ not application launch, real grant acceptance or GUI console-window evidence.
 
 The repository's `.gitattributes` keeps text sources LF even when Windows Git
 uses `core.autocrlf=true`, so the same formatter checks run on both platforms.
-Binary artwork remains binary. Rust embeds canonical doctrine bytes and the
-doctrine helper verifies their SHA-256 hashes. The shared checkout regression
-uses real Git checkout with CRLF conversion enabled and checks text, doctrine
+Binary artwork remains binary. Rust embeds app defaults from `src-tauri/doctrines`;
+the separate skill doctrine helper verifies its catalog's SHA-256 hashes.
+The shared checkout regression uses real Git checkout with CRLF conversion
+enabled and checks text, doctrine
 and binary samples. No CI-only formatting bypass is needed; do not change
 canonical doctrine contents or hashes to repair checkout conversion.
 
