@@ -1,4 +1,5 @@
 import { test, expect } from "./fixtures.mjs";
+import { join } from "node:path";
 import {
   providerFixture,
   repositoryPage,
@@ -15,11 +16,12 @@ for (const embedded of [true, false]) {
     test(`repository Save authorizes without a scope step (${embedded ? "panel" : "standalone"} ${size.width})`, async ({
       page,
       store,
+      dataRoot,
     }, info) => {
       await page.setViewportSize(size);
       const settings = (await store("snapshot")).settings;
       settings.agents = [reviewer];
-      settings.root_folder = "/legacy/unused/folder";
+      settings.root_folder = join(dataRoot, "legacy-unused-folder");
       await store("seed_settings", settings);
       const fixture = await providerFixture(page, store);
       await repositoryPage(page, store, embedded);
@@ -80,7 +82,7 @@ for (const embedded of [true, false]) {
       expect(Object.keys(saved.repository_authorizations)).toEqual([
         saved.repositories[0].id,
       ]);
-      expect(saved.root_folder).toBe("/legacy/unused/folder");
+      expect(saved.root_folder).toBe(settings.root_folder);
       const status = await store("monitoring_activation_status", {
         repositoryId: saved.repositories[0].id,
       });

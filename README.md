@@ -497,6 +497,10 @@ retains the disabled row. Local folder picking, scanning and clone discovery
 are removed end-to-end; saved `root_folder` values are retained only for backward
 compatibility, never used for intake.
 
+Repository saves write a new authorization receipt in settings. Older app
+builds are not guaranteed to read these updated settings; downgrading does
+not have an automatic compatibility migration.
+
 **Save agent**, **Save doctrine**, and **Save repository** persist only that
 resource immediately; assignment saves commit their owning repository.
 **Save preferences** saves global preferences without committing repository

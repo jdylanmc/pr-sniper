@@ -20,7 +20,7 @@ for (const [scenario, expression, timezone] of [
     page,
     store,
   }) => {
-    await seedAgent(store);
+    await seedAgent(store, "33");
     await store("save_repository", { repository: "fixture/schedules" });
     const settings = (await store("snapshot")).settings;
     settings.defaults.schedule = {
@@ -83,6 +83,9 @@ test("Agent saves immediately while unrelated preference and repository drafts s
 }) => {
   await seedAgent(store);
   await store("save_repository", { repository: "fixture/one" });
+  const setup = (await store("snapshot")).settings;
+  setup.repositories[0].enabled = false;
+  await store("seed_settings", setup);
   await page.goto("/?view=settings");
   await section(page, "Preferences");
   await page.locator("#global-capacity").fill("9");
@@ -222,7 +225,7 @@ test("primary and independent opt-ins are reachable without scoped polling or le
   page,
   store,
 }) => {
-  await seedAgent(store);
+  await seedAgent(store, "33");
   await store("save_repository", { repository: "fixture/primary" });
   const settings = (await store("snapshot")).settings;
   const assignment = {

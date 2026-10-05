@@ -55,7 +55,7 @@ async function seed(store, count = 1) {
       id: id(1),
       provider: "github",
       name: "fixture/compact",
-      enabled: true,
+      enabled: false,
       provider_account_id: "22",
       provider_repository_id: "100",
       watched_authors: [{ id: "11", login: "watched-person" }],
@@ -417,7 +417,7 @@ for (const failure of ["write", "conflict"]) {
     if (failure === "write") await mkdir(temporary);
     else {
       const concurrent = structuredClone(initial);
-      concurrent.repositories[0].enabled = false;
+      concurrent.repositories[0].enabled = true;
       await store("seed_settings", concurrent);
     }
     const before = await readFile(join(dataRoot, "config/settings.json"));
@@ -457,7 +457,7 @@ for (const failure of ["write", "conflict"]) {
         "All changes saved",
       );
       expect((await store("snapshot")).settings.repositories[0].enabled).toBe(
-        false,
+        true,
       );
     }
     expect((await store("snapshot")).settings.repositories[1]).toEqual(
@@ -770,7 +770,7 @@ test("R1 correction: concurrent saved repository changes still reject a clean un
     .click();
   const confirmation = modal(page, "Unbind repository account?");
   const concurrent = structuredClone(initial);
-  concurrent.repositories[0].enabled = false;
+  concurrent.repositories[0].enabled = true;
   await store("seed_settings", concurrent);
   const before = await readFile(join(dataRoot, "config/settings.json"));
   await confirmation
@@ -785,7 +785,9 @@ test("R1 correction: concurrent saved repository changes still reject a clean un
   expect((await store("snapshot")).settings).toEqual(concurrent);
   await close(confirmation);
   await expect(editor.locator(".repository-identity")).toContainText("22");
-  await expect(editor.getByLabel("Enable repository monitoring")).toBeChecked();
+  await expect(
+    editor.getByLabel("Enable repository monitoring"),
+  ).not.toBeChecked();
 });
 
 test("R2 correction: saved legacy interval and timezone remain visible but explicitly block polling", async ({

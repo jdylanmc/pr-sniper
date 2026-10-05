@@ -921,6 +921,14 @@ impl Store {
     }
 
     pub fn save_resource(&self, edit: ResourceEdit) -> Result<Settings, String> {
+        let enabled_repository_id = match &edit {
+            ResourceEdit::Repository {
+                id,
+                value: Some(repository),
+                ..
+            } if repository.enabled => Some(id.clone()),
+            _ => None,
+        };
         let edited_existing_repository = match &edit {
             ResourceEdit::Repository {
                 id,
@@ -947,6 +955,28 @@ impl Store {
             _ => None,
         };
         let mut settings = self.validate_resource(edit)?;
+        if let Some(id) = enabled_repository_id {
+            let repository = settings
+                .repositories
+                .iter()
+                .find(|repository| repository.id == id)
+                .unwrap();
+            if repository.assignments.is_empty() {
+                return Err(format!(
+                    "{}: assign at least one saved Agent before enabling repository monitoring.",
+                    repository.name
+                ));
+            }
+            if repository.assignments.iter().any(|assignment| {
+                settings
+                    .agents
+                    .iter()
+                    .find(|agent| agent.id == assignment.agent_id)
+                    .is_none_or(|agent| agent.ai_account.is_none() || agent.model.trim().is_empty())
+            }) {
+                return Err(format!("{}: choose an explicit AI account and model for every assigned Agent before enabling repository monitoring.", repository.name));
+            }
+        }
         for (id, authorization) in &mut settings.repository_authorizations {
             if !settings
                 .repositories

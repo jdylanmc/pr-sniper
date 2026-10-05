@@ -110,7 +110,7 @@ fn tray_press_and_focus_loss_do_not_reopen_a_just_dismissed_panel() {
 }
 
 #[test]
-fn retained_native_navigation_close_and_focus_lease_do_not_change_execution_state() {
+fn retained_native_navigation_and_stale_blur_do_not_change_execution_state() {
     let root = tempfile::tempdir().unwrap();
     let store = Store::new(root.path().into());
     store
@@ -134,9 +134,9 @@ fn retained_native_navigation_close_and_focus_lease_do_not_change_execution_stat
     session.navigate(&store, Some(route.clone())).unwrap();
     let revision = session.revision;
     assert!(session.blur_can_hide(revision));
-    session.focus_holds += 1;
+    session.navigate(&store, Some(route.clone())).unwrap();
     assert!(!session.blur_can_hide(revision));
-    session.focus_holds -= 1;
+    assert!(session.blur_can_hide(session.revision));
     session.set_visible(false);
     assert!(!session.blur_can_hide(revision));
     session.navigate(&store, None).unwrap();
