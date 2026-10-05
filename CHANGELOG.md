@@ -9,9 +9,13 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 - Update the browser-only visual prototype with account/organization repository
   browsing, URL entry, and compact drill-in rows. Newly added repositories open
-  configuration with monitoring off. Native repository intake is unchanged;
-  its follow-up is tracked in #114.
-- Use saved Agent assignments and confirmed monitoring scope as ongoing review
+  configuration with monitoring off.
+- Bring the repository prototype into Settings and Genie: browse GitHub by
+  connected account and personal or organization owner, add verified URLs, and
+  configure compact drill-in rows. Repository Save authorizes all currently open
+  and future matching PRs, persisted atomically with the configuration, while
+  preserving global pause and independent review-start/action permissions. (#114)
+- Use saved Agent assignments and repository configuration as ongoing review
   consent. Remove repeated revision-trust prompts from normal/retry, conversation
   and final reviews without changing read-only execution, revision validation or
   separate publication/approval/merge permissions. Existing blocked queue records
@@ -31,8 +35,8 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   account panels with native device-code waiting, explicit identity confirmation,
   consent details and visible retry/disconnect states. Keep future direct
   providers disabled and existing account/model choices and references intact.
-- Present compact repository cards and shared-style editors for
-  real account binding, scope previews, watched identities and assignments.
+- Present shared-style repository editors for
+  real account binding, watched identities and assignments.
   Expose the independent reviewer-request override, guarded account unbinding
   and the saved global schedule without adding scoped polling controls.
   Preserve separate Comment/Approve/Merge choices, primary roles, resource
@@ -59,6 +63,12 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   waiting/blocked work in arrival order, static reduced-motion states and one
   exact inspector for normal, final, reply and mention work. Preserve captured
   configuration, canonical iteration, work ordinals and separate retry counts.
+
+### Removed
+
+- Remove local-checkout discovery, folder scanning, and separate repository-scope
+  preview/confirmation. Existing configurations and legacy admission data remain
+  readable; merely browsing or adding a repository does not start monitoring.
 
 ### Fixed
 
