@@ -7,6 +7,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- Update the browser-only visual prototype with account/organization repository
+  browsing, URL entry, and compact drill-in rows. Newly added repositories open
+  configuration with monitoring off. Native repository intake is unchanged;
+  its follow-up is tracked in #114.
 - Use saved Agent assignments and confirmed monitoring scope as ongoing review
   consent. Remove repeated revision-trust prompts from normal/retry, conversation
   and final reviews without changing read-only execution, revision validation or

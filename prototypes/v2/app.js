@@ -216,6 +216,8 @@ function remember() {
   const focused = document.activeElement;
   if (focused?.dataset?.reviewId)
     route().returnReview = focused.dataset.reviewId;
+  if (focused?.dataset?.focusKey)
+    route().returnFocus = focused.dataset.focusKey;
 }
 
 function mayLeave() {
@@ -429,7 +431,7 @@ function openSetupStep(step) {
     else navigate(state.agents.length ? "agents" : "agent");
   } else {
     if (state.repos.length === 1) navigate("repo", state.repos[0].id);
-    else navigate(state.repos.length ? "repos" : "repo");
+    else navigate("repos");
   }
 }
 
@@ -693,6 +695,7 @@ function settingsPage() {
 }
 
 function collectionPage(kind) {
+  if (kind === "repos") return repositoriesPage();
   const configuration = {
     agents: [
       "Agents",
@@ -730,6 +733,120 @@ function collectionPage(kind) {
       empty(`No ${kind} yet`, `Use "${button}" to create your first one.`)
     }
     </div></div>`;
+}
+
+function repositoryStatus(repo) {
+  const account = state.accounts.find((item) => item.id === repo.accountId);
+  if (!account?.connected) return "Reconnect account";
+  if (!repo.scope || !repo.agentIds.length) return "Needs setup";
+  return repo.enabled ? "Enabled" : "Paused";
+}
+
+function repositoriesPage() {
+  const accounts = state.accounts.filter(
+    (account) => account.kind === "github",
+  );
+  return `<div class="page-scroll" data-scroll="repos">
+    <div class="repository-heading"><h2>Your repositories</h2><button class="small-primary" data-page="repo-url" data-focus-key="repo-url" aria-label="Add repository by URL" title="Add repository by URL">${icon("plus")}<span>URL</span></button></div>
+    <div class="settings-list repository-items">${
+      state.repos
+        .map((repo) => {
+          const account = state.accounts.find(
+            (item) => item.id === repo.accountId,
+          );
+          return `<button class="settings-row" data-page="repo" data-id="${esc(repo.id)}" data-focus-key="repo-${esc(repo.id)}"><span class="row-copy"><strong>${esc(repo.name)}</strong><small>GitHub · ${esc(account?.name ?? "Account unavailable")}</small></span><span class="row-value">${repositoryStatus(repo)}</span>${icon("chevron")}</button>`;
+        })
+        .join("") ||
+      empty(
+        "No repositories yet",
+        "Browse a connected account below, or add a repository by URL.",
+      )
+    }</div>
+    <h2 class="repository-section-title">Browse from an account</h2>
+    <div class="settings-list">${accounts.map((account) => `<div class="repository-account"><span class="provider-mark" data-brand="github">GH</span><span class="row-copy"><strong>${esc(account.name)}</strong><small>${account.connected ? "GitHub" : "Reconnect in Accounts"}</small></span><button class="repository-browse" data-page="repo-browser" data-id="${esc(account.id)}" data-focus-key="browse-${esc(account.id)}" aria-label="Browse repositories as ${esc(account.name)}" title="Browse repositories" ${disabled(!account.connected)}>${icon("search")}</button></div>`).join("") || `<button class="settings-row" data-page="accounts"><span class="row-copy"><strong>Connect a repository account</strong><small>Add GitHub in Accounts to browse repositories.</small></span>${icon("chevron")}</button>`}</div>
+    <p class="section-note">Choose repositories owned by your personal account or an organization. Sample results only.</p>
+    <p class="section-note">Azure DevOps organization browsing is coming soon.</p>
+  </div>`;
+}
+
+function repositoryBrowserPage() {
+  const account = state.accounts.find((item) => item.id === route().id);
+  if (!account?.connected || account.kind !== "github")
+    return empty(
+      "Account unavailable",
+      "Reconnect in Accounts before browsing.",
+    );
+  const owners = Demo.repositoryOwners(account);
+  route().owner ??= owners[0].name;
+  return `<div class="page-scroll" data-scroll="repo-browser">
+    <p class="section-note">GitHub as <strong>${esc(account.name)}</strong>. Synthetic repositories; no provider request.</p>
+    ${field("Repository owner", `<select id="repository-owner">${owners.map((owner) => option(owner.name, `${owner.name} (${owner.kind.toLowerCase()})`, route().owner)).join("")}</select>`)}
+    ${field("Find a repository", `<input type="search" id="repository-filter" value="${esc(route().query ?? "")}" placeholder="Search this owner..." autocomplete="off" />`)}
+    <div class="settings-list" id="repository-results">${repositoryResults(account)}</div>
+    <p class="section-note">Selecting a repository adds it and opens configuration. Monitoring stays off until you configure it.</p>
+  </div>`;
+}
+
+function repositoryResults(account) {
+  const names = Demo.repositoryCatalog(account, route().owner).filter((name) =>
+    name.toLowerCase().includes((route().query ?? "").toLowerCase()),
+  );
+  return (
+    names
+      .map((name) => {
+        const existing = state.repos.find(
+          (repo) =>
+            repo.accountId === account.id &&
+            repo.name.toLowerCase() === name.toLowerCase(),
+        );
+        return `<button class="settings-row" data-action="pick-repo" data-name="${esc(name)}" data-id="${esc(account.id)}" data-focus-key="pick-${esc(name)}"><span class="row-copy"><strong>${esc(name.split("/")[1])}</strong><small>${esc(name)}</small></span><span class="row-value">${existing ? "Added" : "Add"}</span>${icon(existing ? "chevron" : "plus")}</button>`;
+      })
+      .join("") ||
+    empty(
+      "No matching repositories",
+      "Try another name or choose a different owner.",
+    )
+  );
+}
+
+function repositoryUrlPage() {
+  const accounts = state.accounts.filter(
+    (account) => account.kind === "github" && account.connected,
+  );
+  if (!accounts.length)
+    return `<div class="page-scroll" data-scroll="repo-url">${empty("Connect GitHub first", "A repository needs an acting account.")}<button class="primary-action wide" data-page="accounts">Open Accounts</button></div>`;
+  return `<div class="page-scroll" data-scroll="repo-url"><form class="editor-form" data-form="repo-url">
+    ${field("Repository URL", '<input name="repository" placeholder="https://github.com/owner/repository" required autocomplete="off" spellcheck="false" />', "GitHub URL or owner/repository. No local checkout needed.")}
+    ${field("Acting GitHub account", `<select name="accountId" required>${option("", "Choose an account", "")}${accounts.map((account) => option(account.id, account.name, "")).join("")}</select>`, "Choose explicitly, even when accounts have overlapping access.")}
+    <p class="section-note">Demo only: format is checked, but existence and access are not. Azure DevOps URLs are not supported yet.</p>
+    <div class="editor-actions"><button class="primary-action" type="submit">Add & configure</button><button class="secondary-action" type="button" data-action="back">Cancel</button></div>
+  </form></div>`;
+}
+
+function addRepository(name, accountId) {
+  const normalized = Demo.repositoryName(name);
+  let repo = state.repos.find(
+    (item) =>
+      item.accountId === accountId &&
+      item.name.toLowerCase() === normalized.toLowerCase(),
+  );
+  if (!repo) {
+    if (
+      !perform(
+        "add-repo",
+        { name: normalized, accountId },
+        "Repository added. Configure it before monitoring.",
+        false,
+      )
+    )
+      return;
+    repo = state.repos.at(-1);
+  }
+  dirty = false;
+  const index = stacks[tab].findLastIndex((item) => item.page === "repos");
+  if (index >= 0) stacks[tab] = stacks[tab].slice(0, index + 1);
+  stacks[tab].push({ page: "repo", id: repo.id });
+  render(1, true);
 }
 
 function field(label, control, hint = "") {
@@ -795,9 +912,9 @@ function repoEditor(id) {
     ${field("Repository", input("name", repo.name), "Use a fictional owner/repository; no provider lookup occurs.")}
     ${field("Acting GitHub account", accountSelect("github", repo.accountId))}
     <label class="checkbox-field"><input type="checkbox" name="enabled" ${checked(repo.enabled)} /><span>Enable repository monitoring</span></label>
-    <label class="checkbox-field"><input type="checkbox" name="scope" ${checked(repo.scope)} /><span>Confirm new-PR-only scope (demo)</span></label><p class="section-note">This mock does not import existing PRs. Scope activation is not trust or permission to start a review.</p>
+    <label class="checkbox-field"><input type="checkbox" name="scope" ${checked(repo.scope)} /><span>Confirm new-PR-only scope (demo)</span></label><p class="section-note">This mock does not import existing PRs. Assign an Agent and confirm scope once; saved start and publication settings still apply.</p>
     <fieldset class="check-group"><legend>Assigned agents</legend>${state.agents.map((agent) => `<label><input type="checkbox" name="agentIds" value="${esc(agent.id)}" ${checked(repo.agentIds.includes(agent.id))} /><span>${esc(agent.name)}<small>${agent.completion === "approve" ? "May approve" : "Human handoff"}</small></span></label>`).join("")}</fieldset>
-    <details class="check-group"><summary>People you watch <span class="count-badge">${repo.watched.length}</span></summary>${Demo.people.map((person) => `<label><input type="checkbox" name="watched" value="${esc(person)}" ${checked(repo.watched.includes(person))} /><span>${esc(person)}</span></label>`).join("")}<p class="section-note">Empty means all authors after activation, not blanket trust. Untrusted sample revisions require confirmation.</p></details>
+    <details class="check-group"><summary>People you watch <span class="count-badge">${repo.watched.length}</span></summary>${Demo.people.map((person) => `<label><input type="checkbox" name="watched" value="${esc(person)}" ${checked(repo.watched.includes(person))} /><span>${esc(person)}</span></label>`).join("")}<p class="section-note">Empty means all authors after activation.</p></details>
     <div class="form-group"><h2>Detection schedule</h2>${field("Schedule type", `<select name="schedule">${option("interval", "Fixed interval", repo.schedule)}${option("cron", "Cron (advanced)", repo.schedule)}</select>`)}
       <div data-schedule="interval">${field("Check every (minutes)", `<input name="minutes" type="number" min="1" step="1" value="${repo.minutes}" required />`)}</div>
       <div data-schedule="cron">${field("Five-field cron", input("cron", repo.cron))}${field("Time zone", input("zone", repo.zone))}<p class="section-note">Shape and time-zone validation only. No real timer or cron execution.</p></div>
@@ -982,6 +1099,8 @@ function render(direction = 0, focus = false) {
     agent: "Agent",
     repos: "Repositories",
     repo: "Repository",
+    "repo-browser": "Browse",
+    "repo-url": "Add by URL",
     doctrines: "Doctrines",
     doctrine: "Doctrine",
     accounts: "Accounts",
@@ -1029,6 +1148,12 @@ function render(direction = 0, focus = false) {
       break;
     case "repo":
       html = repoEditor(current.id);
+      break;
+    case "repo-browser":
+      html = repositoryBrowserPage();
+      break;
+    case "repo-url":
+      html = repositoryUrlPage();
       break;
     case "doctrine":
       html = doctrineEditor(current.id);
@@ -1115,7 +1240,12 @@ function render(direction = 0, focus = false) {
       [...next.querySelectorAll("[data-review-id]")].find(
         (element) => element.dataset.reviewId === current.returnReview,
       );
-    (returnCard || pageTitle).focus({ preventScroll: true });
+    const returnControl =
+      direction < 0 &&
+      [...next.querySelectorAll("[data-focus-key]")].find(
+        (element) => element.dataset.focusKey === current.returnFocus,
+      );
+    (returnControl || returnCard || pageTitle).focus({ preventScroll: true });
   }
 }
 
@@ -1221,6 +1351,11 @@ stage.addEventListener("submit", (event) => {
   const form = event.target;
   if (!(form instanceof HTMLFormElement)) return;
   try {
+    if (form.dataset.form === "repo-url") {
+      const data = new FormData(form);
+      addRepository(data.get("repository"), data.get("accountId"));
+      return;
+    }
     if (form.dataset.form === "setup-finish") {
       if (
         perform(
@@ -1301,6 +1436,13 @@ stage.addEventListener("submit", (event) => {
   }
 });
 stage.addEventListener("input", (event) => {
+  if (event.target.id === "repository-filter") {
+    route().query = event.target.value;
+    const account = state.accounts.find((item) => item.id === route().id);
+    stage.querySelector("#repository-results").innerHTML =
+      repositoryResults(account);
+    return;
+  }
   const form = event.target.closest("form");
   if (form?.dataset.form === "account-signin") {
     route().draftName = event.target.value;
@@ -1310,6 +1452,13 @@ stage.addEventListener("input", (event) => {
   if (form && form.dataset.form !== "complete") dirty = true;
 });
 stage.addEventListener("change", (event) => {
+  if (event.target.id === "repository-owner") {
+    route().owner = event.target.value;
+    route().query = "";
+    render();
+    stage.querySelector("#repository-owner").focus();
+    return;
+  }
   if (event.target.name === "confirmSetup") {
     event.target
       .closest("form")
@@ -1349,6 +1498,10 @@ popover.addEventListener("click", (event) => {
   const action = button.dataset.action;
   const id = button.dataset.id;
   if (!action) return;
+  if (action === "pick-repo") {
+    addRepository(button.dataset.name, id);
+    return;
+  }
   if (action === "review") {
     navigate("review", button.dataset.reviewId);
     return;
