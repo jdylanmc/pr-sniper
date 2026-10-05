@@ -1,35 +1,25 @@
 ---
 name: data
-description: "Make stored data and durable computation authoritative, replayable, visible, and shaped by real access."
+description: "Review storage and processing changes for honest guarantees, safe replay, and observable recovery."
 scope: default-pr-sniper-doctrine
 ---
 
 # Data Doctrine
 
-Prime directive: state what owns the truth and what every read, write, and replay may promise. Assume every durable computation will run again.
+Data outlives operations. Acceptance, commit, reader visibility, external effects, and survival through failure are different promises. Durable computations will run again.
 
-Stored data outlives its operation. Separate request acceptance, committed state, reader visibility, external effects, and survival through failure. One event is not all of them.
+Review changed reads, writes, and pipelines under restart, lag, duplicates, mixed versions, and replay after surrounding state changes.
 
-Batch and stream work restarts, lags, duplicates, mixes old and new records, and revisits changed history. Once, in order, now, is not durable. Replay is not merely rerunning code. Inputs, checkpoints, reference data, and external effects need deliberate meaning on resume and on history.
+Look for:
 
-Choose from relationships, access, consistency, evolution pressure, and measured workload. Not fashion. Not a diagram before evidence.
+- **Authority.** Identify the owning store, permitted writers, derived copies, and consumer freshness assumptions. Keep tightly consistent business data under one authority, not arbitrarily split services.
+- **Guarantees.** Check restart durability, reader visibility, permitted staleness, conflict detection and resolution. Transactions need named invariants, atomic boundaries, unacceptable anomalies, and suitable isolation/concurrency control. Weaker guarantees need explicit compensation.
+- **Workload fit.** Representation, storage, and indexes follow relationships, changes, queries, consistency, and evolution. Reshaping needs measured volume, read/write patterns, latency, throughput, contention, growth, and slow paths.
+- **Derived state.** Every cache, index, projection, warehouse, or denormalized copy needs a source, update path, acceptable lag, drift visibility, and rebuild/repair strategy. Unrebuildable state is an authority.
+- **Version coexistence.** Schemas, encodings, interfaces, messages, readers, writers, and retained records must tolerate rollout overlap.
+- **Replay semantics.** Events record facts; commands request work; streams carry records; views derive state. Inputs, reference data, intermediate state, outputs, checkpoints, and sink acceptance need replay meaning. Checkpointing before durable effects loses work; afterward risks duplicates.
+- **Time and order.** Name business-required ordering scope: record, entity, key, partition, stream, window, or history. Distinguish occurrence, arrival, and processing time for joins, windows, and late data. Retention bounds recovery and recomputation.
+- **Visible recovery.** Expose backlog, watermarks, staleness, conflicting writes, migration/rebuild failures, repair paths, and incomplete results. Hidden inconsistency is not eventual consistency.
+- **External effects.** Reprocessing must not silently repeat irreversible actions. Look for stable operation identity and compensation.
 
-- Name the owning store, who may change it, derived copies, and each consumer's freshness and consistency assumptions.
-- State restart survival, when readers observe a write, whether stale reads are allowed, and how conflicts are detected and settled.
-- Measure volume, patterns, latency, throughput, contention, growth, and slowest paths before changing engines, indexes, or layouts.
-- Model fields and relationships by change and query. Choose storage and indexes from observed use and required guarantees.
-- Own every second copy. Caches, indexes, projections, search data, warehouses, and denormalized fields need a source, update path, lag, drift visibility, and rebuild or repair.
-- Schemas, encodings, interfaces, messages, and stored records must survive old and new readers, writers, and data during rollout.
-- Name each atomic commit, its unacceptable anomalies, and the isolation or concurrency control that protects it. Weaker guarantees need explicit compensation.
-- Keep tightly consistent data under one authority. Do not split a business concept merely to create another service.
-- Expose stale copies, failed rebuilds, conflicting writes, migration state, and repair paths. Hidden inconsistency is not eventual consistency.
-- Preserve order only where the business requires it. Name the scope: record, entity, key, partition, stream, window, or whole history.
-- Separate facts, instructions, and views. Events record what happened. Commands request work. Streams carry records. Materialized views are derived. Replay and ownership differ.
-- Declare inputs, outputs, checkpoints, intermediate state, and sink acceptance. A checkpoint before durable effects hides loss. A later checkpoint may duplicate work.
-- Occurrence, arrival, and processing time differ. Windows, joins, and late arrivals must name which time they mean.
-- Retention bounds recovery and recomputation. Tolerate older and newer versions while history stays mixed.
-- Lag is system state. Expose backlog, watermark, staleness, failed recovery, and where results become incomplete.
-- A projection, index, or aggregate needs a source, replay path, and repair. If it cannot be rebuilt, it is an authority.
-- Do not silently repeat irreversible actions. Effects leaving the pipeline need stable operation identity and compensation. Expose that need. Do not define operation identity here.
-
-Owns storage, single-store consistency, and replay through time. Does not own cross-node coordination or full logical-retry identity. Name those limits. One store contract does not cover them. Bounded Context owns business meaning. Migration order is not a storage guarantee.
+Ground findings in concrete loss, duplication, staleness, or recovery scenarios. Single-store guarantees do not establish cross-node coordination, retry identity, or safe migration order.

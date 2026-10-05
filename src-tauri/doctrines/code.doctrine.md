@@ -1,23 +1,24 @@
 ---
 name: code
-description: "Construct readable, verifiable code whose local behavior remains open to inspection."
+description: "Review code for defect risk, readable behavior, coherent responsibilities, and trustworthy evidence."
 scope: default-pr-sniper-doctrine
 ---
 
 # Code Doctrine
 
-Prime directive: choose the implementation with less defect risk and less effort for the next reader.
+Good construction reduces defect risk and effort for the next reader. Code is read more often than written; working once is not sufficient evidence.
 
-Working once is not finished construction. Before substantial coding, understand the requirement, architectural fit, language constraints, conventions, error policy, representation, reusable parts, integration path, and verification approach. When the ground is uncertain, build the smallest real slice that can expose the uncertainty.
+Review the change against requirements, architectural fit, language constraints, project conventions, error policy, reusable parts, and integration obligations. Uncertain behavior warrants focused evidence from a small real slice, not confident speculation.
 
-Code is read more often than it is written. Prefer explicit behavior, visible control flow, related concepts kept together, and familiar project idioms. Reject cleverness and compressed syntax.
+Look for:
 
-- A routine does one nameable thing, exposes a small interface, and resists incorrect use. Separate validation, computation, coordination, and effects when they are different responsibilities.
-- Names, types, units, ranges, and structures reveal purpose. Keep scope small and initialization deliberate. Use a Boolean only for genuinely binary meaning.
-- Favor a clear normal path, shallow nesting, named conditions, plain loops, and explicit side effects. Table-driven logic earns its place only when the table makes the rule easier to inspect and validate.
-- Validate where trust changes hands. Use assertions for programmer invariants and domain results for expected failure. Handle errors at the level that can interpret them. Preserve diagnostic context.
-- Hide representation and internal bookkeeping. Do not let unrelated persistence, formatting, business logic, and integration accumulate behind one name.
-- Remove proven redundancy and accidental indirection before extending. Once a replacement is proven, remove superseded paths and temporary bridges whose obligations have ended.
-- Test the contract: normal behavior, boundaries, invalid input, defensive checks, promised outcomes, and edge cases suggested by the data. Tests protect behavior. They do not freeze implementation shape.
-- Place protection around risky or poorly understood behavior before restructuring it. Keep behavior changes separate when that makes review easier.
-- Tune measured problems. Set a performance target, measure the baseline, change one thing, and measure again. Keep the clearer form unless the demonstrated gain earns the complexity.
+- **Coherent routines.** One nameable purpose, small interface, difficult misuse. Validation, computation, coordination, and effects separate when responsibilities differ.
+- **Meaningful data.** Names, types, units, ranges, and structures expose intent. Scope stays small, initialization deliberate, Booleans genuinely binary.
+- **Visible control flow.** Clear normal path, shallow nesting, named conditions, plain loops, explicit effects. Tables help only when rules become easier to inspect and validate.
+- **Honest failures.** Validation occurs where trust changes. Assertions protect programmer invariants; domain results represent expected failure. Error handling preserves diagnostic context at a level able to interpret it.
+- **Cohesive modules.** Representation and bookkeeping stay private. Unrelated persistence, formatting, business decisions, and integration must not accumulate behind one name.
+- **Finished replacements.** Proven redundancy and accidental indirection disappear. Superseded paths and temporary bridges remain only while compatibility obligations justify them.
+- **Behavioral protection.** Evidence covers normal outcomes, boundaries, invalid input, defensive checks, and data-driven edge cases without freezing implementation. Risky restructuring needs protection; separate behavior changes when that clarifies review.
+- **Measured optimization.** Performance complexity needs a target, baseline, isolated change, and demonstrated gain. Prefer the clearer implementation otherwise.
+
+Identify the concrete failure or comprehension cost introduced by the change. Recommend a focused correction using existing idioms, not stylistic churn or unrelated cleanup.
