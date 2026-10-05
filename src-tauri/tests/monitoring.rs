@@ -2485,6 +2485,14 @@ fn disable_reenable_and_rebind_reset_health_and_cursor_honestly() {
     assert!(!disabled.enabled);
     assert!(!disabled.schedule_available);
     assert_eq!(disabled.next_run, 0);
+    let global_scan = store.load_monitoring_state().unwrap().global_scan.unwrap();
+    assert_eq!(global_scan.next_run, 0);
+    assert!(global_scan.pending.is_empty());
+    assert!(!global_scan.requested);
+    assert!(monitor
+        .prepare_checks(&store, 1_800_000_700, false)
+        .unwrap()
+        .is_empty());
 
     settings.repositories[0].enabled = true;
     set_settings(&store, &settings);
@@ -2496,12 +2504,24 @@ fn disable_reenable_and_rebind_reset_health_and_cursor_honestly() {
         monitor.snapshot()[0].last_failure.as_deref(),
         Some(SCOPE_CONFIRMATION_REQUIRED)
     );
+    assert_eq!(
+        store
+            .load_monitoring_state()
+            .unwrap()
+            .global_scan
+            .unwrap()
+            .next_run,
+        0,
+        "enabled but unconfirmed scope is not eligible for a provider scan"
+    );
     activate(&store, 0, BTreeMap::new());
     monitor = Monitor::restore(&store).unwrap();
     monitor
         .synchronize_configuration(&store, &accounts, 1_800_000_021)
         .unwrap();
     assert!(monitor.snapshot()[0].schedule_available);
+    let global_scan = store.load_monitoring_state().unwrap().global_scan.unwrap();
+    assert!(global_scan.next_run > 1_800_000_021);
 
     settings.repositories[0].provider_account_id = Some("23".into());
     set_settings(&store, &settings);
