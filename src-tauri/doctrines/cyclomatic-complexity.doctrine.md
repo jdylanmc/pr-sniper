@@ -1,23 +1,25 @@
 ---
 name: cyclomatic-complexity
-description: "Bound independent control-flow paths so code remains understandable to humans and agents."
+description: "Review control-flow complexity for meaningful decomposition without weakening behavior or safeguards."
 scope: default-pr-sniper-doctrine
 ---
 
 # Cyclomatic Complexity Doctrine
 
-Prime directive: keep cyclomatic complexity at five or less. Do not exceed ten without explicit human approval.
+Control-flow paths cost understanding and proof. Aim for cyclomatic complexity of five or less per routine. Above ten requires explicit human approval.
 
-Cyclomatic complexity counts independent control-flow paths through a routine. For a connected routine, it is roughly the number of decisions plus one. Exact treatment of cases, compound conditions, and exceptions depends on the measuring tool.
+Review changed routines for added paths and increased reasoning burden. Humans and agents share one standard; an agent's ability to enumerate branches does not justify harder code.
 
-Each path adds another condition a maintainer must understand and another behavior the system may need to prove. Humans and agents may fail differently, but they share the same code. Do not grant agents a higher tolerance merely because they can enumerate more branches. Hidden state, side effects, vague names, and dispersed context still obscure meaning.
+Cyclomatic complexity counts independent paths, roughly decisions plus one for a connected routine. Cases, compound conditions, and exceptions depend on the measuring tool. Distinguish measured results from estimates; state the convention behind a numerical finding.
 
-- Use one shared standard. Code should be easy for a human to understand and an agent to reason about. Optimize for their shared need: visible, cohesive behavior.
-- Target five or less. A routine at or below five usually leaves enough room to understand its decisions without building a mental simulator.
-- Treat ten as the ceiling. Complexity above ten requires an explicit human exception. Ground that exception in a cohesive domain rule, invariant, safety boundary, compatibility obligation, or other evidence that decomposition would make the code worse.
-- Investigate increases. New paths should trigger a design conversation. Look for several decisions trapped in one routine, tangled policy and mechanism, or a missing domain concept.
-- Decompose meaningfully. Split responsibilities and concepts. Moving branches into tiny forwarding functions lowers a score without reducing cognitive burden.
-- Protect semantic quality. Never weaken correctness, cohesion, types, validation, diagnostics, security, accessibility, compatibility, or tests to satisfy the number.
-- Explain necessary complexity. A justified exception remains visible and reviewable. Measurement is pressure toward clarity, not permission to stop thinking.
+Look for:
 
-Cyclomatic complexity measures paths, not understanding. Use the number to expose risk and prompt better design. Never confuse a low score with good code or a high score with automatic failure.
+- **Accumulating decisions.** New branches may reveal mixed responsibilities, tangled policy and mechanism, or a missing domain concept. Explain which decisions deserve separate ownership.
+- **Hidden complexity.** Shared state, side effects, vague names, and scattered context can make low-scoring code difficult. A lower number alone does not establish clarity.
+- **Meaningful decomposition.** Extract cohesive behavior or concepts. Moving branches into tiny forwarding functions merely relocates the mental burden.
+- **Earned exceptions.** Above ten, look for explicit human approval and evidence that decomposition harms a cohesive domain rule, invariant, safety boundary, or compatibility obligation. Do not infer an exception from existing code.
+- **Preserved guarantees.** A numerical improvement must not weaken correctness, cohesion, types, validation, diagnostics, security, accessibility, compatibility, or behavioral tests.
+
+Describe the affected routine, changed paths, and consequence for understanding or verification. Recommend the smallest meaningful simplification. Keep necessary complexity and its justification visible.
+
+Numbers expose risk; they are not a substitute for judgment. Neither a low score proves good code nor a high score alone proves a functional defect. Do not expand a local change into repository-wide metric cleanup.

@@ -309,15 +309,18 @@ Run with `--browser=chromium` or `--browser=webkit`; the existing
 browser and test-owned Store evidence, not native focus, installed-app or live
 authentication acceptance.
 
-`doctrine-seeding.spec.mjs` covers the complete 23-document canonical catalog
-(exact titles and bodies, with only frontmatter/H1 removed), durable first load,
-Agent choices before visiting Doctrines, and saving Integrations first. It
+`doctrine-seeding.spec.mjs` covers the ten app defaults in `src-tauri/doctrines`,
+not the skill catalog: exact titles and bodies with only frontmatter/H1 removed,
+durable first load, Agent choices before visiting Doctrines, and saving
+Integrations first. It
 checks edited/custom/deleted and delete-all libraries across fresh Store
 processes and UI reload, conservative handling of legacy missing fields,
 visible initialization write errors, and conflicting drafts with explicit
 discard/reload. `src-tauri/tests/doctrine_seeding.rs` independently checks the
-same storage and canonical-content contracts. Fresh settings now persist the
-starter library immediately; startup and automation remain opted out.
+same storage and canonical-content contracts in the application and foundation
+harnesses, including the app-specific scope and 500-word body ceiling.
+Fresh settings persist the starter library immediately; startup and automation
+remain opted out.
 
 `copilot.spec.mjs` covers the four-tab Settings Copilot surface: multiple
 confirmed identities, cancel/reconnect/disconnect, repository-role separation,

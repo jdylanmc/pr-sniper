@@ -1,23 +1,23 @@
 ---
 name: solid
-description: "Use five complementary design principles to prevent tangled responsibilities, contracts, and dependencies."
+description: "Review responsibilities, contracts, extension points, and dependency direction through the five SOLID principles."
 scope: default-pr-sniper-doctrine
 ---
 
 # SOLID Doctrine
 
-Prime directive: preserve trustworthy behavior while making change local, deliberate, and unsurprising.
+Good design makes change local, deliberate, and unsurprising while preserving trustworthy behavior. Tangled responsibilities and dishonest contracts matter more than file length.
 
-Spaghetti code is not merely code with many lines. It is code where responsibilities overlap, changes ripple unpredictably, contracts lie, clients depend on things they do not use, and important policy is trapped inside volatile mechanisms.
+Review the proposed change through all five SOLID lenses. These are complementary questions, not a demand for interfaces, subclasses, or abstractions everywhere.
 
-SOLID provides five equal lenses for finding those pressures. They are not rituals. They do not require an interface, subclass, or abstraction everywhere. Apply them where they reduce change cost and clarify ownership.
+- **Single Responsibility Principle.** Does each module, component, or class have one coherent source of change? Keep behavior together for the same business reason; flag combinations pulled apart by different owners, policies, or timelines.
+- **Open/Closed Principle.** Where variation already exists, can a new case extend behavior without repeatedly rewriting trusted logic? Look for earned extension boundaries, not speculative flexibility or preservation of obsolete paths.
+- **Liskov Substitution Principle.** Can implementations substitute without surprising callers? Compare accepted inputs, outputs, invariants, side effects, and failures. Matching signatures do not prove matching behavioral contracts.
+- **Interface Segregation Principle.** Do clients depend only on capabilities they need? Flag forced implementation, mocking, or knowledge of unrelated operations. Focused contracts help; fragmented forwarding interfaces may increase coupling instead.
+- **Dependency Inversion Principle.** Does important policy define stable contracts, or depend directly on volatile mechanisms? Infrastructure may implement those contracts. A wrapper around one concrete dependency is not meaningful inversion without real policy or variation.
 
-- Single Responsibility Principle. Give a module, component, or class one coherent source of change. Keep behavior together when it changes for the same business reason. Separate behavior when different owners, policies, or timelines pull it apart.
-- Open/Closed Principle. Protect stable behavior behind a deliberate extension boundary when real variation exists. Add a new case without repeatedly rewriting trusted logic. Do not predict hypothetical extensions or preserve obsolete paths.
-- Liskov Substitution Principle. An interchangeable implementation must preserve the behavioral expectations of the contract it claims to satisfy. Inputs, outputs, invariants, side effects, and failure behavior matter more than matching a type signature.
-- Interface Segregation Principle. Give clients focused contracts containing what they actually need. Do not force consumers to understand, implement, mock, or depend on unrelated capabilities. Small interfaces are valuable when they represent cohesive client needs, not when fragmentation creates forwarding ceremony.
-- Dependency Inversion Principle. Important policy should define the stable contracts it needs instead of depending directly on volatile mechanisms. Infrastructure may implement those contracts. An abstraction must express real policy and variation. It must not hide one concrete dependency behind another name.
+The principles reinforce one another: coherent responsibility reveals focused contracts; honest substitution supports safe extension; dependency direction protects policy as mechanisms change.
 
-The principles reinforce one another. Coherent responsibility reveals the right contract. Focused contracts make substitution honest. Honest substitution enables safe extension. Dependency direction keeps policy stable while mechanisms change.
+For each finding, identify the changed dependency or contract and its concrete failure or change-cost consequence. Recommend a focused correction that respects existing domain boundaries, simplicity, and control-flow clarity.
 
-SOLID does not guarantee scalability, reuse, testability, or maintainability. It supplies questions for design judgment. Code, Bounded Context, Laziness, and Cyclomatic Complexity remain authoritative for their concerns. Use SOLID to reduce coupling, not to manufacture layers.
+SOLID supplies judgment, not guaranteed scalability, reuse, testability, or maintainability. Do not manufacture layers or report a defect solely because a preferred pattern is absent.

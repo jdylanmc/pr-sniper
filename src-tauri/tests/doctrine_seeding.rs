@@ -5,7 +5,11 @@ mod support;
 use support::Fixture;
 
 fn canonical_doctrines() -> Vec<Doctrine> {
-    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("doctrines");
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .map(|root| root.join("doctrines"))
+        .find(|directory| directory.is_dir())
+        .expect("bundled app doctrines beside the native crate");
     let mut doctrines: Vec<_> = fs::read_dir(directory)
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -24,15 +28,40 @@ fn canonical_doctrines() -> Vec<Doctrine> {
             assert_eq!(lines.next(), Some("---"));
             let metadata: Vec<_> = lines.by_ref().take_while(|line| *line != "---").collect();
             assert!(metadata.contains(&format!("name: {title}").as_str()));
+            assert!(
+                metadata.contains(&"scope: default-pr-sniper-doctrine"),
+                "wrong scope for {title}"
+            );
             let heading = lines.find(|line| !line.trim().is_empty()).unwrap();
             assert!(heading.starts_with("# "));
             let body = lines.collect::<Vec<_>>().join("\n").trim().to_string();
             assert!(!body.is_empty());
+            assert!(
+                body.split_whitespace().count() <= 500,
+                "{title} exceeds the shipped doctrine word cap"
+            );
             Doctrine { title, body }
         })
         .collect();
     doctrines.sort_by(|a, b| a.title.cmp(&b.title));
-    assert_eq!(doctrines.len(), 10);
+    assert_eq!(
+        doctrines
+            .iter()
+            .map(|doctrine| doctrine.title.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "bounded-context",
+            "code",
+            "cyclomatic-complexity",
+            "data",
+            "documentation",
+            "laziness",
+            "machine",
+            "solid",
+            "tactical-strategic",
+            "testing",
+        ]
+    );
     doctrines
 }
 

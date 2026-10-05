@@ -1,22 +1,24 @@
 ---
 name: documentation
-description: "Authority and trust for knowledge that must outlive the moment."
+description: "Review whether documentation preserves unique knowledge with clear authority and maintainable sources."
 scope: default-pr-sniper-doctrine
 ---
 
 # Documentation Doctrine
 
-Documentation should preserve knowledge, not cast a prose shadow over the code.
+Documentation preserves knowledge, not a prose shadow of code. Each concern needs one authority.
 
-Source code and executable behavior are the authority for what an implementation currently does. A handwritten walkthrough of classes, functions, files, or control flow creates a second account of the same fact. The prose is not compiled with the code, so it drifts. When the two disagree, humans and agents waste time deciding which story to trust.
+Review both documentation changes and knowledge obligations created by implementation changes. Source code and executable behavior establish what implementation currently does; requirements and public contracts establish what it must do. A specification is not implementation evidence.
 
-Code cannot carry every truth. It rarely explains why an alternative lost, what a product intends, what a public contract promises, which words a domain owns, how an operator recovers a system, or which obligations require evidence. Preserve those truths in artifacts suited to them.
+Look for:
 
-- One concern, one authority. Name the artifact that owns each durable fact. Other representations are generated, validated, or clearly derived from it.
-- Let code explain behavior. Make ownership, boundaries, contracts, and entry points discoverable in the implementation. Comments preserve intent, invariants, constraints, and surprising decisions. They do not narrate syntax.
-- Document what code cannot. Product intent, architecture rationale, domain language, public contracts, user guidance, operations, migrations, and governance have legitimate homes outside implementation code.
-- Make every document earn its maintenance cost. A permanent document needs a unique purpose, an owner or canonical source, and a credible way to stay current. Generate reference material from validated sources when practical.
-- Treat disagreement as drift. Identify which concern owns the disputed fact, trust that authority, and repair the other artifact. Never average conflicting accounts or choose the convenient one.
-- Optimize retrieval, not document count. Keep entry points small and navigable. Link to focused authority and load detail only when relevant. Deleting unique knowledge is not context economy.
+- **Competing accounts.** Handwritten inventories of classes, files, functions, or control flow drift independently of code. Prefer discoverable implementation and generated or validated reference material over another manually synchronized description.
+- **Lost rationale.** Code rarely explains rejected alternatives, product intent, architecture decisions, domain language, or accepted constraints. Check that changed decisions retain their reason and legitimate durable home.
+- **Useful comments.** Comments should expose intent, invariants, constraints, and surprising decisions, not narrate syntax. Misleading comments are worse than absent narration.
+- **Maintained authority.** A lasting document needs a unique purpose, owner or canonical source, and credible update path. Derived material must identify its source instead of claiming independent authority.
+- **Contract drift.** Compare changed behavior with user guidance, public interfaces, recovery procedures, migration instructions, and governance. Resolve disagreement by identifying which concern owns the fact, never by averaging accounts or choosing convenient prose.
+- **Retrievability.** Small navigable entry points should link to focused authority. Repeated explanations increase ambiguity; deleting unique knowledge to reduce context destroys value.
 
-"Self-explanatory code" never excuses missing rationale, public contracts, recovery procedures, user guidance, or required security, privacy, accessibility, licensing, compliance, and audit records.
+Flag concrete omissions, contradictions, or maintenance traps caused by the change. Recommend the authoritative location and smallest useful correction, not documentation for its own sake.
+
+"Self-explanatory code" never excuses missing rationale, user guidance, recovery procedures, public contracts, or required security, privacy, accessibility, licensing, compliance, and audit evidence.
