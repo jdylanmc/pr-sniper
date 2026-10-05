@@ -1223,6 +1223,9 @@ impl Monitor {
     ) {
         let schedule = configured.first().map(|c| &c.schedule);
         let any_enabled = configured.iter().any(|configuration| configuration.enabled);
+        let valid_global_cron = schedule.is_some_and(|schedule| {
+            matches!(schedule, Schedule::Cron { .. }) && next_run(schedule, now).is_ok()
+        });
         if let Some(schedule) = schedule {
             let key = schedule_key(schedule);
             let next = if any_enabled && matches!(schedule, Schedule::Cron { .. }) {
@@ -1391,6 +1394,14 @@ impl Monitor {
             let key = schedule_key(&configuration.schedule);
             let schedule_changed = health.schedule_key != key;
             health.schedule_key = key;
+            if valid_global_cron
+                && matches!(
+                    health.last_failure.as_deref(),
+                    Some("invalid_global_cron") | Some("invalid_schedule")
+                )
+            {
+                health.last_failure = None;
+            }
             if binding_changed {
                 health.last_success = None;
                 health.next_run = 0;
