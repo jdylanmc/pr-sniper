@@ -1222,9 +1222,10 @@ impl Monitor {
         now: i64,
     ) {
         let schedule = configured.first().map(|c| &c.schedule);
+        let any_enabled = configured.iter().any(|configuration| configuration.enabled);
         if let Some(schedule) = schedule {
             let key = schedule_key(schedule);
-            let next = if matches!(schedule, Schedule::Cron { .. }) {
+            let next = if any_enabled && matches!(schedule, Schedule::Cron { .. }) {
                 next_run(schedule, now).unwrap_or(0)
             } else {
                 0
@@ -1237,6 +1238,8 @@ impl Monitor {
             });
             if scan.schedule_key != key {
                 scan.schedule_key = key;
+                scan.next_run = next;
+            } else if any_enabled && scan.next_run == 0 {
                 scan.next_run = next;
             }
         }
@@ -1518,7 +1521,22 @@ impl Monitor {
                 health.last_failure = None;
             }
         }
+        let has_schedulable_repository = self
+            .state
+            .health
+            .values()
+            .any(|health| health.enabled && health.schedule_available);
         if let Some(scan) = &mut self.state.global_scan {
+            if has_schedulable_repository {
+                if scan.next_run == 0 {
+                    scan.next_run = schedule
+                        .and_then(|schedule| next_run(schedule, now).ok())
+                        .unwrap_or(0);
+                }
+            } else {
+                scan.next_run = 0;
+                scan.requested = false;
+            }
             scan.pending.retain(|id| {
                 self.state
                     .health
