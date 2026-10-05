@@ -219,7 +219,7 @@ test("grouped overview uses saved counts and all six destinations return focus a
     [
       "Repositories",
       page.getByRole("button", {
-        name: "Add repository manually...",
+        name: "Add repository by URL",
         exact: true,
       }),
     ],
@@ -286,8 +286,14 @@ test("overview retains preference and repository drafts without claiming them in
   );
   await section(page, "Repositories");
   await page
-    .getByRole("checkbox", { name: "Monitor example/repo", exact: true })
-    .uncheck();
+    .locator("[data-repository]")
+    .filter({ hasText: "example/repo" })
+    .click();
+  await page.getByLabel("Enable repository monitoring on Save").uncheck();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Close dialog", exact: true })
+    .click();
   await back(page).click();
   await section(page, "Preferences");
   await expect(page.getByLabel("AI capacity", { exact: true })).toHaveValue(
@@ -305,8 +311,12 @@ test("overview retains preference and repository drafts without claiming them in
     "7",
   );
   await section(page, "Repositories");
+  await page
+    .locator("[data-repository]")
+    .filter({ hasText: "example/repo" })
+    .click();
   await expect(
-    page.getByRole("checkbox", { name: "Monitor example/repo", exact: true }),
+    page.getByLabel("Enable repository monitoring on Save"),
   ).not.toBeChecked();
   expect((await store("snapshot")).settings.repositories).toEqual(
     saved.repositories,

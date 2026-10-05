@@ -15,6 +15,38 @@ separately approved platform/distribution work remain in force.
 
 ## October 5, 2026 consent amendment
 
+### Later human amendment: repository Save is authorization (2026-10-05)
+
+Dylan: "If I am configuring a repo and hitting save, consider it authorized."
+This later amendment supersedes the separate repository scope-preview,
+selection, confirmation and activation requirements below, in AC-014/016,
+MVP AC-005/PR-056 and the historical #108/#114 issue text. No replacement
+repository consent gate is permitted, including inside Genie.
+
+Repositories use the approved compact grouped drill-in rows, per-connected-
+GitHub-account owner browser and URL intake. Owner results are scoped to the
+explicit personal or available organization owner under the acting account's
+actual access. Complete pagination, errors, empty states and account isolation
+are required. Azure DevOps remains future-only.
+
+Adding persists a disabled, unassigned entry and immediately opens configuration.
+Normal Save of the newly added valid configuration enables and authorizes all
+currently open and future PRs matching the saved filters. An intentionally
+disabled configuration remains disabled; global off, the global cron, manual/
+automatic start and independent Comment/Approve/Merge permissions remain.
+An unrelated settings save or load never enables or authorizes legacy entries.
+Existing data, including retired folder fields and legacy activation modes,
+remains readable. Local-clone discovery is removed, not hidden.
+
+Save and its authorization must commit together, with no provider backlog
+snapshot in Save. Polling caches are recoverable without losing that authority.
+Stable identity, compare-and-save conflicts, stale-revision checks, sticky
+tracking, deduplication and iteration semantics are unchanged. Genie uses the
+same repository Save; its summary is not a second activation step.
+
+The following earlier consent amendment and criteria retain their historical
+wording for provenance; this later amendment controls every scope-gate conflict.
+
 Dylan explicitly authorized removing per-revision trust approval throughout the
 app. Saving an Agent assignment and confirming the repository's monitoring
 scope authorize ongoing read-only reviews under the saved start policy,

@@ -64,25 +64,23 @@ destinations and newer navigation are not replaced by a late onboarding read.
 Genie opens the same account, Agent, doctrine, repository and Preferences
 editors as Settings. Each resource save applies immediately. Closing hides the
 mounted editor without rolling back saves; Back and Cancel explain which
-unsaved fields they retain or discard. Unsaved editor fields and unconfirmed
-scope choices do not survive quitting the application. Reopening does not reset
+unsaved fields they retain or discard. Unsaved editor fields
+do not survive quitting the application. Reopening does not reset
 libraries or existing monitoring.
 
 New assignments require an explicit Agent choice and start with Comment,
-Approve and Merge off. Existing saved permissions are unchanged. In Genie,
-**Use scope in final check** stages the selected backlog without activating a
-pending repository. The final check shows both identities, effective
-assignments/primary/independent permissions, scope, the single cron/time zone,
+Approve and Merge off. Existing saved permissions are unchanged. Repository
+**Save** authorizes all currently open and future matching pull requests.
+There is no separate repository scope preview or confirmation, including in
+Genie. The setup summary shows both identities, effective
+assignments/primary/independent permissions, filters, the single cron/time zone,
 AI capacity and global pause. It checks assigned models' current catalogs,
 not subscriptions or inference. Watched authors use monitoring's effective
 inherited/override-plus-local union, deduplicated by stable ID. Both repository
-and AI connection generations fence final confirmation, including reconnects
-with unchanged identity. Back cancels final preflight; it cannot roll back a
-native commit already dispatched, whose reply cannot replace newer navigation.
-An explicit checkbox and confirmation enable
-the pending scopes together; changed configuration, accounts or scope reject a
-stale confirmation. Failed writes retain saved resources and can be retried.
-Already-authorized scopes are not replayed, and global pause is never resumed
+and AI connection state fence current setup reads. Back cancels summary preflight;
+it cannot roll back a repository save already dispatched. **Finish setup** only
+leaves the summary: saved configuration is already effective. Failed writes
+retain saved resources and can be retried. Global pause is never resumed
 implicitly. The existing scheduler admits only real work through its normal
 execution and publication permissions.
 
@@ -152,8 +150,7 @@ hide-only. Unknown automation state disables that control and clears the active
 work badge rather than retaining stale availability. Native
 application metadata supplies the running version beside **Status** and
 **Diagnostics** on every tab. Unavailable metadata is labelled explicitly;
-opening Status retries the read without inventing a version. Native
-folder selection holds focus dismissal until it returns. External browser
+opening Status retries the read without inventing a version. Local folder selection is not part of repository intake. External browser
 sign-in may hide the panel; reopening retains the connecting flow and draft.
 Running shows the native shared-capacity jobs (including stopping work);
 Reviewed currently uses the existing renderer; the native active-result paging
@@ -478,19 +475,27 @@ limit. Failed configuration writes are visible, not reported as successful saves
 If configuration commits but recording diagnostics fails, Settings shows the
 committed state with a separate warning, rather than reporting a failed save.
 
-Settings retains the compact sidebar design, with **Integrations**, **Doctrines**,
-**Agents**, and **Preferences**. Integrations leads with compact repository
-cards showing the acting account, enablement and assignment count. Existing
-GitHub account/provider selection and AI integrations remain below the list.
-Choose a local root folder to discover GitHub remotes and select
-repositories with searchable checkboxes, or add a repository manually. Discovery
-reads bounded Git metadata only: no Git commands, hooks, includes or repository
-code execute. It skips nested symlinks, stops descending at repositories, and
-reports unreadable metadata and depth/resource limits. Linked worktrees and
-ambiguous remotes can be added manually. Saved roots are not automatically
-scanned. Multiple clones of the same GitHub repository share one monitoring
-checkbox and saved identity; every discovered clone path remains searchable and
-available in the row's local-clone details.
+Both retained and standalone Settings expose **Accounts**, **Repositories**,
+**Doctrines**, **Agents**, and **Preferences**. Repositories shows only configured
+compact drill-in rows, with acting-account context and Needs setup, Enabled,
+Paused or Reconnect account status. Its overview has no save bar or bulk toggles.
+Use the magnifier for a connected GitHub account, choose its personal owner or
+an organization with accessible repositories, then search that owner's results.
+Organization availability is derived from the complete accessible repository
+catalog, not a claim to list every organization membership or private repository.
+Reads exhaust pagination and report errors rather than successful partial lists.
+**+ URL** accepts a GitHub URL or `owner/repository`, requires an explicit acting
+GitHub account, and validates stable repository identity. AI accounts are not
+repository accounts; Azure DevOps remains Coming soon.
+
+Selecting adds a durable disabled, unassigned row and immediately opens its
+configuration. Existing stable account/repository bindings reopen without reset;
+the same remote can intentionally have different acting-account bindings.
+Normal valid **Save repository** enables the newly added configuration and
+authorizes all currently open and future matching PRs. Leaving before Save
+retains the disabled row. Local folder picking, scanning and clone discovery
+are removed end-to-end; saved `root_folder` values are retained only for backward
+compatibility, never used for intake.
 
 **Save agent**, **Save doctrine**, and **Save repository** persist only that
 resource immediately; assignment saves commit their owning repository.
@@ -524,7 +529,7 @@ new choices live in assignment `actions`. Merge is effective only for the
 primary, and no primary means no effective approval or merge. Opted-in provider
 actions require aggregate clearance and the primary final-review path below.
 Its compact editor exposes the stable account/repository IDs, enablement,
-real monitoring-scope preview, independent reviewer-request override, verified
+saved author filters, independent reviewer-request override, verified
 watched people and the **saved global schedule** (not an unsaved Preferences
 draft). No repository or Agent polling builder is exposed. Each new assignment
 receives missing normal review work at the next global scan; saving is not a scan.
@@ -539,12 +544,9 @@ Back from repository settings retains that repository draft for the current
 session; **Cancel** discards only its unsaved repository changes.
 Assignment saves apply immediately to the owning repository, including its
 pending fields. Back/Cancel from an assignment or binding form discards that
-form's unsaved fields without undoing earlier saves. Delayed scope-status reads
-cannot replace newer preview errors; **Refresh scope status** retries a read
-without clearing a rejected resource save. Scope selections survive filtering,
-and Enter in the scope search does not confirm monitoring. Failed cleanup of a
-late preview is reported inside the open repository editor, independently of
-resource-save errors; after dismissal it uses the Settings alert.
+form's unsaved fields without undoing earlier saves. Owner, account and route
+changes fence asynchronous intake results. Failed repository reads or saves
+retain explicit errors and retry paths, without an unbound success fallback.
 
 **Preferences** exposes one global five-field cron expression, default
 `*/15 * * * *` in `UTC`, an expression helper, explicit IANA time-zone semantics,
@@ -592,7 +594,7 @@ and `save_resource` over the existing Store. `ResourceEdit` addresses one Agent,
 doctrine, repository or global-preference resource with its expected value;
 `value: null` deletes, and `expected: null` creates. Readiness describes saved
 configuration only: account verification, current model access, monitoring
-scope and provider capability remain independent gates. No setup wizard
+saved configuration and provider capability remain independent requirements. No setup wizard
 or monitoring activation is added by this surface.
 
 Saving validates the effective policy on the Rust storage boundary, including
@@ -709,7 +711,7 @@ OS delivery/click-through verification and its evidence limits.
 ### Polling and detection
 
 While the menu-bar process is active, one global five-field cron schedule scans
-enabled, scope-confirmed repositories in the saved IANA time zone. Each scan
+enabled, configured repositories in the saved IANA time zone. Each scan
 captures its repository assignments. One read per account/repository binding
 fans out to individual Agent jobs; assignment timers are not used. Cron times
 skipped by a spring daylight-saving jump run at the first valid local time;
@@ -732,34 +734,24 @@ an explicit **Retry** from Review Queue. Poll operations record no attempted
 mutation or provider receipt because polling does not
 publish comments.
 
-An enabled, account-bound repository does not begin new detection until its
-monitoring scope is explicitly confirmed in Settings. The preview reads the
-real matching open pull requests, shows the count before confirmation, selects
-no existing pull requests by default, and offers **New pull requests only** or
-an explicitly selected subset of existing pull requests plus new pull requests.
-Scope confirmation saves immediately as a separate native operation and requires
-relevant repository/filter drafts to be saved first. Existing configured
-repositories require this confirmation after upgrade; their queue history is
-retained. The native activation record
-stores the account/repository binding, effective author/reviewer filter, latest
-all-state pull-request number, immutable initial heads, observed heads and
-durably admitted heads. Missing, stale or invalid activation blocks timer and
-**Check Now** detection rather than enabling a backlog.
-
-Filter-only edits preserve the confirmed creation watermark, baseline heads,
-initial selection and admitted heads; every poll applies the current effective
-author/reviewer filter for new admission. An unchanged excluded author-matched
-head remains excluded when a filter widens, while its later matching head
-qualifies. An explicit reviewer request can admit an older/unwatched PR despite
-that initial backlog boundary. Preview/apply and
-already-running polls still pin the filter they started with and reject stale
-results.
+Repository Save commits authorization with configuration in one atomic settings
+replacement. No provider backlog snapshot is read during Save, and no additional
+scope confirmation is required. All currently open and future matching PRs are
+eligible at the next global scan, subject to saved start and execution policies.
+The separate polling cache can recover this authorization after a failed write
+or restart; synchronization failures remain visible. An unrelated preference
+save or config load never authorizes or enables an unconfigured/disabled row.
+Disabling or changing bindings invalidates stale authority. Old activation modes
+remain readable until an explicit repository Save replaces their admission policy.
+Filter edits use current saved filters and reset the read cursor without deleting
+tracked iterations. In-flight results still pin their original configuration
+and reject stale results.
 
 Polling reads paginated open pull-request metadata through the repository's
 connected OAuth account. A populated watched-author filter or a request for the
 signed-in account as reviewer admits a non-draft revision. An empty effective
-watched-author filter matches all authors after scope activation. Saved Agent
-assignment and confirmed monitoring scope authorize ongoing read-only reviews,
+watched-author filter matches all authors. Saved repository configuration and
+Agent assignments authorize ongoing read-only reviews,
 including forks, reviewer-requested PRs and later revisions, without a separate
 revision-trust prompt. Admission remains sticky after
 watchlist/reviewer removal, without bypassing current account,
@@ -800,8 +792,9 @@ silently start legacy work.
 **Start review** is explicit when automatic start is disabled. Enabling the
 **Preferences > Start eligible reviews automatically** default (or **Review
 start** in a repository's Settings) admits eligible assignment detections
-to the shared-capacity review runner. Setup/assignment and monitoring activation
-are the consent boundary; no additional revision-trust checkbox is required.
+to the shared-capacity review runner. Saving repository configuration and its
+assignments is the authorization boundary; no scope or revision-trust checkbox
+is required.
 **Cancel review** stops inference and requires an
 explicit retry; changing the account, Agent, prompt, doctrine, repository or
 start gate invalidates affected in-flight work.

@@ -3,6 +3,7 @@ import {
   addRepository,
   saveChanges,
   startupPreference,
+  section,
 } from "./navigation.mjs";
 
 test("adding a repository in Settings persists its canonical name after restart", async ({
@@ -14,7 +15,7 @@ test("adding a repository in Settings persists its canonical name after restart"
   await test.step("existing Settings renders real persisted startup preference", async () => {
     await page.goto("/?view=settings");
     await expect(
-      page.getByRole("heading", { name: "Integrations", exact: true }),
+      page.getByRole("heading", { name: "Accounts", exact: true }),
     ).toBeVisible();
     await expect(await startupPreference(page)).toBeChecked();
     await expect(await startupPreference(page)).toBeDisabled();
@@ -47,6 +48,7 @@ test("adding a repository in Settings persists its canonical name after restart"
 
   await test.step("reloaded Settings reads the saved repository again", async () => {
     await page.reload();
+    await section(page, "Repositories");
     await expect(
       page.getByText("octo/hello-world", { exact: true }),
     ).toBeVisible();

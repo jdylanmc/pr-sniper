@@ -55,7 +55,7 @@ for (const failure of ["malformed", "unreadable"]) {
       await expect(page.locator("#reset-settings")).toBeDisabled();
       await expect(
         page.getByRole("button", {
-          name: "Add repository manually...",
+          name: "Add repository by URL",
           exact: true,
         }),
       ).toHaveCount(0);
@@ -123,11 +123,13 @@ test("Settings displays forty independent persisted repositories after reload", 
   for (let index = 0; index < 40; index++)
     await store("save_repository", { repository: `octo/repository-${index}` });
   await page.goto("/?view=settings");
-  await expect(page.locator(".repository-row")).toHaveCount(40);
+  await section(page, "Repositories");
+  await expect(page.locator("[data-repository]")).toHaveCount(40);
   await page.reload();
-  await expect(page.locator(".repository-row")).toHaveCount(40);
+  await section(page, "Repositories");
+  await expect(page.locator("[data-repository]")).toHaveCount(40);
   await expect(
-    page.getByRole("article", { name: "octo/repository-39", exact: true }),
+    page.getByRole("button", { name: "octo/repository-39", exact: true }),
   ).toBeVisible();
   await expect(await startupPreference(page)).toBeChecked();
   await expect(page.locator("#error")).toBeHidden();

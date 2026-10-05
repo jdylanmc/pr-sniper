@@ -11,7 +11,7 @@ use pr_sniper_lib::{
     monitoring::{
         next_run, AccountAvailability, ActivationApplication, ActivationBaseline, ActivationMode,
         Monitor, MonitoringActivation, MonitoringError, MonitoringState, OperationFailure,
-        OperationState, PollResult, SCOPE_CONFIRMATION_REQUIRED, WAITING_BINDING_CHANGED,
+        OperationState, PollResult, CONFIGURATION_SAVE_REQUIRED, WAITING_BINDING_CHANGED,
         WAITING_HUMAN_START, WAITING_REPOSITORY_DISABLED, WAITING_REPOSITORY_REMOVED,
         WAITING_SUPERSEDED,
     },
@@ -272,6 +272,246 @@ fn check(
     )
 }
 
+fn save_authorized_repository(store: &Store) -> Settings {
+    let settings = store.load_settings().unwrap();
+    let repository = settings.repositories[0].clone();
+    store
+        .save_resource(pr_sniper_lib::storage::ResourceEdit::Repository {
+            id: repository.id.clone(),
+            expected: Some(Box::new(repository.clone())),
+            value: Some(Box::new(repository)),
+        })
+        .unwrap()
+}
+
+#[test]
+fn repository_save_admits_all_old_and_future_matches_without_snapshot_or_duplicate_iterations() {
+    let (_root, store) = unactivated_store();
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].watched_authors = vec![WatchedIdentity {
+        id: "11".into(),
+        login: "watched".into(),
+    }];
+    store.save_settings(&settings).unwrap();
+    let saved = save_authorized_repository(&store);
+    assert_eq!(saved.repository_authorizations.len(), 1);
+    assert!(store
+        .load_monitoring_state()
+        .unwrap()
+        .activations
+        .is_empty());
+    let mut monitor = Monitor::restore(&store).unwrap();
+    assert_eq!(
+        monitor
+            .activation_status(&saved, &saved.repositories[0].id)
+            .mode,
+        Some(ActivationMode::AllOpenAndFuture)
+    );
+    let old = pull("1", 1, "11", "watched", &[], HEAD_A, "2020-01-01T00:00:00Z");
+    let other = pull("2", 2, "12", "other", &[], HEAD_A, "2020-01-01T00:00:00Z");
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_000,
+        vec![old.clone(), other.clone()],
+        "actor",
+    )
+    .unwrap();
+    let first = store.load_queue_state().unwrap();
+    assert_eq!(first.jobs.len(), 1);
+    assert_eq!(first.jobs[0].waiting, WAITING_HUMAN_START);
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_100,
+        vec![old.clone()],
+        "actor",
+    )
+    .unwrap();
+    assert_eq!(store.load_queue_state().unwrap().jobs.len(), 1);
+    // A second explicit Save broadens current filters and clears only the read cursor.
+    let mut repo = saved.repositories[0].clone();
+    repo.watched_authors.clear();
+    store
+        .save_resource(pr_sniper_lib::storage::ResourceEdit::Repository {
+            id: repo.id.clone(),
+            expected: Some(Box::new(saved.repositories[0].clone())),
+            value: Some(Box::new(repo)),
+        })
+        .unwrap();
+    let tickets = monitor.prepare_checks(&store, 1_800_000_200, true).unwrap();
+    assert_eq!(tickets.len(), 1);
+    assert!(tickets[0].updated_after.is_none());
+    monitor
+        .finish(
+            &store,
+            tickets[0].clone(),
+            Ok(poll_result(vec![old.clone(), other], "actor")),
+            1_800_000_201,
+        )
+        .unwrap();
+    assert_eq!(store.load_queue_state().unwrap().jobs.len(), 2);
+    let future = pull(
+        "3",
+        9000,
+        "12",
+        "other",
+        &[],
+        HEAD_A,
+        "2027-01-01T00:00:00Z",
+    );
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_300,
+        vec![old, future],
+        "actor",
+    )
+    .unwrap();
+    assert_eq!(store.load_queue_state().unwrap().jobs.len(), 3);
+}
+
+#[test]
+fn repository_authorization_survives_poll_store_failure_and_never_resurrects_after_disable() {
+    let (root, store) = unactivated_store();
+    let saved = save_authorized_repository(&store);
+    std::fs::create_dir_all(root.path().join("state/monitoring.json.tmp")).unwrap();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    assert!(monitor.prepare_checks(&store, 1_800_000_000, true).is_err());
+    assert_eq!(store.load_settings().unwrap(), saved);
+    std::fs::remove_dir(root.path().join("state/monitoring.json.tmp")).unwrap();
+    assert_eq!(
+        Monitor::restore(&store)
+            .unwrap()
+            .prepare_checks(&store, 1_800_000_010, true)
+            .unwrap()
+            .len(),
+        1
+    );
+    let mut disabled = saved.repositories[0].clone();
+    disabled.enabled = false;
+    let paused = store
+        .save_resource(pr_sniper_lib::storage::ResourceEdit::Repository {
+            id: disabled.id.clone(),
+            expected: Some(Box::new(saved.repositories[0].clone())),
+            value: Some(Box::new(disabled)),
+        })
+        .unwrap();
+    assert!(paused
+        .repository_authorizations
+        .values()
+        .all(Option::is_none));
+    let mut broad = paused.clone();
+    broad.repositories[0].enabled = true;
+    store.save_preferences(broad, &paused).unwrap();
+    assert!(Monitor::restore(&store)
+        .unwrap()
+        .prepare_checks(&store, 1_800_000_100, true)
+        .unwrap()
+        .is_empty());
+    save_authorized_repository(&store);
+    assert_eq!(
+        Monitor::restore(&store)
+            .unwrap()
+            .prepare_checks(&store, 1_800_000_200, true)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn explicit_repository_save_preserves_global_pause_and_rejects_inflight_filter_changes() {
+    let (_root, store) = unactivated_store();
+    store
+        .save_automation(&pr_sniper_lib::capacity::Automation { paused: true })
+        .unwrap();
+    let saved = save_authorized_repository(&store);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    assert!(monitor
+        .prepare_checks(&store, 1_800_000_000, true)
+        .unwrap()
+        .is_empty());
+    assert!(store.load_automation().unwrap().paused);
+    store
+        .save_automation(&pr_sniper_lib::capacity::Automation { paused: false })
+        .unwrap();
+    let ticket = monitor
+        .prepare_checks(&store, 1_800_000_010, true)
+        .unwrap()
+        .remove(0);
+    let mut repository = saved.repositories[0].clone();
+    repository.overrides.reviewer_assignment = Some(false);
+    store
+        .save_resource(pr_sniper_lib::storage::ResourceEdit::Repository {
+            id: repository.id.clone(),
+            expected: Some(Box::new(saved.repositories[0].clone())),
+            value: Some(Box::new(repository)),
+        })
+        .unwrap();
+    assert!(monitor
+        .finish(
+            &store,
+            ticket,
+            Ok(poll_result(
+                vec![pull(
+                    "1",
+                    1,
+                    "11",
+                    "author",
+                    &[],
+                    HEAD_A,
+                    "2020-01-01T00:00:00Z"
+                )],
+                "actor"
+            )),
+            1_800_000_011
+        )
+        .is_err());
+    assert!(store.load_queue_state().unwrap().jobs.is_empty());
+}
+
+#[test]
+fn legacy_cached_authority_cannot_survive_a_disabled_save_then_unrelated_reenable() {
+    let (_root, store) = store();
+    let before = store.load_settings().unwrap();
+    let mut disabled = before.repositories[0].clone();
+    disabled.enabled = false;
+    let saved = store
+        .save_resource(pr_sniper_lib::storage::ResourceEdit::Repository {
+            id: disabled.id.clone(),
+            expected: Some(Box::new(before.repositories[0].clone())),
+            value: Some(Box::new(disabled)),
+        })
+        .unwrap();
+    assert!(store
+        .load_monitoring_state()
+        .unwrap()
+        .activations
+        .contains_key(&before.repositories[0].id));
+    let mut unrelated = saved.clone();
+    unrelated.repositories[0].enabled = true;
+    store.save_preferences(unrelated, &saved).unwrap();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    assert!(
+        !monitor
+            .activation_status(&store.load_settings().unwrap(), &before.repositories[0].id)
+            .active
+    );
+    assert!(monitor
+        .prepare_checks(&store, 1_800_000_000, true)
+        .unwrap()
+        .is_empty());
+    save_authorized_repository(&store);
+    assert_eq!(
+        monitor
+            .prepare_checks(&store, 1_800_000_010, true)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
 #[test]
 fn interval_cron_timezone_and_daylight_transitions_are_explicit() {
     let interval = Schedule::Interval {
@@ -370,7 +610,7 @@ fn configured_repository_requires_explicit_scope_before_any_check() {
     assert!(!health.schedule_available);
     assert_eq!(
         health.last_failure.as_deref(),
-        Some(SCOPE_CONFIRMATION_REQUIRED)
+        Some(CONFIGURATION_SAVE_REQUIRED)
     );
     assert!(
         !monitor
@@ -446,7 +686,7 @@ fn invalid_or_corrupt_activation_state_never_enables_monitoring() {
         .is_empty());
     assert_eq!(
         monitor.snapshot()[0].last_failure.as_deref(),
-        Some(SCOPE_CONFIRMATION_REQUIRED)
+        Some(CONFIGURATION_SAVE_REQUIRED)
     );
     assert!(store
         .load_monitoring_state()
@@ -2519,7 +2759,7 @@ fn removed_inflight_schedule_keeps_exclusion_until_the_read_finishes() {
         .is_empty());
     assert_eq!(
         monitor.snapshot()[0].last_failure.as_deref(),
-        Some(SCOPE_CONFIRMATION_REQUIRED)
+        Some(CONFIGURATION_SAVE_REQUIRED)
     );
     let archived = store
         .load_monitoring_state()
@@ -2574,7 +2814,7 @@ fn disable_reenable_and_rebind_reset_health_and_cursor_honestly() {
     assert!(!monitor.snapshot()[0].schedule_available);
     assert_eq!(
         monitor.snapshot()[0].last_failure.as_deref(),
-        Some(SCOPE_CONFIRMATION_REQUIRED)
+        Some(CONFIGURATION_SAVE_REQUIRED)
     );
     assert_eq!(
         store
@@ -2606,7 +2846,7 @@ fn disable_reenable_and_rebind_reset_health_and_cursor_honestly() {
     assert_eq!(rebound.last_success, None);
     assert_eq!(
         rebound.last_failure.as_deref(),
-        Some(SCOPE_CONFIRMATION_REQUIRED)
+        Some(CONFIGURATION_SAVE_REQUIRED)
     );
     assert!(store.load_monitoring_state().unwrap().cursors.is_empty());
 }
