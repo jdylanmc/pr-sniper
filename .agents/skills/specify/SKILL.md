@@ -9,7 +9,7 @@ user-invocable: true
 
 **Entry:** Human or scoped agent use after Discovery. Consume the full aligned Discovery artifact; produce a complete requirements specification. Return missing decisions to Discovery; do not invent them. Follow the [invocation contract](../setup/INVOCATION.md).
 
-Follow [doctrine selection and application](../doctrine/APPLY.md); preserve the originating task's choices. With none, consider `documentation`, `domain`, and `test-seams` for relevant spec portions. A separately authorized documentation PR requires `worktrees` before changes. Publishing a tracker item alone grants no PR or implementation permission.
+Follow [doctrine selection and application](../doctrine/APPLY.md); preserve the originating task's choices. With none, consider `documentation`, `bounded-context`, and `testing` for relevant spec portions. A separately authorized documentation PR follows the workspace procedure before changes. Publishing a tracker item alone grants no PR or implementation permission.
 
 # Specify
 

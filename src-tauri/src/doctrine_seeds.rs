@@ -13,29 +13,20 @@ macro_rules! sources {
 
 pub fn doctrines() -> Vec<Doctrine> {
     sources![
-        "boundaries",
+        "bounded-context",
         "code",
-        "context",
         "cyclomatic-complexity",
         "data",
         "data-processing",
-        "debugging",
-        "distributed-data",
         "documentation",
-        "domain",
-        "idempotency",
-        "integration-testing",
         "laziness",
         "machine",
         "nimble",
         "pragmatic",
-        "scout",
         "sequencing",
         "solid",
         "tactical-strategic",
-        "test-seams",
         "testing",
-        "worktrees",
     ]
     .into_iter()
     .map(|(title, source)| {

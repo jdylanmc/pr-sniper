@@ -9,7 +9,7 @@ user-invocable: false
 
 **Entry:** Internal helper only for established production use with a real migration obligation, not a standalone entry point or default phase. Follow the [invocation contract](../setup/INVOCATION.md).
 
-Use [doctrine selection and application](../doctrine/APPLY.md). Preserve task selections; otherwise consider `sequencing`, `idempotency`, and, for stored-data changes, `data` or `distributed-data`. Select only relevant guidance and load it before applying. No doctrine authorizes destructive contraction or expands the agreed stage.
+Use [doctrine selection and application](../doctrine/APPLY.md). Preserve task selections; otherwise consider `sequencing` and, for stored-data changes, `data`. Select only relevant guidance and load it before applying. No doctrine authorizes destructive contraction or expands the agreed stage.
 
 The calling delivery owner retains scope, permissions, doctrine selections, and responsibility for finishing the ordinary change.
 
@@ -30,7 +30,7 @@ Skipping this helper never authorizes data loss, even pre-1.0. Existing valuable
 
 Within the caller's existing approval gates, map current readers/writers, stored shape, deployed contracts, actual compatibility window, and ownership. Define the requested stage, acceptance evidence, forward path, and rollback/recovery path. Explain irreversible operations and preservation proof; obtain separate explicit permission for destructive steps. For roll-forward rather than rollback recovery, state the limitation and obtain agreement.
 
-Require `worktrees` through [doctrine selection](../doctrine/APPLY.md) before authorized PR changes; reuse the delivery owner's suitable isolation and [workspace procedure](../ship/WORKSPACE.md). Planning or eligibility inspection does not permit writes.
+Follow the [workspace procedure](../ship/WORKSPACE.md) before authorized PR changes; reuse the delivery owner's suitable isolation and [workspace procedure](../ship/WORKSPACE.md). Planning or eligibility inspection does not permit writes.
 
 ## 3. Execute and verify only the agreed stages
 

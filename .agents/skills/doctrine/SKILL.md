@@ -44,7 +44,7 @@ If Node or the helper is unavailable, report that limitation. With permitted rea
 
 Every consuming skill follows [APPLY.md](APPLY.md). Distinguish operator selections, caller-required doctrines, and agent-selected additions. Requirements are additive: preselection cannot silently remove a skill's required doctrine.
 
-Code Roast requires `solid`. Any authorized PR-producing workflow, including documentation-only work, requires `worktrees` before preparing PR changes. These caller obligations do not permit this skill to create worktrees, make changes, or publish.
+Code Roast requires `solid`. Any authorized PR-producing workflow, including documentation-only work, follows the workspace procedure in [WORKSPACE.md](../ship/WORKSPACE.md) before preparing PR changes. That procedure is not a doctrine. These caller obligations do not permit this skill to create worktrees, make changes, or publish.
 
 Use descriptions to judge relevance, not every body to populate a worker packet. If metadata cannot resolve a consequential ambiguity, ask or inspect only the candidate doctrine needed to clarify it.
 

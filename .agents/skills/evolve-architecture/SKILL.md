@@ -11,7 +11,7 @@ user-invocable: true
 
 Own architectural diagnosis and the evolution proposal, not discovery or delivery. The human-authored [intent](intent.md) defines the purpose. Default to a decision-ready proposal with no product, repository, tracker, or architecture-record writes.
 
-Use [Doctrine](../doctrine/SKILL.md) and the [shared application/worker-packet contract](../doctrine/APPLY.md). Preserve the task's preselection. With none, use catalog metadata to choose relevant guidance such as `solid`, `boundaries`, `laziness`, or `test-seams`; these are candidates, not a mandatory bundle. Applying workers load their assigned texts. Code Roast adds required `solid`; consequential exploration uses Discovery's required `scout`.
+Use [Doctrine](../doctrine/SKILL.md) and the [shared application/worker-packet contract](../doctrine/APPLY.md). Preserve the task's preselection. With none, use catalog metadata to choose relevant guidance such as `solid`, `bounded-context`, `laziness`, or `testing`; these are candidates, not a mandatory bundle. Applying workers load their assigned texts. Code Roast adds required `solid`; consequential exploration uses the Scout skill, not a missing doctrine.
 
 ## 1. Find concrete friction
 
@@ -74,7 +74,7 @@ New product behavior requires explicit requirements, never disguised cleanup.
 
 The selected delivery owner retains integration, independent review, publication,
 and Shepherd custody on one PR. Do not start a competing loop or mutate its
-workspace. Any authorized documentation PR also requires `worktrees` and
+workspace. Any authorized documentation PR also follows the workspace procedure and
 [Changelog](../changelog/SKILL.md). If further planning is needed, pass the
 aligned Discovery artifact to Specify, then the full requirements specification
 to Breakdown Tickets under its approval gate; a proposal alone is not either

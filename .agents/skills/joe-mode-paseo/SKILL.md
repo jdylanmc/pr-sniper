@@ -112,7 +112,7 @@ permission interview is needed beyond the actual kickoff decision.
 ## 3. Establish durable continuity and capabilities
 
 Load [Doctrine](../doctrine/SKILL.md) using [APPLY](../doctrine/APPLY.md);
-PR-producing routes require `worktrees`, code review requires `solid`.
+PR-producing routes follow the workspace procedure; code review requires `solid`.
 Execute [LIFECYCLE](../squadron/LIFECYCLE.md), [DELIVERY](../ship/DELIVERY.md),
 [OBSERVATION](../shepherd/OBSERVATION.md) and [RECOVERY](../shepherd/RECOVERY.md)
 for their respective responsibilities, not duplicate checklists/approval ledgers.

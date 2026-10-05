@@ -34,7 +34,7 @@ Keep the existing task/session record, not another controller:
   no Joe activation or arbitrary labels/closure. Preserve episode key/issue,
   pending operation and owner through every continuation.
 
-Require `worktrees` and [workspace isolation](WORKSPACE.md) before PR changes.
+Require [workspace isolation](WORKSPACE.md) before PR changes.
 Reuse compatible isolation and serialize integration. Each independent writer
 gets its own Git worktree; Paseo registrations follow WORKSPACE, not one project
 per writer. Missing ownership, access, or required capability is an

@@ -15,7 +15,7 @@ Use [Doctrine](../doctrine/SKILL.md) and its [packet contract](../doctrine/APPLY
 Preserve scoped operator choices and required IDs. Without a preselection,
 choose relevant standards from catalog metadata. Send IDs, reasons, required
 flags, source paths, and digests; each applying worker loads the actual texts.
-Every PR-producing worker requires `worktrees`; code reviewers require `solid`.
+Every PR-producing worker follows the workspace procedure; code reviewers require `solid`.
 
 Load and execute [LIFECYCLE](LIFECYCLE.md) for dispatch, accepted returns,
 recovery, and retirement. Keep evidence in the existing work packet;
