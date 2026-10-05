@@ -1,7 +1,7 @@
 ---
 name: tactical-strategic
 description: "Give agents tactical authority inside explicit scope while humans retain strategic ownership."
-scope: shared-engineering-doctrine
+scope: default-pr-sniper-doctrine
 ---
 
 # Tactical and Strategic Programming Doctrine

@@ -1,7 +1,7 @@
 ---
 name: code
 description: "Construct readable, verifiable code whose local behavior remains open to inspection."
-scope: shared-engineering-doctrine
+scope: default-pr-sniper-doctrine
 ---
 
 # Code Doctrine

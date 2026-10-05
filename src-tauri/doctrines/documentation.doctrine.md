@@ -1,7 +1,7 @@
 ---
 name: documentation
 description: "Authority and trust for knowledge that must outlive the moment."
-scope: shared-engineering-doctrine
+scope: default-pr-sniper-doctrine
 ---
 
 # Documentation Doctrine

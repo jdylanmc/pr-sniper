@@ -1,7 +1,7 @@
 ---
 name: cyclomatic-complexity
 description: "Bound independent control-flow paths so code remains understandable to humans and agents."
-scope: shared-engineering-doctrine
+scope: default-pr-sniper-doctrine
 ---
 
 # Cyclomatic Complexity Doctrine

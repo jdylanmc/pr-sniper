@@ -1,7 +1,7 @@
 ---
 name: solid
 description: "Use five complementary design principles to prevent tangled responsibilities, contracts, and dependencies."
-scope: shared-engineering-doctrine
+scope: default-pr-sniper-doctrine
 ---
 
 # SOLID Doctrine

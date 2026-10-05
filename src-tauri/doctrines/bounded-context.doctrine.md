@@ -1,7 +1,7 @@
 ---
 name: bounded-context
 description: "Model business meaning inside one owned boundary, and translate deliberately when meaning crosses it."
-scope: shared-engineering-doctrine
+scope: default-pr-sniper-doctrine
 ---
 
 # Bounded Context Doctrine
