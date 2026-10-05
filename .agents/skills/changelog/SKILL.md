@@ -11,7 +11,7 @@ user-invocable: false
 [invocation contract](../setup/INVOCATION.md). Inherit the caller's scope and
 permissions; this helper never authorizes edits or publication independently.
 Preserve applicable [doctrine selections](../doctrine/APPLY.md); `documentation`
-may inform curation. PR-bound edits follow the delivery's workspace procedure.
+may inform curation. PR-bound edits inherit the delivery's required `worktrees`.
 
 Every modifying agent uses this helper, including for tests, documentation,
 configuration, and skills. Use once per meaningful change; revisit when the

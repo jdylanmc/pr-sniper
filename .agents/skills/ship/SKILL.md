@@ -11,7 +11,7 @@ Coordinate one feature/specification deliverable into one reviewed, green pull r
 
 Follow the common [invocation policy](../setup/INVOCATION.md). Direct human Ship invocation or selection by human-started Joe-mode authorizes the in-scope worktree, implementation, commits, push/PR, review/fixes, and shepherding; do not ask again whether to implement, publish, or shepherd. Explicit narrower requests still constrain the run. Ask for material missing requirements, scope changes, semantic conflicts, destructive probes, or production-data access. Ship, Patch, and Refactor are peer routes, not wrappers around Ship. Multiple Joe-mode deliveries must remain non-overlapping.
 
-Follow [doctrine selection and application](../doctrine/APPLY.md), **following the workspace procedure** for this delivery. Preserve the operator's preselection for the delivery and its descendants. With no preselection, use [Doctrine's catalog](../doctrine/SKILL.md) to choose relevant IDs for each implementation, integration, and review assignment without reading every body. `code`, `testing`, `sequencing`, `laziness`, and `machine` are candidates, not a mandatory bundle. Each applying worker loads its own selected texts; the code reviewer additionally requires `solid`.
+Follow [doctrine selection and application](../doctrine/APPLY.md), **requiring `worktrees`** for this delivery. Preserve the operator's preselection for the delivery and its descendants. With no preselection, use [Doctrine's catalog](../doctrine/SKILL.md) to choose relevant IDs for each implementation, integration, and review assignment without reading every body. `code`, `testing`, `sequencing`, `laziness`, and `machine` are candidates, not a mandatory bundle. Each applying worker loads its own selected texts; the code reviewer additionally requires `solid`.
 
 ## 1. Ground the delivery
 
@@ -21,7 +21,7 @@ Do not demand a readiness label or reject the assignment just because a ticket i
 
 For a ticket graph, record each task, its prerequisites, and its acceptance conditions. Surface missing dependencies, cycles, or ambiguous edges before scheduling affected tasks. Stay within the agreed deliverable; do not sweep in the rest of the backlog.
 
-Inspect local changes and branch state. Preserve unrelated work. Apply the [workspace procedure](WORKSPACE.md), respecting suitable existing isolation and its owner. Do not deliver from the default branch. Record the starting commit for review; it is not a prerequisite packet for resuming a PR.
+Inspect local changes and branch state. Preserve unrelated work. Apply the loaded `worktrees` doctrine using the [workspace procedure](WORKSPACE.md), respecting suitable existing isolation and its owner. Do not deliver from the default branch. Record the starting commit for review; it is not a prerequisite packet for resuming a PR.
 
 Keep a short progress record in the harness session workspace: task states, worker identities/worktrees, integrated commits, checks, decisions, and the PR URL when known. Reconcile it with current Git/provider state after interruption rather than replaying completed work.
 

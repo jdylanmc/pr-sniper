@@ -5,7 +5,7 @@ disable-model-invocation: false
 user-invocable: true
 ---
 
-Use [doctrine selection and application](../doctrine/APPLY.md), following the workspace procedure before preparing PR changes. Preserve inherited selections; with none, consider `code` and `testing` for the actual repair. Load selected texts before applying them, without expanding diagnosis-only or mutation boundaries. Code Roast additionally requires `solid`.
+Use [doctrine selection and application](../doctrine/APPLY.md), requiring `debugging` for diagnosis and `worktrees` before preparing PR changes. Preserve inherited selections; with none, consider `code` and `testing` for the actual repair. Load selected texts before applying them, without expanding diagnosis-only or mutation boundaries. Code Roast additionally requires `solid`.
 
 # Patch
 

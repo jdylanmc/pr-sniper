@@ -14,7 +14,7 @@ Issues and specs for this repo live as Markdown files at the paths confirmed in 
 
 Write the complete artifact at its configured path only after the calling workflow's write approval (creating the directory if approved). Do not overwrite an existing spec or ticket without approval. Preserve source/revision and acceptance references; use the mapped readiness value only for ready work.
 
-Local publication is a repository write, not implicit permission to create a PR. A separately authorized PR follows the delivery workflow's workspace procedure. For authorized writes use the library's `/changelog` helper for this repository/component: curated notable `Unreleased` entries under Keep a Changelog 1.1.0, or report no entry needed. Do not write during proposal/review, create versions/releases, dump commits, or add a recursive entry for changelog-only edits.
+Local publication is a repository write, not implicit permission to create a PR. A separately authorized PR requires `worktrees` and the delivery workflow's workspace procedure. For authorized writes use the library's `/changelog` helper for this repository/component: curated notable `Unreleased` entries under Keep a Changelog 1.1.0, or report no entry needed. Do not write during proposal/review, create versions/releases, dump commits, or add a recursive entry for changelog-only edits.
 
 ## When a skill says "fetch the relevant ticket"
 

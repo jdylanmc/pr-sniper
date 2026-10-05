@@ -9,7 +9,7 @@ user-invocable: false
 
 **Entry:** Internal test-first helper for any authorized task. Prove red then green through real behavior, allow small behavior-preserving cleanup after green, and rerun affected tests. Follow the [invocation contract](../setup/INVOCATION.md).
 
-Follow [doctrine selection and application](../doctrine/APPLY.md), **requiring `testing`**. Preserve the work packet's selections. With no preselection, consider `code` for implementation; load the selected full texts before applying them. Doctrine does not waive the observed red/green loop or grant unrelated refactoring authority.
+Follow [doctrine selection and application](../doctrine/APPLY.md), **requiring `testing`**. Preserve the work packet's selections. With no preselection, consider `test-seams` when choosing boundaries/doubles and `code` for implementation; load the selected full texts before applying them. Doctrine does not waive the observed red/green loop or grant unrelated refactoring authority.
 
 Work in vertical slices: one behavior, a demonstrated failure, the smallest implementation, and a demonstrated pass. Small, behavior-preserving refactoring is allowed **after green**, followed by another test run.
 

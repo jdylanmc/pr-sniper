@@ -9,7 +9,7 @@ user-invocable: true
 
 **Entry:** Human or scoped agent use for questions or batches of links. Investigate primary sources and return cited findings; Synthesize sub-flows require supplied sources, purpose, and altitude. Follow the [invocation contract](../setup/INVOCATION.md).
 
-Preserve the caller's [doctrine selection](../doctrine/APPLY.md). With none, select relevant doctrine from catalog metadata. Pass selected IDs/reasons/digests to delegated readers, who load the text they apply. Doctrine informs judgment; it does not prove external technical claims.
+Preserve the caller's [doctrine selection](../doctrine/APPLY.md). With none, select relevant doctrine from catalog metadata; `context` may help preserve evidence. Pass selected IDs/reasons/digests to delegated readers, who load the text they apply. Doctrine informs judgment; it does not prove external technical claims.
 
 Resolve knowledge gaps by reading evidence, not implementing answers.
 
