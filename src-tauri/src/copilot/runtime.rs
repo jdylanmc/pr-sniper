@@ -364,6 +364,10 @@ mod tests {
     use super::*;
     use std::cell::Cell;
 
+    // Isolate child-process fixture startup across test cases while retaining
+    // the intentional parallel-client coverage inside each case.
+    static SDK_FIXTURE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     struct StartupDiagnostics<'a> {
         root: &'a Path,
         case: &'static str,
@@ -625,6 +629,7 @@ mod tests {
 
     #[tokio::test]
     async fn sdk_clients_pin_distinct_catalogs_and_reap_each_child() {
+        let _sdk_test_guard = SDK_FIXTURE_TEST_LOCK.lock().await;
         let first = tempfile::tempdir().unwrap();
         let second = tempfile::tempdir().unwrap();
         let cancel = AtomicBool::new(false);
@@ -653,6 +658,7 @@ mod tests {
 
     #[tokio::test]
     async fn sdk_rejection_is_not_empty_success_and_does_not_expose_raw_errors() {
+        let _sdk_test_guard = SDK_FIXTURE_TEST_LOCK.lock().await;
         for (token, login, message) in [
             ("missing", "missing", "did not accept"),
             (
@@ -678,6 +684,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancelling_a_waiting_catalog_shuts_down_its_client() {
+        let _sdk_test_guard = SDK_FIXTURE_TEST_LOCK.lock().await;
         let root = private_directory("pr-sniper-cancel-test-").unwrap();
         let cancel = AtomicBool::new(false);
         let trigger = async {
@@ -697,6 +704,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancelled_or_failed_startup_does_not_leave_a_child() {
+        let _sdk_test_guard = SDK_FIXTURE_TEST_LOCK.lock().await;
         for token in ["waiting-start", "bad-start"] {
             let root = tempfile::tempdir().unwrap();
             let cancel = AtomicBool::new(false);
@@ -761,6 +769,7 @@ mod tests {
     #[tokio::test]
     #[cfg(windows)]
     async fn windows_cancellation_terminates_owned_descendants_even_if_shutdown_stalls() {
+        let _sdk_test_guard = SDK_FIXTURE_TEST_LOCK.lock().await;
         for (token, stall) in [
             ("waiting", true),
             ("waiting", false),
@@ -847,6 +856,7 @@ mod tests {
 
     #[tokio::test]
     async fn inherited_whole_lookup_deadline_limits_the_sdk_stage() {
+        let _sdk_test_guard = SDK_FIXTURE_TEST_LOCK.lock().await;
         let root = tempfile::tempdir().unwrap();
         let started = Instant::now();
         // The inherited budget includes cold startup. Observe pending catalog
@@ -885,6 +895,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "explicit offline bundled-runtime smoke; no credentials or inference"]
     async fn bundled_runtime_handshakes_offline_without_credentials() {
+        let _sdk_test_guard = SDK_FIXTURE_TEST_LOCK.lock().await;
         let root = private_directory("pr-sniper-offline-").unwrap();
         let reject_provider = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         reject_provider.set_nonblocking(true).unwrap();
