@@ -10,6 +10,7 @@ import {
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { section } from "./navigation.mjs";
 
 const tab = (page, name) =>
   page
@@ -601,9 +602,7 @@ test("shared drafts, save failures, cancellation and hide/reopen retain exact ow
   await seed(store);
   await page.goto("/");
   await tab(page, "Settings").click();
-  await page
-    .getByLabel("Settings section", { exact: true })
-    .selectOption("preferences");
+  await section(page, "Preferences");
   await page.getByLabel("AI capacity", { exact: true }).fill("9");
   await page
     .getByRole("button", { name: "Set up with Genie", exact: true })
@@ -830,7 +829,7 @@ test("repository saves keep mounted account confirmation ownership", async ({
   const state = await synthetic(page, store, true);
   await seed(store);
   await page.goto("/");
-  await page.locator('[data-genie-edit="repositories"]').click();
+  await page.locator('[data-genie-edit="ai"]').click();
   const ai = page.locator(".copilot-auth");
   await ai
     .getByRole("button", { name: "Connect Copilot account", exact: true })
@@ -841,6 +840,8 @@ test("repository saves keep mounted account confirmation ownership", async ({
   await ai.evaluate((element) => {
     element.dataset.ownership = "original-flow";
   });
+  await back(page);
+  await page.locator('[data-genie-edit="repositories"]').click();
   await page
     .getByRole("article", { name: "fixture/genie", exact: true })
     .getByRole("button", { name: "Settings", exact: true })
@@ -1180,9 +1181,7 @@ test("GEN4 configured inactive restart preserves Queue and manual Settings witho
   await expect(page.locator(".queue-item")).toHaveCount(0);
   await tab(page, "Settings").click();
   await page.reload();
-  await expect(
-    page.getByLabel("Settings section", { exact: true }),
-  ).toBeVisible();
+  await expect(page.locator(".settings-overview")).toBeVisible();
   await page
     .getByRole("button", { name: "Set up with Genie", exact: true })
     .click();
@@ -1198,7 +1197,7 @@ for (const failed of [false, true]) {
   }) => {
     await store("snapshot");
     const held = ipc.holdNext("monitoring_setup_review");
-    const mounting = ipc.holdNext("snapshot");
+    let mounting;
     if (failed)
       await page.addInitScript(() => {
         const original = window.__TAURI_INTERNALS__.invoke;
@@ -1212,10 +1211,10 @@ for (const failed of [false, true]) {
     try {
       await page.goto("/");
       await held.arrived;
+      await expect(page.locator("[data-panel-version]")).toHaveText(/^v/);
+      mounting = ipc.holdNext("snapshot");
       await tab(page, "Settings").click();
-      await expect(
-        page.getByLabel("Settings section", { exact: true }),
-      ).toBeVisible();
+      await expect(page.locator(".settings-window")).toBeVisible();
       await mounting.arrived;
       mounting.release();
       await expect(page.locator("#save-status")).toHaveText(
@@ -1232,7 +1231,7 @@ for (const failed of [false, true]) {
       await expect(page.locator("[data-header-automation]")).toBeVisible();
       await expect(page.locator('[data-panel-view="genie"]')).toBeHidden();
     } finally {
-      mounting.release();
+      mounting?.release();
       held.release();
     }
   });
@@ -1252,9 +1251,7 @@ test("GEN4 failed saved setup read is explicit, never guessed fresh", async ({
   );
   await expect(page.locator('[data-panel-view="genie"]')).toBeHidden();
   await tab(page, "Settings").click();
-  await expect(
-    page.getByLabel("Settings section", { exact: true }),
-  ).toBeVisible();
+  await expect(page.locator(".settings-overview")).toBeVisible();
 });
 
 for (const size of [

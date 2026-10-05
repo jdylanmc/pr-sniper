@@ -87,7 +87,23 @@ export async function mountPanel(app: HTMLElement) {
           `<button type="button" data-panel-tab="${tab}" aria-label="${tab[0].toUpperCase() + tab.slice(1)}"><span class="nav-icon">${icon(destinations[tab].icon)}${tab === "running" ? '<span data-running-count aria-hidden="true">?</span>' : ""}</span><span>${tab[0].toUpperCase() + tab.slice(1)}</span></button>`,
       )
       .join("")}</nav>
-    <footer class="panel-footer"><button type="button" data-panel-status>Status</button><button type="button" data-panel-diagnostics>Diagnostics</button><span>Close hides only. Quit from the tray menu.</span></footer>`;
+    <footer class="panel-footer"><button type="button" data-panel-status>Status</button><button type="button" data-panel-diagnostics>Diagnostics</button><span data-panel-version role="status" aria-label="Application version">Reading version...</span><span class="panel-hide-hint">Close hides only. Quit from the tray menu.</span></footer>`;
+  const version = app.querySelector<HTMLElement>("[data-panel-version]")!;
+  let versionKnown = false;
+  const showVersion = (value: unknown, failure?: unknown) => {
+    if (typeof value === "string" && value.trim()) {
+      versionKnown = true;
+      version.textContent = `v${value.trim()}`;
+      version.title = `Running PR Sniper ${value.trim()}`;
+    } else if (!versionKnown) {
+      version.textContent = "Version unavailable";
+      version.title = `${failure === undefined ? "Native application metadata did not include a version." : `Native metadata unavailable: ${String(failure)}`} Open Status to retry.`;
+    }
+  };
+  void invoke<{ version: unknown }>("snapshot").then(
+    (state) => showVersion(state.version),
+    (cause) => showVersion(undefined, cause),
+  );
   const error = app.querySelector<HTMLElement>("[data-panel-error]")!;
   const heading = app.querySelector<HTMLElement>("[data-panel-heading]")!;
   const content = app.querySelector<HTMLElement>(".panel-content")!;
@@ -580,6 +596,7 @@ export async function mountPanel(app: HTMLElement) {
         error: string | null;
       }>("snapshot");
       if (request !== utilityRevision) return;
+      showVersion(state.version);
       if (state.error) showError(state.error);
       const info = document.createElement("p");
       info.textContent = `PR Sniper ${state.version}. ${state.isolated ? "Isolated profile." : "Native host."} Hiding the panel does not stop background work.`;

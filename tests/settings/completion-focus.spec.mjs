@@ -98,7 +98,10 @@ async function openSettings(page, mode) {
       });
     });
   await page.goto(mode === "panel" ? "/" : "/?view=settings");
-  if (mode === "panel") await tab(page, "Settings").click();
+  if (mode === "panel") {
+    await tab(page, "Settings").click();
+    await section(page, "Repositories");
+  }
   await expect(page.locator("#save-status")).toHaveText("All changes saved");
 }
 

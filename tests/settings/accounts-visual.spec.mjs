@@ -667,10 +667,8 @@ for (const [provider, role] of Object.entries(roles)) {
       const fixture = await syntheticAuth(page);
       await page.goto("/");
       await page.getByRole("button", { name: "Settings", exact: true }).click();
-      await expect(
-        page.getByLabel("Settings section", { exact: true }),
-      ).toBeVisible();
-      await section(page, "Integrations");
+      await expect(page.locator(".settings-overview")).toBeVisible();
+      await section(page, "Accounts");
       const card = page.locator(role.card);
       const action = card.getByRole("button", {
         name: role.connectLabel,
@@ -778,9 +776,12 @@ for (const width of [320, 400, 408]) {
       const fixture = await syntheticAuth(page);
       await page.goto("/");
       await page.getByRole("button", { name: "Settings", exact: true }).click();
-      const navigation = page.getByLabel("Settings section", { exact: true });
-      await expect(navigation).toBeVisible();
-      await section(page, "Integrations");
+      await expect(page.locator(".settings-overview")).toBeVisible();
+      await section(page, "Accounts");
+      const navigation = page.getByRole("button", {
+        name: "Back to Settings",
+        exact: true,
+      });
       await page.evaluate(() => window.__settingsIdle());
       const before = (await store("snapshot")).settings;
       for (const [provider, role] of Object.entries(roles)) {

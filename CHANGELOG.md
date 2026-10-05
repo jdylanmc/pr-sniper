@@ -16,7 +16,7 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   account panels with native device-code waiting, explicit identity confirmation,
   consent details and visible retry/disconnect states. Keep future direct
   providers disabled and existing account/model choices and references intact.
-- Lead Integrations with compact repository cards and shared-style editors for
+- Present compact repository cards and shared-style editors for
   real account binding, scope previews, watched identities and assignments.
   Expose the independent reviewer-request override, guarded account unbinding
   and the saved global schedule without adding scoped polling controls.
@@ -47,6 +47,12 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- Match the approved grouped Settings overview with live resource summaries,
+  separate Accounts and Repositories, retained editor drafts and Back focus,
+  and continued Genie access. (#106)
+- Show the running native application version beside Status and Diagnostics
+  on every panel tab, with explicit unavailable metadata and readable compact
+  footer layouts. (#107)
 - Recover owned interrupted retention stages without deleting unowned files.
   Keep missing human-closed roots unavailable and settle full/compact replies
   consistently without hiding uncertain writes. Revalidate legacy terminal
