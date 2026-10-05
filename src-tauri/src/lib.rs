@@ -19,6 +19,12 @@ pub mod startup;
 pub mod storage;
 mod storage_state;
 
+// Some helpers are consumed only by separate integration-test crates.
+#[cfg(all(test, windows))]
+#[allow(dead_code)]
+#[path = "../tests/support/windows_permissions.rs"]
+pub(crate) mod windows_permissions;
+
 use github::{metadata::PullRequest, provider::Connection, ConnectionError};
 use serde::Serialize;
 use startup::{LoginRegistration, RegistrationStatus};
