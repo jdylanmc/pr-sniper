@@ -135,9 +135,140 @@ work badge rather than retaining stale availability. Native
 folder selection holds focus dismissal until it returns. External browser
 sign-in may hide the panel; reopening retains the connecting flow and draft.
 Running shows the native shared-capacity jobs (including stopping work);
-Reviewed exposes existing completed/terminal evidence in the current projection,
-not a new paged history or purge backend. Status retains schedule health,
+Reviewed currently uses the existing renderer; the native active-result paging
+foundation is available for its separate UI delivery (#80). Status retains schedule health,
 notification history and recovery; Diagnostics remains redacted.
+
+### Active results and terminal cleanup
+
+Open PR jobs, completed passes, earlier iterations and owned feedback remain
+durable across unchanged scans and restarts. The native `result_page` command
+accepts `{ request: { limit, cursor, unavailable_cursor } }`: `limit` is 1–200,
+both cursors are initially `null` (omitted `unavailable_cursor` also starts at
+the beginning). It returns bounded `results` and `next_cursor`, plus separately
+bounded `unavailable`, `unavailable_count` and `next_unavailable_cursor`.
+Each array contains at most `limit` entries; there is no total result or
+diagnostic cap. Each result row identifies an exact iteration, its job, activity sequence,
+completed normal-pass count, review-attempt count and conversation count.
+Completed retries remain separate attempts, not additional normal passes.
+
+The persisted summary index orders meaningful saved activity newest first, then
+item ID ascending for ties. Unchanged polling does not advance activity.
+Pages read the summary index, not every review body. Cursors are versioned
+keyset positions, not offsets or frozen historical snapshots: activity moving
+above a cursor is available on a new traversal, never repeated in older pages.
+Legacy data is indexed deterministically at first access; it does not acquire
+invented historical completion timestamps. An interrupted index update is
+rebuilt from durable operational evidence before a page is returned.
+Saved top-level mention intent belongs to its exact iteration and advances that
+result even when primary routing is blocked. Tracking, not an incidental job,
+supplies that identity, including when no Agents are assigned. Deferred routing
+requires a job on that exact current iteration; superseded unstarted intent
+stays retained without blocking a later iteration's handoff or being replayed.
+Uncertain writes, missing execution history and outstanding human concerns
+still block clearance. Repeated scans and later execution linkage do not count
+intent twice; actual execution progress remains new activity.
+Baseline unlinked mentions have no revision evidence. Only an unchanged first
+tracked iteration, with no contradictory history, can safely associate them;
+intervening revisions are explicitly unavailable, never assigned by latest job
+or timestamp. A successful feedback load durably pins provable identity before
+returning it, including on an index query. Queue replacement also passes that
+load boundary before overwriting the old tracking proof. Migration failure is
+an explicit error, not permission to advance tracking or infer a later identity.
+
+An ambiguous mention or one lacking a real job-backed row does not disable
+healthy results. `unavailable_count` reports the current total on every page;
+`unavailable` entries identify exact mention destinations and explain their
+account/repository/PR scope and missing evidence. Counts on job-backed rows do
+not claim to include unassociated intent. Fetch an entry's `destination` with
+`result_detail` to inspect its retained intent, not a fabricated execution.
+Diagnostics sort by immutable mention work ID ascending, independently of
+result activity. Continue either stream with its own returned cursor; a `null`
+next cursor ends only that stream. Passing `null` again explicitly restarts it.
+Changed availability removes resolved entries without invalidating older keyset
+positions; newly unavailable entries before a cursor appear on a new traversal.
+Neither stream consumes the other's page budget.
+
+For example, start both with
+`{ request: { limit: 25, cursor: null, unavailable_cursor: null } }`.
+Continue results using `next_cursor`, and diagnostics using
+`next_unavailable_cursor`, until each independently returns `null`; do not
+append a restarted stream after it has finished. Even if there are more
+diagnostics than results, every healthy older result remains reachable. Cleanup
+retains mention keys and work identities even when no job ever existed.
+
+Only explicit provider-confirmed closure or merge admits automatic detail
+cleanup. Missing scan results, disabled/deleted configuration, lost accounts
+and completed Agent passes do not. Native maintenance signals terminal AI
+workers to stop and waits for their reservations to be released; it also
+excludes live publication, reply, action, notification and scan snapshots.
+Pending reviews and uncertain external writes keep their original recovery
+records and existing reconciliation controls. A stopped local job alone is not
+proof of a settled provider mutation.
+Legacy closed/merged records without explicit cleanup authority are revalidated
+through the same gated provider scan. Missing, rejected or failed reads retain
+detail; migration never invents terminal confirmation.
+
+Cleanup uses the existing typed JSON collections, not a database, per-PR store
+or archive. A small `retention.json` journal first records safety receipts,
+then fences operational access while removing terminal detail from reviews,
+publications, conversations, final-review/action state, feedback, notifications,
+queue jobs and the result index. Cross-file interruption rolls forward at
+startup or maintenance; failure remains visible through existing host errors
+and does not report success. Settings and account resources are not written.
+A reopen observed before destructive cutover cancels that cleanup. Cutover
+holds the Store lock; this is local serialization, not atomicity with GitHub.
+A reopen observed afterward starts a new iteration, including at the same SHA,
+without restoring discarded local detail.
+
+File replacement uses a unique private stage and a locked ownership record,
+flushed before any payload bytes are written. Startup discards only proven
+abandoned state stages, then repeats the cleanup journal; a partial stage is
+never promoted as committed data. Unowned fixed `.tmp` occupants, links,
+inaccessible stages and corrupt ownership remain visible errors, not cleanup
+permission. Abrupt bootstrap interruption can leave an empty stage and a small
+incomplete ownership record: these have no deletion proof and contain no PR
+detail. They do not obstruct retry or become a bulky archive. Payload handles
+close before replacement on Windows; existing private ACLs remain required.
+Rename is the save commit point: a successful replacement cannot subsequently
+report an uncommitted failure to resource or login-registration rollback callers.
+Claim locks are explicitly released when writing or recovery leaves its scope,
+so duplicated or inherited descriptors do not prolong completed ownership.
+Unlock errors use best-effort diagnostics without turning a committed save into
+an uncommitted failure.
+The small ownership claim remains for deferred directory sync and unlink on the
+next write (or explicit operational startup recovery); no payload remains after
+rename. Ordinary committed reads neither acquire the claim's writer lock nor
+require housekeeping writes, including in read-only configuration directories.
+Only a missing committed file requires recovery before a read may report
+absence/defaults. Recovery failures remain explicit at that boundary and at
+write/startup recovery, retain the claim where needed, and never undo committed
+data. Corrupt committed data and applying cleanup journals still block reads;
+staged bytes are never substituted for a committed file.
+These are process-interruption guarantees, not a portable power-loss guarantee.
+
+Minimal iteration/work/operation/publication/action receipts survive, including
+provider ownership IDs, root-body SHA-256 fingerprints and sticky human-closed
+concerns. Full prompts, configuration snapshots, findings, guides, thread bodies
+and provider observations are not retained as a terminal archive. On reopening,
+the existing paginated GitHub adapter verifies old roots from compact provenance
+before admitting owner-only follow-ups or new review feedback. Later human
+closure is persisted against the current tracked binding/head even with no
+assigned Agents or jobs. Only real eligible jobs materialize execution context
+or replies; closure remains monotonic through restart and reassignment.
+Missing or changed roots block instead of
+inventing clearance. New conversations retain their actual execution context
+and compact original provenance, never a fabricated historical review.
+Missing roots remain unavailable even when their human closure is sticky.
+Settled closed or superseded conversations use the same full/compact provenance
+checks; uncertain or incomplete replies continue blocking readiness.
+
+`result_detail` accepts `{ destination }` using the existing exact panel item/job
+identity. Its tagged result is `available`, `cleaned` or `missing`; storage
+failure rejects the command. Saved panel, notification and provider-link
+destinations explain cleaned detail without selecting another PR or reopened
+iteration. Published discussion remains on GitHub; unpublished terminal detail
+has no restore guarantee. There is no purge control or terminal-history screen.
 
 Preferences separates **Saved preferences** (the one global cron, time zone,
 machine capacity and independent automatic-start/comment defaults) from

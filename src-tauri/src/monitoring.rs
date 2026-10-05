@@ -204,6 +204,8 @@ pub struct NormalWork {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TrackedPullRequest {
+    #[serde(default)]
+    pub terminal_observed: bool,
     pub provider: String,
     pub configuration_id: String,
     pub account_id: String,
@@ -240,6 +242,21 @@ pub struct QueueState {
 
 impl QueueState {
     pub(crate) fn recover_evidence(&mut self, store: &Store) -> Result<(), String> {
+        for receipt in crate::retention::load(store)?.receipts {
+            self.next_enqueue_order = self.next_enqueue_order.max(receipt.enqueue_watermark);
+            let binding = crate::retention::Binding::tracked(&receipt.scope);
+            match self
+                .tracked
+                .iter_mut()
+                .find(|p| crate::retention::Binding::tracked(p) == binding)
+            {
+                Some(current) if current.iteration < receipt.scope.iteration => {
+                    *current = receipt.scope
+                }
+                Some(_) => {}
+                None => self.tracked.push(receipt.scope),
+            }
+        }
         for run in store.review_evidence()? {
             if run.job.assignment_id.as_deref() == Some(&run.assignment_id)
                 && !self.jobs.iter().any(|job| run.matches_job(job))
@@ -1786,7 +1803,7 @@ impl Monitor {
                     .tracked
                     .iter()
                     .filter(|p| {
-                        p.lifecycle == Lifecycle::Open
+                        (p.lifecycle == Lifecycle::Open || !p.terminal_observed)
                             && p.configuration_id == configuration.repository_id
                             && p.account_id == *account_id
                             && p.repository_id == *repository_id
@@ -2141,6 +2158,7 @@ impl Monitor {
                     None => WorkTrigger::Admission,
                 };
                 queue.tracked.push(TrackedPullRequest {
+                    terminal_observed: false,
                     provider: "github".into(),
                     configuration_id: ticket.repository_id.clone(),
                     account_id: ticket.provider_account_id.clone(),
@@ -2187,6 +2205,7 @@ impl Monitor {
             }
             tracked.head_sha = pull.head_sha.clone();
             tracked.lifecycle = pull.state.clone();
+            tracked.terminal_observed = pull.state != Lifecycle::Open;
             tracked.observed_at = now;
             let tracked = tracked.clone();
             for job in queue.jobs.iter_mut().filter(|j| bound(j)) {
@@ -2280,6 +2299,15 @@ impl Monitor {
                         .max()
                         .unwrap_or(0)
                         .max(prior.len() as u64)
+                        .max(
+                            crate::retention::ordinal(
+                                store,
+                                &crate::retention::Binding::tracked(&tracked),
+                                &assignment.agent_id,
+                                false,
+                            )
+                            .map_err(MonitoringError::Storage)?,
+                        )
                         .checked_add(u64::from(!adopting))
                         .ok_or_else(|| {
                             MonitoringError::Storage("Normal pass counter exhausted.".into())

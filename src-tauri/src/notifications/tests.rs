@@ -3,9 +3,7 @@ use crate::monitoring::QueueJob;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(windows)]
-#[allow(dead_code)]
-#[path = "../../tests/support/windows_permissions.rs"]
-mod windows_permissions;
+use crate::windows_permissions;
 
 fn frame(category: Category, cause: &str) -> Frame {
     Frame {

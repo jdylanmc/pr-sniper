@@ -592,9 +592,19 @@ pub fn submit(adapter: &dyn Adapter, notice: &Notice) -> (Phase, Option<String>)
 
 pub fn destination(store: &Store, id: &str) -> Result<Destination, String> {
     let ledger = store.load_notifications()?;
-    Ok(ledger.notices.iter().find(|n| n.id == id).ok_or(
-        "This notification belongs to another profile or is no longer retained. No substitute destination was opened.",
-    )?.event.destination.clone())
+    if let Some(notice) = ledger.notices.iter().find(|n| n.id == id) {
+        return Ok(notice.event.destination.clone());
+    }
+    if let Some(item_id) = crate::retention::load(store)?
+        .receipts
+        .iter()
+        .find_map(|r| r.notices.get(id))
+    {
+        return Ok(Destination::QueueItem {
+            item_id: item_id.clone(),
+        });
+    }
+    Err("This notification belongs to another profile or is no longer retained. No substitute destination was opened.".into())
 }
 
 pub fn prepare(store: &Store, frames: &[Frame], id: &str, now: i64) -> Result<Notice, String> {

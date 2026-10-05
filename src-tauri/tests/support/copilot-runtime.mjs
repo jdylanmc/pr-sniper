@@ -2,15 +2,44 @@
 import { appendFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 
+const args = process.argv.slice(2);
+const tokenIndex = args.indexOf("--auth-token-env");
+const selected = process.env[args[tokenIndex + 1]];
+const startupCase = ["waiting-start", "bad-start"].includes(selected)
+  ? selected
+  : "other";
+const started = performance.now();
+const startupEvent = (phase, method = "none") => {
+  if (process.env.TEST_STARTUP_DIAGNOSTICS !== "1") return;
+  appendFileSync(
+    `${process.env.TEST_RECEIPT}.startup.jsonl`,
+    `${JSON.stringify({
+      case: startupCase,
+      phase,
+      method: [
+        "connect",
+        "ping",
+        "auth.getStatus",
+        "models.list",
+        "runtime.shutdown",
+        "none",
+      ].includes(method)
+        ? method
+        : "other",
+      elapsedMs: Math.floor(performance.now() - started),
+    })}\n`,
+  );
+};
+startupEvent("entered");
+process.on("exit", () => startupEvent("exit"));
+
 if (process.env.TEST_STARTUP_DELAY_MS) {
   await new Promise((resolve) =>
     setTimeout(resolve, Number(process.env.TEST_STARTUP_DELAY_MS)),
   );
 }
+startupEvent("delay-finished");
 
-const args = process.argv.slice(2);
-const tokenIndex = args.indexOf("--auth-token-env");
-const selected = process.env[args[tokenIndex + 1]];
 const allowed = new Set(["account-a", "account-b", "blocked", "waiting"]);
 const receipt = (value) =>
   appendFileSync(process.env.TEST_RECEIPT, `${JSON.stringify(value)}\n`);
@@ -47,6 +76,8 @@ const respond = (id, result, error) => {
   );
 };
 let input = Buffer.alloc(0);
+startupEvent("transport-ready");
+process.stdin.on("end", () => startupEvent("stdin-ended"));
 process.stdin.on("data", (chunk) => {
   input = Buffer.concat([input, chunk]);
   while (true) {
@@ -58,16 +89,21 @@ process.stdin.on("data", (chunk) => {
     if (input.length < header + 4 + length) return;
     const request = JSON.parse(input.subarray(header + 4, header + 4 + length));
     input = input.subarray(header + 4 + length);
+    startupEvent("request", request.method);
     receipt({ method: request.method });
     if (request.id === undefined) continue;
     switch (request.method) {
       case "connect":
-        if (selected === "waiting-start") break;
+        if (selected === "waiting-start") {
+          startupEvent("response-withheld", "connect");
+          break;
+        }
         if (selected === "bad-start") {
           respond(request.id, null, {
             code: -32600,
             message: "Synthetic startup failure",
           });
+          startupEvent("response-error", "connect");
           break;
         }
         respond(request.id, {

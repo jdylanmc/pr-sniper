@@ -26,6 +26,8 @@ use std::collections::BTreeMap;
 const REPO: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const NOW: i64 = 1_800_000_000;
 
+mod retention_identity;
+
 fn pull(head: char) -> PullRequest {
     PullRequest {
         id: "9".into(),
@@ -78,7 +80,7 @@ fn poll(store: &Store, head: char, now: i64) -> PollTicket {
     ticket
 }
 
-fn fixture(count: usize) -> (tempfile::TempDir, Store, Publication, Thread) {
+fn tracking_fixture(count: usize) -> (tempfile::TempDir, Store) {
     let root = tempfile::tempdir().unwrap();
     let store = Store::new(root.path().into());
     let mut settings: Settings = serde_json::from_value(json!({"launch_at_login":false,"doctrines":[],
@@ -114,6 +116,12 @@ fn fixture(count: usize) -> (tempfile::TempDir, Store, Publication, Thread) {
     );
     store.save_monitoring_state(&state).unwrap();
     poll(&store, 'a', NOW);
+    (root, store)
+}
+
+fn fixture(count: usize) -> (tempfile::TempDir, Store, Publication, Thread) {
+    let (root, store) = tracking_fixture(count);
+    let settings = store.load_settings().unwrap();
     let jobs = store.load_queue().unwrap();
     let reviews=jobs.iter().enumerate().map(|(i,job)| {
         let mut operation=JobOperation::review(job,NOW+2);operation.state=OperationState::Completed;
@@ -211,6 +219,7 @@ fn observe(
         store,
         &ticket,
         Scan {
+            retained: vec![],
             feedback: vec![Observed {
                 origin: origin.clone(),
                 head: head.to_string().repeat(40),
@@ -684,6 +693,7 @@ fn r73_completed_second_publication_allows_validated_same_head_reply_clearance()
 
 fn mention_scan(comments: Vec<TopComment>) -> Scan {
     Scan {
+        retained: vec![],
         feedback: vec![],
         mentions: vec![(
             MentionBinding {
@@ -698,6 +708,65 @@ fn mention_scan(comments: Vec<TopComment>) -> Scan {
             comments,
         )],
     }
+}
+
+#[test]
+fn retention_mixed_old_and_new_publications_observe_all_feedback_before_admitting_replies() {
+    let (_root, store, origin, mut old_thread) = fixture(1);
+    let mut queue = store.load_queue_state().unwrap();
+    queue.tracked[0].lifecycle = Lifecycle::Closed;
+    queue.tracked[0].terminal_observed = true;
+    queue.jobs[0].waiting = monitoring::WAITING_CLOSED.into();
+    store.save_queue_state(&queue).unwrap();
+    crate::retention::maintain(&store, true).unwrap();
+    let retained = crate::retention::load(&store).unwrap().receipts[0].owned[0].clone();
+    let ticket = poll(&store, 'a', NOW + 10);
+    let job = store.load_queue().unwrap().pop().unwrap();
+    let mut current = origin;
+    current.id = "new-iteration-publication".into();
+    current.review.job = job.clone();
+    current.review.key = crate::review::key(&job, &current.review.assignment_id);
+    current.review.operation = JobOperation::review(&job, NOW + 11);
+    current.review.operation.state = OperationState::Completed;
+    current.operation = JobOperation::review(&job, NOW + 11);
+    current.operation.state = OperationState::Completed;
+    current.receipts[0].review_id = "43".into();
+    current.receipts[0].comment_ids = vec!["200".into()];
+    current.batch.as_mut().unwrap().comments[0].body = "New iteration finding".into();
+    store
+        .save_reviews(std::slice::from_ref(&current.review))
+        .unwrap();
+    store
+        .save_publications(std::slice::from_ref(&current))
+        .unwrap();
+    let mut new_thread = old_thread.clone();
+    new_thread.id = "new-thread".into();
+    new_thread.comments[0].id = "200".into();
+    new_thread.comments[0].review_id = Some("43".into());
+    new_thread.comments[0].body = current.batch.as_ref().unwrap().comments[0].body.clone();
+    explanation(&mut old_thread, "11");
+    let observations = || Scan {
+        retained: vec![crate::retention::Observed {
+            origin: retained.clone(),
+            head: "a".repeat(40),
+            threads: vec![old_thread.clone()],
+        }],
+        feedback: vec![Observed {
+            origin: current.clone(),
+            head: "a".repeat(40),
+            threads: vec![new_thread.clone()],
+        }],
+        mentions: vec![],
+    };
+    admit_scan(&store, &ticket, observations(), NOW + 12).unwrap();
+    admit_scan(&store, &ticket, observations(), NOW + 13).unwrap();
+    let contexts =
+        crate::feedback::contexts(&store, &job, &current.review.selection.agent.id).unwrap();
+    assert_eq!(contexts.len(), 2);
+    let runs = store.load_follow_ups().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert!(matches!(runs[0].target, ConversationTarget::Retained(_)));
+    assert_eq!(runs[0].context.feedback.len(), 2);
 }
 
 fn finish_scan(store: Store, observations: Scan, now: i64) -> (Store, Result<(), String>) {
@@ -762,6 +831,173 @@ fn cleared_fixture() -> (tempfile::TempDir, Store, Publication, Thread) {
     observe(&store, &origin, &thread, 'a', vec![], NOW + 10);
     assert_eq!(current_state(&store), crate::queue::State::MachineSignedOff);
     (root, store, origin, thread)
+}
+
+#[test]
+fn r5_blocked_mention_moves_only_its_exact_result_once() {
+    use crate::retention::{page, PageRequest};
+    let (root, store, origin, thread) = fixture(2);
+    let mut feedback = store.load_feedback().unwrap();
+    feedback
+        .observe(&origin, &"a".repeat(40), &[thread])
+        .unwrap();
+    store.save_feedback(&feedback).unwrap();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let ticket = monitor
+        .prepare_checks(&store, NOW + 10, true)
+        .unwrap()
+        .remove(0);
+    let mut newer = pull('a');
+    newer.id = "10".into();
+    newer.number = 2;
+    monitor
+        .finish(
+            &store,
+            ticket.clone(),
+            Ok(PollResult {
+                connection: Connection {
+                    identity: Identity {
+                        id: "22".into(),
+                        login: "actor".into(),
+                    },
+                    repository: RemoteRepository {
+                        id: "100".into(),
+                        name: "example/repo".into(),
+                    },
+                    capabilities: Capabilities {
+                        read: true,
+                        comment: CommentCapability::Available,
+                    },
+                },
+                pull_requests: vec![pull('a'), newer],
+            }),
+            NOW + 11,
+        )
+        .unwrap();
+    let first = page(
+        &store,
+        PageRequest {
+            limit: 1,
+            cursor: None,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(first.results[0].job.pull_request_id, "10");
+    admit_scan(
+        &store,
+        &ticket,
+        mention_scan(vec![mention("501", "@actor explain")]),
+        NOW + 12,
+    )
+    .unwrap();
+    assert!(
+        store.load_follow_ups().unwrap().is_empty(),
+        "no primary, no execution"
+    );
+    let newest = page(
+        &store,
+        PageRequest {
+            limit: 1,
+            cursor: None,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(newest.results[0].job.pull_request_id, "9");
+    let stable = serde_json::to_value(&newest).unwrap();
+    let store = Store::new(root.path().into());
+    for _ in 0..2 {
+        admit_scan(
+            &store,
+            &ticket,
+            mention_scan(vec![mention("501", "@actor explain")]),
+            NOW + 13,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(
+                page(
+                    &store,
+                    PageRequest {
+                        limit: 1,
+                        cursor: None,
+                        ..Default::default()
+                    }
+                )
+                .unwrap()
+            )
+            .unwrap(),
+            stable
+        );
+    }
+    assert!(page(
+        &store,
+        PageRequest {
+            limit: 1,
+            cursor: first.next_cursor,
+            ..Default::default()
+        }
+    )
+    .unwrap()
+    .results
+    .is_empty());
+    let tail = page(
+        &store,
+        PageRequest {
+            limit: 1,
+            cursor: newest.next_cursor,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(tail.results[0].job.pull_request_id, "10");
+    assert_eq!(newest.results[0].conversations, 1);
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].primary_assignment_id =
+        Some(settings.repositories[0].assignments[0].id.clone());
+    store.save_settings(&settings).unwrap();
+    admit_scan(&store, &ticket, Scan::default(), NOW + 15).unwrap();
+    let runs = store.load_follow_ups().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(
+        serde_json::to_value(
+            page(
+                &store,
+                PageRequest {
+                    limit: 1,
+                    cursor: None,
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+        )
+        .unwrap(),
+        stable
+    );
+    let intent = store.load_feedback().unwrap().mentions.remove(0);
+    assert_eq!(
+        intent.item_id.as_deref(),
+        Some(newest.results[0].item_id.as_str())
+    );
+    assert_eq!(intent.follow_up_id.as_deref(), Some(runs[0].id.as_str()));
+    let ticket = poll(&store, 'c', NOW + 20);
+    admit_scan(
+        &store,
+        &ticket,
+        mention_scan(vec![mention("501", "@actor explain")]),
+        NOW + 22,
+    )
+    .unwrap();
+    assert_eq!(
+        store.load_feedback().unwrap().mentions[0].item_id,
+        intent.item_id
+    );
+    assert_eq!(store.load_follow_ups().unwrap(), runs);
+    assert_ne!(
+        crate::queue::item_id(store.load_queue().unwrap().last().unwrap()),
+        intent.item_id.unwrap()
+    );
 }
 
 #[test]
@@ -1225,6 +1461,7 @@ fn observing_removed_owners_does_not_transfer_or_erase_feedback() {
         &store,
         &ticket,
         Scan {
+            retained: vec![],
             feedback: vec![Observed {
                 origin: origin.clone(),
                 head: "c".repeat(40),
@@ -1406,6 +1643,7 @@ fn legacy_missing_local_configuration_does_not_orphan_verified_owned_roots() {
         &store,
         &ticket,
         Scan {
+            retained: vec![],
             feedback: vec![Observed {
                 origin: origin.clone(),
                 head: "c".repeat(40),

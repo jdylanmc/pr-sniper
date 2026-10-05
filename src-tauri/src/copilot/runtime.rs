@@ -362,6 +362,83 @@ pub(crate) fn assert_process_stopped(pid: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+
+    struct StartupDiagnostics<'a> {
+        root: &'a Path,
+        case: &'static str,
+        started: Instant,
+        phase: Cell<&'static str>,
+        query_outcome: Cell<&'static str>,
+        query_finished_ms: Cell<Option<u128>>,
+        connect_ms: Cell<Option<u128>>,
+        cancellation_ms: Cell<Option<u128>>,
+    }
+
+    fn startup_fixture_evidence(root: &Path) -> serde_json::Value {
+        let text = match std::fs::read_to_string(root.join("receipt.jsonl.startup.jsonl")) {
+            Ok(text) => text,
+            Err(error) => return serde_json::json!({ "read_error": format!("{:?}", error.kind()) }),
+        };
+        let events: Vec<_> = text.lines().map(|line| {
+            let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+                return serde_json::json!({ "invalid_event": true });
+            };
+            let allowed = |key: &str, values: &[&str]| {
+                event[key].as_str().filter(|value| values.contains(value)).unwrap_or("other").to_owned()
+            };
+            serde_json::json!({
+                "case": allowed("case", &["waiting-start", "bad-start"]),
+                "phase": allowed("phase", &["entered", "delay-finished", "transport-ready", "request", "response-withheld", "response-error", "stdin-ended", "exit"]),
+                "method": allowed("method", &["none", "connect", "ping", "auth.getStatus", "models.list", "runtime.shutdown"]),
+                "elapsedMs": event["elapsedMs"].as_u64(),
+            })
+        }).collect();
+        serde_json::json!(events)
+    }
+
+    impl Drop for StartupDiagnostics<'_> {
+        fn drop(&mut self) {
+            // Emit only after the immediate reaping assertion, including on panic.
+            // Diagnostic I/O must not give asynchronous teardown extra time first.
+            eprintln!(
+                "[synthetic-startup] {}",
+                serde_json::json!({
+                    "case": self.case,
+                    "phase": self.phase.get(),
+                    "panicking": std::thread::panicking(),
+                    "elapsedMs": self.started.elapsed().as_millis(),
+                    "queryOutcome": self.query_outcome.get(),
+                    "queryFinishedMs": self.query_finished_ms.get(),
+                    "connectObservedMs": self.connect_ms.get(),
+                    "cancellationRequestedMs": self.cancellation_ms.get(),
+                    "fixture": startup_fixture_evidence(self.root),
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn startup_diagnostics_emit_only_allowlisted_fixture_evidence() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("receipt.jsonl.startup.jsonl"),
+            "{\"case\":\"waiting-start\",\"phase\":\"request\",\"method\":\"connect\",\"elapsedMs\":750,\"argv\":\"private-marker\"}\n{\"case\":\"private-marker\",\"phase\":\"private-marker\",\"method\":\"private-marker\",\"elapsedMs\":\"private-marker\"}\ninvalid\n").unwrap();
+        let evidence = startup_fixture_evidence(root.path());
+        assert_eq!(
+            evidence[0],
+            serde_json::json!({
+                "case": "waiting-start", "phase": "request", "method": "connect", "elapsedMs": 750,
+            })
+        );
+        assert_eq!(
+            evidence[1],
+            serde_json::json!({
+                "case": "other", "phase": "other", "method": "other", "elapsedMs": null,
+            })
+        );
+        assert_eq!(evidence[2], serde_json::json!({ "invalid_event": true }));
+        assert!(!evidence.to_string().contains("private-marker"));
+    }
 
     #[test]
     #[cfg(target_os = "macos")]
@@ -504,6 +581,11 @@ mod tests {
                 .env
                 .push(("TEST_STARTUP_DELAY_MS".into(), "750".into()));
         }
+        if matches!(token, "waiting-start" | "bad-start") {
+            config
+                .env
+                .push(("TEST_STARTUP_DIAGNOSTICS".into(), "1".into()));
+        }
         config
     }
 
@@ -618,16 +700,49 @@ mod tests {
         for token in ["waiting-start", "bad-start"] {
             let root = tempfile::tempdir().unwrap();
             let cancel = AtomicBool::new(false);
+            let diagnostics = StartupDiagnostics {
+                root: root.path(),
+                case: token,
+                started: Instant::now(),
+                phase: Cell::new("query-and-connect"),
+                query_outcome: Cell::new("pending"),
+                query_finished_ms: Cell::new(None),
+                connect_ms: Cell::new(None),
+                cancellation_ms: Cell::new(None),
+            };
             let trigger = async {
                 wait_for_fixture_method(root.path(), "connect").await;
+                diagnostics
+                    .connect_ms
+                    .set(Some(diagnostics.started.elapsed().as_millis()));
                 if token == "waiting-start" {
                     cancel.store(true, Ordering::SeqCst);
+                    diagnostics
+                        .cancellation_ms
+                        .set(Some(diagnostics.started.elapsed().as_millis()));
                 }
             };
-            let (result, ()) = tokio::join!(
-                query(fixture_options(root.path(), token), token, &cancel),
-                trigger
-            );
+            let observed_query = async {
+                let result = query(fixture_options(root.path(), token), token, &cancel).await;
+                diagnostics
+                    .query_finished_ms
+                    .set(Some(diagnostics.started.elapsed().as_millis()));
+                diagnostics.query_outcome.set(match &result {
+                    Ok(_) => "success",
+                    Err(error) => match error.as_str() {
+                        "Copilot model lookup cancelled." => "cancelled",
+                        "The Copilot runtime could not start. Retry or reinstall PR Sniper." => {
+                            "startup-failed"
+                        }
+                        "Copilot runtime startup timed out. Retry." => "startup-timeout",
+                        "Copilot operation timed out. Retry." => "operation-timeout",
+                        _ => "other-error",
+                    },
+                });
+                result
+            };
+            let (result, ()) = tokio::join!(observed_query, trigger);
+            diagnostics.phase.set("asserting-outcome");
             let error = result.unwrap_err();
             assert!(
                 error.contains(if token == "waiting-start" {
@@ -637,7 +752,9 @@ mod tests {
                 }),
                 "{error}"
             );
+            diagnostics.phase.set("asserting-stopped-and-catalog-only");
             assert_stopped_and_catalog_only(root.path());
+            diagnostics.phase.set("assertions-complete");
         }
     }
 
