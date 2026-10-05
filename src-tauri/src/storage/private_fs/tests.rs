@@ -357,8 +357,7 @@ fn recovery_rejects_links_and_nonprivate_claims_without_touching_their_targets()
 }
 
 #[cfg(windows)]
-#[path = "../../../tests/support/windows_permissions.rs"]
-mod windows_permissions;
+use crate::windows_permissions;
 
 #[cfg(windows)]
 #[test]
