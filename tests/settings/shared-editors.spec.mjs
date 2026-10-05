@@ -1,5 +1,5 @@
 import { test, expect } from "./fixtures.mjs";
-import { fixtureAgent } from "./navigation.mjs";
+import { fixtureAgent, section } from "./navigation.mjs";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -8,11 +8,6 @@ const tab = (page, name) =>
     .getByRole("navigation", { name: "Application destinations" })
     .getByRole("button", { name, exact: true });
 const editor = (page, name) => page.getByRole("dialog", { name, exact: true });
-const section = async (page, name) => {
-  const control = page.getByLabel("Settings section", { exact: true });
-  await expect(control).toBeVisible();
-  await control.selectOption({ label: name });
-};
 const card = (page, kind, name) =>
   page.locator(`.${kind}-card`).filter({
     has: page.getByRole("heading", { name, exact: true }),

@@ -1,6 +1,7 @@
 import { test, expect } from "./fixtures.mjs";
 import { holdFocusFrames } from "./focus-frames.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
+import { section } from "./navigation.mjs";
 
 test.use({ viewport: { width: 400, height: 680 } });
 const tab = (page, name) =>
@@ -128,9 +129,7 @@ test("hide invalidates pending positioning and reopen restores the retained edit
 }, testInfo) => {
   await page.goto("/");
   await tab(page, "Settings").click();
-  await page
-    .getByLabel("Settings section", { exact: true })
-    .selectOption("doctrines");
+  await section(page, "Doctrines");
   await page.getByRole("button", { name: "New doctrine", exact: true }).click();
   const title = page
     .getByRole("dialog", { name: "New doctrine" })

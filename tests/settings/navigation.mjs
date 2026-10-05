@@ -1,6 +1,27 @@
 import { expect } from "./fixtures.mjs";
 
 export async function section(page, name) {
+  const embedded = page.locator(".panel-shell .settings-window");
+  if (await page.locator(".panel-shell").count()) {
+    await expect(embedded).toBeVisible();
+    await expect(embedded).toHaveAttribute("data-settings-section", /.+/);
+    const destination = name === "Integrations" ? "Repositories" : name;
+    if (
+      (await embedded.getAttribute("data-settings-section")) ===
+      destination.toLowerCase()
+    )
+      return;
+    const back = page.getByRole("button", {
+      name: "Back to Settings",
+      exact: true,
+    });
+    if (await back.isVisible()) await back.click();
+    await page
+      .locator(".settings-overview")
+      .getByRole("button", { name: destination, exact: true })
+      .click();
+    return;
+  }
   const mobile = page.getByLabel("Settings section", { exact: true });
   if (await mobile.isVisible()) {
     await mobile.selectOption({ label: name });

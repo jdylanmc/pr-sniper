@@ -162,9 +162,7 @@ for (const delayedReceipt of [false, true]) {
     ).toHaveCount(4);
     await page.screenshot({ path: join(screenshots, "reviewed-shell.png") });
     await tab(page, "Settings").click();
-    await expect(
-      page.getByLabel("Settings section", { exact: true }),
-    ).toBeVisible();
+    await expect(page.locator(".settings-overview")).toBeVisible();
     await page.screenshot({ path: join(screenshots, "settings-shell.png") });
   });
 }

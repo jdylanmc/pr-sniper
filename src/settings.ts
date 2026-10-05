@@ -49,7 +49,15 @@ interface Discovery {
   repositories: Discovered[];
   warnings: string[];
 }
-type Section = "doctrines" | "agents" | "integrations" | "preferences";
+type Section =
+  | "home"
+  | "accounts"
+  | "repositories"
+  | "capacity"
+  | "doctrines"
+  | "agents"
+  | "integrations"
+  | "preferences";
 
 export type SetupTarget =
   | "ai"
@@ -72,6 +80,13 @@ const modelProviders: { id: string; label: string; available: boolean }[] = [
 ];
 
 const sections: Record<Section, [string, string]> = {
+  home: ["Settings", ""],
+  accounts: ["Accounts", "GitHub and Copilot, kept separate."],
+  repositories: ["Repositories", "Acting accounts and review assignments."],
+  capacity: [
+    "Concurrent reviews",
+    "A limit on running work, not saved agents.",
+  ],
   integrations: [
     "Integrations",
     "Sign in to an AI subscription, then connect the repositories it should watch.",
@@ -89,6 +104,12 @@ const sections: Record<Section, [string, string]> = {
 // Bespoke reticle/scope marks, not a generic icon-kit -- each nods at the
 // tab's job rather than a stock glyph.
 const iconPaths = {
+  back: '<path d="m14 6-6 6 6 6M8 12h12"/>',
+  home: '<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="10" cy="18" r="2"/>',
+  accounts:
+    '<circle cx="9" cy="7" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 4a3 3 0 0 1 0 6m2 4a6 6 0 0 1 3 4v3"/>',
+  repositories: '<path d="M3 6h7l2 2h9v12H3zM3 6V4h7l2 2"/>',
+  capacity: '<path d="M2 12h5l3-9 4 18 3-9h5"/>',
   integrations:
     '<circle cx="8" cy="8" r="3.4"/><circle cx="17" cy="17" r="3.4"/><path d="M10.4 10.4 14.6 14.6"/>',
   doctrines:
@@ -153,23 +174,29 @@ export async function mountSettings(
     openGenie?: (opener: HTMLElement) => void;
   } = {},
 ) {
+  const accountSection = options.embedded ? "Accounts" : "Integrations";
   if (options.embedded) app.className = "settings-window settings-page";
   else {
     document.body.classList.add("settings-page");
     app.className = "settings-window";
   }
-  app.innerHTML = `<aside class="settings-sidebar"><div class="settings-brand"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><circle cx="16" cy="16" r="9" stroke="currentColor" stroke-width="1.7"/><path d="M16 2v8m0 12v8M2 16h8m12 0h8" stroke="currentColor" stroke-width="1.7"/><circle cx="16" cy="16" r="2.5" fill="currentColor"/></svg>PR Sniper</div><p class="settings-caption">Preferences</p>
-    <nav aria-label="Settings sections">${Object.entries(sections)
+  const legacySections = Object.entries(sections).filter(([key]) =>
+    ["integrations", "agents", "doctrines", "preferences"].includes(key),
+  );
+  app.innerHTML = `${
+    options.embedded
+      ? ""
+      : `<aside class="settings-sidebar"><div class="settings-brand"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><circle cx="16" cy="16" r="9" stroke="currentColor" stroke-width="1.7"/><path d="M16 2v8m0 12v8M2 16h8m12 0h8" stroke="currentColor" stroke-width="1.7"/><circle cx="16" cy="16" r="2.5" fill="currentColor"/></svg>PR Sniper</div><p class="settings-caption">Preferences</p>
+    <nav aria-label="Settings sections">${legacySections
       .map(
         ([key, [title]]) =>
           `<button type="button" data-section="${key}">${icon(key as Section)}${title}</button>`,
       )
       .join("")}</nav>
-    <label class="mobile-section">Section<select aria-label="Settings section">${Object.entries(
-      sections,
-    )
+    <label class="mobile-section">Section<select aria-label="Settings section">${legacySections
       .map(([key, [title]]) => option(key, title, "integrations"))
-      .join("")}</select></label></aside>
+      .join("")}</select></label></aside>`
+  }
     <div class="settings-main"><div class="settings-genie-entry"><button type="button" data-open-genie>Set up with Genie</button><button type="button" data-return-genie hidden>Back to Genie</button><p data-genie-save-note hidden>Each save is applied immediately. Close hides this editor; Back and Cancel follow the unsaved-field guidance below. Unconfirmed scope choices need a final check.</p></div><header class="settings-heading"><h1 tabindex="-1">Integrations</h1><p>Sign in to an AI subscription, then connect the repositories it should watch.</p></header>
     <p id="error" role="alert" hidden></p><section id="content"></section>
     <footer class="settings-savebar"><span role="status" id="save-status">Loading settings...</span><button id="reload-settings" hidden>Discard draft and reload</button><button id="reset-settings" disabled>Reset changes</button><button class="primary" id="save-settings" disabled>Save preferences</button></footer></div>`;
@@ -179,10 +206,27 @@ export async function mountSettings(
   const save = app.querySelector<HTMLButtonElement>("#save-settings")!;
   const reset = app.querySelector<HTMLButtonElement>("#reset-settings")!;
   const reload = app.querySelector<HTMLButtonElement>("#reload-settings")!;
+  const accountParking = document.createElement("div");
+  accountParking.hidden = true;
+  // Keep native sign-in widgets mounted off-page without their layout selectors.
+  app.after(accountParking);
+  let accountContent: HTMLElement | undefined;
+  let refreshRepositoryRows: (() => void) | undefined;
+  const settingsBack = document.createElement("button");
+  settingsBack.type = "button";
+  settingsBack.className = "settings-home-back";
+  settingsBack.setAttribute("aria-label", "Back to Settings");
+  settingsBack.title = "Back to Settings; retain unsaved changes";
+  settingsBack.innerHTML = icon("back");
+  settingsBack.hidden = true;
+  app.querySelector(".settings-heading")!.prepend(settingsBack);
   let snapshot: Snapshot;
   let saved: Settings;
   let draft: Settings;
-  let section: Section = "integrations";
+  let section: Section = options.embedded ? "home" : "integrations";
+  let homeScroll = 0;
+  let homeOpener: Section | undefined;
+  let accountRead = 0;
   let discovery: Discovery | null = null;
   let query = "";
   let busy = false;
@@ -192,7 +236,6 @@ export async function mountSettings(
   let revision = 0;
   let githubAccounts: GithubAccount[] = [];
   let copilotAccounts: CopilotAccount[] = [];
-  let disposeCopilot: (() => void) | undefined;
   let updateAgentAccounts: (() => void) | undefined;
   let updateRepositoryAccounts: (() => void) | undefined;
   let refreshAgentAccounts: (() => void) | undefined;
@@ -204,6 +247,10 @@ export async function mountSettings(
   const genieNote = app.querySelector<HTMLElement>("[data-genie-save-note]")!;
   genieNote.className = "settings-hint";
   const settingsHeading = app.querySelector<HTMLElement>(".settings-heading")!;
+  if (options.embedded) {
+    settingsHeading.hidden = true;
+    app.querySelector<HTMLElement>(".settings-savebar")!.hidden = true;
+  }
   settingsHeading.classList.add("settings-heading-with-genie");
   settingsHeading
     .querySelector("h1")!
@@ -216,6 +263,7 @@ export async function mountSettings(
     returnGenie.hidden = true;
     app.querySelector<HTMLElement>("[data-genie-save-note]")!.hidden = true;
     openGenie.hidden = !options.openGenie;
+    settingsBack.hidden = !options.embedded || section === "home";
   };
   const dialogs = createDialogs(
     content,
@@ -377,30 +425,32 @@ export async function mountSettings(
     if (!draft) return;
     dialogs.closeAll();
     const restoreFocus = rememberControl();
+    const scroll = content.scrollTop;
     const awaitingAgentAccess =
       document.activeElement === content.querySelector("#new-agent");
     let focusAfterRender: Element | null;
     updateAgentAccounts = undefined;
     updateRepositoryAccounts = undefined;
     refreshAgentAccounts = undefined;
-    const github = content.querySelector<HTMLElement>(".github-auth");
-    const copilot = content.querySelector<HTMLElement>(".copilot-auth");
-    const connections =
-      section === "integrations" && github && copilot
-        ? { github, copilot }
-        : undefined;
-    if (!connections) {
-      disposeCopilot?.();
-      disposeCopilot = undefined;
-    }
+    refreshRepositoryRows = undefined;
+    if (accountContent) accountParking.append(accountContent);
     app.querySelector("h1")!.textContent = sections[section][0];
+    app.dataset.settingsSection = section;
+    app.toggleAttribute("data-settings-home", section === "home");
+    settingsBack.hidden = !options.embedded || section === "home" || !!guidance;
+    app.querySelector<HTMLElement>(".settings-savebar")!.hidden =
+      !!options.embedded && section === "home";
+    settingsHeading.hidden = section === "home";
     app.dataset.resourceLibrary =
-      section === "integrations"
+      section === "integrations" || section === "repositories"
         ? "repositories"
         : section === "agents" || section === "doctrines"
           ? section
           : "";
-    app.toggleAttribute("data-preferences", section === "preferences");
+    app.toggleAttribute(
+      "data-preferences",
+      section === "preferences" || section === "capacity",
+    );
     app.querySelector(".settings-heading p")!.textContent =
       sections[section][1];
     app
@@ -410,19 +460,26 @@ export async function mountSettings(
           button.setAttribute("aria-current", "page");
         else button.removeAttribute("aria-current");
       });
-    app.querySelector<HTMLSelectElement>(".mobile-section select")!.value =
-      section;
+    const select = app.querySelector<HTMLSelectElement>(
+      ".mobile-section select",
+    );
+    if (select) select.value = section;
     content.replaceChildren();
-    if (section === "integrations") renderIntegrations(connections);
+    if (section === "home") renderHome();
+    if (section === "accounts") renderAccounts();
+    if (section === "integrations" || section === "repositories")
+      renderIntegrations();
     if (section === "doctrines") renderDoctrines();
     if (section === "agents")
       renderAgents(() => {
         if (awaitingAgentAccess && document.activeElement === focusAfterRender)
           restoreFocus();
       });
-    if (section === "preferences") renderPreferences();
+    if (section === "preferences" || section === "capacity")
+      renderPreferences();
     content.prepend(genieNote);
     changed();
+    content.scrollTop = scroll;
     restoreFocus();
     focusAfterRender = document.activeElement;
   }
@@ -431,16 +488,94 @@ export async function mountSettings(
     section = next;
     render();
   }
+  function openFromHome(next: Section) {
+    homeScroll = content.scrollTop;
+    homeOpener = next;
+    navigate(next);
+    content.scrollTop = 0;
+    (next === "capacity"
+      ? content.querySelector<HTMLElement>("#global-capacity")
+      : settingsHeading.querySelector<HTMLElement>("h1")
+    )?.focus();
+  }
+  settingsBack.onclick = () => {
+    if (busy) return;
+    leaveGuidance();
+    navigate("home");
+    content.scrollTop = homeScroll;
+    const opener = content.querySelector<HTMLElement>(
+      `[data-settings-destination="${homeOpener}"]`,
+    );
+    opener?.focus({ preventScroll: true });
+    opener?.scrollIntoView({ block: "nearest" });
+  };
   app
     .querySelectorAll<HTMLButtonElement>("[data-section]")
     .forEach((button) => {
       button.onclick = () => navigate(button.dataset.section as Section);
     });
-  app.querySelector<HTMLSelectElement>(".mobile-section select")!.onchange = (
-    event,
-  ) => {
-    navigate((event.target as HTMLSelectElement).value as Section);
-  };
+  const mobileSection = app.querySelector<HTMLSelectElement>(
+    ".mobile-section select",
+  );
+  if (mobileSection)
+    mobileSection.onchange = (event) => {
+      navigate((event.target as HTMLSelectElement).value as Section);
+    };
+
+  function renderHome() {
+    const row = (key: Section, description: string, value = "") =>
+      `<button type="button" class="settings-home-row" data-settings-destination="${key}" data-focus-key="settings:${key}" aria-label="${sections[key][0]}" aria-describedby="settings-${key}-description settings-${key}-count"><span class="settings-row-symbol">${icon(key === "preferences" ? "home" : key)}</span><span class="settings-row-copy"><strong>${sections[key][0]}</strong><small id="settings-${key}-description">${description}</small></span><span class="settings-row-value" id="settings-${key}-count" data-settings-count="${key}">${value}</span><svg class="settings-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button>`;
+    content.innerHTML = `<div class="settings-overview">
+      <div class="settings-intro"><span class="settings-summary-icon">${icon("home")}</span><div><strong>Your review setup</strong><p>Shared agents. Your rules.</p></div></div>
+      <nav aria-label="Review setup" class="settings-home-group">
+        ${row("accounts", "GitHub and Copilot, kept separate", "Reading...")}
+        ${row("agents", "Reusable review configurations", String(saved.agents?.length ?? 0))}
+        ${row("repositories", "Assignments, people, and monitoring", String(saved.repositories?.length ?? 0))}
+        ${row("doctrines", "The principles behind each review", String(saved.doctrines?.length ?? 0))}
+      </nav>
+      <nav aria-label="Application preferences" class="settings-home-group">
+        ${row("capacity", "A limit on running work, not saved agents", String(saved.capacity))}
+        ${row("preferences", "Automation, notifications, startup")}
+      </nav>
+      <button type="button" data-home-genie data-focus-key="settings:genie">Set up with Genie</button>
+    </div>`;
+    content
+      .querySelectorAll<HTMLButtonElement>("[data-settings-destination]")
+      .forEach((button) => {
+        button.onclick = () =>
+          openFromHome(button.dataset.settingsDestination as Section);
+      });
+    const genie =
+      content.querySelector<HTMLButtonElement>("[data-home-genie]")!;
+    genie.hidden = !options.openGenie;
+    genie.onclick = () => options.openGenie?.(genie);
+    const summary = content.querySelector<HTMLElement>(
+      '[data-settings-count="accounts"]',
+    )!;
+    const read = ++accountRead;
+    void Promise.all([
+      invoke<{ accounts: GithubAccount[] }>("github_auth_state"),
+      invoke<CopilotAuth>("copilot_auth_state"),
+    ]).then(
+      ([github, copilot]) => {
+        if (!summary.isConnected || read !== accountRead) return;
+        githubAccounts = github.accounts;
+        copilotAccounts = copilot.accounts;
+        const accounts = [...githubAccounts, ...copilotAccounts];
+        const connected = accounts.filter(
+          (account) => account.state === "connected",
+        ).length;
+        summary.textContent = `${connected} connected${accounts.length > connected ? ` / ${accounts.length - connected} need attention` : ""}`;
+      },
+      (cause) => {
+        if (!summary.isConnected || read !== accountRead) return;
+        summary.textContent = "Unavailable";
+        showError(
+          `Account summary unavailable: ${reason(cause)} Open Accounts to retry.`,
+        );
+      },
+    );
+  }
 
   // ---------------------------------------------------------------- Doctrines
 
@@ -465,8 +600,7 @@ export async function mountSettings(
     const back = modal.querySelector<HTMLButtonElement>(".dialog-head button")!;
     back.classList.add("resource-back");
     back.title = backTitle;
-    back.innerHTML =
-      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m14 6-6 6 6 6M8 12h12"/></svg>';
+    back.innerHTML = icon("back");
   }
 
   function resourceEditor(
@@ -647,8 +781,7 @@ export async function mountSettings(
     content.innerHTML = `<div class="section-actions resource-toolbar"><p>Unlimited saved configurations. AI capacity is set separately.</p><button class="primary" id="new-agent" disabled>New agent</button></div><div class="resource-account-notice"><p class="settings-hint" data-copilot-status>Reading Copilot accounts...</p><button id="manage-copilot">Manage Copilot accounts</button></div><div class="agent-list resource-library"></div>`;
     const list = content.querySelector(".agent-list")!;
     if (!agents().length)
-      list.innerHTML =
-        '<div class="settings-empty"><strong>No agents yet</strong><p>Create one to start assigning it to repositories in Integrations.</p></div>';
+      list.innerHTML = `<div class="settings-empty"><strong>No agents yet</strong><p>Create one to start assigning it to repositories in ${options.embedded ? "Repositories" : "Integrations"}.</p></div>`;
     for (const agent of agents()) {
       const account = copilotAccounts.find(
         (a) => a.account_id === agent.ai_account?.account_id,
@@ -698,8 +831,14 @@ export async function mountSettings(
     }
     content.querySelector<HTMLButtonElement>("#new-agent")!.onclick = (event) =>
       editAgent(event.currentTarget as HTMLButtonElement);
-    content.querySelector<HTMLButtonElement>("#manage-copilot")!.onclick = () =>
-      navigate("integrations");
+    content.querySelector<HTMLButtonElement>("#manage-copilot")!.onclick =
+      () => {
+        navigate(options.embedded ? "accounts" : "integrations");
+        if (options.embedded) {
+          homeOpener = "accounts";
+          settingsHeading.querySelector<HTMLElement>("h1")!.focus();
+        }
+      };
     const notice = content.querySelector<HTMLElement>("[data-copilot-status]")!;
     let accountRequest = 0;
     const refreshAccounts = () => {
@@ -715,7 +854,7 @@ export async function mountSettings(
           );
           notice.textContent = connected
             ? "Copilot sign-in is separate from model access. Edit an Agent to load this account's current models."
-            : "No verified Copilot connection. Connect an account in Integrations; existing Agents and assignments are retained.";
+            : `No verified Copilot connection. Connect an account in ${accountSection}; existing Agents and assignments are retained.`;
           content.querySelector<HTMLButtonElement>("#new-agent")!.disabled =
             !connected;
           onReady();
@@ -867,7 +1006,7 @@ export async function mountSettings(
         )
       ) {
         modelStatus.textContent = existing
-          ? "Connect or reconnect this account in Integrations. The saved model is retained, but this Agent is unconfigured."
+          ? `Connect or reconnect this account in ${accountSection}. The saved model is retained, but this Agent is unconfigured.`
           : "Choose a verified Copilot account, then load its models.";
         return;
       }
@@ -961,7 +1100,7 @@ export async function mountSettings(
         catalog = [];
         modelSelect.disabled = true;
         modelStatus.textContent = selected
-          ? "Reconnect this account in Integrations. Your model and draft are retained."
+          ? `Reconnect this account in ${accountSection}. Your model and draft are retained.`
           : "Choose a verified Copilot account, then load its models.";
       } else if (!selectedWasConnected) {
         void loadModels();
@@ -1081,10 +1220,76 @@ export async function mountSettings(
     }
   }
 
-  function renderIntegrations(connections?: {
-    github: HTMLElement;
-    copilot: HTMLElement;
-  }) {
+  function renderAccounts() {
+    if (accountContent) {
+      content.append(accountContent);
+      window.dispatchEvent(new Event("pr-sniper:refresh-provider-accounts"));
+      return;
+    }
+    accountContent = document.createElement("div");
+    accountContent.innerHTML = `<div class="integration-group"><h2>Git repositories</h2><div class="github-auth"></div></div>
+      <div class="integration-group"><h2>AI integration</h2><div class="copilot-auth"></div><div class="integration-grid">${modelProviders
+        .filter((m) => !m.available)
+        .map(
+          (m) =>
+            `<button type="button" class="integration-card" data-disabled="true" disabled aria-disabled="true"><strong>Direct ${escape(m.label)}</strong><span>Coming soon</span></button>`,
+        )
+        .join("")}</div></div>`;
+    content.append(accountContent);
+    renderCopilotAuth(
+      accountContent.querySelector(".copilot-auth")!,
+      (accounts) => {
+        copilotAccounts = accounts;
+      },
+    );
+    renderGithubAuth(
+      accountContent.querySelector(".github-auth")!,
+      (account, accessible) => {
+        let repository = repositories().find(
+          (candidate) =>
+            candidate.provider === "github" &&
+            candidate.provider_account_id === account.account_id &&
+            candidate.provider_repository_id === accessible.id,
+        );
+        repository ??= repositories().find(
+          (candidate) =>
+            candidate.provider === "github" &&
+            candidate.name === accessible.name &&
+            !candidate.provider_account_id &&
+            !candidate.provider_repository_id,
+        );
+        if (repository) {
+          repository.name = accessible.name;
+          repository.enabled = true;
+          repository.provider_account_id = account.account_id;
+          repository.provider_repository_id = accessible.id;
+        } else {
+          repository = {
+            id: newIdentity(),
+            name: accessible.name,
+            enabled: true,
+            provider: "github",
+            provider_account_id: account.account_id,
+            provider_repository_id: accessible.id,
+          };
+          (draft.repositories ??= []).push(repository);
+        }
+        changed();
+        if (options.embedded) {
+          homeOpener = "repositories";
+          navigate("repositories");
+          settingsHeading.querySelector<HTMLElement>("h1")!.focus();
+        } else refreshRepositoryRows?.();
+      },
+      (accounts) => {
+        githubAccounts = accounts;
+        updateRepositoryAccounts?.();
+        refreshRepositoryRows?.();
+      },
+    );
+  }
+
+  function renderIntegrations() {
     content.innerHTML = `<section class="repository-library" aria-label="Repositories">
       <div class="section-actions resource-toolbar"><div><h2>Repositories</h2><p>Acting accounts and review assignments.</p></div><button class="primary" id="add-repository" aria-label="Add repository manually...">Add repository</button></div>
       <div class="folder-card"><div><strong>${escape(draft.root_folder ?? "Local discovery")}</strong><p>${discovery ? `${discovery.repositories.length} local repositories discovered` : "Scan only a folder you choose."}</p></div><button id="choose-folder">Choose folder...</button></div>
@@ -1093,67 +1298,11 @@ export async function mountSettings(
       <p class="settings-hint">PR Sniper polls scope-confirmed configured repositories while the ${trayAdjective} app is active. Detection does not run reviews or publish comments.</p>
       ${draft.root_folder ? '<div class="settings-actions"><button id="rescan">Scan chosen folder</button></div>' : ""}
       ${discovery?.warnings.map((warning) => `<p class="settings-notice">${escape(warning)}</p>`).join("") ?? ""}
-      <p class="settings-hint">For provider selection or account access, use GitHub accounts below. Choosing a repository never grants trust.</p></section>
-      <div class="integration-group"><h2>Git repositories</h2><div class="github-auth"></div></div>
-      <div class="integration-group"><h2>AI integration</h2><div class="copilot-auth"></div><div class="integration-grid">${modelProviders
-        .filter((m) => !m.available)
-        .map(
-          (m) =>
-            `<button type="button" class="integration-card" data-disabled="true" disabled aria-disabled="true"><strong>Direct ${escape(m.label)}</strong><span>Coming soon</span></button>`,
-        )
-        .join("")}</div></div>`;
-    if (connections) {
-      content.querySelector(".github-auth")!.replaceWith(connections.github);
-      content.querySelector(".copilot-auth")!.replaceWith(connections.copilot);
-    } else {
-      disposeCopilot = renderCopilotAuth(
-        content.querySelector(".copilot-auth")!,
-        (accounts) => {
-          copilotAccounts = accounts;
-        },
-      );
-      renderGithubAuth(
-        content.querySelector(".github-auth")!,
-        (account, accessible) => {
-          let repository = repositories().find(
-            (candidate) =>
-              candidate.provider === "github" &&
-              candidate.provider_account_id === account.account_id &&
-              candidate.provider_repository_id === accessible.id,
-          );
-          repository ??= repositories().find(
-            (candidate) =>
-              candidate.provider === "github" &&
-              candidate.name === accessible.name &&
-              !candidate.provider_account_id &&
-              !candidate.provider_repository_id,
-          );
-          if (repository) {
-            repository.name = accessible.name;
-            repository.enabled = true;
-            repository.provider_account_id = account.account_id;
-            repository.provider_repository_id = accessible.id;
-          } else {
-            repository = {
-              id: newIdentity(),
-              name: accessible.name,
-              enabled: true,
-              provider: "github",
-              provider_account_id: account.account_id,
-              provider_repository_id: accessible.id,
-            };
-            (draft.repositories ??= []).push(repository);
-          }
-          changed();
-          rows();
-        },
-        (accounts) => {
-          githubAccounts = accounts;
-          updateRepositoryAccounts?.();
-          if (content.querySelector(".repository-list")) rows();
-        },
-      );
-    }
+      <p class="settings-hint">For provider selection or account access, use ${options.embedded ? "Accounts in Settings" : "GitHub accounts below"}. Choosing a repository never grants trust.</p></section>`;
+    refreshRepositoryRows = rows;
+    renderAccounts();
+    if (options.embedded && accountContent)
+      accountParking.append(accountContent);
     content.querySelector<HTMLButtonElement>("#choose-folder")!.onclick =
       () => {
         if (!busy) void scan(true);
@@ -1343,7 +1492,7 @@ export async function mountSettings(
     const selectedAccount = repository?.provider_account_id ?? "";
     const modal = dialog(
       repository ? "Edit repository" : "Add repository",
-      `<form><label>GitHub repository<input name="repository" required value="${escape(repository?.name ?? "")}" placeholder="owner/repository or https://github.com/owner/repository" /></label><label>Acting GitHub account<select name="account">${option(selectedAccount, selectedAccount || "Choose a GitHub account", selectedAccount)}</select></label><p class="settings-hint">PR Sniper validates this repository with the selected account before binding its stable identity. No account is chosen for you; reconnect unavailable accounts in Integrations. Without any account, a saved repository remains explicitly unbound. Save persists this repository only. Monitoring scope still requires separate confirmation.</p><p role="alert" hidden></p><div class="resource-actions"><button type="button" data-cancel-resource>Cancel</button><button type="submit" class="primary">Save repository</button></div></form>`,
+      `<form><label>GitHub repository<input name="repository" required value="${escape(repository?.name ?? "")}" placeholder="owner/repository or https://github.com/owner/repository" /></label><label>Acting GitHub account<select name="account">${option(selectedAccount, selectedAccount || "Choose a GitHub account", selectedAccount)}</select></label><p class="settings-hint">PR Sniper validates this repository with the selected account before binding its stable identity. No account is chosen for you; reconnect unavailable accounts in ${accountSection}. Without any account, a saved repository remains explicitly unbound. Save persists this repository only. Monitoring scope still requires separate confirmation.</p><p role="alert" hidden></p><div class="resource-actions"><button type="button" data-cancel-resource>Cancel</button><button type="submit" class="primary">Save repository</button></div></form>`,
       opener,
     );
     resourceEditor(modal);
@@ -1401,7 +1550,7 @@ export async function mountSettings(
               candidate.state === "connected",
           )
         )
-          throw "Choose a connected GitHub account. Reconnect unavailable accounts in Integrations.";
+          throw `Choose a connected GitHub account. Reconnect unavailable accounts in ${accountSection}.`;
         const name = await invoke<string>("canonical_repository_name", {
           repository: requestedName,
         });
@@ -2147,7 +2296,7 @@ export async function mountSettings(
     const people = repository.watched_authors ?? [];
     const picker = dialog(
       "Add people",
-      `<form class="person-lookup"><label>Acting GitHub account<select name="account" required>${option("", "Choose a GitHub account", repository.provider_account_id ?? "")}${availableAccounts.map((account) => option(account.account_id, `${account.login} (${account.account_id})`, repository.provider_account_id ?? "")).join("")}</select></label><label>GitHub login<input name="login" placeholder="octocat" autocomplete="off" required /></label><p class="settings-hint">${availableAccounts.length ? "Looks up the exact login through the selected GitHub account and stores its stable identity. No wildcards." : "No connected GitHub account is available. Connect one in Integrations."}</p><p role="alert" hidden></p><div class="resource-actions"><button type="submit" class="primary" ${availableAccounts.length ? "" : "disabled"}>Add person</button><button type="button" data-cancel-resource>Cancel</button></div></form>`,
+      `<form class="person-lookup"><label>Acting GitHub account<select name="account" required>${option("", "Choose a GitHub account", repository.provider_account_id ?? "")}${availableAccounts.map((account) => option(account.account_id, `${account.login} (${account.account_id})`, repository.provider_account_id ?? "")).join("")}</select></label><label>GitHub login<input name="login" placeholder="octocat" autocomplete="off" required /></label><p class="settings-hint">${availableAccounts.length ? "Looks up the exact login through the selected GitHub account and stores its stable identity. No wildcards." : `No connected GitHub account is available. Connect one in ${accountSection}.`}</p><p role="alert" hidden></p><div class="resource-actions"><button type="submit" class="primary" ${availableAccounts.length ? "" : "disabled"}>Add person</button><button type="button" data-cancel-resource>Cancel</button></div></form>`,
       opener,
     );
     resourceEditor(picker);
@@ -2515,7 +2664,7 @@ export async function mountSettings(
         return;
       }
       const retainAccounts =
-        section === "integrations" &&
+        (section === "integrations" || section === "accounts") &&
         content.querySelector(".account-connection") !== null &&
         sameResource(saved, state.settings);
       saved = clone(state.settings);
@@ -2568,12 +2717,18 @@ export async function mountSettings(
       openGenie.hidden = true;
       app.querySelector<HTMLElement>("[data-genie-save-note]")!.hidden = false;
       const next: Section =
-        target === "ai" ||
-        target === "repository-account" ||
-        target === "repositories"
-          ? "integrations"
-          : target;
+        target === "ai" || target === "repository-account"
+          ? options.embedded
+            ? "accounts"
+            : "integrations"
+          : target === "repositories"
+            ? options.embedded
+              ? "repositories"
+              : "integrations"
+            : target;
+      if (options.embedded) homeOpener = next;
       if (section !== next) navigate(next);
+      settingsBack.hidden = true;
       const selector =
         target === "ai"
           ? ".copilot-auth"
