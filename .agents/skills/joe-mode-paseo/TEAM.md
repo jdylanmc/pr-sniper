@@ -50,7 +50,7 @@ test-framework retrofit. Feature staffing still costs two.
 Standalone Ship is TDD opt-in. Patch and Refactor use one developer without a
 forced red/green workflow. All routes still need useful proof.
 
-Refactor applies `laziness` (KISS and YAGNI) and `solid`, plus `worktrees` for
+Refactor applies `laziness` (KISS and YAGNI) and `solid`, and the workspace procedure for
 PR work. There are no separate `kiss` or `yagni` catalog IDs. Preserve behavior,
 improve structure, use tests where they help. Initial Roast covers preservation,
 ownership/interfaces and needless complexity as distinct angles. Use independent reviewers where separate expertise is needed, not a standing committee.

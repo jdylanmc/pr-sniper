@@ -107,12 +107,11 @@ Preserve applicable attribution and license when distributing a policy copy.
 `scout` renames Julius Brussee's `caveman-explore`, retaining its read-only
 repository-localization behavior, tests, and original import source/hash.
 The Caveman MIT notice above applies. This skill is distinct from the
-repository's human-authored Scout doctrine.
+repository catalog, which no longer includes a Scout doctrine.
 
 `doctrine` is a locally authored read-only catalog/selection/loading skill,
-not an installer import. It contains the unchanged existing human-curated
-doctrine sources and uses the repository MIT license. The newly requested
-`worktrees` doctrine and Ship's workspace procedure adapt Jesse Vincent's
+not an installer import. It contains this repository's curated
+doctrine catalog and uses the repository MIT license. Ship's workspace procedure adapts Jesse Vincent's
 `using-git-worktrees`, whose standalone skill is retired. The Superpowers MIT
 notice applies to that adapted material alongside the repository license.
 

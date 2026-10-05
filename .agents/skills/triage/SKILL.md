@@ -7,7 +7,7 @@ user-invocable: true
 
 # Triage
 
-Use [doctrine selection and application](../doctrine/APPLY.md), preserving explicit choices. With none, consider `debugging` for causal investigation and `documentation` for agent briefs. Pass the scoped packet with a work handoff. Reading/testing a submitted PR is not permission to create or change one; separately authorized PR-producing work requires `worktrees`.
+Use [doctrine selection and application](../doctrine/APPLY.md), preserving explicit choices. With none, consider `documentation` for agent briefs. Pass the scoped packet with a work handoff. Reading/testing a submitted PR is not permission to create or change one; separately authorized PR-producing work follows the workspace procedure.
 
 Move issues on the project issue tracker through a small state machine of triage roles.
 

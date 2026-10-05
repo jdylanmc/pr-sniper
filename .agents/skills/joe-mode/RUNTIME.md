@@ -58,7 +58,7 @@ The selected Ship, Patch, or Refactor owner owns its delivery branch, integratio
 
 Read actual repository worktree guidance before creating any workspace. An existing linked worktree is not automatically safe for several writers. Retire agents only after LIFECYCLE's terminal checks; agent archival never substitutes for separately authorized branch/worktree/workspace cleanup.
 
-Every PR-producing lane requires `worktrees`, including domain/ADR and documentation deliveries. Route workspace operations to the owning workflow's [workspace procedure](../ship/WORKSPACE.md); doctrine selection does not create a workspace or authorize publication.
+Every PR-producing lane follows the workspace procedure, including domain/ADR and documentation deliveries. Route workspace operations to the owning workflow's [workspace procedure](../ship/WORKSPACE.md); doctrine selection does not create a workspace or authorize publication.
 
 ## Copilot-specific restraint
 

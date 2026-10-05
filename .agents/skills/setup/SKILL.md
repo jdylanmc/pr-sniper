@@ -26,7 +26,7 @@ uncertain ownership blocks a new run. For Joe-mode, retain its controller,
 original anchor/exclusions, objective-start evidence, configuration gaps, and
 return destination. Setup is not a new Joe controller or delivery owner.
 
-Use [doctrine selection and application](../doctrine/APPLY.md) within this setup's existing approval gates. If these configuration changes will be delivered in a PR, require `worktrees` before preparing them. No doctrine selection authorizes setup writes or changes to global instructions.
+Use [doctrine selection and application](../doctrine/APPLY.md) within this setup's existing approval gates. If these configuration changes will be delivered in a PR, follow the workspace procedure before preparing them. No doctrine selection authorizes setup writes or changes to global instructions.
 
 Scaffold the per-repo configuration that the engineering skills assume:
 
@@ -175,7 +175,7 @@ Use the library's terse Conventional Commits default in `docs/agents/commit-styl
 
 ### Doctrine
 
-Use `/doctrine` at <verified package location>: no arguments lists catalog metadata; named IDs retrieve verified text; orchestrators send scoped selection packets and workers load their assigned doctrines. Repository-required IDs: <confirmed IDs or none>. Code Roast requires `solid`; PR-producing workflows require `worktrees`. Preserve operator choices for the named delivery without applying them to unrelated work.
+Use `/doctrine` at <verified package location>: no arguments lists catalog metadata; named IDs retrieve verified text; orchestrators send scoped selection packets and workers load their assigned doctrines. Repository-required IDs: <confirmed IDs or none>. Code Roast requires `solid`; PR-producing workflows follow the workspace procedure. Preserve operator choices for the named delivery without applying them to unrelated work.
 ```
 
 Resolve the doctrine placeholders before writing. If the package is unavailable, record that limitation and the needed installation/location instead of claiming doctrine loading is configured. Keep its bundled manifest, sources, and helper together; never change global configuration to make the path work.

@@ -9,7 +9,7 @@ user-invocable: true
 
 **Entry:** Human or scoped agent use after Specify, with human approval before publication. Follow the [invocation contract](../setup/INVOCATION.md).
 
-Use [doctrine selection and application](../doctrine/APPLY.md), preserving the parent deliverable's choices. With none, consider `sequencing` and `documentation` for dependency-aware, durable work packets. Carry scoped selections and required IDs into implementation handoffs. A separately authorized PR for local ticket files requires `worktrees`; tracker publication alone does not.
+Use [doctrine selection and application](../doctrine/APPLY.md), preserving the parent deliverable's choices. With none, consider `sequencing` and `documentation` for dependency-aware, durable work packets. Carry scoped selections and required IDs into implementation handoffs. A separately authorized PR for local ticket files follows the workspace procedure; tracker publication alone does not.
 
 After [Specify](../specify/SKILL.md), break its completed requirements specification into **tickets**: tracer-bullet vertical slices, each declaring the tickets that **block** it. Human or coordinating-agent invocation both require human approval before publication. A raw conversation, exploratory plan, or unfinished Discovery artifact is not a requirements specification.
 

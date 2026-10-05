@@ -19,7 +19,7 @@ for accepted custody/recovery/retirement; idle proves no end of maintenance.
 Before custody, load/execute [OBSERVATION](OBSERVATION.md): scheduler-first
 adaptive cadence, durable per-PR state, fair shared wakes, owned cleanup.
 
-Preserve the delivery's [doctrine selection](../doctrine/APPLY.md) through maintenance and repair handoffs. **Require `worktrees` before preparing PR changes** and use the [workspace procedure](../ship/WORKSPACE.md) to reuse the owned delivery workspace. Invocation/handoff grants bounded maintenance within established ownership; an explicit observation-only request does not. Load applied standards; pass metadata and pinned digests to the route owner. The monitor need not read every worker doctrine.
+Preserve the delivery's [doctrine selection](../doctrine/APPLY.md) through maintenance and repair handoffs. **Follow the [workspace procedure](../ship/WORKSPACE.md) before preparing PR changes** to reuse the owned delivery workspace. Invocation/handoff grants bounded maintenance within established ownership; an explicit observation-only request does not. Load applied standards; pass metadata and pinned digests to the route owner. The monitor need not read every worker doctrine.
 
 ## Take ownership
 

@@ -1,6 +1,6 @@
 # Delivery workspace
 
-The PR-producing owner executes this procedure within its existing authority after loading `worktrees` through [Doctrine](../doctrine/SKILL.md). It replaces the standalone worktree skill, not the caller's approval, setup, or publication rules.
+The PR-producing owner executes this procedure within its existing authority. It replaces the standalone worktree skill, not the caller's approval, setup, or publication rules. Isolation remains required. It is not a doctrine.
 
 ## Inspect and reuse
 

@@ -10,7 +10,7 @@ user-invocable: true
 
 **Entry:** Human only. Turn recurring activities into workflow specifications; do not implement or execute the automation. Follow the [invocation contract](../setup/INVOCATION.md).
 
-Use [doctrine selection and application](../doctrine/APPLY.md). Preserve explicit choices; otherwise, consider `machine` and `laziness` for automation design, not as requirements for every life workflow. Carry selections into any authorized delivery handoff. If a separately authorized PR will deliver workflow documents, require `worktrees` before preparing changes.
+Use [doctrine selection and application](../doctrine/APPLY.md). Preserve explicit choices; otherwise, consider `machine` and `laziness` for automation design, not as requirements for every life workflow. Carry selections into any authorized delivery handoff. If a separately authorized PR will deliver workflow documents, follow the workspace procedure before preparing changes.
 
 Only a human invokes this workflow. Clarify design in focused rounds, recommending answers where useful, aimed at the vocabulary and goal below. Interrogate is internal only to Discovery or Joe-mode; do not call it directly or route ordinary Automate-this design through full domain-modeling Discovery just to reach it.
 

@@ -36,7 +36,7 @@ fn canonical_doctrines() -> Vec<Doctrine> {
         })
         .collect();
     doctrines.sort_by(|a, b| a.title.cmp(&b.title));
-    assert_eq!(doctrines.len(), 23);
+    assert_eq!(doctrines.len(), 14);
     doctrines
 }
 
@@ -52,7 +52,7 @@ fn fresh_settings_persist_the_exact_complete_canonical_catalog() {
             .map(|doctrine| &doctrine.title)
             .collect::<HashSet<_>>()
             .len(),
-        23
+        14
     );
     assert!(fixture.store().has_saved_settings());
     let persisted = fs::read(fixture.path().join("config/settings.json")).unwrap();

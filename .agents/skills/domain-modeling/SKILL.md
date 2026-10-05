@@ -14,7 +14,7 @@ decision-record destination and its writing owner. Conversation modeling alone
 does not authorize files. Reuse confirmed recording scope; ask only when missing
 or changed. Keep human decisions distinct from proposals.
 
-Use [doctrine selection and application](../doctrine/APPLY.md); preserve caller/operator selections. With none, consider `domain`, `boundaries`, and `documentation` for executable concepts, context boundaries, or durable records respectively. PR-bound changes require `worktrees` before writing; recording gates still apply.
+Use [doctrine selection and application](../doctrine/APPLY.md); preserve caller/operator selections. With none, consider `bounded-context` and `documentation` for executable concepts, context boundaries, or durable records. PR-bound changes follow the workspace procedure before writing; recording gates still apply.
 
 Actively build and sharpen the project's domain model during design: challenge terms, invent edge-case scenarios, and record the glossary and decisions as they crystallise. Merely reading `CONTEXT.md` for vocabulary is a one-line habit any skill can use, not this skill. Use this skill to change the model, not just consume it.
 

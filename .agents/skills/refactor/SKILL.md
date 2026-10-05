@@ -13,7 +13,7 @@ Joe-mode's selected delivery grants in-scope worktree, changes, commits, push/PR
 
 Use [doctrine selection and application](../doctrine/APPLY.md), preserving the
 task's selections. Require `laziness` and `solid` for restructuring, and
-`worktrees` for PR changes. Laziness supplies KISS and YAGNI: keep it simple,
+the workspace procedure for PR changes. Laziness supplies KISS and YAGNI: keep it simple,
 do not build what is not needed. These are not separate catalog IDs.
 Code Roast also requires `solid`. Apply the loaded rules without weakening
 behavior preservation.

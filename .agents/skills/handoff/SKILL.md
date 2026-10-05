@@ -13,8 +13,8 @@ agent-to-agent work under the [invocation contract](../setup/INVOCATION.md).
 Confirm destination/access and what transfers. A portable-document request
 does not authorize starting another Joe-mode.
 
-Follow [doctrine selection and application](../doctrine/APPLY.md); consider
-`context` when none was preselected. Carry the task/delivery's doctrine packet:
+Follow [doctrine selection and application](../doctrine/APPLY.md). With none
+preselected, do not invent a doctrine. Carry the task/delivery's doctrine packet:
 operator choices, required and assigned IDs, reasons, accessible source locations,
 pinned digests, and any missing/load/application status. Do not copy every
 doctrine body; the receiver retrieves verified text before applying it.

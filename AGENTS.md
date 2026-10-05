@@ -47,7 +47,8 @@ does not authorize staging, committing or rewriting history.
 
 The complete local package is `.agents/skills/doctrine/`. Use `/doctrine`
 for catalog, selection and verified loading. No additional repository-wide
-doctrines are selected. PR-producing work requires `worktrees`; code Roast
+doctrines are selected. PR-producing work follows the workspace procedure in
+`.agents/skills/ship/WORKSPACE.md`; that procedure is not a doctrine. Code Roast
 requires `solid`. Orchestrators supply scoped selections and source digests;
 workers load the full selected texts before applying them.
 

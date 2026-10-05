@@ -13,7 +13,7 @@ Without all three, return the missing inputs to that parent instead of
 automatically beginning a synthesis interview. A direct human request may
 resolve missing altitude through the question below.
 
-Use [doctrine selection and application](../doctrine/APPLY.md), preserving explicit choices. With none, consider `documentation` and `context` only where relevant to the target artifact. Load selected text before applying it; doctrine does not change the human's chosen altitude, authorize source edits, or add unsupported claims to the synthesis.
+Use [doctrine selection and application](../doctrine/APPLY.md), preserving explicit choices. With none, consider `documentation` only where relevant to the target artifact. Load selected text before applying it; doctrine does not change the human's chosen altitude, authorize source edits, or add unsupported claims to the synthesis.
 
 Make source material useful at the altitude the human chose. Produce a separate candidate, not a replacement source or a self-approved authority. The human-authored [intent](intent.md) defines the purpose.
 
