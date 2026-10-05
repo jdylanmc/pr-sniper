@@ -2,6 +2,8 @@
 
 `settings-overview.spec.mjs` covers the grouped retained-panel Settings home:
 saved resource counts, separate Accounts/Repositories, all six destinations,
+Accounts category/provider drill-down at 408x744 and 320x300, inert coming-soon
+providers, per-provider summary failures, retained sign-ins and nested Back focus,
 keyboard entry, Back focus/scroll, unrelated drafts and Genie reuse. Existing
 shared-editor and panel suites exercise resource saves, explicit discard and
 hide/tab retention through those rows. Footer cases compare the version with the

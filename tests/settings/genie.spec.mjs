@@ -854,6 +854,11 @@ test("repository saves keep mounted account confirmation ownership", async ({
   await back(page);
   await page.locator('[data-genie-edit="repository-account"]').click();
   await expect(ai).toHaveAttribute("data-ownership", "original-flow");
+  await expect(ai).toBeHidden();
+  await expect(page.locator(".github-auth")).toBeVisible();
+  await back(page);
+  await page.locator('[data-genie-edit="ai"]').click();
+  await expect(ai).toHaveAttribute("data-ownership", "original-flow");
   await expect(
     ai.getByRole("button", { name: "Confirm Copilot account", exact: true }),
   ).toBeVisible();

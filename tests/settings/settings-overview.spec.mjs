@@ -13,6 +13,174 @@ const row = (page, name) =>
 
 test.use({ viewport: { width: 408, height: 744 }, deviceScaleFactor: 2 });
 
+for (const viewport of [
+  { width: 408, height: 744 },
+  { width: 320, height: 300 },
+]) {
+  test(`account categories and provider drill-down preserve Back context at ${viewport.width}x${viewport.height}`, async ({
+    page,
+    store,
+  }, testInfo) => {
+    await queueFixture(store);
+    const saved = (await store("snapshot")).settings;
+    await page.setViewportSize(viewport);
+    await page.addInitScript(() => {
+      const invoke = window.__TAURI_INTERNALS__.invoke;
+      window.__accountMutations = [];
+      window.__TAURI_INTERNALS__.invoke = (command, args) => {
+        if (
+          /^(start_|confirm_|disconnect_|cancel_).*(auth|copilot|github)/.test(
+            command,
+          )
+        )
+          window.__accountMutations.push(command);
+        return invoke(command, args);
+      };
+    });
+    await page.goto("/");
+    await tab(page, "Settings").click();
+    await row(page, "Accounts").click();
+    await expect(row(page, "AI Tooling")).toBeVisible();
+    await expect(row(page, "Git Repository")).toBeVisible();
+    await expect(page.locator(".settings-savebar")).toBeHidden();
+    await expect(page.locator(".account-connection")).toHaveCount(0);
+    await page.screenshot({
+      path: testInfo.outputPath("accounts-categories.png"),
+    });
+    for (const [category, provider, unavailable, card, other] of [
+      [
+        "AI Tooling",
+        "GitHub Copilot",
+        ["Claude", "Codex", "Grok"],
+        ".copilot-auth-card",
+        ".github-auth-card",
+      ],
+      [
+        "Git Repository",
+        "GitHub",
+        ["Azure DevOps", "Bitbucket"],
+        ".github-auth-card",
+        ".copilot-auth-card",
+      ],
+    ]) {
+      await row(page, category).focus();
+      await page.keyboard.press("Enter");
+      await expect(page.locator(".settings-heading h1")).toHaveText(category);
+      for (const label of unavailable) {
+        const planned = page
+          .locator(".settings-provider-planned")
+          .filter({ hasText: label });
+        await expect(planned).toContainText("Coming soon");
+        await expect(planned).toHaveAttribute("aria-disabled", "true");
+        await expect(planned.locator("button,a,input")).toHaveCount(0);
+      }
+      await expect(page.locator(".settings-savebar")).toBeHidden();
+      await expect(page.locator(card)).toBeHidden();
+      await row(page, provider).scrollIntoViewIfNeeded();
+      const scroll = await page
+        .locator("#content")
+        .evaluate((element) => element.scrollTop);
+      await row(page, provider).focus();
+      await page.screenshot({
+        path: testInfo.outputPath(
+          `${category.replaceAll(" ", "-")}-providers.png`,
+        ),
+      });
+      await page.keyboard.press("Enter");
+      await expect(page.locator(card)).toBeVisible();
+      await expect(page.locator(other)).toBeHidden();
+      await tab(page, "Queue").click();
+      await tab(page, "Settings").click();
+      await expect(page.locator(card)).toBeVisible();
+      await page
+        .getByRole("button", { name: `Back to ${category}`, exact: true })
+        .click();
+      await expect(row(page, provider)).toBeFocused();
+      expect(
+        await page.locator("#content").evaluate((element) => element.scrollTop),
+      ).toBe(scroll);
+      await page
+        .getByRole("button", { name: "Back to Accounts", exact: true })
+        .click();
+      await expect(row(page, category)).toBeFocused();
+      expect(
+        await page
+          .locator("#content")
+          .evaluate((element) => element.scrollWidth <= element.clientWidth),
+      ).toBe(true);
+    }
+    await back(page).click();
+    await expect(row(page, "Accounts")).toBeFocused();
+    expect(await page.evaluate(() => window.__accountMutations)).toEqual([]);
+    expect((await store("snapshot")).settings).toEqual(saved);
+  });
+}
+
+test("provider summaries isolate failed reads and retain an available retry route", async ({
+  page,
+  store,
+}) => {
+  await queueFixture(store);
+  await page.addInitScript(() => {
+    const invoke = window.__TAURI_INTERNALS__.invoke;
+    window.__githubReadFailure = true;
+    window.__TAURI_INTERNALS__.invoke = (command, args) => {
+      if (command === "github_auth_state" && window.__githubReadFailure)
+        return Promise.reject("GitHub fixture unavailable");
+      if (command === "copilot_auth_state")
+        return Promise.resolve({
+          accounts: [
+            {
+              provider: "copilot",
+              account_id: "1",
+              login: "fixture",
+              state: "connected",
+            },
+            {
+              provider: "copilot",
+              account_id: "2",
+              login: "expired",
+              state: "reconnect_required",
+              reason: "expired",
+            },
+          ],
+          flow: { state: "idle" },
+        });
+      return invoke(command, args);
+    };
+  });
+  await page.goto("/");
+  await tab(page, "Settings").click();
+  await row(page, "Accounts").click();
+  await expect(page.locator('[data-settings-count="ai-tooling"]')).toHaveText(
+    "1 connected / 1 need attention",
+  );
+  await expect(
+    page.locator('[data-settings-count="git-repository"]'),
+  ).toHaveText("Unavailable");
+  await row(page, "AI Tooling").click();
+  await expect(page.locator('[data-settings-count="copilot"]')).toHaveText(
+    "1 connected / 1 need attention",
+  );
+  await section(page, "Git Repository");
+  await expect(page.locator('[data-settings-count="github"]')).toHaveText(
+    "Unavailable",
+  );
+  await row(page, "GitHub").click();
+  await expect(page.locator(".github-auth-card")).toContainText(
+    "GitHub connection state is unavailable. No connection is assumed.",
+  );
+  await page.evaluate(() => {
+    window.__githubReadFailure = false;
+  });
+  await page
+    .getByRole("button", { name: "Retry reading GitHub accounts", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Add GitHub account", exact: true }),
+  ).toBeVisible();
+});
+
 test("grouped overview uses saved counts and all six destinations return focus and scroll", async ({
   page,
   store,
@@ -46,10 +214,7 @@ test("grouped overview uses saved counts and all six destinations return focus a
     path: testInfo.outputPath("settings-production-408x744.png"),
   });
   for (const [name, control] of [
-    [
-      "Accounts",
-      page.getByRole("button", { name: "Add GitHub account", exact: true }),
-    ],
+    ["Accounts", page.getByRole("button", { name: "AI Tooling", exact: true })],
     ["Agents", page.getByRole("button", { name: "New agent", exact: true })],
     [
       "Repositories",
@@ -217,7 +382,7 @@ test("unavailable account summary is explicit and Accounts remains retryable", a
   await expect(page.locator("#error")).toContainText(
     "Synthetic account read failed",
   );
-  await section(page, "Accounts");
+  await section(page, "GitHub");
   await expect(
     page.getByRole("button", { name: "Add GitHub account", exact: true }),
   ).toBeVisible();
@@ -266,7 +431,7 @@ test("Accounts retains the mounted sign-in flow and reports actual connected and
   await expect(page.locator('[data-settings-count="accounts"]')).toHaveText(
     "1 connected / 1 need attention",
   );
-  await section(page, "Accounts");
+  await section(page, "GitHub");
   await page.locator(".github-auth-card").evaluate((element) => {
     window.__accountCard = element;
   });
@@ -274,10 +439,12 @@ test("Accounts retains the mounted sign-in flow and reports actual connected and
     .getByRole("button", { name: "Add GitHub account", exact: true })
     .click();
   await expect(page.locator(".github-auth-card")).toContainText("TEST-CODE");
-  await back(page).click();
+  await section(page, "GitHub Copilot");
+  await expect(page.locator(".github-auth-card")).toBeHidden();
+  await expect(page.locator(".copilot-auth-card")).toBeVisible();
   await section(page, "Agents");
   await back(page).click();
-  await section(page, "Accounts");
+  await section(page, "GitHub");
   await expect(page.locator(".github-auth-card")).toContainText("TEST-CODE");
   expect(
     await page

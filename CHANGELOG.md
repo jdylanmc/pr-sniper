@@ -7,6 +7,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- Group Accounts into AI Tooling and Git Repository provider lists before
+  showing individual integration details. Preserve sign-in flows and nested
+  Back focus; label unavailable providers Coming soon without setup actions.
 - Preserve active PR evidence with stable, bounded native result paging. Clean
   provider-confirmed terminal detail automatically only after workers and
   uncertain writes settle; retain compact ownership/action receipts, safe
