@@ -635,7 +635,7 @@ test("hosted macOS WebKit adds a read-only pinned full-engine gate without nativ
   const job = webkit.jobs.webkit;
   assert.equal(job["runs-on"], "macos-15");
   assert.equal(job["runs-on"], ci.jobs.macos["runs-on"]);
-  assert.equal(job["timeout-minutes"], 40);
+  assert.equal(job["timeout-minutes"], 60);
   assert.equal(job.environment, undefined);
   assert.equal(job.permissions, undefined);
   assert.equal(job.needs, undefined);
@@ -676,7 +676,7 @@ test("hosted macOS WebKit adds a read-only pinned full-engine gate without nativ
       "npm run test:settings -- --browser=webkit",
     ],
   );
-  for (const step of job.steps.filter((step) => step.run)) {
+  for (const step of job.steps) {
     assert.ok(step["timeout-minutes"] > 0);
     assert.ok(step["timeout-minutes"] < job["timeout-minutes"]);
   }
