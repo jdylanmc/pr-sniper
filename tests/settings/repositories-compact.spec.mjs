@@ -130,6 +130,7 @@ async function start(page, store) {
   await page.evaluate(() => window.__settingsIdle());
   await tab(page, "Settings").click();
   await expect(page.locator("#save-status")).toHaveText("All changes saved");
+  await section(page, "Repositories");
   await page.evaluate(() => window.__settingsIdle());
 }
 
@@ -312,6 +313,7 @@ test("manual binding requires an explicit actor and preserves two overlapping st
   ).toBe(4);
   await page.reload();
   await page.evaluate(() => window.__settingsIdle());
+  await section(page, "Repositories");
   await expect(
     row(page, "shared/repository as repository-owner"),
   ).toBeVisible();
@@ -390,6 +392,7 @@ test("provider selection remains a draft until its own guarded repository save",
     };
   });
   await start(page, store);
+  await section(page, "Accounts");
   const account = page.getByRole("article", {
     name: "GitHub account second-owner",
     exact: true,

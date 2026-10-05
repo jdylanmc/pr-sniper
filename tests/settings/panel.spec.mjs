@@ -1,5 +1,6 @@
 import { expect, test } from "./fixtures.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
+import { section } from "./navigation.mjs";
 
 test.use({ viewport: { width: 400, height: 680 } });
 const tab = (page, name) =>
@@ -7,11 +8,6 @@ const tab = (page, name) =>
     .getByRole("navigation", { name: "Application destinations" })
     .getByRole("button", { name, exact: true });
 const heading = (page) => page.locator("[data-panel-heading]");
-const section = async (page, name) => {
-  const select = page.getByLabel("Settings section", { exact: true });
-  await expect(select).toBeVisible();
-  await select.selectOption({ label: name });
-};
 const invoke = (page, command, args) =>
   page.evaluate(
     ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args),
@@ -405,13 +401,14 @@ test("external auth blur and native-picker return retain unsaved preferences and
   await section(page, "Preferences");
   const cron = page.getByLabel("Cron expression", { exact: true });
   await cron.fill("*/23 * * * *");
-  await section(page, "Integrations");
+  await section(page, "Accounts");
   await page.getByRole("button", { name: "Add GitHub account" }).click();
   await expect(page.locator(".github-auth-card")).toContainText("FIXTURE-CODE");
   await page.evaluate(() => window.dispatchEvent(new Event("blur")));
   await invoke(page, "hide_panel");
   await invoke(page, "fixture_show_panel");
   await expect(page.locator(".github-auth-card")).toContainText("FIXTURE-CODE");
+  await section(page, "Repositories");
   await page
     .getByRole("button", { name: "Choose folder...", exact: true })
     .click();
@@ -604,7 +601,10 @@ for (const embedded of [true, false]) {
         });
       });
       await page.goto(embedded ? "/" : "/?view=settings");
-      if (embedded) await tab(page, "Settings").click();
+      if (embedded) {
+        await tab(page, "Settings").click();
+        await section(page, "Repositories");
+      }
       const activate = async (control) => {
         if (activation === "pointer") await control.click();
         else if (activation === "nonfocusing")
