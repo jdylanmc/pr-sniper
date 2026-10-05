@@ -83,6 +83,25 @@ test("URL intake binds the chosen account and starts with no monitoring authorit
   assert.equal(M.repositoryName("owner/repo"), "owner/repo");
 });
 
+test("repository intake does not dispatch existing queued work into free capacity", () => {
+  const state = M.seed();
+  state.reviews
+    .filter((review) => review.state === "running")
+    .forEach((review) => {
+      review.state = "queued";
+      review.run = null;
+      review.stage = 0;
+    });
+  M.validate(state);
+  const next = M.update(state, "add-repo", {
+    accountId: "github-personal",
+    name: "alex-demo/new-repo",
+  });
+  assert.equal(count(next, "running"), 0);
+  assert.deepEqual(plain(next.reviews), plain(state.reviews));
+  assert.equal(next.repos.at(-1).enabled, false);
+});
+
 test("seed has six configurations, four active reviews, eighteen waiting and three human items", () => {
   const state = M.validate(M.seed());
   assert.equal(state.agents.length, 6);
