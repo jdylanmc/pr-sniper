@@ -164,6 +164,9 @@ pub fn missing(store: &Store, route: &Route) -> Result<Option<String>, String> {
     if matches!(detail, Detail::Status | Detail::Diagnostics) {
         return Ok(None);
     }
+    if let Some(message) = crate::retention::cleaned(store, detail)? {
+        return Ok(Some(message.into()));
+    }
     let snapshot = queue::snapshot(store, vec![])?;
     let available = match detail {
         Detail::Item { item_id } => snapshot

@@ -13,10 +13,17 @@ pub mod policy;
 mod process_path;
 pub mod publication;
 pub mod queue;
+pub mod retention;
 pub mod review;
 pub mod startup;
 pub mod storage;
 mod storage_state;
+
+// Some helpers are consumed only by separate integration-test crates.
+#[cfg(all(test, windows))]
+#[allow(dead_code)]
+#[path = "../tests/support/windows_permissions.rs"]
+pub(crate) mod windows_permissions;
 
 use github::{metadata::PullRequest, provider::Connection, ConnectionError};
 use serde::Serialize;
@@ -946,6 +953,80 @@ fn queue_snapshot(host: &Host) -> Result<queue::Snapshot, String> {
 }
 
 #[tauri::command]
+async fn result_page(
+    app: tauri::AppHandle,
+    request: retention::PageRequest,
+) -> Result<retention::Page, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<Host>();
+        let store = host
+            .store
+            .lock()
+            .map_err(|_| "Result storage unavailable.")?;
+        retention::page(&store, request)
+    })
+    .await
+    .map_err(|_| "Result query failed.".to_string())?
+}
+
+#[tauri::command]
+async fn result_detail(
+    app: tauri::AppHandle,
+    destination: panel::Detail,
+) -> Result<retention::DetailResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<Host>();
+        let store = host
+            .store
+            .lock()
+            .map_err(|_| "Result storage unavailable.")?;
+        retention::detail(&store, destination)
+    })
+    .await
+    .map_err(|_| "Result detail query failed.".to_string())?
+}
+
+fn retention_maintenance(app: &tauri::AppHandle) -> Result<(), String> {
+    let host = app.state::<Host>();
+    // Existing launchers take these locks before Store. Nonblocking acquisition
+    // avoids inversion with a worker finishing its saved outcome.
+    macro_rules! idle {
+        ($mutex:expr, $busy:expr) => {
+            match $mutex.try_lock() {
+                Ok(guard) => {
+                    if $busy(&*guard) {
+                        return Ok(());
+                    } else {
+                        guard
+                    }
+                }
+                Err(std::sync::TryLockError::WouldBlock) => return Ok(()),
+                Err(_) => return Err("Cleanup worker coordination unavailable.".into()),
+            }
+        };
+    }
+    let _publications = idle!(host.publications.active, |p: &Option<String>| p.is_some());
+    let _follows = idle!(host.follow_ups.active, |p: &Option<(
+        String,
+        Arc<AtomicBool>
+    )>| p.is_some());
+    let _actions = idle!(host.actions.active, |active: &bool| *active);
+    let store = host
+        .store
+        .lock()
+        .map_err(|_| "Cleanup storage unavailable.")?;
+    if host.notifications.active.load(Ordering::SeqCst) || host.quitting.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+    // Applying journals already excluded all related workers before cutover.
+    retention::recover(&store)?;
+    if host.ai.settle_terminal(&store)? {
+        retention::maintain(&store, true)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn retry_monitoring_operation(
     app: tauri::AppHandle,
     operation_id: String,
@@ -1163,6 +1244,9 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                 }
             };
             if continue_checks && !host.quitting.load(Ordering::SeqCst) {
+                if let Err(error) = retention_maintenance(&app) {
+                    report(&app, error);
+                }
                 if let Err(error) = start_checks(&app, false) {
                     report(&app, error);
                 }
@@ -2249,6 +2333,8 @@ pub fn run() {
             notifications::windows::forward(_app, &_args);
         }))
         .invoke_handler(tauri::generate_handler![
+            result_page,
+            result_detail,
             snapshot,
             save_preferences,
             saved_resources,
@@ -2347,12 +2433,18 @@ pub fn run() {
                 GithubAuth::restore(&github_credentials, github_legacy_credentials.as_ref());
             let copilot = copilot::Integration::new(isolated)?;
             let store = Store::new(root.clone());
+            retention::recover(&store).map_err(std::io::Error::other)?;
             review::restore(&store).map_err(std::io::Error::other)?;
             publication::restore(&store).map_err(std::io::Error::other)?;
             follow_up::restore(&store).map_err(std::io::Error::other)?;
             actions::restore(&store).map_err(std::io::Error::other)?;
             let monitor = monitoring::Monitor::restore(&store).map_err(std::io::Error::other)?;
             let notification_restore = notifications::restore(&store);
+            let retention_restore = if notification_restore.is_ok() {
+                retention::maintain(&store, true).map(|_| ())
+            } else {
+                Ok(())
+            };
             #[cfg(target_os = "macos")]
             let executable = std::env::current_exe()?.canonicalize()?;
             #[cfg(windows)]
@@ -2383,6 +2475,9 @@ pub fn run() {
             if let Err(error) = notification_restore {
                 report(app.handle(), error);
             }
+            if let Err(error) = retention_restore {
+                report(app.handle(), error);
+            }
             record(app.handle(), DiagnosticEvent::SessionStarted);
             let scheduler_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -2393,6 +2488,9 @@ pub fn run() {
                         break;
                     }
                     if let Err(error) = start_checks(&scheduler_app, false) {
+                        report(&scheduler_app, error);
+                    }
+                    if let Err(error) = retention_maintenance(&scheduler_app) {
                         report(&scheduler_app, error);
                     }
                     if let Err(error) = capacity::Coordinator::pump(&scheduler_app) {

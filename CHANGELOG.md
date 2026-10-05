@@ -7,6 +7,11 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- Preserve active PR evidence with stable, bounded native result paging. Clean
+  provider-confirmed terminal detail automatically only after workers and
+  uncertain writes settle; retain compact ownership/action receipts, safe
+  same-head reopening and exact cleaned destinations. Reviewed renderer wiring
+  remains a separate delivery.
 - Re-home GitHub repository and Copilot AI connections in compact, role-labelled
   account panels with native device-code waiting, explicit identity confirmation,
   consent details and visible retry/disconnect states. Keep future direct
@@ -42,6 +47,15 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- Recover owned interrupted retention stages without deleting unowned files.
+  Keep missing human-closed roots unavailable and settle full/compact replies
+  consistently without hiding uncertain writes. Revalidate legacy terminal
+  records explicitly and count saved mention intent once in result ordering.
+- Keep save success aligned with the replacement commit point; recover ownership
+  housekeeping separately without rolling back a committed login preference.
+  Capture mentions from tracked iterations without requiring jobs, retain their
+  cleanup deduplication keys, and prevent superseded unstarted intent from
+  blocking current clearance. Expose ambiguous legacy result associations.
 - Keep account keyboard focus through native state updates, reject stale GitHub
   reads after account actions, and expose retry for unavailable account reads
   and failed GitHub credential deletion. Device-code controls remain fully
