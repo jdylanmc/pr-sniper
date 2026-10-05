@@ -300,7 +300,12 @@ test("panel primary-final route exposes only that final and returns to its exact
   const row = page
     .locator('[data-panel-view="reviewed"] article')
     .filter({ hasText: "Primary final review" });
-  await row.getByRole("button", { name: "Open job", exact: true }).click();
+  await row
+    .getByRole("button", {
+      name: "Open primary final review for example/repo #9",
+      exact: true,
+    })
+    .click();
   await expect(page.locator("[data-item-evidence]")).toContainText(
     "Primary final full review complete",
   );
@@ -341,7 +346,10 @@ test("panel primary-final route exposes only that final and returns to its exact
   await expect(page.locator("#thread-follow-ups article")).toHaveCount(0);
   await page.getByRole("button", { name: "Back", exact: true }).click();
   await expect(
-    row.getByRole("button", { name: "Open job", exact: true }),
+    row.getByRole("button", {
+      name: "Open primary final review for example/repo #9",
+      exact: true,
+    }),
   ).toBeFocused();
   expect((await store("monitoring_snapshot")).items[0].action_status).toEqual(
     before.items[0].action_status,

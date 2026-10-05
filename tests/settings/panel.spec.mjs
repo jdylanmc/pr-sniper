@@ -143,6 +143,26 @@ test("one retained panel shares four destinations, editor drafts and hide-only d
   expect(new URL(page.url()).search).toBe("");
 });
 
+test("Reviewed shows a loading state without a premature empty-state message", async ({
+  page,
+  store,
+  ipc,
+}) => {
+  await queueFixture(store);
+  const held = ipc.holdNext("result_page");
+  await page.goto("/");
+  await tab(page, "Reviewed").click();
+  await held.arrived;
+  const reviewed = page.locator('[data-panel-view="reviewed"]');
+  await expect(reviewed).toContainText("Loading Reviewed results...");
+  await expect(reviewed).not.toContainText(
+    "Reviewed results have not been loaded.",
+  );
+
+  held.release();
+  await expect(reviewed.locator("article")).toHaveCount(4);
+});
+
 test("Back restores exact row, list scroll and focus and switching detail replaces one layer", async ({
   page,
   store,
@@ -351,10 +371,15 @@ test("Running and Reviewed use real native jobs and exact kind identities withou
     .locator('[data-panel-view="reviewed"] article')
     .filter({ hasText: "example/repo #9" });
   await completed
-    .getByRole("button", { name: "Open job", exact: true })
+    .getByRole("button", {
+      name: "Open evidence for example/repo #9",
+      exact: true,
+    })
     .click();
-  await expect(page.locator("#agent-reviews article")).toHaveCount(1);
-  await expect(page.locator("#agent-reviews")).toContainText("example/repo #9");
+  await expect(heading(page)).toHaveText("Saved evidence");
+  await expect(page.locator("[data-item-evidence]")).toContainText(
+    "example/repo #9",
+  );
   await invoke(page, "panel_navigate", {
     route: {
       tab: "reviewed",
@@ -366,6 +391,409 @@ test("Running and Reviewed use real native jobs and exact kind identities withou
   );
   await expect(page.locator("#agent-reviews article")).toHaveCount(0);
   expect((await store("monitoring_snapshot")).reviews).toEqual(before.reviews);
+});
+
+test("Reviewed pages preserve native activity order and load older results without duplicates", async ({
+  page,
+  store,
+}) => {
+  const fixture = await queueFixture(store);
+  const reviews = Array.from({ length: 25 }, (_, index) =>
+    fixture.review(index + 1),
+  );
+  const state = {
+    jobs: reviews.map((review) => review.job),
+    reviews,
+    publications: [],
+    follow_ups: [],
+  };
+  await store("seed_queue_state", state);
+  reviews[7].result.output.synopsis = "Most recently changed result.";
+  await store("seed_queue_state", state);
+
+  const expected = [];
+  let cursor = null;
+  do {
+    const page = await store("result_page", {
+      request: { limit: 12, cursor, unavailable_cursor: null },
+    });
+    expected.push(...page.results);
+    cursor = page.next_cursor;
+  } while (cursor);
+  const expectedIds = expected.map((row) => row.item_id);
+  expect(expected).toHaveLength(25);
+  expect(new Set(expectedIds).size).toBe(25);
+  expect(expected[0].job.number).toBe(8);
+
+  await page.goto("/");
+  await tab(page, "Reviewed").click();
+  const list = page.locator(".reviewed-list");
+  const articles = list.locator("article");
+  await expect(articles).toHaveCount(12);
+  await expect(articles.first().locator(".reviewed-meta")).toHaveText(
+    "1 completed pass, 1 review attempt",
+  );
+  expect(
+    await articles.evaluateAll((entries) =>
+      entries.map((entry) => entry.dataset.reviewedItem),
+    ),
+  ).toEqual(expectedIds.slice(0, 12));
+
+  await page
+    .getByRole("button", { name: "Load older results", exact: true })
+    .click();
+  await expect(articles).toHaveCount(24);
+  await page
+    .getByRole("button", { name: "Load older results", exact: true })
+    .click();
+  await expect(articles).toHaveCount(25);
+  expect(
+    await articles.evaluateAll((entries) =>
+      entries.map((entry) => entry.dataset.reviewedItem),
+    ),
+  ).toEqual(expectedIds);
+  await expect(
+    page.getByRole("button", { name: "Refresh results", exact: true }),
+  ).toBeFocused();
+});
+
+test("Reviewed exhausts result and unavailable streams independently", async ({
+  page,
+  store,
+}) => {
+  const fixture = await queueFixture(store);
+  const reviews = Array.from({ length: 13 }, (_, index) =>
+    fixture.review(index + 1),
+  );
+  function itemId(job) {
+    return Buffer.from(
+      JSON.stringify([
+        job.provider,
+        job.account_id,
+        job.configuration_id,
+        job.repository_id,
+        job.pull_request_id,
+        job.head_sha,
+        job.trigger_policy,
+      ]),
+    ).toString("base64url");
+  }
+  const tracked = [];
+  const mentions = Array.from({ length: 25 }, (_, index) => {
+    const job = fixture.review(index === 1 ? 2 : 100 + index).job;
+    const id = itemId(job);
+    const binding = {
+      configuration_id: job.configuration_id,
+      account_id: job.account_id,
+      account_login: job.account_login,
+      repository_id: job.repository_id,
+      repository_name: job.repository_name,
+      pull_request_id: job.pull_request_id,
+      number: job.number,
+    };
+    tracked.push({
+      provider: job.provider,
+      configuration_id: job.configuration_id,
+      account_id: job.account_id,
+      repository_id: job.repository_id,
+      pull_request_id: job.pull_request_id,
+      number: job.number,
+      head_sha: job.head_sha,
+      lifecycle: "open",
+      terminal_observed: false,
+      iteration_id: `tracked-${index}`,
+      item_id: id,
+      iteration: index % 2 === 0 ? 1 : 2,
+      admission: {
+        watched_author: true,
+        all_authors: false,
+        requested_reviewer: false,
+      },
+      admitted_at: 100,
+      observed_at: 120,
+    });
+    return {
+      ...(index % 2 === 0 ? { item_id: id } : {}),
+      key: JSON.stringify([
+        "mention",
+        "github",
+        binding.account_id,
+        binding.configuration_id,
+        binding.repository_id,
+        binding.pull_request_id,
+        `comment-${index}`,
+      ]),
+      work_id: `unavailable-${String(index).padStart(2, "0")}`,
+      enqueue_order: 100 + index,
+      enqueued_at: 110,
+      binding,
+      comment: {
+        id: `comment-${index}`,
+        body: "@operator explain",
+        author_id: "11",
+        author_login: "author",
+        created_at: "2026-10-02T00:00:00Z",
+        updated_at: "2026-10-02T00:00:00Z",
+      },
+      follow_up_id: null,
+      blocked: "No execution available.",
+    };
+  });
+  const state = {
+    jobs: reviews.map((review) => review.job),
+    reviews,
+    tracked,
+    publications: [],
+    follow_ups: [],
+    feedback: { records: [], mentions },
+  };
+  await store("seed_queue_state", state);
+
+  const resultIds = [];
+  let cursor = null;
+  do {
+    const resultPage = await store("result_page", {
+      request: { limit: 12, cursor, unavailable_cursor: null },
+    });
+    resultIds.push(...resultPage.results.map((row) => row.item_id));
+    cursor = resultPage.next_cursor;
+  } while (cursor);
+  const unavailableIds = [];
+  let unavailableCursor = null;
+  do {
+    const unavailablePage = await store("result_page", {
+      request: {
+        limit: 12,
+        cursor: null,
+        unavailable_cursor: unavailableCursor,
+      },
+    });
+    unavailableIds.push(
+      ...unavailablePage.unavailable.map((entry) => entry.destination.id),
+    );
+    unavailableCursor = unavailablePage.next_unavailable_cursor;
+  } while (unavailableCursor);
+  expect(resultIds).toHaveLength(13);
+  expect(unavailableIds).toHaveLength(25);
+
+  await page.clock.install();
+  await page.goto("/");
+  await tab(page, "Reviewed").click();
+  const reviewed = page.locator('[data-panel-view="reviewed"]');
+  const results = reviewed.locator(".reviewed-list article");
+  const unavailable = reviewed.locator(".reviewed-unavailable-entry");
+  await expect(results).toHaveCount(12);
+  await expect(unavailable).toHaveCount(12);
+
+  await page
+    .getByRole("button", { name: "Load older results", exact: true })
+    .click();
+  await expect(results).toHaveCount(13);
+  await expect(unavailable).toHaveCount(24);
+  await page
+    .getByRole("button", { name: "Load older results", exact: true })
+    .click();
+  await expect(results).toHaveCount(13);
+  await expect(unavailable).toHaveCount(25);
+  await expect(
+    page.getByRole("button", { name: "Load older results", exact: true }),
+  ).toHaveCount(0);
+  await expect(reviewed).toContainText(
+    "All available open-PR results are loaded.",
+  );
+  expect(
+    await results.evaluateAll((entries) =>
+      entries.map((entry) => entry.dataset.reviewedItem),
+    ),
+  ).toEqual(resultIds);
+  expect(
+    await unavailable.evaluateAll((entries) =>
+      entries.map(
+        (entry) => JSON.parse(entry.dataset.reviewedUnavailableDestination).id,
+      ),
+    ),
+  ).toEqual(unavailableIds);
+  await expect(reviewed.locator(".reviewed-unavailable h2")).toHaveText(
+    "25 destinations are unavailable",
+  );
+  expect(new Set(unavailableIds).size).toBe(25);
+});
+
+test("Reviewed filters require an approval receipt and distinguish follow-up from readiness", async ({
+  page,
+  store,
+}) => {
+  const fixture = await queueFixture(store);
+  const otherReady = fixture.review(4);
+  fixture.state.jobs.push(otherReady.job);
+  fixture.state.reviews.push(otherReady);
+  fixture.state.publications.push(fixture.published(otherReady));
+  const approved = fixture.state.reviews.find(
+    (review) => review.job.number === 9,
+  );
+  const itemId = (
+    await store("result_page", {
+      request: { limit: 12, cursor: null, unavailable_cursor: null },
+    })
+  ).results.find((row) => row.job.number === 9).item_id;
+  const effect = {
+    cancelled: false,
+    reconcile_attempts: 0,
+    reconcile_requested: false,
+    id: "reviewed-approval",
+    final_id: "reviewed-final",
+    item_id: itemId,
+    action: "approve",
+    operation: {
+      ...approved.operation,
+      id: "reviewed-approval-operation",
+      operation_type: "github_approve",
+    },
+    observation: {
+      write_capability: true,
+      node_id: "PR_node",
+      repository_id: approved.job.repository_id,
+      pull_request_id: approved.job.pull_request_id,
+      account_id: approved.job.account_id,
+      author_id: approved.job.author_id,
+      head_repository_id: approved.job.repository_id,
+      head: approved.job.head_sha,
+      base: approved.result.reviewed_base_sha,
+      base_name: "main",
+      merge_rules: [],
+      merge_rules_error: null,
+      state: "OPEN",
+      draft: false,
+      permission: "WRITE",
+      mergeable: "MERGEABLE",
+      merge_state: "CLEAN",
+      review_decision: "APPROVED",
+      checks: "SUCCESS",
+      check_contexts: [],
+      in_merge_queue: false,
+      method: "SQUASH",
+      protection: null,
+      threads: [],
+      reviews: [],
+      comments: [],
+      merged_by: null,
+      merged_at: null,
+      merge_commit: null,
+    },
+    body: "Recorded approval fixture.",
+    state: "confirmed",
+    error: null,
+    receipt: {
+      id: "reviewed-receipt",
+      actor_id: approved.job.account_id,
+      head: approved.job.head_sha,
+      action: "approve",
+      merge_commit: null,
+    },
+  };
+  fixture.state.actions = { finals: [], effects: [effect], observations: [] };
+  await store("seed_queue_state", fixture.state);
+
+  const snapshot = await store("monitoring_snapshot");
+  expect(
+    snapshot.items.find((item) => item.job.number === 9).action_status.effects,
+  ).toEqual([effect]);
+  expect(
+    snapshot.items.find((item) => item.job.number === 4).action_status.effects,
+  ).toEqual([]);
+
+  await page.goto("/");
+  await tab(page, "Reviewed").click();
+  const reviewed = page.locator('[data-panel-view="reviewed"]');
+  const list = reviewed.locator(".reviewed-list");
+
+  const approvedFilter = reviewed.getByRole("button", {
+    name: "Approved",
+    exact: true,
+  });
+  await approvedFilter.click();
+  await expect(approvedFilter).toHaveAttribute("aria-pressed", "true");
+  await expect(approvedFilter).toBeFocused();
+  await expect(list.locator("article")).toHaveCount(1);
+  await expect(list).toContainText("example/repo #9");
+  await expect(list).not.toContainText("example/repo #4");
+  await expect(list).toContainText("This is not personal review.");
+
+  await reviewed.getByRole("button", { name: "Ready", exact: true }).click();
+  await expect(list.locator("article")).toHaveCount(2);
+  await expect(list).toContainText("example/repo #9");
+  await expect(list).toContainText("example/repo #4");
+
+  await reviewed
+    .getByRole("button", { name: "Follow-up", exact: true })
+    .click();
+  await expect(list.locator("article")).toHaveCount(2);
+  await expect(list).toContainText("example/repo #1");
+  await expect(list).toContainText("example/repo #2");
+});
+
+test("Reviewed opens the exact cleaned destination without substituting another PR", async ({
+  page,
+  store,
+}) => {
+  const fixture = await queueFixture(store);
+  const other = fixture.review(4);
+  fixture.state.jobs.push(other.job);
+  fixture.state.reviews.push(other);
+  fixture.state.publications.push(fixture.published(other));
+  await store("seed_queue_state", fixture.state);
+  const target = (
+    await store("result_page", {
+      request: { limit: 12, cursor: null, unavailable_cursor: null },
+    })
+  ).results.find((row) => row.job.number === 9);
+  await page.clock.install();
+  await page.goto("/");
+  await tab(page, "Reviewed").click();
+  const entry = page
+    .locator('[data-panel-view="reviewed"] article')
+    .filter({ hasText: "example/repo #9" });
+  await expect(entry).toHaveCount(1);
+
+  const job = target.job;
+  const tracked = {
+    provider: job.provider,
+    configuration_id: job.configuration_id,
+    account_id: job.account_id,
+    repository_id: job.repository_id,
+    pull_request_id: job.pull_request_id,
+    number: job.number,
+    head_sha: job.head_sha,
+    lifecycle: "closed",
+    terminal_observed: true,
+    iteration_id: "reviewed-cleaned-iteration",
+    item_id: target.item_id,
+    iteration: 1,
+    admission: {
+      watched_author: true,
+      all_authors: false,
+      requested_reviewer: false,
+    },
+    admitted_at: 100,
+    observed_at: 101,
+  };
+  await store("seed_queue_state", { ...fixture.state, tracked: [tracked] });
+  expect(await store("fixture_retention")).toEqual({ cleaned: 1 });
+
+  await entry
+    .getByRole("button", {
+      name: "Open evidence for example/repo #9",
+      exact: true,
+    })
+    .click();
+  const evidence = page.locator("[data-item-evidence]");
+  await expect(evidence).toContainText(
+    "Detail for this exact destination was cleaned",
+  );
+  await expect(evidence).toContainText(
+    "No other PR or iteration was selected.",
+  );
+  await expect(evidence).not.toContainText("example/repo #4");
 });
 
 test("external auth blur and native-picker return retain unsaved preferences and connecting identity", async ({
@@ -554,14 +982,19 @@ for (const destination of ["Queue", "Running", "Reviewed"]) {
             .filter({
               hasText: `example/repo #${destination === "Running" ? 3 : 9}`,
             })
-            .getByRole("button", { name: "Open job" });
+            .getByRole("button", {
+              name:
+                destination === "Running"
+                  ? "Open job"
+                  : "Open evidence for example/repo #9",
+            });
     await tab(page, destination).focus();
     await opener.evaluate((element) => {
       window.__nonfocusingOpener = element;
       element.click();
     });
     await expect(heading(page)).toHaveText(
-      destination === "Queue" ? "Saved evidence" : "Job details",
+      destination === "Running" ? "Job details" : "Saved evidence",
     );
     // Redraw the hidden list without choosing a new destination or changing identity.
     for (const job of fixture.state.jobs) job.title += " updated";
@@ -580,7 +1013,7 @@ for (const destination of ["Queue", "Running", "Reviewed"]) {
     await expect(opener).toBeFocused();
     await page.keyboard.press("Enter");
     await expect(heading(page)).toHaveText(
-      destination === "Queue" ? "Saved evidence" : "Job details",
+      destination === "Running" ? "Job details" : "Saved evidence",
     );
     await page.getByRole("button", { name: "Back", exact: true }).click();
     await expect(opener).toBeFocused();
