@@ -21,5 +21,3 @@ Look for:
 - **Preserved guarantees.** A numerical improvement must not weaken correctness, cohesion, types, validation, diagnostics, security, accessibility, compatibility, or behavioral tests.
 
 Describe the affected routine, changed paths, and consequence for understanding or verification. Recommend the smallest meaningful simplification. Keep necessary complexity and its justification visible.
-
-Numbers expose risk; they are not a substitute for judgment. Neither a low score proves good code nor a high score alone proves a functional defect. Do not expand a local change into repository-wide metric cleanup.
