@@ -57,6 +57,39 @@
     return name;
   }
   const uid = (prefix) => `${prefix}-${crypto.randomUUID()}`;
+  function repositoryName(value) {
+    const match = String(value)
+      .trim()
+      .match(
+        /^(?:https:\/\/github\.com\/)?([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)\/([a-z0-9_.-]+?)\/?$/i,
+      );
+    requireValue(match, "Enter a GitHub repository URL or owner/repository.");
+    const name = match[2].replace(/\.git$/i, "");
+    requireValue(name && !/^\.+$/.test(name), "Enter a repository name.");
+    return `${match[1]}/${name}`;
+  }
+  function repositoryOwners(account) {
+    return [
+      { name: account.name, kind: "Personal" },
+      ...(account.organizations ?? []).map((name) => ({
+        name,
+        kind: "Organization",
+      })),
+    ];
+  }
+  function repositoryCatalog(account, owner) {
+    requireValue(
+      account.kind === "github" && account.connected,
+      "Connect a GitHub account before browsing repositories.",
+    );
+    const scope = repositoryOwners(account).find((item) => item.name === owner);
+    requireValue(scope, "Choose an owner available to this account.");
+    return (
+      scope.kind === "Personal"
+        ? ["pr-sniper", "notch", "topo-code", "cmux-maestro"]
+        : ["console", "workspace", "storage", "docs", "website"]
+    ).map((name) => `${owner}/${name}`);
+  }
   const find = (items, id, label) => {
     const result = items.find((item) => item.id === id);
     requireValue(result, `${label} is no longer available.`);
@@ -138,12 +171,14 @@
           id: "github-personal",
           name: "alex-demo",
           kind: "github",
+          organizations: ["orbit"],
           connected: true,
         },
         {
           id: "github-team",
           name: "orbit-review-demo",
           kind: "github",
+          organizations: ["orbit"],
           connected: true,
         },
         {
@@ -959,6 +994,38 @@
         find(state.agents, payload.id, "Agent");
         state.agents = state.agents.filter((item) => item.id !== payload.id);
         break;
+      case "add-repo": {
+        const account = find(state.accounts, payload.accountId, "Account");
+        requireValue(
+          account.kind === "github" && account.connected,
+          "Choose a connected GitHub account.",
+        );
+        const name = repositoryName(payload.name);
+        requireValue(
+          !state.repos.some(
+            (repo) =>
+              repo.accountId === account.id &&
+              repo.name.toLowerCase() === name.toLowerCase(),
+          ),
+          "That repository is already added for this account. Open it from Repositories.",
+        );
+        state.repos.push({
+          id: uid("repo"),
+          name,
+          accountId: account.id,
+          enabled: false,
+          scope: false,
+          agentIds: [],
+          watched: [],
+          schedule: "cron",
+          minutes: 15,
+          cron: "*/15 * * * *",
+          zone: "America/New_York",
+          start: "inherit",
+          comments: "inherit",
+        });
+        break;
+      }
       case "save-repo": {
         const repo = { ...payload.repo, id: payload.repo.id || uid("repo") };
         const index = state.repos.findIndex((item) => item.id === repo.id);
@@ -1038,6 +1105,9 @@
     copy,
     models,
     accountName,
+    repositoryName,
+    repositoryOwners,
+    repositoryCatalog,
     stages,
     people,
     blockReason,

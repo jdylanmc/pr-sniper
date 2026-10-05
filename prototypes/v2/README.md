@@ -28,6 +28,49 @@ and outcomes are synthetic.
 
 ## Visual evidence
 
+### Repository browsing proposal — October 5, 2026
+
+Human-reviewed direction and native follow-up:
+[#114](https://github.com/jdylanmc/pr-sniper/issues/114), under
+[#51](https://github.com/jdylanmc/pr-sniper/issues/51).
+
+Settings > Repositories now uses compact, drill-in rows rather than a local
+folder picker or a list of monitoring checkboxes. Each connected GitHub account
+has a magnifying-glass button. Its browser offers personal and organization
+owners separately, with searchable synthetic repositories belonging to the
+selected owner—not an undifferentiated list of everything the account can access.
+Configured demo accounts include the fictional `orbit` organization.
+
+The requested native follow-up removes local-checkout discovery entirely:
+folder selection, scanning/rescanning, clone-path presentation, and discovery
+bulk selection. These are not alternate or advanced repository-add paths.
+The overview has no "Find a repository" or "Select visible" controls; search
+belongs inside the provider browser.
+
+The separate **+ URL** action accepts a GitHub URL or `owner/repository` and
+requires an explicit acting account. Browse selection or **Add & configure**
+persists a disabled, unassigned repository and immediately opens its editor.
+Back/Cancel leaves that added row in **Needs setup**; it does not start monitoring.
+Selecting an existing binding opens its editor instead of adding a duplicate.
+The same repository under another acting account is a distinct binding.
+
+Azure DevOps would browse repositories in the connected organization (with
+project context); it remains **Coming soon**, not a live or mocked connection.
+Personal GitHub and organization ownership are illustrated without credentials,
+network requests, or real access validation.
+
+This pass changes repository intake and navigation only. The older prototype's
+per-repository schedule editor and sample review trust behavior are historical,
+not current production requirements. Production uses a global cron and no
+per-revision trust prompt (#113). Existing-backlog activation is still an open
+product decision in #108; this prototype retains its new-PR-only scope mock.
+
+Run the focused interaction coverage with:
+
+```sh
+NODE_PATH=/path/to/pr-sniper/node_modules node prototypes/v2/repositories.browser.test.cjs
+```
+
 Two Chromium captures of the approved prototype, using synthetic fixtures.
 Click either image for the full-size view. The header reference-treatment
 provenance and production-clearance limit below also apply to these captures.

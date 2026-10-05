@@ -178,16 +178,22 @@ async function check(engine, name) {
     await settings();
     await page.locator('[data-page="repos"]').click();
     await settle();
-    await page.locator('[data-page="repo"]:not([data-id])').click();
+    await page.locator('[data-page="repo-url"]').click();
     await settle();
-    await page.locator('input[name="name"]').fill("sample/new-project");
+    await page
+      .locator('input[name="repository"]')
+      .fill("https://github.com/sample/new-project");
     await page
       .locator('select[name="accountId"]')
       .selectOption("github-personal");
+    await page.locator('[data-form="repo-url"] button[type="submit"]').click();
+    await settle();
+    await page.locator('input[name="enabled"]').check();
     await page.locator(`input[name="agentIds"][value="${newAgentId}"]`).check();
     await page.locator('input[name="scope"]').check();
     await page.locator("details.check-group summary").click();
     await page.locator('input[name="watched"]').first().check();
+    await page.locator('select[name="schedule"]').selectOption("interval");
     await page.locator('input[name="minutes"]').fill("");
     await page.locator('select[name="schedule"]').selectOption("cron");
     await page.locator('input[name="cron"]').fill("0 9 * * 1-5");
@@ -198,7 +204,7 @@ async function check(engine, name) {
     const newRepoId = (await state()).repos.at(-1).id;
     let savedRepo = (await state()).repos.at(-1);
     assert.equal(savedRepo.schedule, "cron");
-    assert.equal(savedRepo.minutes, 5);
+    assert.equal(savedRepo.minutes, 15);
     assert.equal(savedRepo.cron, "0 9 * * 1-5");
     assert.equal(savedRepo.zone, "Europe/London");
     const editRepo = async () => {
@@ -513,7 +519,7 @@ async function check(engine, name) {
     await settings();
     await page.locator('[data-page="repos"]').click();
     await settle();
-    await page.locator('[data-page="repo"]:not([data-id])').click();
+    await page.locator('[data-page="repo-url"]').click();
     await settle();
     assert.equal(
       await page.locator('select[name="accountId"]').inputValue(),
