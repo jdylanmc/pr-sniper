@@ -186,6 +186,7 @@ fn tools_read_immutable_content_and_reject_arbitrary_paths_or_execution() {
 
 #[tokio::test]
 async fn synthetic_runtime_validates_identity_tools_output_and_reaps_process() {
+    let _sdk_test_guard = crate::copilot::runtime::SDK_FIXTURE_TEST_LOCK.lock().await;
     for (scenario, success) in [
         ("success", true),
         ("wrong-account", false),
@@ -220,6 +221,7 @@ async fn synthetic_runtime_validates_identity_tools_output_and_reaps_process() {
 
 #[tokio::test]
 async fn primary_final_is_a_full_constrained_review_with_peer_and_human_context() {
+    let _sdk_test_guard = crate::copilot::runtime::SDK_FIXTURE_TEST_LOCK.lock().await;
     let root = tempfile::tempdir().unwrap();
     let mut request = request(true);
     request.task.final_context = Some(json!({"purpose":"primary_final_full_review",
@@ -273,6 +275,7 @@ async fn primary_final_is_a_full_constrained_review_with_peer_and_human_context(
 
 #[tokio::test]
 async fn follow_up_decisions_use_the_same_restricted_session_and_usage_contract() {
+    let _sdk_test_guard = crate::copilot::runtime::SDK_FIXTURE_TEST_LOCK.lock().await;
     for scenario in ["follow-up-quiet", "follow-up-human"] {
         for mention in [false, true] {
             let root = tempfile::tempdir().unwrap();
@@ -334,6 +337,7 @@ async fn follow_up_decisions_use_the_same_restricted_session_and_usage_contract(
 
 #[tokio::test]
 async fn cancellation_timeout_and_last_moment_gate_change_never_complete() {
+    let _sdk_test_guard = crate::copilot::runtime::SDK_FIXTURE_TEST_LOCK.lock().await;
     for scenario in ["cancel", "timeout", "gate"] {
         let root = tempfile::tempdir().unwrap();
         let mut request = request(false);
@@ -569,6 +573,7 @@ async fn failure_during_abort(reply: bool, signal: &str, scenario: &str) {
 
 #[tokio::test]
 async fn r72_observed_review_failure_survives_cancellation_during_abort_and_keeps_budget() {
+    let _sdk_test_guard = crate::copilot::runtime::SDK_FIXTURE_TEST_LOCK.lock().await;
     for signal in ["pause", "reduction", "cancel"] {
         for scenario in ["failure-held-abort", "malformed-held-abort"] {
             failure_during_abort(false, signal, scenario).await;
@@ -578,6 +583,7 @@ async fn r72_observed_review_failure_survives_cancellation_during_abort_and_keep
 
 #[tokio::test]
 async fn r72_observed_reply_failure_survives_cancellation_during_abort_and_keeps_budget() {
+    let _sdk_test_guard = crate::copilot::runtime::SDK_FIXTURE_TEST_LOCK.lock().await;
     for signal in ["pause", "reduction", "cancel"] {
         for scenario in ["failure-held-abort", "malformed-held-abort"] {
             failure_during_abort(true, signal, scenario).await;

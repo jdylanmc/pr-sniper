@@ -97,6 +97,11 @@ fn windows_directory() -> Result<PathBuf, String> {
     Ok(OsString::from_wide(&buffer[..length]).into())
 }
 
+// Isolate child-process fixture startup across test cases while retaining
+// the intentional parallel-client coverage inside each case.
+#[cfg(test)]
+pub(crate) static SDK_FIXTURE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 pub(crate) fn private_directory(prefix: &str) -> Result<tempfile::TempDir, String> {
     let directory = tempfile::Builder::new()
         .prefix(prefix)
@@ -363,10 +368,6 @@ pub(crate) fn assert_process_stopped(pid: u32) {
 mod tests {
     use super::*;
     use std::cell::Cell;
-
-    // Isolate child-process fixture startup across test cases while retaining
-    // the intentional parallel-client coverage inside each case.
-    static SDK_FIXTURE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     struct StartupDiagnostics<'a> {
         root: &'a Path,
