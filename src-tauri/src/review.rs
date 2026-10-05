@@ -2,7 +2,7 @@ pub(crate) mod host;
 pub(crate) mod runtime;
 
 use crate::{
-    github::{metadata::PullRequest, ConnectionError},
+    github::ConnectionError,
     monitoring::{self, JobOperation, MonitoringError, OperationFailure, OperationState, QueueJob},
     policy::Policy,
     storage::{Agent, AssignmentAuthority, Doctrine, Repository, Settings, Store},
@@ -34,7 +34,7 @@ pub struct ExecutionConfiguration {
 
 impl Selection {
     /// Compare execution inputs and effective authority, not sibling assignment archives.
-    /// Callers must still revalidate the job, account and trust gates.
+    /// Callers must still revalidate the job, account and permission gates.
     pub fn same_execution(&self, other: &Self) -> bool {
         self.agent == other.agent
             && self.policy == other.policy
@@ -182,6 +182,8 @@ pub struct ReviewRun {
     pub selection: Selection,
     pub operation: JobOperation,
     pub manual_start: bool,
+    /// Legacy evidence only; assignment and scope activation now authorize review.
+    #[serde(default)]
     pub trust_confirmed: bool,
     pub phase: String,
     pub error: Option<String>,
@@ -245,15 +247,6 @@ pub fn restore(store: &Store) -> Result<(), String> {
         store.save_reviews(&reviews)?;
     }
     Ok(())
-}
-
-pub fn requires_trust(settings: &Settings, job: &QueueJob, pull: &PullRequest) -> bool {
-    let watched = if job.work.is_some() {
-        monitoring::currently_watched(settings, job, pull.author.as_ref().map(|a| a.id.as_str()))
-    } else {
-        job.watched_author
-    };
-    !watched || pull.head_repository_id.as_deref() != Some(&job.repository_id)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -287,12 +287,6 @@ pub fn evaluate_review_gate(
     if stop.is_none() && stale {
         stop = Some("The reviewed diff changed; this output is stale.".into());
     }
-    if stop.is_none()
-        && crate::review::requires_trust(settings, current_job.unwrap_or(&review.job), pull)
-        && !review.trust_confirmed
-    {
-        stop = Some("Trust confirmation for this exact revision is required.".into());
-    }
     if stop.is_none() && !can_comment {
         stop = Some("The acting GitHub account cannot publish to this repository.".into());
     }

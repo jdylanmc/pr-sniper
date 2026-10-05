@@ -485,7 +485,10 @@ fn new_only_baselines_existing_unknown_old_heads_and_admits_later_heads() {
     assert_eq!(preview.candidates.len(), 1);
     assert!(preview.candidates[0].all_authors);
     assert!(!preview.candidates[0].watched_author);
-    assert!(preview.candidates[0].trust_confirmation_required);
+    assert!(serde_json::to_value(&preview.candidates[0])
+        .unwrap()
+        .get("trust_confirmation_required")
+        .is_none());
     apply_preview(
         &mut monitor,
         &store,
@@ -512,7 +515,7 @@ fn new_only_baselines_existing_unknown_old_heads_and_admits_later_heads() {
     assert_eq!(jobs[0].pull_request_id, "4");
     assert!(jobs[0].all_authors);
     assert!(!jobs[0].watched_author);
-    assert_eq!(jobs[0].waiting, "trust_confirmation");
+    assert_eq!(jobs[0].waiting, "human_start");
 
     let changed_old = pull("2", 2, "12", "omitted", &[], HEAD_B, "2026-09-25T10:03:00Z");
     check(
@@ -576,7 +579,7 @@ fn selected_existing_queues_only_selected_heads_and_deduplicates() {
     .unwrap();
     assert_eq!(store.load_queue().unwrap().len(), 1);
     assert_eq!(store.load_queue().unwrap()[0].pull_request_id, "2");
-    assert_eq!(store.load_queue().unwrap()[0].waiting, "trust_confirmation");
+    assert_eq!(store.load_queue().unwrap()[0].waiting, "human_start");
     check(
         &mut monitor,
         &store,
@@ -586,7 +589,7 @@ fn selected_existing_queues_only_selected_heads_and_deduplicates() {
     )
     .unwrap();
     assert_eq!(store.load_queue().unwrap().len(), 1);
-    assert_eq!(store.load_queue().unwrap()[0].waiting, "trust_confirmation");
+    assert_eq!(store.load_queue().unwrap()[0].waiting, "human_start");
     let mut restarted = Monitor::restore(&store).unwrap();
     check(
         &mut restarted,
@@ -605,7 +608,7 @@ fn selected_existing_queues_only_selected_heads_and_deduplicates() {
     )
     .unwrap();
     assert_eq!(store.load_queue().unwrap().len(), 1);
-    assert_eq!(store.load_queue().unwrap()[0].waiting, "trust_confirmation");
+    assert_eq!(store.load_queue().unwrap()[0].waiting, "human_start");
 }
 
 #[test]
@@ -629,7 +632,7 @@ fn reconfirming_new_only_preserves_already_admitted_work() {
         "current-login",
     )
     .unwrap();
-    assert_eq!(store.load_queue().unwrap()[0].waiting, "trust_confirmation");
+    assert_eq!(store.load_queue().unwrap()[0].waiting, "human_start");
 
     let preview = stage_preview(&mut monitor, &store, vec![existing.clone()], 1);
     apply_preview(
@@ -652,7 +655,7 @@ fn reconfirming_new_only_preserves_already_admitted_work() {
     .unwrap();
     let jobs = store.load_queue().unwrap();
     assert_eq!(jobs.len(), 1);
-    assert_eq!(jobs[0].waiting, "trust_confirmation");
+    assert_eq!(jobs[0].waiting, "human_start");
     assert_eq!(jobs[0].work.as_ref().unwrap().iteration, 1);
 }
 
@@ -725,7 +728,7 @@ fn changed_old_head_remains_eligible_after_an_ineligible_observation() {
     )
     .unwrap();
     assert_eq!(store.load_queue().unwrap().len(), 1);
-    assert_eq!(store.load_queue().unwrap()[0].waiting, "trust_confirmation");
+    assert_eq!(store.load_queue().unwrap()[0].waiting, "human_start");
     let mut restarted = Monitor::restore(&store).unwrap();
     check(
         &mut restarted,
@@ -736,7 +739,7 @@ fn changed_old_head_remains_eligible_after_an_ineligible_observation() {
     )
     .unwrap();
     assert_eq!(store.load_queue().unwrap().len(), 1);
-    assert_eq!(store.load_queue().unwrap()[0].waiting, "trust_confirmation");
+    assert_eq!(store.load_queue().unwrap()[0].waiting, "human_start");
 }
 
 #[test]
@@ -933,7 +936,7 @@ fn selected_old_head_reactivates_without_duplication_after_filter_roundtrip() {
         "current-login",
     )
     .unwrap();
-    assert_ne!(store.load_queue().unwrap()[0].waiting, WAITING_HUMAN_START);
+    assert_eq!(store.load_queue().unwrap()[0].waiting, WAITING_HUMAN_START);
 
     settings.repositories[0].watched_authors = vec![WatchedIdentity {
         id: "11".into(),
@@ -1015,7 +1018,7 @@ fn reviewer_request_admits_an_unchanged_old_head_but_author_match_keeps_backlog_
     let jobs = store.load_queue().unwrap();
     assert_eq!(jobs.len(), 1);
     assert_eq!(jobs[0].pull_request_id, "2");
-    assert_eq!(jobs[0].waiting, "trust_confirmation");
+    assert_eq!(jobs[0].waiting, "human_start");
     assert!(jobs[0].work.as_ref().unwrap().admission.requested_reviewer);
 }
 
@@ -1060,9 +1063,15 @@ fn activation_preview_filters_lifecycle_and_uses_watched_or_reviewer_matching() 
     );
     assert_eq!(preview.candidates.len(), 2);
     assert!(preview.candidates[0].watched_author);
-    assert!(!preview.candidates[0].trust_confirmation_required);
+    assert!(serde_json::to_value(&preview.candidates[0])
+        .unwrap()
+        .get("trust_confirmation_required")
+        .is_none());
     assert!(preview.candidates[1].requested_reviewer);
-    assert!(preview.candidates[1].trust_confirmation_required);
+    assert!(serde_json::to_value(&preview.candidates[1])
+        .unwrap()
+        .get("trust_confirmation_required")
+        .is_none());
 }
 
 #[test]
@@ -1833,7 +1842,7 @@ fn author_reviewer_and_combined_triggers_filter_before_queueing() {
     assert!(!jobs[0].requested_reviewer);
     assert_eq!(jobs[0].author_login.as_deref(), Some("new-author-login"));
     assert_eq!(jobs[0].account_login, "renamed-account");
-    assert_eq!(jobs[1].waiting, "trust_confirmation");
+    assert_eq!(jobs[1].waiting, "human_start");
     assert!(jobs[2].watched_author && jobs[2].requested_reviewer);
 }
 
@@ -1961,7 +1970,7 @@ fn failed_attempt_health_is_visible_and_persists_across_restart() {
 }
 
 #[test]
-fn reviewer_removal_keeps_admission_across_new_heads_without_bypassing_trust() {
+fn reviewer_removal_keeps_admission_across_new_heads_without_changing_start_policy() {
     let (_root, store) = store();
     let mut settings = store.load_settings().unwrap();
     settings.repositories[0].watched_authors = vec![WatchedIdentity {
@@ -1989,7 +1998,7 @@ fn reviewer_removal_keeps_admission_across_new_heads_without_bypassing_trust() {
     )
     .unwrap();
     assert_eq!(store.load_queue().unwrap().len(), 1);
-    assert_eq!(store.load_queue().unwrap()[0].waiting, "trust_confirmation");
+    assert_eq!(store.load_queue().unwrap()[0].waiting, "human_start");
 
     let removed = pull("1", 1, "33", "author", &[], HEAD_B, "2026-09-25T10:01:00Z");
     check(
@@ -2002,7 +2011,7 @@ fn reviewer_removal_keeps_admission_across_new_heads_without_bypassing_trust() {
     .unwrap();
     assert_eq!(store.load_queue().unwrap().len(), 2);
     assert_eq!(store.load_queue().unwrap()[0].waiting, WAITING_SUPERSEDED);
-    assert_eq!(store.load_queue().unwrap()[1].waiting, "trust_confirmation");
+    assert_eq!(store.load_queue().unwrap()[1].waiting, "human_start");
     assert!(!store.load_queue().unwrap()[1].requested_reviewer);
     assert!(
         store.load_queue().unwrap()[1]
@@ -2035,7 +2044,7 @@ fn reviewer_removal_keeps_admission_across_new_heads_without_bypassing_trust() {
         .load_queue()
         .unwrap()
         .iter()
-        .any(|job| job.head_sha == HEAD_B && job.waiting == "trust_confirmation"));
+        .any(|job| job.head_sha == HEAD_B && job.waiting == "human_start"));
 }
 
 #[test]
@@ -2258,7 +2267,7 @@ fn scans_supersede_old_heads_but_keep_admission_after_trigger_removal_or_missing
             .find(|job| job.pull_request_id == "2")
             .unwrap()
             .waiting,
-        "trust_confirmation"
+        "human_start"
     );
     assert_eq!(
         jobs.iter()
@@ -2324,7 +2333,7 @@ fn scans_supersede_old_heads_but_keep_admission_after_trigger_removal_or_missing
 #[test]
 fn configuration_changes_retire_actionable_jobs_before_a_provider_scan() {
     for (case, expected) in [
-        ("policy", "trust_confirmation"),
+        ("policy", "human_start"),
         ("disabled", WAITING_REPOSITORY_DISABLED),
         ("removed", WAITING_REPOSITORY_REMOVED),
         ("replaced", WAITING_REPOSITORY_REMOVED),

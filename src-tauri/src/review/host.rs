@@ -20,7 +20,6 @@ pub(crate) struct Candidate {
     pub assignment_id: String,
     pub agent_name: String,
     pub job: QueueJob,
-    pub trust_required: bool,
     pub blocked: Option<String>,
     pub planned_selection: Option<Selection>,
     pub run: Option<ReviewRun>,
@@ -69,7 +68,6 @@ pub(crate) fn candidates(store: &crate::storage::Store) -> Result<Vec<Candidate>
                 run,
                 key,
                 assignment_id: assignment.id.clone(),
-                trust_required: job.waiting == monitoring::WAITING_TRUST_CONFIRMATION,
                 blocked: selection.err(),
                 job: job.clone(),
             });
@@ -86,7 +84,6 @@ pub(crate) fn candidates(store: &crate::storage::Store) -> Result<Vec<Candidate>
                     .find(|j| run.matches_job(j))
                     .cloned()
                     .unwrap_or_else(|| run.job.clone()),
-                trust_required: false,
                 blocked: Some(
                     "Historical review; assignment or repository is no longer available.".into(),
                 ),
@@ -109,7 +106,6 @@ pub(crate) fn request(
     store: &crate::storage::Store,
     candidate_key: &str,
     manual: bool,
-    confirm_trust: bool,
     now: i64,
 ) -> Result<ReviewRun, String> {
     let settings = store.load_settings()?;
@@ -166,7 +162,7 @@ pub(crate) fn request(
             job: candidate.job,
             selection: selection.clone(),
             manual_start: manual,
-            trust_confirmed: confirm_trust,
+            trust_confirmed: false,
             phase: "Waiting for shared AI capacity".into(),
             error: None,
             result: None,
@@ -185,10 +181,6 @@ pub(crate) fn request(
         return Err(run.error.unwrap());
     }
     run.manual_start |= manual;
-    run.trust_confirmed |= confirm_trust;
-    if candidate.trust_required && !run.trust_confirmed {
-        return Err("Confirm trust for this exact head revision before starting.".into());
-    }
     replace_run(&mut reviews, &run);
     store.save_reviews(&reviews)?;
     Ok(run)
@@ -199,7 +191,7 @@ pub(crate) fn prepare_dispatch(
     key: &str,
     now: i64,
 ) -> Result<ReviewRun, String> {
-    let mut run = request(store, key, false, false, now)?;
+    let mut run = request(store, key, false, now)?;
     run.feedback_context = Some(
         crate::feedback::contexts(store, &run.job, &run.selection.agent.id)
             .map_err(|e| e.message)?,
@@ -372,11 +364,6 @@ fn remote_gate(
         .map_err(|_| Failure::permanent("Review storage is unavailable."))?;
     let settings = store.load_settings().map_err(Failure::permanent)?;
     monitoring::review_policy(&settings, &run.job, Some(&pull)).map_err(Failure::permanent)?;
-    if super::requires_trust(&settings, &run.job, &pull) && !run.trust_confirmed {
-        return Err(Failure::permanent(
-            "This fork or author requires explicit trust confirmation.",
-        ));
-    }
     Ok(pull)
 }
 
@@ -563,7 +550,6 @@ pub(crate) async fn execute(
 pub(crate) async fn start_review(
     app: tauri::AppHandle,
     candidate_key: String,
-    confirm_trust: bool,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let host = app.state::<Host>();
@@ -575,7 +561,7 @@ pub(crate) async fn start_review(
                 .store
                 .lock()
                 .map_err(|_| "Review storage unavailable.")?;
-            request(&store, &candidate_key, true, confirm_trust, now_seconds()?)?;
+            request(&store, &candidate_key, true, now_seconds()?)?;
         }
         crate::capacity::Coordinator::pump(&app)
     })

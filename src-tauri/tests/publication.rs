@@ -734,7 +734,7 @@ fn head_movement_during_context_preparation_queues_only_an_eligible_new_head() {
 }
 
 #[test]
-fn legacy_results_trust_and_gates_cannot_become_publication_grants() {
+fn legacy_results_need_current_evidence_but_forks_need_no_revision_consent() {
     let mut old = review();
     old.result.as_mut().unwrap().reviewed_base_sha = None;
     assert!(Publication::new(old, false, true, 100).is_err());
@@ -744,8 +744,8 @@ fn legacy_results_trust_and_gates_cannot_become_publication_grants() {
     let mut run = publication();
     run.review.trust_confirmed = false;
     fixture.run(&mut run).unwrap();
-    assert_eq!(fixture.writes(), 0);
-    assert_eq!(run.phase, Phase::Stopped);
+    assert!(fixture.writes() > 0);
+    assert_eq!(run.phase, Phase::Published);
 }
 
 #[test]

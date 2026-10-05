@@ -97,11 +97,12 @@ async function setup(page, candidates) {
   await page.goto("/?view=queue");
 }
 
-test("follow-up analysis starts explicitly and carries its immutable job identity", async ({
+test("follow-up analysis keeps job identity without legacy trust approval", async ({
   page,
 }) => {
-  await setup(page, [candidate()]);
+  await setup(page, [{ ...candidate(), trust_required: true }]);
   const root = page.locator("#thread-follow-ups");
+  await expect(root.getByRole("checkbox", { name: /trust/i })).toHaveCount(0);
   await expect(root).toContainText("external comment 101");
   await expect(root).toContainText("GitHub: repo-owner (22)");
   expect(await page.evaluate(() => window.__followUpActions)).toEqual([]);

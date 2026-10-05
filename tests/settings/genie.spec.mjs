@@ -945,7 +945,7 @@ for (const [name, inherited, local, override, expected] of [
     await expect(authors).toHaveText(
       expected.length
         ? expected.map((id) => `author-${id} (${id})`).join(", ")
-        : "All authors; not blanket trust",
+        : "All authors in confirmed scope",
     );
   });
 }

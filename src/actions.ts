@@ -17,7 +17,6 @@ export interface ActionStatus {
     enqueue_order: number;
     cancelled: boolean;
     execution: NonNullable<ReviewCandidate["run"]> & {
-      trust_confirmed: boolean;
       job: Job;
     };
   } | null;
@@ -137,29 +136,11 @@ export function renderActions(
       button.textContent = running
         ? "Cancel final review"
         : "Start / retry final full review";
-      let trust: HTMLInputElement | undefined;
-      if (
-        !running &&
-        final.execution.job.waiting === "trust_confirmation" &&
-        !final.execution.trust_confirmed
-      ) {
-        const label = document.createElement("label");
-        trust = document.createElement("input");
-        trust.type = "checkbox";
-        label.append(
-          trust,
-          "Trust this exact revision for the primary's read-only final review.",
-        );
-        button.disabled = true;
-        trust.onchange = () => (button.disabled = !trust!.checked);
-        section.append(label);
-      }
       button.onclick = () =>
         void act(
           running ? "cancel_final_review" : "start_final_review",
           {
             id: final.id,
-            ...(!running ? { confirmTrust: trust?.checked ?? false } : {}),
           },
           button,
         );

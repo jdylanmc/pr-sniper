@@ -409,7 +409,7 @@ async fn failure_during_abort(reply: bool, signal: &str, scenario: &str) {
         let run = fixtures::add_reply(&store, 2);
         crate::follow_up::host::request_analysis(&store, &run.id, false, 100).unwrap();
     } else {
-        crate::review::host::request(&store, "normal-2", false, false, 100).unwrap();
+        crate::review::host::request(&store, "normal-2", false, 100).unwrap();
     }
     let archived = store.load_publications().unwrap();
     let coordinator = Coordinator::default();

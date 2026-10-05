@@ -31,7 +31,6 @@ export interface FollowUpCandidate {
   automatic_start: boolean;
   automatic_publication: boolean;
   human_gate: boolean;
-  trust_required?: boolean;
   run: {
     reply_ordinal?: number | null;
     enqueue_order?: number | null;
@@ -79,7 +78,6 @@ export function renderFollowUps(
   const consent = new Set<string>();
   const expanded = new Set<string>();
   const pending = new Set<string>();
-  const trusted = new Set<string>();
   let signature = "";
   async function act(
     candidate: FollowUpCandidate,
@@ -95,9 +93,6 @@ export function renderFollowUps(
         await invoke("start_follow_up", {
           id,
           publish,
-          ...(candidate.trust_required
-            ? { confirmTrust: trusted.has(id) }
-            : {}),
         });
     } catch (error) {
       showError(
@@ -300,25 +295,8 @@ export function renderFollowUps(
           button.disabled =
             pending.has(run.id) ||
             (!!publishing && working) ||
-            (!!candidate.trust_required && !trusted.has(run.id)) ||
             (!!publishing && !consent.has(run.id));
         };
-        if (candidate.trust_required) {
-          const label = document.createElement("label");
-          const checkbox = document.createElement("input");
-          checkbox.type = "checkbox";
-          checkbox.checked = trusted.has(run.id);
-          label.append(
-            checkbox,
-            "I trust this exact revision for read-only conversation analysis; not code execution or publication.",
-          );
-          checkbox.onchange = () => {
-            if (checkbox.checked) trusted.add(run.id);
-            else trusted.delete(run.id);
-            update();
-          };
-          row.append(label);
-        }
         if (publishing) {
           const label = document.createElement("label");
           const checkbox = document.createElement("input");
