@@ -392,7 +392,7 @@ test("provider selection remains a draft until its own guarded repository save",
     };
   });
   await start(page, store);
-  await section(page, "Accounts");
+  await section(page, "GitHub");
   const account = page.getByRole("article", {
     name: "GitHub account second-owner",
     exact: true,

@@ -94,7 +94,7 @@ for (const surface of ["panel", "standalone"]) {
           .getByRole("navigation", { name: "Application destinations" })
           .getByRole("button", { name: "Settings", exact: true })
           .click();
-        await section(page, "Accounts");
+        await section(page, "GitHub Copilot");
       }
       const card = page.locator(".copilot-auth-card");
       await expect(card.locator(".copilot-check")).toHaveCount(1);
@@ -132,7 +132,10 @@ for (const surface of ["panel", "standalone"]) {
         () => window.__accountWindowFocus,
       );
       failStateRead = failedRead;
-      await section(page, surface === "panel" ? "Accounts" : "Integrations");
+      await section(
+        page,
+        surface === "panel" ? "GitHub Copilot" : "Integrations",
+      );
       await expect.poll(() => stateReads).toBeGreaterThan(readsBefore);
       await page.evaluate(() => window.__copilotIdle());
       expect(await page.evaluate(() => window.__accountWindowFocus)).toBe(

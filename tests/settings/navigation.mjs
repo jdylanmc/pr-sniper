@@ -6,20 +6,28 @@ export async function section(page, name) {
     await expect(embedded).toBeVisible();
     await expect(embedded).toHaveAttribute("data-settings-section", /.+/);
     const destination = name === "Integrations" ? "Repositories" : name;
-    if (
-      (await embedded.getAttribute("data-settings-section")) ===
-      destination.toLowerCase()
-    )
-      return;
+    const accountPaths = {
+      "AI Tooling": ["Accounts", "AI Tooling"],
+      "Git Repository": ["Accounts", "Git Repository"],
+      "GitHub Copilot": ["Accounts", "AI Tooling", "GitHub Copilot"],
+      GitHub: ["Accounts", "Git Repository", "GitHub"],
+    };
+    const path = accountPaths[destination] ?? [destination];
+    const key =
+      destination === "GitHub Copilot"
+        ? "copilot"
+        : destination.toLowerCase().replaceAll(" ", "-");
+    if ((await embedded.getAttribute("data-settings-section")) === key) return;
     const back = page.getByRole("button", {
-      name: "Back to Settings",
-      exact: true,
+      name: /^Back to (Settings|Accounts|AI Tooling|Git Repository)$/,
     });
-    if (await back.isVisible()) await back.click();
-    await page
-      .locator(".settings-overview")
-      .getByRole("button", { name: destination, exact: true })
-      .click();
+    while (await back.isVisible()) await back.click();
+    for (const step of path) {
+      await page
+        .locator(".settings-overview")
+        .getByRole("button", { name: step, exact: true })
+        .click();
+    }
     return;
   }
   const mobile = page.getByLabel("Settings section", { exact: true });

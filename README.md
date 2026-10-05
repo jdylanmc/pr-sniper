@@ -21,16 +21,23 @@ AI accounts with browser sign-in and per-Agent account/model selection; see
 implementation summary.
 
 Settings opens a grouped **Your review setup** overview with saved resource
-counts. **Accounts**, **Agents**, **Repositories** and **Doctrines** open their
-existing resource editors; **Concurrent reviews** focuses AI capacity in the
+counts. **Accounts** opens integration categories; **Agents**, **Repositories**
+and **Doctrines** open their existing resource editors. **Concurrent reviews** focuses AI capacity in the
 shared Preferences editor. **Preferences** retains the global schedule,
 automation, notification and startup controls. Back restores the overview's
 row and scroll position without saving or resetting other drafts. Resource
 editors retain their explicit Save/Cancel behavior; the overview has no global
 save bar. **Set up with Genie** remains available.
 
-**Accounts** keeps GitHub repository/publication identity separate from Copilot
-AI identity. Choose **Add GitHub account** or **Connect Copilot account** to
+**Accounts** opens **AI Tooling** and **Git Repository**, each with a provider
+list styled like the Settings overview. Choose **GitHub Copilot** under
+AI Tooling or **GitHub** under Git Repository to reach that integration's
+details. Back returns one level, restoring the selected row and scroll position;
+category/provider lists have no save bar. Genie opens the relevant provider
+directly. Pending sign-ins remain intact while navigating between levels.
+
+GitHub repository/publication identity stays separate from Copilot AI identity.
+Choose **Add GitHub account** or **Connect Copilot account** to
 start that native flow; sign-in is not started or a model selected automatically.
 The compact panels retain actual device-code waiting, returned-identity
 confirmation, failure/retry and disconnected states. Expand each provider's
@@ -38,7 +45,9 @@ confirmation, failure/retry and disconnected states. Expand each provider's
 confirmation saves the returned identity; cancellation does not connect or
 assign it. Connecting does not assign repositories, configure an Agent's model,
 or enable automation. Direct Claude, Codex and Grok remain disabled future
-integrations, distinct from models returned through Copilot.
+integrations, distinct from models returned through Copilot. Azure DevOps and
+Bitbucket are also labelled **Coming soon**, with no setup actions. The legacy
+standalone Settings view retains its combined Integrations editor.
 
 ## Onboarding Genie
 

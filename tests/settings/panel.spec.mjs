@@ -401,7 +401,7 @@ test("external auth blur and native-picker return retain unsaved preferences and
   await section(page, "Preferences");
   const cron = page.getByLabel("Cron expression", { exact: true });
   await cron.fill("*/23 * * * *");
-  await section(page, "Accounts");
+  await section(page, "GitHub");
   await page.getByRole("button", { name: "Add GitHub account" }).click();
   await expect(page.locator(".github-auth-card")).toContainText("FIXTURE-CODE");
   await page.evaluate(() => window.dispatchEvent(new Event("blur")));

@@ -52,6 +52,10 @@ interface Discovery {
 type Section =
   | "home"
   | "accounts"
+  | "ai-tooling"
+  | "git-repository"
+  | "copilot"
+  | "github"
   | "repositories"
   | "capacity"
   | "doctrines"
@@ -82,6 +86,13 @@ const modelProviders: { id: string; label: string; available: boolean }[] = [
 const sections: Record<Section, [string, string]> = {
   home: ["Settings", ""],
   accounts: ["Accounts", "GitHub and Copilot, kept separate."],
+  "ai-tooling": ["AI Tooling", "Subscriptions used by your review agents."],
+  "git-repository": [
+    "Git Repository",
+    "Repository access and publication identities.",
+  ],
+  copilot: ["GitHub Copilot", "AI access, separate from repository identity."],
+  github: ["GitHub", "Repository access and publication identity."],
   repositories: ["Repositories", "Acting accounts and review assignments."],
   capacity: [
     "Concurrent reviews",
@@ -190,7 +201,7 @@ export async function mountSettings(
     <nav aria-label="Settings sections">${legacySections
       .map(
         ([key, [title]]) =>
-          `<button type="button" data-section="${key}">${icon(key as Section)}${title}</button>`,
+          `<button type="button" data-section="${key}">${icon(key as keyof typeof iconPaths)}${title}</button>`,
       )
       .join("")}</nav>
     <label class="mobile-section">Section<select aria-label="Settings section">${legacySections
@@ -226,6 +237,14 @@ export async function mountSettings(
   let section: Section = options.embedded ? "home" : "integrations";
   let homeScroll = 0;
   let homeOpener: Section | undefined;
+  const accountScroll = new Map<Section, number>();
+  const accountParents: Partial<Record<Section, Section>> = {
+    accounts: "home",
+    "ai-tooling": "accounts",
+    "git-repository": "accounts",
+    copilot: "ai-tooling",
+    github: "git-repository",
+  };
   let accountRead = 0;
   let discovery: Discovery | null = null;
   let query = "";
@@ -437,9 +456,18 @@ export async function mountSettings(
     app.querySelector("h1")!.textContent = sections[section][0];
     app.dataset.settingsSection = section;
     app.toggleAttribute("data-settings-home", section === "home");
+    const accountOverview = [
+      "accounts",
+      "ai-tooling",
+      "git-repository",
+    ].includes(section);
+    app.toggleAttribute("data-account-overview", accountOverview);
     settingsBack.hidden = !options.embedded || section === "home" || !!guidance;
+    const parent = accountParents[section] ?? "home";
+    settingsBack.setAttribute("aria-label", `Back to ${sections[parent][0]}`);
+    settingsBack.title = `Back to ${sections[parent][0]}; retain unsaved changes`;
     app.querySelector<HTMLElement>(".settings-savebar")!.hidden =
-      !!options.embedded && section === "home";
+      !!options.embedded && (section === "home" || accountOverview);
     settingsHeading.hidden = section === "home";
     app.dataset.resourceLibrary =
       section === "integrations" || section === "repositories"
@@ -466,7 +494,8 @@ export async function mountSettings(
     if (select) select.value = section;
     content.replaceChildren();
     if (section === "home") renderHome();
-    if (section === "accounts") renderAccounts();
+    if (accountOverview) renderAccountOverview();
+    if (section === "copilot" || section === "github") renderAccounts();
     if (section === "integrations" || section === "repositories")
       renderIntegrations();
     if (section === "doctrines") renderDoctrines();
@@ -500,11 +529,14 @@ export async function mountSettings(
   }
   settingsBack.onclick = () => {
     if (busy) return;
+    const previous = section;
+    const parent = accountParents[section] ?? "home";
     leaveGuidance();
-    navigate("home");
-    content.scrollTop = homeScroll;
+    navigate(parent);
+    content.scrollTop =
+      parent === "home" ? homeScroll : (accountScroll.get(parent) ?? 0);
     const opener = content.querySelector<HTMLElement>(
-      `[data-settings-destination="${homeOpener}"]`,
+      `[data-settings-destination="${parent === "home" ? homeOpener : previous}"]`,
     );
     opener?.focus({ preventScroll: true });
     opener?.scrollIntoView({ block: "nearest" });
@@ -522,9 +554,32 @@ export async function mountSettings(
       navigate((event.target as HTMLSelectElement).value as Section);
     };
 
+  function overviewRow(
+    key: Section,
+    description: string,
+    value = "",
+    symbol: keyof typeof iconPaths = "integrations",
+  ) {
+    return `<button type="button" class="settings-home-row" data-settings-destination="${key}" data-focus-key="settings:${key}" aria-label="${sections[key][0]}" aria-describedby="settings-${key}-description settings-${key}-count"><span class="settings-row-symbol">${icon(symbol)}</span><span class="settings-row-copy"><strong>${sections[key][0]}</strong><small id="settings-${key}-description">${description}</small></span><span class="settings-row-value" id="settings-${key}-count" data-settings-count="${key}">${value}</span><svg class="settings-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button>`;
+  }
   function renderHome() {
-    const row = (key: Section, description: string, value = "") =>
-      `<button type="button" class="settings-home-row" data-settings-destination="${key}" data-focus-key="settings:${key}" aria-label="${sections[key][0]}" aria-describedby="settings-${key}-description settings-${key}-count"><span class="settings-row-symbol">${icon(key === "preferences" ? "home" : key)}</span><span class="settings-row-copy"><strong>${sections[key][0]}</strong><small id="settings-${key}-description">${description}</small></span><span class="settings-row-value" id="settings-${key}-count" data-settings-count="${key}">${value}</span><svg class="settings-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button>`;
+    const row = (
+      key:
+        | "accounts"
+        | "agents"
+        | "repositories"
+        | "doctrines"
+        | "capacity"
+        | "preferences",
+      description: string,
+      value = "",
+    ) =>
+      overviewRow(
+        key,
+        description,
+        value,
+        key === "preferences" ? "home" : key,
+      );
     content.innerHTML = `<div class="settings-overview">
       <div class="settings-intro"><span class="settings-summary-icon">${icon("home")}</span><div><strong>Your review setup</strong><p>Shared agents. Your rules.</p></div></div>
       <nav aria-label="Review setup" class="settings-home-group">
@@ -549,32 +604,102 @@ export async function mountSettings(
       content.querySelector<HTMLButtonElement>("[data-home-genie]")!;
     genie.hidden = !options.openGenie;
     genie.onclick = () => options.openGenie?.(genie);
-    const summary = content.querySelector<HTMLElement>(
-      '[data-settings-count="accounts"]',
-    )!;
+    refreshAccountSummaries();
+  }
+
+  function renderAccountOverview() {
+    const comingSoon = (label: string, symbol: keyof typeof iconPaths) =>
+      `<div class="settings-home-row settings-provider-planned" aria-disabled="true"><span class="settings-row-symbol">${icon(symbol)}</span><span class="settings-row-copy"><strong>${escape(label)}</strong></span><span class="settings-row-value">Coming soon</span></div>`;
+    const rows =
+      section === "accounts"
+        ? overviewRow(
+            "ai-tooling",
+            sections["ai-tooling"][1],
+            "Reading...",
+            "agents",
+          ) +
+          overviewRow(
+            "git-repository",
+            sections["git-repository"][1],
+            "Reading...",
+            "repositories",
+          )
+        : section === "ai-tooling"
+          ? overviewRow(
+              "copilot",
+              "Connect your Copilot subscription",
+              "Reading...",
+              "agents",
+            ) +
+            modelProviders
+              .filter((provider) => !provider.available)
+              .map((provider) => comingSoon(provider.label, "agents"))
+              .join("")
+          : overviewRow(
+              "github",
+              "Repository access and publication",
+              "Reading...",
+              "repositories",
+            ) +
+            ["Azure DevOps", "Bitbucket"]
+              .map((label) => comingSoon(label, "repositories"))
+              .join("");
+    content.innerHTML = `<div class="settings-overview"><nav class="settings-home-group" aria-label="${sections[section][0]}">${rows}</nav></div>`;
+    content
+      .querySelectorAll<HTMLButtonElement>("[data-settings-destination]")
+      .forEach((button) => {
+        button.onclick = () => {
+          if (busy) return;
+          accountScroll.set(section, content.scrollTop);
+          navigate(button.dataset.settingsDestination as Section);
+          content.scrollTop = 0;
+          settingsHeading.querySelector<HTMLElement>("h1")!.focus();
+        };
+      });
+    refreshAccountSummaries();
+  }
+
+  function refreshAccountSummaries() {
+    const summaries = [
+      ...content.querySelectorAll<HTMLElement>(
+        '[data-settings-count="accounts"], [data-settings-count="ai-tooling"], [data-settings-count="git-repository"], [data-settings-count="copilot"], [data-settings-count="github"]',
+      ),
+    ];
     const read = ++accountRead;
-    void Promise.all([
+    void Promise.allSettled([
       invoke<{ accounts: GithubAccount[] }>("github_auth_state"),
       invoke<CopilotAuth>("copilot_auth_state"),
-    ]).then(
-      ([github, copilot]) => {
-        if (!summary.isConnected || read !== accountRead) return;
-        githubAccounts = github.accounts;
-        copilotAccounts = copilot.accounts;
-        const accounts = [...githubAccounts, ...copilotAccounts];
+    ]).then(([github, copilot]) => {
+      if (read !== accountRead || !summaries.some((node) => node.isConnected))
+        return;
+      if (github.status === "fulfilled") githubAccounts = github.value.accounts;
+      if (copilot.status === "fulfilled")
+        copilotAccounts = copilot.value.accounts;
+      for (const summary of summaries) {
+        const key = summary.dataset.settingsCount;
+        const states =
+          key === "accounts"
+            ? [github, copilot]
+            : key === "ai-tooling" || key === "copilot"
+              ? [copilot]
+              : [github];
+        const failure = states.find((state) => state.status === "rejected");
+        if (failure?.status === "rejected") {
+          summary.textContent = "Unavailable";
+          showError(
+            `Account summary unavailable: ${reason(failure.reason)} Open the provider to retry.`,
+          );
+          continue;
+        }
+        const accounts = states.flatMap<GithubAccount | CopilotAccount>(
+          (state) => (state.status === "fulfilled" ? state.value.accounts : []),
+        );
         const connected = accounts.filter(
           (account) => account.state === "connected",
         ).length;
         summary.textContent = `${connected} connected${accounts.length > connected ? ` / ${accounts.length - connected} need attention` : ""}`;
-      },
-      (cause) => {
-        if (!summary.isConnected || read !== accountRead) return;
-        summary.textContent = "Unavailable";
-        showError(
-          `Account summary unavailable: ${reason(cause)} Open Accounts to retry.`,
-        );
-      },
-    );
+      }
+    });
   }
 
   // ---------------------------------------------------------------- Doctrines
@@ -1222,19 +1347,21 @@ export async function mountSettings(
 
   function renderAccounts() {
     if (accountContent) {
+      showAccountProvider();
       content.append(accountContent);
       window.dispatchEvent(new Event("pr-sniper:refresh-provider-accounts"));
       return;
     }
     accountContent = document.createElement("div");
-    accountContent.innerHTML = `<div class="integration-group"><h2>Git repositories</h2><div class="github-auth"></div></div>
-      <div class="integration-group"><h2>AI integration</h2><div class="copilot-auth"></div><div class="integration-grid">${modelProviders
+    accountContent.innerHTML = `<div class="integration-group" data-account-provider="github"><h2>Git repositories</h2><div class="github-auth"></div></div>
+      <div class="integration-group" data-account-provider="copilot"><h2>AI integration</h2><div class="copilot-auth"></div><div class="integration-grid" ${options.embedded ? "hidden" : ""}>${modelProviders
         .filter((m) => !m.available)
         .map(
           (m) =>
             `<button type="button" class="integration-card" data-disabled="true" disabled aria-disabled="true"><strong>Direct ${escape(m.label)}</strong><span>Coming soon</span></button>`,
         )
         .join("")}</div></div>`;
+    showAccountProvider();
     content.append(accountContent);
     renderCopilotAuth(
       accountContent.querySelector(".copilot-auth")!,
@@ -1287,6 +1414,15 @@ export async function mountSettings(
         refreshRepositoryRows?.();
       },
     );
+  }
+
+  function showAccountProvider() {
+    accountContent
+      ?.querySelectorAll<HTMLElement>("[data-account-provider]")
+      .forEach((group) => {
+        group.hidden =
+          !!options.embedded && group.dataset.accountProvider !== section;
+      });
   }
 
   function renderIntegrations() {
@@ -2664,7 +2800,9 @@ export async function mountSettings(
         return;
       }
       const retainAccounts =
-        (section === "integrations" || section === "accounts") &&
+        (section === "integrations" ||
+          section === "copilot" ||
+          section === "github") &&
         content.querySelector(".account-connection") !== null &&
         sameResource(saved, state.settings);
       saved = clone(state.settings);
@@ -2719,14 +2857,17 @@ export async function mountSettings(
       const next: Section =
         target === "ai" || target === "repository-account"
           ? options.embedded
-            ? "accounts"
+            ? target === "ai"
+              ? "copilot"
+              : "github"
             : "integrations"
           : target === "repositories"
             ? options.embedded
               ? "repositories"
               : "integrations"
             : target;
-      if (options.embedded) homeOpener = next;
+      if (options.embedded)
+        homeOpener = accountParents[next] ? "accounts" : next;
       if (section !== next) navigate(next);
       settingsBack.hidden = true;
       const selector =
