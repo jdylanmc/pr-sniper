@@ -298,7 +298,7 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       "rustup show active-toolchain",
       "npm run format:check",
       "cargo check --manifest-path src-tauri\\Cargo.toml --locked --all-targets",
-      "cargo test --manifest-path src-tauri\\Cargo.toml --locked --all-targets -- --nocapture",
+      "cargo test --manifest-path src-tauri\\Cargo.toml --locked --all-targets -- --nocapture --test-threads=1",
       "cargo test --manifest-path src-tauri\\Cargo.toml --locked --lib copilot::runtime::tests::bundled_runtime_handshakes_offline_without_credentials -- --exact --ignored --nocapture",
       "cargo clippy --manifest-path src-tauri\\Cargo.toml --locked --all-targets -- -D warnings",
       "npm exec playwright install chromium",

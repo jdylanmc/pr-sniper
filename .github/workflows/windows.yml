@@ -65,8 +65,8 @@ jobs:
       - name: Check all native application targets
         run: cargo check --manifest-path src-tauri\Cargo.toml --locked --all-targets
         timeout-minutes: 10
-      - name: Test native application with exact owned fixture claims
-        run: cargo test --manifest-path src-tauri\Cargo.toml --locked --all-targets -- --nocapture
+      - name: Test native application serially to isolate process fixtures
+        run: cargo test --manifest-path src-tauri\Cargo.toml --locked --all-targets -- --nocapture --test-threads=1
         timeout-minutes: 15
       - name: Handshake with bundled Windows runtime (offline, no credentials or inference)
         run: cargo test --manifest-path src-tauri\Cargo.toml --locked --lib copilot::runtime::tests::bundled_runtime_handshakes_offline_without_credentials -- --exact --ignored --nocapture
