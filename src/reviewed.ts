@@ -137,6 +137,8 @@ export function mountReviewed(
   let unavailable: UnavailableResult[] = [];
   let nextCursor: ResultCursor | null = null;
   let nextUnavailableCursor: UnavailableCursor | null = null;
+  let resultsExhausted = false;
+  let unavailableExhausted = false;
   let unavailableCount = 0;
   let snapshot: MonitoringSnapshot | undefined;
   let loaded = false;
@@ -415,6 +417,9 @@ export function mountReviewed(
       for (const result of unavailable) {
         const article = document.createElement("article");
         article.className = "reviewed-unavailable-entry";
+        article.dataset.reviewedUnavailableDestination = JSON.stringify(
+          result.destination,
+        );
         const message = document.createElement("p");
         message.textContent = result.message;
         const button = document.createElement("button");
@@ -427,7 +432,7 @@ export function mountReviewed(
       root.append(section);
     }
 
-    const more = nextCursor !== null || nextUnavailableCursor !== null;
+    const more = hasOlder();
     if (more) {
       const button = document.createElement("button");
       button.type = "button";
@@ -452,7 +457,7 @@ export function mountReviewed(
   }
 
   function hasOlder(): boolean {
-    return nextCursor !== null || nextUnavailableCursor !== null;
+    return loaded && (!resultsExhausted || !unavailableExhausted);
   }
 
   function filterLabel(value: ReviewedFilter): string {
@@ -468,6 +473,8 @@ export function mountReviewed(
           unavailable,
           nextCursor,
           nextUnavailableCursor,
+          resultsExhausted,
+          unavailableExhausted,
           unavailableCount,
           loaded,
         }
@@ -487,26 +494,32 @@ export function mountReviewed(
       if (revision !== requestRevision) return;
       const nextRows = reset ? [] : [...rows];
       const seenRows = new Set(nextRows.map((row) => row.item_id));
-      for (const row of page.results)
-        if (!seenRows.has(row.item_id)) {
-          nextRows.push(row);
-          seenRows.add(row.item_id);
-        }
+      if (reset || !resultsExhausted) {
+        for (const row of page.results)
+          if (!seenRows.has(row.item_id)) {
+            nextRows.push(row);
+            seenRows.add(row.item_id);
+          }
+        nextCursor = page.next_cursor;
+        resultsExhausted = page.next_cursor === null;
+      }
       const nextUnavailable = reset ? [] : [...unavailable];
       const seenUnavailable = new Set(
         nextUnavailable.map((entry) => JSON.stringify(entry.destination)),
       );
-      for (const entry of page.unavailable) {
-        const key = JSON.stringify(entry.destination);
-        if (!seenUnavailable.has(key)) {
-          nextUnavailable.push(entry);
-          seenUnavailable.add(key);
+      if (reset || !unavailableExhausted) {
+        for (const entry of page.unavailable) {
+          const key = JSON.stringify(entry.destination);
+          if (!seenUnavailable.has(key)) {
+            nextUnavailable.push(entry);
+            seenUnavailable.add(key);
+          }
         }
+        nextUnavailableCursor = page.next_unavailable_cursor;
+        unavailableExhausted = page.next_unavailable_cursor === null;
       }
       rows = nextRows;
       unavailable = nextUnavailable;
-      nextCursor = page.next_cursor;
-      nextUnavailableCursor = page.next_unavailable_cursor;
       unavailableCount = page.unavailable_count;
       loaded = true;
     } catch (cause) {
@@ -516,6 +529,8 @@ export function mountReviewed(
         unavailable = previous.unavailable;
         nextCursor = previous.nextCursor;
         nextUnavailableCursor = previous.nextUnavailableCursor;
+        resultsExhausted = previous.resultsExhausted;
+        unavailableExhausted = previous.unavailableExhausted;
         unavailableCount = previous.unavailableCount;
         loaded = previous.loaded;
       }

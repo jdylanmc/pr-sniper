@@ -457,6 +457,168 @@ test("Reviewed pages preserve native activity order and load older results witho
   ).toBeFocused();
 });
 
+test("Reviewed exhausts result and unavailable streams independently", async ({
+  page,
+  store,
+}) => {
+  const fixture = await queueFixture(store);
+  const reviews = Array.from({ length: 13 }, (_, index) =>
+    fixture.review(index + 1),
+  );
+  function itemId(job) {
+    return Buffer.from(
+      JSON.stringify([
+        job.provider,
+        job.account_id,
+        job.configuration_id,
+        job.repository_id,
+        job.pull_request_id,
+        job.head_sha,
+        job.trigger_policy,
+      ]),
+    ).toString("base64url");
+  }
+  const tracked = [];
+  const mentions = Array.from({ length: 25 }, (_, index) => {
+    const job = fixture.review(index === 1 ? 2 : 100 + index).job;
+    const id = itemId(job);
+    const binding = {
+      configuration_id: job.configuration_id,
+      account_id: job.account_id,
+      account_login: job.account_login,
+      repository_id: job.repository_id,
+      repository_name: job.repository_name,
+      pull_request_id: job.pull_request_id,
+      number: job.number,
+    };
+    tracked.push({
+      provider: job.provider,
+      configuration_id: job.configuration_id,
+      account_id: job.account_id,
+      repository_id: job.repository_id,
+      pull_request_id: job.pull_request_id,
+      number: job.number,
+      head_sha: job.head_sha,
+      lifecycle: "open",
+      terminal_observed: false,
+      iteration_id: `tracked-${index}`,
+      item_id: id,
+      iteration: index % 2 === 0 ? 1 : 2,
+      admission: {
+        watched_author: true,
+        all_authors: false,
+        requested_reviewer: false,
+      },
+      admitted_at: 100,
+      observed_at: 120,
+    });
+    return {
+      ...(index % 2 === 0 ? { item_id: id } : {}),
+      key: JSON.stringify([
+        "mention",
+        "github",
+        binding.account_id,
+        binding.configuration_id,
+        binding.repository_id,
+        binding.pull_request_id,
+        `comment-${index}`,
+      ]),
+      work_id: `unavailable-${String(index).padStart(2, "0")}`,
+      enqueue_order: 100 + index,
+      enqueued_at: 110,
+      binding,
+      comment: {
+        id: `comment-${index}`,
+        body: "@operator explain",
+        author_id: "11",
+        author_login: "author",
+        created_at: "2026-10-02T00:00:00Z",
+        updated_at: "2026-10-02T00:00:00Z",
+      },
+      follow_up_id: null,
+      blocked: "No execution available.",
+    };
+  });
+  const state = {
+    jobs: reviews.map((review) => review.job),
+    reviews,
+    tracked,
+    publications: [],
+    follow_ups: [],
+    feedback: { records: [], mentions },
+  };
+  await store("seed_queue_state", state);
+
+  const resultIds = [];
+  let cursor = null;
+  do {
+    const resultPage = await store("result_page", {
+      request: { limit: 12, cursor, unavailable_cursor: null },
+    });
+    resultIds.push(...resultPage.results.map((row) => row.item_id));
+    cursor = resultPage.next_cursor;
+  } while (cursor);
+  const unavailableIds = [];
+  let unavailableCursor = null;
+  do {
+    const unavailablePage = await store("result_page", {
+      request: {
+        limit: 12,
+        cursor: null,
+        unavailable_cursor: unavailableCursor,
+      },
+    });
+    unavailableIds.push(
+      ...unavailablePage.unavailable.map((entry) => entry.destination.id),
+    );
+    unavailableCursor = unavailablePage.next_unavailable_cursor;
+  } while (unavailableCursor);
+  expect(resultIds).toHaveLength(13);
+  expect(unavailableIds).toHaveLength(25);
+
+  await page.clock.install();
+  await page.goto("/");
+  await tab(page, "Reviewed").click();
+  const reviewed = page.locator('[data-panel-view="reviewed"]');
+  const results = reviewed.locator(".reviewed-list article");
+  const unavailable = reviewed.locator(".reviewed-unavailable-entry");
+  await expect(results).toHaveCount(12);
+  await expect(unavailable).toHaveCount(12);
+
+  await page
+    .getByRole("button", { name: "Load older results", exact: true })
+    .click();
+  await expect(results).toHaveCount(13);
+  await expect(unavailable).toHaveCount(24);
+  await page
+    .getByRole("button", { name: "Load older results", exact: true })
+    .click();
+  await expect(results).toHaveCount(13);
+  await expect(unavailable).toHaveCount(25);
+  await expect(
+    page.getByRole("button", { name: "Load older results", exact: true }),
+  ).toHaveCount(0);
+  await expect(reviewed).toContainText(
+    "All available open-PR results are loaded.",
+  );
+  expect(
+    await results.evaluateAll((entries) =>
+      entries.map((entry) => entry.dataset.reviewedItem),
+    ),
+  ).toEqual(resultIds);
+  expect(
+    await unavailable.evaluateAll((entries) =>
+      entries.map(
+        (entry) => JSON.parse(entry.dataset.reviewedUnavailableDestination).id,
+      ),
+    ),
+  ).toEqual(unavailableIds);
+  await expect(reviewed.locator(".reviewed-unavailable h2")).toHaveText(
+    "25 destinations are unavailable",
+  );
+  expect(new Set(unavailableIds).size).toBe(25);
+});
+
 test("Reviewed filters require an approval receipt and distinguish follow-up from readiness", async ({
   page,
   store,
