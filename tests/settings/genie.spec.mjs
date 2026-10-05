@@ -680,7 +680,7 @@ test("existing authorized re-entry leaves scope bytes and global pause unchanged
   store,
   dataRoot,
 }) => {
-  await synthetic(page, store, true);
+  const state = await synthetic(page, store, true);
   await seed(store);
   await store("set_automation_paused", { paused: true });
   await page.goto("/");
@@ -692,10 +692,18 @@ test("existing authorized re-entry leaves scope bytes and global pause unchanged
   const file = join(dataRoot, "state/monitoring.json");
   const before = await readFile(file, "utf8");
   await tab(page, "Settings").click();
-  await page
-    .getByRole("button", { name: "Set up with Genie", exact: true })
-    .click();
-  await page.locator("[data-genie-next]").click();
+  const refresh = Promise.withResolvers();
+  state.beforeRead = () => refresh.promise;
+  try {
+    await page
+      .getByRole("button", { name: "Set up with Genie", exact: true })
+      .click();
+    await expect(page.locator("[data-genie-next]")).toBeVisible();
+  } finally {
+    state.beforeRead = undefined;
+    refresh.resolve();
+  }
+  await page.getByRole("button", { name: "Review setup", exact: true }).click();
   await expect(confirmation(page)).toBeEnabled();
   await expect(page.locator(".genie-page")).toContainText(
     "Already authorized; unchanged",

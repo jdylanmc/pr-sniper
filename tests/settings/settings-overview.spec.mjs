@@ -457,6 +457,7 @@ for (const metadata of ["native", "missing", "rejected"]) {
   test(`footer ${metadata} version remains inline across every tab with working utility controls`, async ({
     page,
     store,
+    ipc,
   }) => {
     await queueFixture(store);
     const nativeVersion = (await store("snapshot")).version;
@@ -476,7 +477,9 @@ for (const metadata of ["native", "missing", "rejected"]) {
       }, metadata);
     await page.goto("/");
     const version = page.locator("[data-panel-version]");
+    let navigation;
     for (const name of ["Queue", "Running", "Reviewed", "Settings"]) {
+      if (name === "Settings") navigation = ipc.holdNext("panel_navigate");
       await tab(page, name).click();
       await expect(version).toHaveText(
         metadata === "native" ? `v${nativeVersion}` : "Version unavailable",
@@ -486,7 +489,11 @@ for (const metadata of ["native", "missing", "rejected"]) {
         "Close hides only. Quit from the tray menu.",
       );
     }
+    navigation.release();
+    await expect(page.locator(".settings-overview")).toBeVisible();
+    await page.evaluate(() => window.__settingsIdle());
     await page.locator("[data-panel-status]").focus();
+    await expect(page.locator("[data-panel-status]")).toBeFocused();
     await page.keyboard.press("Enter");
     await expect(page.locator("[data-panel-heading]")).toHaveText("Status");
     await expect(version).toHaveText(`v${nativeVersion}`);
