@@ -34,8 +34,11 @@ for (const action of ["add", "disable"]) {
     else {
       const repository = await repositorySettings(page, "octo/hello-world");
       await repository
-        .getByLabel("Enable repository monitoring on Save")
-        .uncheck();
+        .getByRole("switch", { name: "Monitor octo/hello-world" })
+        .click();
+      await expect(
+        repository.locator("[data-repository-monitoring-state]"),
+      ).toHaveText("Disabled");
       await closeDialog(page);
     }
     const modal = await editAgent(page);

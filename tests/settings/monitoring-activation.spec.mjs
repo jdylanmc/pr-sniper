@@ -35,7 +35,7 @@ async function configured(store, enabled = false) {
 }
 
 for (const failure of ["write", "conflict"]) {
-  test(`repository Save ${failure} cannot report authorization and retains draft for repair`, async ({
+  test(`repository switch ${failure} cannot report authorization and retains draft for repair`, async ({
     page,
     store,
     dataRoot,
@@ -44,7 +44,9 @@ for (const failure of ["write", "conflict"]) {
     await providerFixture(page, store);
     await repositoryPage(page, store);
     const editor = await repositorySettings(page, "fixture/one");
-    await editor.getByLabel("Enable repository monitoring on Save").check();
+    await editor
+      .getByLabel("Reviewer requests", { exact: true })
+      .selectOption("on");
     if (failure === "write")
       await mkdir(join(dataRoot, "config/settings.json.tmp"));
     else {
@@ -52,13 +54,14 @@ for (const failure of ["write", "conflict"]) {
       next.repositories[0].overrides = { reviewer_assignment: false };
       await store("seed_settings", next);
     }
-    await editor
-      .getByRole("button", { name: "Save repository", exact: true })
-      .click();
+    await editor.getByRole("switch", { name: "Monitor fixture/one" }).click();
     await expect(editor.locator("[data-resource-error]")).toBeVisible();
     await expect(
-      editor.getByLabel("Enable repository monitoring on Save"),
-    ).toBeChecked();
+      editor.getByRole("switch", { name: "Monitor fixture/one" }),
+    ).not.toBeChecked();
+    await expect(
+      editor.getByLabel("Reviewer requests", { exact: true }),
+    ).toHaveValue("on");
     expect(
       (await store("snapshot")).settings.repository_authorizations,
     ).toBeUndefined();
@@ -67,6 +70,10 @@ for (const failure of ["write", "conflict"]) {
     );
     if (failure === "write") {
       await rmdir(join(dataRoot, "config/settings.json.tmp"));
+      await editor.getByRole("switch", { name: "Monitor fixture/one" }).click();
+      await expect(
+        editor.locator("[data-repository-monitoring-state]"),
+      ).toHaveText("Enabled");
       await editor
         .getByRole("button", { name: "Save repository", exact: true })
         .click();
@@ -89,7 +96,7 @@ test("an explicit disabled Save and unrelated Preferences never enable a paused 
   await repositoryPage(page, store);
   let editor = await repositorySettings(page, "fixture/one");
   await expect(
-    editor.getByLabel("Enable repository monitoring on Save"),
+    editor.getByRole("switch", { name: "Monitor fixture/one" }),
   ).not.toBeChecked();
   await editor
     .getByRole("button", { name: "Save repository", exact: true })
@@ -105,7 +112,7 @@ test("an explicit disabled Save and unrelated Preferences never enable a paused 
   expect(Object.values(saved.repository_authorizations ?? {})).toEqual([null]);
   editor = await repositorySettings(page, "fixture/one");
   await expect(
-    editor.getByLabel("Enable repository monitoring on Save"),
+    editor.getByRole("switch", { name: "Monitor fixture/one" }),
   ).not.toBeChecked();
 });
 
@@ -118,7 +125,10 @@ test("Save locks dismissal until the native commit returns and does not issue a 
   const fixture = await providerFixture(page, store);
   await repositoryPage(page, store);
   const editor = await repositorySettings(page, "fixture/one");
-  await editor.getByLabel("Enable repository monitoring on Save").check();
+  await editor.getByRole("switch", { name: "Monitor fixture/one" }).click();
+  await expect(editor.locator("[data-repository-monitoring-state]")).toHaveText(
+    "Enabled",
+  );
   const held = ipc.holdNext("save_resource");
   try {
     await editor
@@ -157,7 +167,10 @@ for (const embedded of [true, false]) {
     await providerFixture(page, store);
     await repositoryPage(page, store, embedded);
     let editor = await repositorySettings(page, "fixture/one");
-    await editor.getByLabel("Enable repository monitoring on Save").check();
+    await editor.getByRole("switch", { name: "Monitor fixture/one" }).click();
+    await expect(
+      editor.locator("[data-repository-monitoring-state]"),
+    ).toHaveText("Enabled");
     await editor
       .getByRole("button", { name: "Save repository", exact: true })
       .click();

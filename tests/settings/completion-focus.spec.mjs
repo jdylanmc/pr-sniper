@@ -181,8 +181,8 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       await activate(page, neighbor, activation);
       const neighborEditor = dialog(page, "Settings for fixture/neighbor");
       await neighborEditor
-        .getByLabel("Enable repository monitoring on Save")
-        .uncheck();
+        .getByLabel("Reviewer requests", { exact: true })
+        .selectOption("on");
       await neighborEditor
         .getByRole("button", { name: "Close dialog", exact: true })
         .click();
@@ -587,7 +587,10 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       expect(
         (await store("snapshot")).settings.repositories[1].assignments,
       ).toEqual(saved.repositories[1].assignments);
-      await parent.getByLabel("Enable repository monitoring on Save").uncheck();
+      await parent.getByRole("switch", { name: /^Monitor / }).click();
+      await expect(
+        parent.locator("[data-repository-monitoring-state]"),
+      ).toHaveText("Disabled");
       await parent
         .getByRole("button", { name: "Save repository", exact: true })
         .click();

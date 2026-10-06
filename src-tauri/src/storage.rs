@@ -1031,6 +1031,18 @@ impl Store {
                 .iter()
                 .find(|repository| repository.id == id)
                 .unwrap();
+            if repository.provider != ProviderId::Github || repository.account_binding().is_none() {
+                return Err(format!(
+                    "{}: bind a supported GitHub account and repository before enabling monitoring.",
+                    repository.name
+                ));
+            }
+            if !matches!(settings.defaults.schedule, Schedule::Cron { .. }) {
+                return Err(format!(
+                    "{}: choose a global five-field cron schedule in Preferences before enabling monitoring.",
+                    repository.name
+                ));
+            }
             if repository.assignments.is_empty() {
                 return Err(format!(
                     "{}: assign at least one saved Agent before enabling repository monitoring.",

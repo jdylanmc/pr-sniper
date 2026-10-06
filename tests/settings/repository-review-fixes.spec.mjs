@@ -181,10 +181,12 @@ for (const kind of [
         .locator(".assignment-row")
         .getByRole("button", { name: "Remove", exact: true })
         .click();
-    await editor.getByLabel("Enable repository monitoring on Save").check();
-    await editor
-      .getByRole("button", { name: "Save repository", exact: true })
-      .click();
+    if (kind === "reopened")
+      await editor.getByRole("switch", { name: "Monitor fixture/one" }).click();
+    else
+      await editor
+        .getByRole("button", { name: "Save repository", exact: true })
+        .click();
     await expect(editor.locator("[data-resource-error]")).toContainText(
       kind === "unusable-agent"
         ? "explicit AI account and model"
@@ -192,7 +194,13 @@ for (const kind of [
     );
     await expect(editor).toBeVisible();
     expect((await store("snapshot")).settings).toEqual(before);
-    await editor.getByLabel("Enable repository monitoring on Save").uncheck();
+    const monitoring = editor.getByRole("switch", {
+      name: "Monitor fixture/one",
+    });
+    if (kind !== "reopened") {
+      await monitoring.click();
+      await expect(monitoring).not.toBeChecked();
+    }
     await editor
       .getByRole("button", { name: "Save repository", exact: true })
       .click();

@@ -38,7 +38,7 @@ import {
 import "./settings.css";
 import { createDialogs } from "./dialogs";
 import { mountNotificationSettings } from "./notifications";
-import { mountAutomation } from "./automation";
+import { mountAutomation, type AutomationSnapshot } from "./automation";
 
 interface ConfiguredRepository extends Repository {
   watched_authors?: WatchedIdentity[];
@@ -330,6 +330,9 @@ export async function mountSettings(
   let githubAccounts: GithubAccount[] = [];
   let repositoryAccountsState: "loading" | "ready" | "unavailable" = "loading";
   const pendingSetup = new Set<string>();
+  const setupMonitoringOff = new Set<string>();
+  let repositoryAutomation: AutomationSnapshot | undefined;
+  let repositoryAutomationRead = 0;
   let copilotAccounts: CopilotAccount[] = [];
   let updateAgentAccounts: (() => void) | undefined;
   let updateRepositoryAccounts: (() => void) | undefined;
@@ -439,11 +442,17 @@ export async function mountSettings(
     edit: ResourceEdit,
     modal?: HTMLDialogElement,
     accountGeneration?: number,
+    retainRepositoryDraft = false,
   ) {
     if (busy) throw "Another resource save is in progress. Try again.";
     if (catalogConflict && (edit.kind === "agent" || edit.kind === "doctrine"))
       throw "Resource changed in another window. Your draft has not been written. Close this editor and reload Agents and doctrines before saving.";
     busy = true;
+    const currentDraft =
+      retainRepositoryDraft && edit.kind === "repository"
+        ? repositories().find((r) => r.id === edit.id)
+        : undefined;
+    const retained = currentDraft ? clone(currentDraft) : undefined;
     changed();
     if (modal) modal.dataset.closeLocked = "true";
     const focused = document.activeElement;
@@ -471,6 +480,13 @@ export async function mountSettings(
         acceptResource(settings, clone(result.settings), edit);
         if (!catalogConflict)
           settings.doctrines = clone(result.settings.doctrines ?? []);
+      }
+      if (retained && edit.kind === "repository") {
+        const committed = draft.repositories?.find((r) => r.id === edit.id);
+        if (committed) {
+          retained.enabled = committed.enabled;
+          acceptResource(draft, { ...draft, repositories: [retained] }, edit);
+        }
       }
       if (!catalogConflict) snapshot.doctrine_catalog = result.doctrine_catalog;
       if (result.warning) showError(result.warning);
@@ -505,6 +521,58 @@ export async function mountSettings(
     ),
     value: clone(value),
   });
+
+  function repositoryMonitoringDetail(repository: Repository): string {
+    if (
+      repositoryAccountsState !== "ready" ||
+      !githubAccounts.some(
+        (a) =>
+          a.account_id === repository.provider_account_id &&
+          a.state === "connected",
+      )
+    )
+      return repository.enabled
+        ? "Reconnect account"
+        : "No new scans or reviews / Reconnect account";
+    if (!repository.enabled) return "No new scans or reviews";
+    if (!repository.assignments?.length) return "Needs setup";
+    if (!repositoryAutomation)
+      return "Global Monitoring state unavailable; check Status and reopen Repositories to retry";
+    if (repositoryAutomation.paused) return "Global Monitoring paused";
+    if (repositoryAutomation.active >= repositoryAutomation.capacity)
+      return "Waiting for AI capacity";
+    return "Global Monitoring, access and execution checks still apply";
+  }
+
+  async function refreshRepositoryAutomation(update: () => void) {
+    const read = ++repositoryAutomationRead;
+    try {
+      const state = await invoke<AutomationSnapshot>("automation_snapshot");
+      if (read !== repositoryAutomationRead) return;
+      repositoryAutomation = state;
+    } catch {
+      if (read !== repositoryAutomationRead) return;
+      repositoryAutomation = undefined;
+    }
+    update();
+  }
+
+  async function toggleRepositoryMonitoring(
+    id: string,
+    enabled: boolean,
+    modal?: HTMLDialogElement,
+  ) {
+    const current = saved.repositories?.find((r) => r.id === id);
+    if (!current) throw "Save this repository configuration first.";
+    await commitResource(
+      repositoryEdit(current, { ...clone(current), enabled }),
+      modal,
+      undefined,
+      true,
+    );
+    pendingSetup.delete(id);
+    setupMonitoringOff.delete(id);
+  }
 
   function dialog(title: string, body: string, opener: HTMLElement) {
     const modal = document.createElement("dialog");
@@ -1616,32 +1684,28 @@ export async function mountSettings(
             const account = githubAccounts.find(
               (a) => a.account_id === repository.provider_account_id,
             );
-            const state =
-              !repository.provider_account_id || account?.state !== "connected"
-                ? "Reconnect account"
-                : !repository.assignments?.length
-                  ? "Needs setup"
-                  : repository.enabled
-                    ? "Enabled"
-                    : "Paused";
+            const committed =
+              saved.repositories?.find((r) => r.id === repository.id) ??
+              repository;
+            const state = committed.enabled ? "Enabled" : "Disabled";
             const label =
               repositories().filter((r) => r.name === repository.name).length >
               1
                 ? `${repository.name} as ${account?.login ?? "Account unavailable"}`
                 : repository.name;
-            return `<button type="button" class="native-repository-row" aria-label="${escape(label)}" data-dirty="${!sameResource(
+            return `<div class="native-repository-row repository-monitoring-row"><button type="button" class="repository-open" aria-label="${escape(label)}" data-dirty="${!sameResource(
               repository,
               saved.repositories?.find((r) => r.id === repository.id),
             )}" data-repository="${escape(repository.id)}" data-focus-key="repository:${escape(repository.id)}:settings">
-          <span class="settings-row-copy"><strong>${escape(repository.name)}</strong><small>${repository.provider === "github" ? "GitHub" : "Azure DevOps"} / ${escape(account?.login ?? "Account unavailable")}</small></span>
-          <span class="settings-row-value">${state}${
+          <span class="settings-row-copy"><strong>${escape(repository.name)}</strong><small>${repository.provider === "github" ? "GitHub" : "Azure DevOps"} / ${escape(account?.login ?? "Account unavailable")}</small><small data-repository-monitoring-detail="${escape(repository.id)}">${escape(repositoryMonitoringDetail(committed))}</small></span>
+          <span class="settings-row-value" data-monitoring-state="${state.toLowerCase()}">${state}${
             sameResource(
               repository,
               saved.repositories?.find((r) => r.id === repository.id),
             )
               ? ""
               : " / Draft"
-          }</span><span aria-hidden="true">›</span></button>`;
+          }</span><span aria-hidden="true">›</span></button><button type="button" class="repository-monitoring-toggle" role="switch" aria-checked="${committed.enabled}" aria-label="Monitor ${escape(label)}" data-toggle-repository="${escape(repository.id)}" data-focus-key="repository:${escape(repository.id)}:monitoring" ${busy ? "disabled" : ""}>${committed.enabled ? "Disable" : "Enable"}</button></div>`;
           })
           .join("") ||
         '<p class="settings-empty">No repositories yet. Browse an account below or add a GitHub URL.</p>';
@@ -1665,6 +1729,27 @@ export async function mountSettings(
           ),
         );
       list
+        .querySelectorAll<HTMLButtonElement>("[data-toggle-repository]")
+        .forEach((button) => {
+          button.onclick = async () => {
+            clearError();
+            const restore = rememberControl(content);
+            try {
+              await toggleRepositoryMonitoring(
+                button.dataset.toggleRepository!,
+                button.getAttribute("aria-checked") !== "true",
+              );
+              rows();
+              restore();
+              void refreshRepositoryAutomation(updateMonitoringDetails);
+            } catch (cause) {
+              showError(reason(cause));
+              rows();
+              restore();
+            }
+          };
+        });
+      list
         .querySelectorAll<HTMLButtonElement>("[data-repository]")
         .forEach((button) => {
           button.onclick = () =>
@@ -1686,6 +1771,17 @@ export async function mountSettings(
         });
       restore();
     };
+    const updateMonitoringDetails = () => {
+      content
+        .querySelectorAll<HTMLElement>("[data-repository-monitoring-detail]")
+        .forEach((detail) => {
+          const committed = saved.repositories?.find(
+            (r) => r.id === detail.dataset.repositoryMonitoringDetail,
+          );
+          if (committed)
+            detail.textContent = repositoryMonitoringDetail(committed);
+        });
+    };
     refreshRepositoryRows = rows;
     renderAccounts();
     if (accountContent) accountParking.append(accountContent);
@@ -1696,6 +1792,7 @@ export async function mountSettings(
       .querySelector<HTMLButtonElement>("[data-repository-reload]")
       ?.addEventListener("click", () => reload.click());
     rows();
+    void refreshRepositoryAutomation(updateMonitoringDetails);
   }
 
   async function addAndConfigure(
@@ -2263,7 +2360,7 @@ export async function mountSettings(
     const modal = dialog(
       `Settings for ${repository.name}`,
       `<section class="repository-identity"><h3>${escape(repository.name)}</h3><p class="settings-hint">${escape(repository.provider === "github" ? `GitHub acting account: ${githubAccounts.find((account) => account.account_id === repository.provider_account_id)?.login ?? (repository.provider_account_id ? "Saved account unavailable" : "No account selected")}.` : "Azure DevOps account binding is not available in this build.")}</p></section>
-        <label class="repository-check"><input type="checkbox" data-repository-enabled ${repository.enabled || pendingSetup.has(repository.id) ? "checked" : ""} /><span>Enable repository monitoring on Save</span></label>
+        <section class="repository-group"><label class="repository-check"><input type="checkbox" role="switch" aria-label="Monitor ${escape(repository.name)}" data-repository-enabled ${repository.enabled || (pendingSetup.has(repository.id) && !setupMonitoringOff.has(repository.id)) ? "checked" : ""} /><span>Monitor this repository</span></label><p data-repository-monitoring-state role="status"></p><p class="settings-hint" data-repository-monitoring-detail></p></section>
         <section class="repository-group"><h2>Pull requests to watch</h2>
         <p class="settings-hint">Save authorizes all currently open and future matching pull requests. Eligible reviews start automatically; global monitoring off, pause and repository disablement still apply. Adding this row alone does not start monitoring.</p>
         <label for="repository-reviewer-trigger">Reviewer requests</label><select id="repository-reviewer-trigger" data-reviewer-trigger><option value="inherit">Use default (${saved.defaults.reviewer_assignment ? "on" : "off"})</option><option value="on">Include PRs explicitly requesting the acting account</option><option value="off">Do not admit through reviewer requests</option></select>
@@ -2290,12 +2387,57 @@ export async function mountSettings(
       "Back to repositories; retain unsaved repository changes",
     );
     modal.classList.add("repository-editor");
-    modal.querySelector<HTMLInputElement>(
+    const monitoring = modal.querySelector<HTMLInputElement>(
       "[data-repository-enabled]",
-    )!.onchange = (event) => {
-      repository.enabled = (event.currentTarget as HTMLInputElement).checked;
-      pendingSetup.delete(repository.id);
-      changed();
+    )!;
+    const monitoringState = modal.querySelector<HTMLElement>(
+      "[data-repository-monitoring-state]",
+    )!;
+    const monitoringDetail = modal.querySelector<HTMLElement>(
+      "[data-repository-monitoring-detail]",
+    )!;
+    const updateMonitoring = () => {
+      if (!modal.isConnected) return;
+      const committed =
+        saved.repositories?.find((r) => r.id === repository.id) ?? repository;
+      monitoringState.textContent = committed.enabled ? "Enabled" : "Disabled";
+      monitoringState.dataset.monitoringState = committed.enabled
+        ? "enabled"
+        : "disabled";
+      monitoringDetail.textContent = pendingSetup.has(repository.id)
+        ? monitoring.checked
+          ? "Starts after you save valid configuration. Turn this off to keep the repository disabled."
+          : "Stays disabled when you save configuration."
+        : `${repositoryMonitoringDetail(committed)}. This control saves monitoring immediately using saved configuration; other fields stay in your draft. Global Monitoring is separate.`;
+    };
+    updateMonitoring();
+    void refreshRepositoryAutomation(updateMonitoring);
+    monitoring.onchange = async () => {
+      if (pendingSetup.has(repository.id)) {
+        repository.enabled = false;
+        if (monitoring.checked) setupMonitoringOff.delete(repository.id);
+        else setupMonitoringOff.add(repository.id);
+        updateMonitoring();
+        changed();
+        return;
+      }
+      const enabled = monitoring.checked;
+      monitoring.checked =
+        saved.repositories?.find((r) => r.id === repository.id)?.enabled ??
+        false;
+      const alert = modal.querySelector<HTMLElement>("[data-resource-error]")!;
+      alert.hidden = true;
+      try {
+        await toggleRepositoryMonitoring(repository.id, enabled, modal);
+        monitoring.checked = repository.enabled;
+        updateMonitoring();
+        refreshRepositoryRows?.();
+        void refreshRepositoryAutomation(updateMonitoring);
+      } catch (cause) {
+        alert.textContent = reason(cause);
+        alert.hidden = false;
+        updateMonitoring();
+      }
     };
     const reviewerTrigger = modal.querySelector<HTMLSelectElement>(
       "[data-reviewer-trigger]",
@@ -2323,6 +2465,7 @@ export async function mountSettings(
           )!.checked;
           await commitResource(repositoryEdit(repository), modal);
           pendingSetup.delete(repository.id);
+          setupMonitoringOff.delete(repository.id);
           modal.close();
           render();
         } catch (cause) {

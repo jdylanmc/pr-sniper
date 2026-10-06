@@ -289,7 +289,13 @@ test("overview retains preference and repository drafts without claiming them in
     .locator("[data-repository]")
     .filter({ hasText: "example/repo" })
     .click();
-  await page.getByLabel("Enable repository monitoring on Save").uncheck();
+  await page
+    .getByLabel("Reviewer requests", { exact: true })
+    .selectOption("off");
+  await page.getByRole("switch", { name: "Monitor example/repo" }).click();
+  await expect(page.locator("[data-repository-monitoring-state]")).toHaveText(
+    "Disabled",
+  );
   await page
     .getByRole("dialog")
     .getByRole("button", { name: "Close dialog", exact: true })
@@ -316,10 +322,10 @@ test("overview retains preference and repository drafts without claiming them in
     .filter({ hasText: "example/repo" })
     .click();
   await expect(
-    page.getByLabel("Enable repository monitoring on Save"),
+    page.getByRole("switch", { name: "Monitor example/repo" }),
   ).not.toBeChecked();
   expect((await store("snapshot")).settings.repositories).toEqual(
-    saved.repositories,
+    saved.repositories.map((repository) => ({ ...repository, enabled: false })),
   );
 });
 
