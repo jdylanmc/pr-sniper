@@ -372,6 +372,82 @@ fn repository_save_admits_all_old_and_future_matches_without_snapshot_or_duplica
 }
 
 #[test]
+fn disabled_resource_save_and_global_edits_suppress_scans_without_closing_or_deleting_admitted_work(
+) {
+    let (_root, store) = unactivated_store();
+    let mut settings = store.load_settings().unwrap();
+    let mut neighbor = settings.repositories[0].clone();
+    neighbor.id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd".into();
+    neighbor.name = "example/neighbor".into();
+    neighbor.provider_repository_id = Some("200".into());
+    neighbor.enabled = false;
+    settings.repositories.push(neighbor.clone());
+    store.save_settings(&settings).unwrap();
+    let authorized = save_authorized_repository(&store);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_000,
+        vec![pull(
+            "1",
+            1,
+            "11",
+            "author",
+            &[],
+            HEAD_A,
+            "2020-01-01T00:00:00Z",
+        )],
+        "actor",
+    )
+    .unwrap();
+    let admitted = store.load_queue_state().unwrap();
+    assert_eq!(admitted.jobs.len(), 1);
+    assert_eq!(admitted.tracked.len(), 1);
+    let mut repository = authorized.repositories[0].clone();
+    repository.enabled = false;
+    let disabled = store
+        .save_resource(pr_sniper_lib::storage::ResourceEdit::Repository {
+            id: repository.id.clone(),
+            expected: Some(Box::new(authorized.repositories[0].clone())),
+            value: Some(Box::new(repository)),
+        })
+        .unwrap();
+    let mut preferences = disabled.global_preferences();
+    preferences.capacity = 7;
+    preferences.defaults.schedule = Schedule::Cron {
+        expression: "* * * * *".into(),
+        timezone: "UTC".into(),
+    };
+    store
+        .save_resource(pr_sniper_lib::storage::ResourceEdit::Preferences {
+            expected: disabled.global_preferences(),
+            value: preferences,
+        })
+        .unwrap();
+    let mut restarted = Monitor::restore(&store).unwrap();
+    assert!(restarted
+        .prepare_checks(&store, 1_800_000_100, true)
+        .unwrap()
+        .is_empty());
+    let retained = store.load_queue_state().unwrap();
+    assert_eq!(retained.tracked, admitted.tracked);
+    assert_eq!(retained.jobs.len(), admitted.jobs.len());
+    assert_eq!(
+        retained.jobs[0].pull_request_id,
+        admitted.jobs[0].pull_request_id
+    );
+    assert_eq!(retained.jobs[0].head_sha, admitted.jobs[0].head_sha);
+    assert_eq!(store.load_settings().unwrap().repositories[1], neighbor);
+    assert!(store
+        .load_settings()
+        .unwrap()
+        .repository_authorizations
+        .values()
+        .all(Option::is_none));
+}
+
+#[test]
 fn repository_authorization_survives_poll_store_failure_and_never_resurrects_after_disable() {
     let (root, store) = unactivated_store();
     let saved = save_authorized_repository(&store);

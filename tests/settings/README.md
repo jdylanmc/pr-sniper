@@ -69,6 +69,18 @@ SETTINGS_TEST_PORT=1652 npm exec playwright -- test \
   --output /absolute/private/queue-visual
 ```
 
+`repository-monitoring.spec.mjs` covers persistent listing/editor monitoring
+switches through resource-scoped native Store saves, authorization and reload.
+Global pause remains separate, intentionally disabled saves stay disabled, and
+quick switches use saved configuration without consuming unrelated or repository
+field drafts. Invalid enablement and compare-save conflicts retain drafts and
+show errors without optimistic enabled state. New intake stays disabled until
+configuration Save; a deliberate off choice survives assignment saves and Back.
+Compact keyboard/focus, forced-colors and reduced-motion cases use isolated
+browser fixtures, not the native desktop. Native resource and account-precommit
+tests separately cover schedule/binding/assignment validity, account loss,
+generation changes and durable authorization.
+
 `agent-intelligence.spec.mjs` exercises advertised reasoning efforts, context
 tiers and token capacities through the shared Agent editor and real native
 resource saves/restarts. Account/model changes retain incompatible deliberate

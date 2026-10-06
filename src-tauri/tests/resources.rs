@@ -177,6 +177,113 @@ fn enabled_repository_saves_reject_incomplete_legacy_configuration_without_break
 }
 
 #[test]
+fn monitoring_toggle_requires_valid_saved_configuration_and_preserves_other_resources_on_restart() {
+    use pr_sniper_lib::{policy::Schedule, storage::Store};
+    for invalid in [
+        "binding",
+        "schedule",
+        "assignment",
+        "ai_account",
+        "unknown_agent",
+    ] {
+        let fixture = Fixture::new();
+        let store = fixture.store();
+        let mut original = settings();
+        original.repositories[0].enabled = false;
+        match invalid {
+            "binding" => original.repositories[0].provider_account_id = None,
+            "schedule" => {
+                original.defaults.schedule = Schedule::Interval {
+                    minutes: 5,
+                    timezone: "UTC".into(),
+                }
+            }
+            "assignment" => original.repositories[0].assignments.clear(),
+            "ai_account" => original.agents[0].ai_account = None,
+            "unknown_agent" => {}
+            _ => unreachable!(),
+        }
+        store.save_settings(&original).unwrap();
+        let expected = original.repositories[0].clone();
+        let mut enabled = expected.clone();
+        enabled.enabled = true;
+        if invalid == "unknown_agent" {
+            enabled.assignments[0].agent_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd".into();
+        }
+        assert!(store
+            .save_resource(ResourceEdit::Repository {
+                id: REPO.into(),
+                expected: Some(Box::new(expected)),
+                value: Some(Box::new(enabled)),
+            })
+            .is_err());
+        assert_eq!(store.load_settings().unwrap(), original);
+        assert!(store
+            .load_settings()
+            .unwrap()
+            .repository_authorizations
+            .is_empty());
+    }
+
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let mut original = settings();
+    original.repositories[0].enabled = false;
+    let mut neighbor = original.repositories[0].clone();
+    neighbor.id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd".into();
+    neighbor.name = "example/neighbor".into();
+    neighbor.provider_repository_id = Some("200".into());
+    original.repositories.push(neighbor.clone());
+    store.save_settings(&original).unwrap();
+    store
+        .save_automation(&pr_sniper_lib::capacity::Automation { paused: true })
+        .unwrap();
+    let mut enabled = original.repositories[0].clone();
+    enabled.enabled = true;
+    let edit = ResourceEdit::Repository {
+        id: REPO.into(),
+        expected: Some(Box::new(original.repositories[0].clone())),
+        value: Some(Box::new(enabled.clone())),
+    };
+    let mut preferences = original.global_preferences();
+    preferences.capacity = 7;
+    store
+        .save_resource(ResourceEdit::Preferences {
+            expected: original.global_preferences(),
+            value: preferences,
+        })
+        .unwrap();
+    let committed = store.save_resource(edit.clone()).unwrap();
+    let reopened = Store::new(fixture.path().to_path_buf());
+    assert_eq!(reopened.load_settings().unwrap(), committed);
+    assert_eq!(committed.repositories[1], neighbor);
+    assert_eq!(committed.agents, original.agents);
+    assert_eq!(committed.doctrines, original.doctrines);
+    assert_eq!(committed.capacity, 7);
+    assert!(committed.repository_authorizations[REPO]
+        .as_ref()
+        .unwrap()
+        .matches(&enabled));
+    assert!(reopened.load_automation().unwrap().paused);
+    assert!(reopened
+        .save_resource(edit)
+        .unwrap_err()
+        .contains("Resource changed"));
+    assert_eq!(reopened.load_settings().unwrap(), committed);
+    enabled.enabled = false;
+    let disabled = reopened
+        .save_resource(ResourceEdit::Repository {
+            id: REPO.into(),
+            expected: Some(Box::new(committed.repositories[0].clone())),
+            value: Some(Box::new(enabled)),
+        })
+        .unwrap();
+    assert!(!disabled.repositories[0].enabled);
+    assert!(disabled.repository_authorizations[REPO].is_none());
+    assert!(reopened.load_automation().unwrap().paused);
+}
+
+#[test]
 fn removing_the_last_assignment_cannot_commit_enabled_configuration_or_revoke_prior_authority() {
     let fixture = Fixture::new();
     let store = fixture.store();

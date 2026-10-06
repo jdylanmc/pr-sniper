@@ -166,6 +166,40 @@
 .native-repository-row small {
   overflow-wrap: anywhere;
 }
+.settings-window .repository-monitoring-row {
+  gap: 6px;
+  padding: 0 8px 0 0;
+}
+.settings-window .repository-open {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+.repository-open .settings-row-copy {
+  min-width: 0;
+}
+.repository-monitoring-toggle {
+  flex: none;
+}
+.settings-window [data-monitoring-state] {
+  font-weight: 600;
+}
+.settings-window [data-monitoring-state="enabled"] {
+  color: #28777d;
+}
+@media (forced-colors: active) {
+  .settings-window [data-monitoring-state] {
+    color: CanvasText;
+  }
+}
 .settings-window .repository-library #add-repository {
   background: #f68743;
   color: #243247;

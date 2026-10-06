@@ -51,11 +51,12 @@ test("adding, reopening, configuring, pausing and removing preserves identities 
   await expect(reopened).toHaveCount(0);
   for (const enabled of [false, true]) {
     const editor = await repositorySettings(page, "fixture/one");
-    await editor
-      .getByLabel("Enable repository monitoring on Save")
-      .setChecked(enabled);
+    await editor.getByRole("switch", { name: "Monitor fixture/one" }).click();
+    await expect(
+      editor.locator("[data-repository-monitoring-state]"),
+    ).toHaveText(enabled ? "Enabled" : "Disabled");
     const before = (await store("snapshot")).settings;
-    expect(before.repositories[0].enabled).toBe(!enabled);
+    expect(before.repositories[0].enabled).toBe(enabled);
     await editor
       .getByRole("button", { name: "Save repository", exact: true })
       .click();
