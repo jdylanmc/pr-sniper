@@ -1,7 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import crosshair from "./crosshair.svg";
 import "./style.css";
-import { renderMonitoring } from "./monitoring";
+import { renderMonitoring, type MonitoringSnapshot } from "./monitoring";
+import { renderIntelligenceDiagnostics } from "./work-presentation";
 import { mountSettingsWithGenie } from "./genie";
 import { mountPanel } from "./panel";
 import { isWindows, trayAdjective, trayLocation } from "./platform";
@@ -62,7 +63,11 @@ async function load() {
       content
         .querySelector("#refresh")!
         .addEventListener("click", () => void load());
-      const entries = await invoke<Diagnostic[]>("diagnostics");
+      const [entries, jobs] = await Promise.all([
+        invoke<Diagnostic[]>("diagnostics"),
+        invoke<MonitoringSnapshot>("monitoring_snapshot"),
+      ]);
+      if (revision !== loadRevision) return;
       content.querySelector("#log")!.textContent =
         `${doctrineCatalogLabel(state.doctrine_catalog)}\n${JSON.stringify(state.doctrine_catalog ?? null, null, 2)}\n\n` +
         (entries.length
@@ -73,6 +78,7 @@ async function load() {
               )
               .join("\n")
           : "No host events recorded.");
+      renderIntelligenceDiagnostics(content, jobs);
     } else if (view === "queue") {
       renderMonitoring(content, showError);
     } else {

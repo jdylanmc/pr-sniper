@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { actualIntelligence } from "./copilot";
 import { mountAutomation, type AutomationSnapshot } from "./automation";
 import type { PanelDetail } from "./panel";
 import { renderActions } from "./actions";
@@ -164,6 +165,7 @@ export interface ReviewCandidate {
       model: string;
       session_id: string;
       runtime_version: string;
+      intelligence?: import("./policy").AgentIntelligence | null;
       input_tokens: number;
       output_tokens: number;
       tool_calls: number;
@@ -905,7 +907,7 @@ export function renderMonitoring(
         guide.append(summary, list);
         const usage = document.createElement("p");
         usage.className = "hint";
-        usage.textContent = `Session ${result.session_id}; runtime ${result.runtime_version}; model ${result.model}. Tokens: ${result.input_tokens} input, ${result.output_tokens} output. Read-tool calls: ${result.tool_calls}.`;
+        usage.textContent = `Session ${result.session_id}; runtime ${result.runtime_version}; model ${result.model}. ${actualIntelligence(result.intelligence)} Tokens: ${result.input_tokens} input, ${result.output_tokens} output. Read-tool calls: ${result.tool_calls}.`;
         row.append(guide, usage);
         const publication = publications.find(
           (p) => p.review_operation_id === run.operation.id,

@@ -128,6 +128,9 @@ pub struct Agent {
     pub id: String,
     pub name: String,
     pub model: String,
+    /// Absent on legacy profiles until Intelligence or account/model is configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intelligence: Option<AgentIntelligence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai_account: Option<AiAccount>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -137,6 +140,13 @@ pub struct Agent {
     pub doctrines: Option<Vec<String>>,
     pub prompt: String,
     pub signature: String,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentIntelligence {
+    pub reasoning_effort: Option<String>,
+    pub context_tier: Option<String>,
 }
 
 /// Stable connection reference, never a credential or mutable login.
@@ -511,6 +521,17 @@ impl Settings {
             }
             crate::policy::validate_configuration_text(&agent.name)?;
             crate::policy::validate_configuration_text(&agent.model)?;
+            if let Some(intelligence) = &agent.intelligence {
+                for value in [&intelligence.reasoning_effort, &intelligence.context_tier]
+                    .into_iter()
+                    .flatten()
+                {
+                    if value.trim().is_empty() || value.trim() != value {
+                        return Err("Intelligence overrides must be nonempty advertised values; use Provider default instead.".into());
+                    }
+                    crate::policy::validate_configuration_text(value)?;
+                }
+            }
             crate::policy::validate_configuration_text(&agent.prompt)?;
             crate::policy::validate_configuration_text(&agent.signature)?;
             if let Some(account) = &agent.ai_account {

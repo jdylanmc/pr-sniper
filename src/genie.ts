@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import { modelSelectable, type CopilotModel } from "./copilot";
+import {
+  modelSelectable,
+  intelligenceError,
+  type CopilotModel,
+} from "./copilot";
 import { doctrineTitles, effectivePolicy } from "./policy";
 import { type SetupReview } from "./resources";
 import { mountSettings, type SetupTarget, type GuidedReturn } from "./settings";
@@ -306,6 +310,16 @@ export function mountGenie(
         )
       )
         throw "An assigned model is unavailable in its account's current catalog. Edit the Agent or retry; no replacement was selected.";
+      for (const agent of agents.filter(
+        (a) => a.ai_account?.account_id === accountId,
+      )) {
+        const invalid = intelligenceError(
+          models.find((model) => model.id === agent.model),
+          agent.intelligence,
+        );
+        if (invalid)
+          throw `${agent.name}: ${invalid} Edit the Agent; no replacement was selected.`;
+      }
     }
     return true;
   }

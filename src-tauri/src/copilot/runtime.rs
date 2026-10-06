@@ -212,6 +212,58 @@ pub(crate) fn models(
     result
 }
 
+#[allow(deprecated)] // Pinned catalogs may still advertise contextMax instead of maxPromptTokens.
+pub(crate) fn validate_intelligence(
+    model: &Model,
+    intelligence: Option<&crate::storage::AgentIntelligence>,
+) -> Result<(), String> {
+    if model.policy.as_ref().is_some_and(|policy| {
+        !matches!(
+            policy.state,
+            github_copilot_sdk::rpc::ModelPolicyState::Enabled
+                | github_copilot_sdk::rpc::ModelPolicyState::Unconfigured
+        )
+    }) {
+        return Err("The configured model is unavailable by account policy.".into());
+    }
+    let Some(intelligence) = intelligence else {
+        return Ok(());
+    };
+    if intelligence.reasoning_effort.as_ref().is_some_and(|value| {
+        model
+            .capabilities
+            .supports
+            .as_ref()
+            .and_then(|supports| supports.reasoning_effort)
+            == Some(false)
+            || !model
+                .supported_reasoning_efforts
+                .as_ref()
+                .is_some_and(|values| values.contains(value))
+    }) {
+        return Err("The saved reasoning effort is not advertised for this account/model. Edit the Agent or retry discovery; no replacement was selected.".into());
+    }
+    if let Some(value) = &intelligence.context_tier {
+        let pricing = model
+            .billing
+            .as_ref()
+            .and_then(|billing| billing.token_prices.as_ref());
+        let advertised = model
+            .supported_context_tiers
+            .as_ref()
+            .is_some_and(|values| values.contains(value))
+            || pricing.is_some_and(|prices| match value.as_str() {
+                "default" => prices.max_prompt_tokens.is_some() || prices.context_max.is_some(),
+                "long_context" => prices.long_context.is_some(),
+                _ => false,
+            });
+        if !advertised || !matches!(value.as_str(), "default" | "long_context") {
+            return Err("The saved context tier is not supported by this account/model and pinned runtime. Edit the Agent or retry discovery; no replacement was selected.".into());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 fn supports_runtime(major: isize, minor: isize) -> bool {
     // Verified LC_BUILD_VERSION of the pinned 1.0.85 native runtime.

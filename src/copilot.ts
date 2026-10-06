@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { AgentIntelligence } from "./policy";
 
 export interface CopilotAccount {
   provider: "copilot";
@@ -31,9 +32,91 @@ export interface CopilotModel {
   policy?: { state: string; terms?: string };
   warningText?: { dataRetention?: string };
   infoMessages?: { message: string }[];
+  supportedReasoningEfforts?: string[];
+  defaultReasoningEffort?: string;
+  supportedContextTiers?: string[];
+  capabilities?: {
+    supports?: { reasoningEffort?: boolean };
+    limits?: {
+      max_context_window_tokens?: number;
+      max_output_tokens?: number;
+    };
+  };
+  billing?: {
+    tokenPrices?: {
+      maxPromptTokens?: number;
+      contextMax?: number;
+      longContext?: { maxPromptTokens?: number; contextMax?: number };
+    };
+  };
 }
 export const modelSelectable = (model: CopilotModel) =>
   !model.policy || ["enabled", "unconfigured"].includes(model.policy.state);
+
+export const reasoningEfforts = (model?: CopilotModel) =>
+  model?.capabilities?.supports?.reasoningEffort === false
+    ? []
+    : (model?.supportedReasoningEfforts ?? []);
+
+export function contextTiers(model?: CopilotModel): string[] {
+  const prices = model?.billing?.tokenPrices;
+  return [
+    ...new Set([
+      ...(model?.supportedContextTiers ?? []),
+      ...(prices?.maxPromptTokens !== undefined ||
+      prices?.contextMax !== undefined
+        ? ["default"]
+        : []),
+      ...(prices?.longContext ? ["long_context"] : []),
+    ]),
+  ];
+}
+
+// These are the pinned SDK's context wire values, not a model capability catalog.
+export const runtimeContextTier = (value: string) =>
+  value === "default" || value === "long_context";
+
+export function contextCapacity(model?: CopilotModel, tier = "default") {
+  const prices = model?.billing?.tokenPrices;
+  const prompt =
+    tier === "long_context"
+      ? (prices?.longContext?.maxPromptTokens ??
+        prices?.longContext?.contextMax)
+      : tier === "default"
+        ? (prices?.maxPromptTokens ?? prices?.contextMax)
+        : undefined;
+  const output = model?.capabilities?.limits?.max_output_tokens;
+  const total =
+    prompt !== undefined && output !== undefined ? prompt + output : undefined;
+  return total !== undefined
+    ? `${total.toLocaleString("en-US")} tokens`
+    : prompt !== undefined
+      ? `${prompt.toLocaleString("en-US")} prompt tokens`
+      : "";
+}
+
+export function intelligenceError(
+  model: CopilotModel | undefined,
+  choice: AgentIntelligence | undefined,
+) {
+  if (
+    choice?.reasoning_effort &&
+    !reasoningEfforts(model).includes(choice.reasoning_effort)
+  )
+    return "The selected reasoning effort is not advertised for this account/model.";
+  if (
+    choice?.context_tier &&
+    (!contextTiers(model).includes(choice.context_tier) ||
+      !runtimeContextTier(choice.context_tier))
+  )
+    return "The selected context tier is not supported by this account/model and pinned runtime.";
+  return "";
+}
+
+export const actualIntelligence = (value?: AgentIntelligence | null) =>
+  value
+    ? `Reasoning effort: ${value.reasoning_effort ?? "Provider default (not reported)"}. Context window: ${value.context_tier ?? "Provider default (not reported)"}.`
+    : "Actual reasoning effort and context window were not recorded. Today's settings are not evidence.";
 
 export const copilotFailure = (reason?: string) =>
   ({

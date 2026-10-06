@@ -90,6 +90,37 @@ model choice; opening or saving unrelated settings does not migrate their
 selection. Existing doctrine, prompt, signature and repository assignments stay
 intact.
 
+## Agent Intelligence
+
+The shared Agent editor offers **Reasoning effort** and **Context window**
+choices advertised by the selected account/model, plus **Provider default**.
+Reasoning defaults and context capacities appear only when advertised. Context
+tiers also use Copilot's tiered token-pricing metadata; there is no arbitrary
+token-budget input. Unadvertised choices are unavailable. Advertised context
+values outside the pinned runtime's `default`/`long_context` wire values are
+disabled and explained, not sent as guessed settings.
+
+Changing the account or model retains deliberate overrides, including
+incompatible ones. The editor explains the incompatibility and blocks Save
+until you explicitly choose supported values or Provider default. Discovery
+failures keep choices intact without declaring them invalid; unrelated edits
+to an unchanged saved profile can still save. Genie's final check and every
+runtime execution revalidate overrides against the selected account's current
+model metadata. Restricted session creation and actual model/effort/context
+readback must succeed before inference; rejected or ignored overrides block
+execution, with no replacement model or success-shaped fallback.
+
+Agent saves record the requested Intelligence together with the model/account.
+Unrelated edits to legacy Agents preserve absent Intelligence fields; they do
+not invent a deliberate default choice.
+Jobs capture that configuration immutably. Job details and Diagnostics show
+captured requests separately from the actual runtime session report; later
+Agent edits do not rewrite either. Missing legacy fields are unavailable
+evidence, not today's defaults. A provider default not reported by the runtime
+is labeled as such, not fabricated as a selected effort or capacity. The SDK
+and bundled runtime remain pinned at 1.0.14 and 1.0.85; configuring an Agent
+does not upgrade the runtime, reset credentials or perform an inference test.
+
 ## App doctrine library
 
 The shipped library is exactly ten app-owned doctrines: `bounded-context`,
@@ -136,7 +167,8 @@ repository connection.
 AI credentials use the separate Keychain service
 `com.jdylanmc.pr-sniper.copilot.oauth-app.v1`, keyed by provider and stable
 account ID. No global active account is used. Settings stores only
-`ai_account: { provider, account_id }` and the returned model ID.
+`ai_account: { provider, account_id }`, the returned model ID, and requested
+`intelligence: { reasoning_effort, context_tier }` (null means Provider default).
 
 The Windows native boundary uses the equivalent independent service namespace
 in Credential Manager, sharing the existing record/rotation contracts rather

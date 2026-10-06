@@ -16,6 +16,7 @@ import {
   workPresentation,
   purposes,
   type WorkPresentation,
+  renderIntelligenceDiagnostics,
 } from "./work-presentation";
 import "./panel.css";
 
@@ -610,10 +611,10 @@ export async function mountPanel(app: HTMLElement) {
       refresh.onclick = () => void utility(type);
       views.utility.append(refresh);
       if (type === "diagnostics") {
-        const entries =
-          await invoke<{ timestamp_secs: number; event: string }[]>(
-            "diagnostics",
-          );
+        const [entries, jobs] = await Promise.all([
+          invoke<{ timestamp_secs: number; event: string }[]>("diagnostics"),
+          invoke<MonitoringSnapshot>("monitoring_snapshot"),
+        ]);
         if (request !== utilityRevision) return;
         const pre = document.createElement("pre");
         pre.textContent =
@@ -627,6 +628,7 @@ export async function mountPanel(app: HTMLElement) {
                 .join("\n")
             : "No host events recorded.");
         views.utility.append(pre);
+        renderIntelligenceDiagnostics(views.utility, jobs);
       } else {
         const tools = document.createElement("div");
         tools.dataset.panelRecovery = "true";
