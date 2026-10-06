@@ -7,6 +7,8 @@ import {
   section,
   editAgent,
   addRepository,
+  fixtureAgent,
+  repositorySettings,
 } from "./navigation.mjs";
 
 const canonicalDirectory = new URL(
@@ -202,6 +204,150 @@ test("resource save refreshes the whole resolved library and its selection count
   await expect(modal.locator("[data-selection-count]")).toHaveText(
     "0 selected / 12 shown",
   );
+});
+
+for (const [representation, references, selected] of [
+  ["ordered", { doctrines: ["code"] }, 1],
+  ["legacy", { doctrine: "code" }, 1],
+  ["inactive legacy", { doctrine: "code", doctrines: [] }, 0],
+]) {
+  for (const concurrentEdit of [false, true]) {
+    test(`external selected-doctrine rename stays coherent after an unrelated resource save (${representation})${concurrentEdit ? " without accepting a concurrent Agent edit" : ""}`, async ({
+      page,
+      store,
+      dataRoot,
+    }) => {
+      const settings = (await store("snapshot")).settings;
+      settings.agents = [{ ...fixtureAgent, ...references }];
+      await store("seed_settings", settings);
+      await store("save_repository", { repository: "fixture/rename" });
+      const initial = (await store("snapshot")).settings;
+      await page.goto("/?view=settings");
+      await section(page, "Preferences");
+      await page.locator("#global-capacity").fill("9");
+      const repository = await repositorySettings(page, "fixture/rename");
+      await repository
+        .getByLabel("Review start", { exact: true })
+        .selectOption("automatic");
+      await closeDialog(page);
+
+      const code = initial.doctrines.find(({ title }) => title === "code");
+      await store("save_resource", {
+        edit: {
+          kind: "doctrine",
+          title: "code",
+          expected: code,
+          value: { ...code, title: "renamed-code" },
+        },
+      });
+      if (concurrentEdit) {
+        const agent = (await store("snapshot")).settings.agents[0];
+        await store("save_resource", {
+          edit: {
+            kind: "agent",
+            id: agent.id,
+            expected: agent,
+            value: { ...agent, prompt: "Concurrent Agent prompt." },
+          },
+        });
+      }
+      await section(page, "Doctrines");
+      await newDoctrine(page, "local-principle", "Saved in this window.");
+      const resolved = await store("snapshot");
+      expect(resolved.settings.agents[0]).toMatchObject(
+        representation === "ordered"
+          ? { doctrines: ["renamed-code"] }
+          : { doctrine: "renamed-code" },
+      );
+      expect(await library(page)).toEqual(resolved.settings.doctrines);
+      const modal = await editAgent(page);
+      await expect(
+        modal.getByRole("checkbox", { name: "renamed-code", exact: true }),
+      ).toBeChecked({ checked: selected === 1 });
+      await expect(modal.locator("[name=doctrine]")).toHaveCount(11);
+      await expect(modal.locator("[data-selection-count]")).toHaveText(
+        `${selected} selected / 11 shown`,
+      );
+      await expect(modal.locator("[data-doctrine-catalog]")).toContainText(
+        resolved.doctrine_catalog.effective_revision.slice(0, 12),
+      );
+      await expect(
+        modal.getByRole("textbox", { name: "Prompt", exact: true }),
+      ).toHaveValue(fixtureAgent.prompt);
+      await modal
+        .getByRole("textbox", { name: "Prompt", exact: true })
+        .fill("Unrelated local Agent edit.");
+      await modal
+        .getByRole("button", { name: "Save agent", exact: true })
+        .click();
+      if (concurrentEdit) {
+        await expect(modal.getByRole("alert")).toContainText(
+          "Resource changed in another window",
+        );
+        await expect(
+          modal.getByRole("textbox", { name: "Prompt", exact: true }),
+        ).toHaveValue("Unrelated local Agent edit.");
+        expect(await diskSettings(dataRoot)).toEqual(resolved.settings);
+        await closeDialog(page);
+      } else {
+        await expect(modal).toHaveCount(0);
+        const expectedAgent = {
+          ...resolved.settings.agents[0],
+          prompt: "Unrelated local Agent edit.",
+        };
+        if (representation === "inactive legacy") delete expectedAgent.doctrine;
+        expect((await diskSettings(dataRoot)).agents[0]).toEqual(expectedAgent);
+      }
+      expect((await diskSettings(dataRoot)).capacity).toBe(initial.capacity);
+      expect((await diskSettings(dataRoot)).repositories).toEqual(
+        initial.repositories,
+      );
+      await section(page, "Preferences");
+      await expect(page.locator("#global-capacity")).toHaveValue("9");
+      const pending = await repositorySettings(page, "fixture/rename");
+      await expect(
+        pending.getByLabel("Review start", { exact: true }),
+      ).toHaveValue("automatic");
+    });
+  }
+}
+
+test("unrelated library refresh does not accept a concurrent still-valid Agent selection edit", async ({
+  page,
+  store,
+  dataRoot,
+}) => {
+  const settings = (await store("snapshot")).settings;
+  settings.agents = [{ ...fixtureAgent, doctrines: ["code"] }];
+  await store("seed_settings", settings);
+  await page.goto("/?view=settings");
+  const agent = (await store("snapshot")).settings.agents[0];
+  await store("save_resource", {
+    edit: {
+      kind: "agent",
+      id: agent.id,
+      expected: agent,
+      value: { ...agent, doctrines: ["testing"] },
+    },
+  });
+  await section(page, "Doctrines");
+  await newDoctrine(page, "local-principle", "Saved in this window.");
+  const resolved = (await store("snapshot")).settings;
+  const modal = await editAgent(page);
+  await expect(
+    modal.getByRole("checkbox", { name: "code", exact: true }),
+  ).toBeChecked();
+  await modal
+    .getByRole("textbox", { name: "Prompt", exact: true })
+    .fill("Keep my draft.");
+  await modal.getByRole("button", { name: "Save agent", exact: true }).click();
+  await expect(modal.getByRole("alert")).toContainText(
+    "Resource changed in another window",
+  );
+  await expect(
+    modal.getByRole("textbox", { name: "Prompt", exact: true }),
+  ).toHaveValue("Keep my draft.");
+  expect(await diskSettings(dataRoot)).toEqual(resolved);
 });
 
 test.beforeEach(async ({ page }) => {

@@ -384,10 +384,29 @@ export async function mountSettings(
     try {
       const result = await saveResource(edit, accountGeneration);
       snapshot.doctrine_catalog = result.doctrine_catalog;
+      const key = (title: string) => title.trim().toLowerCase();
+      const titles = new Set(
+        (result.settings.doctrines ?? []).map((d) => key(d.title)),
+      );
       for (const settings of [saved, draft]) {
         acceptResource(settings, clone(result.settings), edit);
-        // Library edits save in their own modal, not the preference/repository
-        // draft. Refresh the resolved choices with their returned revision.
+        // Adopt dependent reference repairs with the library, not unrelated
+        // Agent edits or still-valid selection changes and their CAS baselines.
+        for (const agent of settings.agents ?? []) {
+          const references = [
+            ...(agent.doctrine ? [agent.doctrine] : []),
+            ...(agent.doctrines ?? []),
+          ];
+          if (references.every((title) => titles.has(key(title)))) continue;
+          const committed = result.settings.agents?.find(
+            (a) => a.id === agent.id,
+          );
+          if (!committed) continue;
+          if (committed.doctrine === undefined) delete agent.doctrine;
+          else agent.doctrine = committed.doctrine;
+          if (committed.doctrines === undefined) delete agent.doctrines;
+          else agent.doctrines = clone(committed.doctrines);
+        }
         settings.doctrines = clone(result.settings.doctrines ?? []);
       }
       if (result.warning) showError(result.warning);
