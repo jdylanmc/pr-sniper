@@ -776,7 +776,17 @@ fn repository_override_is_schedulable_with_an_unconfigured_legacy_global_and_pre
         store.load_monitoring_state().unwrap().activations,
         before.activations
     );
-    save_cadence(&store, 0, None);
+    let current = store.load_settings().unwrap();
+    let mut disabled = current.repositories[0].clone();
+    disabled.enabled = false;
+    disabled.overrides.schedule = None;
+    store
+        .save_resource(pr_sniper_lib::storage::ResourceEdit::Repository {
+            id: disabled.id.clone(),
+            expected: Some(Box::new(current.repositories[0].clone())),
+            value: Some(Box::new(disabled)),
+        })
+        .unwrap();
     monitor
         .synchronize_configuration(&store, &accounts, 1_800_000_001)
         .unwrap();
@@ -2188,6 +2198,143 @@ fn transient_poll_failures_stop_after_three_retries_and_manual_retry_resets_budg
     assert_eq!(reset.attempt_count, 0);
     assert_eq!(reset.initial_attempt_at, now + 1);
     assert_eq!(reset.retry_deadline, now + 901);
+}
+
+#[test]
+fn schedule_status_uses_real_retry_health_through_exhaustion_restart_and_manual_recovery() {
+    use pr_sniper_lib::monitoring::repository_schedule_status;
+    let (root, store) = store();
+    let id = store.load_settings().unwrap().repositories[0].id.clone();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let mut now = 1_800_000_000;
+    for attempt in 1..=4 {
+        let ticket = monitor
+            .prepare_checks(&store, now, attempt == 1)
+            .unwrap()
+            .remove(0);
+        monitor
+            .finish(&store, ticket, Err(ConnectionError::Network), now + 1)
+            .unwrap_err();
+        let health = monitor.snapshot().remove(0);
+        let status = repository_schedule_status(&store, &id, now + 1).unwrap();
+        assert!(status.configured_next_run.unwrap() > now + 1);
+        if attempt < 4 {
+            assert_eq!(
+                status.next_run,
+                health.operation.as_ref().unwrap().next_attempt_at
+            );
+            assert!(status.issue.is_none());
+            now = status.next_run.unwrap();
+        } else {
+            assert_eq!(
+                health.operation.as_ref().unwrap().state,
+                OperationState::ManualRetry
+            );
+            assert_eq!(status.next_run, None);
+            assert!(status.issue.unwrap().contains("Open Status and Retry"));
+        }
+    }
+    let reopened = Store::new(root.path().to_path_buf());
+    let mut restarted = Monitor::restore(&reopened).unwrap();
+    let before = reopened.load_monitoring_state().unwrap();
+    let settings = reopened.load_settings().unwrap();
+    let status = repository_schedule_status(&reopened, &id, now + 1000).unwrap();
+    assert_eq!(status.next_run, None);
+    assert!(status
+        .issue
+        .unwrap()
+        .contains("suspended after failed attempts"));
+    assert_eq!(reopened.load_monitoring_state().unwrap(), before);
+    assert_eq!(reopened.load_settings().unwrap(), settings);
+    assert!(restarted
+        .prepare_checks(&reopened, now + 1000, false)
+        .unwrap()
+        .is_empty());
+    let operation = restarted.snapshot()[0].operation.clone().unwrap();
+    restarted
+        .manual_retry_operation(&reopened, &operation.id, now + 1001)
+        .unwrap();
+    let status = repository_schedule_status(&reopened, &id, now + 1001).unwrap();
+    assert_eq!(status.next_run, Some(now + 1001));
+    assert!(status.issue.is_none());
+    let ticket = restarted
+        .prepare_checks(&reopened, now + 1001, false)
+        .unwrap()
+        .remove(0);
+    restarted
+        .finish(
+            &reopened,
+            ticket,
+            Ok(poll_result(Vec::new(), "actor")),
+            now + 1002,
+        )
+        .unwrap();
+    let status = repository_schedule_status(&reopened, &id, now + 1002).unwrap();
+    assert_eq!(status.next_run, Some(restarted.snapshot()[0].next_run));
+    assert!(status.next_run.unwrap() > now + 1002);
+    assert!(status.issue.is_none());
+}
+
+#[test]
+fn schedule_status_distinguishes_configured_preview_from_unavailable_paused_disabled_and_stale_health(
+) {
+    use pr_sniper_lib::monitoring::repository_schedule_status;
+    let (_root, store) = store();
+    let mut settings = store.load_settings().unwrap();
+    let id = settings.repositories[0].id.clone();
+    let now = 1_800_000_000;
+    let preview = repository_schedule_status(&store, &id, now).unwrap();
+    assert_eq!(preview.next_run, None);
+    assert_eq!(preview.configured_next_run, Some(now + 900));
+    assert!(preview.issue.unwrap().contains("not synchronized"));
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let accounts = available_accounts(&[(ACCOUNT_ID, "actor")]);
+    monitor
+        .synchronize_configuration(&store, &accounts, now)
+        .unwrap();
+    let healthy = repository_schedule_status(&store, &id, now).unwrap();
+    assert_eq!(healthy.next_run, Some(monitor.snapshot()[0].next_run));
+    assert!(healthy.issue.is_none());
+    store
+        .save_automation(&pr_sniper_lib::capacity::Automation { paused: true })
+        .unwrap();
+    let paused = repository_schedule_status(&store, &id, now).unwrap();
+    assert_eq!(paused.next_run, None);
+    assert_eq!(paused.configured_next_run, Some(now + 900));
+    assert!(paused.issue.unwrap().contains("resume"));
+    store
+        .save_automation(&pr_sniper_lib::capacity::Automation { paused: false })
+        .unwrap();
+    monitor
+        .synchronize_configuration(&store, &BTreeMap::new(), now)
+        .unwrap();
+    let disconnected = repository_schedule_status(&store, &id, now).unwrap();
+    assert_eq!(disconnected.next_run, None);
+    assert!(disconnected
+        .issue
+        .unwrap()
+        .contains("Reconnect the acting GitHub account"));
+    settings.repositories[0].enabled = false;
+    set_settings(&store, &settings);
+    let disabled = repository_schedule_status(&store, &id, now).unwrap();
+    assert_eq!(disabled.next_run, None);
+    assert!(disabled.issue.unwrap().contains("disabled"));
+    settings.repositories[0].enabled = true;
+    settings.repositories[0].overrides.schedule = Some(cron("0 * * * *", "UTC"));
+    set_settings(&store, &settings);
+    let stale = repository_schedule_status(&store, &id, now).unwrap();
+    assert_eq!(stale.next_run, None);
+    assert!(stale.configured_next_run.is_some());
+    assert!(stale.issue.unwrap().contains("not synchronized"));
+    monitor
+        .synchronize_configuration(&store, &accounts, now)
+        .unwrap();
+    let healthy_override = repository_schedule_status(&store, &id, now).unwrap();
+    assert_eq!(
+        healthy_override.next_run,
+        Some(monitor.snapshot()[0].next_run)
+    );
+    assert!(healthy_override.issue.is_none());
 }
 
 #[test]

@@ -95,6 +95,154 @@ fn repository_schedule_rejects_invalid_cron_timezone_and_unsupported_occurrences
 }
 
 #[test]
+fn inherited_impossible_cron_blocks_readiness_and_enabled_saves_without_blocking_valid_overrides() {
+    use pr_sniper_lib::{policy::Schedule, storage::Store};
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let mut legacy = settings();
+    legacy.defaults.schedule = Schedule::Cron {
+        expression: "0 0 31 2 *".into(),
+        timezone: "UTC".into(),
+    };
+    let mut neighbor = legacy.repositories[0].clone();
+    neighbor.id = "bbbbbbbb-bbbb-4bbb-8bbb-000000000002".into();
+    neighbor.name = "example/neighbor".into();
+    neighbor.provider_repository_id = Some("200".into());
+    neighbor.enabled = false;
+    legacy.repositories.push(neighbor);
+    store.save_settings(&legacy).unwrap();
+    let reopened = Store::new(fixture.path().to_path_buf());
+    let before = reopened.load_settings().unwrap();
+    let readiness = before.readiness();
+    assert!(!readiness.configuration_ready);
+    assert!(readiness.repositories[0].issues[0].contains("no next occurrence"));
+    let bytes = std::fs::read(fixture.path().join("config/settings.json")).unwrap();
+    let edit = ResourceEdit::Repository {
+        id: REPO.into(),
+        expected: Some(Box::new(before.repositories[0].clone())),
+        value: Some(Box::new(before.repositories[0].clone())),
+    };
+    assert!(reopened
+        .save_resource(edit)
+        .unwrap_err()
+        .contains("no next occurrence"));
+    assert_eq!(
+        std::fs::read(fixture.path().join("config/settings.json")).unwrap(),
+        bytes
+    );
+    assert_eq!(reopened.load_settings().unwrap(), before);
+    let mut repository = before.repositories[0].clone();
+    repository.overrides.schedule = Some(Schedule::Cron {
+        expression: "*/5 * * * *".into(),
+        timezone: "Asia/Tokyo".into(),
+    });
+    let valid = reopened
+        .save_resource(ResourceEdit::Repository {
+            id: REPO.into(),
+            expected: Some(Box::new(before.repositories[0].clone())),
+            value: Some(Box::new(repository)),
+        })
+        .unwrap();
+    assert!(valid.readiness().configuration_ready);
+    assert!(valid.readiness().repositories[0].issues.is_empty());
+    assert_eq!(valid.repositories[1], before.repositories[1]);
+    let valid_bytes = std::fs::read(fixture.path().join("config/settings.json")).unwrap();
+    let mut inherited = valid.repositories[0].clone();
+    inherited.overrides.schedule = None;
+    assert!(reopened
+        .save_resource(ResourceEdit::Repository {
+            id: REPO.into(),
+            expected: Some(Box::new(valid.repositories[0].clone())),
+            value: Some(Box::new(inherited.clone())),
+        })
+        .unwrap_err()
+        .contains("no next occurrence"));
+    assert_eq!(
+        std::fs::read(fixture.path().join("config/settings.json")).unwrap(),
+        valid_bytes
+    );
+    assert_eq!(reopened.load_settings().unwrap(), valid);
+    inherited.enabled = false;
+    let disabled = reopened
+        .save_resource(ResourceEdit::Repository {
+            id: REPO.into(),
+            expected: Some(Box::new(valid.repositories[0].clone())),
+            value: Some(Box::new(inherited)),
+        })
+        .unwrap();
+    assert!(disabled.readiness().repositories[0].issues[0].contains("no next occurrence"));
+    assert_eq!(disabled.repositories[1], before.repositories[1]);
+    let mut enabled = disabled.repositories[0].clone();
+    enabled.enabled = true;
+    assert!(reopened
+        .save_resource(ResourceEdit::Repository {
+            id: REPO.into(),
+            expected: Some(Box::new(disabled.repositories[0].clone())),
+            value: Some(Box::new(enabled)),
+        })
+        .unwrap_err()
+        .contains("no next occurrence"));
+    assert_eq!(reopened.load_settings().unwrap(), disabled);
+}
+
+#[test]
+fn inherited_future_validation_covers_public_policy_and_preference_enable_paths_without_a_global_gate(
+) {
+    use pr_sniper_lib::policy::Schedule;
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let mut legacy = settings();
+    legacy.defaults.schedule = Schedule::Cron {
+        expression: "0 0 31 2 *".into(),
+        timezone: "UTC".into(),
+    };
+    legacy.repositories[0].enabled = false;
+    store.save_settings(&legacy).unwrap();
+    let before = store.load_settings().unwrap();
+    let mut enabled = before.clone();
+    enabled.repositories[0].enabled = true;
+    assert!(store
+        .save_preferences(enabled, &before)
+        .unwrap_err()
+        .contains("no next occurrence"));
+    assert_eq!(store.load_settings().unwrap(), before);
+    let mut unrelated = before.clone();
+    unrelated.capacity = 2;
+    let unrelated = store.save_preferences(unrelated, &before).unwrap();
+    assert_eq!(unrelated.defaults.schedule, before.defaults.schedule);
+    let mut override_repository = unrelated.repositories[0].clone();
+    override_repository.enabled = true;
+    override_repository.overrides.schedule = Some(Schedule::Cron {
+        expression: "*/5 * * * *".into(),
+        timezone: "UTC".into(),
+    });
+    let valid = store
+        .save_resource(ResourceEdit::Repository {
+            id: REPO.into(),
+            expected: Some(Box::new(unrelated.repositories[0].clone())),
+            value: Some(Box::new(override_repository)),
+        })
+        .unwrap();
+    let mut inherit = valid.repositories[0].overrides.clone();
+    inherit.schedule = None;
+    assert!(store
+        .save_repository_policy(REPO, inherit)
+        .unwrap_err()
+        .contains("no next occurrence"));
+    assert_eq!(store.load_settings().unwrap(), valid);
+    let mut defaults = valid.defaults.clone();
+    defaults.schedule = Schedule::Cron {
+        expression: "0 0 31 4 *".into(),
+        timezone: "UTC".into(),
+    };
+    assert!(store
+        .save_defaults(defaults)
+        .unwrap_err()
+        .contains("no next occurrence"));
+    assert_eq!(store.load_settings().unwrap(), valid);
+}
+
+#[test]
 fn intelligence_resource_save_restart_and_job_snapshots_survive_later_agent_edits() {
     use pr_sniper_lib::storage::{AgentIntelligence, Store};
     let fixture = Fixture::new();

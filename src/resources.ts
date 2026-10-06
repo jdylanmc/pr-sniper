@@ -112,6 +112,7 @@ export const savedResources = () => invoke<SavedResources>("saved_resources");
 export interface RepositoryScheduleStatus {
   inherited: boolean;
   schedule: Schedule;
+  configured_next_run: number | null;
   next_run: number | null;
   issue: string | null;
   enabled: boolean;
@@ -123,15 +124,21 @@ export const repositoryScheduleStatus = (repositoryId: string) =>
   });
 export function scheduleStatusText(status: RepositoryScheduleStatus): string {
   const { schedule } = status;
+  const time = (instant: number) =>
+    new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZone: schedule.timezone,
+    }).format(new Date(instant * 1000));
   const next =
     status.next_run === null
-      ? `Unavailable: ${status.issue}`
-      : new Intl.DateTimeFormat(undefined, {
-          dateStyle: "medium",
-          timeStyle: "short",
-          timeZone: schedule.timezone,
-        }).format(new Date(status.next_run * 1000));
-  return `${status.inherited ? "Use global schedule" : "Repository override"}: ${scheduleDescription(schedule)} / ${schedule.timezone}. Next scan: ${next}.${status.paused ? " Global monitoring is paused; no scans run." : ""}${!status.enabled ? " Repository is disabled; no scans run." : ""}`;
+      ? `Not scheduled. ${status.issue ?? "Check native monitoring in Status."}`
+      : time(status.next_run);
+  const preview =
+    status.next_run === null && status.configured_next_run !== null
+      ? ` Configured occurrence: ${time(status.configured_next_run)} (cadence preview only).`
+      : "";
+  return `${status.inherited ? "Use global schedule" : "Repository override"}: ${scheduleDescription(schedule)} / ${schedule.timezone}. Next scan: ${next}${status.next_run === null ? "" : "."}${preview}`;
 }
 export function sameResource(left: unknown, right: unknown): boolean {
   const ordered = (value: unknown): unknown => {

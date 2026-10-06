@@ -95,12 +95,13 @@ for (const embedded of [true, false]) {
     const status = await store("repository_schedule_status", {
       repositoryId: saved.repositories[0].id,
     });
-    expect(status.next_run).toBeGreaterThan(0);
+    expect(status.next_run).toBeNull();
+    expect(status.configured_next_run).toBeGreaterThan(0);
     expect(status).toMatchObject({
       inherited: false,
       enabled: false,
-      issue: null,
     });
+    expect(status.issue).toContain("disabled");
     await section(page, "Preferences");
     await page.locator("#cron-helper").selectOption("0 * * * *");
     await page.locator("#global-timezone").fill("Asia/Tokyo");
@@ -241,8 +242,10 @@ test("new repositories inherit; valid override Save honors intentional pause and
     inherited: false,
     paused: true,
     enabled: true,
-    issue: null,
   });
+  expect(status.next_run).toBeNull();
+  expect(status.configured_next_run).toBeGreaterThan(0);
+  expect(status.issue).toContain("paused");
   expect(status.schedule.timezone).toBe("America/New_York");
   expect((await store("saved_resources")).readiness.configuration_ready).toBe(
     true,
@@ -255,4 +258,199 @@ test("new repositories inherit; valid override Save honors intentional pause and
     .getByRole("button", { name: "Cancel repository changes" })
     .click();
   expect((await store("snapshot")).settings).toEqual(saved);
+});
+
+async function seedHealth(store, repository, changes = {}) {
+  const health = {
+    repository_id: repository.id,
+    name: repository.name,
+    schedule_key: "cron:*/15 * * * *:UTC",
+    provider_account_id: repository.provider_account_id,
+    provider_repository_id: repository.provider_repository_id,
+    enabled: repository.enabled,
+    last_attempt: 100,
+    last_success: null,
+    next_run: 0,
+    schedule_available: false,
+    last_failure: "network",
+    in_flight: false,
+    operation: {
+      id: "eeeeeeee-eeee-4eee-8eee-000000000001",
+      provider: "github",
+      account_id: "22",
+      configuration_id: repository.id,
+      repository_id: "100",
+      pull_request_id: null,
+      head_sha: null,
+      trigger_policy: "[[],true]",
+      operation_type: "repository_poll",
+      state: "manual_retry",
+      attempt_count: 4,
+      initial_attempt_at: 100,
+      retry_deadline: 1000,
+      next_attempt_at: null,
+      failure: "network",
+      attempted_mutation: null,
+      pending_review_id: null,
+      owned_thread_id: null,
+      triggering_external_comment_id: null,
+      confirmed_receipt: null,
+    },
+    ...changes,
+  };
+  await store("seed_queue_state", {
+    jobs: [],
+    reviews: [],
+    publications: [],
+    follow_ups: [],
+    monitoring: { health: { [repository.id]: health } },
+  });
+}
+
+test("native IPC and shared UI do not promise a scan for exhausted retry or disconnected health after restart", async ({
+  page,
+  store,
+}) => {
+  const saved = await seed(store);
+  saved.repositories[0].enabled = true;
+  await store("seed_settings", saved);
+  await seedHealth(store, saved.repositories[0]);
+  const before = (await store("snapshot")).settings;
+  const status = await store("repository_schedule_status", {
+    repositoryId: saved.repositories[0].id,
+  });
+  expect(status.next_run).toBeNull();
+  expect(status.configured_next_run).toBeGreaterThan(0);
+  expect(status.issue).toContain("Open Status and Retry");
+  await providerFixture(page, store);
+  await repositoryPage(page, store);
+  const row = page.getByRole("button", { name: "fixture/one", exact: true });
+  await expect(row).toContainText("Next scan: Not scheduled.");
+  await expect(row).toContainText("Open Status and Retry");
+  await expect(row).toContainText("Configured occurrence:");
+  await expect(row).not.toContainText(/Next scan: [A-Z][a-z]{2} \d/);
+  const editor = await repositorySettings(page, "fixture/one");
+  await expect(editor.locator("[data-effective-schedule]")).toContainText(
+    "suspended after failed attempts",
+  );
+  await editor
+    .getByRole("button", { name: "Close dialog", exact: true })
+    .click();
+  await page.reload();
+  await section(page, "Repositories");
+  await expect(row).toContainText("Next scan: Not scheduled.");
+  expect((await store("snapshot")).settings).toEqual(before);
+  const exhausted = (await store("monitoring_snapshot")).health[0];
+  expect(exhausted.operation).toMatchObject({
+    state: "manual_retry",
+    attempt_count: 4,
+  });
+  expect(exhausted.next_run).toBe(0);
+  await seedHealth(store, saved.repositories[0], {
+    last_failure: "account_disconnected",
+    operation: null,
+  });
+  await page.reload();
+  await section(page, "Repositories");
+  await expect(row).toContainText("Reconnect the acting GitHub account");
+  await expect(row).toContainText("Next scan: Not scheduled.");
+  await seedHealth(store, saved.repositories[0], {
+    schedule_available: true,
+    next_run: 2000000000,
+    last_failure: null,
+    operation: null,
+  });
+  const healthy = await store("repository_schedule_status", {
+    repositoryId: saved.repositories[0].id,
+  });
+  expect(healthy.next_run).toBe(2000000000);
+  expect(healthy.issue).toBeNull();
+  await page.reload();
+  await section(page, "Repositories");
+  await expect(row).not.toContainText("Not scheduled");
+  await expect(row).not.toContainText("cadence preview only");
+});
+
+test("impossible inherited cron is unconfigured; override removal and enable failure retain drafts, bytes and neighbors", async ({
+  page,
+  store,
+}) => {
+  const settings = await seed(store);
+  settings.defaults.schedule = {
+    kind: "cron",
+    expression: "0 0 31 2 *",
+    timezone: "UTC",
+  };
+  settings.repositories[0].enabled = true;
+  await store("seed_settings", settings);
+  const before = (await store("snapshot")).settings;
+  const readiness = (await store("saved_resources")).readiness;
+  expect(readiness.configuration_ready).toBe(false);
+  expect(readiness.repositories[0].issues.join(" ")).toContain(
+    "no next occurrence",
+  );
+  const unconfigured = await store("repository_schedule_status", {
+    repositoryId: settings.repositories[0].id,
+  });
+  expect(unconfigured).toMatchObject({
+    next_run: null,
+    configured_next_run: null,
+  });
+  await providerFixture(page, store);
+  await repositoryPage(page, store);
+  let editor = await repositorySettings(page, "fixture/one");
+  await expect(editor.locator("[data-effective-schedule]")).toContainText(
+    "no next occurrence",
+  );
+  await expect(editor.locator("[data-effective-schedule]")).not.toContainText(
+    "Configured occurrence:",
+  );
+  await editor
+    .getByRole("button", { name: "Save repository", exact: true })
+    .click();
+  await expect(editor.locator("[data-resource-error]")).toContainText(
+    "no next occurrence",
+  );
+  expect((await store("snapshot")).settings).toEqual(before);
+  await editor.getByLabel("Schedule", { exact: true }).selectOption("override");
+  await editor
+    .getByLabel("Cadence", { exact: true })
+    .selectOption("*/15 * * * *");
+  await save(editor);
+  const valid = (await store("snapshot")).settings;
+  expect((await store("saved_resources")).readiness.configuration_ready).toBe(
+    true,
+  );
+  expect(valid.repositories[1]).toEqual(before.repositories[1]);
+  await page.reload();
+  await section(page, "Repositories");
+  editor = await repositorySettings(page, "fixture/one");
+  await editor.getByLabel("Schedule", { exact: true }).selectOption("inherit");
+  await editor
+    .getByRole("button", { name: "Save repository", exact: true })
+    .click();
+  await expect(editor.locator("[data-resource-error]")).toContainText(
+    "no next occurrence",
+  );
+  await expect(editor.getByLabel("Schedule", { exact: true })).toHaveValue(
+    "inherit",
+  );
+  expect((await store("snapshot")).settings).toEqual(valid);
+  await editor.getByLabel("Enable repository monitoring on Save").uncheck();
+  await save(editor);
+  const disabled = (await store("snapshot")).settings;
+  expect(disabled.repositories[0].enabled).toBe(false);
+  expect(disabled.repositories[0].overrides?.schedule).toBeUndefined();
+  editor = await repositorySettings(page, "fixture/one");
+  await editor.getByLabel("Enable repository monitoring on Save").check();
+  await editor
+    .getByRole("button", { name: "Save repository", exact: true })
+    .click();
+  await expect(editor.locator("[data-resource-error]")).toContainText(
+    "no next occurrence",
+  );
+  await expect(
+    editor.getByLabel("Enable repository monitoring on Save"),
+  ).toBeChecked();
+  expect((await store("snapshot")).settings).toEqual(disabled);
 });

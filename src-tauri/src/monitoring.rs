@@ -3288,10 +3288,36 @@ mod read_diagnostic_tests {
 pub struct RepositoryScheduleStatus {
     pub inherited: bool,
     pub schedule: Schedule,
+    pub configured_next_run: Option<i64>,
     pub next_run: Option<i64>,
     pub issue: Option<String>,
     pub enabled: bool,
     pub paused: bool,
+}
+
+pub fn configured_occurrence(schedule: &Schedule, now: i64) -> Result<i64, String> {
+    if !matches!(schedule, Schedule::Cron { .. }) {
+        return Err("Choose a five-field cron schedule for this repository, or repair the saved global schedule in Preferences.".into());
+    }
+    schedule.validate()?;
+    next_run(schedule, now).map_err(|_| {
+        "This cron has no next occurrence. Choose a supported recurring five-field expression or repair the saved global schedule in Preferences.".into()
+    })
+}
+
+fn schedule_recovery(health: &ScheduleHealth) -> String {
+    match health.last_failure.as_deref() {
+        Some(WAITING_ACCOUNT_DISCONNECTED) => "Reconnect the acting GitHub account in Accounts, then check Status.".into(),
+        Some("account_binding_required") => "Bind the acting GitHub account and save this repository.".into(),
+        Some(CONFIGURATION_SAVE_REQUIRED | "scope_confirmation_required") => "Save this repository's valid configuration to authorize monitoring.".into(),
+        Some("provider_unavailable") => "This repository's provider binding is unavailable. Repair its GitHub binding in Settings.".into(),
+        Some("invalid_schedule" | "invalid_global_cron" | "configuration" | "configuration_changed") => "Repair the effective repository schedule or configuration, save it and check Status.".into(),
+        Some("settings_unavailable") => "Saved configuration could not be read. Repair local storage access and check Status.".into(),
+        _ if health.operation.as_ref().is_some_and(|operation| matches!(operation.state, OperationState::ManualRetry | OperationState::Failed)) => {
+            "Monitoring is suspended after failed attempts. Open Status and Retry the monitoring operation after correcting its failure.".into()
+        }
+        _ => "Monitoring is unavailable. Open Status to inspect the failure and recover the monitoring operation.".into(),
+    }
 }
 
 pub fn repository_schedule_status(
@@ -3311,34 +3337,61 @@ pub fn repository_schedule_status(
         .as_ref()
         .unwrap_or(&settings.defaults.schedule)
         .clone();
-    let next = if !matches!(schedule, Schedule::Cron { .. }) {
-        Err("Choose a five-field cron schedule for this repository, or repair the saved global schedule in Preferences.".into())
-    } else {
-        schedule.validate().and_then(|()| next_run(&schedule, now)
-            .map_err(|_| "This cron has no next occurrence. Choose a supported recurring five-field expression.".to_string()))
-    };
-    let (mut next_run, issue) = match next {
+    let (configured_next_run, mut issue) = match configured_occurrence(&schedule, now) {
         Ok(next) => (Some(next), None),
         Err(issue) => (None, Some(issue)),
     };
+    let paused = store.load_automation()?.paused;
+    let state = store.load_monitoring_state()?;
+    let health = state.health.get(repository_id).filter(|health| {
+        health.schedule_key == schedule_key(&schedule)
+            && health.name == repository.name
+            && health.provider_account_id == repository.provider_account_id
+            && health.provider_repository_id == repository.provider_repository_id
+            && health.enabled == repository.enabled
+    });
+    let mut next_run = None;
     if issue.is_none() {
-        if let Some(health) = store
-            .load_monitoring_state()?
-            .health
-            .get(repository_id)
-            .filter(|h| {
-                h.schedule_key == schedule_key(&schedule) && h.schedule_available && h.next_run > 0
-            })
-        {
-            next_run = Some(health.next_run);
+        if !repository.enabled {
+            issue = Some(
+                "Repository is disabled; enable and save it before monitoring can scan.".into(),
+            );
+        } else if paused {
+            let mut message =
+                "Global monitoring is paused; resume it before any repository can scan."
+                    .to_string();
+            if let Some(health) =
+                health.filter(|health| !health.schedule_available || health.next_run <= 0)
+            {
+                message.push(' ');
+                message.push_str(&schedule_recovery(health));
+            }
+            issue = Some(message);
+        } else if let Some(health) = health {
+            if health.schedule_available
+                && health.next_run > 0
+                && !health.operation.as_ref().is_some_and(|operation| {
+                    matches!(
+                        operation.state,
+                        OperationState::ManualRetry | OperationState::Failed
+                    )
+                })
+            {
+                next_run = Some(health.next_run);
+            } else {
+                issue = Some(schedule_recovery(health));
+            }
+        } else {
+            issue = Some("Saved schedule is not synchronized with native monitoring yet. Check Status and retry configuration synchronization; a configured occurrence is not a scheduled scan.".into());
         }
     }
     Ok(RepositoryScheduleStatus {
         inherited: repository.overrides.schedule.is_none(),
         schedule,
+        configured_next_run,
         next_run,
         issue,
         enabled: repository.enabled,
-        paused: store.load_automation()?.paused,
+        paused,
     })
 }

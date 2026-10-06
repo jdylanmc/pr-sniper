@@ -575,7 +575,13 @@ Its compact editor exposes the stable account/repository IDs, enablement,
 saved author filters, independent reviewer-request override, verified
 watched people and **Monitoring schedule**: **Use global schedule** or an explicit
 **Repository override**, with human-readable cadence, advanced five-field cron,
-IANA time zone and a native-calculated next scan after Save. Inheritance uses the
+IANA time zone and the actual native scheduled next scan after Save. Unavailable
+health, retry exhaustion, pause, disablement and unsynchronized saves show no
+scheduled scan and explain recovery. A separately labeled **Configured occurrence**
+is only a native cron preview, never a promise that a blocked repository will scan.
+Effective inherited and overridden cron must have a future occurrence before an
+enabled repository can be saved; disabled legacy configurations remain repairable.
+Valid overrides do not depend on an unusable saved global schedule. Inheritance uses the
 saved global settings, never an unsaved Preferences draft. Global edits affect
 inheriting repositories only; removing an override returns to the actual global
 cron/time zone. Invalid/unsupported expressions and time zones retain the draft
