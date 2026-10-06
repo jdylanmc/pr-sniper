@@ -315,6 +315,20 @@
   min-height: 0;
   overscroll-behavior: contain;
 }
+.panel-shell[data-scroll-queue="true"] .panel-error {
+  max-height: none;
+  overflow: visible;
+}
+.panel-shell[data-scroll-queue="true"] .panel-content:focus-visible {
+  outline-offset: -3px;
+}
+.panel-shell[data-scroll-queue="true"][data-evidence="job"] .panel-content {
+  margin-top: 0;
+}
+.panel-shell[data-scroll-queue="true"][data-evidence="job"]
+  [data-monitor-detail] {
+  margin-top: -23px;
+}
 .panel-content > [data-panel-view] {
   margin: 0;
   padding: 0 18px 14px;
@@ -904,6 +918,14 @@
   .panel-tabs {
     padding: 3px;
   }
+  .panel-shell[data-scroll-queue="true"] .panel-tabs {
+    grid-template-columns: repeat(4, minmax(0, max-content));
+    justify-content: space-between;
+  }
+  .panel-shell[data-scroll-queue="true"] .panel-footer .panel-hide-hint {
+    flex-basis: 100%;
+    text-align: left;
+  }
   .panel-tabs button {
     gap: 1px;
     padding: 3px;
@@ -920,6 +942,10 @@
     display: none;
   }
   .panel-shell[data-evidence="job"] .panel-content {
+    margin-top: 0;
+  }
+  .panel-shell[data-scroll-queue="true"][data-evidence="job"]
+    [data-monitor-detail] {
     margin-top: 0;
   }
   .panel-summary {

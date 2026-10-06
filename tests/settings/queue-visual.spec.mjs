@@ -457,3 +457,276 @@ for (const deviceScaleFactor of [1, 2]) {
     });
   });
 }
+
+for (const scenario of [
+  { name: "large-text-320x440", height: 440, textScale: 2, error: false },
+  { name: "read-error-320x300", height: 300, textScale: 1, error: true },
+  { name: "large-text-error-320x300", height: 300, textScale: 2, error: true },
+]) {
+  test(`constrained Queue keeps evidence and pinned recovery usable: ${scenario.name}`, async ({
+    page,
+    store,
+  }, testInfo) => {
+    await queueFixture(store);
+    const nextKey =
+      page.context().browser().browserType().name() === "webkit" &&
+      process.platform === "darwin"
+        ? "Alt+Tab"
+        : "Tab";
+    await page.setViewportSize({ width: 320, height: scenario.height });
+    await page.clock.install();
+    await page.addInitScript(() => {
+      const original = window.__TAURI_INTERNALS__.invoke;
+      window.__queueReadFailure = false;
+      window.__TAURI_INTERNALS__.invoke = (command, args) =>
+        window.__queueReadFailure &&
+        ["monitoring_snapshot", "automation_snapshot"].includes(command)
+          ? Promise.reject(
+              "Could not read monitoring state. Check local storage and diagnostics; this is not an empty successful check.",
+            )
+          : original(command, args);
+    });
+    await page.goto("/");
+    await page.evaluate(() => window.__settingsIdle());
+    if (scenario.textScale === 2) {
+      // Retain enlarged card text when real selection/refresh recreates rows.
+      const rules = await page.evaluate(() =>
+        [
+          ".queue-item",
+          ".queue-item h3",
+          ".queue-state",
+          ".queue-card-top",
+          ".queue-reference",
+          ".queue-summary-text",
+          ".queue-card-footer",
+          ".queue-avatar",
+          ".queue-trigger",
+        ]
+          .map((selector) => {
+            const element = document.querySelector(selector);
+            return `.panel-shell ${selector} { font-size: ${parseFloat(getComputedStyle(element).fontSize) * 2}px; }`;
+          })
+          .join("\n"),
+      );
+      await page.locator(".panel-shell").evaluate((root) => {
+        const elements = [root, ...root.querySelectorAll("*")];
+        const sizes = elements.map(
+          (element) => parseFloat(getComputedStyle(element).fontSize) * 2,
+        );
+        elements.forEach((element, index) => {
+          element.style.fontSize = `${sizes[index]}px`;
+        });
+      });
+      await page.addStyleTag({ content: rules });
+    }
+    if (scenario.error) {
+      await page.evaluate(() => {
+        window.__queueReadFailure = true;
+      });
+      await page.clock.runFor(5100);
+      await page.evaluate(() => window.__settingsIdle());
+      await expect(page.locator("[data-queue-ready]")).toHaveText("?");
+      await expect(page.locator("[data-panel-error]")).toContainText(
+        "Could not read monitoring state",
+      );
+    }
+    const geometry = await page.evaluate(() => {
+      const box = (selector) => {
+        const element = document.querySelector(selector);
+        const bounds = element.getBoundingClientRect();
+        return {
+          y: bounds.y,
+          height: bounds.height,
+          bottom: bounds.bottom,
+          clientHeight: element.clientHeight,
+          scrollHeight: element.scrollHeight,
+        };
+      };
+      return {
+        viewport: { width: innerWidth, height: innerHeight },
+        summary: box(".panel-summary"),
+        error: box("[data-panel-error]"),
+        content: box(".panel-content"),
+        navigation: box(".panel-tabs"),
+        footer: box(".panel-footer"),
+        controls: [
+          ...document.querySelectorAll(
+            ".panel-tabs button,.panel-footer button",
+          ),
+        ].map((element) => {
+          const bounds = element.getBoundingClientRect();
+          return {
+            label: element.textContent,
+            x: bounds.x,
+            right: bounds.right,
+            y: bounds.y,
+            bottom: bounds.bottom,
+            fontSize: getComputedStyle(element).fontSize,
+          };
+        }),
+      };
+    });
+    await writeFile(
+      testInfo.outputPath(`${scenario.name}-geometry.json`),
+      JSON.stringify(
+        {
+          ...geometry,
+          browser: {
+            name: page.context().browser().browserType().name(),
+            version: page.context().browser().version(),
+          },
+        },
+        null,
+        2,
+      ),
+    );
+    await page.screenshot({
+      path: testInfo.outputPath(`${scenario.name}.png`),
+    });
+    expect(geometry.content.clientHeight).toBeGreaterThanOrEqual(64);
+    expect(geometry.content.scrollHeight).toBeGreaterThan(
+      geometry.content.clientHeight,
+    );
+    for (const bounds of [geometry.navigation, geometry.footer]) {
+      expect(bounds.y).toBeGreaterThanOrEqual(0);
+      expect(bounds.bottom).toBeLessThanOrEqual(scenario.height);
+    }
+    for (const bounds of geometry.controls) {
+      expect(bounds.x).toBeGreaterThanOrEqual(0);
+      expect(bounds.right).toBeLessThanOrEqual(320);
+      expect(bounds.y).toBeGreaterThanOrEqual(0);
+      expect(bounds.bottom).toBeLessThanOrEqual(scenario.height);
+      expect(bounds.fontSize).toBe(`${9 * scenario.textScale}px`);
+    }
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    if (scenario.error) {
+      await page.getByRole("button", { name: "Hide PR Sniper panel" }).focus();
+      await page.keyboard.press(nextKey);
+      await expect(
+        page.getByRole("region", { name: "Queue content", exact: true }),
+      ).toBeFocused();
+      for (let step = 0; step < 12; step++) {
+        const visible = await page
+          .locator("[data-panel-error]")
+          .evaluate((element) => {
+            const bounds = element.getBoundingClientRect();
+            const viewport = document
+              .querySelector(".panel-content")
+              .getBoundingClientRect();
+            return bounds.bottom > viewport.top && bounds.top < viewport.bottom;
+          });
+        if (visible) break;
+        const before = await page
+          .locator(".panel-content")
+          .evaluate((element) => element.scrollTop);
+        await page.keyboard.press("PageDown");
+        await page.clock.runFor(250);
+        await expect
+          .poll(() =>
+            page
+              .locator(".panel-content")
+              .evaluate((element) => element.scrollTop),
+          )
+          .toBeGreaterThan(before + 20);
+        let previous = -1;
+        await expect
+          .poll(async () => {
+            const scroll = await page
+              .locator(".panel-content")
+              .evaluate((element) => element.scrollTop);
+            const settled = scroll === previous;
+            previous = scroll;
+            return settled;
+          })
+          .toBe(true);
+      }
+      await writeFile(
+        testInfo.outputPath(`${scenario.name}-reading-geometry.json`),
+        JSON.stringify(
+          await page.evaluate(() => {
+            const region = document.querySelector(".panel-content");
+            const error = document.querySelector("[data-panel-error]");
+            return {
+              scrollTop: region.scrollTop,
+              region: region.getBoundingClientRect().toJSON(),
+              error: error.getBoundingClientRect().toJSON(),
+              active: document.activeElement.className,
+              shellScroll: document.querySelector(".panel-shell").scrollTop,
+            };
+          }),
+          null,
+          2,
+        ),
+      );
+      await page.screenshot({
+        path: testInfo.outputPath(`${scenario.name}-reading-error.png`),
+      });
+      await expect(page.locator("[data-panel-error]")).toBeInViewport();
+      // Recover through an ordinary pinned utility, not a forced interaction.
+      await page.getByRole("button", { name: "Status", exact: true }).click();
+      await expect(page.locator("[data-panel-heading]")).toHaveText("Status");
+      await page.getByRole("button", { name: "Back", exact: true }).click();
+      await page.evaluate(() => {
+        window.__queueReadFailure = false;
+      });
+      await page.clock.runFor(5100);
+      await page.evaluate(() => window.__settingsIdle());
+    }
+    const lastArticle = page.getByRole("article", {
+      name: "example/repo #3",
+      exact: true,
+    });
+    const last = lastArticle.getByRole("button", {
+      name: "Evidence and actions",
+      exact: true,
+    });
+    // Tab follows the real document order and the browser scrolls focused work.
+    await page.locator("[data-panel-heading]").focus();
+    for (let step = 0; step < 12; step++) {
+      if (await last.evaluate((element) => element === document.activeElement))
+        break;
+      await page.keyboard.press(nextKey);
+    }
+    await expect(last).toBeFocused();
+    const scroll = await page
+      .locator(".panel-content")
+      .evaluate((element) => element.scrollTop);
+    expect(scroll).toBeGreaterThan(0);
+    await page.screenshot({
+      path: testInfo.outputPath(`${scenario.name}-focused-evidence.png`),
+    });
+    await page.keyboard.press("Enter");
+    await expect(page.locator("[data-item-evidence]")).toContainText(
+      "example/repo #3",
+    );
+    expect(
+      await page
+        .locator(".panel-content")
+        .evaluate((element) => element.clientHeight),
+    ).toBeGreaterThanOrEqual(64);
+    await page.getByRole("button", { name: "Back", exact: true }).click();
+    await expect(last).toBeFocused();
+    if (scenario.textScale === 2)
+      await expect(lastArticle.locator("h3")).toHaveCSS("font-size", "30px");
+    expect(
+      await page
+        .locator(".panel-content")
+        .evaluate((element) => element.scrollTop),
+    ).toBe(scroll);
+    await page
+      .getByRole("button", { name: "Diagnostics", exact: true })
+      .click();
+    await expect(page.locator("[data-panel-heading]")).toHaveText(
+      "Diagnostics",
+    );
+    expect(
+      await page
+        .locator(".panel-content")
+        .evaluate((element) => element.clientHeight),
+    ).toBeGreaterThanOrEqual(64);
+  });
+}

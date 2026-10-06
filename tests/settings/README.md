@@ -42,6 +42,24 @@ reduced motion, tiny viewports, 1x/2x device scale and doubled actual text sizes
 These browser/accessibility-tree checks do not establish native outer corners,
 desktop tray behavior or a live screen-reader session.
 
+Queue's heading, summary and error banner share its retained content scroller,
+including exact saved evidence and utility routes.
+Only the brand header, navigation and utilities stay pinned; other destinations
+keep their existing heading/summary placement. Short Queue panels lay out navigation
+at each label's intrinsic width and give the complete hide/quit guidance a footer
+row, rather than wrapping one label or squeezing guidance into a narrow column.
+No text size, counts or errors are reduced to make the evidence fit.
+
+The three combined regressions capture screenshots and measured content,
+navigation, footer and individual-control bounds before keyboard interaction:
+320x440 at 200% actual text, 320x300 with a monitoring-read error, and 320x300
+with both. The scrolling viewport must remain at least 64px high, every pinned
+control must fit completely, unknown counts remain unknown, and ordinary
+keyboard traversal must open the exact last handoff and retain scroll/focus on
+Back. Doubled card text persists across real row redraws. macOS WebKit uses
+Option+Tab for all-controls traversal, matching the existing Genie seam.
+Use `--browser webkit` with the same focused command to check the second engine.
+
 After the ordinary frontend and Store-bridge build, run only this lane's checks
 on an available private port, for example:
 
