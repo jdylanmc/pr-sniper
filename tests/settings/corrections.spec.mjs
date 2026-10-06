@@ -8,6 +8,7 @@ import {
   seedAgent,
   setAgentPrompt,
   editAgent,
+  chooseRepositoryAccount,
 } from "./navigation.mjs";
 
 for (const api of ["showModal", "close"]) {
@@ -35,9 +36,7 @@ for (const api of ["showModal", "close"]) {
     await modal
       .getByLabel("Repository URL", { exact: true })
       .fill("octo/fallback");
-    await page
-      .getByLabel("Acting GitHub account", { exact: true })
-      .selectOption("22");
+    await chooseRepositoryAccount(modal, "22");
     await modal
       .getByRole("button", { name: "Add & configure", exact: true })
       .click();
@@ -142,9 +141,10 @@ test("R2 dismissed repository reply cannot resurrect a reset draft", async ({
     await page
       .getByLabel("Repository URL", { exact: true })
       .fill("octo/cancelled");
-    await page
-      .getByLabel("Acting GitHub account", { exact: true })
-      .selectOption("22");
+    await chooseRepositoryAccount(
+      page.getByRole("dialog", { name: "Add repository by URL", exact: true }),
+      "22",
+    );
     await page
       .getByRole("button", { name: "Add & configure", exact: true })
       .click();
@@ -245,9 +245,14 @@ for (const kind of ["add", "rename"]) {
         await page
           .getByLabel("Repository URL", { exact: true })
           .fill(completion === "valid" ? "octo/dismissed" : "invalid");
-        await page
-          .getByLabel("Acting GitHub account", { exact: true })
-          .selectOption("22");
+        await chooseRepositoryAccount(
+          page.getByRole("dialog", {
+            name:
+              kind === "rename" ? "Edit repository" : "Add repository by URL",
+            exact: true,
+          }),
+          "22",
+        );
         await page
           .getByRole("button", { name: "Add & configure", exact: true })
           .click();
@@ -322,9 +327,10 @@ test("R2 repeated submit dispatch cannot start a second repository request", asy
       .getByRole("button", { name: "Add repository by URL", exact: true })
       .click();
     await page.getByLabel("Repository URL", { exact: true }).fill("octo/once");
-    await page
-      .getByLabel("Acting GitHub account", { exact: true })
-      .selectOption("22");
+    await chooseRepositoryAccount(
+      page.getByRole("dialog", { name: "Add repository by URL", exact: true }),
+      "22",
+    );
     await page
       .getByRole("button", { name: "Add & configure", exact: true })
       .click();

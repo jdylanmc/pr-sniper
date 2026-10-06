@@ -1800,7 +1800,7 @@
 .repository-editor .repository-identity {
   margin-bottom: 16px;
 }
-.repository-identity dl {
+.repository-binding-details {
   display: grid;
   grid-template-columns: auto 1fr;
   gap: 4px 12px;
@@ -1808,8 +1808,22 @@
   color: var(--resource-muted);
   font-size: 10px;
 }
-.repository-identity dd {
+.repository-binding-details dd {
   margin: 0;
+}
+.repository-actor {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.repository-actor [role="status"] {
+  flex: 1;
+  margin: 8px 0;
+}
+.settings-window .repository-actor button {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  font-size: 11px;
 }
 .settings-window .repository-editor .repository-group {
   padding: 12px;
