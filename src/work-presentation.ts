@@ -4,6 +4,7 @@ import type { QueueItem } from "./queue";
 import type { ReviewSelection } from "./resources";
 import type { AutomationSnapshot } from "./automation";
 import type { FollowUpCandidate } from "./follow-up";
+import { actualIntelligence } from "./copilot";
 
 export const purposes: Record<WorkKind, string> = {
   normal: "Normal pass",
@@ -212,6 +213,80 @@ export function renderFacts(root: HTMLElement, entries: [string, string][]) {
   root.append(list);
 }
 
+export function renderIntelligenceDiagnostics(
+  root: HTMLElement,
+  snapshot: MonitoringSnapshot,
+) {
+  const details = document.createElement("details");
+  details.dataset.intelligenceDiagnostics = "true";
+  const summary = document.createElement("summary");
+  summary.textContent = "Recorded job Intelligence";
+  details.append(summary);
+  const note = document.createElement("p");
+  note.textContent =
+    "Captured requests and actual session reports, not today's Agent settings. These are execution records, separate from the redacted host log.";
+  details.append(note);
+  let count = 0;
+  const seen = new Set<string>();
+  const append = (
+    id: string,
+    selection: ReviewSelection,
+    result: {
+      model: string;
+      session_id: string;
+      intelligence?: import("./policy").AgentIntelligence | null;
+    } | null,
+  ) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    count++;
+    const heading = document.createElement("h4");
+    heading.textContent = `Job ${id}`;
+    details.append(heading);
+    renderFacts(details, [
+      ["Requested model", selection.agent.model],
+      [
+        "Requested reasoning effort",
+        selection.agent.intelligence
+          ? (selection.agent.intelligence.reasoning_effort ??
+            "Provider default")
+          : "Not recorded (legacy evidence)",
+      ],
+      [
+        "Requested context window",
+        selection.agent.intelligence
+          ? (selection.agent.intelligence.context_tier ?? "Provider default")
+          : "Not recorded (legacy evidence)",
+      ],
+      ["Actual model", result?.model ?? "Not recorded"],
+      ["Session", result?.session_id ?? "Not recorded"],
+      ["Actual Intelligence", actualIntelligence(result?.intelligence)],
+    ]);
+  };
+  for (const candidate of snapshot.reviews ?? []) {
+    if (candidate.run)
+      append(
+        candidate.run.operation.id,
+        candidate.run.selection,
+        candidate.run.result,
+      );
+  }
+  for (const { run } of snapshot.follow_ups ?? []) {
+    const selection =
+      run.context?.selection ??
+      run.review?.selection ??
+      (run.target?.kind === "owned" ? run.target.review.selection : undefined);
+    if (selection) append(run.id, selection, run.result);
+  }
+  for (const item of snapshot.items ?? []) {
+    const execution = item.action_status?.final_review?.execution;
+    if (execution)
+      append(execution.operation.id, execution.selection, execution.result);
+  }
+  if (!count) details.append("No recorded job configuration available.");
+  root.append(details);
+}
+
 export function renderConfiguration(
   root: HTMLElement,
   label: string,
@@ -257,6 +332,18 @@ export function renderConfiguration(
       ],
       ["AI account", agent.ai_account?.account_id ?? "Not recorded"],
       ["Model", agent.model ?? "Not recorded"],
+      [
+        "Requested reasoning effort",
+        agent.intelligence
+          ? (agent.intelligence.reasoning_effort ?? "Provider default")
+          : "Not recorded (legacy snapshot; no chosen override evidence)",
+      ],
+      [
+        "Requested context window",
+        agent.intelligence
+          ? (agent.intelligence.context_tier ?? "Provider default")
+          : "Not recorded (legacy snapshot; no chosen override evidence)",
+      ],
       [
         "GitHub identity",
         options.job

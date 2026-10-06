@@ -87,15 +87,52 @@ process.stdin.on("data", (chunk) => {
         respond(request.id, { version: "synthetic", protocolVersion: 3 });
         break;
       case "models.list":
+        if (scenario === "catalog-error") {
+          frame({ jsonrpc: "2.0", id: request.id, error: {
+            code: -32000, message: "Fixture catalog discovery failed",
+          } });
+          break;
+        }
         respond(request.id, {
           models: [
-            { id: "review-model", name: "Review model", capabilities: {} },
+            {
+              id: "review-model", name: "Review model", capabilities: {},
+              ...(scenario !== "unsupported-intelligence" ? {
+                supportedReasoningEfforts: ["low", "high"],
+                defaultReasoningEffort: "low",
+                supportedContextTiers: ["default", "long_context"],
+              } : {}),
+            },
           ],
         });
         break;
       case "session.create":
         sessionId = request.params.sessionId;
+        if (scenario === "reject-intelligence") {
+          frame({ jsonrpc: "2.0", id: request.id, error: {
+            code: -32602, message: "Fixture rejects requested intelligence",
+          } });
+          break;
+        }
+        globalThis.intelligence = {
+          reasoningEffort: request.params.reasoningEffort,
+          contextTier: request.params.contextTier,
+        };
         respond(request.id, { sessionId });
+        break;
+      case "session.model.getCurrent":
+        if (scenario === "intelligence-readback-error") {
+          frame({ jsonrpc: "2.0", id: request.id, error: {
+            code: -32000, message: "Fixture runtime readback unavailable",
+          } });
+          break;
+        }
+        respond(request.id, {
+          modelId: "review-model",
+          ...(scenario === "ignore-intelligence"
+            ? { reasoningEffort: "low", contextTier: "default" }
+            : globalThis.intelligence),
+        });
         break;
       case "session.eventLog.registerInterest":
         respond(request.id, { id: randomUUID() });
