@@ -196,6 +196,8 @@ const reason = (error: unknown): string => {
       "GitHub is disconnected. Connect the PR Sniper GitHub OAuth App, then try again.",
     missing_read_permission:
       "GitHub denied read access for this account. Verify repository access and this app's organization authorization with your administrator, then retry.",
+    repository_unavailable:
+      "GitHub could not find this repository or hides it from the selected account. Check the URL and this account's repository access; for a private organization, check the PR Sniper OAuth App's organization approval and single sign-on authorization with its administrator, then retry. A 404 does not prove the repository is absent.",
     rate_limited: "GitHub rate limited this lookup. Wait before trying again.",
     network: "Cannot reach GitHub. Check your network and try again.",
     timeout: "GitHub lookup timed out. Try again.",
@@ -204,9 +206,9 @@ const reason = (error: unknown): string => {
     incomplete_read:
       "GitHub did not return a complete repository list. More repositories may be unavailable; retry.",
     missing_scope:
-      "Reconnect the GitHub account with the required repository access, then retry.",
+      "The selected GitHub authorization does not grant the required repo scope. Reconnect this account in Accounts and review the PR Sniper OAuth App's public/private repository access request, then retry.",
     organization_policy_denied:
-      "GitHub organization policy or single sign-on denied access. Authorize this app for that organization, then retry.",
+      "GitHub reported an organization authorization restriction. Check the PR Sniper OAuth App's organization approval and single sign-on authorization in GitHub; if restricted, ask the organization administrator for access, then retry. Reconnecting alone cannot bypass organization policy.",
     repository_changed:
       "The repository identity changed. Refresh the owner or check the URL, then retry.",
     authentication_changed:

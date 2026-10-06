@@ -2693,6 +2693,7 @@ mod repository_read_tests {
             ConnectionError::ProviderFailure,
             ConnectionError::ProviderRejected,
             ConnectionError::MissingReadPermission,
+            ConnectionError::RepositoryUnavailable,
             ConnectionError::OrganizationPolicyDenied,
         ] {
             let mut initial = GithubAuth::new();

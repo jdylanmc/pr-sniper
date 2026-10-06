@@ -323,12 +323,12 @@ for (const [name, failedResponse, diagnostic] of [
   [
     "scope",
     response([], { "x-oauth-scopes": "read:user" }),
-    "Reconnect the GitHub account",
+    "Reconnect this account in Accounts",
   ],
   [
     "SSO",
     response({}, { "x-github-sso": "required" }, 403),
-    "Authorize this app",
+    "Reconnecting alone cannot bypass organization policy",
   ],
 ]) {
   test(`${name} failure remains distinct and failed Retry does not pretend success`, async ({

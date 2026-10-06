@@ -107,6 +107,32 @@ Scroll padding and target margin retain the existing external focus outline.
 Tab reaches the switch, ordinary scrolling reveals its full focus target, and
 the same drill-in/editor and native pause/authorization semantics remain intact.
 
+`corporate-repository-url.spec.mjs` exercises Settings and Genie URL intake
+with synthetic account-keyed HTTP responses through the real native
+`GithubClient` parser and isolated Store, not final-result-only UI stubs.
+It covers authorized private organization metadata with nullable optional
+fields, stable account mismatch, ambiguous 404, scope, organization authorization,
+read denial, expired authorization, transport/provider/schema failures, retry
+without losing URL/account, disabled initial persistence and late cancellation.
+`corporate_repository_url` additionally compares browser and URL stable identities,
+supported HTTPS/name variants, explicit denial and canonical/schema guards.
+Native `repository_read_tests` and `repository_save_account_tests` protect actual
+session publication, generation changes and precommit authority separately;
+the process-per-command browser bridge does not simulate a live Keychain,
+credential refresh, confirmation race or installed corporate entitlement.
+
+GitHub's [troubleshooting contract](https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api)
+states that 404 also hides unauthorized private resources. URL verification
+therefore never treats 404 as definitive absence or definite read denial.
+Explicit OAuth scope evidence can distinguish a missing required `repo` scope
+from an otherwise unclassified 403, without overriding single-sign-on or rate-limit
+classification. Optional permissions metadata is not a default read grant:
+admission still requires authenticated repository metadata and a successful
+pull-request read. Required identity/private/archive/disabled fields remain
+validated against GitHub's [repository contract](https://docs.github.com/en/rest/repos/repos#get-a-repository).
+Live organization access or app restrictions require authorized evidence; these
+fixtures cannot establish the cause of the original installed corporate failure.
+
 `agent-intelligence.spec.mjs` exercises advertised reasoning efforts, context
 tiers and token capacities through the shared Agent editor and real native
 resource saves/restarts. Account/model changes retain incompatible deliberate

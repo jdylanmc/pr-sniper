@@ -65,6 +65,8 @@ const failures: Record<string, string> = {
     "The authenticated GitHub account does not match the expected account ID. No repository action was taken.",
   missing_read_permission:
     "GitHub denied repository or pull-request read access, or the repository does not exist. Check repository access and credential permissions.",
+  repository_unavailable:
+    "GitHub could not find this repository or hides it from the selected account. Check the URL, repository access, and the PR Sniper OAuth App's organization approval or single sign-on authorization. A 404 does not prove the repository is absent.",
   rate_limited:
     "GitHub rate limited this read. Wait for the provider limit to reset before retrying.",
   network: "Could not reach GitHub securely. Check your network and try again.",

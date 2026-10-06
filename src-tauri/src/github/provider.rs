@@ -376,7 +376,7 @@ impl<T: Transport> GithubClient<T> {
             .map_err(|_| ConnectionError::InvalidRepository)?;
         let (user, _) = self.read("/user")?;
         let identity = verify_identity(&user, expected_account_id)?;
-        let (repo, response) = self.read(&format!("/repos/{name}"))?;
+        let (repo, response) = self.read_repository(&format!("/repos/{name}"))?;
         let id = decimal_id(&repo["id"])?;
         let remote_name = repo["full_name"]
             .as_str()
@@ -393,7 +393,8 @@ impl<T: Transport> GithubClient<T> {
         if repo["permissions"]["pull"].as_bool() == Some(false) || disabled {
             return Err(ConnectionError::MissingReadPermission);
         }
-        let (pulls, _) = self.read(&format!("/repos/{name}/pulls?state=open&per_page=1"))?;
+        let (pulls, _) =
+            self.read_repository(&format!("/repos/{name}/pulls?state=open&per_page=1"))?;
         if !pulls.is_array() {
             return Err(ConnectionError::InvalidResponse);
         }
@@ -424,6 +425,23 @@ impl<T: Transport> GithubClient<T> {
 
     pub(super) fn read(&self, path: &str) -> Result<(Value, Response), ConnectionError> {
         parse_response(self.transport.get(path)?)
+    }
+
+    fn read_repository(&self, path: &str) -> Result<(Value, Response), ConnectionError> {
+        let response = self.transport.get(path)?;
+        // GitHub hides unauthorized private resources behind the same 404 as
+        // absent repositories. Neither absence nor a definite denial is proven.
+        if response.status == 404 {
+            return Err(ConnectionError::RepositoryUnavailable);
+        }
+        let missing_scope =
+            response.headers.contains_key("x-oauth-scopes") && !has_scope(&response, "repo");
+        match parse_response(response) {
+            Err(ConnectionError::MissingReadPermission) if missing_scope => {
+                Err(ConnectionError::MissingScope)
+            }
+            result => result,
+        }
     }
 }
 

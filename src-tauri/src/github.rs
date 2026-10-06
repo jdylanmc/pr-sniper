@@ -34,6 +34,7 @@ pub enum ConnectionError {
     SignedOut,
     Timeout,
     MissingReadPermission,
+    RepositoryUnavailable,
     MissingScope,
     OrganizationPolicyDenied,
     RateLimited,
