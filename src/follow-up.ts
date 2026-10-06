@@ -159,7 +159,7 @@ export function renderFollowUps(
           ` Original root head ${run.target.review.job.head_sha}; publication ${run.target.publication_id}.`,
         );
       const state = document.createElement("p");
-      state.textContent = `Follow-up: ${run.phase.replaceAll("_", " ")}. Start: ${candidate.automatic_start ? "automatic" : "manual"}; reply publication: ${candidate.automatic_publication ? "automatic" : "confirmation required"}.`;
+      state.textContent = `Follow-up: ${run.phase.replaceAll("_", " ")}. Execution is automatic when eligible; reply publication: ${candidate.automatic_publication ? "automatic" : "confirmation required"}.`;
       row.append(heading, identity, state);
       if (configuration && (run.analysis?.attempt_count || run.result))
         renderConfiguration(
@@ -197,7 +197,7 @@ export function renderFollowUps(
       if (candidate.human_gate) {
         const warning = document.createElement("p");
         warning.textContent =
-          "A prior comment needs human judgment. Automatic follow-ups are paused; start explicitly only after the human decision.";
+          "A prior comment needs human judgment. Retry this follow-up only after the human decision.";
         row.append(warning);
       }
       if (candidate.blocked || run.error) {
@@ -284,15 +284,19 @@ export function renderFollowUps(
           void act(candidate, false, true);
         };
         row.append(button);
-      } else if (!terminal && (!candidate.blocked || run.publication)) {
+      } else if (
+        !terminal &&
+        (!candidate.blocked || run.publication) &&
+        (publishing || run.analysis || run.cancelled || candidate.human_gate)
+      ) {
         const button = document.createElement("button");
         button.textContent = publishing
           ? run.publication
             ? "Reconcile / retry reply"
             : "Publish reply"
-          : run.analysis
-            ? "Retry follow-up"
-            : "Start follow-up";
+          : candidate.human_gate
+            ? "Retry after human decision"
+            : "Retry follow-up";
         const update = () => {
           button.disabled =
             pending.has(run.id) ||

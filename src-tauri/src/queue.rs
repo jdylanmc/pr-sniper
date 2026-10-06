@@ -203,13 +203,7 @@ fn review_state(
         return State::Blocked;
     }
     let Some(run) = &candidate.run else {
-        return if Selection::resolve(settings, &candidate.job, &candidate.assignment_id)
-            .is_ok_and(|s| !s.policy.automatic_agent_start)
-        {
-            State::ConfirmationRequired
-        } else {
-            State::Queued
-        };
+        return State::Queued;
     };
     if failed(&run.operation) {
         return State::Failed;
@@ -348,11 +342,7 @@ fn follow_up_state(candidate: &follow_up::host::Candidate) -> Option<State> {
         return Some(State::WaitingForHuman);
     }
     match run.phase {
-        Phase::WaitingStart => Some(if candidate.automatic_start {
-            State::Queued
-        } else {
-            State::ConfirmationRequired
-        }),
+        Phase::WaitingStart => Some(State::Queued),
         Phase::Analyzing => Some(State::Reviewing),
         Phase::WaitingPublication => Some(if candidate.automatic_publication {
             State::AwaitingPublication

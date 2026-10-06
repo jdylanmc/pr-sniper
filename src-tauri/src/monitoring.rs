@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, HashSet};
 // Old queue records remain actionable without requiring per-revision consent.
 pub const WAITING_TRUST_CONFIRMATION: &str = "trust_confirmation";
 pub const WAITING_HUMAN_START: &str = "human_start";
+pub const WAITING_AI_CAPACITY: &str = "ai_capacity";
 pub const WAITING_AGENT_UNAVAILABLE: &str = "agent_unavailable";
 pub const WAITING_ACCOUNT_DISCONNECTED: &str = "account_disconnected";
 pub const WAITING_REPOSITORY_DISABLED: &str = "repository_disabled";
@@ -2425,7 +2426,7 @@ impl Monitor {
                     watched_author: eligibility.watched_author,
                     all_authors: eligibility.all_authors,
                     requested_reviewer: eligibility.requested_reviewer,
-                    waiting: waiting_state(ticket).into(),
+                    waiting: WAITING_AI_CAPACITY.into(),
                     detected_at: existing.map(|i| queue.jobs[i].detected_at).unwrap_or(now),
                 };
                 if let Some(index) = existing {
@@ -2896,19 +2897,14 @@ fn configuration_failure(failure: Option<&str>) -> bool {
     )
 }
 
-fn actionable(job: &QueueJob) -> bool {
+pub(crate) fn actionable(job: &QueueJob) -> bool {
     matches!(
         job.waiting.as_str(),
-        WAITING_TRUST_CONFIRMATION | WAITING_HUMAN_START | WAITING_AGENT_UNAVAILABLE
+        WAITING_TRUST_CONFIRMATION
+            | WAITING_HUMAN_START
+            | WAITING_AGENT_UNAVAILABLE
+            | WAITING_AI_CAPACITY
     )
-}
-
-fn waiting_state(ticket: &PollTicket) -> &'static str {
-    if !ticket.policy.automatic_agent_start {
-        WAITING_HUMAN_START
-    } else {
-        WAITING_AGENT_UNAVAILABLE
-    }
 }
 
 pub(crate) fn check_error(error: ConnectionError) -> MonitoringError {
@@ -3046,7 +3042,7 @@ pub fn new_revision_eligible(settings: &Settings, job: &QueueJob, pull: &PullReq
     let mut current = job.clone();
     current.head_sha = pull.head_sha.clone();
     current.trigger_policy = trigger;
-    current.waiting = WAITING_HUMAN_START.into();
+    current.waiting = WAITING_AI_CAPACITY.into();
     review_policy(settings, &current, Some(pull)).is_ok()
 }
 

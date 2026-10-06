@@ -428,7 +428,7 @@ for (const failure of ["write", "conflict"]) {
     const rejection = await editor
       .locator("[data-resource-error]")
       .textContent();
-    await editor.getByLabel("Review start", { exact: true }).focus();
+    await editor.getByLabel("Reviewer requests", { exact: true }).focus();
     await page.evaluate(() => window.__settingsIdle());
     await expect(editor.locator("[data-resource-error]")).toHaveText(rejection);
     await expect(

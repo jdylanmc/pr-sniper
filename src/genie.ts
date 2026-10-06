@@ -239,7 +239,7 @@ export function mountGenie(
           <dt>Pull requests</dt><dd>${scope?.mode === "all_open_and_future" ? "All currently open and future matching PRs" : scope?.active ? "Legacy saved admission retained; Save repository to include all currently open and future matching PRs" : "Not configured"}</dd>
           <dt>Authors</dt><dd>${watched.length ? escape(watched.map((a) => `${a.login} (${a.id})`).join(", ")) : "All authors"}</dd>
           <dt>Review requests</dt><dd>${policy.reviewer_assignment ? "Acting-account requests can admit older or unwatched PRs" : "Off"}</dd>
-          <dt>Review start</dt><dd>${policy.automatic_agent_start ? "Automatic when eligible" : "Manual start required"}</dd>
+          <dt>Review execution</dt><dd>Automatic when eligible; pause, disablement, account access and capacity still apply</dd>
           <dt>Comment gate</dt><dd>${policy.automatic_comment_publication ? "Automatic only with assignment permission" : "Local-only until separately authorized"}</dd></dl>
           ${(repository.assignments ?? [])
             .map((assignment) => {

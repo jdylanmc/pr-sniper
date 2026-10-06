@@ -370,12 +370,6 @@ export function renderConfiguration(
     if (policy)
       renderFacts(details, [
         [
-          "Review start",
-          policy.automatic_agent_start
-            ? "Automatic when eligible"
-            : "Manual start",
-        ],
-        [
           "Publication",
           policy.automatic_comment_publication
             ? "Automatic when permitted"

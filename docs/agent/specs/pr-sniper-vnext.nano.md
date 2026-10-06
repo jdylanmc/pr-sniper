@@ -15,6 +15,26 @@ separately approved platform/distribution work remain in force.
 
 ## October 5, 2026 consent amendment
 
+### Always-on eligible review amendment (#120)
+
+The human-approved [October 5 visual-bugs specification](https://github.com/jdylanmc/pr-sniper/issues/51#issuecomment-6008945622)
+supersedes the manual/automatic review-start preferences retained in the
+historical consent wording below. Valid new repository Save authorizes and
+enables matching normal work; admitted eligible work automatically enters and
+drains shared AI capacity without a per-PR Start click or another poll.
+Explicit global pause, intentional repository disablement, admission/watch
+rules, assignments, account access, capacity and surfaced failures remain gates.
+Cancellation, bounded automatic retries, explicit failure retry, human judgment
+and personal-review handoffs remain distinct from initial start.
+
+Legacy start flags remain readable configuration/evidence but have no execution
+authority, including for interrupted work. No app-data reset is required or
+performed. Actual job configuration and provider safety receipts are retained.
+Automatic read-only review grants no Comment, Approve or Merge permission and
+does not weaken revision, provider-policy or uncertain-write recovery checks.
+This scoped amendment does not implement the later capability, watch or
+repository-schedule amendments (#121-#123), or explicit PR intake (#119).
+
 ### Later human amendment: repository Save is authorization (2026-10-05)
 
 Dylan: "If I am configuring a repo and hitting save, consider it authorized."

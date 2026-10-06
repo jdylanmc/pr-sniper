@@ -11,8 +11,8 @@ use pr_sniper_lib::{
     monitoring::{
         next_run, AccountAvailability, ActivationApplication, ActivationBaseline, ActivationMode,
         Monitor, MonitoringActivation, MonitoringError, MonitoringState, OperationFailure,
-        OperationState, PollResult, CONFIGURATION_SAVE_REQUIRED, WAITING_BINDING_CHANGED,
-        WAITING_HUMAN_START, WAITING_REPOSITORY_DISABLED, WAITING_REPOSITORY_REMOVED,
+        OperationState, PollResult, CONFIGURATION_SAVE_REQUIRED, WAITING_AI_CAPACITY,
+        WAITING_BINDING_CHANGED, WAITING_REPOSITORY_DISABLED, WAITING_REPOSITORY_REMOVED,
         WAITING_SUPERSEDED,
     },
     policy::{PolicyOverrides, Schedule, WatchedIdentity},
@@ -319,7 +319,7 @@ fn repository_save_admits_all_old_and_future_matches_without_snapshot_or_duplica
     .unwrap();
     let first = store.load_queue_state().unwrap();
     assert_eq!(first.jobs.len(), 1);
-    assert_eq!(first.jobs[0].waiting, WAITING_HUMAN_START);
+    assert_eq!(first.jobs[0].waiting, WAITING_AI_CAPACITY);
     check(
         &mut monitor,
         &store,
@@ -755,7 +755,7 @@ fn new_only_baselines_existing_unknown_old_heads_and_admits_later_heads() {
     assert_eq!(jobs[0].pull_request_id, "4");
     assert!(jobs[0].all_authors);
     assert!(!jobs[0].watched_author);
-    assert_eq!(jobs[0].waiting, "human_start");
+    assert_eq!(jobs[0].waiting, "ai_capacity");
 
     let changed_old = pull("2", 2, "12", "omitted", &[], HEAD_B, "2026-09-25T10:03:00Z");
     check(
@@ -819,7 +819,7 @@ fn selected_existing_queues_only_selected_heads_and_deduplicates() {
     .unwrap();
     assert_eq!(store.load_queue().unwrap().len(), 1);
     assert_eq!(store.load_queue().unwrap()[0].pull_request_id, "2");
-    assert_eq!(store.load_queue().unwrap()[0].waiting, "human_start");
+    assert_eq!(store.load_queue().unwrap()[0].waiting, "ai_capacity");
     check(
         &mut monitor,
         &store,
@@ -829,7 +829,7 @@ fn selected_existing_queues_only_selected_heads_and_deduplicates() {
     )
     .unwrap();
     assert_eq!(store.load_queue().unwrap().len(), 1);
-    assert_eq!(store.load_queue().unwrap()[0].waiting, "human_start");
+    assert_eq!(store.load_queue().unwrap()[0].waiting, "ai_capacity");
     let mut restarted = Monitor::restore(&store).unwrap();
     check(
         &mut restarted,
@@ -848,7 +848,7 @@ fn selected_existing_queues_only_selected_heads_and_deduplicates() {
     )
     .unwrap();
     assert_eq!(store.load_queue().unwrap().len(), 1);
-    assert_eq!(store.load_queue().unwrap()[0].waiting, "human_start");
+    assert_eq!(store.load_queue().unwrap()[0].waiting, "ai_capacity");
 }
 
 #[test]
@@ -872,7 +872,7 @@ fn reconfirming_new_only_preserves_already_admitted_work() {
         "current-login",
     )
     .unwrap();
-    assert_eq!(store.load_queue().unwrap()[0].waiting, "human_start");
+    assert_eq!(store.load_queue().unwrap()[0].waiting, "ai_capacity");
 
     let preview = stage_preview(&mut monitor, &store, vec![existing.clone()], 1);
     apply_preview(
@@ -895,7 +895,7 @@ fn reconfirming_new_only_preserves_already_admitted_work() {
     .unwrap();
     let jobs = store.load_queue().unwrap();
     assert_eq!(jobs.len(), 1);
-    assert_eq!(jobs[0].waiting, "human_start");
+    assert_eq!(jobs[0].waiting, "ai_capacity");
     assert_eq!(jobs[0].work.as_ref().unwrap().iteration, 1);
 }
 
@@ -968,7 +968,7 @@ fn changed_old_head_remains_eligible_after_an_ineligible_observation() {
     )
     .unwrap();
     assert_eq!(store.load_queue().unwrap().len(), 1);
-    assert_eq!(store.load_queue().unwrap()[0].waiting, "human_start");
+    assert_eq!(store.load_queue().unwrap()[0].waiting, "ai_capacity");
     let mut restarted = Monitor::restore(&store).unwrap();
     check(
         &mut restarted,
@@ -979,7 +979,7 @@ fn changed_old_head_remains_eligible_after_an_ineligible_observation() {
     )
     .unwrap();
     assert_eq!(store.load_queue().unwrap().len(), 1);
-    assert_eq!(store.load_queue().unwrap()[0].waiting, "human_start");
+    assert_eq!(store.load_queue().unwrap()[0].waiting, "ai_capacity");
 }
 
 #[test]
@@ -1176,7 +1176,7 @@ fn selected_old_head_reactivates_without_duplication_after_filter_roundtrip() {
         "current-login",
     )
     .unwrap();
-    assert_eq!(store.load_queue().unwrap()[0].waiting, WAITING_HUMAN_START);
+    assert_eq!(store.load_queue().unwrap()[0].waiting, WAITING_AI_CAPACITY);
 
     settings.repositories[0].watched_authors = vec![WatchedIdentity {
         id: "11".into(),
@@ -1200,7 +1200,7 @@ fn selected_old_head_reactivates_without_duplication_after_filter_roundtrip() {
     .unwrap();
     let jobs = store.load_queue().unwrap();
     assert_eq!(jobs.len(), 1);
-    assert_eq!(jobs[0].waiting, WAITING_HUMAN_START);
+    assert_eq!(jobs[0].waiting, WAITING_AI_CAPACITY);
 }
 
 #[test]
@@ -1258,7 +1258,7 @@ fn reviewer_request_admits_an_unchanged_old_head_but_author_match_keeps_backlog_
     let jobs = store.load_queue().unwrap();
     assert_eq!(jobs.len(), 1);
     assert_eq!(jobs[0].pull_request_id, "2");
-    assert_eq!(jobs[0].waiting, "human_start");
+    assert_eq!(jobs[0].waiting, "ai_capacity");
     assert!(jobs[0].work.as_ref().unwrap().admission.requested_reviewer);
 }
 
@@ -2084,7 +2084,7 @@ fn author_reviewer_and_combined_triggers_filter_before_queueing() {
     assert!(!jobs[0].requested_reviewer);
     assert_eq!(jobs[0].author_login.as_deref(), Some("new-author-login"));
     assert_eq!(jobs[0].account_login, "renamed-account");
-    assert_eq!(jobs[1].waiting, "human_start");
+    assert_eq!(jobs[1].waiting, "ai_capacity");
     assert!(jobs[2].watched_author && jobs[2].requested_reviewer);
 }
 
@@ -2165,7 +2165,7 @@ fn polling_deduplicates_repeats_but_admits_new_heads_and_survives_restart() {
     );
     assert!(jobs
         .iter()
-        .any(|job| job.head_sha == HEAD_B && job.waiting == "human_start"));
+        .any(|job| job.head_sha == HEAD_B && job.waiting == "ai_capacity"));
     assert_eq!(restarted.snapshot()[0].last_success, Some(1_800_000_201));
 }
 
@@ -2240,7 +2240,7 @@ fn reviewer_removal_keeps_admission_across_new_heads_without_changing_start_poli
     )
     .unwrap();
     assert_eq!(store.load_queue().unwrap().len(), 1);
-    assert_eq!(store.load_queue().unwrap()[0].waiting, "human_start");
+    assert_eq!(store.load_queue().unwrap()[0].waiting, "ai_capacity");
 
     let removed = pull("1", 1, "33", "author", &[], HEAD_B, "2026-09-25T10:01:00Z");
     check(
@@ -2253,7 +2253,7 @@ fn reviewer_removal_keeps_admission_across_new_heads_without_changing_start_poli
     .unwrap();
     assert_eq!(store.load_queue().unwrap().len(), 2);
     assert_eq!(store.load_queue().unwrap()[0].waiting, WAITING_SUPERSEDED);
-    assert_eq!(store.load_queue().unwrap()[1].waiting, "human_start");
+    assert_eq!(store.load_queue().unwrap()[1].waiting, "ai_capacity");
     assert!(!store.load_queue().unwrap()[1].requested_reviewer);
     assert!(
         store.load_queue().unwrap()[1]
@@ -2286,7 +2286,7 @@ fn reviewer_removal_keeps_admission_across_new_heads_without_changing_start_poli
         .load_queue()
         .unwrap()
         .iter()
-        .any(|job| job.head_sha == HEAD_B && job.waiting == "human_start"));
+        .any(|job| job.head_sha == HEAD_B && job.waiting == "ai_capacity"));
 }
 
 #[test]
@@ -2509,18 +2509,18 @@ fn scans_supersede_old_heads_but_keep_admission_after_trigger_removal_or_missing
             .find(|job| job.pull_request_id == "2")
             .unwrap()
             .waiting,
-        "human_start"
+        "ai_capacity"
     );
     assert_eq!(
         jobs.iter()
             .find(|job| job.pull_request_id == "3")
             .unwrap()
             .waiting,
-        WAITING_HUMAN_START
+        WAITING_AI_CAPACITY
     );
     assert!(jobs.iter().any(|job| job.pull_request_id == "1"
         && job.head_sha == HEAD_B
-        && job.waiting == "human_start"));
+        && job.waiting == "ai_capacity"));
 
     let mut reappeared = pull("3", 3, "11", "author", &[], HEAD_A, "2026-09-25T10:05:00Z");
     reappeared.title = "PR 3 reappeared".into();
@@ -2547,7 +2547,7 @@ fn scans_supersede_old_heads_but_keep_admission_after_trigger_removal_or_missing
             .find(|job| job.pull_request_id == "3" && job.head_sha == HEAD_A)
             .unwrap()
             .waiting,
-        WAITING_HUMAN_START
+        WAITING_AI_CAPACITY
     );
     assert_eq!(
         reactivated
@@ -2575,7 +2575,7 @@ fn scans_supersede_old_heads_but_keep_admission_after_trigger_removal_or_missing
 #[test]
 fn configuration_changes_retire_actionable_jobs_before_a_provider_scan() {
     for (case, expected) in [
-        ("policy", "human_start"),
+        ("policy", "ai_capacity"),
         ("disabled", WAITING_REPOSITORY_DISABLED),
         ("removed", WAITING_REPOSITORY_REMOVED),
         ("replaced", WAITING_REPOSITORY_REMOVED),

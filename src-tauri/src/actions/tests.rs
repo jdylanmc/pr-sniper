@@ -27,6 +27,67 @@ use std::{
 
 const REPO: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const NOW: i64 = 1_800_000_000;
+
+#[test]
+fn legacy_final_wait_runs_automatically_without_replacing_immutable_basis_or_grants() {
+    let (_root, store, item) = fixture(1, true, false);
+    synchronize(&store, &item, Ok(observed()), NOW + 1).unwrap();
+    let mut ledger = store.load_actions().unwrap();
+    assert_eq!(ledger.finals.len(), 1);
+    let final_review = &mut ledger.finals[0];
+    final_review.basis.selection.policy.automatic_agent_start = false;
+    final_review
+        .execution
+        .selection
+        .policy
+        .automatic_agent_start = false;
+    final_review.execution.manual_start = false;
+    final_review
+        .basis
+        .repository
+        .overrides
+        .automatic_agent_start = Some(true);
+    final_review
+        .basis
+        .selection
+        .configuration
+        .as_mut()
+        .unwrap()
+        .repository
+        .overrides
+        .automatic_agent_start = Some(true);
+    final_review
+        .execution
+        .selection
+        .configuration
+        .as_mut()
+        .unwrap()
+        .repository
+        .overrides
+        .automatic_agent_start = Some(true);
+    let captured = final_review.clone();
+    store.save_actions(&ledger).unwrap();
+    validate_local(&store, &captured).unwrap();
+    synchronize(&store, &item, Ok(observed()), NOW + 2).unwrap();
+    assert_eq!(store.load_actions().unwrap().finals, vec![captured.clone()]);
+    let batch = Capacity::default().dispatch(&store, NOW + 2).unwrap();
+    assert!(batch.errors.is_empty(), "{:?}", batch.errors);
+    assert_eq!(batch.dispatched.len(), 1);
+    let Dispatch::Review(run, _) = &batch.dispatched[0] else {
+        panic!("Final review expected")
+    };
+    assert_eq!(run.operation.operation_type, "primary_final_review");
+    assert_eq!(run.operation.state, OperationState::Running);
+    assert!(!run.manual_start);
+    assert_eq!(run.selection, captured.execution.selection);
+    assert_eq!(
+        store.load_actions().unwrap().finals[0].basis,
+        captured.basis
+    );
+    assert!(store.load_actions().unwrap().effects.is_empty());
+    assert!(!captured.basis.permissions.merge);
+}
+
 fn output() -> ReviewResult {
     serde_json::from_value(json!({"reviewed_base_sha":"b".repeat(40),"output":{"synopsis":"Review completed.",
         "files":[{"path":"source.rs","order":1,"explanation":"Complete source review."}],"findings":[],"decision":"machine_sign_off"},
@@ -38,7 +99,8 @@ fn fixture(count: usize, approve: bool, merge: bool) -> (tempfile::TempDir, Stor
     let mut settings:Settings=serde_json::from_value(json!({"launch_at_login":false,"doctrines":[],
         "repositories":[{"id":REPO,"provider":"github","name":"example/repo","enabled":true,"provider_account_id":"22",
             "provider_repository_id":"100","watched_authors":[{"id":"11","login":"author"}]}]})).unwrap();
-    settings.defaults.automatic_agent_start = true;
+    settings.defaults.automatic_agent_start = false;
+    settings.repositories[0].overrides.automatic_agent_start = Some(false);
     for i in 1..=count {
         let agent = format!("aaaaaaaa-aaaa-4aaa-8aaa-{i:012}");
         settings.agents.push(serde_json::from_value(json!({"id":agent,"name":format!("Agent {i}"),"model":"model",

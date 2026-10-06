@@ -463,6 +463,13 @@ test("fresh Genie uses shared account choices and authorizes at repository Save,
   );
   await page.locator("[data-genie-next]").click();
   await expect(page.locator("[data-genie-confirm]")).toHaveCount(0);
+  await expect(page.locator(".genie-repository")).toContainText(
+    "Automatic when eligible",
+  );
+  await expect(page.locator(".genie-repository")).not.toContainText(
+    "Manual start",
+  );
+  await expect(page.getByLabel("Review start", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Finish setup", exact: true }).click();
   await expect(page.locator("[data-panel-heading]")).toHaveText("Your queue");
   expect((await store("snapshot")).settings).toEqual(authorized);

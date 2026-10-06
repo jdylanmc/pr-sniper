@@ -168,26 +168,10 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                     )
                 }
                 Some(run)
-                    if !run.manual_start
-                        && candidate
-                            .planned_selection
-                            .as_ref()
-                            .is_none_or(|s| !s.policy.automatic_agent_start) =>
-                {
-                    Some("Manual start required.".into())
-                }
-                Some(run)
                     if run.operation.state != OperationState::Running
                         && !due(&run.operation, now) =>
                 {
                     Some("Waiting for retry backoff.".into())
-                }
-                None if candidate
-                    .planned_selection
-                    .as_ref()
-                    .is_none_or(|s| !s.policy.automatic_agent_start) =>
-                {
-                    Some("Manual start required.".into())
                 }
                 _ => None,
             };
@@ -231,8 +215,8 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                         .clone()
                         .unwrap_or_else(|| "Manual retry required.".into()),
                 )
-            } else if !run.manual_start && !candidate.automatic_start {
-                Some("Manual follow-up start required.".into())
+            } else if candidate.human_gate && !run.manual_start {
+                Some("A prior comment needs human judgment before retrying this follow-up.".into())
             } else if run
                 .analysis
                 .as_ref()

@@ -190,14 +190,14 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
         await activate(page, opener, activation);
         const modal = dialog(page, "Settings for fixture/target");
         await modal
-          .getByLabel("Review start", { exact: true })
-          .selectOption("automatic");
+          .getByLabel("Reviewer requests", { exact: true })
+          .selectOption("on");
         await modal.getByRole("button", { name: action, exact: true }).click();
         await expect(modal).toHaveCount(0);
         await afterRedraw(page, original, opener);
         const saved = (await store("snapshot")).settings;
         expect(saved.repositories[1].id).toBe(targetId);
-        expect(saved.repositories[1].overrides?.automatic_agent_start).toBe(
+        expect(saved.repositories[1].overrides?.reviewer_assignment).toBe(
           action === "Save repository" ? true : undefined,
         );
         expect(saved.repositories[0]).toEqual(initial.repositories[0]);
@@ -229,7 +229,7 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       expect((await store("snapshot")).settings.repositories[1]).toMatchObject({
         id: targetId,
         name: "fixture/renamed",
-        overrides: { automatic_agent_start: true },
+        overrides: { reviewer_assignment: true },
       });
 
       const add = page.getByRole("button", {
@@ -291,8 +291,8 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       await section(page, "Integrations");
       await repoOpener(page).click();
       await dialog(page, "Settings for fixture/target")
-        .getByLabel("Review start", { exact: true })
-        .selectOption("automatic");
+        .getByLabel("Reviewer requests", { exact: true })
+        .selectOption("on");
       await dialog(page, "Settings for fixture/target")
         .getByRole("button", { name: "Close dialog", exact: true })
         .click();
@@ -424,10 +424,13 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       await section(page, "Integrations");
       await repoOpener(page).click();
       await expect(
-        dialog(page, "Settings for fixture/target").getByLabel("Review start", {
-          exact: true,
-        }),
-      ).toHaveValue("automatic");
+        dialog(page, "Settings for fixture/target").getByLabel(
+          "Reviewer requests",
+          {
+            exact: true,
+          },
+        ),
+      ).toHaveValue("on");
       await dialog(page, "Settings for fixture/target")
         .getByRole("button", { name: "Close dialog", exact: true })
         .click();
@@ -639,8 +642,8 @@ for (const focusTarget of ["Running", "Settings"]) {
             await modal.getByRole("checkbox", { name: /^Comment/ }).uncheck();
           } else {
             await modal
-              .getByLabel("Review start", { exact: true })
-              .selectOption("automatic");
+              .getByLabel("Reviewer requests", { exact: true })
+              .selectOption("on");
           }
         }
         const hold = ipc.holdNext("save_resource");
@@ -676,7 +679,7 @@ for (const focusTarget of ["Running", "Settings"]) {
         else if (resource === "assignment")
           expect(saved.repositories[1].assignments[1].comment).toBe(false);
         else
-          expect(saved.repositories[1].overrides.automatic_agent_start).toBe(
+          expect(saved.repositories[1].overrides.reviewer_assignment).toBe(
             true,
           );
         await tab(page, "Settings").click();

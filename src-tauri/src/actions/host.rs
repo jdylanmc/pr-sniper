@@ -68,10 +68,6 @@ pub(crate) fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                         .clone()
                         .unwrap_or_else(|| "Final review requires manual retry.".into()),
                 )
-            } else if !run.execution.manual_start
-                && !run.execution.selection.policy.automatic_agent_start
-            {
-                Some("Explicit start of the primary final full review is required.".into())
             } else if run.execution.operation.state != OperationState::Running
                 && run
                     .execution
@@ -109,10 +105,8 @@ pub(crate) fn prepare_dispatch(store: &Store, id: &str, now: i64) -> Result<Revi
         .find(|f| f.id == id)
         .ok_or("Final review unavailable.")?;
     validate_local(store, run)?;
-    if run.cancelled
-        || (!run.execution.manual_start && !run.execution.selection.policy.automatic_agent_start)
-    {
-        return Err("Final review start is not authorized.".into());
+    if run.cancelled {
+        return Err("Final review cancelled; explicit retry required.".into());
     }
     if let Err(error) = run.execution.operation.begin_ai_attempt(now) {
         run.execution.error = Some(error.clone());
