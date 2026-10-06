@@ -84,16 +84,40 @@ async function open(
 ) {
   if (embedded) await store("fixture_show_panel");
   await page.goto(embedded ? "/" : "/?view=settings");
-  if (embedded)
-    await page
-      .getByRole("navigation", { name: "Application destinations" })
-      .getByRole("button", { name: "Settings", exact: true })
-      .click();
+  if (embedded) await openPanelSettings(page);
+  return browseFromSettings(page, account, genie);
+}
+
+async function openPanelSettings(page) {
+  await page
+    .getByRole("navigation", { name: "Application destinations" })
+    .getByRole("button", { name: "Settings", exact: true })
+    .click();
+  await expect(page.locator("[data-panel-heading]")).toHaveText("Settings");
+  await expect(page.locator(".settings-overview")).toBeVisible();
+  await expect(page.locator(".settings-window")).toHaveAttribute(
+    "data-settings-section",
+    "home",
+  );
+}
+
+async function browseFromSettings(page, account, genie) {
   if (genie) {
     await page
+      .locator(".settings-window")
       .getByRole("button", { name: "Set up with Genie", exact: true })
       .click();
-    await page.locator('[data-genie-edit="repositories"]').click();
+    const guide = page.locator('[data-panel-view="genie"]');
+    await expect(page.locator("[data-panel-heading]")).toHaveText("Genie");
+    await expect(guide).toBeVisible();
+    await expect(
+      guide.locator('[data-genie-edit="repositories"]'),
+    ).toBeEnabled();
+    await guide.locator('[data-genie-edit="repositories"]').click();
+    await expect(page.locator(".settings-window")).toHaveAttribute(
+      "data-settings-section",
+      "repositories",
+    );
   } else {
     await section(page, "Repositories");
   }
@@ -145,6 +169,39 @@ for (const [embedded, genie] of [
     expect((await store("snapshot")).settings.repositories).toBeUndefined();
   });
 }
+
+test("Genie repository browsing waits for the actual delayed Settings bootstrap", async ({
+  page,
+  store,
+  ipc,
+}) => {
+  const { state } = await install(page, store);
+  await store("fixture_show_panel");
+  await page.goto("/");
+  // The panel footer has its own snapshot; hold the subsequent Settings load.
+  await expect(page.locator("[data-panel-version]")).toHaveText(/^v/);
+  const held = ipc.holdNext("snapshot");
+  const navigation = openPanelSettings(page);
+  try {
+    await held.arrived;
+    await expect(page.locator(".settings-window")).toBeVisible();
+    await expect(page.locator("#save-status")).toHaveText(
+      "Loading settings...",
+    );
+    await expect(page.locator('[data-panel-view="genie"]')).toBeHidden();
+    expect(state.reads).toEqual([]);
+    held.release();
+    await navigation;
+    const browser = await browseFromSettings(page, corporate, true);
+    await expect(browser.getByLabel("Repository owner")).toBeEnabled();
+    await browser.getByLabel("Repository owner").selectOption(corporate.login);
+    await expect(browser.locator("[data-pick]")).toHaveCount(1);
+    expect(state.reads.every((read) => read.accountId === "22")).toBe(true);
+  } finally {
+    held.release();
+    await navigation;
+  }
+});
 
 test("partial organization authorization is visible without disabling accessible results; Retry is fresh", async ({
   page,
