@@ -329,6 +329,7 @@ impl State {
     fn compact(mut self, store: &Store, receipt: &Receipt) -> Result<(), String> {
         mark_activity_pending(store)?;
         let binding = Binding::tracked(&receipt.scope);
+        self.feedback.observe_human_boundaries(&self.follow_ups);
         self.follow_ups.retain(|f| !binding.matches(&f.context.job));
         self.publications
             .retain(|p| !binding.matches(&p.review.job));
@@ -367,13 +368,14 @@ impl State {
                 .any(|item| source == &format!("queue:{item}"))
         });
         self.queue.jobs.retain(|j| !binding.matches(j));
-        // Follow-ups first: legacy decoding may need the original publication.
+        // Persist minimal conversation gates before deleting their source runs.
+        // Follow-ups precede publications because legacy decoding needs the origin.
         // Repeating every write is intentional; the journal is the recovery fence.
+        store.write_state("feedback.json", &self.feedback)?;
         store.write_state("follow-ups.json", &self.follow_ups)?;
         store.write_state("publications.json", &self.publications)?;
         store.write_state("reviews.json", &self.reviews)?;
         store.write_state("actions.json", &self.actions)?;
-        store.write_state("feedback.json", &self.feedback)?;
         store.write_state("notifications.json", &self.notifications)?;
         store.write_state("queue.json", &self.queue)?;
         super::paging::discard(store, &receipt.items)

@@ -31,7 +31,7 @@ pub struct Basis {
 
 impl Basis {
     fn same_execution(&self, other: &Self) -> bool {
-        // Preserve the full action basis; only retired start data is inert.
+        // Preserve the full action basis; retired automation preferences are inert.
         let mut current = self.clone();
         current.selection.policy.automatic_agent_start =
             other.selection.policy.automatic_agent_start;
@@ -146,6 +146,7 @@ pub struct Status {
     pub machine_clear: bool,
     pub personal_review: &'static str,
     pub permissions: ActionPermissions,
+    pub provider_approval: Option<crate::github::actions::ProviderReview>,
     pub final_review: Option<FinalReview>,
     pub effects: Vec<Effect>,
     pub blockers: Vec<String>,
@@ -606,53 +607,39 @@ pub fn ready(
     } {
         return Err("This provider action is not opted in.".into());
     }
-    if action == Action::Merge {
-        let latest = observation.reviews.iter().rev().find(|review| {
-            review.actor_id == observation.account_id
-                && matches!(
-                    review.state.as_str(),
-                    "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED"
-                )
-        });
-        let current_approval = latest.filter(|review| {
-            review.state == "APPROVED"
-                && review.head == observation.head
-                && review.submitted_at.is_some()
-        });
-        let confirmed = current_approval.is_some()
-            && store.load_actions()?.effects.iter().any(|effect| {
-                same_scope(effect, &run.basis.job)
-                    && effect.item_id == run.basis.item_id
-                    && effect.action == Action::Approve
-                    && effect.state == EffectState::Confirmed
-                    && effect.error.is_none()
-                    && effect.receipt.as_ref().is_some_and(|receipt| {
-                        receipt.action == Action::Approve
-                            && receipt.actor_id == observation.account_id
-                            && receipt.head == observation.head
-                            && observation.reviews.iter().any(|review| {
-                                review.id == receipt.id
-                                    && review.actor_id == receipt.actor_id
-                                    && review.head == observation.head
-                                    && review.state == "APPROVED"
-                                    && review.body == effect.body
-                            })
-                    })
-            });
-        let observed_existing = current_approval.is_some_and(|approval| {
-            run.observation
-                .reviews
-                .iter()
-                .any(|review| review == approval)
-        });
-        if !confirmed && !observed_existing {
-            return Err("Merge requires this iteration's confirmed acting-account approval before transmission.".into());
-        }
+    if action == Action::Merge && provider_approval(observation).is_none() {
+        return Err(
+            "Merge requires confirmed current-revision provider approval before transmission."
+                .into(),
+        );
     }
     if let Some(reason) = observation.blocker(action) {
         return Err(reason);
     }
     Ok(())
+}
+
+pub(crate) fn provider_approval(
+    observation: &Observation,
+) -> Option<&crate::github::actions::ProviderReview> {
+    let mut reviewers = std::collections::HashSet::new();
+    observation.reviews.iter().rev().find(|review| {
+        matches!(
+            review.state.as_str(),
+            "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED"
+        ) && reviewers.insert(&review.actor_id)
+            && review.state == "APPROVED"
+            && review.actor_id != observation.author_id
+            && review.head == observation.head
+            && [&review.id, &review.actor_id].iter().all(|id| {
+                id.parse::<u64>()
+                    .is_ok_and(|value| value > 0 && value.to_string() == **id)
+            })
+            && review
+                .submitted_at
+                .as_deref()
+                .is_some_and(|time| chrono::DateTime::parse_from_rfc3339(time).is_ok())
+    })
 }
 
 pub fn prepare_effect(
@@ -1054,7 +1041,11 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
         }
         if let Some(observation) = observed.and_then(|o| o.observation.as_ref()) {
             for (action, enabled) in [
-                (Action::Approve, permissions.approve),
+                (
+                    Action::Approve,
+                    permissions.approve
+                        && !(permissions.merge && provider_approval(observation).is_some()),
+                ),
                 (Action::Merge, permissions.merge),
             ] {
                 if enabled {
@@ -1114,7 +1105,11 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
             if run.execution.operation.state == OperationState::Completed {
                 if let Some(observation) = observed.and_then(|o| o.observation.as_ref()) {
                     for (action, enabled) in [
-                        (Action::Approve, permissions.approve),
+                        (
+                            Action::Approve,
+                            permissions.approve
+                                && !(permissions.merge && provider_approval(observation).is_some()),
+                        ),
                         (Action::Merge, permissions.merge),
                     ] {
                         if enabled && !effects.iter().any(|e| e.action == action) {
@@ -1169,6 +1164,10 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
                 "Not inferred."
             },
             permissions,
+            provider_approval: observed
+                .and_then(|o| o.observation.as_ref())
+                .and_then(provider_approval)
+                .cloned(),
             final_review,
             effects,
             blockers,

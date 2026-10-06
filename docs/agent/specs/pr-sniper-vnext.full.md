@@ -10,7 +10,9 @@ independent merge-only permissions, not the unrelated specification.
 
 Assignment grants are direct Publish Comment and primary-only Reply Comment,
 Approve or Approve & Merge. Primary selection grants none. Merge includes
-approval and follows a separately confirmed, current-iteration approval receipt;
+approval permission and follows separately confirmed applicable current-revision
+provider approval, without requiring the merger's own vote or fabricating an
+application receipt for another reviewer's approval;
 approve-only never merges. Obsolete secondary grants are disabled, not preserved
 through auto-promotion. Current configuration reconciliation must not reset
 real application data or alter actual job evidence/provider-operation receipts.

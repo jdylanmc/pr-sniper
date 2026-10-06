@@ -253,17 +253,16 @@ fn review_state(
     {
         return State::Blocked;
     }
-    let comments = current.policy.automatic_comment_publication
-        && settings
-            .repositories
-            .iter()
-            .find(|r| r.id == candidate.job.configuration_id)
-            .and_then(|r| {
-                r.assignments
-                    .iter()
-                    .find(|a| a.id == candidate.assignment_id)
-            })
-            .is_some_and(|a| a.comment);
+    let comments = settings
+        .repositories
+        .iter()
+        .find(|r| r.id == candidate.job.configuration_id)
+        .and_then(|r| {
+            r.assignments
+                .iter()
+                .find(|a| a.id == candidate.assignment_id)
+        })
+        .is_some_and(|a| a.comment);
     if comments || publication.is_some() {
         if batch.is_some_and(|p| p.blocked.is_some()) {
             return State::Blocked;
@@ -435,6 +434,9 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             }
         }
         for follow_up in &follow_ups {
+            if follow_up.superseded {
+                continue;
+            }
             let prior_iteration = follow_up.run.context.job.head_sha != job.head_sha
                 || follow_up
                     .run

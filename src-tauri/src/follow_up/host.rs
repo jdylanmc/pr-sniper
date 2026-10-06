@@ -446,26 +446,7 @@ fn conversation_cursor(
     ledger: &mut crate::feedback::Ledger,
     binding: &crate::feedback::MentionBinding,
 ) -> usize {
-    if let Some(index) = ledger
-        .conversation_cursors
-        .iter()
-        .position(|cursor| cursor.binding.key("") == binding.key(""))
-    {
-        return index;
-    }
-
-    ledger
-        .conversation_cursors
-        .push(crate::feedback::ConversationCursor {
-            binding: binding.clone(),
-            comments: Default::default(),
-            threads: Default::default(),
-            comments_initialized: false,
-            threads_initialized: false,
-            discussion: Vec::new(),
-            closed_threads: Default::default(),
-        });
-    ledger.conversation_cursors.len() - 1
+    ledger.conversation_cursor(binding)
 }
 
 fn merge_thread_observation(
@@ -553,6 +534,10 @@ fn admit_thread_intents(
                     .insert(thread.id.clone());
             }
             let external = thread.latest_other_user(&binding.account_id);
+            ledger.conversation_cursors[index].thread_triggers.insert(
+                thread.id.clone(),
+                external.map(|comment| comment.id.clone()),
+            );
             let key = external.map(|comment| {
                 serde_json::json!([
                     "thread",
@@ -671,6 +656,7 @@ pub(crate) struct Candidate {
     pub(crate) automatic_start: bool,
     pub(crate) automatic_publication: bool,
     pub(crate) human_gate: bool,
+    pub(crate) superseded: bool,
 }
 
 fn serialize_run<S: serde::Serializer>(run: &FollowUp, serializer: S) -> Result<S::Ok, S::Error> {
@@ -688,22 +674,16 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
     let runs = store.load_follow_ups()?;
     let settings = store.load_settings()?;
     let jobs = store.load_queue()?;
-    let feedback_ledger = store.load_feedback()?;
-    let human_threads: std::collections::BTreeSet<_> = crate::retention::load(store)?
-        .receipts
-        .into_iter()
-        .flat_map(|r| r.owned)
-        .flat_map(|o| {
-            o.human_input_threads
-                .into_iter()
-                .map(move |id| (o.proof.account_id.clone(), id))
-        })
-        .collect();
+    let mut feedback_ledger = store.load_feedback()?;
+    feedback_ledger.observe_human_boundaries(&runs);
+    let retained = crate::retention::load(store)?;
     Ok(runs
         .iter()
         .map(|saved_run| {
             let mut pending = saved_run.clone();
-            if pending.result.is_none() && pending.publication.is_none()
+            if !pending.cancelled && pending.result.is_none() && pending.publication.is_none()
+                && pending.analysis_history.is_empty()
+                && pending.history.iter().all(|operation| operation.attempt_count == 0)
                 && pending.analysis.as_ref().is_none_or(|operation| operation.attempt_count == 0 && operation.state != OperationState::Running)
             {
                 let job = &pending.context.job;
@@ -713,7 +693,9 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
                     repository_name: job.repository_name.clone(), pull_request_id: job.pull_request_id.clone(), number: job.number,
                 };
                 if let Ok(context) = primary_context(store, &settings, &jobs, &binding, &crate::queue::item_id(job)) {
-                    if context.assignment_id != pending.context.assignment_id {
+                    if context.assignment_id != pending.context.assignment_id
+                        || context.selection.agent != pending.context.selection.agent
+                        || context.job != pending.context.job {
                         if let Some(operation) = pending.analysis.take() { pending.retain_analysis_attempt(operation); }
                         pending.context = context;
                     }
@@ -755,17 +737,10 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
                     }
                     Ok(selection)
                 });
-            let human_gate = run.thread().is_ok_and(|t|
-                human_threads.contains(&(run.context.job.account_id.clone(), t.id.clone())))
-                || runs.iter().any(|other| {
-                other
-                    .thread()
-                    .ok()
-                    .zip(run.thread().ok())
-                    .is_some_and(|(a, b)| a.id == b.id)
-                    && other.context.job.account_id == run.context.job.account_id
-                    && other.phase == Phase::HumanInputRequired
-            });
+            let human_gate = run.thread().is_ok_and(|thread| feedback_ledger.human_gated(&run.context.job, &thread.id)
+                || (!feedback_ledger.human_answered(&run.context.job, &thread.id)
+                    && retained.receipts.iter().any(|receipt| crate::retention::Binding::tracked(&receipt.scope).matches(&run.context.job)
+                        && receipt.owned.iter().any(|owned| owned.human_input_threads.contains(&thread.id)))));
             Candidate {
                 planned_selection: policy.as_ref().ok().cloned(),
                 run: run.clone(),
@@ -774,6 +749,7 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
                 automatic_publication: policy.is_ok() && jobs.iter().find(|job| run.matches_job(job))
                     .is_some_and(|job| run.authority(&settings, job).is_ok_and(|grant| grant)),
                 human_gate,
+                superseded: feedback_ledger.thread_superseded(run),
             }
         })
         .collect())
@@ -1611,6 +1587,19 @@ impl Native {
     }
 }
 
+fn validate_observed_trigger(run: &FollowUp, observation: &Observation) -> Result<(), Failure> {
+    if let Observation::Owned(thread) = observation {
+        if thread
+            .latest_other_user(&run.context.job.account_id)
+            .map(|comment| &comment.id)
+            != Some(&run.trigger_id)
+        {
+            return Err(Failure::permanent(super::SUPERSEDED_TRIGGER));
+        }
+    }
+    Ok(())
+}
+
 async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure> {
     run.phase = Phase::Analyzing;
     native.save(run)?;
@@ -1619,17 +1608,7 @@ async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure>
         let snapshot = run.clone();
         let (context, client, observation) = tauri::async_runtime::spawn_blocking(move || {
             let observation = worker.observe(&snapshot)?;
-            if let Observation::Owned(thread) = &observation {
-                if thread
-                    .latest_other_user(&snapshot.context.job.account_id)
-                    .map(|c| &c.id)
-                    != Some(&snapshot.trigger_id)
-                {
-                    return Err(Failure::permanent(
-                        "A later external comment superseded this follow-up.",
-                    ));
-                }
-            }
+            validate_observed_trigger(&snapshot, &observation)?;
             let mut current = snapshot.clone();
             if let Observation::Mention { replies, .. } = &observation {
                 current.discussion = replies.clone();

@@ -12,6 +12,7 @@ export interface ActionStatus {
   machine_clear: boolean;
   personal_review: string;
   permissions: { approve: boolean; merge: boolean };
+  provider_approval?: { id: string; actor_id: string; head: string } | null;
   final_review: {
     id: string;
     enqueue_order: number;
@@ -52,6 +53,11 @@ export function renderActions(
   const observed = document.createElement("p");
   observed.textContent = `Final evidence: ${status.final_valid ? "valid against recorded observations" : "not currently validated"}. Provider observations: ${status.provider_observed_at ? new Date(status.provider_observed_at * 1000).toISOString() : "not available"}. Gates are rechecked before provider requests.`;
   section.append(observed);
+  if (status.provider_approval) {
+    const approval = document.createElement("p");
+    approval.textContent = `Confirmed provider approval ${status.provider_approval.id} by reviewer ${status.provider_approval.actor_id} on ${status.provider_approval.head}. Provider evidence, not an inferred PR Sniper approval receipt or personal review.`;
+    section.append(approval);
+  }
   for (const blocker of status.blockers) {
     const message = document.createElement("p");
     message.textContent = blocker;
