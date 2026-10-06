@@ -59,8 +59,12 @@ const failures: Record<string, string> = {
     "The PR Sniper GitHub OAuth authorization is missing, expired, or rejected. Reconnect GitHub.",
   missing_scope:
     "The GitHub OAuth authorization no longer grants the required repo scope. Reconnect and review the requested public/private repository access.",
+  scope_unverified:
+    "GitHub did not provide the scope evidence needed to verify this read. No missing scope or grant is established. Retry this selected account; if it persists, check this app's authorization in GitHub.",
   organization_policy_denied:
     "GitHub organization policy or SAML single sign-on blocks this repository. Authorize the OAuth App for the organization or contact its administrator.",
+  organization_policy_denied_with_missing_scope:
+    "GitHub reported an organization authorization restriction and an authorization missing repo scope. Ask the organization administrator to approve the PR Sniper OAuth App; also reconnect this selected account in Accounts with repository access. Reconnecting alone cannot bypass organization policy.",
   wrong_identity:
     "The authenticated GitHub account does not match the expected account ID. No repository action was taken.",
   missing_read_permission:
@@ -86,6 +90,73 @@ const failures: Record<string, string> = {
   configuration:
     "Saved repository settings are unavailable. Reload Settings and check local storage.",
 };
+
+export function describeReadFailureDetails(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") return;
+  if (
+    "provider_rejected_status" in error &&
+    typeof error.provider_rejected_status === "number" &&
+    Number.isInteger(error.provider_rejected_status) &&
+    error.provider_rejected_status >= 100 &&
+    error.provider_rejected_status <= 599
+  )
+    return `GitHub rejected this lookup (HTTP ${error.provider_rejected_status}). Check the current repository URL/input and provider policy, then retry. This response does not establish a missing scope.`;
+  if (!("rate_limited_with_context" in error)) return;
+  const context = error.rate_limited_with_context;
+  if (
+    !context ||
+    typeof context !== "object" ||
+    !("retry_after_seconds" in context) ||
+    !("reset_at" in context) ||
+    !("organization_access_incomplete" in context) ||
+    typeof context.organization_access_incomplete !== "boolean" ||
+    !("missing_repo_scope" in context) ||
+    typeof context.missing_repo_scope !== "boolean"
+  )
+    return;
+  const { retry_after_seconds: delay, reset_at: reset } = context;
+  const validTimestamp = (value: unknown) =>
+    value === null ||
+    (typeof value === "number" && Number.isSafeInteger(value) && value >= 0);
+  if (!validTimestamp(delay) || !validTimestamp(reset)) return;
+  const messages = [
+    "GitHub rate limited this lookup. Wait before trying again.",
+  ];
+  if (typeof delay === "number") messages.push(`Retry after ${delay} seconds.`);
+  if (typeof reset === "number")
+    messages.push(
+      `GitHub reports the rate-limit reset at Unix time ${reset} (UTC seconds).`,
+    );
+  if (context.organization_access_incomplete)
+    messages.push(
+      "Organization access is also restricted or incomplete. Check this app's organization approval or single sign-on authorization after the rate limit clears; discovery is not complete.",
+    );
+  if (context.missing_repo_scope)
+    messages.push(
+      "The selected authorization also lacks repo scope. After waiting, reconnect this selected account with repository access.",
+    );
+  if (context.missing_repo_scope && context.organization_access_incomplete)
+    messages.push("Reconnecting alone cannot bypass organization policy.");
+  return messages.join(" ");
+}
+
+export function readFailureMissingScope(error: unknown): boolean {
+  if (
+    error === "missing_scope" ||
+    error === "organization_policy_denied_with_missing_scope"
+  )
+    return true;
+  return !!(
+    describeReadFailureDetails(error) &&
+    error &&
+    typeof error === "object" &&
+    "rate_limited_with_context" in error &&
+    error.rate_limited_with_context &&
+    typeof error.rate_limited_with_context === "object" &&
+    "missing_repo_scope" in error.rate_limited_with_context &&
+    error.rate_limited_with_context.missing_repo_scope === true
+  );
+}
 
 function describe(connection: Connection): string {
   const { identity, capabilities } = connection;
@@ -237,22 +308,25 @@ export function renderConnection(
       observations.delete(repository.id);
       observation = undefined;
       status.textContent =
-        typeof cause === "string" && Object.hasOwn(failures, cause)
+        describeReadFailureDetails(cause) ??
+        (typeof cause === "string" && Object.hasOwn(failures, cause)
           ? failures[cause]
-          : "Connection read failed. No raw error details or partial metadata are exposed.";
+          : "Connection read failed. No raw error details or partial metadata are exposed.");
       if (
-        typeof cause === "string" &&
-        [
-          "signed_out",
-          "wrong_identity",
-          "network",
-          "rate_limited",
-          "timeout",
-          "provider_failure",
-          "invalid_response",
-          "missing_scope",
-          "configuration",
-        ].includes(cause)
+        readFailureMissingScope(cause) ||
+        (typeof cause === "string" &&
+          [
+            "signed_out",
+            "wrong_identity",
+            "network",
+            "rate_limited",
+            "timeout",
+            "provider_failure",
+            "invalid_response",
+            "missing_scope",
+            "organization_policy_denied_with_missing_scope",
+            "configuration",
+          ].includes(cause))
       )
         window.dispatchEvent(new Event("pr-sniper:refresh-provider-accounts"));
     } finally {

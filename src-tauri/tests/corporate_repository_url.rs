@@ -135,7 +135,7 @@ fn corporate_url_failure_classes_remain_truthful_and_retryable() {
                         "required; url=https://github.com/orgs/example/sso",
                     ),
                 ],
-                "organization_policy_denied",
+                "organization_policy_denied_with_missing_scope",
             ),
             (
                 403,
@@ -232,5 +232,209 @@ fn explicit_denial_and_unverified_metadata_never_admit_a_repository() {
             Err(expected)
         );
         assert!(!provider.reads.borrow().iter().any(|path| path == PULLS));
+    }
+}
+
+#[test]
+fn unknown_scope_evidence_blocks_url_and_catalog_without_claiming_revocation() {
+    for path in [REPO, CATALOG] {
+        let provider = Provider::ready();
+        provider
+            .responses
+            .borrow_mut()
+            .get_mut(path)
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .headers
+            .clear();
+        let client = GithubClient::new(&provider);
+        let error = if path == REPO {
+            client
+                .connect("example-org/example-repo", Some(ACCOUNT))
+                .unwrap_err()
+        } else {
+            client
+                .repository_browser(&client.current_identity().unwrap())
+                .unwrap_err()
+        };
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            json!("scope_unverified")
+        );
+        assert!(!provider.reads.borrow().iter().any(|p| p == PULLS));
+    }
+}
+
+#[test]
+fn rejected_http_status_is_not_a_successful_payload_schema_failure() {
+    for path in [REPO, PULLS] {
+        let provider = Provider::ready();
+        provider.responses.borrow_mut().insert(
+            path,
+            Ok(response(422, json!({"message":"Validation failed"}), &[])),
+        );
+        let error = GithubClient::new(&provider)
+            .connect("example-org/example-repo", Some(ACCOUNT))
+            .unwrap_err();
+        assert_eq!(error, ConnectionError::ProviderRejectedStatus(422));
+    }
+}
+
+const POLICY_MESSAGE: &str = "Although you appear to have the correct authorization credentials, the fixture-org organization has enabled OAuth App access restrictions, meaning that data access to third-parties is limited. For more information visit https://example.invalid/private";
+
+#[test]
+fn reset_only_rate_limits_and_policy_scope_combinations_retain_all_safe_evidence() {
+    for path in [REPO, PULLS] {
+        for (headers, expected) in [
+            (
+                vec![
+                    ("x-ratelimit-remaining", "0"),
+                    ("x-ratelimit-reset", "1800000060"),
+                ],
+                ConnectionError::RateLimitedWithContext {
+                    retry_after_seconds: None,
+                    reset_at: Some(1800000060),
+                    organization_access_incomplete: true,
+                    missing_repo_scope: false,
+                },
+            ),
+            (
+                vec![("x-oauth-scopes", "read:user"), ("retry-after", "60")],
+                ConnectionError::RateLimitedWithContext {
+                    retry_after_seconds: Some(60),
+                    reset_at: None,
+                    organization_access_incomplete: true,
+                    missing_repo_scope: true,
+                },
+            ),
+        ] {
+            let provider = Provider::ready();
+            provider.responses.borrow_mut().insert(
+                path,
+                Ok(response(403, json!({"message":POLICY_MESSAGE}), &headers)),
+            );
+            assert_eq!(
+                GithubClient::new(&provider)
+                    .connect("example-org/example-repo", Some(ACCOUNT)),
+                Err(expected)
+            );
+        }
+        for marker in [
+            "partial-results; organizations=123",
+            "unknown",
+            "required-but-not-a-contract-marker",
+        ] {
+            let provider = Provider::ready();
+            provider.responses.borrow_mut().insert(
+                path,
+                Ok(response(
+                    403,
+                    json!({"message":"Resource not accessible"}),
+                    &[("x-github-sso", marker)],
+                )),
+            );
+            assert_eq!(
+                GithubClient::new(&provider)
+                    .connect("example-org/example-repo", Some(ACCOUNT)),
+                Err(ConnectionError::MissingReadPermission)
+            );
+        }
+        let provider = Provider::ready();
+        provider.responses.borrow_mut().insert(
+            path,
+            Ok(response(
+                403,
+                json!({}),
+                &[
+                    ("x-ratelimit-remaining", "0"),
+                    ("x-ratelimit-reset", "1800000060"),
+                ],
+            )),
+        );
+        assert_eq!(
+            GithubClient::new(&provider).connect("example-org/example-repo", Some(ACCOUNT)),
+            Err(ConnectionError::RateLimitedWithContext {
+                retry_after_seconds: None,
+                reset_at: Some(1800000060),
+                organization_access_incomplete: false,
+                missing_repo_scope: false,
+            })
+        );
+    }
+}
+
+#[test]
+fn evidenced_oauth_app_restrictions_preserve_policy_and_scope_without_raw_body() {
+    for path in [REPO, PULLS] {
+        for (headers, expected) in [
+            (
+                vec![("x-oauth-scopes", "repo")],
+                "organization_policy_denied",
+            ),
+            (vec![], "organization_policy_denied"),
+            (
+                vec![("x-oauth-scopes", "read:user")],
+                "organization_policy_denied_with_missing_scope",
+            ),
+        ] {
+            let provider = Provider::ready();
+            provider.responses.borrow_mut().insert(
+                path,
+                Ok(response(403, json!({"message":POLICY_MESSAGE}), &headers)),
+            );
+            let error = GithubClient::new(&provider)
+                .connect("example-org/example-repo", Some(ACCOUNT))
+                .unwrap_err();
+            assert_eq!(serde_json::to_value(error).unwrap(), json!(expected));
+        }
+        for message in [
+            "Resource not accessible",
+            "OAuth App access restrictions",
+            "Check whether the organization has enabled OAuth App access restrictions",
+        ] {
+            let provider = Provider::ready();
+            provider
+                .responses
+                .borrow_mut()
+                .insert(path, Ok(response(403, json!({"message":message}), &[])));
+            assert_eq!(
+                GithubClient::new(&provider)
+                    .connect("example-org/example-repo", Some(ACCOUNT)),
+                Err(ConnectionError::MissingReadPermission)
+            );
+        }
+    }
+}
+
+#[test]
+fn partial_sso_does_not_hide_confirmed_rate_limits_or_retry_timestamps() {
+    for path in [REPO, PULLS] {
+        let provider = Provider::ready();
+        provider.responses.borrow_mut().insert(
+            path,
+            Ok(response(
+                403,
+                json!({"message":"API rate limit exceeded"}),
+                &[
+                    ("x-github-sso", "partial-results; organizations=123"),
+                    ("x-ratelimit-remaining", "0"),
+                    ("x-ratelimit-reset", "1800000060"),
+                    ("retry-after", "60"),
+                ],
+            )),
+        );
+        let error = GithubClient::new(&provider)
+            .connect("example-org/example-repo", Some(ACCOUNT))
+            .unwrap_err();
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            json!({
+                "rate_limited_with_context":{
+                    "retry_after_seconds":60,"reset_at":1800000060,
+                    "organization_access_incomplete":true,"missing_repo_scope":false
+                }
+            })
+        );
     }
 }

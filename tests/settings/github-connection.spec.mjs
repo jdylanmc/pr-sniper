@@ -169,14 +169,31 @@ for (const [error, expected] of [
   ["missing_read_permission", "denied repository or pull-request read"],
   ["repository_unavailable", "A 404 does not prove the repository is absent"],
   ["missing_scope", "no longer grants the required repo scope"],
+  ["scope_unverified", "No missing scope or grant is established"],
   ["organization_policy_denied", "organization policy or SAML single sign-on"],
+  [
+    "organization_policy_denied_with_missing_scope",
+    "Reconnecting alone cannot bypass organization policy",
+  ],
+  [{ provider_rejected_status: 422 }, "HTTP 422"],
+  [
+    {
+      rate_limited_with_context: {
+        retry_after_seconds: 60,
+        reset_at: 1800000060,
+        organization_access_incomplete: true,
+        missing_repo_scope: false,
+      },
+    },
+    "Retry after 60 seconds",
+  ],
   ["rate_limited", "rate limited"],
   ["network", "Could not reach GitHub securely"],
   ["provider_failure", "could not complete this read"],
   ["incomplete_read", "No partial result was accepted"],
   ["gho_untrusted_secret_error_body", "No raw error details"],
 ]) {
-  test(`connection reports ${error} without enabling metadata or leaking errors`, async ({
+  test(`connection reports ${typeof error === "string" ? error : Object.keys(error)[0]} without enabling metadata or leaking errors`, async ({
     page,
     store,
   }) => {

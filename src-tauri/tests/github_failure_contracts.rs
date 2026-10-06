@@ -216,7 +216,7 @@ fn explicit_provider_rejection_is_not_classified_as_a_retryable_server_failure()
 
     let result = GithubClient::new(transport).connect("jdylanmc/pr-sniper", Some("6954990"));
 
-    assert_eq!(result, Err(ConnectionError::InvalidResponse));
+    assert_eq!(result, Err(ConnectionError::ProviderRejectedStatus(422)));
 }
 
 #[test]
@@ -252,7 +252,7 @@ fn repository_verification_rejects_a_missing_or_revoked_repo_scope() {
 }
 
 #[test]
-fn absent_scope_evidence_does_not_assume_the_required_repo_scope() {
+fn absent_scope_evidence_does_not_claim_scope_revocation_or_a_grant() {
     let mut transport = ready_transport();
     let repository = transport
         .responses
@@ -264,7 +264,7 @@ fn absent_scope_evidence_does_not_assume_the_required_repo_scope() {
 
     assert_eq!(
         GithubClient::new(transport).connect("jdylanmc/pr-sniper", Some("6954990")),
-        Err(ConnectionError::MissingScope)
+        Err(ConnectionError::ScopeUnverified)
     );
 }
 

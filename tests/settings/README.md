@@ -133,6 +133,27 @@ validated against GitHub's [repository contract](https://docs.github.com/en/rest
 Live organization access or app restrictions require authorized evidence; these
 fixtures cannot establish the cause of the original installed corporate failure.
 
+Fix-wave regressions separate absent scope evidence (`scope_unverified`, no
+admission and no account-wide scope-revocation claim) from an explicit scope
+list missing `repo`. Unverified later catalog pages retain only preceding
+verified records with a visible incomplete-read warning. HTTP rejection status
+is retained separately from malformed successful JSON/schema, including 422.
+Confirmed rate limits retain Retry-After/reset timestamps and relevant partial
+organization visibility; a partial-results SSO marker alone does not prove
+required authorization. Native rate scheduling prefers Retry-After, otherwise
+uses the reported reset time.
+
+Organization policy recognition at URL repository/pulls boundaries is narrow:
+the known 403 OAuth App restriction message template or an explicit required
+SSO marker, not any generic 403 or arbitrary OAuth-related wording. Combined
+policy/scope evidence explains both administrator approval and the selected
+account's missing scope; only actual scope deficiency invalidates that actor's
+session. Rate-limit recovery remains primary when also evidenced, with the
+other safe facts retained. Unknown wording stays a conditional denial, never
+a guessed policy diagnosis. These cases use real provider parsing, native
+session/precommit guards and Store-backed Settings/Genie tests in Chromium and
+WebKit; no live entitlement or real Keychain/CredStore proof is implied.
+
 `agent-intelligence.spec.mjs` exercises advertised reasoning efforts, context
 tiers and token capacities through the shared Agent editor and real native
 resource saves/restarts. Account/model changes retain incompatible deliberate

@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import { renderConnection } from "./connections";
+import {
+  describeReadFailureDetails,
+  readFailureMissingScope,
+  renderConnection,
+} from "./connections";
 import {
   renderGithubAuth,
   githubAccountFailureMessage,
@@ -191,6 +195,8 @@ const reason = (error: unknown): string => {
       ? "The selected GitHub session is unavailable. Check secure credential access or reconnect this account, then retry."
       : reason(session.error);
   }
+  const details = describeReadFailureDetails(error);
+  if (details) return details;
   const errors: Record<string, string> = {
     signed_out:
       "GitHub is disconnected. Connect the PR Sniper GitHub OAuth App, then try again.",
@@ -207,8 +213,12 @@ const reason = (error: unknown): string => {
       "GitHub did not return a complete repository list. More repositories may be unavailable; retry.",
     missing_scope:
       "The selected GitHub authorization does not grant the required repo scope. Reconnect this account in Accounts and review the PR Sniper OAuth App's public/private repository access request, then retry.",
+    scope_unverified:
+      "GitHub did not provide the scope evidence needed to verify this read. No missing scope or grant is established. Retry this selected account; if it persists, check this app's authorization in GitHub. No repository was accepted from this unverified read.",
     organization_policy_denied:
       "GitHub reported an organization authorization restriction. Check the PR Sniper OAuth App's organization approval and single sign-on authorization in GitHub; if restricted, ask the organization administrator for access, then retry. Reconnecting alone cannot bypass organization policy.",
+    organization_policy_denied_with_missing_scope:
+      "GitHub reported an organization authorization restriction and an authorization missing repo scope. Ask the organization administrator to approve the PR Sniper OAuth App; also reconnect this selected account in Accounts with repository access. Reconnecting alone cannot bypass organization policy.",
     repository_changed:
       "The repository identity changed. Refresh the owner or check the URL, then retry.",
     authentication_changed:
@@ -216,7 +226,7 @@ const reason = (error: unknown): string => {
     provider_failure:
       "GitHub lookup failed. Check provider health and try again.",
     provider_rejected:
-      "GitHub rejected this lookup. Check the selected account and provider policy before retrying.",
+      "GitHub rejected this lookup. Check the current repository URL/input and provider policy before retrying; this does not establish a missing scope.",
     wrong_identity:
       "GitHub returned a different account. Reconnect the selected account; no other account will be used.",
     configuration:
@@ -2255,7 +2265,7 @@ export async function mountSettings(
           (error === "wrong_identity" ||
             error === "authentication_changed" ||
             error === "signed_out" ||
-            error === "missing_scope" ||
+            readFailureMissingScope(error) ||
             (session && (error === "configuration" || error === "broken_cli"))))
       ) {
         loaded = false;
