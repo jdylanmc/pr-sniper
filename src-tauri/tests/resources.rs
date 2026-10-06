@@ -61,6 +61,138 @@ fn agent_edit(expected: &Settings, name: &str) -> ResourceEdit {
 }
 
 #[test]
+fn enabled_repository_saves_reject_incomplete_legacy_configuration_without_breaking_load_or_disabled_repair(
+) {
+    for missing_agent in [true, false] {
+        let fixture = Fixture::new();
+        let store = fixture.store();
+        let mut original = settings();
+        if missing_agent {
+            original.repositories[0].assignments.clear();
+        } else {
+            original.agents[0].ai_account = None;
+        }
+        store.save_settings(&original).unwrap();
+        assert_eq!(store.load_settings().unwrap(), original);
+        let path = fixture.path().join("config/settings.json");
+        let before = std::fs::read(&path).unwrap();
+        let repository = original.repositories[0].clone();
+        let edit = ResourceEdit::Repository {
+            id: repository.id.clone(),
+            expected: Some(Box::new(repository.clone())),
+            value: Some(Box::new(repository.clone())),
+        };
+        let failure = store.save_resource(edit).unwrap_err();
+        assert!(failure.contains(&repository.name));
+        assert!(failure.contains(if missing_agent {
+            "assign at least one saved Agent"
+        } else {
+            "explicit AI account and model"
+        }));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let mut disabled = repository.clone();
+        disabled.enabled = false;
+        let repaired = store
+            .save_resource(ResourceEdit::Repository {
+                id: repository.id.clone(),
+                expected: Some(Box::new(repository)),
+                value: Some(Box::new(disabled)),
+            })
+            .unwrap();
+        assert!(!repaired.repositories[0].enabled);
+        assert!(repaired
+            .repository_authorizations
+            .values()
+            .all(Option::is_none));
+        assert_eq!(store.load_settings().unwrap(), repaired);
+    }
+}
+
+#[test]
+fn removing_the_last_assignment_cannot_commit_enabled_configuration_or_revoke_prior_authority() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let original = settings();
+    store.save_settings(&original).unwrap();
+    let repository = original.repositories[0].clone();
+    let authorized = store
+        .save_resource(ResourceEdit::Repository {
+            id: repository.id.clone(),
+            expected: Some(Box::new(repository.clone())),
+            value: Some(Box::new(repository.clone())),
+        })
+        .unwrap();
+    let before = std::fs::read(fixture.path().join("config/settings.json")).unwrap();
+    let mut empty = repository.clone();
+    empty.assignments.clear();
+    assert!(store
+        .save_resource(ResourceEdit::Repository {
+            id: repository.id.clone(),
+            expected: Some(Box::new(repository)),
+            value: Some(Box::new(empty)),
+        })
+        .unwrap_err()
+        .contains("assign at least one saved Agent"));
+    assert_eq!(
+        std::fs::read(fixture.path().join("config/settings.json")).unwrap(),
+        before
+    );
+    assert_eq!(store.load_settings().unwrap(), authorized);
+}
+
+#[test]
+fn legacy_folder_and_cas_survive_upgrade_without_implicit_repository_authorization() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let mut original = settings();
+    original.root_folder = Some(
+        fixture
+            .path()
+            .join("retired local clones")
+            .to_str()
+            .unwrap()
+            .into(),
+    );
+    original.repositories[0].enabled = false;
+    store.save_settings(&original).unwrap();
+    let loaded = store.load_settings().unwrap();
+    let mut preferences = loaded.global_preferences();
+    preferences.capacity = 7;
+    let saved = store
+        .save_resource(ResourceEdit::Preferences {
+            expected: loaded.global_preferences(),
+            value: preferences,
+        })
+        .unwrap();
+    assert_eq!(saved.root_folder, original.root_folder);
+    assert!(!saved.repositories[0].enabled);
+    assert!(saved.repository_authorizations.is_empty());
+    let mut repo = saved.repositories[0].clone();
+    repo.enabled = true;
+    let edit = ResourceEdit::Repository {
+        id: REPO.into(),
+        expected: Some(Box::new(saved.repositories[0].clone())),
+        value: Some(Box::new(repo)),
+    };
+    let bytes = std::fs::read(fixture.path().join("config/settings.json")).unwrap();
+    std::fs::create_dir(fixture.path().join("config/settings.json.tmp")).unwrap();
+    assert!(store.save_resource(edit.clone()).is_err());
+    assert_eq!(
+        std::fs::read(fixture.path().join("config/settings.json")).unwrap(),
+        bytes
+    );
+    std::fs::remove_dir(fixture.path().join("config/settings.json.tmp")).unwrap();
+    let authorized = store.save_resource(edit.clone()).unwrap();
+    assert_eq!(authorized.repository_authorizations.len(), 1);
+    assert!(store
+        .save_resource(edit)
+        .unwrap_err()
+        .contains("Resource changed"));
+    assert_eq!(store.load_settings().unwrap(), authorized);
+    assert_eq!(authorized.root_folder, original.root_folder);
+}
+
+#[test]
 fn resource_saves_merge_unrelated_commits_and_reject_same_resource_conflicts() {
     let fixture = Fixture::new();
     let store = fixture.store();

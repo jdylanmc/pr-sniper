@@ -18,11 +18,10 @@ async function connection(page, name = "jdylanmc/pr-sniper") {
 async function boundConnection(page, name, actingAccount) {
   await section(page, "Integrations");
   await page
-    .getByRole("article", {
+    .getByRole("button", {
       name: `${name} as ${actingAccount}`,
       exact: true,
     })
-    .getByRole("button", { name: "Settings", exact: true })
     .click();
   const modal = page.getByRole("dialog", {
     name: `Settings for ${name}`,
@@ -69,6 +68,7 @@ async function saveBoundRepository(
   Object.assign(
     settings.repositories.find((repository) => repository.name === name),
     {
+      enabled: false,
       provider_account_id: accountId,
       provider_repository_id: repositoryId,
     },
@@ -293,10 +293,14 @@ test("retargeting a repository revalidates its stable binding", async ({
     exact: true,
   });
   await editor
-    .getByLabel("GitHub repository", { exact: true })
+    .getByLabel("Repository URL", { exact: true })
     .fill("other/target");
   await editor
-    .getByRole("button", { name: "Save repository", exact: true })
+    .getByRole("button", { name: "Add & configure", exact: true })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Settings for other/target", exact: true })
+    .getByRole("button", { name: "Close dialog", exact: true })
     .click();
   await saveChanges(page);
   expect((await store("snapshot")).settings.repositories).toEqual([
@@ -461,6 +465,7 @@ test("disconnecting one account clears only its repository evidence", async ({
   await closeDialog(page);
 
   const auth = page.locator(".github-auth-card");
+  await section(page, "Accounts");
   await auth.getByRole("button", { name: "Disconnect account-a" }).click();
   await expect(auth).not.toContainText("account-a (101)");
   await expect(auth).toContainText("account-b (202)");
@@ -601,15 +606,16 @@ test("missing repo scope disables every binding for one account only", async ({
   );
   await closeDialog(page);
 
-  await expect(page.getByRole("article", { name: "octo/one" })).toContainText(
-    "Needs attention",
-  );
-  await expect(page.getByRole("article", { name: "octo/two" })).toContainText(
-    "Needs attention",
-  );
-  await expect(page.getByRole("article", { name: "octo/three" })).toContainText(
-    "GitHub as second",
-  );
+  await expect(
+    page.getByRole("button", { name: "octo/one", exact: true }),
+  ).toContainText("Reconnect account");
+  await expect(
+    page.getByRole("button", { name: "octo/two", exact: true }),
+  ).toContainText("Reconnect account");
+  await expect(
+    page.getByRole("button", { name: "octo/three", exact: true }),
+  ).toContainText("GitHub / second");
+  await section(page, "Accounts");
   await expect(
     page
       .locator(".github-auth-card")

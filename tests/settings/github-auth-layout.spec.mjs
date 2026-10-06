@@ -108,10 +108,15 @@ for (const viewport of [
     const card = page.locator(".github-auth-card");
     await expect(card).toContainText("2 GitHub accounts");
     await expectContained(page);
+    await expect(
+      card.getByRole("button", { name: /Load repositories/ }),
+    ).toHaveCount(0);
     await card
-      .getByRole("button", { name: "Load repositories for dylanmccurry-msft" })
-      .click();
-    await expect(card).toContainText("long-organization-name/");
+      .getByRole("button", {
+        name: "Disconnect dylanmccurry-msft",
+        exact: true,
+      })
+      .focus();
     await expectContained(page);
   });
 

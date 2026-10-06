@@ -15,9 +15,7 @@ const tab = (page, name) =>
     .getByRole("button", { name, exact: true });
 const dialog = (page, name) => page.getByRole("dialog", { name, exact: true });
 const repoOpener = (page, name = "fixture/target") =>
-  page
-    .getByRole("article", { name, exact: true })
-    .getByRole("button", { name: "Settings", exact: true });
+  page.getByRole("button", { name, exact: true });
 const agentCard = (page, id = targetAgentId) =>
   page.locator(`[data-agent-id="${id}"]`);
 const doctrineCard = (page, title) =>
@@ -30,7 +28,7 @@ async function seed(page, store, assignments = false) {
   await store("save_repository", { repository: "fixture/target" });
   const settings = (await store("snapshot")).settings;
   settings.agents = [
-    fixtureAgent,
+    { ...fixtureAgent, ai_account: { provider: "copilot", account_id: "101" } },
     {
       ...fixtureAgent,
       id: targetAgentId,
@@ -44,6 +42,13 @@ async function seed(page, store, assignments = false) {
     { title: "Neighbor doctrine", body: "Keep this neighbor." },
     { title: "Target doctrine", body: "Keep the target principles." },
   ];
+  settings.repositories.forEach((repository, index) =>
+    Object.assign(repository, {
+      provider_account_id: "22",
+      provider_repository_id: String(99 + index),
+    }),
+  );
+  settings.repositories[1].enabled = assignments;
   if (assignments) {
     settings.repositories[1].assignments = settings.agents.map(
       (agent, index) => ({
@@ -76,6 +81,26 @@ async function seed(page, store, assignments = false) {
           ],
           flow: { state: "idle" },
         });
+      if (command === "github_auth_state")
+        return Promise.resolve({
+          accounts: [
+            {
+              provider: "github",
+              account_id: "22",
+              login: "fixture",
+              state: "connected",
+            },
+          ],
+          flow: { state: "idle" },
+        });
+      if (command === "resolve_provider_repository")
+        return Promise.resolve({
+          identity: { id: args.accountId },
+          repository: {
+            id: args.repository === "fixture/added" ? "200" : "100",
+            name: args.repository,
+          },
+        });
       if (command === "list_copilot_models")
         return Promise.resolve([
           { id: "fixture-model", name: "Fixture model" },
@@ -100,8 +125,8 @@ async function openSettings(page, mode) {
   await page.goto(mode === "panel" ? "/" : "/?view=settings");
   if (mode === "panel") {
     await tab(page, "Settings").click();
-    await section(page, "Repositories");
   }
+  await section(page, "Repositories");
   await expect(page.locator("#save-status")).toHaveText("All changes saved");
 }
 
@@ -148,15 +173,15 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       await openSettings(page, mode);
       await draftPreferences(page);
       await section(page, "Integrations");
-      const neighbor = page.getByRole("checkbox", {
-        name: "Monitor fixture/neighbor",
-        exact: true,
-      });
-      const neighborEnabled = await neighbor.isChecked();
-      if (activation === "keyboard") {
-        await neighbor.focus();
-        await page.keyboard.press("Space");
-      } else await activate(page, neighbor, activation);
+      const neighbor = repoOpener(page, "fixture/neighbor");
+      await activate(page, neighbor, activation);
+      const neighborEditor = dialog(page, "Settings for fixture/neighbor");
+      await neighborEditor
+        .getByLabel("Enable repository monitoring on Save")
+        .uncheck();
+      await neighborEditor
+        .getByRole("button", { name: "Close dialog", exact: true })
+        .click();
       await expect(neighbor).toBeFocused();
 
       for (const action of ["Cancel repository changes", "Save repository"]) {
@@ -177,7 +202,7 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
         );
         expect(saved.repositories[0]).toEqual(initial.repositories[0]);
         expect(saved.capacity).toBe(initial.capacity);
-        await expect(neighbor).toBeChecked({ checked: !neighborEnabled });
+        await expect(neighbor).toContainText("Draft");
       }
 
       const original = await repoOpener(page).elementHandle();
@@ -191,12 +216,15 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
         .click();
       modal = dialog(page, "Edit repository");
       await modal
-        .getByLabel("GitHub repository", { exact: true })
+        .getByLabel("Repository URL", { exact: true })
         .fill("fixture/renamed");
       await modal
-        .getByRole("button", { name: "Save repository", exact: true })
+        .getByRole("button", { name: "Add & configure", exact: true })
         .click();
       await expect(modal).toHaveCount(0);
+      await dialog(page, "Settings for fixture/renamed")
+        .getByRole("button", { name: "Close dialog", exact: true })
+        .click();
       await afterRedraw(page, original, repoOpener(page, "fixture/renamed"));
       expect((await store("snapshot")).settings.repositories[1]).toMatchObject({
         id: targetId,
@@ -205,20 +233,24 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       });
 
       const add = page.getByRole("button", {
-        name: "Add repository manually...",
+        name: "Add repository by URL",
         exact: true,
       });
       const originalAdd = await add.elementHandle();
       await activate(page, add, activation);
-      modal = dialog(page, "Add repository");
+      modal = dialog(page, "Add repository by URL");
       await modal
-        .getByLabel("GitHub repository", { exact: true })
+        .getByLabel("Repository URL", { exact: true })
         .fill("fixture/added");
+      await modal.getByLabel("Acting GitHub account").selectOption("22");
       await modal
-        .getByRole("button", { name: "Save repository", exact: true })
+        .getByRole("button", { name: "Add & configure", exact: true })
         .click();
       await expect(modal).toHaveCount(0);
-      await afterRedraw(page, originalAdd, add);
+      await dialog(page, "Settings for fixture/added")
+        .getByRole("button", { name: "Close dialog", exact: true })
+        .click();
+      await afterRedraw(page, originalAdd, repoOpener(page, "fixture/added"));
       expect((await store("snapshot")).settings.repositories[2]).toMatchObject({
         name: "fixture/added",
         enabled: false,
@@ -244,7 +276,7 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       ).toBe(false);
       expect(saved.repositories[0]).toEqual(initial.repositories[0]);
       expect(saved.capacity).toBe(initial.capacity);
-      await expect(neighbor).toBeChecked({ checked: !neighborEnabled });
+      await expect(neighbor).toContainText("Draft");
       await section(page, "Preferences");
       await expect(page.locator("#global-capacity")).toHaveValue("9");
     });
@@ -542,6 +574,16 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       await parent
         .getByRole("button", { name: "Save repository", exact: true })
         .click();
+      await expect(parent.locator("[data-resource-error]")).toContainText(
+        "assign at least one saved Agent",
+      );
+      expect(
+        (await store("snapshot")).settings.repositories[1].assignments,
+      ).toEqual(saved.repositories[1].assignments);
+      await parent.getByLabel("Enable repository monitoring on Save").uncheck();
+      await parent
+        .getByRole("button", { name: "Save repository", exact: true })
+        .click();
       await expect(parent).toHaveCount(0);
       await afterRedraw(page, nextOuter, outerOpener);
       const cleared = (await store("snapshot")).settings.repositories[1];
@@ -649,49 +691,6 @@ for (const focusTarget of ["Running", "Settings"]) {
 }
 
 for (const mode of ["panel", "legacy"]) {
-  test(`${mode} cancelling a newly discovered repository returns to that unconfigured row without saving it`, async ({
-    page,
-    store,
-    dataRoot,
-  }) => {
-    const initial = await seed(page, store);
-    const root = join(dataRoot, "repositories");
-    await mkdir(join(root, "discovered/.git"), { recursive: true });
-    await writeFile(
-      join(root, "discovered/.git/config"),
-      '[remote "origin"]\nurl = git@github.com:fixture/discovered.git\n',
-    );
-    await page.exposeFunction("__discoverFocusFixture", () =>
-      store("discover_repositories", { root }),
-    );
-    await page.addInitScript(() => {
-      const original = window.__TAURI_INTERNALS__.invoke;
-      window.__TAURI_INTERNALS__.invoke = (command, args) =>
-        command === "choose_repository_folder"
-          ? window.__discoverFocusFixture()
-          : original(command, args);
-    });
-    await openSettings(page, mode);
-    await page
-      .getByRole("button", { name: "Choose folder...", exact: true })
-      .click();
-    const opener = repoOpener(page, "fixture/discovered");
-    const original = await opener.elementHandle();
-    await activate(page, opener, "nonfocusing");
-    await dialog(page, "Settings for fixture/discovered")
-      .getByRole("button", { name: "Cancel repository changes", exact: true })
-      .click();
-    await afterRedraw(page, original, opener);
-    expect((await store("snapshot")).settings).toEqual(initial);
-    await expect(page.locator("#save-status")).toHaveText("Unsaved changes");
-    await expect(
-      page.getByRole("checkbox", {
-        name: "Monitor fixture/discovered",
-        exact: true,
-      }),
-    ).not.toBeChecked();
-  });
-
   for (const outcome of ["verified", "reconnect", "focus moved"]) {
     test(`${mode} new Agent completion waits for current account verification with ${outcome} and never steals later focus`, async ({
       page,

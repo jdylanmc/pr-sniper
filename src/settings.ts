@@ -14,9 +14,6 @@ import { doctrineTitles } from "./policy";
 import {
   type Settings,
   type ResourceEdit,
-  type MonitoringActivationStatus,
-  type MonitoringActivationPreview,
-  type PendingActivation,
   acceptResource,
   globalPreferences,
   savedResources,
@@ -32,22 +29,17 @@ interface ConfiguredRepository extends Repository {
   watched_authors?: WatchedIdentity[];
   assignments?: Assignment[];
 }
+interface ResolvedRepository {
+  identity: { id: string };
+  repository: { id: string; name: string };
+  account_generation: number;
+}
 interface Snapshot {
   settings: Settings | null;
   settings_persisted: boolean;
   isolated: boolean;
   login_registration: "absent" | "registered" | "invalid" | null;
   error: string | null;
-}
-interface Discovered {
-  path: string;
-  name: string | null;
-  unavailable: string | null;
-}
-interface Discovery {
-  root: string;
-  repositories: Discovered[];
-  warnings: string[];
 }
 type Section =
   | "home"
@@ -60,7 +52,6 @@ type Section =
   | "capacity"
   | "doctrines"
   | "agents"
-  | "integrations"
   | "preferences";
 
 export type SetupTarget =
@@ -72,7 +63,6 @@ export type SetupTarget =
   | "preferences";
 export interface GuidedReturn {
   back: () => void;
-  stage: (selection: PendingActivation) => void;
 }
 
 // Direct integrations, distinct from the models available through Copilot.
@@ -97,10 +87,6 @@ const sections: Record<Section, [string, string]> = {
   capacity: [
     "Concurrent reviews",
     "A limit on running work, not saved agents.",
-  ],
-  integrations: [
-    "Integrations",
-    "Sign in to an AI subscription, then connect the repositories it should watch.",
   ],
   doctrines: [
     "Doctrines",
@@ -169,7 +155,17 @@ const reason = (error: unknown) => {
     network: "Cannot reach GitHub. Check your network and try again.",
     timeout: "GitHub lookup timed out. Try again.",
     invalid_response:
-      "Enter a valid GitHub login and try again. No identity was added.",
+      "GitHub returned invalid data. Check the account and repository, then retry.",
+    incomplete_read:
+      "GitHub did not return a complete repository list. No partial results were used; retry.",
+    missing_scope:
+      "Reconnect the GitHub account with the required repository access, then retry.",
+    organization_policy_denied:
+      "GitHub organization policy or single sign-on denied access. Authorize this app for that organization, then retry.",
+    repository_changed:
+      "The repository identity changed. Refresh the owner or check the URL, then retry.",
+    authentication_changed:
+      "The GitHub connection changed during this request. Retry with the current connected account.",
     provider_failure:
       "GitHub lookup failed. Check provider health and try again.",
   };
@@ -185,14 +181,16 @@ export async function mountSettings(
     openGenie?: (opener: HTMLElement) => void;
   } = {},
 ) {
-  const accountSection = options.embedded ? "Accounts" : "Integrations";
+  const accountSection = "Accounts";
   if (options.embedded) app.className = "settings-window settings-page";
   else {
     document.body.classList.add("settings-page");
     app.className = "settings-window";
   }
   const legacySections = Object.entries(sections).filter(([key]) =>
-    ["integrations", "agents", "doctrines", "preferences"].includes(key),
+    ["accounts", "repositories", "agents", "doctrines", "preferences"].includes(
+      key,
+    ),
   );
   app.innerHTML = `${
     options.embedded
@@ -205,10 +203,10 @@ export async function mountSettings(
       )
       .join("")}</nav>
     <label class="mobile-section">Section<select aria-label="Settings section">${legacySections
-      .map(([key, [title]]) => option(key, title, "integrations"))
+      .map(([key, [title]]) => option(key, title, "accounts"))
       .join("")}</select></label></aside>`
   }
-    <div class="settings-main"><div class="settings-genie-entry"><button type="button" data-open-genie>Set up with Genie</button><button type="button" data-return-genie hidden>Back to Genie</button><p data-genie-save-note hidden>Each save is applied immediately. Close hides this editor; Back and Cancel follow the unsaved-field guidance below. Unconfirmed scope choices need a final check.</p></div><header class="settings-heading"><h1 tabindex="-1">Integrations</h1><p>Sign in to an AI subscription, then connect the repositories it should watch.</p></header>
+    <div class="settings-main"><div class="settings-genie-entry"><button type="button" data-open-genie>Set up with Genie</button><button type="button" data-return-genie hidden>Back to Genie</button><p data-genie-save-note hidden>Each save is applied immediately. Close hides this editor; Back and Cancel follow the unsaved-field guidance below. Repository Save is authorization; no further scope confirmation is needed.</p></div><header class="settings-heading"><h1 tabindex="-1">Settings</h1><p>Sign in to an AI subscription, then connect the repositories it should watch.</p></header>
     <p id="error" role="alert" hidden></p><section id="content"></section>
     <footer class="settings-savebar"><span role="status" id="save-status">Loading settings...</span><button id="reload-settings" hidden>Discard draft and reload</button><button id="reset-settings" disabled>Reset changes</button><button class="primary" id="save-settings" disabled>Save preferences</button></footer></div>`;
   const content = app.querySelector<HTMLElement>("#content")!;
@@ -234,7 +232,7 @@ export async function mountSettings(
   let snapshot: Snapshot;
   let saved: Settings;
   let draft: Settings;
-  let section: Section = options.embedded ? "home" : "integrations";
+  let section: Section = options.embedded ? "home" : "accounts";
   let homeScroll = 0;
   let homeOpener: Section | undefined;
   const accountScroll = new Map<Section, number>();
@@ -246,14 +244,20 @@ export async function mountSettings(
     github: "git-repository",
   };
   let accountRead = 0;
-  let discovery: Discovery | null = null;
-  let query = "";
   let busy = false;
   let startupPending = false;
   let startupError = "";
   let conflict = false;
   let revision = 0;
+  let routeGeneration = 0;
+  app
+    .closest("[data-panel-view]")
+    ?.addEventListener("pr-sniper:section-active", (event) => {
+      if (!(event as CustomEvent<boolean>).detail) routeGeneration++;
+    });
   let githubAccounts: GithubAccount[] = [];
+  let repositoryAccountsState: "loading" | "ready" | "unavailable" = "loading";
+  const pendingSetup = new Set<string>();
   let copilotAccounts: CopilotAccount[] = [];
   let updateAgentAccounts: (() => void) | undefined;
   let updateRepositoryAccounts: (() => void) | undefined;
@@ -355,7 +359,11 @@ export async function mountSettings(
     reload.disabled = busy;
   }
 
-  async function commitResource(edit: ResourceEdit, modal?: HTMLDialogElement) {
+  async function commitResource(
+    edit: ResourceEdit,
+    modal?: HTMLDialogElement,
+    accountGeneration?: number,
+  ) {
     if (busy) throw "Another resource save is in progress. Try again.";
     busy = true;
     changed();
@@ -371,7 +379,7 @@ export async function mountSettings(
     ].map((control) => ({ control, disabled: control.disabled }));
     controls.forEach(({ control }) => (control.disabled = true));
     try {
-      const result = await saveResource(edit);
+      const result = await saveResource(edit, accountGeneration);
       for (const settings of [saved, draft])
         acceptResource(settings, clone(result.settings), edit);
       if (result.warning) showError(result.warning);
@@ -467,10 +475,11 @@ export async function mountSettings(
     settingsBack.setAttribute("aria-label", `Back to ${sections[parent][0]}`);
     settingsBack.title = `Back to ${sections[parent][0]}; retain unsaved changes`;
     app.querySelector<HTMLElement>(".settings-savebar")!.hidden =
-      !!options.embedded && (section === "home" || accountOverview);
+      section === "repositories" ||
+      (!!options.embedded && (section === "home" || accountOverview));
     settingsHeading.hidden = section === "home";
     app.dataset.resourceLibrary =
-      section === "integrations" || section === "repositories"
+      section === "repositories"
         ? "repositories"
         : section === "agents" || section === "doctrines"
           ? section
@@ -494,10 +503,12 @@ export async function mountSettings(
     if (select) select.value = section;
     content.replaceChildren();
     if (section === "home") renderHome();
-    if (accountOverview) renderAccountOverview();
+    if (accountOverview) {
+      if (!options.embedded && section === "accounts") renderAccounts();
+      else renderAccountOverview();
+    }
     if (section === "copilot" || section === "github") renderAccounts();
-    if (section === "integrations" || section === "repositories")
-      renderIntegrations();
+    if (section === "repositories") renderRepositories();
     if (section === "doctrines") renderDoctrines();
     if (section === "agents")
       renderAgents(() => {
@@ -906,7 +917,7 @@ export async function mountSettings(
     content.innerHTML = `<div class="section-actions resource-toolbar"><p>Unlimited saved configurations. AI capacity is set separately.</p><button class="primary" id="new-agent" disabled>New agent</button></div><div class="resource-account-notice"><p class="settings-hint" data-copilot-status>Reading Copilot accounts...</p><button id="manage-copilot">Manage Copilot accounts</button></div><div class="agent-list resource-library"></div>`;
     const list = content.querySelector(".agent-list")!;
     if (!agents().length)
-      list.innerHTML = `<div class="settings-empty"><strong>No agents yet</strong><p>Create one to start assigning it to repositories in ${options.embedded ? "Repositories" : "Integrations"}.</p></div>`;
+      list.innerHTML = `<div class="settings-empty"><strong>No agents yet</strong><p>Create one to start assigning it to repositories in Repositories.</p></div>`;
     for (const agent of agents()) {
       const account = copilotAccounts.find(
         (a) => a.account_id === agent.ai_account?.account_id,
@@ -958,7 +969,7 @@ export async function mountSettings(
       editAgent(event.currentTarget as HTMLButtonElement);
     content.querySelector<HTMLButtonElement>("#manage-copilot")!.onclick =
       () => {
-        navigate(options.embedded ? "accounts" : "integrations");
+        navigate(options.embedded ? "copilot" : "accounts");
         if (options.embedded) {
           homeOpener = "accounts";
           settingsHeading.querySelector<HTMLElement>("h1")!.focus();
@@ -1321,29 +1332,7 @@ export async function mountSettings(
     };
   }
 
-  // ------------------------------------------------------------- Integrations
-
-  async function scan(choose: boolean) {
-    clearError();
-    busy = true;
-    changed();
-    try {
-      const result = choose
-        ? await invoke<Discovery | null>("choose_repository_folder")
-        : await invoke<Discovery>("discover_repositories", {
-            root: draft.root_folder,
-          });
-      if (result) {
-        discovery = result;
-        draft.root_folder = result.root;
-      }
-    } catch (cause) {
-      showError(reason(cause));
-    } finally {
-      busy = false;
-      render();
-    }
-  }
+  // --------------------------------------------------- Accounts / repositories
 
   function renderAccounts() {
     if (accountContent) {
@@ -1371,45 +1360,9 @@ export async function mountSettings(
     );
     renderGithubAuth(
       accountContent.querySelector(".github-auth")!,
-      (account, accessible) => {
-        let repository = repositories().find(
-          (candidate) =>
-            candidate.provider === "github" &&
-            candidate.provider_account_id === account.account_id &&
-            candidate.provider_repository_id === accessible.id,
-        );
-        repository ??= repositories().find(
-          (candidate) =>
-            candidate.provider === "github" &&
-            candidate.name === accessible.name &&
-            !candidate.provider_account_id &&
-            !candidate.provider_repository_id,
-        );
-        if (repository) {
-          repository.name = accessible.name;
-          repository.enabled = true;
-          repository.provider_account_id = account.account_id;
-          repository.provider_repository_id = accessible.id;
-        } else {
-          repository = {
-            id: newIdentity(),
-            name: accessible.name,
-            enabled: true,
-            provider: "github",
-            provider_account_id: account.account_id,
-            provider_repository_id: accessible.id,
-          };
-          (draft.repositories ??= []).push(repository);
-        }
-        changed();
-        if (options.embedded) {
-          homeOpener = "repositories";
-          navigate("repositories");
-          settingsHeading.querySelector<HTMLElement>("h1")!.focus();
-        } else refreshRepositoryRows?.();
-      },
       (accounts) => {
-        githubAccounts = accounts;
+        repositoryAccountsState = accounts ? "ready" : "unavailable";
+        githubAccounts = accounts ?? [];
         updateRepositoryAccounts?.();
         refreshRepositoryRows?.();
       },
@@ -1425,343 +1378,437 @@ export async function mountSettings(
       });
   }
 
-  function renderIntegrations() {
+  function renderRepositories() {
     content.innerHTML = `<section class="repository-library" aria-label="Repositories">
-      <div class="section-actions resource-toolbar"><div><h2>Repositories</h2><p>Acting accounts and review assignments.</p></div><button class="primary" id="add-repository" aria-label="Add repository manually...">Add repository</button></div>
-      <div class="folder-card"><div><strong>${escape(draft.root_folder ?? "Local discovery")}</strong><p>${discovery ? `${discovery.repositories.length} local repositories discovered` : "Scan only a folder you choose."}</p></div><button id="choose-folder">Choose folder...</button></div>
-      <div class="repository-toolbar"><input id="repo-search" type="search" aria-label="Find a repository" placeholder="Find a repository..." value="${escape(query)}" /><button id="select-visible">Select visible</button></div>
-      <div class="list-label"><span>Repository</span><span id="selected-count"></span></div><div class="repository-list"></div>
-      <p class="settings-hint">PR Sniper polls scope-confirmed configured repositories while the ${trayAdjective} app is active. Detection does not run reviews or publish comments.</p>
-      ${draft.root_folder ? '<div class="settings-actions"><button id="rescan">Scan chosen folder</button></div>' : ""}
-      ${discovery?.warnings.map((warning) => `<p class="settings-notice">${escape(warning)}</p>`).join("") ?? ""}
-      <p class="settings-hint">For provider selection or account access, use ${options.embedded ? "Accounts in Settings" : "GitHub accounts below"}. Assign an Agent and confirm monitoring scope to authorize ongoing read-only reviews.</p></section>`;
+      <div class="section-actions"><h2>Your repositories</h2><button class="primary" id="add-repository" aria-label="Add repository by URL">+ URL</button></div>
+      <div class="repository-list native-repository-list"></div>
+      ${conflict ? '<p role="alert">Saved settings changed in another window. Your unsaved draft is retained.</p><button data-repository-reload>Discard draft and reload</button>' : ""}
+      <h2>Browse from an account</h2><div data-repository-accounts class="native-repository-list"></div>
+      <p class="settings-hint">Choose a personal or organization owner. Saving repository configuration authorizes current and future matching pull requests.</p>
+      <p class="settings-hint">Azure DevOps organization browsing is coming soon.</p></section>`;
+    const rows = () => {
+      const list = content.querySelector<HTMLElement>(".repository-list");
+      const accounts = content.querySelector<HTMLElement>(
+        "[data-repository-accounts]",
+      );
+      if (!list || !accounts) return;
+      const restore = rememberControl(content);
+      list.innerHTML =
+        repositories()
+          .map((repository) => {
+            const account = githubAccounts.find(
+              (a) => a.account_id === repository.provider_account_id,
+            );
+            const state =
+              !repository.provider_account_id || account?.state !== "connected"
+                ? "Reconnect account"
+                : !repository.assignments?.length
+                  ? "Needs setup"
+                  : repository.enabled
+                    ? "Enabled"
+                    : "Paused";
+            const label =
+              repositories().filter((r) => r.name === repository.name).length >
+              1
+                ? `${repository.name} as ${account?.login ?? repository.provider_account_id ?? repository.id}`
+                : repository.name;
+            return `<button type="button" class="native-repository-row" aria-label="${escape(label)}" data-dirty="${!sameResource(
+              repository,
+              saved.repositories?.find((r) => r.id === repository.id),
+            )}" data-repository="${escape(repository.id)}" data-focus-key="repository:${escape(repository.id)}:settings">
+          <span class="settings-row-copy"><strong>${escape(repository.name)}</strong><small>${repository.provider === "github" ? "GitHub" : "Azure DevOps"} / ${escape(account?.login ?? repository.provider_account_id ?? "Account required")}</small></span>
+          <span class="settings-row-value">${state}${
+            sameResource(
+              repository,
+              saved.repositories?.find((r) => r.id === repository.id),
+            )
+              ? ""
+              : " / Draft"
+          }</span><span aria-hidden="true">›</span></button>`;
+          })
+          .join("") ||
+        '<p class="settings-empty">No repositories yet. Browse an account below or add a GitHub URL.</p>';
+      accounts.innerHTML =
+        repositoryAccountsState === "unavailable"
+          ? '<p role="alert">GitHub accounts are unavailable. No connection is assumed.</p><button data-retry-accounts>Retry reading accounts</button>'
+          : repositoryAccountsState === "loading"
+            ? '<p role="status">Reading GitHub accounts...</p>'
+            : githubAccounts
+                .map(
+                  (account) =>
+                    `<div class="native-repository-row"><span class="settings-row-copy"><strong>${escape(account.login)}</strong><small>GitHub / ${escape(account.account_id)}${account.state === "connected" ? "" : " / Reconnect in Accounts"}</small></span><button type="button" data-browse-account="${escape(account.account_id)}" aria-label="Browse repositories as ${escape(account.login)}" ${account.state === "connected" ? "" : "disabled"}><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/></svg></button></div>`,
+                )
+                .join("") ||
+              '<p class="settings-empty">Connect a GitHub account in Accounts to browse repositories.</p>';
+      accounts
+        .querySelector<HTMLButtonElement>("[data-retry-accounts]")
+        ?.addEventListener("click", () =>
+          window.dispatchEvent(
+            new Event("pr-sniper:refresh-provider-accounts"),
+          ),
+        );
+      list
+        .querySelectorAll<HTMLButtonElement>("[data-repository]")
+        .forEach((button) => {
+          button.onclick = () =>
+            repositoryDialog(
+              repositories().find((r) => r.id === button.dataset.repository)!,
+              button,
+            );
+        });
+      accounts
+        .querySelectorAll<HTMLButtonElement>("[data-browse-account]")
+        .forEach((button) => {
+          button.onclick = () =>
+            browseRepositories(
+              githubAccounts.find(
+                (a) => a.account_id === button.dataset.browseAccount,
+              )!,
+              button,
+            );
+        });
+      restore();
+    };
     refreshRepositoryRows = rows;
     renderAccounts();
-    if (options.embedded && accountContent)
-      accountParking.append(accountContent);
-    content.querySelector<HTMLButtonElement>("#choose-folder")!.onclick =
-      () => {
-        if (!busy) void scan(true);
-      };
-    content
-      .querySelector<HTMLButtonElement>("#rescan")
-      ?.addEventListener("click", () => {
-        if (!busy) void scan(false);
-      });
-    content.querySelector<HTMLInputElement>("#repo-search")!.oninput = (
-      event,
-    ) => {
-      query = (event.target as HTMLInputElement).value;
-      rows();
-    };
+    if (accountContent) accountParking.append(accountContent);
     content.querySelector<HTMLButtonElement>("#add-repository")!.onclick = (
       event,
-    ) => editRepository(event.currentTarget as HTMLButtonElement);
-    content.querySelector<HTMLButtonElement>("#select-visible")!.onclick =
-      () => {
-        for (const item of visible()) if (item.name) select(item, true);
-        rows();
-      };
-    function all() {
-      type RepositoryRow = Discovered & {
-        paths: string[];
-        repositoryId?: string;
-      };
-      const list: RepositoryRow[] = [];
-      const identities = new Map<string, Discovered & { paths: string[] }>();
-      for (const item of discovery?.repositories ?? []) {
-        const existing = item.name ? identities.get(item.name) : undefined;
-        if (existing) existing.paths.push(item.path);
-        else {
-          const row = { ...item, paths: [item.path] };
-          list.push(row);
-          if (item.name) identities.set(item.name, row);
-        }
-      }
-      const configuredNames = new Set(repositories().map((repo) => repo.name));
-      const unconfigured = list.filter(
-        (item) => !item.name || !configuredNames.has(item.name),
-      );
-      for (const repo of repositories()) {
-        const discovered = identities.get(repo.name);
-        unconfigured.push({
-          name: repo.name,
-          path: discovered?.path ?? "",
-          paths: discovered?.paths ?? [],
-          unavailable: discovered?.unavailable ?? null,
-          repositoryId: repo.id,
-        });
-      }
-      return unconfigured;
-    }
-    function visible() {
-      return all().filter((item) =>
-        `${item.name ?? ""} ${item.paths.join(" ")}`
-          .toLowerCase()
-          .includes(query.toLowerCase()),
-      );
-    }
-    function select(
-      item: Discovered & { repositoryId?: string },
-      enabled: boolean,
-    ) {
-      let existing = item.repositoryId
-        ? repositories().find((r) => r.id === item.repositoryId)
-        : repositories().find(
-            (r) => r.name === item.name && !r.provider_account_id,
-          );
-      if (existing) existing.enabled = enabled;
-      else if (enabled && item.name) {
-        existing = {
-          id: newIdentity(),
-          name: item.name,
-          enabled,
-          provider: "github",
-        };
-        (draft.repositories ??= []).push(existing);
-      }
-      changed();
-      return existing;
-    }
-    function rows() {
-      const list = content.querySelector<HTMLElement>(".repository-list")!;
-      const restoreFocus = rememberControl(list);
-      list.replaceChildren();
-      content.querySelector("#selected-count")!.textContent =
-        `${repositories().filter((r) => r.enabled).length} selected`;
-      if (!visible().length) {
-        list.innerHTML = `<div class="settings-empty"><strong>${query ? "No matching repositories" : "No repositories yet"}</strong><p>${query ? "Try a repository or organization name." : "Choose a local folder or add a GitHub repository manually."}</p></div>`;
-      }
-      for (const item of visible()) {
-        const repository = item.repositoryId
-          ? repositories().find((r) => r.id === item.repositoryId)
-          : repositories().find(
-              (r) => r.name === item.name && !r.provider_account_id,
-            );
-        const actingAccount = githubAccounts.find(
-          (account) => account.account_id === repository?.provider_account_id,
-        );
-        const providerLabel =
-          repository?.provider === "azure_devops"
-            ? "Azure DevOps"
-            : repository?.provider_account_id
-              ? actingAccount?.state === "connected"
-                ? `GitHub as ${actingAccount.login}`
-                : `GitHub as ${actingAccount?.login ?? repository.provider_account_id} - Needs attention`
-              : "GitHub - account required";
-        const row = document.createElement("article");
-        row.className = "repository-row";
-        const markDraft = (current = repository) => {
-          row.dataset.dirty = String(
-            !!current &&
-              !sameResource(
-                current,
-                saved.repositories?.find((r) => r.id === current.id),
-              ),
-          );
-          for (const [selector, action] of [
-            ["input", "monitor"],
-            [".configure", "settings"],
-          ]) {
-            const control = row.querySelector<HTMLElement>(selector);
-            if (control)
-              control.dataset.focusKey = `repository:${current?.id ?? item.name ?? item.path}:${action}`;
-          }
-        };
-        const localName = item.path.split(isWindows ? /[\\/]/ : "/").pop();
-        const duplicateBinding =
-          !!repository &&
-          repositories().filter((candidate) => candidate.name === item.name)
-            .length > 1;
-        row.setAttribute(
-          "aria-label",
-          duplicateBinding
-            ? `${item.name} as ${actingAccount?.login ?? repository.provider_account_id ?? repository.id}`
-            : (item.name ?? localName ?? "Unavailable repository"),
-        );
-        const assignmentCount = repository?.assignments?.length ?? 0;
-        row.innerHTML = `<input type="checkbox" aria-label="Monitor ${escape(item.name ?? localName ?? "repository")}" ${repository?.enabled ? "checked" : ""} ${!item.name ? "disabled" : ""} />
-          <span class="repo-symbol">${icon("integrations")}</span><div class="repository-info"><strong>${escape(item.name?.split("/")[1] ?? localName ?? "")}</strong><p>${escape(item.name ?? item.unavailable ?? "Unavailable")}</p><p>${escape(providerLabel)}</p>${item.name ? `<p class="repository-summary">${repository?.enabled ? "Enabled; scope and access required" : "Monitoring disabled"} / ${assignmentCount ? `${assignmentCount} agent${assignmentCount === 1 ? "" : "s"} assigned` : "No agents assigned"}</p>` : ""}${item.paths.length ? `<details class="clone-paths"><summary>${item.paths.length} local ${item.paths.length === 1 ? "clone" : "clones"}</summary><ul>${item.paths.map((path) => `<li>${escape(path)}</li>`).join("")}</ul></details>` : ""}</div>
-          ${item.name ? '<button class="configure">Settings</button>' : ""}`;
-        markDraft();
-        row.querySelector<HTMLInputElement>("input")!.onchange = (event) => {
-          const checkbox = event.currentTarget as HTMLInputElement;
-          checkbox.focus({ preventScroll: true });
-          markDraft(select(item, checkbox.checked));
-          row.querySelector(".repository-summary")!.textContent =
-            `${checkbox.checked ? "Enabled; scope and access required" : "Monitoring disabled"} / ${assignmentCount ? `${assignmentCount} agent${assignmentCount === 1 ? "" : "s"} assigned` : "No agents assigned"}`;
-          content.querySelector("#selected-count")!.textContent =
-            `${repositories().filter((r) => r.enabled).length} selected`;
-        };
-        row
-          .querySelector<HTMLButtonElement>(".configure")
-          ?.addEventListener("click", (event) => {
-            let repo = item.repositoryId
-              ? repositories().find((r) => r.id === item.repositoryId)
-              : repositories().find(
-                  (r) => r.name === item.name && !r.provider_account_id,
-                );
-            if (!repo) {
-              repo = {
-                id: newIdentity(),
-                name: item.name!,
-                enabled: false,
-                provider: "github",
-              };
-              (draft.repositories ??= []).push(repo);
-              changed();
-            }
-            markDraft(repo);
-            repositoryDialog(repo, event.currentTarget as HTMLButtonElement);
-          });
-        list.append(row);
-      }
-      restoreFocus();
-    }
+    ) => editRepository(event.currentTarget as HTMLElement);
+    content
+      .querySelector<HTMLButtonElement>("[data-repository-reload]")
+      ?.addEventListener("click", () => reload.click());
     rows();
+  }
+
+  async function addAndConfigure(
+    accountId: string,
+    resolved: ResolvedRepository,
+    modal: HTMLDialogElement,
+    opener: HTMLElement,
+    previous?: ConfiguredRepository,
+  ) {
+    const requestedRoute = routeGeneration;
+    if (
+      resolved.identity.id !== accountId ||
+      !githubAccounts.some(
+        (a) => a.account_id === accountId && a.state === "connected",
+      )
+    )
+      throw "The acting account changed or disconnected. Reconnect and try again.";
+    let repository = repositories().find(
+      (r) =>
+        r.provider === "github" &&
+        r.provider_account_id === accountId &&
+        r.provider_repository_id === resolved.repository.id,
+    );
+    if (previous && repository && previous.id !== repository.id)
+      throw `${resolved.repository.name} is already configured on another row under this account. Choose a different repository or cancel this edit.`;
+    if (
+      !repository ||
+      (previous?.id === repository.id &&
+        previous.name !== resolved.repository.name)
+    ) {
+      const value: ConfiguredRepository = {
+        ...(previous ?? {}),
+        id: previous?.id ?? newIdentity(),
+        name: resolved.repository.name,
+        enabled: previous?.enabled ?? false,
+        provider: "github",
+        provider_account_id: accountId,
+        provider_repository_id: resolved.repository.id,
+      };
+      await commitResource(
+        repositoryEdit(value),
+        modal,
+        resolved.account_generation,
+      );
+      if (!previous) pendingSetup.add(value.id);
+      repository = repositories().find((r) => r.id === value.id)!;
+    }
+    modal.close();
+    render();
+    if (app.closest("[hidden]") || requestedRoute !== routeGeneration) return;
+    repositoryDialog(
+      repository,
+      content.querySelector<HTMLElement>(
+        `[data-repository="${CSS.escape(repository.id)}"]`,
+      ) ?? opener,
+    );
   }
 
   function editRepository(
     opener: HTMLElement,
     repository?: ConfiguredRepository,
   ) {
-    const selectedAccount = repository?.provider_account_id ?? "";
     const modal = dialog(
-      repository ? "Edit repository" : "Add repository",
-      `<form><label>GitHub repository<input name="repository" required value="${escape(repository?.name ?? "")}" placeholder="owner/repository or https://github.com/owner/repository" /></label><label>Acting GitHub account<select name="account">${option(selectedAccount, selectedAccount || "Choose a GitHub account", selectedAccount)}</select></label><p class="settings-hint">PR Sniper validates this repository with the selected account before binding its stable identity. No account is chosen for you; reconnect unavailable accounts in ${accountSection}. Without any account, a saved repository remains explicitly unbound. Save persists this repository only. Monitoring scope still requires separate confirmation.</p><p role="alert" hidden></p><div class="resource-actions"><button type="button" data-cancel-resource>Cancel</button><button type="submit" class="primary">Save repository</button></div></form>`,
+      repository ? "Edit repository" : "Add repository by URL",
+      `<form><label>Repository URL<input name="repository" required value="${escape(repository?.name ?? "")}" placeholder="https://github.com/owner/repository" autocomplete="off" /></label>
+      <label>Acting GitHub account<select name="account" required></select></label>
+      <p class="settings-hint">GitHub URL or owner/repository. Choose the acting account explicitly. Adding opens configuration without starting monitoring.</p>
+      <p role="alert" hidden></p><div class="resource-actions"><button type="button" data-cancel-resource>Cancel</button><button type="submit" class="primary">Add &amp; configure</button></div></form>`,
       opener,
     );
     resourceEditor(modal);
     modal.classList.add("repository-editor");
-    const accountControl =
-      modal.querySelector<HTMLSelectElement>("[name=account]")!;
-    accountControl.setAttribute("aria-label", "Acting GitHub account");
-    updateRepositoryAccounts = () => {
+    const account = modal.querySelector<HTMLSelectElement>("[name=account]")!;
+    account.setAttribute("aria-label", "Acting GitHub account");
+    let initialAccount = true;
+    const update = () => {
       if (!modal.isConnected) return;
-      const selected = accountControl.value;
-      accountControl.innerHTML =
+      const selected = initialAccount
+        ? (repository?.provider_account_id ?? "")
+        : account.value;
+      initialAccount = false;
+      account.innerHTML =
         option("", "Choose a GitHub account", selected) +
         githubAccounts
           .map(
-            (candidate) =>
-              `<option value="${escape(candidate.account_id)}" ${candidate.account_id === selected ? "selected" : ""} ${candidate.state === "connected" ? "" : "disabled"}>${escape(candidate.login)} (${escape(candidate.account_id)})${candidate.state === "connected" ? "" : " - reconnect required"}</option>`,
+            (a) =>
+              `<option value="${escape(a.account_id)}" ${selected === a.account_id ? "selected" : ""} ${a.state === "connected" ? "" : "disabled"}>${escape(a.login)} (${escape(a.account_id)})${a.state === "connected" ? "" : " / Reconnect required"}</option>`,
           )
           .join("") +
-        (selected &&
-        !githubAccounts.some((candidate) => candidate.account_id === selected)
+        (selected && !githubAccounts.some((a) => a.account_id === selected)
           ? `<option selected disabled value="${escape(selected)}">${escape(selected)} - reconnect required</option>`
           : "");
-      accountControl.required = githubAccounts.length > 0 || !!selectedAccount;
     };
-    updateRepositoryAccounts();
+    updateRepositoryAccounts = update;
+    update();
     let submitting = false;
-    const originDraft = draft;
     modal.querySelector("form")!.onsubmit = async (event) => {
       event.preventDefault();
       if (submitting) return;
+      const accountId = account.value;
+      const requestedRoute = routeGeneration;
+      const input = modal.querySelector<HTMLInputElement>("[name=repository]")!;
+      const controls = [
+        ...modal.querySelectorAll<
+          HTMLInputElement | HTMLSelectElement | HTMLButtonElement
+        >('input,select,button[type="submit"]'),
+      ];
+      const alert = modal.querySelector<HTMLElement>("[role=alert]")!;
       submitting = true;
-      const requestRevision = revision;
-      const active = () =>
-        modal.open && modal.isConnected && draft === originDraft;
-      const current = () =>
-        active() &&
-        revision === requestRevision &&
-        (!repository || repositories().includes(repository));
-      const input = modal.querySelector<HTMLInputElement>("input")!;
-      const button = modal.querySelector<HTMLButtonElement>(
-        "button[type=submit]",
-      )!;
-      const account = modal.querySelector<HTMLSelectElement>("[name=account]");
-      const accountId = account?.value || undefined;
-      const requestedName = input.value;
-      input.disabled = true;
-      if (account) account.disabled = true;
-      button.disabled = true;
+      controls.forEach((c) => (c.disabled = true));
       try {
         if (
-          (accountId || account?.required) &&
           !githubAccounts.some(
-            (candidate) =>
-              candidate.account_id === accountId &&
-              candidate.state === "connected",
+            (a) => a.account_id === accountId && a.state === "connected",
           )
         )
-          throw `Choose a connected GitHub account. Reconnect unavailable accounts in ${accountSection}.`;
-        const name = await invoke<string>("canonical_repository_name", {
-          repository: requestedName,
-        });
-        const resolved = accountId
-          ? await invoke<{
-              identity: { id: string; login: string };
-              repository: { id: string; name: string };
-            }>("resolve_provider_repository", {
-              provider: "github",
-              accountId,
-              repository: name,
-            })
-          : undefined;
-        if (!current()) return;
-        if (resolved?.identity.id !== accountId)
-          throw "GitHub returned an unexpected account identity.";
-        const canonical = resolved?.repository.name ?? name;
+          throw "Choose a connected GitHub account in Accounts, then retry.";
+        const resolved = await invoke<ResolvedRepository>(
+          "resolve_provider_repository",
+          {
+            provider: "github",
+            accountId,
+            repository: input.value,
+          },
+        );
         if (
-          repositories().some(
-            (r) =>
-              r.name === canonical &&
-              r.id !== repository?.id &&
-              r.provider_account_id === accountId,
-          )
+          !modal.open ||
+          !modal.isConnected ||
+          app.closest("[hidden]") ||
+          requestedRoute !== routeGeneration
         )
-          throw "This GitHub repository is already configured.";
-        const value: Repository = {
-          ...(repository ?? {}),
-          id: repository?.id ?? newIdentity(),
-          name: canonical,
-          provider: "github",
-          enabled: repository?.enabled ?? false,
-          provider_account_id: resolved?.identity.id,
-          provider_repository_id: resolved?.repository.id,
-        };
-        await commitResource(repositoryEdit(value), modal);
-        modal.close();
-        render();
+          return;
+        await addAndConfigure(accountId, resolved, modal, opener, repository);
       } catch (cause) {
-        if (!active()) return;
-        const alert = modal.querySelector<HTMLElement>("[role=alert]")!;
-        alert.textContent = reason(cause);
-        alert.hidden = false;
+        if (modal.open) {
+          alert.textContent = reason(cause);
+          alert.hidden = false;
+        }
       } finally {
         submitting = false;
-        if (active()) {
-          button.disabled = false;
-          input.disabled = false;
-          if (account) account.disabled = false;
+        controls.forEach((c) => (c.disabled = false));
+      }
+    };
+  }
+
+  function browseRepositories(account: GithubAccount, opener: HTMLElement) {
+    const modal = dialog(
+      `Browse repositories as ${account.login}`,
+      `<p class="settings-hint">Acting GitHub account: ${escape(account.login)} (${escape(account.account_id)}).</p>
+      <label>Repository owner<select data-owner aria-label="Repository owner" disabled><option value="">Choose an owner</option></select></label>
+      <label>Find a repository<input type="search" data-owner-search placeholder="Search this owner..." /></label>
+      <p role="status">Loading available owners...</p><p role="alert" hidden></p><button data-retry hidden>Retry</button>
+      <div data-owner-results class="native-repository-list"></div>
+      <p class="settings-hint">Only repositories accessible to this account are listed. Selecting adds a disabled row and opens configuration.</p>`,
+      opener,
+    );
+    compactEditor(modal, "Back to repositories");
+    modal.classList.add("repository-editor");
+    const owner = modal.querySelector<HTMLSelectElement>("[data-owner]")!;
+    const search = modal.querySelector<HTMLInputElement>(
+      "[data-owner-search]",
+    )!;
+    const status = modal.querySelector<HTMLElement>("[role=status]")!;
+    const alert = modal.querySelector<HTMLElement>("[role=alert]")!;
+    const retry = modal.querySelector<HTMLButtonElement>("[data-retry]")!;
+    const list = modal.querySelector<HTMLElement>("[data-owner-results]")!;
+    let generation = 0;
+    let results: { id: string; name: string }[] = [];
+    let loaded = false;
+    let selecting = false;
+    const current = (read: number) =>
+      modal.open && modal.isConnected && read === generation;
+    const connected = () =>
+      githubAccounts.some(
+        (a) => a.account_id === account.account_id && a.state === "connected",
+      );
+    const renderResults = () => {
+      const filtered = results.filter((r) =>
+        r.name.toLowerCase().includes(search.value.trim().toLowerCase()),
+      );
+      list.innerHTML = filtered
+        .map(
+          (r) =>
+            `<button type="button" class="native-repository-row" data-pick="${escape(r.id)}"><span class="settings-row-copy"><strong>${escape(r.name.split("/")[1])}</strong><small>${escape(r.name)}</small></span><span>${repositories().some((saved) => saved.provider === "github" && saved.provider_account_id === account.account_id && saved.provider_repository_id === r.id) ? "Added" : "Add"}</span><span aria-hidden="true">›</span></button>`,
+        )
+        .join("");
+      if (loaded && owner.value)
+        status.textContent = !results.length
+          ? "No accessible repositories for this owner."
+          : !filtered.length
+            ? "No matching repositories. Try another name."
+            : `${results.length} accessible repositories loaded.`;
+      list
+        .querySelectorAll<HTMLButtonElement>("[data-pick]")
+        .forEach((button) => {
+          button.onclick = async () => {
+            if (selecting) return;
+            selecting = true;
+            const read = generation;
+            const requestedRoute = routeGeneration;
+            list
+              .querySelectorAll<HTMLButtonElement>("button")
+              .forEach((b) => (b.disabled = true));
+            const selected = results.find((r) => r.id === button.dataset.pick)!;
+            try {
+              if (!connected())
+                throw "Account disconnected. Reconnect in Accounts.";
+              const resolved = await invoke<ResolvedRepository>(
+                "resolve_provider_repository",
+                {
+                  provider: "github",
+                  accountId: account.account_id,
+                  repository: selected.name,
+                },
+              );
+              if (
+                !current(read) ||
+                app.closest("[hidden]") ||
+                requestedRoute !== routeGeneration
+              )
+                return;
+              if (resolved.repository.id !== selected.id)
+                throw "Repository identity changed. Refresh this owner and try again.";
+              await addAndConfigure(
+                account.account_id,
+                resolved,
+                modal,
+                opener,
+              );
+            } catch (cause) {
+              if (current(read)) {
+                alert.textContent = reason(cause);
+                alert.hidden = false;
+              }
+            } finally {
+              selecting = false;
+              if (current(read)) renderResults();
+            }
+          };
+        });
+    };
+    const load = async () => {
+      const read = ++generation;
+      loaded = false;
+      results = [];
+      list.replaceChildren();
+      alert.hidden = true;
+      retry.hidden = true;
+      const ownerLogin = owner.value;
+      status.textContent = ownerLogin
+        ? "Loading all accessible repositories for this owner..."
+        : "Loading available owners...";
+      try {
+        if (!connected()) throw "Account disconnected. Reconnect in Accounts.";
+        if (!ownerLogin) {
+          const result = await invoke<{
+            identity: { id: string };
+            owners: { login: string; kind: string }[];
+          }>("list_provider_repository_owners", {
+            provider: "github",
+            accountId: account.account_id,
+          });
+          if (!current(read)) return;
+          if (result.identity.id !== account.account_id || !connected())
+            throw "Account changed. Reconnect and retry.";
+          owner.innerHTML =
+            option("", "Choose an owner", "") +
+            result.owners
+              .map((o) => option(o.login, `${o.login} (${o.kind})`, ""))
+              .join("");
+          owner.disabled = false;
+          status.textContent =
+            "Choose the personal account or an available organization.";
+        } else {
+          const result = await invoke<{
+            identity: { id: string };
+            repositories: { id: string; name: string }[];
+          }>("list_provider_repositories", {
+            provider: "github",
+            accountId: account.account_id,
+            owner: ownerLogin,
+          });
+          if (!current(read)) return;
+          if (
+            result.identity.id !== account.account_id ||
+            !connected() ||
+            result.repositories.some(
+              (r) =>
+                r.name.split("/")[0].toLowerCase() !== ownerLogin.toLowerCase(),
+            )
+          )
+            throw "GitHub returned an unexpected account or owner. Retry.";
+          loaded = true;
+          results = result.repositories;
+          renderResults();
+        }
+      } catch (cause) {
+        if (current(read)) {
+          status.textContent = "Repository browsing unavailable.";
+          alert.textContent = reason(cause);
+          alert.hidden = false;
+          retry.hidden = false;
         }
       }
     };
+    owner.onchange = () => {
+      search.value = "";
+      void load();
+    };
+    search.oninput = renderResults;
+    retry.onclick = () => void load();
+    void load();
   }
 
   function repositoryDialog(
     repository: ConfiguredRepository,
     opener: HTMLElement,
   ) {
-    // A dialog opened from Genie must never fall back to immediate activation
-    // when its caller navigates away while a preview/save is in flight.
-    const scopeGuidance = guidance;
     const schedule = saved.defaults.schedule;
     const modal = dialog(
       `Settings for ${repository.name}`,
       `<section class="repository-identity"><h3>${escape(repository.name)}</h3><p class="settings-hint">${escape(repository.provider === "github" ? `GitHub acting account: ${githubAccounts.find((account) => account.account_id === repository.provider_account_id)?.login ?? repository.provider_account_id ?? "not selected"}.` : "Azure DevOps account binding is not available in this build.")}</p><dl><dt>Account ID</dt><dd>${escape(repository.provider_account_id ?? "Unbound")}</dd><dt>Repository ID</dt><dd>${escape(repository.provider_repository_id ?? "Not verified")}</dd></dl></section>
-        <label class="repository-check"><input type="checkbox" data-repository-enabled ${repository.enabled ? "checked" : ""} /><span>Enable repository monitoring</span></label>
-        <section class="repository-group"><div class="section-actions"><h2>Monitoring scope</h2><button data-configure-scope ${repository.provider_account_id && repository.provider_repository_id ? "" : "disabled"}>Configure scope</button></div>
-        <p class="settings-hint" data-scope-status>Reading monitoring scope...</p>
-        <p role="alert" data-scope-error hidden></p>
-        <button data-refresh-scope>Refresh scope status</button>
+        <label class="repository-check"><input type="checkbox" data-repository-enabled ${repository.enabled || pendingSetup.has(repository.id) ? "checked" : ""} /><span>Enable repository monitoring on Save</span></label>
+        <section class="repository-group"><h2>Pull requests to watch</h2>
+        <p class="settings-hint">Save authorizes all currently open and future matching pull requests. Global monitoring off and manual review start still apply. Adding this row alone does not start monitoring.</p>
         <label for="repository-reviewer-trigger">Reviewer requests</label><select id="repository-reviewer-trigger" data-reviewer-trigger><option value="inherit">Use default (${saved.defaults.reviewer_assignment ? "on" : "off"})</option><option value="on">Include PRs explicitly requesting the acting account</option><option value="off">Do not admit through reviewer requests</option></select>
         <p class="settings-hint">Reviewer requests independently admit older or unwatched PRs. Once admitted, work stays tracked until verified closure or merge. Disablement and execution permissions still apply.</p></section>
         <section class="repository-group"><h2>Automation overrides</h2>
         <label for="repository-review-start">Review start</label><select id="repository-review-start" data-review-start><option value="inherit">Use default (${saved.defaults.automatic_agent_start ? "automatic" : "manual"})</option><option value="automatic">Start automatically when eligible</option><option value="manual">Require manual start</option></select>
-        <p class="settings-hint">Save repository commits this resource only. Agent assignments and confirmed scope authorize ongoing read-only reviews, including forks and later revisions. Review start does not enable publication.</p>
+        <p class="settings-hint">Save repository commits and authorizes this configuration, including forks and later revisions. Review start does not enable publication.</p>
         <label for="repository-publication">Comment publication</label><select id="repository-publication" data-publication><option value="inherit">Use default (${saved.defaults.automatic_comment_publication ? "automatic" : "local-only"})</option><option value="automatic">Publish automatically after revalidation</option><option value="manual">Off: retain normal findings locally</option></select>
         <p class="settings-hint">The assignment must also allow Comment. Uses the repository's GitHub account, never the Copilot account. This cannot approve or merge a pull request.</p>
         </section><section class="repository-group"><div class="section-actions"><h2>Agents on this repository</h2><button class="primary" data-assign-agent ${agents().length ? "" : "disabled"}>Assign agent</button></div>
@@ -1770,7 +1817,7 @@ export async function mountSettings(
         <p class="settings-hint">Each assignment receives its own normal pass. Newly assigned Agents get missing work at the next global scan; adding one does not start a scan. Primary routes top-level mentions of the acting account, without enabling Approve or Merge.</p>
         </section><section class="repository-group"><div class="section-actions"><h2>People you watch</h2><button data-add-people>Add people</button></div>
         <div class="watchlist"></div>
-        <p class="settings-hint">Optional. A nonempty effective watched-author filter qualifies those authors. An empty effective author filter means all authors after scope confirmation. Pull requests requesting the signed-in account also qualify when the effective inherited reviewer-assignment trigger is enabled. Exact GitHub login, no wildcards.</p>
+        <p class="settings-hint">Optional. A nonempty effective watched-author filter qualifies those authors. An empty effective author filter means all authors. Pull requests requesting the signed-in account also qualify when the reviewer-request trigger is enabled. Exact GitHub login, no wildcards.</p>
         </section><section class="repository-group" data-global-schedule><h2>Saved global schedule</h2><p>${schedule.kind === "cron" ? `<code>${escape(schedule.expression)}</code>` : `Every ${schedule.minutes} minutes (saved legacy schedule)`} / ${escape(schedule.timezone)}</p><p class="settings-hint">${schedule.kind === "cron" ? "One schedule scans enabled repositories. Change it in Preferences;" : "Polling is blocked until you choose a global five-field cron schedule in Preferences. The saved legacy interval is retained;"} repository and Agent assignments have no separate polling controls.</p></section>
         <details class="repository-group"><summary>Repository and connection</summary><div class="settings-actions"><button id="rename-repository">Edit repository</button><button data-unbind-repository ${repository.provider_account_id ? "" : "disabled"}>Unbind account</button><button id="remove-repository">Remove repository</button></div><div class="connection"></div></details>
         <p class="settings-hint">Save applies only this repository. Back retains its draft for this session; Cancel discards it. Earlier assignment saves stay applied.</p>
@@ -1786,6 +1833,7 @@ export async function mountSettings(
       "[data-repository-enabled]",
     )!.onchange = (event) => {
       repository.enabled = (event.currentTarget as HTMLInputElement).checked;
+      pendingSetup.delete(repository.id);
       changed();
     };
     const reviewerTrigger = modal.querySelector<HTMLSelectElement>(
@@ -1809,7 +1857,11 @@ export async function mountSettings(
     modal.querySelector<HTMLButtonElement>("[data-save-repository]")!.onclick =
       async () => {
         try {
+          repository.enabled = modal.querySelector<HTMLInputElement>(
+            "[data-repository-enabled]",
+          )!.checked;
           await commitResource(repositoryEdit(repository), modal);
+          pendingSetup.delete(repository.id);
           modal.close();
           render();
         } catch (cause) {
@@ -1866,17 +1918,6 @@ export async function mountSettings(
           publication.value === "automatic";
       changed();
     };
-    const scopeStatus = modal.querySelector<HTMLElement>(
-      "[data-scope-status]",
-    )!;
-    const scopeError = modal.querySelector<HTMLElement>("[data-scope-error]")!;
-    const configureScope = modal.querySelector<HTMLButtonElement>(
-      "[data-configure-scope]",
-    )!;
-    let scopeRead = 0;
-    void refreshScopeStatus();
-    modal.querySelector<HTMLButtonElement>("[data-refresh-scope]")!.onclick =
-      () => void refreshScopeStatus();
     if (
       saved.repositories?.some(
         (r) => r.id === repository.id && r.name === repository.name,
@@ -1913,7 +1954,6 @@ export async function mountSettings(
         repository,
         () => renderWatchlist(),
       );
-    configureScope.onclick = () => void configureMonitoringScope();
     modal.querySelector<HTMLButtonElement>("#rename-repository")!.onclick =
       () => {
         modal.close();
@@ -1980,298 +2020,6 @@ export async function mountSettings(
       };
     };
 
-    async function refreshScopeStatus() {
-      const current = ++scopeRead;
-      if (
-        !repository.provider_account_id ||
-        !repository.provider_repository_id ||
-        !saved.repositories?.some((item) => item.id === repository.id)
-      ) {
-        scopeStatus.textContent =
-          "Save and bind this repository before confirming monitoring scope.";
-        return;
-      }
-      try {
-        const status = await invoke<MonitoringActivationStatus>(
-          "monitoring_activation_status",
-          { repositoryId: repository.id },
-        );
-        if (!modal.open || current !== scopeRead) return;
-        if (scopeGuidance && status.active) {
-          configureScope.disabled = true;
-          scopeStatus.textContent =
-            "Already authorized. Genie leaves this monitoring scope intact; use manual Settings to replace it.";
-          return;
-        }
-        scopeStatus.textContent = status.active
-          ? status.mode === "selected_existing"
-            ? `Active for new pull requests and ${status.selected_existing} selected existing pull request${status.selected_existing === 1 ? "" : "s"}.`
-            : "Active for new pull requests only."
-          : "Scope confirmation required. New detections are paused; existing queue history is preserved.";
-      } catch {
-        if (modal.open && current === scopeRead)
-          scopeStatus.textContent =
-            "Monitoring scope status is unavailable. Check local storage and retry.";
-      }
-    }
-
-    async function configureMonitoringScope() {
-      ++scopeRead;
-      if (
-        !sameResource(
-          repository,
-          saved.repositories?.find((r) => r.id === repository.id),
-        )
-      ) {
-        scopeStatus.textContent =
-          "Save repository before previewing monitoring scope. Your draft has not been changed.";
-        return;
-      }
-      configureScope.disabled = true;
-      modal.querySelector<HTMLButtonElement>("[data-refresh-scope]")!.disabled =
-        true;
-      scopeError.hidden = true;
-      const expected = clone(repository);
-      scopeStatus.textContent =
-        "Reading matching open pull requests through the bound GitHub account...";
-      try {
-        const preview = await invoke<MonitoringActivationPreview>(
-          "preview_monitoring_activation",
-          { repositoryId: repository.id },
-        );
-        if (!modal.open || !sameResource(repository, expected)) {
-          try {
-            await invoke("cancel_monitoring_activation", {
-              previewId: preview.preview_id,
-            });
-          } catch {
-            if (modal.open) {
-              scopeStatus.textContent = "Repository changed during preview.";
-              scopeError.textContent =
-                "Monitoring scope preview cleanup failed. Save or Cancel repository changes, then configure scope again to cancel or replace the preview before confirming scope.";
-              scopeError.hidden = false;
-            } else
-              showError(
-                "Monitoring scope preview cleanup failed. Reopen the repository and cancel or replace the preview before confirming scope.",
-              );
-            return;
-          }
-          if (modal.open)
-            scopeStatus.textContent =
-              "Repository changed during preview. Save repository before previewing monitoring scope again.";
-          return;
-        }
-        showScopePreview(preview);
-      } catch (cause) {
-        if (modal.open) scopeStatus.textContent = reason(cause);
-      } finally {
-        if (modal.open) {
-          configureScope.disabled = false;
-          modal.querySelector<HTMLButtonElement>(
-            "[data-refresh-scope]",
-          )!.disabled = false;
-        }
-      }
-    }
-
-    function showScopePreview(preview: MonitoringActivationPreview) {
-      const scope = dialog(
-        `Monitoring scope for ${repository.name}`,
-        `<p>Found <strong data-matching-count>${preview.candidates.length}</strong> matching open, non-draft pull request${preview.candidates.length === 1 ? "" : "s"} through ${escape(preview.account_login)} (${escape(preview.account_id)}).</p>
-        <p class="settings-hint">Choose the initial author-matched backlog. Explicit reviewer requests can admit older PRs. Confirming scope authorizes assigned Agents to review matching PRs and later revisions without further trust prompts. Once admitted, a PR stays tracked until verified closure or merge. Execution and publication permissions still apply.</p>
-        <fieldset class="activation-choice"><legend>Initial scope</legend>
-          <label><input type="radio" name="scope-mode" value="new_only" checked />New pull requests only</label>
-          <label><input type="radio" name="scope-mode" value="selected_existing" />Selected existing pull requests plus new pull requests</label>
-        </fieldset>
-        <div class="repository-toolbar"><input type="search" data-scope-search aria-label="Find matching pull request" placeholder="Find by number, title or author..." /><span data-selection-count>0 selected</span></div>
-        <div class="activation-list" data-scope-list></div>
-        <p role="alert" hidden></p>
-        ${scopeGuidance ? '<p class="settings-hint">This choice is not activation. Monitoring remains off for this pending repository until the combined final confirmation. Closing the application loses unconfirmed scope choices, not saved resources.</p>' : ""}
-        <div class="settings-actions"><button class="primary" data-confirm-scope>${scopeGuidance ? "Use scope in final check" : "Confirm monitoring scope"}</button><button data-cancel-scope>Cancel</button></div>`,
-        configureScope,
-      );
-      compactEditor(scope, "Back to repository; cancel this scope preview");
-      scope.classList.add("repository-editor");
-      const list = scope.querySelector<HTMLElement>("[data-scope-list]")!;
-      const search = scope.querySelector<HTMLInputElement>(
-        "[data-scope-search]",
-      )!;
-      const count = scope.querySelector<HTMLElement>("[data-selection-count]")!;
-      const alert = scope.querySelector<HTMLElement>("[role=alert]")!;
-      const confirm = scope.querySelector<HTMLButtonElement>(
-        "[data-confirm-scope]",
-      )!;
-      const cancel = scope.querySelector<HTMLButtonElement>(
-        "[data-cancel-scope]",
-      )!;
-      const close = scope.querySelector<HTMLButtonElement>(
-        "[aria-label='Close dialog']",
-      )!;
-      const selected = new Set<string>();
-      let previewActive = true;
-      let applying = false;
-
-      const mode = () =>
-        scope.querySelector<HTMLInputElement>(
-          'input[name="scope-mode"]:checked',
-        )!.value as "new_only" | "selected_existing";
-      const selectionEnabled = () => mode() === "selected_existing";
-      const updateCount = () => {
-        count.textContent = `${selected.size} selected`;
-      };
-      const renderCandidates = () => {
-        const query = search.value.trim().toLowerCase();
-        list.replaceChildren();
-        const candidates = preview.candidates.filter((candidate) =>
-          `${candidate.number} ${candidate.title} ${candidate.author_login ?? ""}`
-            .toLowerCase()
-            .includes(query),
-        );
-        if (!candidates.length) {
-          list.innerHTML =
-            '<p class="settings-empty">No matching pull requests.</p>';
-          return;
-        }
-        for (const candidate of candidates) {
-          const row = document.createElement("label");
-          row.className = "activation-row";
-          const checkbox = document.createElement("input");
-          checkbox.type = "checkbox";
-          checkbox.disabled = !selectionEnabled();
-          checkbox.checked = selected.has(candidate.pull_request_id);
-          checkbox.setAttribute(
-            "aria-label",
-            `Include pull request ${candidate.number}`,
-          );
-          checkbox.onchange = () => {
-            if (checkbox.checked) selected.add(candidate.pull_request_id);
-            else selected.delete(candidate.pull_request_id);
-            updateCount();
-          };
-          const details = document.createElement("span");
-          const author = candidate.author_login ?? "deleted or unavailable";
-          const triggers = [
-            candidate.watched_author ? "watched author" : "",
-            candidate.all_authors ? "all-author scope" : "",
-            candidate.requested_reviewer ? "requested reviewer" : "",
-          ]
-            .filter(Boolean)
-            .join(" and ");
-          details.innerHTML = `<strong>#${candidate.number} ${escape(candidate.title)}</strong><small>${escape(author)} \u00b7 ${escape(triggers)}</small>`;
-          row.append(checkbox, details);
-          list.append(row);
-        }
-      };
-      const discardPreview = async () => {
-        if (!previewActive) return;
-        try {
-          await invoke("cancel_monitoring_activation", {
-            previewId: preview.preview_id,
-          });
-          previewActive = false;
-        } catch {
-          showError(
-            "Monitoring scope preview cleanup failed. Reopen the repository and cancel or replace the preview before confirming scope.",
-          );
-        }
-      };
-      for (const radio of scope.querySelectorAll<HTMLInputElement>(
-        'input[name="scope-mode"]',
-      ))
-        radio.onchange = () => {
-          if (!selectionEnabled()) selected.clear();
-          updateCount();
-          renderCandidates();
-        };
-      search.oninput = renderCandidates;
-      search.onkeydown = (event) => {
-        if (event.key === "Enter") event.preventDefault();
-      };
-      cancel.onclick = async () => {
-        await discardPreview();
-        if (!previewActive) {
-          scope.close();
-          await refreshScopeStatus();
-        }
-      };
-      scope.addEventListener("pr-sniper:dialog-closed", () => {
-        if (previewActive && !applying) void discardPreview();
-      });
-      confirm.onclick = async () => {
-        alert.hidden = true;
-        if (selectionEnabled() && !selected.size) {
-          alert.textContent =
-            "Select at least one existing pull request, or choose new pull requests only.";
-          alert.hidden = false;
-          return;
-        }
-        applying = true;
-        scope.dataset.closeLocked = "true";
-        confirm.disabled = true;
-        cancel.disabled = true;
-        close.disabled = true;
-        const inputs = [
-          ...scope.querySelectorAll<HTMLInputElement>("input"),
-        ].map((input) => ({ input, disabled: input.disabled }));
-        inputs.forEach(({ input }) => (input.disabled = true));
-        try {
-          if (scopeGuidance) {
-            if (guidance !== scopeGuidance)
-              throw "This guided step is no longer active. Return to Genie and preview scope again.";
-            scopeGuidance.stage({
-              preview,
-              repository: clone(repository),
-              defaults: clone(saved.defaults),
-              mode: mode(),
-              selectedPullRequestIds: [...selected],
-            });
-            previewActive = false;
-            delete scope.dataset.closeLocked;
-            scope.close();
-            scopeStatus.textContent =
-              "Scope chosen for Genie's final check. This pending repository is not monitoring yet.";
-            return;
-          }
-          await invoke<MonitoringActivationStatus>(
-            "apply_monitoring_activation",
-            {
-              request: {
-                repositoryId: repository.id,
-                previewId: preview.preview_id,
-                mode: mode(),
-                selectedPullRequestIds: [...selected],
-              },
-            },
-          );
-          previewActive = false;
-          delete scope.dataset.closeLocked;
-          scope.close();
-          await refreshScopeStatus();
-        } catch (cause) {
-          const message = reason(cause);
-          if (scope.isConnected) {
-            alert.textContent = message;
-            alert.hidden = false;
-          } else {
-            showError(`Monitoring scope was not applied. ${message}`);
-          }
-        } finally {
-          applying = false;
-          if (scope.isConnected) {
-            delete scope.dataset.closeLocked;
-            confirm.disabled = false;
-            cancel.disabled = false;
-            close.disabled = false;
-            inputs.forEach(
-              ({ input, disabled }) => (input.disabled = disabled),
-            );
-          }
-        }
-      };
-      updateCount();
-      renderCandidates();
-    }
-
     function renderAssignments(opener = document.activeElement) {
       const list = modal.querySelector<HTMLElement>(".assignment-list")!;
       const restoreFocus = rememberControl(
@@ -2327,7 +2075,7 @@ export async function mountSettings(
       const people = repository.watched_authors ?? [];
       if (!people.length) {
         list.innerHTML =
-          '<p class="settings-empty">No people added for this repository. Inherited watched authors still apply; if the effective author filter is empty, all authors qualify after scope confirmation. Reviewer requests qualify when that trigger is enabled.</p>';
+          '<p class="settings-empty">No people added for this repository. Inherited watched authors still apply; if the effective author filter is empty, all authors qualify under the saved configuration. Reviewer requests qualify when that trigger is enabled.</p>';
         restoreFocus();
         return;
       }
@@ -2368,7 +2116,7 @@ export async function mountSettings(
         .join("")}</select></label>
         <label class="repository-check"><input type="checkbox" name="primary" ${isPrimary ? "checked" : ""} ${sole ? "disabled" : ""} /><span>Primary<small>${sole ? "The sole assignment is primary automatically." : "At most one explicit primary per repository. Uncheck to leave none."}</small></span></label>
         <div class="permission-row"><label><input type="checkbox" name="comment" ${existing?.comment ? "checked" : ""} /><span>Comment<small>Allow comment publication, independently of approval and merge.</small></span></label><label><input type="checkbox" name="approve" ${existing?.actions?.approve ? "checked" : ""} /><span>Approve<small>Opt in to the acting GitHub account's approval after current Agent clearance and a primary final full review. Never self-approval or policy bypass.</small></span></label><label><input type="checkbox" name="merge" ${existing?.actions?.merge ? "checked" : ""} ${isPrimary ? "" : "disabled"} /><span>Merge<small>Independent opt-in; primary only, after final review, green CI and verified provider policies. Does not require Approve or personal acknowledgment.</small></span></label></div>
-        <p class="settings-hint">Saving this assignment authorizes the selected Agent to review this repository's confirmed monitoring scope and later revisions under its review-start setting. Primary selection never enables publication permissions. Polling is configured globally in Preferences. Saving commits this repository, not unrelated drafts.</p><p role="alert" hidden></p><div class="resource-actions"><button class="primary">${existing ? "Save assignment" : "Assign agent"}</button><button type="button" data-cancel-resource>Cancel</button></div></form>`,
+        <p class="settings-hint">Saving this assignment authorizes the selected Agent to review this repository's saved current and future matching pull requests and later revisions under its review-start setting. Primary selection never enables publication permissions. Polling is configured globally in Preferences. Saving commits this repository, not unrelated drafts.</p><p role="alert" hidden></p><div class="resource-actions"><button class="primary">${existing ? "Save assignment" : "Assign agent"}</button><button type="button" data-cancel-resource>Cancel</button></div></form>`,
       opener,
     );
     resourceEditor(modal);
@@ -2524,8 +2272,8 @@ export async function mountSettings(
       <label>Cron expression<input id="global-cron" value="${escape(schedule.kind === "cron" ? schedule.expression : "")}" placeholder="*/15 * * * *" /></label>
       <label>Schedule helper<select id="cron-helper"><option value="">Custom five-field expression</option><option value="*/15 * * * *">Every 15 minutes</option><option value="0 * * * *">Every hour</option><option value="0 9 * * MON-FRI">Weekdays at 09:00</option></select></label>
       <label>Time zone<input id="global-timezone" value="${escape(schedule.timezone)}" /></label>
-      </div><p class="settings-hint">Five fields: minute, hour, day, month, weekday. Evaluated in this IANA time zone, including its daylight-saving rules. One global scan covers enabled, scope-confirmed repositories. Shared AI capacity drains admitted work independently of polling.${schedule.kind === "interval" ? ` Saved legacy interval: ${schedule.minutes} minutes. Polling is blocked until you explicitly choose a cron expression; no automatic conversion.` : ""}</p></fieldset>
-      <fieldset aria-label="Review execution"><legend>Review execution</legend><label class="setting-row"><span>Start eligible reviews automatically<small>Default for assigned repositories with confirmed monitoring scope. No per-revision confirmation; publication has its own gate.</small></span><input id="automatic-review-start" type="checkbox" role="switch" ${draft.defaults.automatic_agent_start ? "checked" : ""} /></label></fieldset>
+      </div><p class="settings-hint">Five fields: minute, hour, day, month, weekday. Evaluated in this IANA time zone, including its daylight-saving rules. One global scan covers enabled, configured repositories. Shared AI capacity drains admitted work independently of polling.${schedule.kind === "interval" ? ` Saved legacy interval: ${schedule.minutes} minutes. Polling is blocked until you explicitly choose a cron expression; no automatic conversion.` : ""}</p></fieldset>
+      <fieldset aria-label="Review execution"><legend>Review execution</legend><label class="setting-row"><span>Start eligible reviews automatically<small>Default for saved, configured repositories. No per-revision confirmation; publication has its own gate.</small></span><input id="automatic-review-start" type="checkbox" role="switch" ${draft.defaults.automatic_agent_start ? "checked" : ""} /></label></fieldset>
       <fieldset aria-label="Comment publication"><legend>Comment publication</legend><label class="setting-row"><span>Publish review comments automatically<small>Default for assigned repositories that allow Comment. Revalidates revision, permissions and eligibility before publication. Never approves or merges.</small></span><input id="automatic-publication" type="checkbox" role="switch" ${draft.defaults.automatic_comment_publication ? "checked" : ""} /></label></fieldset>
       <p class="settings-hint preferences-permissions">Approve and Merge remain separate repository-assignment permissions, never global grants.</p></div>
       <div class="preferences-boundary"><h2>Immediate controls</h2><span>Applied separately</span></div>
@@ -2586,7 +2334,7 @@ export async function mountSettings(
           ...state.issues,
           ...state.repositories.flatMap((r) => r.issues),
         ];
-        readiness.textContent = `${state.configuration_ready ? "Saved configuration is complete." : `Saved setup incomplete: ${issues.join(" ")}`} Account verification, model access and monitoring-scope confirmation remain separate gates. Unsaved fields do not affect readiness.`;
+        readiness.textContent = `${state.configuration_ready ? "Saved configuration is complete." : `Saved setup incomplete: ${issues.join(" ")}`} Account verification and model access remain separate requirements. Repository Save authorizes monitoring. Unsaved fields do not affect readiness.`;
       },
       (cause) => {
         if (readiness.isConnected)
@@ -2756,7 +2504,6 @@ export async function mountSettings(
       snapshot = state;
       saved = clone(state.settings);
       draft = clone(saved);
-      discovery = null;
       conflict = false;
       if (state.error) showError(state.error);
     } catch {
@@ -2774,7 +2521,6 @@ export async function mountSettings(
   reset.onclick = () => {
     if (!busy) {
       draft = clone(saved);
-      discovery = null;
       clearError();
       render();
     }
@@ -2800,7 +2546,7 @@ export async function mountSettings(
         return;
       }
       const retainAccounts =
-        (section === "integrations" ||
+        (section === "accounts" ||
           section === "copilot" ||
           section === "github") &&
         content.querySelector(".account-connection") !== null &&
@@ -2856,15 +2602,11 @@ export async function mountSettings(
       app.querySelector<HTMLElement>("[data-genie-save-note]")!.hidden = false;
       const next: Section =
         target === "ai" || target === "repository-account"
-          ? options.embedded
-            ? target === "ai"
-              ? "copilot"
-              : "github"
-            : "integrations"
+          ? target === "ai"
+            ? "copilot"
+            : "github"
           : target === "repositories"
-            ? options.embedded
-              ? "repositories"
-              : "integrations"
+            ? "repositories"
             : target;
       if (options.embedded)
         homeOpener = accountParents[next] ? "accounts" : next;

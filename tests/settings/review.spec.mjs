@@ -52,6 +52,9 @@ test("automatic review start is explicit, inherited and saved without enabling p
   store,
 }) => {
   await store("save_repository", { repository: "fixture/review-policy" });
+  const setup = (await store("snapshot")).settings;
+  setup.repositories[0].enabled = false;
+  await store("seed_settings", setup);
   await page.goto("/?view=settings");
   const initial = (await store("snapshot")).settings;
   await section(page, "Preferences");
@@ -66,6 +69,7 @@ test("automatic review start is explicit, inherited and saved without enabling p
   await saveChanges(page);
   let settings = (await store("snapshot")).settings;
   expect(settings.defaults.automatic_agent_start).toBe(true);
+  expect(settings.repositories[0].enabled).toBe(false);
   expect(settings.defaults.automatic_comment_publication).toBe(
     initial.defaults.automatic_comment_publication,
   );

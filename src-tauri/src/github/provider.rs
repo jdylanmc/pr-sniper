@@ -27,6 +27,12 @@ pub struct RemoteRepository {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RepositoryOwner {
+    pub login: String,
+    pub kind: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Capabilities {
     pub read: bool,
     pub comment: CommentCapability,
@@ -71,6 +77,58 @@ impl<T: Transport> GithubClient<T> {
     }
 
     pub fn accessible_repositories(&self) -> Result<Vec<RemoteRepository>, ConnectionError> {
+        self.repository_catalog()
+            .map(|entries| entries.into_iter().map(|(repo, _)| repo).collect())
+    }
+
+    pub fn repository_owners(
+        &self,
+        identity: &Identity,
+    ) -> Result<Vec<RepositoryOwner>, ConnectionError> {
+        let mut owners = BTreeMap::new();
+        owners.insert(identity.login.to_ascii_lowercase(), "personal");
+        for (repository, owner) in self.repository_catalog()? {
+            let owner = owner.ok_or(ConnectionError::InvalidResponse)?;
+            if repository.name.split('/').next() != Some(owner.login.as_str()) {
+                return Err(ConnectionError::InvalidResponse);
+            }
+            if owner.kind == "organization" {
+                owners.insert(owner.login, "organization");
+            }
+        }
+        Ok(owners
+            .into_iter()
+            .map(|(login, kind)| RepositoryOwner { login, kind })
+            .collect())
+    }
+
+    pub fn owner_repositories(
+        &self,
+        owner: &str,
+    ) -> Result<Vec<RemoteRepository>, ConnectionError> {
+        if owner.is_empty()
+            || owner.len() > 39
+            || !owner
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Err(ConnectionError::InvalidRepository);
+        }
+        Ok(self
+            .accessible_repositories()?
+            .into_iter()
+            .filter(|r| {
+                r.name
+                    .split('/')
+                    .next()
+                    .is_some_and(|login| login.eq_ignore_ascii_case(owner))
+            })
+            .collect())
+    }
+
+    fn repository_catalog(
+        &self,
+    ) -> Result<Vec<(RemoteRepository, Option<RepositoryOwner>)>, ConnectionError> {
         let mut result = Vec::new();
         let mut repository_ids = std::collections::HashSet::new();
         for page in 1..=10_000 {
@@ -96,9 +154,27 @@ impl<T: Transport> GithubClient<T> {
                 if !repository_ids.insert(id.clone()) {
                     return Err(ConnectionError::IncompleteRead);
                 }
-                result.push(RemoteRepository { id, name });
+                let owner = repository["owner"]["login"].as_str().and_then(|login| {
+                    let kind = match repository["owner"]["type"].as_str()? {
+                        "User" => "personal",
+                        "Organization" => "organization",
+                        _ => return None,
+                    };
+                    Some(RepositoryOwner {
+                        login: login.to_ascii_lowercase(),
+                        kind,
+                    })
+                });
+                result.push((RemoteRepository { id, name }, owner));
             }
-            if repositories.len() < 100 {
+            let more = response
+                .headers
+                .get("link")
+                .is_some_and(|link| link.contains("rel=\"next\""));
+            if more && repositories.is_empty() {
+                return Err(ConnectionError::IncompleteRead);
+            }
+            if repositories.len() < 100 && !more {
                 return Ok(result);
             }
         }

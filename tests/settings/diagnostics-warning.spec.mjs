@@ -9,6 +9,7 @@ import {
   setAgentPrompt,
   assignment,
   saveAssignment,
+  closeDialog,
 } from "./navigation.mjs";
 
 for (const action of ["add", "enable", "remove", "agent", "assignment"]) {
@@ -18,27 +19,42 @@ for (const action of ["add", "enable", "remove", "agent", "assignment"]) {
     dataRoot,
   }) => {
     await store("seed_settings", { launch_at_login: true });
-    await seedAgent(store);
+    await seedAgent(store, "33");
     await store("save_repository", { repository: "octo/hello-world" });
     const repository = (await store("snapshot")).settings.repositories[0];
-    if (action === "enable")
+    if (action === "enable") {
       await store("update_repository", {
         id: repository.id,
         repository: repository.name,
         enabled: false,
       });
+      const configured = (await store("snapshot")).settings;
+      configured.repositories[0].assignments = [
+        {
+          id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          agent_id: configured.agents[0].id,
+          schedule: configured.defaults.schedule,
+          comment: false,
+          approve: false,
+        },
+      ];
+      await store("seed_settings", configured);
+    }
     const before = (await store("snapshot")).settings;
     await page.goto("/?view=settings");
     const log = join(dataRoot, "state/diagnostics.jsonl");
     await rm(log);
     await mkdir(log);
-    const card = page.getByRole("article", {
+    const card = page.getByRole("button", {
       name: repository.name,
       exact: true,
     });
     if (action === "add") await addRepository(page, "neighbor/new");
-    else if (action === "enable") await card.getByRole("checkbox").check();
-    else if (action === "remove") {
+    else if (action === "enable") {
+      const editor = await repositorySettings(page, repository.name);
+      await editor.getByLabel("Enable repository monitoring on Save").check();
+      await closeDialog(page);
+    } else if (action === "remove") {
       const modal = await repositorySettings(page, repository.name);
       await modal
         .getByText("Repository and connection", { exact: true })
@@ -69,11 +85,15 @@ for (const action of ["add", "enable", "remove", "agent", "assignment"]) {
         "neighbor/new",
       );
       await expect(
-        page.getByRole("article", { name: "neighbor/new", exact: true }),
+        page.getByRole("button", { name: "neighbor/new", exact: true }),
       ).toBeVisible();
     } else if (action === "enable") {
       expect(saved.repositories[0].enabled).toBe(true);
-      await expect(card.getByRole("checkbox")).toBeChecked();
+      const editor = await repositorySettings(page, repository.name);
+      await expect(
+        editor.getByLabel("Enable repository monitoring on Save"),
+      ).toBeChecked();
+      await closeDialog(page);
     } else if (action === "remove") {
       expect(saved.repositories ?? []).toHaveLength(0);
       await expect(card).toHaveCount(0);
@@ -89,7 +109,9 @@ for (const action of ["add", "enable", "remove", "agent", "assignment"]) {
         comment: false,
         approve: false,
       });
-      await expect(card).toContainText("1 agent assigned");
+      const editor = await repositorySettings(page, repository.name);
+      await expect(editor.locator(".assignment-row")).toHaveCount(1);
+      await closeDialog(page);
     }
     expect(saved.launch_at_login).toBe(true);
     expect(saved.defaults).toEqual(before.defaults);

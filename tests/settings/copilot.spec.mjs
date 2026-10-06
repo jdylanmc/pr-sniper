@@ -132,10 +132,7 @@ for (const surface of ["panel", "standalone"]) {
         () => window.__accountWindowFocus,
       );
       failStateRead = failedRead;
-      await section(
-        page,
-        surface === "panel" ? "GitHub Copilot" : "Integrations",
-      );
+      await section(page, surface === "panel" ? "GitHub Copilot" : "Accounts");
       await expect.poll(() => stateReads).toBeGreaterThan(readsBefore);
       await page.evaluate(() => window.__copilotIdle());
       expect(await page.evaluate(() => window.__accountWindowFocus)).toBe(
@@ -423,7 +420,7 @@ for (const action of ["disconnect", "confirm", "verify"]) {
     await modal
       .getByRole("button", { name: "Save doctrine", exact: true })
       .click();
-    await section(page, "Integrations");
+    await section(page, "Accounts");
     const card = page.locator(".copilot-auth-card");
     const name =
       action === "confirm"
@@ -628,7 +625,7 @@ test("legacy Agent becomes explicitly account/model bound and survives a real st
     signature: "My signature",
   });
   expect(persisted.repositories).toEqual(settings.repositories);
-  await section(page, "Integrations");
+  await section(page, "Accounts");
   await page
     .getByRole("button", {
       name: "Disconnect Copilot fixture-ai-one",
@@ -687,7 +684,7 @@ test("model failures, empty catalogs and policy denial stay honest and retryable
   await expect(dialog.getByLabel("Model", { exact: true })).toHaveValue("");
   await dialog.getByLabel("Model", { exact: true }).selectOption("available");
   await dialog.getByRole("button", { name: "Save agent", exact: true }).click();
-  await section(page, "Integrations");
+  await section(page, "Accounts");
   await expect(page.locator(".copilot-auth-card")).toContainText(
     "Signed in as fixture-ai-one",
   );
@@ -763,7 +760,7 @@ test("no-account and secure-storage errors provide a recoverable connection rout
     page.getByRole("button", { name: "New agent", exact: true }),
   ).toBeDisabled();
   await expect(page.locator("[data-copilot-status]")).toContainText(
-    "Connect an account in Integrations",
+    "Connect an account in Accounts",
   );
 });
 

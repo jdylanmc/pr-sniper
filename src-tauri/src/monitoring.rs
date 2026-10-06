@@ -26,7 +26,7 @@ pub const WAITING_SCOPE_EXCLUDED: &str = "scope_excluded";
 pub const WAITING_CLOSED: &str = "closed";
 pub const WAITING_MERGED: &str = "merged";
 pub const WAITING_ASSIGNMENT_REMOVED: &str = "assignment_removed";
-pub const SCOPE_CONFIRMATION_REQUIRED: &str = "scope_confirmation_required";
+pub const CONFIGURATION_SAVE_REQUIRED: &str = "repository_configuration_required";
 const RETRY_WINDOW_SECONDS: i64 = 15 * 60;
 const MAX_RETRIES: u8 = 3;
 
@@ -348,6 +348,7 @@ pub struct MonitoringState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActivationMode {
+    AllOpenAndFuture,
     NewOnly,
     SelectedExisting,
 }
@@ -637,19 +638,41 @@ impl Monitor {
     }
 
     pub fn activation_status(&self, settings: &Settings, repository_id: &str) -> ActivationStatus {
+        if settings.repositories.iter().any(|r| {
+            r.id == repository_id
+                && settings
+                    .repository_authorizations
+                    .get(repository_id)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|a| a.matches(r))
+        }) {
+            return ActivationStatus {
+                repository_id: repository_id.into(),
+                active: true,
+                reason: None,
+                mode: Some(ActivationMode::AllOpenAndFuture),
+                selected_existing: 0,
+                creation_watermark: None,
+            };
+        }
         let context = Self::activation_context(settings, repository_id).ok();
         let activation = context.as_ref().and_then(|context| {
             self.state
                 .activations
                 .get(repository_id)
-                .filter(|activation| activation_matches_context(activation, context))
+                .filter(|activation| {
+                    !settings
+                        .repository_authorizations
+                        .contains_key(repository_id)
+                        && activation_matches_context(activation, context)
+                })
         });
         ActivationStatus {
             repository_id: repository_id.into(),
             active: activation.is_some(),
             reason: activation
                 .is_none()
-                .then(|| SCOPE_CONFIRMATION_REQUIRED.into()),
+                .then(|| CONFIGURATION_SAVE_REQUIRED.into()),
             mode: activation.map(|activation| activation.mode.clone()),
             selected_existing: activation
                 .map(|activation| activation.selected_existing)
@@ -1046,6 +1069,7 @@ impl Monitor {
         let previous = self.state.clone();
         let previous_leases = self.leases.clone();
         let configured = configured_schedules(&settings);
+        self.restore_saved_authorizations(&settings);
         self.reconcile_activations(&configured);
         self.synchronize_health(&configured, accounts, now);
         if let Err(error) = self.synchronize_jobs(store, &configured, accounts) {
@@ -1075,6 +1099,7 @@ impl Monitor {
         let settings = store.load_settings()?;
         let configured = configured_schedules(&settings);
         let previous = self.state.clone();
+        self.restore_saved_authorizations(&settings);
         self.reconcile_activations(&configured);
         self.synchronize_health(&configured, accounts, now);
         if let Err(error) = self.synchronize_jobs(store, &configured, accounts) {
@@ -1192,6 +1217,61 @@ impl Monitor {
             }
         }
         Ok(())
+    }
+
+    fn restore_saved_authorizations(&mut self, settings: &Settings) {
+        self.state.activations.retain(|id, activation| {
+            (!settings.repository_authorizations.contains_key(id)
+                && activation.mode != ActivationMode::AllOpenAndFuture)
+                || settings.repositories.iter().any(|repository| {
+                    repository.id == *id
+                        && settings
+                            .repository_authorizations
+                            .get(id)
+                            .and_then(Option::as_ref)
+                            .is_some_and(|a| a.matches(repository))
+                })
+        });
+        for repository in &settings.repositories {
+            let Some(saved) = settings
+                .repository_authorizations
+                .get(&repository.id)
+                .and_then(Option::as_ref)
+                .filter(|saved| saved.matches(repository))
+            else {
+                continue;
+            };
+            if self
+                .state
+                .activations
+                .get(&repository.id)
+                .is_some_and(|a| a.version == saved.version)
+            {
+                continue;
+            }
+            let Ok(context) = Self::activation_context(settings, &repository.id) else {
+                continue;
+            };
+            self.state.activations.insert(
+                repository.id.clone(),
+                MonitoringActivation {
+                    version: saved.version.clone(),
+                    repository_id: repository.id.clone(),
+                    name: saved.name.clone(),
+                    account_id: saved.account_id.clone(),
+                    provider_repository_id: saved.repository_id.clone(),
+                    trigger_policy: context.trigger_policy,
+                    creation_watermark: 0,
+                    mode: ActivationMode::AllOpenAndFuture,
+                    selected_existing: 0,
+                    baseline: BTreeMap::new(),
+                    confirmed_at: 0,
+                },
+            );
+            // Explicit Save can broaden filters: re-read all open PRs, retaining
+            // queue/iteration evidence that prevents unchanged reviews repeating.
+            self.state.cursors.remove(&repository.id);
+        }
     }
 
     fn reconcile_activations(&mut self, configured: &[ConfiguredSchedule]) {
@@ -1476,7 +1556,7 @@ impl Monitor {
                     activation_matches_configuration(activation, configuration)
                 })
             {
-                unavailable_health(health, SCOPE_CONFIRMATION_REQUIRED);
+                unavailable_health(health, CONFIGURATION_SAVE_REQUIRED);
                 self.state.cursors.remove(&configuration.health_key);
                 continue;
             }
@@ -2443,6 +2523,9 @@ fn activation_admission_candidate(
     activation: &mut MonitoringActivation,
     pull: &PullRequest,
 ) -> bool {
+    if activation.mode == ActivationMode::AllOpenAndFuture {
+        return true;
+    }
     if pull.number > activation.creation_watermark {
         return true;
     }
@@ -2808,6 +2891,7 @@ fn configuration_failure(failure: Option<&str>) -> bool {
                 | "configuration_changed"
                 | "settings_unavailable"
                 | "scope_confirmation_required"
+                | "repository_configuration_required"
         )
     )
 }
