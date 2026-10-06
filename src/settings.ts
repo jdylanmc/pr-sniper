@@ -41,6 +41,15 @@ interface ResolvedRepository {
   repository: { id: string; name: string };
   account_generation: number;
 }
+interface RepositoryBrowseWarning {
+  boundary:
+    | "repository_page"
+    | "repository_metadata"
+    | "pagination"
+    | "organization_access";
+  page: number;
+  error: string | Record<string, number>;
+}
 interface Snapshot {
   settings: Settings | null;
   doctrine_catalog?: DoctrineCatalog | null;
@@ -158,14 +167,14 @@ const reason = (error: unknown) => {
     signed_out:
       "GitHub is disconnected. Connect the PR Sniper GitHub OAuth App, then try again.",
     missing_read_permission:
-      "GitHub denied read access. Check the repository or login and your account access.",
+      "GitHub denied read access for this account. Verify repository access and this app's organization authorization with your administrator, then retry.",
     rate_limited: "GitHub rate limited this lookup. Wait before trying again.",
     network: "Cannot reach GitHub. Check your network and try again.",
     timeout: "GitHub lookup timed out. Try again.",
     invalid_response:
-      "GitHub returned invalid data. Check the account and repository, then retry.",
+      "GitHub returned malformed or unsupported data. Retry; if it persists, report this lookup failure.",
     incomplete_read:
-      "GitHub did not return a complete repository list. No partial results were used; retry.",
+      "GitHub did not return a complete repository list. More repositories may be unavailable; retry.",
     missing_scope:
       "Reconnect the GitHub account with the required repository access, then retry.",
     organization_policy_denied:
@@ -176,7 +185,25 @@ const reason = (error: unknown) => {
       "The GitHub connection changed during this request. Retry with the current connected account.",
     provider_failure:
       "GitHub lookup failed. Check provider health and try again.",
+    provider_rejected:
+      "GitHub rejected this lookup. Check the selected account and provider policy before retrying.",
+    wrong_identity:
+      "GitHub returned a different account. Reconnect the selected account; no other account will be used.",
   };
+  if (error && typeof error === "object") {
+    if (
+      "rate_limited_after" in error &&
+      typeof error.rate_limited_after === "number" &&
+      error.rate_limited_after >= 0
+    )
+      return `${errors.rate_limited} Retry after ${error.rate_limited_after} seconds.`;
+    if (
+      "provider_failure_after" in error &&
+      typeof error.provider_failure_after === "number" &&
+      error.provider_failure_after >= 0
+    )
+      return `${errors.provider_failure} Retry after ${error.provider_failure_after} seconds.`;
+  }
   return typeof error === "string"
     ? (errors[error] ?? error)
     : "This action failed. Check local access and try again.";
@@ -1785,7 +1812,7 @@ export async function mountSettings(
       `Browse repositories as ${account.login}`,
       `<p class="settings-hint">Acting GitHub account: ${escape(account.login)} (${escape(account.account_id)}).</p>
       <label>Repository owner<select data-owner aria-label="Repository owner" disabled><option value="">Choose an owner</option></select></label>
-      <label>Find a repository<input type="search" data-owner-search placeholder="Search this owner..." /></label>
+      <label>Find a repository<input type="search" data-owner-search placeholder="Search this owner..." disabled /></label>
       <p role="status">Loading available owners...</p><p role="alert" hidden></p><button data-retry hidden>Retry</button>
       <div data-owner-results class="native-repository-list"></div>
       <p class="settings-hint">Only repositories accessible to this account are listed. Selecting adds a disabled row and opens configuration.</p>`,
@@ -1804,9 +1831,16 @@ export async function mountSettings(
     let generation = 0;
     let results: { id: string; name: string }[] = [];
     let loaded = false;
+    let resultsOwner = "";
+    let incomplete = false;
     let selecting = false;
+    const browserRoute = routeGeneration;
     const current = (read: number) =>
-      modal.open && modal.isConnected && read === generation;
+      modal.open &&
+      modal.isConnected &&
+      read === generation &&
+      browserRoute === routeGeneration &&
+      !app.closest("[hidden]");
     const connected = () =>
       githubAccounts.some(
         (a) => a.account_id === account.account_id && a.state === "connected",
@@ -1822,11 +1856,13 @@ export async function mountSettings(
         )
         .join("");
       if (loaded && owner.value)
-        status.textContent = !results.length
-          ? "No accessible repositories for this owner."
-          : !filtered.length
-            ? "No matching repositories. Try another name."
-            : `${results.length} accessible repositories loaded.`;
+        status.textContent = incomplete
+          ? `${results.length} accessible repositories shown. Repository discovery is incomplete; more may be unavailable.`
+          : !results.length
+            ? "No accessible repositories for this owner."
+            : !filtered.length
+              ? "No matching repositories. Try another name."
+              : `${results.length} accessible repositories loaded.`;
       list
         .querySelectorAll<HTMLButtonElement>("[data-pick]")
         .forEach((button) => {
@@ -1876,16 +1912,40 @@ export async function mountSettings(
           };
         });
     };
+    const showWarnings = (warnings: RepositoryBrowseWarning[] = []) => {
+      incomplete = warnings.length > 0;
+      alert.hidden = !incomplete;
+      retry.hidden = !incomplete;
+      alert.textContent = [
+        ...new Set(
+          warnings.map((warning) => {
+            const boundary = {
+              repository_page: "Repository page",
+              repository_metadata: "Repository metadata",
+              pagination: "Repository pagination",
+              organization_access: "Organization access",
+            }[warning.boundary];
+            return `${boundary} (page ${warning.page}): ${reason(warning.error)}`;
+          }),
+        ),
+      ].join(" ");
+    };
     const load = async () => {
       const read = ++generation;
-      loaded = false;
-      results = [];
-      list.replaceChildren();
+      const ownerLogin = owner.value;
+      const retaining = loaded && resultsOwner === ownerLogin;
+      if (!retaining) {
+        loaded = false;
+        results = [];
+        list.replaceChildren();
+      }
+      search.disabled = !loaded;
       alert.hidden = true;
       retry.hidden = true;
-      const ownerLogin = owner.value;
       status.textContent = ownerLogin
-        ? "Loading all accessible repositories for this owner..."
+        ? retaining
+          ? "Refreshing repositories; previously loaded results remain visible..."
+          : "Loading all accessible repositories for this owner..."
         : "Loading available owners...";
       try {
         if (!connected()) throw "Account disconnected. Reconnect in Accounts.";
@@ -1893,6 +1953,7 @@ export async function mountSettings(
           const result = await invoke<{
             identity: { id: string };
             owners: { login: string; kind: string }[];
+            warnings?: RepositoryBrowseWarning[];
           }>("list_provider_repository_owners", {
             provider: "github",
             accountId: account.account_id,
@@ -1906,12 +1967,15 @@ export async function mountSettings(
               .map((o) => option(o.login, `${o.login} (${o.kind})`, ""))
               .join("");
           owner.disabled = false;
-          status.textContent =
-            "Choose the personal account or an available organization.";
+          showWarnings(result.warnings);
+          status.textContent = incomplete
+            ? "Some owners may be unavailable. Choose a loaded owner or retry discovery."
+            : "Choose the personal account or an available organization.";
         } else {
           const result = await invoke<{
             identity: { id: string };
             repositories: { id: string; name: string }[];
+            warnings?: RepositoryBrowseWarning[];
           }>("list_provider_repositories", {
             provider: "github",
             accountId: account.account_id,
@@ -1928,12 +1992,32 @@ export async function mountSettings(
           )
             throw "GitHub returned an unexpected account or owner. Retry.";
           loaded = true;
+          resultsOwner = ownerLogin;
           results = result.repositories;
+          owner.disabled = false;
+          search.disabled = false;
+          showWarnings(result.warnings);
           renderResults();
         }
       } catch (cause) {
         if (current(read)) {
-          status.textContent = "Repository browsing unavailable.";
+          if (
+            !connected() ||
+            cause === "wrong_identity" ||
+            cause === "authentication_changed" ||
+            cause === "signed_out" ||
+            cause === "missing_scope"
+          ) {
+            loaded = false;
+            results = [];
+            list.replaceChildren();
+            search.disabled = true;
+            owner.disabled = true;
+          }
+          status.textContent = loaded
+            ? "Refresh failed. Previously loaded results remain visible; discovery is incomplete."
+            : "Repository browsing unavailable.";
+          incomplete = true;
           alert.textContent = reason(cause);
           alert.hidden = false;
           retry.hidden = false;

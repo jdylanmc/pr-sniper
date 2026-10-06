@@ -483,7 +483,14 @@ Use the magnifier for a connected GitHub account, choose its personal owner or
 an organization with accessible repositories, then search that owner's results.
 Organization availability is derived from the complete accessible repository
 catalog, not a claim to list every organization membership or private repository.
-Reads exhaust pagination and report errors rather than successful partial lists.
+Managed usernames (including their enterprise underscore suffix) are supported.
+Reads follow validated GitHub pagination. If organization single sign-on (SSO),
+malformed metadata or a later page fails, successfully read results remain
+usable with a visible boundary-specific warning; the list is never presented
+as complete or conclusively empty. **Retry** makes a fresh lookup using only
+the selected account and reports whether it succeeded. Missing repository scope
+requires explicit reconnect; organization authorization may require your
+administrator. No retry substitutes another account or the GitHub CLI login.
 **+ URL** accepts a GitHub URL or `owner/repository`, requires an explicit acting
 GitHub account, and validates stable repository identity. AI accounts are not
 repository accounts; Azure DevOps remains Coming soon.
