@@ -2938,6 +2938,7 @@ fn connection_error_code(error: ConnectionError) -> &'static str {
         ConnectionError::SignedOut => "SignedOut",
         ConnectionError::Timeout => "Timeout",
         ConnectionError::MissingReadPermission => "MissingReadPermission",
+        ConnectionError::RepositoryUnavailable => "RepositoryUnavailable",
         ConnectionError::MissingScope => "MissingScope",
         ConnectionError::OrganizationPolicyDenied => "OrganizationPolicyDenied",
         ConnectionError::RateLimited | ConnectionError::RateLimitedAfter(_) => "RateLimited",

@@ -167,6 +167,7 @@ for (const [error, expected] of [
   ["signed_out", "OAuth authorization is missing, expired, or rejected"],
   ["wrong_identity", "does not match"],
   ["missing_read_permission", "denied repository or pull-request read"],
+  ["repository_unavailable", "A 404 does not prove the repository is absent"],
   ["missing_scope", "no longer grants the required repo scope"],
   ["organization_policy_denied", "organization policy or SAML single sign-on"],
   ["rate_limited", "rate limited"],

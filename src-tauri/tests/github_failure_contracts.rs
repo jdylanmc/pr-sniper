@@ -127,7 +127,7 @@ fn unauthorized_account_is_signed_out_not_a_verified_connection() {
 }
 
 #[test]
-fn repository_or_pull_read_denial_is_missing_read_permission() {
+fn repository_or_pull_404_is_ambiguous_and_403_is_read_denial() {
     for path in [REPOSITORY, PULLS] {
         for status in [403, 404] {
             let mut transport = ready_transport();
@@ -144,7 +144,11 @@ fn repository_or_pull_read_denial_is_missing_read_permission() {
 
             assert_eq!(
                 result,
-                Err(ConnectionError::MissingReadPermission),
+                Err(if status == 404 {
+                    ConnectionError::RepositoryUnavailable
+                } else {
+                    ConnectionError::MissingReadPermission
+                }),
                 "GET {path}, status {status}"
             );
         }
