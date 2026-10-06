@@ -1,5 +1,34 @@
 # Settings behavioral tests
 
+`agent-intelligence.spec.mjs` exercises advertised reasoning efforts, context
+tiers and token capacities through the shared Agent editor and real native
+resource saves/restarts. Account/model changes retain incompatible deliberate
+choices until the operator explicitly repairs them; discovery failures never
+declare retained values invalid. Models with no advertised overrides explain
+disabled controls and offer Provider default only. Job inspectors distinguish
+captured requests, runtime-reported settings and unavailable legacy evidence,
+including after a later Agent edit.
+
+`actions.spec.mjs` also covers final-only Intelligence in both Diagnostics
+routes through real resource saves, native final admission and persisted action
+ledgers. Queued/captured/failed finals show bound requests without inventing an
+actual report; completed, legacy and absent records stay distinct after later
+Agent edits. Repeated read projections retain normal/reply/mention ordering and
+deduplicate execution IDs. The primary-final inspector retains its own snapshot.
+
+The native `review::runtime::tests` use the pinned SDK transport with synthetic
+account/model catalogs to check session payloads, readback, rejected/ignored
+overrides and failures before inference. Normal, primary-final, owned-reply and
+mention paths share this machinery. Run the separate
+`bundled_runtime_intelligence_offline` test explicitly with `--ignored
+--nocapture` to exercise the actual SDK 1.0.14 / runtime 1.0.85 production
+session configuration and model readback, using a rejecting loopback provider,
+no credentials and no inference. It is offline configuration evidence, not
+proof of a live account's advertised capabilities or a live model's reasoning
+quality. The runtime revalidates each actual account/model catalog, reads back
+the session configuration and blocks before inference if an override is not
+honored. No SDK/runtime upgrade or credential reset is part of this delivery.
+
 `repository-review-fixes.spec.mjs` follows the actual Manage Copilot accounts
 button in retained and standalone Settings, rejects rename/rebind collisions
 without leaving the originating editor, and checks incomplete enabled saves

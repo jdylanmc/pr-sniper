@@ -5,6 +5,13 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+### Added
+
+- Configure Agents with advertised reasoning-effort and context-tier choices,
+  explicit Provider defaults and visible unsupported selections. Preserve
+  deliberate choices and immutable job evidence, and verify actual session
+  configuration before inference. (#128)
+
 ### Changed
 
 - Update the browser-only visual prototype with account/organization repository
