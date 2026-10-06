@@ -46,6 +46,7 @@ fn job() -> QueueJob {
 
 fn pull() -> PullRequest {
     PullRequest {
+        mentioned: false,
         id: "9".into(),
         number: 1,
         title: "Review".into(),
@@ -535,7 +536,6 @@ fn every_before_after_mutation_seam_revalidates_policy_revision_and_lifecycle() 
         Change::Author,
         Change::Disabled,
         Change::Comment,
-        Change::Gate,
         Change::Cancel,
         Change::Scope,
         Change::Permission,
@@ -580,6 +580,26 @@ fn every_before_after_mutation_seam_revalidates_policy_revision_and_lifecycle() 
             }
         }
     }
+}
+
+#[test]
+fn retired_publication_defaults_never_override_actual_assignment_permission() {
+    for seam in 1..=7 {
+        let mut fixture = Fixture::new();
+        fixture.change = Some((seam, Change::Gate));
+        let mut run = publication();
+        fixture.run(&mut run).unwrap();
+        assert!(fixture.change.is_none());
+        assert_eq!(fixture.visible(), 1);
+        assert_eq!(run.phase, Phase::Published);
+    }
+    let mut fixture = Fixture::new();
+    fixture.settings.defaults.automatic_comment_publication = true;
+    fixture.settings.repositories[0].assignments[0].comment = false;
+    let mut run = publication();
+    fixture.run(&mut run).unwrap();
+    assert_eq!(fixture.writes(), 0);
+    assert_eq!(fixture.visible(), 0);
 }
 
 #[test]

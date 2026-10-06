@@ -26,10 +26,12 @@ use std::collections::BTreeMap;
 const REPO: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const NOW: i64 = 1_800_000_000;
 
+mod primary_capabilities;
 mod retention_identity;
 
 fn pull(head: char) -> PullRequest {
     PullRequest {
+        mentioned: false,
         id: "9".into(),
         number: 1,
         title: "Review".into(),
@@ -93,7 +95,8 @@ fn tracking_fixture(count: usize) -> (tempfile::TempDir, Store) {
         settings.agents.push(serde_json::from_value(json!({"id":agent,"name":format!("Agent {i}"),"model":"model",
             "ai_account":{"provider":"copilot","account_id":"33"},"prompt":"Review correctness.","signature":"machine"})).unwrap());
         settings.repositories[0].assignments.push(serde_json::from_value(json!({
-            "id":format!("cccccccc-cccc-4ccc-8ccc-{i:012}"),"agent_id":agent,"schedule":settings.defaults.schedule,"comment":true
+            "id":format!("cccccccc-cccc-4ccc-8ccc-{i:012}"),"agent_id":agent,"schedule":settings.defaults.schedule,"comment":true,
+            "actions":{"reply":count==1,"approve":false,"merge":false}
         })).unwrap());
     }
     store.save_settings(&settings).unwrap();
@@ -116,12 +119,44 @@ fn tracking_fixture(count: usize) -> (tempfile::TempDir, Store) {
         },
     );
     store.save_monitoring_state(&state).unwrap();
-    poll(&store, 'a', NOW);
+    let ticket = poll(&store, 'a', NOW);
+    admit_scan(
+        &store,
+        &ticket,
+        Scan {
+            mentions: vec![(
+                MentionBinding {
+                    configuration_id: REPO.into(),
+                    account_id: "22".into(),
+                    account_login: "actor".into(),
+                    repository_id: "100".into(),
+                    repository_name: "example/repo".into(),
+                    pull_request_id: "9".into(),
+                    number: 1,
+                },
+                vec![],
+            )],
+            ..Scan::default()
+        },
+        NOW + 2,
+    )
+    .unwrap();
     (root, store)
 }
 
 fn fixture(count: usize) -> (tempfile::TempDir, Store, Publication, Thread) {
     let (root, store) = tracking_fixture(count);
+    let mut assigned = store.load_settings().unwrap();
+    if count > 1 {
+        assigned.repositories[0].primary_assignment_id =
+            Some(assigned.repositories[0].assignments[0].id.clone());
+    }
+    assigned.repositories[0].assignments[0]
+        .actions
+        .as_mut()
+        .unwrap()
+        .reply = true;
+    store.save_settings(&assigned).unwrap();
     let settings = store.load_settings().unwrap();
     let jobs = store.load_queue().unwrap();
     let reviews=jobs.iter().enumerate().map(|(i,job)| {
@@ -179,6 +214,28 @@ fn fixture(count: usize) -> (tempfile::TempDir, Store, Publication, Thread) {
             published_at: "2026-09-30T00:00:00Z".into(),
         }],
     };
+    let ticket = poll(&store, 'a', NOW + 4);
+    admit_scan(
+        &store,
+        &ticket,
+        Scan {
+            threads: vec![(
+                MentionBinding {
+                    configuration_id: REPO.into(),
+                    account_id: "22".into(),
+                    account_login: "actor".into(),
+                    repository_id: "100".into(),
+                    repository_name: "example/repo".into(),
+                    pull_request_id: "9".into(),
+                    number: 1,
+                },
+                vec![thread.clone()],
+            )],
+            ..Scan::default()
+        },
+        NOW + 5,
+    )
+    .unwrap();
     (root, store, origin, thread)
 }
 
@@ -200,8 +257,8 @@ fn mention(id: &str, body: &str) -> TopComment {
     TopComment {
         id: id.into(),
         body: body.into(),
-        author_id: Some("22".into()),
-        author_login: Some("actor".into()),
+        author_id: Some("11".into()),
+        author_login: Some("author".into()),
         created_at: "2026-09-30T00:01:00Z".into(),
         updated_at: "2026-09-30T00:01:00Z".into(),
     }
@@ -221,6 +278,7 @@ fn observe(
         &ticket,
         Scan {
             retained: vec![],
+            threads: vec![],
             feedback: vec![Observed {
                 origin: origin.clone(),
                 head: head.to_string().repeat(40),
@@ -302,7 +360,7 @@ fn output_for(
         conversation: run.input(),
         trigger_id: run.trigger_id.clone(),
         feedback: run.context.feedback.clone(),
-        owner_agent_id: run.context.selection.agent.id.clone(),
+        owner_agent_id: run.assessment_owner().into(),
     };
     let output = task
         .validate(
@@ -450,7 +508,7 @@ fn review_and_publish(store: &Store, output: Value, now: i64) -> Publication {
         .find(|c| c.review_operation_id == review.operation.id)
         .unwrap();
     assert!(candidate.blocked.is_none(), "{:?}", candidate.blocked);
-    let mut publication = Publication::new(review, false, true, now + 2).unwrap();
+    let mut publication = Publication::new(review, true, false, now + 2).unwrap();
     publication::execute(
         &mut ReviewPublication {
             store,
@@ -655,7 +713,7 @@ fn r73_completed_second_publication_allows_validated_same_head_reply_clearance()
     ] {
         let (root, store, origin, mut thread, next) = two_published_iterations(false);
         let archive = std::fs::read(root.path().join("state/publications.json")).unwrap();
-        explanation(&mut thread, "22");
+        explanation(&mut thread, "11");
         thread.comments[1].reply_to = Some(thread.comments[0].id.clone());
         thread.comments[1].review_id = thread.comments[0].review_id.clone();
         observe(&store, &origin, &thread, 'c', vec![], NOW + 30);
@@ -697,6 +755,7 @@ fn r73_completed_second_publication_allows_validated_same_head_reply_clearance()
 fn mention_scan(comments: Vec<TopComment>) -> Scan {
     Scan {
         retained: vec![],
+        threads: vec![],
         feedback: vec![],
         mentions: vec![(
             MentionBinding {
@@ -749,6 +808,7 @@ fn retention_mixed_old_and_new_publications_observe_all_feedback_before_admittin
     new_thread.comments[0].body = current.batch.as_ref().unwrap().comments[0].body.clone();
     explanation(&mut old_thread, "11");
     let observations = || Scan {
+        threads: vec![],
         retained: vec![crate::retention::Observed {
             origin: retained.clone(),
             head: "a".repeat(40),
@@ -768,7 +828,7 @@ fn retention_mixed_old_and_new_publications_observe_all_feedback_before_admittin
     assert_eq!(contexts.len(), 2);
     let runs = store.load_follow_ups().unwrap();
     assert_eq!(runs.len(), 1);
-    assert!(matches!(runs[0].target, ConversationTarget::Retained(_)));
+    assert!(matches!(runs[0].target, ConversationTarget::Thread { .. }));
     assert_eq!(runs[0].context.feedback.len(), 2);
 }
 
@@ -840,6 +900,10 @@ fn cleared_fixture() -> (tempfile::TempDir, Store, Publication, Thread) {
 fn r5_blocked_mention_moves_only_its_exact_result_once() {
     use crate::retention::{page, PageRequest};
     let (root, store, origin, thread) = fixture(2);
+    let mut no_primary = store.load_settings().unwrap();
+    no_primary.repositories[0].primary_assignment_id = None;
+    no_primary.repositories[0].assignments[0].actions = None;
+    store.save_settings(&no_primary).unwrap();
     let mut feedback = store.load_feedback().unwrap();
     feedback
         .observe(&origin, &"a".repeat(40), &[thread])
@@ -1221,12 +1285,10 @@ fn current_iteration_owner_reply_keeps_original_review_root_and_receipts() {
     let runs = store.load_follow_ups().unwrap();
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].context.job.head_sha, "c".repeat(40));
-    assert_eq!(runs[0].owned().unwrap().review.job.head_sha, "a".repeat(40));
     assert_eq!(
         runs[0]
-            .owned()
+            .thread()
             .unwrap()
-            .thread
             .root()
             .unwrap()
             .original_commit
@@ -1288,7 +1350,7 @@ fn current_iteration_owner_reply_keeps_original_review_root_and_receipts() {
 fn same_head_explanation_clears_only_with_an_explicit_validated_assessment() {
     for clear in [false, true] {
         let (root, store, origin, mut thread) = fixture(1);
-        explanation(&mut thread, "22");
+        explanation(&mut thread, "11");
         observe(&store, &origin, &thread, 'a', vec![], NOW + 10);
         let archive = std::fs::read(root.path().join("state/reviews.json")).unwrap();
         let jobs = store.load_queue().unwrap();
@@ -1451,6 +1513,7 @@ fn observing_removed_owners_does_not_transfer_or_erase_feedback() {
     let (_root, store, origin, mut thread) = fixture(2);
     let mut settings = store.load_settings().unwrap();
     settings.repositories[0].assignments.remove(0);
+    settings.repositories[0].primary_assignment_id = None;
     store.save_settings(&settings).unwrap();
     explanation(&mut thread, "11");
     let ticket = poll(&store, 'c', NOW + 10);
@@ -1465,6 +1528,7 @@ fn observing_removed_owners_does_not_transfer_or_erase_feedback() {
         &ticket,
         Scan {
             retained: vec![],
+            threads: vec![],
             feedback: vec![Observed {
                 origin: origin.clone(),
                 head: "c".repeat(40),
@@ -1475,7 +1539,12 @@ fn observing_removed_owners_does_not_transfer_or_erase_feedback() {
         NOW + 12,
     )
     .unwrap();
-    assert!(store.load_follow_ups().unwrap().is_empty());
+    let responders = store.load_follow_ups().unwrap();
+    assert_eq!(responders.len(), 1);
+    assert_eq!(
+        responders[0].context.assignment_id,
+        settings.repositories[0].assignments[0].id
+    );
     let job = store.load_queue().unwrap().pop().unwrap();
     assert_eq!(
         crate::feedback::views(&store, &job).unwrap()[0].state,
@@ -1487,6 +1556,10 @@ fn observing_removed_owners_does_not_transfer_or_erase_feedback() {
 #[test]
 fn one_mention_routes_to_primary_with_stable_order_and_no_role_change_replay() {
     let (_root, store, origin, thread) = fixture(7);
+    let mut unassigned = store.load_settings().unwrap();
+    unassigned.repositories[0].primary_assignment_id = None;
+    unassigned.repositories[0].assignments[0].actions = None;
+    store.save_settings(&unassigned).unwrap();
     let comment = mention("501", "@actor please explain the contract.");
     observe(
         &store,
@@ -1573,16 +1646,19 @@ fn handled_mentions_and_signed_output_do_not_retrigger_across_restart() {
         NOW + 10,
     );
     let capacity = Capacity::default();
-    let Dispatch::Reply(mut run, _) = capacity
-        .dispatch(&store, NOW + 20)
-        .unwrap()
-        .dispatched
-        .remove(0)
-    else {
-        panic!("Mention expected")
-    };
-    let result = output_for(&run, ReplyDecision::Quiet, vec![]);
-    complete_analysis(&store, &mut run, Ok(result), true, NOW + 21).unwrap();
+    let batch = capacity.dispatch(&store, NOW + 20).unwrap();
+    assert_eq!(
+        batch.dispatched.len(),
+        2,
+        "Non-mentions also receive a primary assessment."
+    );
+    for work in batch.dispatched {
+        let Dispatch::Reply(mut run, _) = work else {
+            panic!("Conversation expected");
+        };
+        let result = output_for(&run, ReplyDecision::Quiet, vec![]);
+        complete_analysis(&store, &mut run, Ok(result), true, NOW + 21).unwrap();
+    }
     let order = store.load_queue_state().unwrap().next_enqueue_order;
     super::super::restore(&store).unwrap();
     observe(
@@ -1596,8 +1672,8 @@ fn handled_mentions_and_signed_output_do_not_retrigger_across_restart() {
         ],
         NOW + 30,
     );
-    assert_eq!(store.load_follow_ups().unwrap().len(), 1);
-    assert_eq!(store.load_feedback().unwrap().mentions.len(), 1);
+    assert_eq!(store.load_follow_ups().unwrap().len(), 2);
+    assert_eq!(store.load_feedback().unwrap().mentions.len(), 2);
     assert_eq!(store.load_queue_state().unwrap().next_enqueue_order, order);
     assert!(Capacity::default()
         .dispatch(&store, NOW + 40)
@@ -1647,6 +1723,7 @@ fn legacy_missing_local_configuration_does_not_orphan_verified_owned_roots() {
         &ticket,
         Scan {
             retained: vec![],
+            threads: vec![],
             feedback: vec![Observed {
                 origin: origin.clone(),
                 head: "c".repeat(40),
@@ -1969,9 +2046,9 @@ fn unavailable_owner_stays_blocked_but_assigned_fork_conversation_needs_no_conse
         .is_err());
     assert!(run
         .validate_current(&settings, &run.context.job, &fork, true, false)
-        .is_err());
+        .is_ok());
     settings.repositories[0].assignments[0].comment = false;
-    assert!(run.authority(&settings, &run.context.job).is_err());
+    assert!(run.authority(&settings, &run.context.job).unwrap());
 }
 
 #[test]
@@ -2119,6 +2196,7 @@ impl Environment for MentionEnvironment<'_> {
             let mut settings = self.store.load_settings().unwrap();
             settings.repositories[0].primary_assignment_id =
                 Some(settings.repositories[0].assignments[1].id.clone());
+            settings.repositories[0].assignments[0].actions = None;
             self.store.save_settings(&settings).unwrap();
         }
         result
@@ -2155,14 +2233,14 @@ fn mention_lost_response_reconciles_original_body_after_primary_change_without_r
     complete_analysis(&store, &mut run, Ok(result), true, NOW + 21).unwrap();
     run.publication = Some(run.operation("mention_reply", NOW + 22));
     run.confirmed = true;
-    run.automatic_publication = false;
+    run.automatic_publication = true;
     run.body = Some(run.reply_body().unwrap());
     save_to_store(&store, &run).unwrap();
     let original_body = run.body.clone();
     let original_agent = run.context.selection.agent.id.clone();
     let wire = CommentWire(Arc::new(Mutex::new(CommentServer {
         comments: vec![json!({
-            "id":501,"body":comment.body,"user":{"id":22,"login":"actor"},"created_at":comment.created_at,
+            "id":501,"body":comment.body,"user":{"id":11,"login":"author"},"created_at":comment.created_at,
             "updated_at":comment.updated_at,"issue_url":"https://api.github.com/repos/example/repo/issues/1"
         })],
         writes: 0,

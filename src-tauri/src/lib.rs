@@ -1481,12 +1481,12 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                 if connection.repository.id != ticket_for_poll.provider_repository_id {
                     return Err(ConnectionError::RepositoryChanged);
                 }
-                let pull_requests = client
+                let mut pull_requests = client
                     .poll_tracked_pull_requests(&connection.repository, &ticket_for_poll.tracked)?;
                 let follow_ups = follow_up::host::scan(
                     &app,
                     &ticket_for_poll,
-                    &pull_requests,
+                    &mut pull_requests,
                     &connection.identity,
                 )?;
                 Ok((
@@ -4557,6 +4557,7 @@ mod github_auth_tests {
                 },
             },
             pull_requests: vec![PullRequest {
+                mentioned: false,
                 id: "1".into(),
                 number: 1,
                 title: "PR 1".into(),

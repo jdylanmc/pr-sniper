@@ -35,15 +35,21 @@ impl Basis {
         let mut current = self.clone();
         current.selection.policy.automatic_agent_start =
             other.selection.policy.automatic_agent_start;
+        current.selection.policy.automatic_comment_publication =
+            other.selection.policy.automatic_comment_publication;
         if let (Some(left), Some(right)) = (
             current.selection.configuration.as_mut(),
             other.selection.configuration.as_ref(),
         ) {
             left.repository.overrides.automatic_agent_start =
                 right.repository.overrides.automatic_agent_start;
+            left.repository.overrides.automatic_comment_publication =
+                right.repository.overrides.automatic_comment_publication;
         }
         current.repository.overrides.automatic_agent_start =
             other.repository.overrides.automatic_agent_start;
+        current.repository.overrides.automatic_comment_publication =
+            other.repository.overrides.automatic_comment_publication;
         if monitoring::actionable(&current.job) && monitoring::actionable(&other.job) {
             current.job.waiting = other.job.waiting.clone();
         }
@@ -220,10 +226,8 @@ pub fn basis(store: &Store, item_id: &str) -> Result<Basis, String> {
         .map(|a| repository.assignment_authority(a))
         .ok_or("Primary unavailable.")?;
     let permissions = ActionPermissions {
-        approve: repository
-            .assignments
-            .iter()
-            .any(|a| repository.assignment_authority(a).approve),
+        reply: authority.reply,
+        approve: authority.approve,
         merge: authority.merge,
     };
     let feedback = feedback::contexts(store, &job, &selection.agent.id).map_err(|e| e.message)?;
@@ -602,6 +606,49 @@ pub fn ready(
     } {
         return Err("This provider action is not opted in.".into());
     }
+    if action == Action::Merge {
+        let latest = observation.reviews.iter().rev().find(|review| {
+            review.actor_id == observation.account_id
+                && matches!(
+                    review.state.as_str(),
+                    "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED"
+                )
+        });
+        let current_approval = latest.filter(|review| {
+            review.state == "APPROVED"
+                && review.head == observation.head
+                && review.submitted_at.is_some()
+        });
+        let confirmed = current_approval.is_some()
+            && store.load_actions()?.effects.iter().any(|effect| {
+                same_scope(effect, &run.basis.job)
+                    && effect.item_id == run.basis.item_id
+                    && effect.action == Action::Approve
+                    && effect.state == EffectState::Confirmed
+                    && effect.error.is_none()
+                    && effect.receipt.as_ref().is_some_and(|receipt| {
+                        receipt.action == Action::Approve
+                            && receipt.actor_id == observation.account_id
+                            && receipt.head == observation.head
+                            && observation.reviews.iter().any(|review| {
+                                review.id == receipt.id
+                                    && review.actor_id == receipt.actor_id
+                                    && review.head == observation.head
+                                    && review.state == "APPROVED"
+                                    && review.body == effect.body
+                            })
+                    })
+            });
+        let observed_existing = current_approval.is_some_and(|approval| {
+            run.observation
+                .reviews
+                .iter()
+                .any(|review| review == approval)
+        });
+        if !confirmed && !observed_existing {
+            return Err("Merge requires this iteration's confirmed acting-account approval before transmission.".into());
+        }
+    }
     if let Some(reason) = observation.blocker(action) {
         return Err(reason);
     }
@@ -954,6 +1001,10 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
         };
         let primary = repository.primary_assignment_id();
         let permissions = ActionPermissions {
+            reply: repository
+                .assignments
+                .iter()
+                .any(|a| repository.assignment_authority(a).reply),
             approve: repository
                 .assignments
                 .iter()

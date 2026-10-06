@@ -163,6 +163,7 @@ fn retained_origin_controls_launch_conflicts_even_if_ordinary_evidence_differs()
 
 fn pull(review: &ReviewRun) -> PullRequest {
     PullRequest {
+        mentioned: false,
         id: review.job.pull_request_id.clone(),
         number: review.job.number,
         title: review.job.title.clone(),

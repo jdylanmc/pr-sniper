@@ -75,6 +75,12 @@ export type Job = QueueItem["job"] & {
 };
 
 export interface MonitoringSnapshot {
+  pending_threads?: {
+    work_id: string;
+    binding: { repository_name: string; number: number };
+    thread: { id: string };
+    blocked: string | null;
+  }[];
   mentions?: MentionRouting[];
   global_scan?: {
     schedule_key: string;

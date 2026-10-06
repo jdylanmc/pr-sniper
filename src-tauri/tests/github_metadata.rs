@@ -138,6 +138,7 @@ fn metadata_exhausts_pull_request_and_file_pages_without_losing_verified_fields(
         result,
         Ok(vec![
             PullRequest {
+                mentioned: false,
                 id: "1001".into(),
                 number: 31,
                 title: "Preserve stable identities".into(),
@@ -182,6 +183,7 @@ fn metadata_exhausts_pull_request_and_file_pages_without_losing_verified_fields(
                 ],
             },
             PullRequest {
+                mentioned: false,
                 id: "1002".into(),
                 number: 32,
                 title: "Read merged metadata".into(),

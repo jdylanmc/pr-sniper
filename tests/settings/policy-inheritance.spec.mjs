@@ -70,14 +70,21 @@ test("reusable Agents keep independent repository assignments and preserve legac
       modal.locator("[name=frequency],[name=cron],[name=timezone]"),
     ).toHaveCount(0);
     await modal
-      .getByRole("checkbox", { name: /^Comment/ })
+      .getByRole("checkbox", { name: /^Publish Comment/ })
       .setChecked(index === 1);
-    await expect(
-      modal.getByRole("checkbox", { name: /^Approve/ }),
-    ).toBeEnabled();
-    await expect(
-      modal.getByRole("checkbox", { name: /^Approve/ }),
-    ).not.toBeChecked();
+    if (index === 1) {
+      await expect(
+        modal.getByRole("radio", { name: "Approve", exact: true }),
+      ).toHaveCount(0);
+      await expect(modal.locator("[data-primary-permissions]")).toBeHidden();
+    } else {
+      await expect(
+        modal.getByRole("radio", { name: "Approve", exact: true }),
+      ).toBeEnabled();
+      await expect(
+        modal.getByRole("radio", { name: "Neither", exact: true }),
+      ).toBeChecked();
+    }
     await saveAssignment(page, modal);
   }
   expect(

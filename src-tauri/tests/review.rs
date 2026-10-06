@@ -57,6 +57,7 @@ fn settings() -> Settings {
 
 fn pull() -> PullRequest {
     PullRequest {
+        mentioned: false,
         id: "9".into(),
         number: 1,
         title: "Review".into(),

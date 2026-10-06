@@ -1,13 +1,11 @@
 use super::*;
 use crate::{
     feedback::{Context, Record},
-    follow_up::{ConversationContext, FollowUp},
     github::{
         metadata::{Lifecycle, PullRequest},
         threads::Thread,
     },
     monitoring::PollTicket,
-    review::Selection,
 };
 
 pub(crate) struct Observed {
@@ -82,7 +80,6 @@ pub(crate) fn admit_observations(
     let settings = store.load_settings()?;
     let mut receipts = load(store)?;
     let mut feedback = store.load_feedback()?;
-    let mut eligible = Vec::new();
     for observation in observed {
         let (scope, origin) = receipts
             .receipts
@@ -180,56 +177,12 @@ pub(crate) fn admit_observations(
                 feedback.records.push(record);
             }
         }
-        eligible.push((origin.clone(), tracked, observation.threads));
     }
     save(store, &receipts)?;
     store.save_feedback(&feedback)?;
-    let mut runs = store.load_follow_ups()?;
-    for (origin, tracked, threads) in eligible {
-        let Some(job) = jobs.iter().rev().find(|j| {
-            origin.matches(j)
-                && crate::queue::item_id(j) == tracked.item_id
-                && j.head_sha == tracked.head_sha
-                && j.assignment_id.as_deref() == Some(&origin.proof.assignment_id)
-                && j.work
-                    .as_ref()
-                    .is_some_and(|w| w.agent_id == origin.proof.agent_id)
-                && crate::monitoring::review_policy(&settings, j, None).is_ok()
-        }) else {
-            continue;
-        };
-        let selection = Selection::resolve(&settings, job, &origin.proof.assignment_id)?;
-        for thread in threads {
-            if thread.resolved
-                || !thread.can_reply
-                || thread
-                    .root()
-                    .is_ok_and(|r| origin.closed_roots.contains(&r.id))
-                || thread.latest_external(&job.account_id).is_none()
-            {
-                continue;
-            }
-            let context = ConversationContext {
-                assignment_id: origin.proof.assignment_id.clone(),
-                job: job.clone(),
-                selection: selection.clone(),
-                trust_confirmed: false,
-                feedback: crate::feedback::contexts(store, job, &selection.agent.id)
-                    .map_err(|e| e.message)?,
-                feedback_checked: true,
-            };
-            let run = FollowUp::retained(&origin, thread, context)?;
-            if known_key(store, &run.key)? {
-                continue;
-            }
-            if crate::follow_up::admit_stored(store, &mut runs, run)? {
-                let run = runs
-                    .last_mut()
-                    .ok_or("Retained follow-up admission disappeared.")?;
-                run.enqueue_order = Some(store.allocate_enqueue_order()?);
-                run.enqueued_at = Some(now);
-            }
-        }
-    }
-    store.save_follow_ups(&runs)
+    // Conversation admission is primary-routed by the shared scan. Retention
+    // observes original ownership and human closure; it must not fan out work
+    // to the historical author or replay a reopened conversation.
+    let _ = now;
+    Ok(())
 }

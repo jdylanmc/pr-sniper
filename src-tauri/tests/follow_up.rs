@@ -10,10 +10,7 @@ use pr_sniper_lib::{
         ConnectionError, Identity,
     },
     monitoring::{JobOperation, OperationState, QueueJob},
-    publication::{
-        self, Batch, GatePermissions, InlineComment, Publication, Receipt, RemoteState,
-        WriteFailure,
-    },
+    publication::{Batch, InlineComment, Publication, Receipt, RemoteState, WriteFailure},
     review::{Failure, ReviewResult, ReviewRun, Selection},
     storage::{Settings, Store},
 };
@@ -31,7 +28,8 @@ fn settings() -> Settings {
     serde_json::from_value(json!({
         "launch_at_login":false,"repositories":[{"id":REPOSITORY,"provider":"github","name":"example/repo","enabled":true,
         "provider_account_id":"22","provider_repository_id":"100","watched_authors":[{"id":"11","login":"author"}],
-        "assignments":[{"id":ASSIGNMENT,"agent_id":AGENT,"schedule":{"kind":"interval","minutes":5,"timezone":"UTC"},"comment":true}]}],
+        "assignments":[{"id":ASSIGNMENT,"agent_id":AGENT,"schedule":{"kind":"interval","minutes":5,"timezone":"UTC"},"comment":true,
+            "actions":{"reply":true,"approve":false,"merge":false}}]}],
         "agents":[{"id":AGENT,"name":"Reviewer","model":"model","ai_account":{"provider":"copilot","account_id":"33"},
         "prompt":"Review correctness.","signature":"stored"}]
     })).unwrap()
@@ -99,6 +97,7 @@ fn thread() -> Thread {
 }
 fn pull() -> PullRequest {
     PullRequest {
+        mentioned: false,
         id: "9".into(),
         number: 1,
         title: "Review".into(),
@@ -406,20 +405,13 @@ impl Environment for Fixture {
         if self.wire.0.lock().unwrap().changed_head {
             pull.head_sha = "c".repeat(40);
         }
-        Ok(publication::evaluate_review_gate(
-            &settings(),
-            &run.owned().unwrap().review,
-            Some(&run.context.job),
-            &pull,
-            GatePermissions {
-                active: true,
-                can_comment: true,
-                cancelled: self.withdrawn,
-                automatic: run.automatic_publication,
-                confirmed: run.confirmed,
-            },
-        )
-        .stop)
+        if self.withdrawn {
+            return Ok(Some("Publication cancelled.".into()));
+        }
+        Ok(run
+            .validate_current(&settings(), &run.context.job, &pull, true, true)
+            .err()
+            .map(|error| error.message))
     }
     fn reply(&mut self, run: &FollowUp) -> Result<String, WriteFailure> {
         let thread = self.observe(run).map_err(|failure| WriteFailure {
@@ -591,16 +583,57 @@ fn retention_compact_origin_reconciles_a_lost_reply_without_reposting() {
 fn last_local_check_rejects_withdrawn_or_changed_publication_grants() {
     let mut run = prepared(&origin());
     let mut current = run.clone();
-    assert!(run.check_publication_grant(&current, false).is_ok());
+    assert!(run.check_publication_grant(&current, false).is_err());
     current.confirmed = false;
     assert!(run.check_publication_grant(&current, false).is_err());
     current.confirmed = true;
-    assert!(run.check_publication_grant(&current, true).is_err());
+    assert!(run.check_publication_grant(&current, true).is_ok());
     run.automatic_publication = true;
     current.confirmed = false;
     assert!(run.check_publication_grant(&current, true).is_ok());
     current.cancelled = true;
     assert!(run.check_publication_grant(&current, true).is_err());
+}
+
+#[test]
+fn general_provider_threads_keep_original_authorship_and_reply_as_the_acting_identity() {
+    let fixture = Fixture::new();
+    {
+        let mut server = fixture.wire.0.lock().unwrap();
+        server.threads[0].comments[0].author_id = Some("44".into());
+        server.threads[0].comments[0].body = "An unowned review question".into();
+    }
+    let client = GithubClient::new(fixture.wire.clone());
+    let threads = client
+        .review_threads_at("example/repo", "100", "9", 1, &"a".repeat(40))
+        .unwrap();
+    assert_eq!(threads[0].comments[0].author_id.as_deref(), Some("44"));
+    assert!(
+        client.owned_threads(&fixture.origin).is_err(),
+        "General routing does not forge owned-root provenance."
+    );
+    assert!(client.review_thread("101", "9", "thread-node").is_err());
+    assert!(client.review_thread("100", "10", "thread-node").is_err());
+    let body = "Automated follow-up by PR Sniper / Agent Primary / model model.\n\nNew evidence.\n<!-- pr-sniper:reply:general -->\n\nPR Sniper";
+    let id = client
+        .reply_to_review_thread("example/repo", 1, "22", "100", body)
+        .map_err(|error| error.failure.message)
+        .unwrap();
+    assert_eq!(id, "200");
+    let current = client
+        .review_thread("100", "9", "thread-node")
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.comments[0].author_id.as_deref(), Some("44"));
+    assert_eq!(
+        current.comments.last().unwrap().author_id.as_deref(),
+        Some("22")
+    );
+    assert_eq!(
+        current.comments.last().unwrap().reply_to.as_deref(),
+        Some("100")
+    );
+    assert_eq!(fixture.writes(), 1);
 }
 
 #[test]

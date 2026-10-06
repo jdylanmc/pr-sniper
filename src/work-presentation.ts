@@ -10,7 +10,7 @@ export const purposes: Record<WorkKind, string> = {
   normal: "Normal pass",
   primary_final: "Primary final review",
   reply: "Targeted reply",
-  mention: "Primary mention",
+  mention: "Primary conversation",
 };
 
 export interface WorkPresentation {
@@ -136,12 +136,27 @@ export function workPresentation(
         (f.run.target?.kind === "mention" ? "mention" : "reply") === kind,
     );
     if (!candidate) {
+      const pending =
+        kind === "reply" &&
+        snapshot.pending_threads?.find((intent) => intent.work_id === id);
+      if (pending)
+        return {
+          agent: "Primary unavailable",
+          subject: `Discussion ${pending.thread.id}`,
+          reference: `${pending.binding.repository_name} #${pending.binding.number}`,
+          ordinal,
+          count,
+          state: "blocked",
+          captured: false,
+          attempt: null,
+          trigger: pending.blocked ?? "Awaiting durable primary assessment",
+        };
       const mention =
         kind === "mention" && snapshot.mentions?.find((m) => m.work_id === id);
       if (!mention) return;
       return {
         agent: "Primary unavailable",
-        subject: `Mention ${mention.comment.id}`,
+        subject: `Comment ${mention.comment.id}`,
         reference: `${mention.binding.repository_name} #${mention.binding.number}`,
         ordinal,
         count,
@@ -169,12 +184,15 @@ export function workPresentation(
           ? "Outcome unknown; no confirmed reply receipt. Reconcile the original intent."
           : run.publication
             ? `${run.publication.state.replaceAll("_", " ")}; no confirmed reply receipt`
-            : run.result && run.result.output.decision !== "reply"
-              ? "No automated reply"
-              : "Not started; no confirmed reply receipt",
+            : run.result?.output.decision === "reply" &&
+                !candidate.automatic_publication
+              ? "Local response; Reply Comment permission is off. No provider write authorized."
+              : run.result && run.result.output.decision !== "reply"
+                ? "No automated reply"
+                : "Not started; no confirmed reply receipt",
       cancelled: run.cancelled,
     };
-    trigger = `External comment ${run.trigger_id}; ${kind === "mention" ? "acting-account mention" : "owned-thread reply"}`;
+    trigger = `Other-user comment ${run.trigger_id}; ${kind === "mention" ? "primary conversation assessment" : "primary thread assessment"}`;
     ordinal =
       run.reply_ordinal == null
         ? purposes[kind]
@@ -364,16 +382,24 @@ export function renderConfiguration(
     details.append(policyTitle);
     renderFacts(details, [
       ["May comment", authority ? on(authority.comment) : "Not recorded"],
+      [
+        "May reply",
+        authority
+          ? authority.reply === undefined
+            ? "Not recorded (historical)"
+            : on(authority.reply)
+          : "Not recorded",
+      ],
       ["May approve", authority ? on(authority.approve) : "Not recorded"],
       ["May merge", authority ? on(authority.merge) : "Not recorded"],
     ]);
     if (policy)
       renderFacts(details, [
         [
-          "Publication",
+          "Retired publication preference (historical only)",
           policy.automatic_comment_publication
-            ? "Automatic when permitted"
-            : "Confirmation required when permitted",
+            ? "Recorded automatic; assignment grants govern current writes"
+            : "Recorded off; assignment grants govern current writes",
         ],
         [
           "Watched authors",

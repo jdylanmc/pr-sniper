@@ -6,7 +6,7 @@ import {
   closeDialog,
 } from "./navigation.mjs";
 
-test("publication permission is independent, inherited and persisted", async ({
+test("retired publication defaults and repository overrides are not permission controls", async ({
   page,
   store,
 }) => {
@@ -16,46 +16,28 @@ test("publication permission is independent, inherited and persisted", async ({
   await store("seed_settings", setup);
   await page.goto("/?view=settings");
   await section(page, "Preferences");
-  const automatic = page.getByRole("switch", {
-    name: /^Publish review comments automatically/,
-  });
-  await expect(automatic).not.toBeChecked();
-  await automatic.check();
-  expect(
-    (await store("snapshot")).settings.defaults.automatic_comment_publication,
-  ).toBe(false);
-  await saveChanges(page);
-  const saved = (await store("snapshot")).settings;
-  expect(saved.defaults.automatic_comment_publication).toBe(true);
-  expect(saved.defaults.automatic_agent_start).toBe(false);
+  await expect(page.locator("#automatic-publication")).toHaveCount(0);
+  await expect(
+    page.getByText(
+      "Publication permissions are set on each repository's Agent assignments.",
+    ),
+  ).toBeVisible();
   await section(page, "Integrations");
   let modal = await repositorySettings(page, "fixture/publication-policy");
   await expect(
+    modal.getByText("Automation overrides", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
     modal.getByLabel("Comment publication", { exact: true }),
-  ).toHaveValue("inherit");
-  await modal
-    .getByLabel("Comment publication", { exact: true })
-    .selectOption("manual");
+  ).toHaveCount(0);
   await closeDialog(page);
-  await saveChanges(page);
-  expect(
-    (await store("snapshot")).settings.repositories[0].overrides
-      .automatic_comment_publication,
-  ).toBe(false);
   await page.reload();
   modal = await repositorySettings(page, "fixture/publication-policy");
   await expect(
     modal.getByLabel("Comment publication", { exact: true }),
-  ).toHaveValue("manual");
-  await modal
-    .getByLabel("Comment publication", { exact: true })
-    .selectOption("inherit");
+  ).toHaveCount(0);
   await closeDialog(page);
-  await saveChanges(page);
-  expect(
-    (await store("snapshot")).settings.repositories[0].overrides
-      ?.automatic_comment_publication,
-  ).toBeUndefined();
+  expect((await store("snapshot")).settings).toEqual(setup);
   expect((await store("snapshot")).settings.repositories[0].enabled).toBe(
     false,
   );

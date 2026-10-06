@@ -61,6 +61,8 @@ pub struct Settings {
     pub doctrine_catalog_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doctrine_reset: Option<DoctrineReset>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_notice: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agents: Vec<Agent>,
     #[serde(default = "default_capacity")]
@@ -104,6 +106,7 @@ impl Default for Settings {
             doctrines: Vec::new(),
             doctrine_catalog_version: doctrine_catalog_version(),
             doctrine_reset: None,
+            capability_notice: None,
             agents: Vec::new(),
             capacity: default_capacity(),
         }
@@ -175,6 +178,8 @@ pub struct Assignment {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActionPermissions {
+    #[serde(default)]
+    pub reply: bool,
     pub approve: bool,
     pub merge: bool,
 }
@@ -184,6 +189,8 @@ pub struct ActionPermissions {
 pub struct AssignmentAuthority {
     pub primary: bool,
     pub comment: bool,
+    #[serde(default)]
+    pub reply: bool,
     pub approve: bool,
     pub merge: bool,
 }
@@ -622,6 +629,24 @@ impl Settings {
                     return Err("The selected agent no longer exists. Choose a local agent.".into());
                 }
                 assignment.schedule.validate()?;
+                if repository.primary_assignment_id() != Some(assignment.id.as_str())
+                    && assignment
+                        .actions
+                        .as_ref()
+                        .is_some_and(|a| a.reply || a.approve || a.merge)
+                {
+                    return Err("Secondary assignments can only Publish Comment. Clear Reply, Approve and Merge permissions before saving.".into());
+                }
+                if assignment
+                    .actions
+                    .as_ref()
+                    .is_some_and(|a| a.merge && !a.approve)
+                {
+                    return Err(
+                        "Approve & Merge includes approval. Merge-only is not a valid permission."
+                            .into(),
+                    );
+                }
             }
             if repository
                 .primary_assignment_id
@@ -667,9 +692,13 @@ impl Repository {
         AssignmentAuthority {
             primary: primary && assigned,
             comment: assigned && assignment.comment,
+            reply: assigned && primary && assignment.actions.as_ref().is_some_and(|a| a.reply),
             approve: assigned
-                && self.primary_assignment_id().is_some()
-                && assignment.actions.as_ref().is_some_and(|a| a.approve),
+                && primary
+                && assignment
+                    .actions
+                    .as_ref()
+                    .is_some_and(|a| a.approve || a.merge),
             merge: assigned && primary && assignment.actions.as_ref().is_some_and(|a| a.merge),
         }
     }
@@ -1189,6 +1218,25 @@ impl Store {
             }
             settings.doctrines = canonical;
         }
+        // Reconcile only current configuration. Historical execution and provider
+        // receipts are separate resources and must never be rewritten.
+        let mut reconciled_permissions = false;
+        for repository in &mut settings.repositories {
+            let primary = repository.primary_assignment_id().map(str::to_owned);
+            for assignment in &mut repository.assignments {
+                if let Some(actions) = &mut assignment.actions {
+                    if primary.as_deref() != Some(&assignment.id) {
+                        if actions.reply || actions.approve || actions.merge {
+                            *actions = ActionPermissions::default();
+                            reconciled_permissions = true;
+                        }
+                    } else if actions.merge && !actions.approve {
+                        actions.approve = true;
+                        reconciled_permissions = true;
+                    }
+                }
+            }
+        }
         let migrated = settings
             .repositories
             .iter_mut()
@@ -1203,10 +1251,13 @@ impl Store {
                     changed
                 }
             });
+        if reconciled_permissions {
+            settings.capability_notice = Some("Repository permissions reconciled: obsolete secondary Reply/Approve/Merge grants disabled; primary Approve & Merge includes approval. Primary selection grants no capabilities. Existing job history and provider receipts are unchanged.".into());
+        }
         settings
             .validate()
             .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.")?;
-        if migrated || reconcile_doctrines {
+        if migrated || reconcile_doctrines || reconciled_permissions {
             self.write_settings(&settings)?;
         }
         Ok(settings)

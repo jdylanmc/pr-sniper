@@ -89,6 +89,7 @@ fn configured(count: usize) -> (Fixture, Store, Monitor) {
 
 fn pull(head: char) -> PullRequest {
     PullRequest {
+        mentioned: false,
         id: "9".into(),
         number: 101,
         title: "Review".into(),
@@ -437,7 +438,10 @@ fn normal_review_survives_sibling_resource_saves_without_replacing_snapshot() {
                 "comment" => repository.assignments[1].comment = false,
                 "actions" => {
                     repository.assignments[1].actions = Some(
-                        serde_json::from_value(json!({"approve":true,"merge":false})).unwrap(),
+                        serde_json::from_value(
+                            json!({"reply":false,"approve":false,"merge":false}),
+                        )
+                        .unwrap(),
                     );
                 }
                 "schedule" => {
@@ -545,7 +549,7 @@ fn normal_review_execution_invalidates_own_inputs_authority_and_repository_gates
             "approve" | "merge" => {
                 settings.repositories[0].assignments[0].actions = Some(
                     serde_json::from_value(json!({
-                        "approve":change == "approve","merge":change == "merge"
+                        "approve":true,"merge":change == "merge"
                     }))
                     .unwrap(),
                 );
@@ -574,9 +578,14 @@ fn normal_review_execution_invalidates_own_inputs_authority_and_repository_gates
             _ => unreachable!(),
         }
         store.save_settings(&settings).unwrap();
-        assert!(
+        let action_metadata_only = matches!(
+            change,
+            "publication gate" | "comment" | "approve" | "merge" | "primary"
+        );
+        assert_eq!(
             review::validate_execution_selection(&store, &run).is_err(),
-            "{change} must invalidate the active review"
+            !action_metadata_only,
+            "{change}: read-only execution and current provider authority are separate"
         );
         assert_eq!(store.load_reviews().unwrap()[0], run);
     }

@@ -54,7 +54,7 @@ export interface Assignment {
   schedule: Schedule;
   comment: boolean;
   approve: boolean;
-  actions?: { approve: boolean; merge: boolean };
+  actions?: { reply?: boolean; approve: boolean; merge: boolean };
 }
 
 export const doctrineTitles = (agent: Agent): string[] =>

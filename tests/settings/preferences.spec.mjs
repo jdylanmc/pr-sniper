@@ -176,7 +176,7 @@ test("compact saved controls persist exact cron, timezone and full u32 capacity 
     };
     expect((await store("snapshot")).settings).toEqual(expected);
     await expect(page.locator("#cron-helper")).toHaveValue("0 9 * * MON-FRI");
-    await expect(page.locator("#automatic-publication")).not.toBeChecked();
+    await expect(page.locator("#automatic-publication")).toHaveCount(0);
   }
   await page.reload();
   await page.evaluate(() => window.__settingsIdle());
@@ -256,7 +256,7 @@ test("failed preference and pause writes keep committed state, exact drafts and 
   await page.locator("#global-cron").fill("5 * * * *");
   await page.locator("#global-timezone").fill("Pacific/Auckland");
   await page.locator("#global-capacity").fill("33");
-  await page.locator("#automatic-publication").check();
+  await expect(page.locator("#automatic-publication")).toHaveCount(0);
   await preferences(page)
     .getByText("Capacity work details", { exact: true })
     .click();
@@ -270,7 +270,7 @@ test("failed preference and pause writes keep committed state, exact drafts and 
     "Pacific/Auckland",
   );
   await expect(page.locator("#global-capacity")).toHaveValue("33");
-  await expect(page.locator("#automatic-publication")).toBeChecked();
+  await expect(page.locator("#automatic-publication")).toHaveCount(0);
   await expect(page.locator("#preferences-capacity-work")).toHaveAttribute(
     "open",
     "",
@@ -304,7 +304,7 @@ test("startup, notification and pause commit independently while newer keyboard 
   const original = (await store("snapshot")).settings;
   await page.locator("#global-capacity").fill("17");
   await page.locator("#global-cron").fill("7 * * * *");
-  await page.locator("#automatic-publication").check();
+  await expect(page.locator("#automatic-publication")).toHaveCount(0);
   const held = ipc.holdNext("seed_settings");
   await page.locator("#login").click();
   await held.arrived;
@@ -341,7 +341,7 @@ test("startup, notification and pause commit independently while newer keyboard 
   });
   await expect(page.locator("#global-capacity")).toHaveValue("17");
   await expect(page.locator("#global-timezone")).toHaveValue("Europe/Paris");
-  await expect(page.locator("#automatic-publication")).toBeChecked();
+  await expect(page.locator("#automatic-publication")).toHaveCount(0);
   await expect(page.locator("#save-status")).toHaveText("Unsaved changes");
   await page.locator("#automation-settings").scrollIntoViewIfNeeded();
   await capture(page, browserName, "immediate-controls");

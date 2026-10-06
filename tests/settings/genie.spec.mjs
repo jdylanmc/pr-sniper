@@ -259,7 +259,7 @@ async function seed(store) {
           agent_id: agentId,
           schedule: settings.defaults.schedule,
           comment: false,
-          actions: { approve: false, merge: false },
+          actions: { reply: false, approve: false, merge: false },
         },
       ],
     },
@@ -435,10 +435,19 @@ test("fresh Genie uses shared account choices and authorizes at repository Save,
   await assignment
     .getByLabel("Agent", { exact: true })
     .selectOption(saved.agents[0].id);
-  for (const permission of ["Comment", "Approve", "Merge"])
+  for (const permission of ["Publish Comment", "Reply Comment"])
     await expect(
       assignment.getByRole("checkbox", { name: new RegExp(`^${permission}`) }),
     ).not.toBeChecked();
+  await expect(
+    assignment.getByRole("radio", { name: "Neither", exact: true }),
+  ).toBeChecked();
+  await expect(
+    assignment.getByRole("radio", { name: "Approve", exact: true }),
+  ).not.toBeChecked();
+  await expect(
+    assignment.getByRole("radio", { name: "Approve & Merge", exact: true }),
+  ).not.toBeChecked();
   await assignment
     .getByRole("button", { name: "Assign agent", exact: true })
     .click();

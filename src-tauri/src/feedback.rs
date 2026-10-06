@@ -66,6 +66,7 @@ impl MentionBinding {
             && self.repository_id == job.repository_id
             && self.pull_request_id == job.pull_request_id
     }
+
     pub fn matches_tracked(&self, pr: &TrackedPullRequest) -> bool {
         pr.provider == "github"
             && self.configuration_id == pr.configuration_id
@@ -96,6 +97,14 @@ impl MentionBinding {
             comment
         ])
         .to_string()
+    }
+}
+
+impl Ledger {
+    pub(crate) fn conversation_closed(&self, job: &QueueJob, thread_id: &str) -> bool {
+        self.conversation_cursors
+            .iter()
+            .any(|cursor| cursor.binding.matches(job) && cursor.closed_threads.contains(thread_id))
     }
 }
 
@@ -169,6 +178,36 @@ impl Mention {
 pub struct Ledger {
     pub records: Vec<Record>,
     pub mentions: Vec<Mention>,
+    #[serde(default)]
+    pub conversation_cursors: Vec<ConversationCursor>,
+    #[serde(default)]
+    pub pending_threads: Vec<PendingThread>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConversationCursor {
+    pub binding: MentionBinding,
+    pub comments: HashSet<String>,
+    pub threads: HashSet<String>,
+    pub comments_initialized: bool,
+    pub threads_initialized: bool,
+    pub discussion: Vec<TopComment>,
+    pub closed_threads: HashSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PendingThread {
+    pub binding: MentionBinding,
+    pub item_id: String,
+    pub thread: Thread,
+    pub key: String,
+    pub work_id: String,
+    pub enqueue_order: u64,
+    pub enqueued_at: i64,
+    pub follow_up_id: Option<String>,
+    pub blocked: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -338,7 +377,15 @@ impl Ledger {
 }
 
 pub fn contexts(store: &Store, job: &QueueJob, agent: &str) -> Result<Vec<Context>, Failure> {
-    contexts_excluding(store, job, agent, None)
+    contexts_excluding(store, job, agent, None, false)
+}
+
+pub fn conversation_contexts(
+    store: &Store,
+    job: &QueueJob,
+    agent: &str,
+) -> Result<Vec<Context>, Failure> {
+    contexts_excluding(store, job, agent, None, true)
 }
 
 fn contexts_excluding(
@@ -346,6 +393,7 @@ fn contexts_excluding(
     job: &QueueJob,
     agent: &str,
     own_operation: Option<&str>,
+    include_current_peers: bool,
 ) -> Result<Vec<Context>, Failure> {
     let ledger = store.load_feedback().map_err(Failure::permanent)?;
     let publications = store.load_publications().map_err(Failure::permanent)?;
@@ -366,7 +414,8 @@ fn contexts_excluding(
         for root in &receipt.comment_ids {
             let id = root_key(job, root);
             let record = ledger.records.iter().find(|r| r.context.id == id);
-            if !earlier
+            if !include_current_peers
+                && !earlier
                 && origin.review.selection.agent.id != agent
                 && !record.is_some_and(|r| r.context.closed)
             {
@@ -404,7 +453,30 @@ pub fn validate_context(
     agent: &str,
     captured: &[Context],
 ) -> Result<(), Failure> {
-    if contexts(store, job, agent)? != captured {
+    validate_captured_context(store, job, &contexts(store, job, agent)?, captured)
+}
+
+pub fn validate_conversation_context(
+    store: &Store,
+    job: &QueueJob,
+    agent: &str,
+    captured: &[Context],
+) -> Result<(), Failure> {
+    validate_captured_context(
+        store,
+        job,
+        &conversation_contexts(store, job, agent)?,
+        captured,
+    )
+}
+
+fn validate_captured_context(
+    store: &Store,
+    job: &QueueJob,
+    current: &[Context],
+    captured: &[Context],
+) -> Result<(), Failure> {
+    if current != captured {
         return Err(Failure::permanent(
             "Owned feedback changed during analysis; no stale assessment accepted.",
         ));
@@ -527,6 +599,7 @@ pub fn publication_gate(store: &Store, review: &crate::review::ReviewRun) -> Res
             &review.job,
             &review.selection.agent.id,
             Some(&review.operation.id),
+            false,
         )
         .map_err(|e| e.message)?;
         if &current != captured {
@@ -690,7 +763,7 @@ pub fn owned_reply_assessment(run: &FollowUp) -> Result<(), Failure> {
     validate_assessments(
         &result.output.feedback_assessments,
         &run.context.feedback,
-        &run.context.selection.agent.id,
+        run.assessment_owner(),
         false,
     )?;
     if matches!(run.target, ConversationTarget::Mention { .. })

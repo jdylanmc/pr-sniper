@@ -16,6 +16,22 @@ _Avoid_: Default account, inferred account
 The provider account visibly named at the point where PR Sniper performs or proposes a repository action.
 _Avoid_: Logged-in user
 
+**Primary Agent**:
+The repository assignment responsible for eligible conversation assessments and
+the final full review before permitted provider actions. A sole assignment is
+primary automatically; multiple assignments have at most one explicit primary.
+Selecting primary grants no capabilities and does not change original feedback
+ownership.
+_Avoid_: Global primary, thread owner as responder
+
+**Assignment Capability**:
+An explicit repository-scoped grant: Publish Comment for any assignment;
+independent Reply Comment and Approve or Approve & Merge for the primary only.
+Merge includes approval and follows confirmed current-head approval; an existing
+provider vote is not fabricated as a new PR Sniper vote. These product grants
+never authorize development agents to publish, approve or merge.
+_Avoid_: Automation override, reusable Agent permission, merge-only grant
+
 **Provider Repository Identity**:
 The provider-issued stable repository ID bound to one explicit Provider Account.
 _Avoid_: Repository name

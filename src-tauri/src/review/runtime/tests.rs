@@ -56,6 +56,7 @@ fn context(changed: bool) -> ReviewContext {
     ReviewContext {
         base_revision: "b".repeat(40),
         pull: PullRequest {
+            mentioned: false,
             id: "1".into(),
             number: 1,
             title: "Synthetic review".into(),
