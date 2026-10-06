@@ -222,6 +222,7 @@ for (const [representation, references, selected] of [
       await store("seed_settings", settings);
       await store("save_repository", { repository: "fixture/rename" });
       const initial = (await store("snapshot")).settings;
+      const initialCatalog = (await store("snapshot")).doctrine_catalog;
       await page.goto("/?view=settings");
       await section(page, "Preferences");
       await page.locator("#global-capacity").fill("9");
@@ -259,8 +260,40 @@ for (const [representation, references, selected] of [
           ? { doctrines: ["renamed-code"] }
           : { doctrine: "renamed-code" },
       );
-      expect(await library(page)).toEqual(resolved.settings.doctrines);
-      const modal = await editAgent(page);
+      await expect(page.locator("[data-catalog-conflict]")).toBeVisible();
+      expect(await library(page)).toEqual(initial.doctrines);
+      let modal = await editAgent(page);
+      await expect(
+        modal.getByRole("checkbox", { name: "code", exact: true }),
+      ).toBeChecked({ checked: selected === 1 });
+      await expect(modal.locator("[data-selection-count]")).toHaveText(
+        `${selected} selected / 10 shown`,
+      );
+      await expect(modal.locator("[data-doctrine-catalog]")).toContainText(
+        initialCatalog.effective_revision.slice(0, 12),
+      );
+      await modal
+        .getByRole("textbox", { name: "Prompt", exact: true })
+        .fill("Keep my draft before explicit reload.");
+      await modal
+        .getByRole("button", { name: "Save agent", exact: true })
+        .click();
+      await expect(modal.getByRole("alert")).toContainText(
+        "Resource changed in another window",
+      );
+      await expect(
+        modal.getByRole("textbox", { name: "Prompt", exact: true }),
+      ).toHaveValue("Keep my draft before explicit reload.");
+      expect(await diskSettings(dataRoot)).toEqual(resolved.settings);
+      await closeDialog(page);
+      await page
+        .getByRole("button", {
+          name: "Reload Agents and doctrines",
+          exact: true,
+        })
+        .click();
+      await expect(page.locator("[data-catalog-conflict]")).toBeHidden();
+      modal = await editAgent(page);
       await expect(
         modal.getByRole("checkbox", { name: "renamed-code", exact: true }),
       ).toBeChecked({ checked: selected === 1 });
@@ -273,31 +306,22 @@ for (const [representation, references, selected] of [
       );
       await expect(
         modal.getByRole("textbox", { name: "Prompt", exact: true }),
-      ).toHaveValue(fixtureAgent.prompt);
+      ).toHaveValue(
+        concurrentEdit ? "Concurrent Agent prompt." : fixtureAgent.prompt,
+      );
       await modal
         .getByRole("textbox", { name: "Prompt", exact: true })
         .fill("Unrelated local Agent edit.");
       await modal
         .getByRole("button", { name: "Save agent", exact: true })
         .click();
-      if (concurrentEdit) {
-        await expect(modal.getByRole("alert")).toContainText(
-          "Resource changed in another window",
-        );
-        await expect(
-          modal.getByRole("textbox", { name: "Prompt", exact: true }),
-        ).toHaveValue("Unrelated local Agent edit.");
-        expect(await diskSettings(dataRoot)).toEqual(resolved.settings);
-        await closeDialog(page);
-      } else {
-        await expect(modal).toHaveCount(0);
-        const expectedAgent = {
-          ...resolved.settings.agents[0],
-          prompt: "Unrelated local Agent edit.",
-        };
-        if (representation === "inactive legacy") delete expectedAgent.doctrine;
-        expect((await diskSettings(dataRoot)).agents[0]).toEqual(expectedAgent);
-      }
+      await expect(modal).toHaveCount(0);
+      const expectedAgent = {
+        ...resolved.settings.agents[0],
+        prompt: "Unrelated local Agent edit.",
+      };
+      if (representation === "inactive legacy") delete expectedAgent.doctrine;
+      expect((await diskSettings(dataRoot)).agents[0]).toEqual(expectedAgent);
       expect((await diskSettings(dataRoot)).capacity).toBe(initial.capacity);
       expect((await diskSettings(dataRoot)).repositories).toEqual(
         initial.repositories,
@@ -349,6 +373,177 @@ test("unrelated library refresh does not accept a concurrent still-valid Agent s
   ).toHaveValue("Keep my draft.");
   expect(await diskSettings(dataRoot)).toEqual(resolved);
 });
+
+for (const [scenario, references, selection] of [
+  ["old title reused", { doctrines: ["code"] }, null],
+  [
+    "concurrent reorder",
+    { doctrines: ["code", "testing"] },
+    ["testing", "renamed-code"],
+  ],
+  [
+    "concurrent addition",
+    { doctrines: ["code", "testing"] },
+    ["renamed-code", "testing", "solid"],
+  ],
+  ["concurrent removal", { doctrines: ["code", "testing"] }, ["testing"]],
+  [
+    "inactive singular and active replacement",
+    { doctrine: "code", doctrines: ["testing"] },
+    ["solid"],
+  ],
+]) {
+  test(`external rename with ${scenario} requires explicit coherent reload`, async ({
+    page,
+    store,
+    dataRoot,
+  }) => {
+    const settings = (await store("snapshot")).settings;
+    settings.agents = [{ ...fixtureAgent, ...references }];
+    await store("seed_settings", settings);
+    await page.goto("/?view=settings");
+    const initial = await store("snapshot");
+    await section(page, "Preferences");
+    await page.locator("#global-capacity").fill("9");
+    const code = settings.doctrines.find(({ title }) => title === "code");
+    await store("save_resource", {
+      edit: {
+        kind: "doctrine",
+        title: "code",
+        expected: code,
+        value: { ...code, title: "renamed-code" },
+      },
+    });
+    if (scenario === "old title reused") {
+      await store("save_resource", {
+        edit: {
+          kind: "doctrine",
+          title: "code",
+          expected: null,
+          value: { title: "code", body: "Unrelated replacement text." },
+        },
+      });
+    } else {
+      const agent = (await store("snapshot")).settings.agents[0];
+      await store("save_resource", {
+        edit: {
+          kind: "agent",
+          id: agent.id,
+          expected: agent,
+          value: { ...agent, doctrines: selection },
+        },
+      });
+    }
+    await section(page, "Doctrines");
+    await newDoctrine(page, "local-principle", "Saved in this window.");
+    const resolved = await store("snapshot");
+    await expect(page.locator("[data-catalog-conflict]")).toBeVisible();
+    await page.evaluate(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await window.__settingsIdle();
+    });
+    await expect(page.locator("[data-catalog-conflict]")).toBeVisible();
+    expect(await library(page)).toEqual(initial.settings.doctrines);
+    let modal = await editAgent(page);
+    expect(
+      await modal
+        .locator("[name=doctrine]:checked")
+        .evaluateAll((inputs) => inputs.map((input) => input.value)),
+    ).toEqual(
+      initial.settings.doctrines
+        .filter(({ title }) => references.doctrines.includes(title))
+        .map(({ title }) => title),
+    );
+    await expect(modal.locator("[data-selection-count]")).toHaveText(
+      `${references.doctrines.length} selected / 10 shown`,
+    );
+    await expect(modal.locator("[data-doctrine-catalog]")).toContainText(
+      initial.doctrine_catalog.effective_revision.slice(0, 12),
+    );
+    await modal
+      .getByRole("textbox", { name: "Prompt", exact: true })
+      .fill("Keep my blocked draft.");
+    await modal
+      .getByRole("button", { name: "Save agent", exact: true })
+      .click();
+    await expect(modal.getByRole("alert")).toContainText(
+      "Resource changed in another window",
+    );
+    await expect(
+      modal.getByRole("textbox", { name: "Prompt", exact: true }),
+    ).toHaveValue("Keep my blocked draft.");
+    expect(await diskSettings(dataRoot)).toEqual(resolved.settings);
+    await closeDialog(page);
+    if (scenario === "old title reused") {
+      await writeFile(join(dataRoot, "config/settings.json"), "{");
+      await page
+        .getByRole("button", {
+          name: "Reload Agents and doctrines",
+          exact: true,
+        })
+        .click();
+      await expect(page.locator("#error")).toBeVisible();
+      await expect(page.locator("[data-catalog-conflict]")).toBeVisible();
+      await section(page, "Doctrines");
+      expect(await library(page)).toEqual(initial.settings.doctrines);
+      await expect(page.locator("[data-doctrine-catalog]")).toContainText(
+        initial.doctrine_catalog.effective_revision.slice(0, 12),
+      );
+      await section(page, "Preferences");
+      await expect(page.locator("#global-capacity")).toHaveValue("9");
+      await writeFile(
+        join(dataRoot, "config/settings.json"),
+        JSON.stringify(resolved.settings),
+      );
+    }
+    await page
+      .getByRole("button", { name: "Reload Agents and doctrines", exact: true })
+      .click();
+    await expect(page.locator("[data-catalog-conflict]")).toBeHidden();
+    modal = await editAgent(page);
+    const titles = resolved.settings.agents[0].doctrines;
+    expect(
+      await modal
+        .locator("[name=doctrine]:checked")
+        .evaluateAll((inputs) => inputs.map((input) => input.value)),
+    ).toEqual(
+      resolved.settings.doctrines
+        .filter(({ title }) => titles.includes(title))
+        .map(({ title }) => title),
+    );
+    await expect(modal.locator("[data-selection-count]")).toHaveText(
+      `${titles.length} selected / ${resolved.settings.doctrines.length} shown`,
+    );
+    if (scenario === "old title reused") {
+      await expect(
+        modal.getByRole("checkbox", { name: "code", exact: true }),
+      ).not.toBeChecked();
+      await expect(
+        modal.getByRole("checkbox", { name: "renamed-code", exact: true }),
+      ).toBeChecked();
+    }
+    await expect(modal.locator("[data-doctrine-catalog]")).toContainText(
+      resolved.doctrine_catalog.effective_revision.slice(0, 12),
+    );
+    await modal
+      .getByRole("textbox", { name: "Prompt", exact: true })
+      .fill("Explicitly refreshed edit.");
+    await modal
+      .getByRole("button", { name: "Save agent", exact: true })
+      .click();
+    await expect(modal).toHaveCount(0);
+    const expectedAgent = {
+      ...resolved.settings.agents[0],
+      prompt: "Explicitly refreshed edit.",
+    };
+    if (scenario === "inactive singular and active replacement")
+      delete expectedAgent.doctrine;
+    expect((await diskSettings(dataRoot)).agents[0]).toEqual(expectedAgent);
+    await section(page, "Preferences");
+    await expect(page.locator("#global-capacity")).toHaveValue("9");
+    expect((await diskSettings(dataRoot)).capacity).toBe(settings.capacity);
+  });
+}
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
