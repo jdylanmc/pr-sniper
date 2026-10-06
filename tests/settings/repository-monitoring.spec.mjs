@@ -1,4 +1,6 @@
 import { test, expect } from "./fixtures.mjs";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { section } from "./navigation.mjs";
 import {
   providerFixture,
@@ -52,6 +54,327 @@ const openEditor = async (page) => {
   await page.locator(`[data-repository="${repoId}"]`).click();
   return editor(page);
 };
+
+test("failed new configuration Save cannot enable a later nested assignment Save", async ({
+  page,
+  store,
+  dataRoot,
+}) => {
+  const initial = await seed(store);
+  initial.repositories = [initial.repositories[1]];
+  await store("seed_settings", initial);
+  await store("set_automation_paused", { paused: true });
+  await providerFixture(page, store);
+  await repositoryPage(page, store);
+  await section(page, "Preferences");
+  await page.locator("#global-capacity").fill("9");
+  await section(page, "Repositories");
+  const modal = await addByUrl(page);
+  const monitoring = modal.getByRole("switch", { name: "Monitor fixture/one" });
+  await expect(monitoring).toBeChecked();
+  await modal.locator("[data-reviewer-trigger]").selectOption("off");
+  const file = join(dataRoot, "config/settings.json");
+  const before = await readFile(file);
+  const intake = JSON.parse(before);
+  const repository = intake.repositories.find((r) => r.name === "fixture/one");
+  await modal
+    .getByRole("button", { name: "Save repository", exact: true })
+    .click();
+  await expect(modal.locator("[data-resource-error]")).toContainText(
+    "assign at least one saved Agent",
+  );
+  expect(await readFile(file)).toEqual(before);
+  await expect(modal.locator("[data-repository-monitoring-state]")).toHaveText(
+    "Disabled",
+  );
+  await expect(modal.locator("[data-reviewer-trigger]")).toHaveValue("off");
+  await modal
+    .getByRole("button", { name: "Assign agent", exact: true })
+    .click();
+  const assign = page.getByRole("dialog", {
+    name: "Assign agent",
+    exact: true,
+  });
+  await assign.getByLabel("Agent", { exact: true }).selectOption(reviewer.id);
+  await assign
+    .getByRole("button", { name: "Assign agent", exact: true })
+    .click();
+  await expect(assign).toHaveCount(0);
+  const bytes = JSON.parse(await readFile(file, "utf8"));
+  const committed = bytes.repositories.find((r) => r.id === repository.id);
+  expect(committed.enabled).toBe(false);
+  expect(committed.assignments).toHaveLength(1);
+  expect(committed.assignments[0]).toMatchObject({
+    agent_id: reviewer.id,
+    comment: false,
+  });
+  expect(committed.overrides.reviewer_assignment).toBe(false);
+  expect(bytes.repository_authorizations[repository.id]).toBeNull();
+  expect((await store("snapshot")).settings).toEqual(bytes);
+  expect(bytes.repositories.find((r) => r.id === neighborId)).toEqual(
+    initial.repositories[0],
+  );
+  expect(bytes.defaults).toEqual(initial.defaults);
+  expect(bytes.capacity).toBe(initial.capacity);
+  await expect(modal.locator("[data-repository-monitoring-state]")).toHaveText(
+    "Disabled",
+  );
+  await expect(monitoring).toBeChecked();
+  await expect(
+    modal.locator("[data-repository-monitoring-detail]"),
+  ).toContainText("Starts after you save valid configuration");
+  await modal
+    .getByRole("button", { name: "Close dialog", exact: true })
+    .click();
+  const row = page.locator(`[data-repository="${repository.id}"]`);
+  await expect(row.locator("[data-monitoring-state]")).toHaveText("Disabled");
+  await expect(
+    page.locator(`[data-toggle-repository="${repository.id}"]`),
+  ).toHaveAttribute("aria-checked", "false");
+  await row.click();
+  await expect(modal.locator("[data-repository-monitoring-state]")).toHaveText(
+    "Disabled",
+  );
+  await expect(monitoring).toBeChecked();
+  await modal
+    .getByRole("button", { name: "Save repository", exact: true })
+    .click();
+  await expect(modal).toHaveCount(0);
+  const enabled = JSON.parse(await readFile(file, "utf8"));
+  expect(enabled.repositories.find((r) => r.id === repository.id).enabled).toBe(
+    true,
+  );
+  expect(enabled.repository_authorizations[repository.id]).toMatchObject({
+    account_id: "22",
+    repository_id: "100",
+  });
+  expect((await store("automation_snapshot")).paused).toBe(true);
+  await expect(row.locator("[data-monitoring-state]")).toHaveText("Enabled");
+  await row.click();
+  await expect(modal.locator("[data-repository-monitoring-state]")).toHaveText(
+    "Enabled",
+  );
+  await expect(monitoring).toBeChecked();
+  await modal
+    .getByRole("button", { name: "Close dialog", exact: true })
+    .click();
+  await section(page, "Preferences");
+  await expect(page.locator("#global-capacity")).toHaveValue("9");
+});
+
+test("nested assignment Save refreshes the editor and listing from actual saved monitoring", async ({
+  page,
+  store,
+}) => {
+  const initial = await seed(store, false);
+  initial.repositories[0].enabled = true;
+  await store("seed_settings", initial);
+  await providerFixture(page, store);
+  await repositoryPage(page, store);
+  const modal = await openEditor(page);
+  await expect(modal.locator("[data-repository-monitoring-state]")).toHaveText(
+    "Enabled",
+  );
+  await expect(
+    modal.locator("[data-repository-monitoring-detail]"),
+  ).toContainText("Needs setup");
+  await modal
+    .getByRole("button", { name: "Assign agent", exact: true })
+    .click();
+  const assign = page.getByRole("dialog", {
+    name: "Assign agent",
+    exact: true,
+  });
+  await assign.getByLabel("Agent", { exact: true }).selectOption(reviewer.id);
+  await assign
+    .getByRole("button", { name: "Assign agent", exact: true })
+    .click();
+  await expect(assign).toHaveCount(0);
+  const saved = (await store("snapshot")).settings;
+  expect(saved.repositories[0].enabled).toBe(true);
+  expect(saved.repository_authorizations[repoId]).toMatchObject({
+    account_id: "22",
+    repository_id: "100",
+  });
+  await expect(modal.locator("[data-repository-monitoring-state]")).toHaveText(
+    "Enabled",
+  );
+  await expect(
+    modal.getByRole("switch", { name: "Monitor fixture/one" }),
+  ).toBeChecked();
+  await expect(
+    modal.locator("[data-repository-monitoring-detail]"),
+  ).not.toContainText("Needs setup");
+  await modal
+    .getByRole("button", { name: "Close dialog", exact: true })
+    .click();
+  await expect(page.locator(`[data-repository="${repoId}"]`)).not.toContainText(
+    "Needs setup",
+  );
+});
+
+for (const embedded of [true, false]) {
+  for (const width of [320, 408]) {
+    for (const textScale of [1, 2]) {
+      test(`repository state and switch remain contained at ${width}px with ${textScale * 100}% actual text (${embedded ? "panel" : "standalone"})`, async ({
+        page,
+        store,
+      }, info) => {
+        await page.setViewportSize({ width, height: 744 });
+        await page.emulateMedia({
+          forcedColors: "active",
+          reducedMotion: "reduce",
+        });
+        await seed(store);
+        await store("set_automation_paused", { paused: true });
+        await providerFixture(page, store);
+        await repositoryPage(page, store, embedded);
+        const list = page.locator(".repository-list");
+        const originalControlSize = await toggle(page).evaluate((control) =>
+          parseFloat(getComputedStyle(control).fontSize),
+        );
+        const enlargeText = () =>
+          list.evaluate((root, scale) => {
+            const sizes = [...root.querySelectorAll("*")].map((element) => ({
+              element,
+              size: parseFloat(getComputedStyle(element).fontSize),
+            }));
+            for (const { element, size } of sizes)
+              element.style.fontSize = `${size * scale}px`;
+          }, textScale);
+        await enlargeText();
+        const contained = () =>
+          list.evaluate((root) => {
+            const bounds = root.getBoundingClientRect();
+            const inside = (rect) =>
+              rect.left >= bounds.left &&
+              rect.right <= bounds.right &&
+              rect.top >= bounds.top &&
+              rect.bottom <= bounds.bottom;
+            const rows = [
+              ...root.querySelectorAll(".repository-monitoring-row"),
+            ];
+            return rows.map((row) => {
+              const open = row.querySelector("[data-repository]");
+              const copy = row.querySelector(".settings-row-copy");
+              const state = row.querySelector("[data-monitoring-state]");
+              const control = row.querySelector("[data-toggle-repository]");
+              const rowBounds = row.getBoundingClientRect();
+              const controlBounds = control.getBoundingClientRect();
+              const text = document.createRange();
+              text.selectNodeContents(state);
+              const controlText = document.createRange();
+              controlText.selectNodeContents(control);
+              const copyBounds = copy.getBoundingClientRect();
+              const copyText = [...copy.querySelectorAll("strong,small")].every(
+                (element) => {
+                  const range = document.createRange();
+                  range.selectNodeContents(element);
+                  return [...range.getClientRects()].every(
+                    (rect) =>
+                      inside(rect) &&
+                      rect.left >= copyBounds.left &&
+                      rect.right <= copyBounds.right,
+                  );
+                },
+              );
+              return {
+                row: inside(row.getBoundingClientRect()),
+                open: inside(open.getBoundingClientRect()),
+                state: [...text.getClientRects()].every(inside),
+                control: inside(control.getBoundingClientRect()),
+                controlText: [...controlText.getClientRects()].every(inside),
+                readableState: state.scrollWidth <= state.clientWidth,
+                readableControl: control.scrollWidth <= control.clientWidth,
+                copyText,
+                fontSize: parseFloat(getComputedStyle(control).fontSize),
+                extents: {
+                  listLeft: bounds.left,
+                  listRight: bounds.right,
+                  rowLeft: rowBounds.left,
+                  rowRight: rowBounds.right,
+                  switchLeft: controlBounds.left,
+                  switchRight: controlBounds.right,
+                },
+              };
+            });
+          });
+        const geometry = await contained();
+        expect(geometry).toHaveLength(2);
+        const measurements = info.outputPath("containment.json");
+        await writeFile(
+          measurements,
+          JSON.stringify(
+            {
+              browser: page.context().browser().browserType().name(),
+              width,
+              textScale,
+              originalControlSize,
+              geometry,
+            },
+            null,
+            2,
+          ),
+        );
+        await info.attach("containment.json", {
+          path: measurements,
+          contentType: "application/json",
+        });
+        for (const row of geometry) {
+          expect(row).toMatchObject({
+            row: true,
+            open: true,
+            state: true,
+            control: true,
+            controlText: true,
+            readableState: true,
+            readableControl: true,
+            copyText: true,
+          });
+          expect(row.fontSize).toBe(originalControlSize * textScale);
+        }
+        await expect(toggle(page)).toHaveAccessibleName("Monitor fixture/one");
+        await toggle(page).scrollIntoViewIfNeeded();
+        await toggle(page).focus();
+        await expect(toggle(page)).toBeFocused();
+        const target = await toggle(page).boundingBox();
+        expect(target.x).toBeGreaterThanOrEqual(0);
+        expect(target.x + target.width).toBeLessThanOrEqual(width);
+        expect(target.y).toBeGreaterThanOrEqual(0);
+        expect(target.y + target.height).toBeLessThanOrEqual(744);
+        await page.screenshot({
+          path: info.outputPath("contained-text-and-focus.png"),
+        });
+        await page.keyboard.press("Space");
+        await expect(toggle(page)).toHaveAttribute("aria-checked", "true");
+        await expect(toggle(page)).toBeFocused();
+        await expect(
+          page.locator(`[data-repository="${repoId}"]`),
+        ).toContainText("Global Monitoring paused");
+        expect((await store("automation_snapshot")).paused).toBe(true);
+        await enlargeText();
+        for (const row of await contained()) {
+          expect(row).toMatchObject({
+            row: true,
+            open: true,
+            state: true,
+            control: true,
+            controlText: true,
+            readableState: true,
+            readableControl: true,
+            copyText: true,
+          });
+          expect(row.fontSize).toBe(originalControlSize * textScale);
+        }
+        await page.locator(`[data-repository="${repoId}"]`).click();
+        await expect(editor(page)).toBeVisible();
+        await expect(
+          editor(page).locator("[data-repository-monitoring-state]"),
+        ).toHaveText("Enabled");
+      });
+    }
+  }
+}
 
 for (const embedded of [true, false]) {
   test(`persistent repository switch keeps global pause separate (${embedded ? "panel" : "standalone"})`, async ({
@@ -174,7 +497,8 @@ test("invalid quick enable reports failure without optimistic enabled state or l
   const original = await seed(store, false);
   await providerFixture(page, store);
   await repositoryPage(page, store);
-  await toggle(page).click();
+  await toggle(page).focus();
+  await page.keyboard.press("Space");
   await expect(page.locator("#error")).toContainText(
     "assign at least one saved Agent",
   );

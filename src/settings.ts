@@ -2400,6 +2400,12 @@ export async function mountSettings(
       if (!modal.isConnected) return;
       const committed =
         saved.repositories?.find((r) => r.id === repository.id) ?? repository;
+      if (committed.enabled) {
+        pendingSetup.delete(repository.id);
+        setupMonitoringOff.delete(repository.id);
+      }
+      if (!pendingSetup.has(repository.id))
+        monitoring.checked = committed.enabled;
       monitoringState.textContent = committed.enabled ? "Enabled" : "Disabled";
       monitoringState.dataset.monitoringState = committed.enabled
         ? "enabled"
@@ -2409,6 +2415,10 @@ export async function mountSettings(
           ? "Starts after you save valid configuration. Turn this off to keep the repository disabled."
           : "Stays disabled when you save configuration."
         : `${repositoryMonitoringDetail(committed)}. This control saves monitoring immediately using saved configuration; other fields stay in your draft. Global Monitoring is separate.`;
+    };
+    const refreshSavedMonitoring = () => {
+      updateMonitoring();
+      refreshRepositoryRows?.();
     };
     updateMonitoring();
     void refreshRepositoryAutomation(updateMonitoring);
@@ -2460,10 +2470,9 @@ export async function mountSettings(
     modal.querySelector<HTMLButtonElement>("[data-save-repository]")!.onclick =
       async () => {
         try {
-          repository.enabled = modal.querySelector<HTMLInputElement>(
-            "[data-repository-enabled]",
-          )!.checked;
-          await commitResource(repositoryEdit(repository), modal);
+          const proposed = clone(repository);
+          proposed.enabled = monitoring.checked;
+          await commitResource(repositoryEdit(repository, proposed), modal);
           pendingSetup.delete(repository.id);
           setupMonitoringOff.delete(repository.id);
           modal.close();
@@ -2530,6 +2539,7 @@ export async function mountSettings(
         repository,
         () => {
           renderAssignments();
+          refreshSavedMonitoring();
         },
       );
     modal.querySelector<HTMLButtonElement>("[data-add-people]")!.onclick = (
@@ -2538,7 +2548,10 @@ export async function mountSettings(
       addPersonDialog(
         event.currentTarget as HTMLButtonElement,
         repository,
-        () => renderWatchlist(),
+        () => {
+          renderWatchlist();
+          refreshSavedMonitoring();
+        },
       );
     modal.querySelector<HTMLButtonElement>("#rename-repository")!.onclick =
       () => {
@@ -2635,7 +2648,10 @@ export async function mountSettings(
           assignAgentDialog(
             event.currentTarget as HTMLButtonElement,
             repository,
-            () => renderAssignments(),
+            () => {
+              renderAssignments();
+              refreshSavedMonitoring();
+            },
             assignment,
           );
         row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick = (
