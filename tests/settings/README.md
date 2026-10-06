@@ -154,6 +154,14 @@ a guessed policy diagnosis. These cases use real provider parsing, native
 session/precommit guards and Store-backed Settings/Genie tests in Chromium and
 WebKit; no live entitlement or real Keychain/CredStore proof is implied.
 
+The exact `actions::tests::provider_rules_` native selectors exercise rules
+HTTP 403/429 through actual action observation and persisted retry state.
+Plain, Retry-After and contextual reset/partial-authorization limits all remain
+failures, preserving current authority and captured finals without provider
+writes. Reset-only limits retain their measured retry interval. Unsupported
+or denied rules remain approval-independent and merge-blocking; they are not
+silently reclassified as transient failures or accepted merge policy.
+
 `agent-intelligence.spec.mjs` exercises advertised reasoning efforts, context
 tiers and token capacities through the shared Agent editor and real native
 resource saves/restarts. Account/model changes retain incompatible deliberate
