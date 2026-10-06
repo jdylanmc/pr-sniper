@@ -162,7 +162,27 @@ const option = (value: string, label: string, selected: string) =>
   `<option value="${escape(value)}" ${value === selected ? "selected" : ""}>${escape(label)}</option>`;
 const words = (text: string) =>
   text.trim() ? text.trim().split(/\s+/).length : 0;
-const reason = (error: unknown) => {
+function repositorySessionFailure(cause: unknown) {
+  if (
+    cause &&
+    typeof cause === "object" &&
+    "stage" in cause &&
+    cause.stage === "session" &&
+    "account_id" in cause &&
+    typeof cause.account_id === "string" &&
+    "error" in cause
+  ) {
+    return { accountId: cause.account_id, error: cause.error };
+  }
+}
+
+const reason = (error: unknown): string => {
+  const session = repositorySessionFailure(error);
+  if (session) {
+    return session.error === "configuration" || session.error === "broken_cli"
+      ? "The selected GitHub session is unavailable. Check secure credential access or reconnect this account, then retry."
+      : reason(session.error);
+  }
   const errors: Record<string, string> = {
     signed_out:
       "GitHub is disconnected. Connect the PR Sniper GitHub OAuth App, then try again.",
@@ -189,6 +209,8 @@ const reason = (error: unknown) => {
       "GitHub rejected this lookup. Check the selected account and provider policy before retrying.",
     wrong_identity:
       "GitHub returned a different account. Reconnect the selected account; no other account will be used.",
+    configuration:
+      "Repository lookup configuration is unavailable. Check local/provider setup and retry.",
   };
   if (error && typeof error === "object") {
     if (
@@ -1948,16 +1970,17 @@ export async function mountSettings(
       owner.disabled = false;
     };
     const showReadFailure = (cause: unknown) => {
+      const session = repositorySessionFailure(cause);
+      const error = session ? session.error : cause;
+      const sameBinding = !session || session.accountId === account.account_id;
       if (
         !connected() ||
-        cause === "wrong_identity" ||
-        cause === "authentication_changed" ||
-        cause === "signed_out" ||
-        cause === "missing_scope" ||
-        cause ===
-          "Reconnect the acting GitHub account before saving this repository." ||
-        cause ===
-          "GitHub connection changed. Resolve the repository again before saving."
+        (sameBinding &&
+          (error === "wrong_identity" ||
+            error === "authentication_changed" ||
+            error === "signed_out" ||
+            error === "missing_scope" ||
+            (session && (error === "configuration" || error === "broken_cli"))))
       ) {
         loaded = false;
         results = [];
@@ -1971,7 +1994,9 @@ export async function mountSettings(
       status.textContent = loaded
         ? "Lookup failed. Previously loaded results remain visible; discovery is incomplete."
         : "Repository browsing unavailable.";
-      alert.textContent = reason(cause);
+      alert.textContent = sameBinding
+        ? reason(cause)
+        : "The lookup returned a failure for another account. Retry this selected account.";
       alert.hidden = false;
       retry.hidden = false;
     };

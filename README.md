@@ -489,9 +489,12 @@ malformed metadata or a later page fails, successfully read results remain
 usable with a visible boundary-specific warning; the list is never presented
 as complete or conclusively empty. **Retry** refreshes owner choices and the
 selected owner's repositories together, retaining the selection and search.
-If selecting a repository detects unusable account authorization or a changed
-connection, cached owners/results are cleared until a fresh selected-account
-lookup succeeds. Missing repository scope
+If a lookup or selection detects unavailable session/credentials, unusable
+account authorization or a changed connection, that account's cached
+owners/results are cleared until a fresh selected-account lookup succeeds.
+Native session failures are distinct from ordinary catalog configuration or
+transport failures, which retain usable results with explicit warnings.
+Missing repository scope
 requires explicit reconnect; organization authorization may require your
 administrator. No retry substitutes another account or the GitHub CLI login.
 **+ URL** accepts a GitHub URL or `owner/repository`, requires an explicit acting
