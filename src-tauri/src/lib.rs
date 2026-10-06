@@ -1402,6 +1402,7 @@ fn monitoring_setup_review(host: State<'_, Host>) -> Result<monitoring::SetupRev
 #[derive(Serialize)]
 struct GithubRepositories {
     identity: github::Identity,
+    owners: Vec<github::provider::RepositoryOwner>,
     repositories: Vec<github::provider::RemoteRepository>,
     warnings: Vec<github::provider::RepositoryBrowseWarning>,
 }
@@ -1655,6 +1656,7 @@ async fn list_provider_repositories(
                 let browser = client.owner_repository_browser(identity, &owner)?;
                 Ok(GithubRepositories {
                     identity: identity.clone(),
+                    owners: browser.owners,
                     repositories: browser.repositories,
                     warnings: browser.warnings,
                 })
@@ -1902,6 +1904,7 @@ mod repository_read_tests {
             Operation::Repositories => {
                 let browser = client.repository_browser(identity)?;
                 serde_json::to_value(GithubRepositories {
+                    owners: browser.owners,
                     repositories: browser
                         .repositories
                         .into_iter()
@@ -2022,6 +2025,28 @@ mod repository_read_tests {
     fn repositories_completion_cannot_expire_a_replacement_connection() {
         assert_reconnected_completion(Operation::Repositories);
     }
+
+    #[test]
+    fn selected_owner_command_carries_the_full_owner_catalog_from_the_same_read() {
+        let (identity, client) = acquire(HeldProvider {
+            operation: Operation::Repositories,
+            signed_out: false,
+            barrier: None,
+        })
+        .unwrap();
+        let result = read_operation(Operation::Repositories, &identity, client, 0).unwrap();
+        assert_eq!(result["identity"]["id"], "22");
+        assert_eq!(
+            result["owners"],
+            json!([
+                {"login": "original", "kind": "personal"},
+                {"login": "owner", "kind": "organization"}
+            ])
+        );
+        assert_eq!(result["repositories"].as_array().unwrap().len(), 1);
+        assert_eq!(result["warnings"], json!([]));
+    }
+
     struct CorporateProvider {
         fail_second: bool,
         wrong_identity: bool,

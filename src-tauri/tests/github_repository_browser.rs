@@ -359,3 +359,42 @@ fn duplicate_or_empty_advertised_pages_are_not_silent_success() {
         assert_eq!(browser.warnings[0].error, ConnectionError::IncompleteRead);
     }
 }
+
+#[test]
+fn contradictory_advertised_last_stops_before_following_the_next_page() {
+    for link in [
+            format!("<https://api.github.com{CATALOG}2>; rel=\"next\", <https://api.github.com{CATALOG}1>; rel=\"last\""),
+            format!("<https://api.github.com{CATALOG}1>; rel=\"last\", <https://api.github.com{CATALOG}2>; rel=\"next\""),
+        ] {
+            let client = GithubClient::new(Fixture::new(vec![first(
+                json!([repository(101, "fixture_corp", "User")]), Some(&link)
+            )]));
+            let browser = client.repository_browser(&identity()).unwrap();
+            assert_eq!(browser.repositories.len(), 1);
+            assert_eq!(browser.owners.len(), 1);
+            assert_eq!(browser.warnings[0].error, ConnectionError::IncompleteRead);
+            assert_eq!(browser.warnings[0].boundary, "pagination");
+            assert_eq!(browser.warnings[0].page, 1);
+        }
+}
+
+#[test]
+fn next_cannot_exceed_a_retained_advertised_last() {
+    let link = format!("<https://api.github.com{CATALOG}2>; rel=\"next\", <https://api.github.com{CATALOG}2>; rel=\"last\"");
+    let mut second = response(json!([repository(102, "orbit", "Organization")]));
+    second.headers.insert(
+        "link".into(),
+        format!("<https://api.github.com{CATALOG}3>; rel=\"next\""),
+    );
+    let client = GithubClient::new(Fixture::new(vec![
+        first(
+            json!([repository(101, "fixture_corp", "User")]),
+            Some(&link),
+        ),
+        (format!("{CATALOG}2"), Ok(second)),
+    ]));
+    let browser = client.repository_browser(&identity()).unwrap();
+    assert_eq!(browser.repositories.len(), 2);
+    assert_eq!(browser.warnings[0].error, ConnectionError::IncompleteRead);
+    assert_eq!(browser.warnings[0].page, 2);
+}

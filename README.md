@@ -487,8 +487,11 @@ Managed usernames (including their enterprise underscore suffix) are supported.
 Reads follow validated GitHub pagination. If organization single sign-on (SSO),
 malformed metadata or a later page fails, successfully read results remain
 usable with a visible boundary-specific warning; the list is never presented
-as complete or conclusively empty. **Retry** makes a fresh lookup using only
-the selected account and reports whether it succeeded. Missing repository scope
+as complete or conclusively empty. **Retry** refreshes owner choices and the
+selected owner's repositories together, retaining the selection and search.
+If selecting a repository detects unusable account authorization or a changed
+connection, cached owners/results are cleared until a fresh selected-account
+lookup succeeds. Missing repository scope
 requires explicit reconnect; organization authorization may require your
 administrator. No retry substitutes another account or the GitHub CLI login.
 **+ URL** accepts a GitHub URL or `owner/repository`, requires an explicit acting

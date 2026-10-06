@@ -47,6 +47,10 @@ export async function providerFixture(page, store, handler) {
     if (command === "list_provider_repositories")
       return {
         identity: { id: args.accountId },
+        owners: [
+          { login: "fixture", kind: "personal" },
+          { login: "orbit", kind: "organization" },
+        ],
         repositories: [
           { id: "100", name: `${args.owner}/one` },
           { id: "200", name: `${args.owner}/two` },

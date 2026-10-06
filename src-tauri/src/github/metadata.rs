@@ -429,6 +429,9 @@ pub(super) fn next_page(
         .get("page")
         .and_then(|page| page.parse::<u64>().ok())
         .ok_or(ConnectionError::IncompleteRead)?;
+    if advertised_last.is_some_and(|last| page > last) {
+        return Err(ConnectionError::IncompleteRead);
+    }
     let Some(link) = response.headers.get("link") else {
         return if advertised_last.is_some_and(|last| last > page) {
             Err(ConnectionError::IncompleteRead)
@@ -437,6 +440,7 @@ pub(super) fn next_page(
         };
     };
     let mut next = None;
+    let mut next_number = None;
     let mut last = None;
     let mut relations = HashSet::new();
     // Repository affiliation parameters contain commas inside the target URL.
@@ -501,6 +505,7 @@ pub(super) fn next_page(
                     url.path(),
                     url.query().ok_or(ConnectionError::IncompleteRead)?
                 ));
+                next_number = Some(number);
             }
             "rel=\"last\"" => last = Some(number),
             "rel=\"prev\"" | "rel=\"first\"" => (),
@@ -511,10 +516,13 @@ pub(super) fn next_page(
         if last < page || advertised_last.is_some_and(|previous| last < previous) {
             return Err(ConnectionError::IncompleteRead);
         }
-        *advertised_last = Some(last);
     }
-    if next.is_none() && advertised_last.is_some_and(|last| last > page) {
+    let effective_last = last.or(*advertised_last);
+    if effective_last.is_some_and(|last| next_number.is_some_and(|number| number > last))
+        || (next.is_none() && effective_last.is_some_and(|last| last > page))
+    {
         return Err(ConnectionError::IncompleteRead);
     }
+    *advertised_last = effective_last;
     Ok(next)
 }
