@@ -61,6 +61,74 @@ fn agent_edit(expected: &Settings, name: &str) -> ResourceEdit {
 }
 
 #[test]
+fn intelligence_resource_save_restart_and_job_snapshots_survive_later_agent_edits() {
+    use pr_sniper_lib::storage::{AgentIntelligence, Store};
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let original = settings();
+    store.save_settings(&original).unwrap();
+    let mut agent = original.agents[0].clone();
+    agent.intelligence = Some(AgentIntelligence {
+        reasoning_effort: Some("high".into()),
+        context_tier: Some("long_context".into()),
+    });
+    let saved = store
+        .save_resource(ResourceEdit::Agent {
+            id: agent.id.clone(),
+            expected: Some(original.agents[0].clone()),
+            value: Some(agent),
+        })
+        .unwrap();
+    let reopened = Store::new(fixture.path().to_path_buf());
+    assert_eq!(
+        reopened.load_settings().unwrap().agents[0].intelligence,
+        saved.agents[0].intelligence
+    );
+    let selection = Selection::resolve(&saved, &job(), ASSIGNMENT).unwrap();
+    let mut run: ReviewRun = serde_json::from_value(json!({
+        "key": review::key(&job(), ASSIGNMENT), "assignment_id": ASSIGNMENT, "job": job(),
+        "selection": selection, "operation": JobOperation::review(&job(), 100),
+        "manual_start":true, "trust_confirmed":true, "phase":"completed", "error":null,
+        "result": {
+            "output":{"synopsis":"No defects were found.", "files":[], "findings":[], "decision":"machine_sign_off"},
+            "model":"explicit-model", "session_id":"fixture", "runtime_version":"fixture",
+            "intelligence":{"reasoning_effort":"high", "context_tier":"long_context"},
+            "input_tokens":1, "output_tokens":1, "tool_calls":0
+        }
+    })).unwrap();
+    run.operation.state = OperationState::Completed;
+    reopened.save_reviews(&[run.clone()]).unwrap();
+    let mut edited = saved.agents[0].clone();
+    edited.model = "later-model".into();
+    edited.intelligence = Some(AgentIntelligence::default());
+    reopened
+        .save_resource(ResourceEdit::Agent {
+            id: edited.id.clone(),
+            expected: Some(saved.agents[0].clone()),
+            value: Some(edited),
+        })
+        .unwrap();
+    let restarted = Store::new(fixture.path().to_path_buf());
+    assert_eq!(restarted.load_reviews().unwrap()[0], run);
+    assert_eq!(
+        restarted.load_settings().unwrap().agents[0].intelligence,
+        Some(AgentIntelligence::default())
+    );
+    let mut invalid = restarted.load_settings().unwrap().agents[0].clone();
+    invalid.intelligence.as_mut().unwrap().reasoning_effort = Some(" ".into());
+    let before = restarted.load_settings().unwrap();
+    assert!(restarted
+        .save_resource(ResourceEdit::Agent {
+            id: invalid.id.clone(),
+            expected: Some(before.agents[0].clone()),
+            value: Some(invalid),
+        })
+        .unwrap_err()
+        .contains("Provider default"));
+    assert_eq!(restarted.load_settings().unwrap(), before);
+}
+
+#[test]
 fn enabled_repository_saves_reject_incomplete_legacy_configuration_without_breaking_load_or_disabled_repair(
 ) {
     for missing_agent in [true, false] {

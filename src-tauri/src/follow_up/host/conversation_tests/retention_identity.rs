@@ -210,6 +210,7 @@ fn clear_current_passes(store: &Store, now: i64) {
                 session_id: "fixture".into(),
                 model: "model".into(),
                 runtime_version: "fixture".into(),
+                intelligence: None,
                 input_tokens: 1,
                 output_tokens: 1,
                 tool_calls: 1,

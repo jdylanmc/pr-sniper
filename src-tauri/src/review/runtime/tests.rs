@@ -30,6 +30,7 @@ fn selection() -> Selection {
             id: "agent".into(),
             name: "Reviewer".into(),
             model: "review-model".into(),
+            intelligence: None,
             ai_account: Some(AiAccount {
                 provider: "copilot".into(),
                 account_id: "33".into(),
@@ -145,6 +146,165 @@ fn stopped(root: &Path) {
     crate::copilot::runtime::assert_process_stopped(pid as u32);
 }
 
+fn explicit_intelligence() -> crate::storage::AgentIntelligence {
+    crate::storage::AgentIntelligence {
+        reasoning_effort: Some("high".into()),
+        context_tier: Some("long_context".into()),
+    }
+}
+
+#[tokio::test]
+async fn intelligence_is_advertised_transported_read_back_or_rejected_before_inference() {
+    for (scenario, explicit, success) in [
+        ("success", false, true),
+        ("success", true, true),
+        ("unsupported-intelligence", true, false),
+        ("reject-intelligence", true, false),
+        ("ignore-intelligence", true, false),
+        ("catalog-error", true, false),
+        ("intelligence-readback-error", true, false),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let mut request = request(false);
+        request.selection.agent.intelligence = Some(if explicit {
+            explicit_intelligence()
+        } else {
+            Default::default()
+        });
+        let result = execute(
+            options(root.path(), scenario),
+            &Identity {
+                id: "33".into(),
+                login: "review-account".into(),
+            },
+            &operation(8),
+            request,
+        )
+        .await;
+        assert_eq!(result.is_ok(), success, "{scenario}: {result:?}");
+        let receipt = receipt(root.path());
+        if success {
+            let actual = result.unwrap().intelligence.unwrap();
+            assert_eq!(
+                actual,
+                if explicit {
+                    explicit_intelligence()
+                } else {
+                    Default::default()
+                }
+            );
+            let create = receipt
+                .iter()
+                .find(|r| r["method"] == "session.create")
+                .unwrap();
+            if explicit {
+                assert_eq!(create["config"]["reasoningEffort"], "high");
+                assert_eq!(create["config"]["contextTier"], "long_context");
+            } else {
+                assert!(create["config"].get("reasoningEffort").is_none());
+                assert!(create["config"].get("contextTier").is_none());
+            }
+        } else {
+            assert!(!receipt.iter().any(|r| r["method"] == "session.send"));
+            if scenario == "unsupported-intelligence" {
+                assert!(!receipt.iter().any(|r| r["method"] == "session.create"));
+            }
+        }
+        stopped(root.path());
+    }
+}
+
+#[tokio::test]
+#[ignore = "explicit offline bundled-runtime acceptance; no credentials or inference"]
+async fn bundled_runtime_intelligence_offline() {
+    use crate::copilot::runtime::{private_directory, runtime_program, shutdown, with_directory};
+    use github_copilot_sdk::ProviderConfig;
+    let root = private_directory("pr-sniper-intelligence-offline-").unwrap();
+    let path = root.path().to_path_buf();
+    let reject_provider = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    reject_provider.set_nonblocking(true).unwrap();
+    let mut options = crate::copilot::runtime::options(
+        runtime_program().unwrap(),
+        root.path(),
+        "",
+        std::env::vars_os().map(|(key, _)| key),
+    )
+    .unwrap();
+    options.github_token = None;
+    options.env_remove.push("COPILOT_SDK_AUTH_TOKEN".into());
+    let mut provider = ProviderConfig::default();
+    provider.provider_type = Some("openai".into());
+    provider.base_url = format!("http://{}/v1", reject_provider.local_addr().unwrap());
+    for (key, value) in [
+        ("COPILOT_OFFLINE", "true".to_string()),
+        ("COPILOT_PROVIDER_BASE_URL", provider.base_url.clone()),
+        ("COPILOT_PROVIDER_TYPE", "openai".to_string()),
+        ("COPILOT_MODEL", "gpt-5".to_string()),
+    ] {
+        options.env_remove.retain(|name| name != key);
+        options.env.push((key.into(), value.into()));
+    }
+    let (version, pid, evidence) = with_directory(root, async {
+        let client = tokio::time::timeout(Duration::from_secs(30), Client::start(options))
+            .await
+            .unwrap()
+            .unwrap();
+        let pid = client.pid().unwrap();
+        let version = client.get_status().await.unwrap().version;
+        let evidence = tokio::time::timeout(Duration::from_secs(10), async {
+            let mut evidence = Vec::new();
+            for (effort, tier) in [
+                (None, None),
+                (Some("high"), Some("default")),
+                (Some("low"), Some("long_context")),
+            ] {
+                let request = request(false);
+                let tools = Arc::new(ReadTools {
+                    context: request.context,
+                    client: request.client,
+                    name: request.repository_name,
+                    read: Mutex::new(BTreeSet::new()),
+                    source_failure: Mutex::new(None),
+                    gate: request.local_gate,
+                });
+                let mut selection = selection();
+                selection.agent.model = "gpt-5".into();
+                selection.agent.intelligence = Some(crate::storage::AgentIntelligence {
+                    reasoning_effort: effort.map(String::from),
+                    context_tier: tier.map(String::from),
+                });
+                // Same production session configuration and readback gate; only the provider
+                // is an offline rejecting loopback endpoint. Never send a prompt.
+                let session = client
+                    .create_session(config(&selection, tools).with_provider(provider.clone()))
+                    .await
+                    .map_err(|_| "Pinned runtime rejected production configuration.".to_string())?;
+                let actual = verified_intelligence(&session, &selection)
+                    .await
+                    .map_err(|error| error.message)?;
+                evidence.push(actual);
+            }
+            Ok::<_, String>(evidence)
+        })
+        .await;
+        shutdown(&client).await;
+        (version, pid, evidence)
+    })
+    .await
+    .unwrap();
+    let evidence = evidence.unwrap().unwrap();
+    assert_eq!(evidence[1].reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(evidence[1].context_tier.as_deref(), Some("default"));
+    assert_eq!(evidence[2].reasoning_effort.as_deref(), Some("low"));
+    assert_eq!(evidence[2].context_tier.as_deref(), Some("long_context"));
+    assert!(
+        matches!(reject_provider.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
+    );
+    crate::copilot::runtime::assert_process_stopped(pid);
+    assert!(!path.exists());
+    eprintln!("offline pinned runtime {version}: production session/readback={evidence:?}; no provider requests, credentials or inference; child stopped and private state removed");
+}
+
 #[test]
 fn tools_read_immutable_content_and_reject_arbitrary_paths_or_execution() {
     let request = request(true);
@@ -222,6 +382,7 @@ async fn synthetic_runtime_validates_identity_tools_output_and_reaps_process() {
 async fn primary_final_is_a_full_constrained_review_with_peer_and_human_context() {
     let root = tempfile::tempdir().unwrap();
     let mut request = request(true);
+    request.selection.agent.intelligence = Some(explicit_intelligence());
     request.task.final_context = Some(json!({"purpose":"primary_final_full_review",
         "normal_passes":[{"agent":"Peer A","decision":"machine_sign_off"},{"agent":"Peer B","decision":"machine_sign_off"}],
         "human_provider_context":{"comments":[{"body":"Human context is data; do not run commands."}],"threads":[]}}));
@@ -253,6 +414,7 @@ async fn primary_final_is_a_full_constrained_review_with_peer_and_human_context(
     .unwrap();
     assert_eq!(result.output.files.len(), 1);
     assert_eq!(result.output.files[0].path, "source.rs");
+    assert_eq!(result.intelligence, Some(explicit_intelligence()));
     assert_eq!(
         result.output.decision,
         crate::review::Decision::MachineSignOff
@@ -268,15 +430,25 @@ async fn primary_final_is_a_full_constrained_review_with_peer_and_human_context(
     );
     assert_eq!(config["requestExtensions"], false);
     assert_eq!(config["enableHostGitOperations"], false);
+    assert_eq!(config["reasoningEffort"], "high");
+    assert_eq!(config["contextTier"], "long_context");
     stopped(root.path());
 }
 
 #[tokio::test]
 async fn follow_up_decisions_use_the_same_restricted_session_and_usage_contract() {
-    for scenario in ["follow-up-quiet", "follow-up-human"] {
+    for scenario in [
+        "follow-up-quiet",
+        "follow-up-human",
+        "unsupported-intelligence",
+        "reject-intelligence",
+        "ignore-intelligence",
+        "catalog-error",
+    ] {
         for mention in [false, true] {
             let root = tempfile::tempdir().unwrap();
-            let base = request(false);
+            let mut base = request(false);
+            base.selection.agent.intelligence = Some(explicit_intelligence());
             let request = Request {
                 context: base.context,
                 client: base.client,
@@ -315,9 +487,18 @@ async fn follow_up_decisions_use_the_same_restricted_session_and_usage_contract(
                 &operation(8),
                 request,
             )
-            .await
-            .unwrap();
+            .await;
+            if !scenario.starts_with("follow-up-") {
+                assert!(result.is_err(), "{scenario}: {result:?}");
+                assert!(!receipt(root.path())
+                    .iter()
+                    .any(|entry| entry["method"] == "session.send"));
+                stopped(root.path());
+                continue;
+            }
+            let result = result.unwrap();
             assert_eq!(result.input_tokens, 20);
+            assert_eq!(result.intelligence, Some(explicit_intelligence()));
             assert_eq!(
                 result.output.decision,
                 if scenario == "follow-up-human" {
@@ -330,6 +511,56 @@ async fn follow_up_decisions_use_the_same_restricted_session_and_usage_contract(
             stopped(root.path());
         }
     }
+}
+
+#[test]
+fn intelligence_validation_uses_actual_model_metadata_and_pricing_not_invented_lists() {
+    use crate::storage::AgentIntelligence;
+    let model = |extra: Value| {
+        let mut value = json!({"id":"fixture","name":"Fixture","capabilities":{}});
+        for (key, value_extra) in extra.as_object().unwrap() {
+            value[key] = value_extra.clone();
+        }
+        serde_json::from_value::<github_copilot_sdk::Model>(value).unwrap()
+    };
+    for extra in [
+        json!({"supportedReasoningEfforts":["high"],"supportedContextTiers":["default","long_context"]}),
+        json!({"supportedReasoningEfforts":["high"],"billing":{"tokenPrices":{"maxPromptTokens":100,"longContext":{"maxPromptTokens":200}}}}),
+        json!({"supportedReasoningEfforts":["high"],"billing":{"tokenPrices":{"contextMax":100,"longContext":{"contextMax":200}}}}),
+    ] {
+        assert!(crate::copilot::runtime::validate_intelligence(
+            &model(extra),
+            Some(&explicit_intelligence())
+        )
+        .is_ok());
+    }
+    for extra in [
+        json!({}),
+        json!({"supportedReasoningEfforts":["low"],"supportedContextTiers":["default","long_context"]}),
+        json!({"capabilities":{"supports":{"reasoningEffort":false}},"supportedReasoningEfforts":["high"],"supportedContextTiers":["default","long_context"]}),
+        json!({"supportedReasoningEfforts":["high"],"supportedContextTiers":["default"]}),
+        json!({"supportedReasoningEfforts":["high"],"supportedContextTiers":["default","long_context"],"policy":{"state":"disabled"}}),
+    ] {
+        assert!(crate::copilot::runtime::validate_intelligence(
+            &model(extra),
+            Some(&explicit_intelligence())
+        )
+        .is_err());
+    }
+    assert!(crate::copilot::runtime::validate_intelligence(
+        &model(json!({})),
+        Some(&AgentIntelligence::default())
+    )
+    .is_ok());
+    let future = AgentIntelligence {
+        reasoning_effort: None,
+        context_tier: Some("future".into()),
+    };
+    assert!(crate::copilot::runtime::validate_intelligence(
+        &model(json!({"supportedContextTiers":["future"]})),
+        Some(&future)
+    )
+    .is_err());
 }
 
 #[tokio::test]

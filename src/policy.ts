@@ -30,11 +30,16 @@ export interface Agent {
   id: string;
   name: string;
   model: string;
+  intelligence?: AgentIntelligence;
   ai_account?: AiAccount;
   doctrine?: string;
   doctrines?: string[];
   prompt: string;
   signature: string;
+}
+export interface AgentIntelligence {
+  reasoning_effort: string | null;
+  context_tier: string | null;
 }
 export interface AiAccount {
   provider: "copilot";

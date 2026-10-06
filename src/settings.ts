@@ -4,6 +4,11 @@ import { renderGithubAuth, type GithubAccount } from "./github-auth";
 import {
   renderCopilotAuth,
   modelSelectable,
+  reasoningEfforts,
+  contextTiers,
+  contextCapacity,
+  runtimeContextTier,
+  intelligenceError,
   type CopilotAccount,
   type CopilotAuth,
   type CopilotModel,
@@ -1063,6 +1068,9 @@ export async function mountSettings(
         <div class="resource-intelligence"><h3>Intelligence</h3><p class="settings-hint">GitHub Copilot. The AI account is separate from the GitHub account used for repository actions.</p>
         <label>AI account<select name="ai-account" aria-label="AI account"><option value="">Choose a Copilot account</option>${copilotAccounts.map((a) => `<option value="${escape(a.account_id)}" ${a.account_id === existing?.ai_account?.account_id ? "selected" : ""} ${a.state === "connected" ? "" : "disabled"}>${escape(a.login)} (${escape(a.account_id)})${a.state === "connected" ? "" : " - reconnect required"}</option>`).join("")}${existing?.ai_account && !copilotAccounts.some((a) => a.account_id === existing.ai_account?.account_id) ? `<option selected disabled value="${escape(existing.ai_account.account_id)}">Copilot ${escape(existing.ai_account.account_id)} - reconnect required</option>` : ""}</select></label>
         <label>Model<select name="model" aria-label="Model" disabled><option value="${escape(existing?.model ?? "")}">${escape(existing?.model ?? "Choose an account first")}</option></select></label>
+        <label>Reasoning effort<select name="reasoning-effort" aria-label="Reasoning effort" disabled></select></label>
+        <label>Context window<select name="context-tier" aria-label="Context window" disabled></select></label>
+        <p class="settings-hint" data-intelligence-status aria-live="polite"></p>
         <p class="settings-hint" data-model-status role="status"></p><button type="button" data-retry-models>Retry model list</button><button type="button" data-cancel-models hidden>Cancel model lookup</button></div>
         <label>Prompt<textarea name="prompt" rows="4" required>${escape(existing?.prompt ?? "Review this pull request for correctness, risk, and readability.")}</textarea></label>
         <fieldset class="resource-doctrines"><legend>Doctrines</legend><p class="settings-hint" data-doctrine-catalog>${escape(doctrineCatalogLabel(snapshot.doctrine_catalog))}</p><p class="settings-hint">Select zero, one or many. Existing order is retained; new selections append in library order. Filtering does not change selections.</p><label>Filter doctrines<input type="search" data-doctrine-filter placeholder="Find principles..." /></label><p class="settings-hint" data-selection-count aria-live="polite"></p><div class="doctrine-choices" tabindex="0" role="group" aria-label="Available doctrines">${doctrines()
@@ -1144,6 +1152,96 @@ export async function mountSettings(
       "[data-cancel-models]",
     )!;
     let catalog: CopilotModel[] = [];
+    let catalogLoaded = false;
+    const effortSelect = modal.querySelector<HTMLSelectElement>(
+      "[name=reasoning-effort]",
+    )!;
+    const contextSelect = modal.querySelector<HTMLSelectElement>(
+      "[name=context-tier]",
+    )!;
+    const intelligenceStatus = modal.querySelector<HTMLElement>(
+      "[data-intelligence-status]",
+    )!;
+    let effort = existing?.intelligence?.reasoning_effort ?? "";
+    let context = existing?.intelligence?.context_tier ?? "";
+    let intelligenceChanged = false;
+    const intelligence = () => ({
+      reasoning_effort: effort || null,
+      context_tier: context || null,
+    });
+    function describeIntelligence() {
+      const model = catalog.find((m) => m.id === modelSelect.value);
+      const ready = catalogLoaded && !!model && modelSelectable(model);
+      const render = (
+        select: HTMLSelectElement,
+        selected: string,
+        values: string[],
+        defaultLabel: string,
+        label: (value: string) => string,
+        supported: (value: string) => boolean = () => true,
+      ) => {
+        select.innerHTML =
+          option("", defaultLabel, selected) +
+          (selected && !values.includes(selected)
+            ? `<option selected disabled value="${escape(selected)}">${escape(selected)} - ${catalogLoaded ? "unsupported; retained" : "retained; discovery unavailable"}</option>`
+            : "") +
+          values
+            .map(
+              (value) =>
+                `<option value="${escape(value)}" ${selected === value ? "selected" : ""} ${supported(value) ? "" : "disabled"}>${escape(label(value))}${supported(value) ? "" : " - unsupported by pinned runtime"}</option>`,
+            )
+            .join("");
+        select.disabled = !ready || (!values.some(supported) && !selected);
+      };
+      render(
+        effortSelect,
+        effort,
+        reasoningEfforts(model),
+        `Provider default${model?.defaultReasoningEffort ? ` (${model.defaultReasoningEffort})` : ""}`,
+        (value) => value,
+      );
+      const capacity = contextCapacity(model);
+      render(
+        contextSelect,
+        context,
+        contextTiers(model),
+        `Provider default${capacity ? ` (${capacity})` : ""}`,
+        (value) =>
+          `${value === "default" ? "Standard" : value === "long_context" ? "Long context" : value}${contextCapacity(model, value) ? ` (${contextCapacity(model, value)})` : ""}`,
+        runtimeContextTier,
+      );
+      intelligenceStatus.textContent = !catalogLoaded
+        ? "Capabilities are unavailable until model discovery succeeds. Deliberate choices are retained, not declared invalid."
+        : !ready
+          ? "Choose an available model to check Intelligence. Deliberate choices are retained."
+          : intelligenceError(model, intelligence())
+            ? `${intelligenceError(model, intelligence())} Your choice is retained. Select a supported value or explicitly choose Provider default before saving.`
+            : [
+                reasoningEfforts(model).length
+                  ? ""
+                  : "No reasoning efforts advertised; Provider default only.",
+                contextTiers(model).some(runtimeContextTier)
+                  ? ""
+                  : "No supported context tiers advertised; Provider default only.",
+                model?.capabilities?.limits?.max_context_window_tokens !==
+                undefined
+                  ? `Advertised model maximum: ${model.capabilities.limits.max_context_window_tokens.toLocaleString("en-US")} tokens.`
+                  : "",
+                "Provider defaults are resolved by the runtime. Actual settings are checked before inference and captured with each result.",
+              ]
+                .filter(Boolean)
+                .join(" ");
+    }
+    effortSelect.onchange = () => {
+      effort = effortSelect.value;
+      intelligenceChanged = true;
+      describeIntelligence();
+    };
+    contextSelect.onchange = () => {
+      context = contextSelect.value;
+      intelligenceChanged = true;
+      describeIntelligence();
+    };
     let request = 0;
     let pendingLookup: { accountId: string; requestId: string } | undefined;
     const cancelLookup = () => {
@@ -1169,6 +1267,8 @@ export async function mountSettings(
     async function loadModels() {
       cancelLookup();
       catalog = [];
+      catalogLoaded = false;
+      describeIntelligence();
       const accountId = accountSelect.value;
       const selected = modelSelect.value;
       const current = ++request;
@@ -1199,6 +1299,7 @@ export async function mountSettings(
         )
           return;
         catalog = models;
+        catalogLoaded = true;
         modelSelect.innerHTML =
           option("", "Choose a model", selected) +
           (selected && !models.some((m) => m.id === selected)
@@ -1234,6 +1335,7 @@ export async function mountSettings(
         : modelSelect.value && (!model || !modelSelectable(model))
           ? "The saved model is unavailable. It is retained, not replaced. Choose an available model or retry."
           : `${catalog.length} models returned by Copilot. This is not an inference test. ${notices.join(" ")}`;
+      describeIntelligence();
     }
     accountSelect.onchange = () => {
       selectedWasConnected = copilotAccounts.some(
@@ -1271,6 +1373,8 @@ export async function mountSettings(
       if (!connected) {
         cancelLookup();
         catalog = [];
+        catalogLoaded = false;
+        describeIntelligence();
         modelSelect.disabled = true;
         modelStatus.textContent = selected
           ? `Reconnect this account in ${accountSection}. Your model and draft are retained.`
@@ -1323,16 +1427,31 @@ export async function mountSettings(
           !!existing &&
           accountId === (existing.ai_account?.account_id ?? "") &&
           model === existing.model;
-        if (
-          !unchanged &&
-          (!accountId ||
-            !catalog.some((m) => m.id === model && modelSelectable(m)))
-        )
+        const sameIntelligence =
+          effort === (existing?.intelligence?.reasoning_effort ?? "") &&
+          context === (existing?.intelligence?.context_tier ?? "");
+        const selectedModel = catalog.find((m) => m.id === model);
+        const modelAvailable =
+          catalogLoaded && selectedModel && modelSelectable(selectedModel);
+        if (!unchanged && (!accountId || !modelAvailable))
           throw "Choose a verified AI account and a model returned for that account. Retry the model list if unavailable.";
+        if (!modelAvailable && !sameIntelligence)
+          throw "Model capabilities are unavailable. Retry discovery before changing Intelligence; saved choices are retained.";
+        if (modelAvailable) {
+          const invalid = intelligenceError(selectedModel, intelligence());
+          if (invalid)
+            throw `${invalid} Choose a supported value or Provider default; no setting was discarded.`;
+        }
         const values: Agent = {
           id: existing?.id ?? newIdentity(),
           name,
           model,
+          ...(existing?.intelligence ||
+          !existing ||
+          !unchanged ||
+          intelligenceChanged
+            ? { intelligence: intelligence() }
+            : {}),
           ...(accountId
             ? {
                 ai_account: {

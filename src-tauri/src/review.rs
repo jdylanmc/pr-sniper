@@ -315,6 +315,9 @@ pub struct ReviewResult<O = ReviewOutput> {
     pub session_id: String,
     pub model: String,
     pub runtime_version: String,
+    /// Read back from this actual runtime session, never reconstructed on reload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intelligence: Option<crate::storage::AgentIntelligence>,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub tool_calls: u64,
@@ -599,6 +602,7 @@ impl Events {
             session_id,
             model,
             runtime_version,
+            intelligence: None,
             input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
             tool_calls: self.tool_calls,

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { actualIntelligence } from "./copilot";
 import type { QueueItem } from "./queue";
 import type { ReviewSelection } from "./resources";
 import { renderConfiguration } from "./work-presentation";
@@ -66,6 +67,7 @@ export interface FollowUpCandidate {
       };
       session_id: string;
       model: string;
+      intelligence?: import("./policy").AgentIntelligence | null;
     } | null;
   };
 }
@@ -245,7 +247,7 @@ export function renderFollowUps(
       if (run.result) {
         const session = document.createElement("p");
         session.className = "hint";
-        session.textContent = `Session ${run.result.session_id}; model ${run.result.model}.`;
+        session.textContent = `Session ${run.result.session_id}; model ${run.result.model}. ${actualIntelligence(run.result.intelligence)}`;
         row.append(session);
         const decision = document.createElement("p");
         decision.textContent =

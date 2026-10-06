@@ -138,6 +138,7 @@ fn prepared(origin: &Publication) -> FollowUp {
         session_id: "session".into(),
         model: "model".into(),
         runtime_version: "fixture".into(),
+        intelligence: None,
         input_tokens: 1,
         output_tokens: 1,
         tool_calls: 1,
