@@ -20,6 +20,37 @@ same-login connection replacement. Existing session-cache, scope-loss and
 precommit controls remain covering evidence. No tests require live accounts,
 Keychain access, provider writes or desktop automation.
 
+`queue-visual.spec.mjs` exercises the production retained Queue with the real
+isolated Store bridge. Empty, populated and attention-only fixtures reconcile
+the approved `prototypes/v2/evidence/configured-queue.png` design with human-only
+handoffs: orange Ready for you and white Needs attention summaries, an actual
+capacity link to Running, and the same compact card structure when empty.
+Counts come from the existing native projection; no sample work, Agent lane,
+manual-start gate or personal-review acknowledgment is introduced.
+
+Captures include the actual renderer and a side-by-side comparison (approved
+panel crop left, actual Queue right). Image color samples and measured summary/
+card landmarks use the approved capture's 408x744 panel at desktop coordinates
+(813,42). Explicit tolerances allow platform typography and truthful captions,
+not the prototype's obsolete counts, Agent queue or workflow. Same-Store reloads
+must preserve screenshots within a 0.1% changed-pixel allowance for isolated
+rasterization differences (16 intensity levels per channel). Measurement artifacts include reference and
+actual image hashes. Keyboard/Back/refresh and unavailable-destination cases
+retain exact item identity and scroll/focus; media cases cover light/dark
+(the panel intentionally retains its approved light content), forced colors,
+reduced motion, tiny viewports, 1x/2x device scale and doubled actual text sizes.
+These browser/accessibility-tree checks do not establish native outer corners,
+desktop tray behavior or a live screen-reader session.
+
+After the ordinary frontend and Store-bridge build, run only this lane's checks
+on an available private port, for example:
+
+```sh
+SETTINGS_TEST_PORT=1652 npm exec playwright -- test \
+  --config tests/settings/playwright.config.mjs queue-visual.spec.mjs \
+  --output /absolute/private/queue-visual
+```
+
 `agent-intelligence.spec.mjs` exercises advertised reasoning efforts, context
 tiers and token capacities through the shared Agent editor and real native
 resource saves/restarts. Account/model changes retain incompatible deliberate
