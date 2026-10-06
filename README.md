@@ -492,6 +492,8 @@ selected owner's repositories together, retaining the selection and search.
 If a lookup or selection detects unavailable session/credentials, unusable
 account authorization or a changed connection, that account's cached
 owners/results are cleared until a fresh selected-account lookup succeeds.
+Unusable credential access also blocks native repository Save, even for an
+earlier resolution at the same connection generation.
 Native session failures are distinct from ordinary catalog configuration or
 transport failures, which retain usable results with explicit warnings.
 Missing repository scope

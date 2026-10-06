@@ -282,6 +282,7 @@ fn repository_browser_fixture(args: &Value) -> Result<Value, pr_sniper_lib::Repo
             let response = self.0.get(path).ok_or(ConnectionError::Configuration)?;
             if let Some(error) = response["error"].as_str() {
                 return Err(match error {
+                    "broken_cli" => ConnectionError::BrokenCli,
                     "network" => ConnectionError::Network,
                     "timeout" => ConnectionError::Timeout,
                     _ => ConnectionError::Configuration,

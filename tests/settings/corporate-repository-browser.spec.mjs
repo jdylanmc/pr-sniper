@@ -744,6 +744,8 @@ for (const operation of ["retry", "selection", "credential-header"]) {
 for (const failure of [
   "catalog-configuration",
   "partial-configuration",
+  "catalog-broken-cli",
+  "partial-broken-cli",
   "session-network",
   "session-schema",
 ]) {
@@ -762,15 +764,19 @@ for (const failure of [
         failure === "session-network" ? "network" : "invalid_response";
     else
       state.responses[22][
-        `${catalog}${failure === "catalog-configuration" ? 1 : 2}`
-      ] = { error: "configuration" };
+        `${catalog}${failure.startsWith("partial-") ? 2 : 1}`
+      ] = {
+        error: failure.endsWith("broken-cli") ? "broken_cli" : "configuration",
+      };
     await browser.getByRole("button", { name: "Retry", exact: true }).click();
     await expect(browser.getByRole("alert")).toContainText(
       failure === "session-network"
         ? "Cannot reach GitHub"
         : failure === "session-schema"
           ? "malformed"
-          : "lookup configuration",
+          : failure.endsWith("broken-cli")
+            ? "broken_cli"
+            : "lookup configuration",
     );
     await expect(browser.locator("[data-pick]")).toHaveCount(1);
     await expect(browser.getByLabel("Repository owner")).toBeEnabled();

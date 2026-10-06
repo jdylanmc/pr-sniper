@@ -316,7 +316,14 @@ impl GithubAuth {
     }
 
     fn publish_session_failure(&mut self, account_id: &str, error: ConnectionError) {
-        let reason = failure_from_connection_error(error);
+        self.publish_account_failure(account_id, failure_from_connection_error(error));
+    }
+
+    fn publish_acquisition_failure(&mut self, account_id: &str, error: ConnectionError) {
+        self.publish_account_failure(account_id, failure_from_acquisition_error(error));
+    }
+
+    fn publish_account_failure(&mut self, account_id: &str, reason: GithubAuthFailure) {
         let Some(state) = self.accounts.get(account_id) else {
             return;
         };
@@ -716,6 +723,15 @@ fn failure_from_connection_error(error: ConnectionError) -> GithubAuthFailure {
         ConnectionError::MissingScope => GithubAuthFailure::MissingScope,
         ConnectionError::Configuration => GithubAuthFailure::CredentialsUnavailable,
         _ => GithubAuthFailure::Provider,
+    }
+}
+
+fn failure_from_acquisition_error(error: ConnectionError) -> GithubAuthFailure {
+    match error {
+        ConnectionError::BrokenCli | ConnectionError::Configuration => {
+            GithubAuthFailure::CredentialsUnavailable
+        }
+        _ => failure_from_connection_error(error),
     }
 }
 
@@ -1948,7 +1964,11 @@ fn repository_read<T, C>(
                 RepositoryReadError::catalog(account_id, error)
             };
             if matches!(&failure, RepositoryReadError::Session { .. }) {
-                auth.publish_session_failure(account_id, error);
+                if session_failed {
+                    auth.publish_acquisition_failure(account_id, error);
+                } else {
+                    auth.publish_session_failure(account_id, error);
+                }
             }
             Err(failure)
         }
@@ -2326,8 +2346,251 @@ mod repository_read_tests {
     }
 
     #[test]
+    fn session_header_failure_blocks_a_previously_resolved_same_generation_save() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::new(root.path().into());
+        let mut initial = GithubAuth::new();
+        initial.accounts.insert(
+            "22".into(),
+            GithubAccountState::Connected(identity("original")),
+        );
+        initial.accounts.insert(
+            "44".into(),
+            GithubAccountState::Connected(github::Identity {
+                id: "44".into(),
+                login: "neighbor".into(),
+            }),
+        );
+        let auth = Mutex::new(initial);
+        let generations = Mutex::new(BTreeMap::from([("22".into(), 7), ("44".into(), 9)]));
+        let resolved = repository_read(
+            &generations,
+            &auth,
+            "22",
+            || {
+                acquire(HeldProvider {
+                    operation: Operation::Resolve,
+                    signed_out: false,
+                    barrier: None,
+                })
+            },
+            |identity, client, generation| {
+                read_operation(Operation::Resolve, identity, client, generation)
+            },
+        )
+        .unwrap();
+        assert_eq!(resolved["account_generation"], 7);
+        assert_eq!(resolved["repository"]["id"], "100");
+        let failure = repository_read(
+            &generations,
+            &auth,
+            "22",
+            || Err::<(github::Identity, ()), _>(ConnectionError::BrokenCli),
+            |_, (), _| -> Result<(), ConnectionError> {
+                panic!("Header failure cannot verify identity or read catalog")
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            serde_json::to_value(failure).unwrap(),
+            json!({"stage":"session","account_id":"22","error":"broken_cli"})
+        );
+        let repository: storage::Repository = serde_json::from_value(json!({
+            "id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "provider":"github",
+            "name":resolved["repository"]["name"], "enabled":false,
+            "provider_account_id":"22", "provider_repository_id":"100"
+        }))
+        .unwrap();
+        let edit = storage::ResourceEdit::Repository {
+            id: repository.id.clone(),
+            expected: None,
+            value: Some(Box::new(repository)),
+        };
+        let result = validate_repository_save_account(
+            &auth.lock().unwrap(),
+            &generations.lock().unwrap(),
+            &edit,
+            Some(7),
+        )
+        .and_then(|()| store.save_resource(edit).map_err(ResourceSaveError::from));
+        assert!(
+            result.is_err(),
+            "Unusable session reached Store under the previously resolved generation"
+        );
+        assert_eq!(
+            serde_json::to_value(result.unwrap_err()).unwrap(),
+            json!({"stage":"session","account_id":"22","error":"configuration"})
+        );
+        assert!(store.load_settings().unwrap().repositories.is_empty());
+        let auth = auth.lock().unwrap();
+        assert!(matches!(
+            &auth.accounts["22"],
+            GithubAccountState::ReconnectRequired {
+                reason: GithubAuthFailure::CredentialsUnavailable,
+                ..
+            }
+        ));
+        assert!(auth.account_session_allowed("44").is_ok());
+        assert_eq!(generations.lock().unwrap()["22"], 7);
+        assert_eq!(generations.lock().unwrap()["44"], 9);
+    }
+
+    #[test]
+    fn acquisition_failure_classes_preserve_native_retry_and_account_boundaries() {
+        for (error, reason, retryable) in [
+            (
+                ConnectionError::BrokenCli,
+                GithubAuthFailure::CredentialsUnavailable,
+                false,
+            ),
+            (
+                ConnectionError::Configuration,
+                GithubAuthFailure::CredentialsUnavailable,
+                false,
+            ),
+            (
+                ConnectionError::SignedOut,
+                GithubAuthFailure::Expired,
+                false,
+            ),
+            (
+                ConnectionError::WrongIdentity,
+                GithubAuthFailure::WrongIdentity,
+                false,
+            ),
+            (
+                ConnectionError::MissingScope,
+                GithubAuthFailure::MissingScope,
+                false,
+            ),
+            (ConnectionError::Network, GithubAuthFailure::Network, true),
+            (ConnectionError::Timeout, GithubAuthFailure::Timeout, true),
+            (
+                ConnectionError::InvalidResponse,
+                GithubAuthFailure::InvalidResponse,
+                true,
+            ),
+            (
+                ConnectionError::RateLimited,
+                GithubAuthFailure::RateLimited,
+                true,
+            ),
+            (
+                ConnectionError::RateLimitedAfter(12),
+                GithubAuthFailure::RateLimited,
+                true,
+            ),
+            (
+                ConnectionError::ProviderFailure,
+                GithubAuthFailure::Provider,
+                true,
+            ),
+            (
+                ConnectionError::ProviderFailureAfter(12),
+                GithubAuthFailure::Provider,
+                true,
+            ),
+            (
+                ConnectionError::ProviderRejected,
+                GithubAuthFailure::Provider,
+                true,
+            ),
+            (
+                ConnectionError::MissingReadPermission,
+                GithubAuthFailure::Provider,
+                true,
+            ),
+            (
+                ConnectionError::OrganizationPolicyDenied,
+                GithubAuthFailure::Provider,
+                true,
+            ),
+            (
+                ConnectionError::IncompleteRead,
+                GithubAuthFailure::Provider,
+                true,
+            ),
+            (
+                ConnectionError::MissingCli,
+                GithubAuthFailure::Provider,
+                true,
+            ),
+            (
+                ConnectionError::RevisionChanged,
+                GithubAuthFailure::Provider,
+                true,
+            ),
+            (
+                ConnectionError::InvalidRepository,
+                GithubAuthFailure::Provider,
+                true,
+            ),
+            (
+                ConnectionError::RepositoryChanged,
+                GithubAuthFailure::Provider,
+                true,
+            ),
+        ] {
+            let mut initial = GithubAuth::new();
+            initial.accounts.insert(
+                "22".into(),
+                GithubAccountState::Connected(identity("original")),
+            );
+            initial.accounts.insert(
+                "44".into(),
+                GithubAccountState::Connected(github::Identity {
+                    id: "44".into(),
+                    login: "neighbor".into(),
+                }),
+            );
+            let auth = Mutex::new(initial);
+            let generations = Mutex::new(BTreeMap::from([("22".into(), 7), ("44".into(), 9)]));
+            let result = repository_read(
+                &generations,
+                &auth,
+                "22",
+                || Err::<(github::Identity, ()), _>(error),
+                |_, (), _| -> Result<(), ConnectionError> {
+                    panic!("Failed acquisition cannot read catalog")
+                },
+            );
+            assert_eq!(result, Err(RepositoryReadError::session("22", error)));
+            let auth = auth.lock().unwrap();
+            assert!(
+                matches!(&auth.accounts["22"], GithubAccountState::ReconnectRequired {
+                reason: actual, ..
+            } if *actual == reason),
+                "{error:?}"
+            );
+            assert_eq!(
+                auth.account_session_allowed("22").is_ok(),
+                retryable,
+                "{error:?}"
+            );
+            assert!(auth.account_session_allowed("44").is_ok());
+            assert_eq!(generations.lock().unwrap()["22"], 7);
+            assert_eq!(generations.lock().unwrap()["44"], 9);
+        }
+        let mut generic = GithubAuth::new();
+        generic.accounts.insert(
+            "22".into(),
+            GithubAccountState::Connected(identity("original")),
+        );
+        generic.publish_session_failure("22", ConnectionError::BrokenCli);
+        assert!(matches!(
+            &generic.accounts["22"],
+            GithubAccountState::ReconnectRequired {
+                reason: GithubAuthFailure::Provider,
+                ..
+            }
+        ));
+        assert!(generic.account_session_allowed("22").is_ok());
+    }
+
+    #[test]
     fn catalog_failures_do_not_turn_a_verified_account_into_reconnect_required() {
         for error in [
+            ConnectionError::BrokenCli,
             ConnectionError::Configuration,
             ConnectionError::InvalidResponse,
             ConnectionError::Network,
@@ -2396,71 +2659,73 @@ mod repository_read_tests {
 
     #[test]
     fn session_failure_completion_is_generation_owned() {
-        for supersede in [false, true] {
-            let generations = Arc::new(Mutex::new(BTreeMap::new()));
-            let mut original = GithubAuth::new();
-            original.accounts.insert(
-                "22".into(),
-                GithubAccountState::Connected(identity("original")),
-            );
-            let auth = Arc::new(Mutex::new(original));
-            let (entered_tx, entered_rx) = mpsc::channel();
-            let (release_tx, release_rx) = mpsc::channel();
-            let worker_auth = auth.clone();
-            let worker_generations = generations.clone();
-            let worker = std::thread::spawn(move || {
-                repository_read(
-                    &worker_generations,
-                    &worker_auth,
-                    "22",
-                    || {
-                        entered_tx.send(()).unwrap();
-                        release_rx.recv_timeout(WAIT).unwrap();
-                        Err::<(github::Identity, ()), _>(ConnectionError::Configuration)
-                    },
-                    |_, (), _| -> Result<(), ConnectionError> {
-                        panic!("Failed sessions cannot read provider data")
-                    },
-                )
-            });
-            entered_rx.recv_timeout(WAIT).unwrap();
-            if supersede {
-                let mut generations = generations.lock().unwrap();
-                let mut auth = auth.lock().unwrap();
-                auth.pending = Some(PendingGithubAccount {
-                    identity: identity("replacement"),
-                    pair: github::oauth::TokenPair::new(
-                        "fixture-access",
-                        "fixture-refresh",
-                        std::time::Duration::from_secs(60),
-                        std::time::Duration::from_secs(120),
-                    ),
-                });
-                auth.confirm_repository_with(&mut generations, |_, _| Ok(()))
-                    .unwrap();
-            }
-            release_tx.send(()).unwrap();
-            assert_eq!(
-                worker.join().unwrap(),
-                Err(if supersede {
-                    RepositoryReadError::Superseded
-                } else {
-                    RepositoryReadError::session("22", ConnectionError::Configuration)
-                })
-            );
-            let auth = auth.lock().unwrap();
-            if supersede {
-                assert!(
-                    matches!(&auth.accounts["22"],GithubAccountState::Connected(identity) if identity.login == "replacement")
+        for acquisition_error in [ConnectionError::Configuration, ConnectionError::BrokenCli] {
+            for supersede in [false, true] {
+                let generations = Arc::new(Mutex::new(BTreeMap::new()));
+                let mut original = GithubAuth::new();
+                original.accounts.insert(
+                    "22".into(),
+                    GithubAccountState::Connected(identity("original")),
                 );
-            } else {
-                assert!(matches!(
-                    &auth.accounts["22"],
-                    GithubAccountState::ReconnectRequired {
-                        reason: GithubAuthFailure::CredentialsUnavailable,
-                        ..
-                    }
-                ));
+                let auth = Arc::new(Mutex::new(original));
+                let (entered_tx, entered_rx) = mpsc::channel();
+                let (release_tx, release_rx) = mpsc::channel();
+                let worker_auth = auth.clone();
+                let worker_generations = generations.clone();
+                let worker = std::thread::spawn(move || {
+                    repository_read(
+                        &worker_generations,
+                        &worker_auth,
+                        "22",
+                        || {
+                            entered_tx.send(()).unwrap();
+                            release_rx.recv_timeout(WAIT).unwrap();
+                            Err::<(github::Identity, ()), _>(acquisition_error)
+                        },
+                        |_, (), _| -> Result<(), ConnectionError> {
+                            panic!("Failed sessions cannot read provider data")
+                        },
+                    )
+                });
+                entered_rx.recv_timeout(WAIT).unwrap();
+                if supersede {
+                    let mut generations = generations.lock().unwrap();
+                    let mut auth = auth.lock().unwrap();
+                    auth.pending = Some(PendingGithubAccount {
+                        identity: identity("replacement"),
+                        pair: github::oauth::TokenPair::new(
+                            "fixture-access",
+                            "fixture-refresh",
+                            std::time::Duration::from_secs(60),
+                            std::time::Duration::from_secs(120),
+                        ),
+                    });
+                    auth.confirm_repository_with(&mut generations, |_, _| Ok(()))
+                        .unwrap();
+                }
+                release_tx.send(()).unwrap();
+                assert_eq!(
+                    worker.join().unwrap(),
+                    Err(if supersede {
+                        RepositoryReadError::Superseded
+                    } else {
+                        RepositoryReadError::session("22", acquisition_error)
+                    })
+                );
+                let auth = auth.lock().unwrap();
+                if supersede {
+                    assert!(
+                        matches!(&auth.accounts["22"],GithubAccountState::Connected(identity) if identity.login == "replacement")
+                    );
+                } else {
+                    assert!(matches!(
+                        &auth.accounts["22"],
+                        GithubAccountState::ReconnectRequired {
+                            reason: GithubAuthFailure::CredentialsUnavailable,
+                            ..
+                        }
+                    ));
+                }
             }
         }
     }
