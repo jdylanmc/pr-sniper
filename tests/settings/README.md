@@ -9,6 +9,13 @@ disabled controls and offer Provider default only. Job inspectors distinguish
 captured requests, runtime-reported settings and unavailable legacy evidence,
 including after a later Agent edit.
 
+`actions.spec.mjs` also covers final-only Intelligence in both Diagnostics
+routes through real resource saves, native final admission and persisted action
+ledgers. Queued/captured/failed finals show bound requests without inventing an
+actual report; completed, legacy and absent records stay distinct after later
+Agent edits. Repeated read projections retain normal/reply/mention ordering and
+deduplicate execution IDs. The primary-final inspector retains its own snapshot.
+
 The native `review::runtime::tests` use the pinned SDK transport with synthetic
 account/model catalogs to check session payloads, readback, rejected/ignored
 overrides and failures before inference. Normal, primary-final, owned-reply and

@@ -3,8 +3,16 @@ import { queueFixture } from "./queue-fixture.mjs";
 import { closeDialog, repositorySettings } from "./navigation.mjs";
 import { createHash } from "node:crypto";
 
-async function actionFixture(store, observe = true) {
+async function actionFixture(store, observe = true, intelligence) {
   const fixture = await queueFixture(store);
+  if (intelligence) {
+    const agent = fixture.settings.agents[0];
+    const value = { ...agent, intelligence };
+    await store("save_resource", {
+      edit: { kind: "agent", id: agent.id, expected: agent, value },
+    });
+    Object.assign(agent, value);
+  }
   const review = fixture.review(9);
   review.trust_confirmed = false;
   const repository = fixture.settings.repositories[0];
@@ -106,6 +114,219 @@ async function actionFixture(store, observe = true) {
     : { finals: [], effects: [], observations: [] };
   return { ...fixture, state, observation, actions, review };
 }
+
+for (const surface of ["standalone", "panel"]) {
+  for (const state of [
+    "queued",
+    "captured",
+    "completed",
+    "failed",
+    "legacy",
+    "absent",
+  ]) {
+    test(`${surface} ${state} primary-final-only Diagnostics uses stored Intelligence, not today's Agent`, async ({
+      page,
+      store,
+    }) => {
+      const requested = {
+        reasoning_effort: "high",
+        context_tier: "long_context",
+      };
+      const fixture = await actionFixture(store, true, requested);
+      const final = fixture.actions.finals[0];
+      expect(final.execution.selection.agent.intelligence).toEqual(requested);
+      final.execution.operation.id = "final-operation-128";
+      final.execution.operation.attempt_count = state === "queued" ? 0 : 1;
+      final.execution.operation.state =
+        state === "captured"
+          ? "running"
+          : state === "failed"
+            ? "failed"
+            : state === "queued"
+              ? "queued"
+              : "completed";
+      final.execution.error =
+        state === "failed" ? "Synthetic final failure." : null;
+      final.execution.result = ["completed", "legacy"].includes(state)
+        ? {
+            ...structuredClone(fixture.review.result),
+            session_id: "actual-final-session-128",
+            intelligence: requested,
+          }
+        : null;
+      if (state === "legacy") {
+        delete final.execution.selection.agent.intelligence;
+        delete final.execution.result.intelligence;
+      }
+      fixture.state.reviews = [];
+      fixture.state.actions = fixture.actions;
+      if (state === "absent") fixture.state.actions.finals = [];
+      await store("seed_queue_state", fixture.state);
+      const originalSnapshot = await store("monitoring_snapshot");
+      const capturedExecution =
+        originalSnapshot.items[0].action_status.final_review?.execution;
+      const settings = (await store("snapshot")).settings;
+      const value = {
+        ...settings.agents[0],
+        model: "later-final-model",
+        intelligence: { reasoning_effort: "low", context_tier: "default" },
+      };
+      await store("save_resource", {
+        edit: {
+          kind: "agent",
+          id: value.id,
+          expected: settings.agents[0],
+          value,
+        },
+      });
+      const snapshot = await store("monitoring_snapshot");
+      expect(snapshot.reviews.every((candidate) => !candidate.run)).toBe(true);
+      expect(snapshot.follow_ups).toEqual([]);
+      const stored = snapshot.items[0].action_status.final_review;
+      if (state !== "absent") {
+        expect(stored.execution).toEqual(capturedExecution);
+        expect(stored.execution.selection).toEqual(final.execution.selection);
+      } else expect(stored).toBeNull();
+      if (surface === "panel")
+        await store("panel_navigate", {
+          route: { tab: "running", detail: { type: "diagnostics" } },
+        });
+      await page.goto(surface === "panel" ? "/" : "/?view=diagnostics");
+      const diagnostics = page.locator("[data-intelligence-diagnostics]");
+      await diagnostics.locator("summary").click();
+      await expect(diagnostics).not.toContainText("later-final-model");
+      if (state === "absent") {
+        await expect(diagnostics).toContainText(
+          "No recorded job configuration available.",
+        );
+        await expect(diagnostics.locator("h4")).toHaveCount(0);
+        return;
+      }
+      await expect(diagnostics).not.toContainText(
+        "No recorded job configuration available.",
+      );
+      await expect(diagnostics.locator("h4")).toHaveText([
+        "Job final-operation-128",
+      ]);
+      await expect(diagnostics).toContainText(
+        "Requested modelconfigured-model",
+      );
+      if (state === "legacy") {
+        await expect(diagnostics).toContainText(
+          "Requested reasoning effortNot recorded (legacy evidence)",
+        );
+        await expect(diagnostics).toContainText(
+          "Actual reasoning effort and context window were not recorded.",
+        );
+      } else {
+        await expect(diagnostics).toContainText(
+          "Requested reasoning efforthigh",
+        );
+        await expect(diagnostics).toContainText(
+          "Requested context windowlong_context",
+        );
+      }
+      if (final.execution.result) {
+        await expect(diagnostics).toContainText(
+          "Sessionactual-final-session-128",
+        );
+        await expect(diagnostics).toContainText("Actual modelconfigured-model");
+        if (state === "completed")
+          await expect(diagnostics).toContainText(
+            "Reasoning effort: high. Context window: long_context.",
+          );
+      } else {
+        await expect(diagnostics).toContainText("Actual modelNot recorded");
+        await expect(diagnostics).toContainText("SessionNot recorded");
+        await expect(diagnostics).toContainText(
+          "Actual reasoning effort and context window were not recorded.",
+        );
+      }
+      if (state === "completed") {
+        await store("panel_navigate", {
+          route: {
+            tab: "running",
+            detail: { type: "job", kind: "primary_final", id: final.id },
+          },
+        });
+        await page.goto("/");
+        const captured = page.locator(".work-configuration").filter({
+          hasText: "Assigned Agent configuration",
+        });
+        await expect(captured).toContainText("Captured for this execution.");
+        await expect(captured).toContainText("long_context");
+        await expect(captured).not.toContainText("later-final-model");
+        const raw = page.getByText(
+          "Final review, peer and human context, complete guide",
+          { exact: true },
+        );
+        await raw.click();
+        const finalEvidence = raw.locator("..");
+        await expect(finalEvidence).toContainText("actual-final-session-128");
+        await expect(finalEvidence).toContainText('"reasoning_effort": "high"');
+      }
+    });
+  }
+}
+
+test("Diagnostics preserves normal, reply and mention order and deduplicates recorded execution projections", async ({
+  page,
+  store,
+}) => {
+  const fixture = await actionFixture(store, true, {
+    reasoning_effort: "high",
+    context_tier: "long_context",
+  });
+  const final = fixture.actions.finals[0];
+  final.execution.operation.id = "final-operation-order";
+  final.execution.operation.state = "completed";
+  final.execution.result = {
+    ...structuredClone(fixture.review.result),
+    session_id: "final-session-order",
+    intelligence: { reasoning_effort: "high", context_tier: "long_context" },
+  };
+  fixture.state.actions = fixture.actions;
+  await store("seed_queue_state", fixture.state);
+  const snapshot = await store("monitoring_snapshot");
+  const normalId = snapshot.reviews[0].run.operation.id;
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      const value = await original(command, args);
+      if (command !== "monitoring_snapshot") return value;
+      const execution = value.items[0].action_status.final_review.execution;
+      // Exercise repeated read projections, without altering stored evidence.
+      value.reviews.push(value.reviews[0]);
+      value.items.push(value.items[0]);
+      value.follow_ups = ["reply", "mention"].map((kind) => ({
+        run: {
+          id: `${kind}-order`,
+          context: { job: execution.job, selection: execution.selection },
+          result: { ...execution.result, session_id: `${kind}-session-order` },
+        },
+      }));
+      return value;
+    };
+  });
+  await page.goto("/?view=diagnostics");
+  const diagnostics = page.locator("[data-intelligence-diagnostics]");
+  await diagnostics.locator("summary").click();
+  await expect(diagnostics.locator("h4")).toHaveText([
+    `Job ${normalId}`,
+    "Job reply-order",
+    "Job mention-order",
+    "Job final-operation-order",
+  ]);
+  for (const session of [
+    "reply-session-order",
+    "mention-session-order",
+    "final-session-order",
+  ])
+    await expect(diagnostics).toContainText(session);
+  await expect((await store("monitoring_snapshot")).reviews).toHaveLength(
+    snapshot.reviews.length,
+  );
+});
 
 async function optOutInSettings(page) {
   await page
