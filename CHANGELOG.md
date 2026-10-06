@@ -23,9 +23,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 - Group Accounts into AI Tooling and Git Repository provider lists before
   showing individual integration details. Preserve sign-in flows and nested
   Back focus; label unavailable providers Coming soon without setup actions.
-- Seed fresh configurations with ten concise engineering review doctrines from
-  an app-owned catalog, independent of agent skills. Existing user libraries,
-  including edited or empty libraries, remain unchanged.
+- Use the ten shipped app doctrines consistently across Agents and reviews.
+  Reconcile unversioned pre-alpha libraries once, report cleared obsolete
+  selections and catalog revisions, and preserve later edits, captured job
+  evidence and provider safety state. (#131)
 - Preserve active PR evidence with stable, bounded native result paging. Clean
   provider-confirmed terminal detail automatically only after workers and
   uncertain writes settle; retain compact ownership/action receipts, safe
