@@ -80,6 +80,14 @@ Compact keyboard/focus, forced-colors and reduced-motion cases use isolated
 browser fixtures, not the native desktop. Native resource and account-precommit
 tests separately cover schedule/binding/assignment validity, account loss,
 generation changes and durable authorization.
+Failed new configuration Save is followed by a nested assignment Save with
+independent native settings-byte and authorization assertions: only a later
+valid configuration Save may enable the new row. Nested saves refresh actual
+saved monitoring state/details without consuming the pending setup choice.
+At 320px and 408px, panel and standalone controls also receive actual 100%/200%
+computed text sizes. Tests check row, copy, state, switch and switch-text
+containment inside the clipping list, visible keyboard focus and Space
+activation before and after redraw; document overflow alone is not that oracle.
 
 `agent-intelligence.spec.mjs` exercises advertised reasoning efforts, context
 tiers and token capacities through the shared Agent editor and real native

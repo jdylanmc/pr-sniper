@@ -122,6 +122,7 @@
 }
 .settings-window .native-repository-list,
 .settings-window .repository-library .repository-list.native-repository-list {
+  grid-template-columns: minmax(0, 1fr);
   background: #ffffff;
   border: 1px solid #eff2f5;
   border-radius: 12px;
@@ -167,6 +168,10 @@
   overflow-wrap: anywhere;
 }
 .settings-window .repository-monitoring-row {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
   gap: 6px;
   padding: 0 8px 0 0;
 }
@@ -174,7 +179,8 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  flex: 1;
+  flex: 1 1 160px;
+  flex-wrap: wrap;
   min-width: 0;
   padding: 12px;
   border: 0;
@@ -182,12 +188,14 @@
   background: transparent;
   color: inherit;
   text-align: left;
+  white-space: normal;
 }
 .repository-open .settings-row-copy {
   min-width: 0;
 }
 .repository-monitoring-toggle {
   flex: none;
+  margin: 6px 0 6px auto;
 }
 .settings-window [data-monitoring-state] {
   font-weight: 600;
