@@ -90,6 +90,31 @@ model choice; opening or saving unrelated settings does not migrate their
 selection. Existing doctrine, prompt, signature and repository assignments stay
 intact.
 
+## App doctrine library
+
+The shipped library is exactly ten app-owned doctrines: `bounded-context`,
+`code`, `cyclomatic-complexity`, `data`, `documentation`, `laziness`, `machine`,
+`solid`, `tactical-strategic`, and `testing`. Their source is
+`src-tauri/doctrines`; the 23 engineering-skill doctrines under
+`.agents/skills/doctrine` are not app choices.
+
+On the first load of an unversioned pre-alpha configuration, PR Sniper replaces
+its doctrine library with those ten and removes obsolete Agent references.
+Valid references and their order, Agents, assignments, accounts and other
+settings remain. Settings reports the old library size and removed references.
+The reconciliation and its version marker commit together in settings; a failed
+write reports an error and can be retried. It never deletes job evidence or
+provider-operation safety receipts. After that one-time reconciliation, edited,
+custom and intentionally empty libraries survive restart.
+
+Agent editors use the same saved library as assignment resolution and job
+capture. Filtering retains selections. Editors, Doctrines and Diagnostics show
+the bundled source and effective library revisions (SHA-256 of the ordered
+title/body JSON). Jobs retain the actual selected texts and catalog revision;
+older jobs without a recorded revision say so rather than inferring today's
+catalog. Library changes still invalidate affected execution inputs through
+the existing review/publication guards.
+
 ## Native boundary
 
 The application reuses its own secretless GitHub device-flow registration and

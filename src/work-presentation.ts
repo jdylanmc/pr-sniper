@@ -319,6 +319,12 @@ export function renderConfiguration(
       const doctrines = document.createElement("h4");
       doctrines.textContent = "Doctrines";
       details.append(doctrines);
+      text(
+        "Captured doctrine catalog",
+        selection.configuration.doctrine_catalog
+          ? JSON.stringify(selection.configuration.doctrine_catalog, null, 2)
+          : "Catalog revision not captured. Today's library is not historical evidence.",
+      );
       if (!selection.configuration.doctrines.length)
         details.append("None selected");
       for (const doctrine of selection.configuration.doctrines)

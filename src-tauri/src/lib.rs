@@ -910,6 +910,7 @@ mod repository_save_account_tests {
 #[derive(Serialize)]
 struct Snapshot {
     settings: Option<Settings>,
+    doctrine_catalog: Option<storage::DoctrineCatalog>,
     login_registration: Option<RegistrationStatus>,
     isolated: bool,
     error: Option<String>,
@@ -1176,6 +1177,7 @@ fn finish_committed_settings(
     let mut saved = match store.lock() {
         Ok(store) => store.finish_settings_save(settings),
         Err(_) => SavedSettings {
+            doctrine_catalog: settings.doctrine_catalog(),
             settings,
             warning: Some(
                 "Settings saved, but host diagnostics could not be recorded. Check local storage permissions."
@@ -1457,6 +1459,7 @@ fn snapshot(host: State<'_, Host>) -> Result<Snapshot, String> {
         }
     };
     Ok(Snapshot {
+        doctrine_catalog: settings.as_ref().map(Settings::doctrine_catalog),
         settings,
         login_registration,
         isolated: host.isolated,

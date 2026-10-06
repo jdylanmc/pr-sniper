@@ -13,6 +13,8 @@ import { type Repository, primaryAssignmentId } from "./repositories";
 import { doctrineTitles } from "./policy";
 import {
   type Settings,
+  type DoctrineCatalog,
+  doctrineCatalogLabel,
   type ResourceEdit,
   acceptResource,
   globalPreferences,
@@ -36,6 +38,7 @@ interface ResolvedRepository {
 }
 interface Snapshot {
   settings: Settings | null;
+  doctrine_catalog?: DoctrineCatalog | null;
   settings_persisted: boolean;
   isolated: boolean;
   login_registration: "absent" | "registered" | "invalid" | null;
@@ -380,8 +383,13 @@ export async function mountSettings(
     controls.forEach(({ control }) => (control.disabled = true));
     try {
       const result = await saveResource(edit, accountGeneration);
-      for (const settings of [saved, draft])
+      snapshot.doctrine_catalog = result.doctrine_catalog;
+      for (const settings of [saved, draft]) {
         acceptResource(settings, clone(result.settings), edit);
+        // Library edits save in their own modal, not the preference/repository
+        // draft. Refresh the resolved choices with their returned revision.
+        settings.doctrines = clone(result.settings.doctrines ?? []);
+      }
       if (result.warning) showError(result.warning);
     } catch (cause) {
       if (reason(cause).startsWith("Resource changed")) conflict = true;
@@ -518,6 +526,14 @@ export async function mountSettings(
     if (section === "preferences" || section === "capacity")
       renderPreferences();
     content.prepend(genieNote);
+    if (saved.doctrine_reset) {
+      const notice = document.createElement("p");
+      notice.className = "settings-hint";
+      notice.dataset.doctrineReset = "true";
+      notice.setAttribute("role", "status");
+      notice.textContent = `Pre-alpha doctrine library reset: replaced ${saved.doctrine_reset.previous_count} doctrines with the 10 shipped defaults; removed ${saved.doctrine_reset.removed_references} obsolete Agent references. Later library edits are preserved.`;
+      content.prepend(notice);
+    }
     changed();
     content.scrollTop = scroll;
     restoreFocus();
@@ -790,7 +806,7 @@ export async function mountSettings(
     ${existing ? `<button type="button" class="resource-delete" data-delete-resource>Delete ${kind}</button><div data-delete-confirmation hidden><p>Delete this saved ${kind} and discard these unsaved fields? Completed review evidence is retained.</p><div class="resource-actions"><button type="button" data-confirm-delete>Confirm deletion</button><button type="button" data-keep-resource>Keep ${kind}</button></div></div>` : ""}`;
 
   function renderDoctrines() {
-    content.innerHTML = `<div class="section-actions resource-toolbar"><p>Reusable principles, shared across Agents. Plain text, never commands.</p><button class="primary" id="new-doctrine">New doctrine</button></div><div class="doctrine-list resource-library"></div>`;
+    content.innerHTML = `<p class="settings-hint" data-doctrine-catalog>${escape(doctrineCatalogLabel(snapshot.doctrine_catalog))}</p><div class="section-actions resource-toolbar"><p>Reusable principles, shared across Agents. Plain text, never commands.</p><button class="primary" id="new-doctrine">New doctrine</button></div><div class="doctrine-list resource-library"></div>`;
     const list = content.querySelector(".doctrine-list")!;
     if (!doctrines().length)
       list.innerHTML =
@@ -1028,7 +1044,7 @@ export async function mountSettings(
         <label>Model<select name="model" aria-label="Model" disabled><option value="${escape(existing?.model ?? "")}">${escape(existing?.model ?? "Choose an account first")}</option></select></label>
         <p class="settings-hint" data-model-status role="status"></p><button type="button" data-retry-models>Retry model list</button><button type="button" data-cancel-models hidden>Cancel model lookup</button></div>
         <label>Prompt<textarea name="prompt" rows="4" required>${escape(existing?.prompt ?? "Review this pull request for correctness, risk, and readability.")}</textarea></label>
-        <fieldset class="resource-doctrines"><legend>Doctrines</legend><p class="settings-hint">Select zero, one or many. Existing order is retained; new selections append in library order. Filtering does not change selections.</p><label>Filter doctrines<input type="search" data-doctrine-filter placeholder="Find principles..." /></label><p class="settings-hint" data-selection-count aria-live="polite"></p><div class="doctrine-choices" tabindex="0" role="group" aria-label="Available doctrines">${doctrines()
+        <fieldset class="resource-doctrines"><legend>Doctrines</legend><p class="settings-hint" data-doctrine-catalog>${escape(doctrineCatalogLabel(snapshot.doctrine_catalog))}</p><p class="settings-hint">Select zero, one or many. Existing order is retained; new selections append in library order. Filtering does not change selections.</p><label>Filter doctrines<input type="search" data-doctrine-filter placeholder="Find principles..." /></label><p class="settings-hint" data-selection-count aria-live="polite"></p><div class="doctrine-choices" tabindex="0" role="group" aria-label="Available doctrines">${doctrines()
           .map(
             (d) =>
               `<label data-doctrine-choice><input type="checkbox" name="doctrine" value="${escape(d.title)}" ${existing && doctrineTitles(existing).some((t) => t.trim().toLowerCase() === d.title.trim().toLowerCase()) ? "checked" : ""} /><span>${escape(d.title)}</span></label>`,

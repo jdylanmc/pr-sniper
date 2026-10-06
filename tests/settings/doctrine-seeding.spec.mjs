@@ -38,6 +38,110 @@ async function diskSettings(dataRoot) {
   );
 }
 
+test("stale 23-entry saved catalog is reset before the shared Agent selector opens", async ({
+  page,
+  store,
+  dataRoot,
+}) => {
+  const settings = (await store("snapshot")).settings;
+  delete settings.doctrine_catalog_version;
+  settings.doctrines = [
+    "boundaries",
+    "code",
+    "context",
+    "cyclomatic-complexity",
+    "data-processing",
+    "data",
+    "debugging",
+    "distributed-data",
+    "documentation",
+    "domain",
+    "idempotency",
+    "integration-testing",
+    "laziness",
+    "machine",
+    "nimble",
+    "pragmatic",
+    "scout",
+    "sequencing",
+    "solid",
+    "tactical-strategic",
+    "test-seams",
+    "testing",
+    "worktrees",
+  ].map((title) => ({ title, body: `Old ${title} text.` }));
+  settings.agents = [
+    {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      name: "Retained reviewer",
+      model: "copilot",
+      doctrines: ["code", "domain", "testing"],
+      prompt: "Review correctness.",
+      signature: "Fixture",
+    },
+  ];
+  await writeFile(
+    join(dataRoot, "config/settings.json"),
+    JSON.stringify(settings),
+  );
+  await page.goto("/?view=settings");
+  await expect(page.locator("[data-doctrine-reset]")).toContainText(
+    "replaced 23 doctrines with the 10 shipped defaults",
+  );
+  await section(page, "Agents");
+  await page.getByRole("button", { name: "New agent", exact: true }).click();
+  const modal = page.getByRole("dialog", { name: "New agent", exact: true });
+  await expect(modal.locator("[name=doctrine]")).toHaveCount(10);
+  await expect(modal.locator("[data-selection-count]")).toHaveText(
+    "0 selected / 10 shown",
+  );
+  await expect(modal.locator("[data-doctrine-catalog]")).toContainText(
+    "10 doctrines / config/settings.json; defaults: src-tauri/doctrines",
+  );
+  await modal.getByRole("checkbox", { name: "code", exact: true }).check();
+  await modal.getByLabel("Filter doctrines", { exact: true }).fill("testing");
+  await expect(modal.locator("[data-selection-count]")).toHaveText(
+    "1 selected (1 hidden by filter) / 1 shown",
+  );
+  await modal.getByLabel("Filter doctrines", { exact: true }).fill("");
+  await expect(modal.locator("[data-selection-count]")).toHaveText(
+    "1 selected / 10 shown",
+  );
+  const catalog = (await store("snapshot")).doctrine_catalog;
+  expect(catalog.source_revision).toBe(catalog.effective_revision);
+  await closeDialog(page);
+  await page
+    .locator(".agent-card")
+    .getByRole("button", { name: "Edit", exact: true })
+    .click();
+  const edited = page.getByRole("dialog", { name: "Edit agent", exact: true });
+  await expect(edited.locator("[name=doctrine]")).toHaveCount(10);
+  await expect(edited.locator("[data-selection-count]")).toHaveText(
+    "2 selected / 10 shown",
+  );
+  await edited.getByLabel("Filter doctrines", { exact: true }).fill("testing");
+  await expect(edited.locator("[data-selection-count]")).toHaveText(
+    "2 selected (1 hidden by filter) / 1 shown",
+  );
+  await expect(edited.locator("[data-doctrine-catalog]")).toContainText(
+    catalog.effective_revision.slice(0, 12),
+  );
+  await closeDialog(page);
+  expect((await diskSettings(dataRoot)).agents[0].doctrines).toEqual([
+    "code",
+    "testing",
+  ]);
+  await page.goto("/?view=diagnostics");
+  await expect(page.locator("#log")).toContainText(catalog.source);
+  await expect(page.locator("#log")).toContainText(catalog.effective_revision);
+  await page.goto("/");
+  await page.locator("[data-panel-diagnostics]").click();
+  await expect(page.locator('[data-panel-view="utility"] pre')).toContainText(
+    catalog.effective_revision,
+  );
+  expect((await diskSettings(dataRoot)).doctrines).toEqual(canonical);
+});
+
 async function library(page) {
   return page.locator(".doctrine-card").evaluateAll((cards) =>
     cards.map((card) => ({
@@ -68,6 +172,37 @@ async function deleteDoctrine(page, card) {
     .click();
   await page.evaluate(() => window.__settingsIdle());
 }
+
+test("resource save refreshes the whole resolved library and its selection counts after an external addition", async ({
+  page,
+  store,
+}) => {
+  await page.goto("/?view=settings");
+  await section(page, "Doctrines");
+  const expected = (await store("snapshot")).settings;
+  const external = structuredClone(expected);
+  external.doctrines.push({
+    title: "external-principle",
+    body: "Saved from another window.",
+  });
+  await store("save_preferences", { settings: external, expected });
+  await newDoctrine(page, "local-principle", "Saved in this window.");
+  const resolved = await store("snapshot");
+  expect(await library(page)).toEqual(resolved.settings.doctrines);
+  await expect(page.locator("[data-doctrine-catalog]")).toContainText(
+    "12 doctrines",
+  );
+  await expect(page.locator("[data-doctrine-catalog]")).toContainText(
+    resolved.doctrine_catalog.effective_revision.slice(0, 12),
+  );
+  await section(page, "Agents");
+  await page.getByRole("button", { name: "New agent", exact: true }).click();
+  const modal = page.getByRole("dialog", { name: "New agent", exact: true });
+  await expect(modal.locator("[name=doctrine]")).toHaveCount(12);
+  await expect(modal.locator("[data-selection-count]")).toHaveText(
+    "0 selected / 12 shown",
+  );
+});
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -239,14 +374,18 @@ for (const [name, doctrines] of [
   ["explicit empty library", []],
   ["custom library", [{ title: "mine", body: "Keep only my principles." }]],
 ]) {
-  test(`existing ${name} is preserved without seed insertion`, async ({
+  test(`versioned ${name} is preserved without seed insertion`, async ({
     page,
     store,
     dataRoot,
   }) => {
     const config = join(dataRoot, "config");
     await mkdir(config);
-    const original = JSON.stringify({ launch_at_login: false, doctrines });
+    const original = JSON.stringify({
+      launch_at_login: false,
+      doctrine_catalog_version: 1,
+      doctrines,
+    });
     await writeFile(join(config, "settings.json"), original);
     await page.goto("/?view=settings");
     await section(page, "Agents");

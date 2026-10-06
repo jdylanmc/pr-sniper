@@ -2,7 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { mountSettings } from "./settings";
 import { mountGenie } from "./genie";
-import type { SetupReview } from "./resources";
+import {
+  type SetupReview,
+  type DoctrineCatalog,
+  doctrineCatalogLabel,
+} from "./resources";
 import { renderMonitoring, type MonitoringSnapshot } from "./monitoring";
 import type { AutomationSnapshot } from "./automation";
 import crosshair from "./crosshair.svg";
@@ -593,6 +597,7 @@ export async function mountPanel(app: HTMLElement) {
         version: string;
         isolated: boolean;
         error: string | null;
+        doctrine_catalog?: DoctrineCatalog | null;
       }>("snapshot");
       if (request !== utilityRevision) return;
       showVersion(state.version);
@@ -611,14 +616,16 @@ export async function mountPanel(app: HTMLElement) {
           );
         if (request !== utilityRevision) return;
         const pre = document.createElement("pre");
-        pre.textContent = entries.length
-          ? entries
-              .map(
-                (e) =>
-                  `${new Date(e.timestamp_secs * 1000).toISOString()}  ${e.event}`,
-              )
-              .join("\n")
-          : "No host events recorded.";
+        pre.textContent =
+          `${doctrineCatalogLabel(state.doctrine_catalog)}\n${JSON.stringify(state.doctrine_catalog ?? null, null, 2)}\n\n` +
+          (entries.length
+            ? entries
+                .map(
+                  (e) =>
+                    `${new Date(e.timestamp_secs * 1000).toISOString()}  ${e.event}`,
+                )
+                .join("\n")
+            : "No host events recorded.");
         views.utility.append(pre);
       } else {
         const tools = document.createElement("div");

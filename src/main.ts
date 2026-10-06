@@ -5,6 +5,7 @@ import { renderMonitoring } from "./monitoring";
 import { mountSettingsWithGenie } from "./genie";
 import { mountPanel } from "./panel";
 import { isWindows, trayAdjective, trayLocation } from "./platform";
+import { type DoctrineCatalog, doctrineCatalogLabel } from "./resources";
 
 interface Snapshot {
   settings: {
@@ -14,6 +15,7 @@ interface Snapshot {
   isolated: boolean;
   error: string | null;
   version: string;
+  doctrine_catalog?: DoctrineCatalog | null;
 }
 
 interface Diagnostic {
@@ -61,14 +63,16 @@ async function load() {
         .querySelector("#refresh")!
         .addEventListener("click", () => void load());
       const entries = await invoke<Diagnostic[]>("diagnostics");
-      content.querySelector("#log")!.textContent = entries.length
-        ? entries
-            .map(
-              (entry) =>
-                `${new Date(entry.timestamp_secs * 1000).toISOString()}  ${entry.event}`,
-            )
-            .join("\n")
-        : "No host events recorded.";
+      content.querySelector("#log")!.textContent =
+        `${doctrineCatalogLabel(state.doctrine_catalog)}\n${JSON.stringify(state.doctrine_catalog ?? null, null, 2)}\n\n` +
+        (entries.length
+          ? entries
+              .map(
+                (entry) =>
+                  `${new Date(entry.timestamp_secs * 1000).toISOString()}  ${entry.event}`,
+              )
+              .join("\n")
+          : "No host events recorded.");
     } else if (view === "queue") {
       renderMonitoring(content, showError);
     } else {
