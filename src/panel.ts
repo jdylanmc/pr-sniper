@@ -120,6 +120,8 @@ export async function mountPanel(app: HTMLElement) {
   const error = app.querySelector<HTMLElement>("[data-panel-error]")!;
   const heading = app.querySelector<HTMLElement>("[data-panel-heading]")!;
   const content = app.querySelector<HTMLElement>(".panel-content")!;
+  const context = app.querySelector<HTMLElement>(".panel-context")!;
+  const summary = app.querySelector<HTMLElement>("[data-panel-summary]")!;
   const back = app.querySelector<HTMLButtonElement>("[data-panel-back]")!;
   const views = {
     monitor: app.querySelector<HTMLElement>('[data-panel-view="monitor"]')!,
@@ -714,6 +716,22 @@ export async function mountPanel(app: HTMLElement) {
     app.dataset.detail = String(!!route.detail);
     app.dataset.evidence = route.detail?.type ?? "";
     app.dataset.setup = String(setupVisible());
+    const scrollQueue = route.tab === "queue" && !setupVisible();
+    app.dataset.scrollQueue = String(scrollQueue);
+    if (scrollQueue) {
+      content.tabIndex = 0;
+      content.setAttribute("role", "region");
+      content.setAttribute("aria-label", "Queue content");
+    } else {
+      content.removeAttribute("tabindex");
+      content.removeAttribute("role");
+      content.removeAttribute("aria-label");
+    }
+    // Queue chrome shares the evidence scroll budget; navigation stays pinned.
+    if (scrollQueue && context.parentElement !== content)
+      content.prepend(context, summary, error);
+    else if (!scrollQueue && context.parentElement === content)
+      content.before(context, summary, error);
     drawSummary();
     for (const button of app.querySelectorAll<HTMLButtonElement>(
       "[data-panel-tab]",
