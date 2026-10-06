@@ -131,6 +131,8 @@ impl Ledger {
             let human = run.phase == crate::follow_up::Phase::HumanInputRequired;
             let answered = run.manual_start
                 && !run.cancelled
+                && !run.uncertain
+                && run.error.is_none()
                 && run
                     .analysis
                     .as_ref()
@@ -201,33 +203,23 @@ impl Ledger {
         let Ok(thread) = run.thread() else {
             return false;
         };
-        if run.publication.is_some()
-            || run.uncertain
-            || run.receipt.is_some()
-            || run.cancelled
-            || run
-                .error
-                .as_deref()
-                .is_some_and(|error| error != crate::follow_up::SUPERSEDED_TRIGGER)
-            || run
-                .analysis
-                .as_ref()
-                .is_some_and(|operation| operation.state == OperationState::Running)
-        {
+        if !run.can_retire_assessment() {
             return false;
+        }
+        if run.phase == crate::follow_up::Phase::HumanInputRequired {
+            return self.human_answered(&run.context.job, &thread.id);
         }
         self.conversation_cursors
             .iter()
             .filter(|cursor| cursor.binding.matches(&run.context.job))
             .any(|cursor| {
                 cursor.closed_threads.contains(&thread.id)
-                    || (run.phase != crate::follow_up::Phase::HumanInputRequired
-                        && cursor
-                            .thread_triggers
-                            .get(&thread.id)
-                            .is_some_and(|latest| {
-                                latest.as_deref().is_some_and(|id| id != run.trigger_id)
-                            }))
+                    || (cursor
+                        .thread_triggers
+                        .get(&thread.id)
+                        .is_some_and(|latest| {
+                            latest.as_deref().is_some_and(|id| id != run.trigger_id)
+                        }))
             })
     }
 }

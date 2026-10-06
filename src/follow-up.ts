@@ -31,7 +31,9 @@ export interface FollowUpCandidate {
   blocked: string | null;
   automatic_start: boolean;
   automatic_publication: boolean;
+  captured_local_response?: boolean;
   human_gate: boolean;
+  superseded?: boolean;
   run: {
     reply_ordinal?: number | null;
     enqueue_order?: number | null;
@@ -165,7 +167,7 @@ export function renderFollowUps(
           ` Original root head ${run.target.review.job.head_sha}; publication ${run.target.publication_id}.`,
         );
       const state = document.createElement("p");
-      state.textContent = `Follow-up: ${run.phase.replaceAll("_", " ")}. Execution is automatic when eligible; Reply Comment: ${candidate.automatic_publication ? "permitted after revalidation" : "off; analysis continues and qualifying responses remain local"}. Initial Publish Comment is independent.`;
+      state.textContent = `Follow-up: ${run.phase.replaceAll("_", " ")}. Execution is automatic when eligible; Reply Comment: ${candidate.captured_local_response ? "not granted for this captured response; later permission changes do not replay it" : candidate.automatic_publication ? "permitted after revalidation" : "off; analysis continues and qualifying responses remain local"}. Initial Publish Comment is independent.`;
       row.append(heading, identity, state);
       if (configuration && (run.analysis?.attempt_count || run.result))
         renderConfiguration(
@@ -277,8 +279,8 @@ export function renderFollowUps(
           run.result.output.decision === "quiet"
             ? `No reply needed. ${run.result.output.reason}`
             : run.result.output.decision === "human_input_required"
-              ? `Human input required. No automated reply. ${run.result.output.reason}`
-              : `Draft reply: ${run.result.output.body}`;
+              ? `${candidate.superseded && !candidate.human_gate ? "Historical human-input outcome; this gate was answered by a later explicit assessment." : "Human input required. No automated reply."} ${run.result.output.reason}`
+              : `${!candidate.automatic_publication && !run.publication && !run.uncertain && !run.receipt ? "Local response" : "Draft reply"}: ${run.result.output.body}`;
         row.append(decision);
         for (const evidence of run.result.output.evidence) {
           const source = document.createElement("p");

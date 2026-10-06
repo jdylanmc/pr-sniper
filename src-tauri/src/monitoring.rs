@@ -50,6 +50,7 @@ pub enum OperationFailure {
     Network,
     Provider,
     Permanent,
+    Superseded,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2893,7 +2894,10 @@ impl JobOperation {
         let operation = self;
         let failure = retryable_failure(error);
         operation.failure = Some(failure.clone());
-        if failure == OperationFailure::Permanent {
+        if matches!(
+            failure,
+            OperationFailure::Permanent | OperationFailure::Superseded
+        ) {
             operation.state = OperationState::Failed;
             operation.next_attempt_at = None;
             return;

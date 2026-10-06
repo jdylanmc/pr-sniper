@@ -33,7 +33,8 @@ export interface WorkPresentation {
   };
 }
 
-function conversationState(run: FollowUpCandidate["run"]) {
+function conversationState(candidate: FollowUpCandidate) {
+  const run = candidate.run;
   // Analysis completion does not settle a remote mutation, even after cancel.
   if (run.uncertain || run.phase === "unresolved") return "outcome_unknown";
   if (run.phase === "stale_after_publication") return "stale_after_publication";
@@ -51,8 +52,13 @@ function conversationState(run: FollowUpCandidate["run"]) {
   if (run.analysis?.state === "completed") {
     if (run.result?.output.decision === "quiet") return "completed";
     if (run.result?.output.decision === "human_input_required")
-      return "human_input_required";
-    if (run.result?.output.decision === "reply") return "waiting_publication";
+      return candidate.superseded && !candidate.human_gate
+        ? "answered_human_input"
+        : "human_input_required";
+    if (run.result?.output.decision === "reply")
+      return candidate.automatic_publication
+        ? "waiting_publication"
+        : "completed_local";
     return "outcome_unknown";
   }
   if (run.analysis?.state === "queued" && run.analysis.attempt_count > 0)
@@ -63,7 +69,9 @@ function conversationState(run: FollowUpCandidate["run"]) {
 const conversationLabels: Record<string, string> = {
   outcome_unknown: "Outcome unknown",
   human_input_required: "Human input required",
+  answered_human_input: "Human input answered",
   waiting_publication: "Awaiting publication",
+  completed_local: "Completed locally",
   publication_failed: "Publication failed",
   publication_retry: "Publication retry queued",
   publishing: "Publishing",
@@ -172,7 +180,7 @@ export function workPresentation(
     captured = !!run.analysis?.attempt_count || !!run.result;
     selection = captured ? context?.selection : candidate.planned_selection;
     attempt = run.analysis?.attempt_count ?? 0;
-    state = conversationState(run);
+    state = conversationState(candidate);
     reason = candidate.blocked ?? run.error;
     if (job?.waiting === "superseded" && !run.publication && !run.uncertain)
       state = "superseded";
@@ -184,12 +192,14 @@ export function workPresentation(
           ? "Outcome unknown; no confirmed reply receipt. Reconcile the original intent."
           : run.publication
             ? `${run.publication.state.replaceAll("_", " ")}; no confirmed reply receipt`
-            : run.result?.output.decision === "reply" &&
-                !candidate.automatic_publication
-              ? "Local response; Reply Comment permission is off. No provider write authorized."
-              : run.result && run.result.output.decision !== "reply"
-                ? "No automated reply"
-                : "Not started; no confirmed reply receipt",
+            : candidate.captured_local_response
+              ? "Completed local response; no Reply Comment grant was captured. Later permissions do not replay it."
+              : run.result?.output.decision === "reply" &&
+                  !candidate.automatic_publication
+                ? "Local response; Reply Comment permission is off. No provider write authorized."
+                : run.result && run.result.output.decision !== "reply"
+                  ? "No automated reply"
+                  : "Not started; no confirmed reply receipt",
       cancelled: run.cancelled,
     };
     trigger = `Other-user comment ${run.trigger_id}; ${kind === "mention" ? "primary conversation assessment" : "primary thread assessment"}`;

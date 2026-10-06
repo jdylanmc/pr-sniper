@@ -454,3 +454,373 @@ fn fixwave_queued_retry_keeps_its_executed_context_after_agent_replacement() {
     assert!(candidate.blocked.is_some());
     assert_eq!(store.load_follow_ups().unwrap()[0], retry);
 }
+
+#[test]
+fn adjacent_owned_failure_survives_newer_primary_clearance() {
+    for secondary in [false, true] {
+        let (_root, store, origin, mut thread) = fixture(if secondary { 2 } else { 1 });
+        if secondary {
+            let mut settings = store.load_settings().unwrap();
+            settings.repositories[0].assignments[0].actions = None;
+            settings.repositories[0].primary_assignment_id =
+                Some(settings.repositories[0].assignments[1].id.clone());
+            settings.repositories[0].assignments[1].comment = false;
+            settings.repositories[0].assignments[1].actions = Some(ActionPermissions {
+                reply: true,
+                approve: false,
+                merge: false,
+            });
+            store.save_settings(&settings).unwrap();
+        }
+        explanation(&mut thread, "11");
+        observe(&store, &origin, &thread, 'a', vec![], NOW + 10);
+        let mut old =
+            prepare_dispatch(&store, &store.load_follow_ups().unwrap()[0].id, NOW + 20).unwrap();
+        complete_analysis(
+            &store,
+            &mut old,
+            Err(Failure::permanent(
+                "The provider returned incomplete evidence.",
+            )),
+            true,
+            NOW + 21,
+        )
+        .unwrap_err();
+        let saved = store.load_follow_ups().unwrap()[0].clone();
+        explanation(&mut thread, "11");
+        thread.comments.last_mut().unwrap().id = "102".into();
+        observe(&store, &origin, &thread, 'a', vec![], NOW + 30);
+        let mut latest =
+            prepare_dispatch(&store, &store.load_follow_ups().unwrap()[1].id, NOW + 40).unwrap();
+        let feedback = latest.context.feedback[0].id.clone();
+        let result = output_for(
+            &latest,
+            ReplyDecision::Quiet,
+            vec![assessment(&feedback, Disposition::Cleared)],
+        );
+        complete_analysis(&store, &mut latest, Ok(result), true, NOW + 41).unwrap();
+        assert_eq!(current_state(&store), crate::queue::State::Failed);
+        let snapshot = crate::queue::normal_snapshot(&store, vec![]).unwrap();
+        assert!(snapshot.items[0]
+            .warnings
+            .iter()
+            .any(|warning| warning == "The provider returned incomplete evidence."));
+        assert_eq!(store.load_follow_ups().unwrap()[0], saved);
+    }
+}
+
+#[test]
+fn adjacent_owned_running_cancelled_and_uncertain_work_survives_newer_clearance() {
+    for phase in ["running", "cancelled", "uncertain"] {
+        let (_root, store, origin, mut thread) = fixture(1);
+        explanation(&mut thread, "11");
+        observe(&store, &origin, &thread, 'a', vec![], NOW + 10);
+        let mut old =
+            prepare_dispatch(&store, &store.load_follow_ups().unwrap()[0].id, NOW + 20).unwrap();
+        if phase == "cancelled" {
+            cancel_in_store(&store, &Capacity::default(), None, &old.id, NOW + 21).unwrap();
+        } else if phase == "uncertain" {
+            let result = output_for(&old, ReplyDecision::Reply, vec![]);
+            complete_analysis(&store, &mut old, Ok(result), true, NOW + 21).unwrap();
+            old.publication = Some(old.operation("thread_reply", NOW + 22));
+            old.publication.as_mut().unwrap().attempted_mutation = Some("thread_reply".into());
+            old.uncertain = true;
+            old.body = Some(old.reply_body().unwrap());
+            save_to_store(&store, &old).unwrap();
+        }
+        let saved = store.load_follow_ups().unwrap()[0].clone();
+        explanation(&mut thread, "11");
+        thread.comments.last_mut().unwrap().id = "102".into();
+        observe(&store, &origin, &thread, 'a', vec![], NOW + 30);
+        let mut latest =
+            prepare_dispatch(&store, &store.load_follow_ups().unwrap()[1].id, NOW + 40).unwrap();
+        let result = output_for(
+            &latest,
+            ReplyDecision::Quiet,
+            vec![assessment(
+                &latest.context.feedback[0].id,
+                Disposition::Cleared,
+            )],
+        );
+        complete_analysis(&store, &mut latest, Ok(result), true, NOW + 41).unwrap();
+        assert!(!candidates(&store).unwrap()[0].superseded, "{phase}");
+        assert_ne!(
+            current_state(&store),
+            crate::queue::State::MachineSignedOff,
+            "{phase}"
+        );
+        assert_eq!(store.load_follow_ups().unwrap()[0], saved);
+    }
+}
+
+#[test]
+fn adjacent_explicit_answer_clears_only_the_current_unowned_human_boundary() {
+    for outcome in ["quiet", "failed", "cancelled", "human"] {
+        let (root, store, _, thread) = fixture(1);
+        clear_local_review(&store);
+        let mut settings = store.load_settings().unwrap();
+        settings.repositories[0].assignments[0].comment = false;
+        store.save_settings(&settings).unwrap();
+        let mut thread = unowned_thread(&thread);
+        observe_general(&store, &thread, 'a', NOW + 10);
+        let mut old =
+            prepare_dispatch(&store, &store.load_follow_ups().unwrap()[0].id, NOW + 20).unwrap();
+        let result = output_for(&old, ReplyDecision::HumanInputRequired, vec![]);
+        complete_analysis(&store, &mut old, Ok(result), true, NOW + 21).unwrap();
+        let saved = store.load_follow_ups().unwrap()[0].clone();
+        let mut comment = thread.comments[0].clone();
+        comment.id = "801".into();
+        comment.reply_to = Some("800".into());
+        thread.comments.push(comment);
+        observe_general(&store, &thread, 'a', NOW + 30);
+        let id = store.load_follow_ups().unwrap()[1].id.clone();
+        assert!(request_analysis(&store, &id, false, NOW + 40).is_err());
+        assert_eq!(current_state(&store), crate::queue::State::WaitingForHuman);
+        let mut answer = request_analysis(&store, &id, true, NOW + 40).unwrap();
+        answer
+            .analysis
+            .as_mut()
+            .unwrap()
+            .begin_ai_attempt(NOW + 40)
+            .unwrap();
+        save_to_store(&store, &answer).unwrap();
+        if outcome == "cancelled" {
+            cancel_in_store(&store, &Capacity::default(), None, &id, NOW + 41).unwrap();
+        } else {
+            let result = if outcome == "failed" {
+                Err(Failure::permanent("Incomplete answer evidence."))
+            } else {
+                Ok(output_for(
+                    &answer,
+                    if outcome == "human" {
+                        ReplyDecision::HumanInputRequired
+                    } else {
+                        ReplyDecision::Quiet
+                    },
+                    vec![],
+                ))
+            };
+            let completed = complete_analysis(&store, &mut answer, result, true, NOW + 41);
+            assert_eq!(completed.is_ok(), outcome != "failed");
+        }
+        drop(store);
+        let store = Store::new(root.path().into());
+        assert_eq!(store.load_follow_ups().unwrap()[0], saved);
+        let old = candidates(&store).unwrap().remove(0);
+        assert_eq!(old.human_gate, outcome != "quiet");
+        assert_eq!(old.superseded, outcome == "quiet");
+        if outcome == "quiet" {
+            assert_eq!(current_state(&store), crate::queue::State::MachineSignedOff);
+            assert!(
+                crate::actions::basis(&store, &crate::queue::item_id(&saved.context.job)).is_ok()
+            );
+        } else {
+            assert_ne!(current_state(&store), crate::queue::State::MachineSignedOff);
+        }
+    }
+}
+
+#[test]
+fn adjacent_completed_local_reply_is_not_an_impossible_confirmation_or_replayed_grant() {
+    for publish in [false, true] {
+        for reply in [false, true] {
+            let (_root, store, _, thread) = fixture(1);
+            clear_local_review(&store);
+            let mut settings = store.load_settings().unwrap();
+            settings.repositories[0].assignments[0].comment = publish;
+            settings.repositories[0].assignments[0].actions = Some(ActionPermissions {
+                reply,
+                approve: true,
+                merge: false,
+            });
+            store.save_settings(&settings).unwrap();
+            let thread = unowned_thread(&thread);
+            observe_general(&store, &thread, 'a', NOW + 10);
+            let mut run =
+                prepare_dispatch(&store, &store.load_follow_ups().unwrap()[0].id, NOW + 20)
+                    .unwrap();
+            let result = output_for(&run, ReplyDecision::Reply, vec![]);
+            complete_analysis(&store, &mut run, Ok(result), true, NOW + 21).unwrap();
+            let snapshot = crate::queue::normal_snapshot(&store, vec![]).unwrap();
+            assert_eq!(
+                snapshot.items[0].state,
+                if publish || reply {
+                    crate::queue::State::AwaitingPublication
+                } else {
+                    crate::queue::State::MachineSignedOff
+                }
+            );
+            assert!(run.publication.is_none());
+            assert_eq!(
+                run.result.as_ref().unwrap().output.decision,
+                ReplyDecision::Reply
+            );
+            if !publish && !reply {
+                assert!(crate::actions::basis(&store, &snapshot.items[0].id).is_ok());
+                settings.repositories[0].assignments[0]
+                    .actions
+                    .as_mut()
+                    .unwrap()
+                    .reply = true;
+                store.save_settings(&settings).unwrap();
+                let candidate = candidates(&store).unwrap().remove(0);
+                assert!(
+                    !candidate.automatic_publication,
+                    "Local history is not a pending grant."
+                );
+                assert_eq!(store.load_follow_ups().unwrap()[0], run);
+                assert_eq!(current_state(&store), crate::queue::State::MachineSignedOff);
+            }
+        }
+    }
+}
+
+struct AnalysisObservation<'a> {
+    store: &'a Store,
+    observation: Result<Observation, Failure>,
+}
+
+impl Environment for AnalysisObservation<'_> {
+    fn now(&self) -> Result<i64, Failure> {
+        Ok(NOW + 31)
+    }
+    fn save(&mut self, _: &mut FollowUp) -> Result<(), Failure> {
+        panic!("Checkpoint must not rewrite captured work");
+    }
+    fn observe(&mut self, _: &FollowUp) -> Result<Observation, Failure> {
+        self.observation.clone()
+    }
+    fn gate(
+        &mut self,
+        run: &FollowUp,
+        observation: &Observation,
+    ) -> Result<Option<String>, Failure> {
+        local_gate(self.store, run)?;
+        Ok((!run.fresh_observation(observation)).then(|| "Discussion changed.".into()))
+    }
+    fn reply(&mut self, _: &FollowUp) -> Result<String, WriteFailure> {
+        panic!("Read-only analysis checkpoint cannot publish");
+    }
+}
+
+#[test]
+fn adjacent_mid_analysis_checkpoints_classify_only_verified_new_comment_supersession() {
+    for owned in [false, true] {
+        for checkpoint in ["before_send", "final_verification"] {
+            let (_root, store, origin, thread) = fixture(1);
+            let mut thread = if owned {
+                thread
+            } else {
+                clear_local_review(&store);
+                let mut settings = store.load_settings().unwrap();
+                settings.repositories[0].assignments[0].comment = false;
+                store.save_settings(&settings).unwrap();
+                unowned_thread(&thread)
+            };
+            if owned {
+                explanation(&mut thread, "11");
+                observe(&store, &origin, &thread, 'a', vec![], NOW + 10);
+            } else {
+                observe_general(&store, &thread, 'a', NOW + 10);
+            }
+            let mut old =
+                prepare_dispatch(&store, &store.load_follow_ups().unwrap()[0].id, NOW + 20)
+                    .unwrap();
+            let captured = old.context.clone();
+            let mut environment = AnalysisObservation {
+                store: &store,
+                observation: Ok(Observation::Owned(thread.clone())),
+            };
+            analysis_checkpoint(&mut environment, &old).unwrap();
+            if checkpoint == "final_verification" {
+                output_for(&old, ReplyDecision::Quiet, vec![]);
+            }
+            let mut comment = thread.comments.last().unwrap().clone();
+            comment.id = if owned { "102" } else { "801" }.into();
+            comment.reply_to = Some(thread.comments[0].id.clone());
+            comment.body = "A new question before the next analysis checkpoint".into();
+            thread.comments.push(comment);
+            environment.observation = Ok(Observation::Owned(thread.clone()));
+            if owned {
+                observe(&store, &origin, &thread, 'a', vec![], NOW + 30);
+                assert_eq!(
+                    local_gate(&store, &old).unwrap_err().kind,
+                    monitoring::OperationFailure::Superseded
+                );
+            }
+            let error = analysis_checkpoint(&mut environment, &old).unwrap_err();
+            assert_eq!(error.kind, monitoring::OperationFailure::Superseded);
+            complete_analysis(&store, &mut old, Err(error), true, NOW + 31).unwrap_err();
+            if owned {
+                observe(&store, &origin, &thread, 'a', vec![], NOW + 32);
+            } else {
+                observe_general(&store, &thread, 'a', NOW + 32);
+            }
+            let saved = store.load_follow_ups().unwrap()[0].clone();
+            assert_eq!(saved.context, captured);
+            assert_eq!(
+                saved.analysis.as_ref().unwrap().failure,
+                Some(monitoring::OperationFailure::Superseded)
+            );
+            assert_eq!(
+                saved.analysis.as_ref().unwrap().state,
+                OperationState::Failed
+            );
+            assert!(saved.analysis.as_ref().unwrap().next_attempt_at.is_none());
+            let mut latest =
+                prepare_dispatch(&store, &store.load_follow_ups().unwrap()[1].id, NOW + 40)
+                    .unwrap();
+            let assessments = if owned {
+                vec![assessment(
+                    &latest.context.feedback[0].id,
+                    Disposition::Cleared,
+                )]
+            } else {
+                vec![]
+            };
+            let result = output_for(&latest, ReplyDecision::Quiet, assessments);
+            complete_analysis(&store, &mut latest, Ok(result), true, NOW + 41).unwrap();
+            assert_eq!(current_state(&store), crate::queue::State::MachineSignedOff);
+            assert_eq!(store.load_follow_ups().unwrap()[0], saved);
+        }
+    }
+}
+
+#[test]
+fn adjacent_analysis_checkpoint_keeps_provider_failures_and_edits_distinct_from_supersession() {
+    let (_root, store, _, thread) = fixture(1);
+    clear_local_review(&store);
+    let thread = unowned_thread(&thread);
+    observe_general(&store, &thread, 'a', NOW + 10);
+    let run = prepare_dispatch(&store, &store.load_follow_ups().unwrap()[0].id, NOW + 20).unwrap();
+    let mut changed = thread.clone();
+    changed.comments[0].body = "Edited original evidence".into();
+    let mut environment = AnalysisObservation {
+        store: &store,
+        observation: Ok(Observation::Owned(changed.clone())),
+    };
+    assert_eq!(
+        analysis_checkpoint(&mut environment, &run)
+            .unwrap_err()
+            .kind,
+        monitoring::OperationFailure::Permanent
+    );
+    let mut comment = changed.comments[0].clone();
+    comment.id = "801".into();
+    changed.comments.push(comment);
+    environment.observation = Ok(Observation::Owned(changed));
+    assert_eq!(
+        analysis_checkpoint(&mut environment, &run)
+            .unwrap_err()
+            .kind,
+        monitoring::OperationFailure::Permanent
+    );
+    environment.observation = Err(Failure::permanent(super::super::super::SUPERSEDED_TRIGGER));
+    assert_eq!(
+        analysis_checkpoint(&mut environment, &run)
+            .unwrap_err()
+            .kind,
+        monitoring::OperationFailure::Permanent,
+        "A diagnostic alone is not a supersession cause"
+    );
+}

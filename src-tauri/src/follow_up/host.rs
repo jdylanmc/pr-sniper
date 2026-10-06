@@ -655,6 +655,7 @@ pub(crate) struct Candidate {
     pub(crate) blocked: Option<String>,
     pub(crate) automatic_start: bool,
     pub(crate) automatic_publication: bool,
+    pub(crate) captured_local_response: bool,
     pub(crate) human_gate: bool,
     pub(crate) superseded: bool,
 }
@@ -747,9 +748,11 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
                 blocked: policy.as_ref().err().cloned(),
                 automatic_start: policy.is_ok() && !human_gate,
                 automatic_publication: policy.is_ok() && jobs.iter().find(|job| run.matches_job(job))
-                    .is_some_and(|job| run.authority(&settings, job).is_ok_and(|grant| grant)),
+                    .is_some_and(|job| run.authority(&settings, job).is_ok_and(|grant| grant))
+                    && !run.captured_local_response(),
                 human_gate,
                 superseded: feedback_ledger.thread_superseded(run),
+                captured_local_response: run.captured_local_response(),
             }
         })
         .collect())
@@ -856,6 +859,9 @@ impl Coordinator {
             let mut run = candidate.run;
             let now = now_seconds()?;
             if publish {
+                if run.captured_local_response() {
+                    return Err("This response completed locally without a Reply Comment grant. Historical local responses are not replayed; a new comment creates new work.".into());
+                }
                 if !candidate.automatic_publication && !run.uncertain && run.receipt.is_none() {
                     return Err("Reply Comment permission is off. This response remains local; manual confirmation cannot grant a capability.".into());
                 }
@@ -1284,6 +1290,19 @@ fn local_gate(store: &Store, run: &FollowUp) -> Result<(), Failure> {
         ));
     }
     if run.context.feedback_checked {
+        if run.publication.is_none() {
+            if let Some(thread) = ledger.records.iter().find_map(|record| {
+                (crate::feedback::same_pr(&record.job, job)
+                    && record.job.configuration_id == job.configuration_id
+                    && record.observed_head == job.head_sha
+                    && record.context.unavailable.is_none()
+                    && run.owns_feedback(&record.context))
+                .then_some(record.context.thread.as_ref())
+                .flatten()
+            }) {
+                validate_observed_trigger(run, &Observation::Owned(thread.clone()))?;
+            }
+        }
         crate::feedback::validate_conversation_context(
             store,
             job,
@@ -1589,15 +1608,42 @@ impl Native {
 
 fn validate_observed_trigger(run: &FollowUp, observation: &Observation) -> Result<(), Failure> {
     if let Observation::Owned(thread) = observation {
-        if thread
-            .latest_other_user(&run.context.job.account_id)
-            .map(|comment| &comment.id)
-            != Some(&run.trigger_id)
-        {
-            return Err(Failure::permanent(super::SUPERSEDED_TRIGGER));
+        let latest = thread.latest_other_user(&run.context.job.account_id);
+        if latest.map(|comment| &comment.id) != Some(&run.trigger_id) {
+            let captured = run.thread().map_err(Failure::permanent)?;
+            if run.publication.is_none()
+                && !run.uncertain
+                && run.receipt.is_none()
+                && !thread.resolved
+                && thread.id == captured.id
+                && thread.comments.starts_with(&captured.comments)
+                && latest.is_some_and(|comment| {
+                    !captured.comments.iter().any(|old| old.id == comment.id)
+                })
+            {
+                return Err(Failure {
+                    kind: monitoring::OperationFailure::Superseded,
+                    ..Failure::permanent(super::SUPERSEDED_TRIGGER)
+                });
+            }
+            return Err(Failure::permanent(
+                "The conversation trigger changed without verified new-comment supersession.",
+            ));
         }
     }
     Ok(())
+}
+
+fn analysis_checkpoint(
+    environment: &mut impl Environment,
+    run: &FollowUp,
+) -> Result<Observation, Failure> {
+    let observation = environment.observe(run)?;
+    validate_observed_trigger(run, &observation)?;
+    if let Some(reason) = environment.gate(run, &observation)? {
+        return Err(analysis_gate_failure(reason));
+    }
+    Ok(observation)
 }
 
 async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure> {
@@ -1672,11 +1718,7 @@ async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure>
             local_gate: Arc::new(move || local_native.local(&local_run)),
             before_send: Arc::new(move || {
                 let mut native = before_native.clone();
-                let observation = native.observe(&before_run)?;
-                match native.gate(&before_run, &observation)? {
-                    Some(reason) => Err(analysis_gate_failure(reason)),
-                    None => Ok(()),
-                }
+                analysis_checkpoint(&mut native, &before_run).map(|_| ())
             }),
         };
         let remaining = run
@@ -1696,11 +1738,7 @@ async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure>
         let mut final_native = native.clone();
         let final_run = run.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            let observation = final_native.observe(&final_run)?;
-            match final_native.gate(&final_run, &observation)? {
-                Some(reason) => Err(analysis_gate_failure(reason)),
-                None => Ok(()),
-            }
+            analysis_checkpoint(&mut final_native, &final_run).map(|_| ())
         })
         .await
         .map_err(|_| Failure::permanent("Final follow-up verification failed."))??;
