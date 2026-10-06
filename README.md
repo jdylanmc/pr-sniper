@@ -960,8 +960,8 @@ Approval is one acting-account vote, not one vote per configured Agent. It can
 contribute before the provider has collected its other required approvals, but
 cannot self-approve a GitHub PR or replace an existing account vote. Approve alone
 never merges. Approve & Merge includes approval permission and additionally
-requires this iteration's independently confirmed acting-account approval
-receipt, current-head green checks, satisfied
+requires independently confirmed current-revision provider approval from an
+eligible reviewer (not necessarily the merger), current-head green checks, satisfied
 provider reviews/rules, conflict-free **CLEAN** readiness, no unresolved threads
 (even outdated ones), no required/active merge queue, and a provider-selected
 enabled merge method. Admin-bypass capability is neither queried nor used.

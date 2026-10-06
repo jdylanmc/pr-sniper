@@ -27,6 +27,7 @@ use std::{
 
 const REPO: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const NOW: i64 = 1_800_000_000;
+mod fixwave;
 
 #[test]
 fn legacy_final_wait_runs_automatically_without_replacing_immutable_basis_or_grants() {
@@ -108,7 +109,7 @@ fn fixture(count: usize, approve: bool, merge: bool) -> (tempfile::TempDir, Stor
         settings.repositories[0].assignments.push(
             serde_json::from_value(
                 json!({"id":format!("cccccccc-cccc-4ccc-8ccc-{i:012}"),"agent_id":agent,
-            "schedule":settings.defaults.schedule,"comment":true,"approve":true,
+            "schedule":settings.defaults.schedule,"comment":false,"approve":true,
             "actions":{"approve":i==1&&(approve||merge),"merge":i==1&&merge}}),
             )
             .unwrap(),
@@ -1006,7 +1007,13 @@ struct Server {
 impl Transport for Wire {
     fn get(&self, path: &str) -> Result<Response, ConnectionError> {
         let server = self.0.lock().unwrap();
-        let value = if path.contains("/reviews?") {
+        let value = if path == "/user" {
+            json!({"id":22,"login":"actor"})
+        } else if path == "/repos/example/repo" {
+            json!({"id":100,"full_name":"example/repo","private":false,"archived":false,"disabled":false,"permissions":{"pull":true}})
+        } else if path == "/repos/example/repo/pulls?state=open&per_page=1" {
+            json!([])
+        } else if path.contains("/reviews?") {
             json!(server.observation.reviews.iter().map(|r|json!({
             "id":r.id.parse::<u64>().unwrap(),"user":{"id":r.actor_id.parse::<u64>().unwrap()},"commit_id":r.head,"state":r.state,"body":r.body,"submitted_at":r.submitted_at
         })).collect::<Vec<_>>())
@@ -1017,7 +1024,7 @@ impl Transport for Wire {
         };
         Ok(Response {
             status: 200,
-            headers: BTreeMap::new(),
+            headers: BTreeMap::from([("x-oauth-scopes".into(), "repo".into())]),
             body: serde_json::to_vec(&value).unwrap(),
         })
     }

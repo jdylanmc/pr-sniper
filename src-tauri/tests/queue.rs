@@ -86,7 +86,7 @@ fn publication_is_a_separate_fact_and_the_author_is_not_the_operator() {
     let store = Store::new(root.path().into());
     let mut run = review(1);
     seed(&store, &[run.clone()], &[]);
-    assert_eq!(state(&store), State::MachineSignedOff);
+    assert_eq!(state(&store), State::AwaitingPublication);
     let snapshot = serde_json::to_value(queue::snapshot(&store, vec![]).unwrap()).unwrap();
     assert_eq!(snapshot["publications"][0]["local_only"], false);
     assert_eq!(

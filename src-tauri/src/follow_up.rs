@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 pub(crate) use task::{ConversationInput, ReplyTask};
 pub use task::{Evidence, ReplyDecision, ReplyOutput};
 
+pub(crate) const SUPERSEDED_TRIGGER: &str = "A later external comment superseded this follow-up.";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {

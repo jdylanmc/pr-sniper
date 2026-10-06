@@ -27,8 +27,10 @@ A sole assignment is primary automatically; multiple assignments permit at most
 one explicit primary, or none. Selecting primary grants nothing. Secondaries
 can Publish Comment only. The primary can independently Publish Comment and
 Reply Comment, plus neither, Approve, or Approve & Merge. Merge implies approval
-permission and must follow the current iteration's confirmed acting-account
-approval. Approve alone never merges. Multiple Agents sharing an account do not
+permission and must follow confirmed applicable current-revision provider
+approval, from an eligible other reviewer or the acting account. There is no
+acting-account-vote quota; self-approval remains forbidden and no external vote
+is fabricated as a PR Sniper receipt. Approve alone never merges. Multiple Agents sharing an account do not
 provide independent votes.
 
 The current primary alone automatically assesses eligible other-user comments
