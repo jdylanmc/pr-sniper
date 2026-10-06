@@ -297,6 +297,14 @@ fn duplicate_query_parameters_cannot_hide_a_dropped_pull_filter() {
 
 #[test]
 fn contradictory_last_links_cannot_hide_unread_pages() {
+    for link in [
+        format!("<https://api.github.com{LIST_NEXT}>; rel=\"next\", <https://api.github.com{LIST}>; rel=\"last\""),
+        format!("<https://api.github.com{LIST}>; rel=\"last\", <https://api.github.com{LIST_NEXT}>; rel=\"next\""),
+    ] {
+        let mut transport = ready_transport();
+        transport.reply(LIST, linked(json!([detail()]), &link));
+        assert_eq!(read(transport), Err(ConnectionError::IncompleteRead));
+    }
     let mut transport = ready_transport();
     transport.reply(LIST, linked(
         json!([detail()]),

@@ -85,6 +85,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- Fix connected corporate-account repository browsing for enterprise-managed
+  usernames. Retain accessible results with explicit partial authorization,
+  metadata and pagination warnings, and make Retry use the selected account
+  without losing a verified connection. (#124)
 - Match the approved grouped Settings overview with live resource summaries,
   separate Accounts and Repositories, retained editor drafts and Back focus,
   and continued Genie access. (#106)

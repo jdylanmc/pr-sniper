@@ -40,6 +40,7 @@ pub enum ConnectionError {
     RateLimitedAfter(i64),
     Network,
     ProviderFailure,
+    ProviderRejected,
     ProviderFailureAfter(i64),
     IncompleteRead,
     RevisionChanged,

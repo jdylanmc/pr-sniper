@@ -47,6 +47,10 @@ export async function providerFixture(page, store, handler) {
     if (command === "list_provider_repositories")
       return {
         identity: { id: args.accountId },
+        owners: [
+          { login: "fixture", kind: "personal" },
+          { login: "orbit", kind: "organization" },
+        ],
         repositories: [
           { id: "100", name: `${args.owner}/one` },
           { id: "200", name: `${args.owner}/two` },
@@ -88,7 +92,9 @@ export async function providerFixture(page, store, handler) {
       ].includes(command)
         ? window
             .__repositoryFixture(command, args)
-            .catch((error) => Promise.reject(error.message))
+            .catch((error) =>
+              Promise.reject(error instanceof Error ? error.message : error),
+            )
         : original(command, args);
   });
   return state;

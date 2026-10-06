@@ -414,7 +414,7 @@ fn optional_text(value: Option<&Value>) -> Result<Option<String>, ConnectionErro
     }
 }
 
-fn next_page(
+pub(super) fn next_page(
     path: &str,
     response: &Response,
     advertised_last: &mut Option<u64>,
@@ -429,6 +429,9 @@ fn next_page(
         .get("page")
         .and_then(|page| page.parse::<u64>().ok())
         .ok_or(ConnectionError::IncompleteRead)?;
+    if advertised_last.is_some_and(|last| page > last) {
+        return Err(ConnectionError::IncompleteRead);
+    }
     let Some(link) = response.headers.get("link") else {
         return if advertised_last.is_some_and(|last| last > page) {
             Err(ConnectionError::IncompleteRead)
@@ -437,9 +440,26 @@ fn next_page(
         };
     };
     let mut next = None;
+    let mut next_number = None;
     let mut last = None;
     let mut relations = HashSet::new();
-    for item in link.split(',') {
+    // Repository affiliation parameters contain commas inside the target URL.
+    let mut start = 0;
+    let mut in_target = false;
+    let mut items = Vec::new();
+    for (index, byte) in link.bytes().enumerate() {
+        match byte {
+            b'<' => in_target = true,
+            b'>' => in_target = false,
+            b',' if !in_target => {
+                items.push(&link[start..index]);
+                start = index + 1;
+            }
+            _ => (),
+        }
+    }
+    items.push(&link[start..]);
+    for item in items {
         let (target, relation) = item
             .trim()
             .split_once(';')
@@ -485,6 +505,7 @@ fn next_page(
                     url.path(),
                     url.query().ok_or(ConnectionError::IncompleteRead)?
                 ));
+                next_number = Some(number);
             }
             "rel=\"last\"" => last = Some(number),
             "rel=\"prev\"" | "rel=\"first\"" => (),
@@ -495,10 +516,13 @@ fn next_page(
         if last < page || advertised_last.is_some_and(|previous| last < previous) {
             return Err(ConnectionError::IncompleteRead);
         }
-        *advertised_last = Some(last);
     }
-    if next.is_none() && advertised_last.is_some_and(|last| last > page) {
+    let effective_last = last.or(*advertised_last);
+    if effective_last.is_some_and(|last| next_number.is_some_and(|number| number > last))
+        || (next.is_none() && effective_last.is_some_and(|last| last > page))
+    {
         return Err(ConnectionError::IncompleteRead);
     }
+    *advertised_last = effective_last;
     Ok(next)
 }
