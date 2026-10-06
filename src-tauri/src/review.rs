@@ -39,14 +39,19 @@ impl Selection {
     /// Compare execution inputs and effective authority, not sibling assignment archives.
     /// Callers must still revalidate the job, account and permission gates.
     pub fn same_execution(&self, other: &Self) -> bool {
+        // Ignore retired start preferences without rewriting captured evidence.
+        let mut policy = self.policy.clone();
+        policy.automatic_agent_start = other.policy.automatic_agent_start;
         self.agent == other.agent
-            && self.policy == other.policy
+            && policy == other.policy
             && self.doctrine == other.doctrine
             && self.preset == other.preset
             && match (&self.configuration, &other.configuration) {
                 (Some(left), Some(right)) => {
                     let a = &left.repository;
                     let b = &right.repository;
+                    let mut overrides = a.overrides.clone();
+                    overrides.automatic_agent_start = b.overrides.automatic_agent_start;
                     // Assignment records and raw primary designation are archival;
                     // the selected Agent and effective authority carry their inputs.
                     left.authority == right.authority
@@ -58,7 +63,7 @@ impl Selection {
                         && a.provider_account_id == b.provider_account_id
                         && a.legacy_installation_id == b.legacy_installation_id
                         && a.provider_repository_id == b.provider_repository_id
-                        && a.overrides == b.overrides
+                        && overrides == b.overrides
                         && a.review_preset == b.review_preset
                         && a.watched_authors == b.watched_authors
                 }
@@ -216,11 +221,9 @@ pub fn validate_execution_selection(store: &Store, run: &ReviewRun) -> Result<()
         .ok_or_else(|| Failure::permanent("Review detection is no longer available."))?;
     let current =
         Selection::resolve(&settings, job, &run.assignment_id).map_err(Failure::permanent)?;
-    if !current.same_execution(&run.selection)
-        || (!current.policy.automatic_agent_start && !run.manual_start)
-    {
+    if !current.same_execution(&run.selection) {
         return Err(Failure::permanent(
-            "Agent configuration or start gate changed; explicitly retry.",
+            "Agent configuration changed; explicitly retry.",
         ));
     }
     if let Some(context) = &run.feedback_context {

@@ -1,5 +1,25 @@
 # PR Sniper vNext Experience - Supporting Requirements
 
+## Scoped always-on review reconciliation (#120)
+
+The [human-approved October 5 amendment](https://github.com/jdylanmc/pr-sniper/issues/51#issuecomment-6008945622)
+and the [nano specification's always-on review amendment](./pr-sniper-vnext.nano.md#always-on-eligible-review-amendment-120)
+control conflicts with historical manual-start wording in this document.
+Eligible admitted normal, final and conversation analyses run automatically
+through shared capacity, without a Start click or another poll. Legacy false
+defaults/overrides and interrupted manual-wait records do not block execution.
+Pause, disabled repositories, admission, assignment/access, capacity, surfaced
+failures and human-judgment boundaries remain effective. Normal repository Save
+is authorization, not a second execution consent step. Cancellation and retry
+remain meaningful; the human Queue remains a personal-review handoff.
+
+Start flags are retained only as readable legacy configuration/evidence; no
+reset or broad migration is needed. Actual job snapshots and uncertain provider
+write receipts are not erased or reconstructed. Review execution is read-only
+and grants no publication, approval or merge authority. All unrelated historical
+requirements remain, including existing independent action grants; #119 and
+#121-#123 are separate deliveries, not implementation claims here. - Supporting Requirements
+
 - Spec ID: SPEC-PR-SNIPER-VNEXT
 - Source: docs/agent/discovery/pr-sniper-vnext.md
 - Source revision: 6092326a4f7718384942bf6d72a573a780b3c7a6417cab46fa1a0b8e14460950

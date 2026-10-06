@@ -650,16 +650,20 @@ test("current normal clearance hands off personally and exposes a distinct durab
   );
   await expect(page.getByRole("checkbox", { name: /trust/i })).toHaveCount(0);
   expect(fixture.actions.finals[0].execution.trust_confirmed).toBe(false);
-  await page
-    .getByRole("button", { name: "Start / retry final full review" })
-    .click();
-  await expect
-    .poll(
-      async () =>
-        (await store("monitoring_snapshot")).items[0].action_status.final_review
-          .execution.manual_start,
-    )
-    .toBe(true);
+  await expect(
+    page.getByRole("button", { name: /Start .*final full review/ }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Cancel queued final review" }),
+  ).toBeEnabled();
+  expect(
+    (await store("automation_snapshot")).work.find(
+      (work) => work.key.id === fixture.actions.finals[0].id,
+    ),
+  ).toMatchObject({
+    state: "blocked",
+    reason: "Waiting for final-review retry backoff.",
+  });
   const snapshot = await store("monitoring_snapshot");
   expect(snapshot.reviews).toHaveLength(1);
   expect(snapshot.publications).toHaveLength(1);

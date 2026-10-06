@@ -169,7 +169,7 @@ test("native occupancy and stopping counts stay explicit and FIFO text is inert"
   );
 });
 
-test("a running review no longer prevents accepting another manual start request", async ({
+test("running work leaves other admitted work automatic without a Start request", async ({
   page,
   store,
 }) => {
@@ -195,7 +195,9 @@ test("a running review no longer prevents accepting another manual start request
     .locator("#agent-reviews article")
     .filter({ hasText: "example/repo #9" })
     .getByRole("button", { name: "Start review", exact: true });
-  await expect(start).toBeEnabled();
-  await start.click();
-  await expect.poll(() => page.evaluate(() => window.__starts.length)).toBe(1);
+  await expect(start).toHaveCount(0);
+  await expect(page.locator("#agent-reviews")).toContainText(
+    "Queued automatically",
+  );
+  expect(await page.evaluate(() => window.__starts)).toEqual([]);
 });

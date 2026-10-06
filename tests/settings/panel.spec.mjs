@@ -204,7 +204,17 @@ test("Back reacquires the exact accessible row action group after redraw with sa
   });
   await store("seed_queue_state", {
     jobs,
-    reviews: [],
+    reviews: jobs.map((job) => ({
+      ...fixture.review(job.number),
+      key: job.work.id,
+      job,
+      operation: {
+        ...fixture.review(job.number).operation,
+        state: "failed",
+      },
+      result: null,
+      error: "Review failed; explicit retry required.",
+    })),
     publications: [],
     follow_ups: [],
   });
@@ -628,8 +638,8 @@ for (const embedded of [true, false]) {
         exact: true,
       });
       await repository
-        .getByLabel("Review start", { exact: true })
-        .selectOption("manual");
+        .getByLabel("Reviewer requests", { exact: true })
+        .selectOption("off");
       await activate(people);
       const picker = page.getByRole("dialog", {
         name: "Add people",
@@ -650,8 +660,8 @@ for (const embedded of [true, false]) {
         .click();
       await expect(people).toBeFocused();
       await expect(
-        repository.getByLabel("Review start", { exact: true }),
-      ).toHaveValue("manual");
+        repository.getByLabel("Reviewer requests", { exact: true }),
+      ).toHaveValue("off");
       await repository
         .getByText("Repository and connection", { exact: true })
         .click();

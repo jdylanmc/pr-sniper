@@ -132,13 +132,20 @@ export function renderActions(
     section.append(details);
     if (final.execution.operation.state !== "completed") {
       const running = final.execution.operation.state === "running";
+      const queued = ["queued", "interrupted"].includes(
+        final.execution.operation.state,
+      );
       const button = document.createElement("button");
       button.textContent = running
         ? "Cancel final review"
-        : "Start / retry final full review";
+        : queued && !final.cancelled
+          ? "Cancel queued final review"
+          : "Retry final full review";
       button.onclick = () =>
         void act(
-          running ? "cancel_final_review" : "start_final_review",
+          running || (queued && !final.cancelled)
+            ? "cancel_final_review"
+            : "start_final_review",
           {
             id: final.id,
           },

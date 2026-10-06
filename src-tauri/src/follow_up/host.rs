@@ -492,10 +492,7 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
                 planned_selection: policy.as_ref().ok().cloned(),
                 run: run.clone(),
                 blocked: policy.as_ref().err().cloned(),
-                automatic_start: policy
-                    .as_ref()
-                    .is_ok_and(|s| s.policy.automatic_agent_start)
-                    && !human_gate,
+                automatic_start: policy.is_ok() && !human_gate,
                 automatic_publication: policy
                     .as_ref()
                     .is_ok_and(|s| s.policy.automatic_comment_publication),
@@ -704,7 +701,7 @@ pub(crate) fn prepare_analysis(
     store: &Store,
     run: &mut FollowUp,
     blocked: Option<String>,
-    automatic_start: bool,
+    human_gate: bool,
     manual: bool,
     now: i64,
 ) -> Result<(), String> {
@@ -716,6 +713,9 @@ pub(crate) fn prepare_analysis(
     }
     if let Some(error) = blocked {
         return Err(error);
+    }
+    if human_gate && !manual && !run.manual_start {
+        return Err("A prior comment needs human judgment before retrying this follow-up.".into());
     }
     if run
         .analysis
@@ -733,9 +733,6 @@ pub(crate) fn prepare_analysis(
                 )
             })
     {
-        if !automatic_start && !manual {
-            return Err("Explicit follow-up start is required.".into());
-        }
         let settings = store.load_settings()?;
         let jobs = store.load_queue()?;
         let job = jobs
@@ -783,7 +780,7 @@ pub(crate) fn request_analysis(
         store,
         &mut run,
         candidate.blocked,
-        candidate.automatic_start,
+        candidate.human_gate,
         manual,
         now,
     )?;
@@ -1024,12 +1021,9 @@ fn local_gate(store: &Store, run: &FollowUp) -> Result<(), Failure> {
         .map_err(Failure::permanent)?;
     let automatic = run.authority(&settings, job).map_err(Failure::permanent)?;
     run.check_publication_grant(&current, automatic)?;
-    if run.publication.is_none()
-        && (!selection.same_execution(&run.context.selection)
-            || (!selection.policy.automatic_agent_start && !run.manual_start))
-    {
+    if run.publication.is_none() && !selection.same_execution(&run.context.selection) {
         return Err(Failure::permanent(
-            "Follow-up selection or start gate changed; explicit retry required.",
+            "Follow-up selection changed; explicit retry required.",
         ));
     }
     if run.context.feedback_checked {

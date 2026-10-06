@@ -29,6 +29,28 @@ pub struct Basis {
     pub trust_confirmed: bool,
 }
 
+impl Basis {
+    fn same_execution(&self, other: &Self) -> bool {
+        // Preserve the full action basis; only retired start data is inert.
+        let mut current = self.clone();
+        current.selection.policy.automatic_agent_start =
+            other.selection.policy.automatic_agent_start;
+        if let (Some(left), Some(right)) = (
+            current.selection.configuration.as_mut(),
+            other.selection.configuration.as_ref(),
+        ) {
+            left.repository.overrides.automatic_agent_start =
+                right.repository.overrides.automatic_agent_start;
+        }
+        current.repository.overrides.automatic_agent_start =
+            other.repository.overrides.automatic_agent_start;
+        if monitoring::actionable(&current.job) && monitoring::actionable(&other.job) {
+            current.job.waiting = other.job.waiting.clone();
+        }
+        current == *other
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FinalReview {
@@ -443,7 +465,11 @@ pub fn synchronize(
                 && (basis.permissions.merge || observation.blocker(Action::Approve).is_none())
             {
                 let id = fingerprint(&basis, &observation, &ledger.effects)?;
-                if !ledger.finals.iter().any(|f| f.id == id) {
+                if !ledger.finals.iter().any(|f| {
+                    f.id == id
+                        || (f.basis.same_execution(&basis)
+                            && observation_matches(f, &observation, &ledger.effects))
+                }) {
                     let operation = {
                         let mut o = JobOperation::review(&basis.job, now);
                         o.operation_type = "primary_final_review".into();
@@ -490,7 +516,7 @@ pub fn validate_local(store: &Store, run: &FinalReview) -> Result<(), String> {
     if run.cancelled {
         return Err("Final review was cancelled.".into());
     }
-    if basis(store, &run.basis.item_id)? != run.basis {
+    if !basis(store, &run.basis.item_id)?.same_execution(&run.basis) {
         return Err(
             "Current review, feedback, assignment or permissions changed after the final snapshot."
                 .into(),

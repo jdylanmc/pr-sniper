@@ -3139,7 +3139,7 @@ mod github_auth_tests {
     };
     use crate::monitoring::{
         ActivationMode, ActivationPreviewEvidence, Monitor, PollResult,
-        WAITING_ACCOUNT_DISCONNECTED, WAITING_HUMAN_START,
+        WAITING_ACCOUNT_DISCONNECTED, WAITING_AI_CAPACITY,
     };
     use crate::policy::{PolicyOverrides, WatchedIdentity};
     use crate::storage::{ProviderId as SettingsProviderId, Repository, Settings, Store};
@@ -3917,7 +3917,7 @@ mod github_auth_tests {
             assert!(!failure.requires_host_report());
             assert_eq!(
                 store.lock().unwrap().load_queue().unwrap()[0].waiting,
-                WAITING_HUMAN_START
+                WAITING_AI_CAPACITY
             );
             let health = monitor.lock().unwrap().snapshot().remove(0);
             let expected_failure = format!("{error:?}");

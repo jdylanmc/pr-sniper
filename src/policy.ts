@@ -10,6 +10,7 @@ export interface Policy {
   adapter: "copilot";
   selector: Selector;
   prompt: string;
+  /** Legacy readable configuration/evidence, not an execution preference. */
   automatic_agent_start: boolean;
   automatic_comment_publication: boolean;
 }
@@ -71,8 +72,7 @@ export function effectivePolicy(
     adapter: overrides.adapter ?? defaults.adapter,
     selector: overrides.selector ?? defaults.selector,
     prompt: overrides.prompt ?? defaults.prompt,
-    automatic_agent_start:
-      overrides.automatic_agent_start ?? defaults.automatic_agent_start,
+    automatic_agent_start: true,
     automatic_comment_publication:
       overrides.automatic_comment_publication ??
       defaults.automatic_comment_publication,

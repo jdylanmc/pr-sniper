@@ -219,11 +219,9 @@ impl FollowUp {
         let current = Selection::resolve(settings, job, &self.context.assignment_id)
             .map_err(Failure::permanent)?;
         if self.publication.is_none() {
-            if !current.same_execution(&self.context.selection)
-                || (!current.policy.automatic_agent_start && !self.manual_start)
-            {
+            if !current.same_execution(&self.context.selection) {
                 return Err(Failure::permanent(
-                    "Conversation execution configuration or start gate changed.",
+                    "Conversation execution configuration changed.",
                 ));
             }
         } else if !self.same_result_lens(&current) {
@@ -733,12 +731,7 @@ pub fn current_owner_job<'a>(
             && j.work
                 .as_ref()
                 .is_none_or(|w| w.agent_id == origin.selection.agent.id)
-            && matches!(
-                j.waiting.as_str(),
-                crate::monitoring::WAITING_HUMAN_START
-                    | crate::monitoring::WAITING_AGENT_UNAVAILABLE
-                    | crate::monitoring::WAITING_TRUST_CONFIRMATION
-            )
+            && crate::monitoring::actionable(j)
     })
 }
 
@@ -807,11 +800,9 @@ pub fn validate_analysis_commit(
             .ok_or_else(|| Failure::permanent("Conversation assignment missing."))?,
     )
     .map_err(Failure::permanent)?;
-    if !current.same_execution(&run.context.selection)
-        || (!current.policy.automatic_agent_start && !run.manual_start)
-    {
+    if !current.same_execution(&run.context.selection) {
         return Err(Failure::permanent(
-            "Follow-up selection or start permission changed before result persistence.",
+            "Follow-up selection changed before result persistence.",
         ));
     }
     run.authority(&settings, job).map_err(Failure::permanent)?;

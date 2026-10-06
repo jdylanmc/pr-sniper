@@ -306,7 +306,6 @@ fn normal_review_execution_invalidates_own_inputs_authority_and_repository_gates
         "doctrine selection",
         "preset body",
         "repository prompt",
-        "start gate",
         "publication gate",
         "comment",
         "approve",
@@ -340,7 +339,6 @@ fn normal_review_execution_invalidates_own_inputs_authority_and_repository_gates
                 settings.repositories[0].review_preset = None;
                 settings.repositories[0].overrides.prompt = Some("Changed repository lens.".into());
             }
-            "start gate" => settings.defaults.automatic_agent_start = false,
             "publication gate" => settings.defaults.automatic_comment_publication = true,
             "comment" => settings.repositories[0].assignments[0].comment = false,
             "approve" | "merge" => {
@@ -563,7 +561,7 @@ fn a_filter_edit_discards_an_inflight_read_then_resumes_on_the_next_global_scan(
 }
 
 #[test]
-fn older_reviewer_admission_is_sticky_without_overriding_start_or_publication() {
+fn older_reviewer_admission_is_sticky_and_automatic_without_granting_publication() {
     let (_fixture, store, mut monitor) = configured(1);
     let mut observed = pull('a');
     observed.number = 5;
@@ -574,10 +572,10 @@ fn older_reviewer_admission_is_sticky_without_overriding_start_or_publication() 
     });
     scan(&mut monitor, &store, vec![observed.clone()], NOW);
     let original = store.load_queue().unwrap().remove(0);
-    assert_eq!(original.waiting, monitoring::WAITING_HUMAN_START);
+    assert_eq!(original.waiting, monitoring::WAITING_AI_CAPACITY);
     let mut settings = store.load_settings().unwrap();
     assert!(
-        !monitoring::review_policy(&settings, &original, Some(&observed))
+        monitoring::review_policy(&settings, &original, Some(&observed))
             .unwrap()
             .automatic_agent_start
     );
@@ -1113,7 +1111,7 @@ fn tracking_with_zero_assignments_survives_restart_and_creates_work_only_at_a_la
     assert_eq!(store.load_queue().unwrap().len(), 1);
     assert_eq!(
         store.load_queue().unwrap()[0].waiting,
-        monitoring::WAITING_HUMAN_START
+        monitoring::WAITING_AI_CAPACITY
     );
 }
 
@@ -1267,6 +1265,6 @@ fn a_replaced_assignment_gets_new_work_without_reusing_the_previous_agents_pass(
     assert_eq!(jobs[1].work.as_ref().unwrap().pass_ordinal, 1);
     assert_eq!(
         queue::snapshot(&store, monitor.snapshot()).unwrap().items[0].state,
-        queue::State::ConfirmationRequired
+        queue::State::Queued
     );
 }
