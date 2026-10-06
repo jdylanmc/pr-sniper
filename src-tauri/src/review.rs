@@ -42,6 +42,7 @@ impl Selection {
         // Ignore retired start preferences without rewriting captured evidence.
         let mut policy = self.policy.clone();
         policy.automatic_agent_start = other.policy.automatic_agent_start;
+        policy.automatic_comment_publication = other.policy.automatic_comment_publication;
         self.agent == other.agent
             && policy == other.policy
             && self.doctrine == other.doctrine
@@ -52,10 +53,11 @@ impl Selection {
                     let b = &right.repository;
                     let mut overrides = a.overrides.clone();
                     overrides.automatic_agent_start = b.overrides.automatic_agent_start;
-                    // Assignment records and raw primary designation are archival;
-                    // the selected Agent and effective authority carry their inputs.
-                    left.authority == right.authority
-                        && left.doctrines == right.doctrines
+                    overrides.automatic_comment_publication =
+                        b.overrides.automatic_comment_publication;
+                    // Role/capability evidence is archival, not a read-only
+                    // execution grant. Provider stages revalidate current authority.
+                    left.doctrines == right.doctrines
                         && a.id == b.id
                         && a.provider == b.provider
                         && a.name == b.name

@@ -15,6 +15,40 @@ separately approved platform/distribution work remain in force.
 
 ## October 5, 2026 consent amendment
 
+### Primary assignment capabilities and conversations (#122)
+
+The [approved October 5 tracker amendment](https://github.com/jdylanmc/pr-sniper/issues/51#issuecomment-6008945622),
+Discovery D25-D27 and VB-122-1..6 supersede historical AC-005/006/008,
+owning-secondary replies, mention-only conversation routing and independent
+merge-only grants below. Permissions belong to a repository assignment, not
+the reusable Agent or global/repository publication policy dropdowns.
+
+A sole assignment is primary automatically; multiple assignments permit at most
+one explicit primary, or none. Selecting primary grants nothing. Secondaries
+can Publish Comment only. The primary can independently Publish Comment and
+Reply Comment, plus neither, Approve, or Approve & Merge. Merge implies approval
+permission and must follow the current iteration's confirmed acting-account
+approval. Approve alone never merges. Multiple Agents sharing an account do not
+provide independent votes.
+
+The current primary alone automatically assesses eligible other-user comments
+on admitted open PRs, including non-mentions and secondary/unowned threads,
+under its own captured lens and signature. Reply Comment authorizes publication,
+not analysis: without it responses stay local. Publish Comment governs initial
+findings only. New observations and durable pending work are eligible; first
+observed historical conversation is context, not a reply backlog. Preserve
+original feedback ownership, human-closed concerns, relevance/loop filtering,
+deduplication, bounded retries/capacity and explicit human-judgment retry.
+Revalidate current roles/grants before new writes; reconcile uncertain writes
+under their original intent without rewriting job history or receipts.
+
+Watch settings grant no capabilities, and general Reply never discovers every
+repository PR. The direct watch UX (#121) and repository cadence (#123) remain
+separate deliveries. Existing read-only execution, final full primary review
+after peer passes/concerns clear, signed current revision/discussion/configuration
+evidence, draft restrictions, green CI and provider merge policies remain.
+This product amendment grants development agents no approval/merge authority.
+
 ### Always-on eligible review amendment (#120)
 
 The human-approved [October 5 visual-bugs specification](https://github.com/jdylanmc/pr-sniper/issues/51#issuecomment-6008945622)

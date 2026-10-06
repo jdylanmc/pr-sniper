@@ -59,7 +59,9 @@ fn configuration_edits_and_eligibility_loss_invalidate_saved_attempts() {
             0 => settings.repositories[0].enabled = false,
             1 => settings.agents[0].prompt = "Changed prompt.".into(),
             2 => settings.agents[0].model = "another-model".into(),
-            3 => settings.defaults.automatic_comment_publication = true,
+            3 => {
+                settings.repositories[0].overrides.prompt = Some("Changed repository lens.".into())
+            }
             _ => {
                 let mut jobs = store.load_queue().unwrap();
                 jobs[0].waiting = "superseded".into();

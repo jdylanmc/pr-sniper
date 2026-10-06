@@ -117,6 +117,31 @@ fn due(operation: &JobOperation, now: i64) -> bool {
 pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
     let mut result = crate::actions::host::candidates(store, now)?;
     let follow_ups = follow_up::host::candidates(store)?;
+    for intent in store
+        .load_feedback()?
+        .pending_threads
+        .into_iter()
+        .filter(|intent| {
+            intent.follow_up_id.is_none()
+                && !follow_ups
+                    .iter()
+                    .any(|candidate| candidate.run.key == intent.key)
+        })
+    {
+        result.push(Work {
+            key: WorkId {
+                kind: Kind::Reply,
+                id: intent.work_id,
+            },
+            enqueue_order: intent.enqueue_order,
+            state: "blocked",
+            reason: Some(
+                intent
+                    .blocked
+                    .unwrap_or_else(|| "Primary discussion assessment unavailable.".into()),
+            ),
+        });
+    }
     for mention in store.load_feedback()?.mentions.into_iter().filter(|m| {
         m.follow_up_id.is_none()
             && !follow_ups

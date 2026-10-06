@@ -334,26 +334,8 @@ fn active_and_interrupted_analysis_reject_relevant_input_and_authority_changes()
         ("policy_prompt", |s| {
             s.defaults.prompt = "Different policy.".into()
         }),
-        ("publication_policy", |s| {
-            s.defaults.automatic_comment_publication = true
-        }),
-        ("comment", |s| {
-            s.repositories[0].assignments[0].comment = false
-        }),
         ("primary", |s| {
             s.repositories[0].primary_assignment_id = Some(SIBLING_ASSIGNMENT.into())
-        }),
-        ("approve", |s| {
-            s.repositories[0].assignments[0].actions = Some(ActionPermissions {
-                approve: true,
-                merge: false,
-            })
-        }),
-        ("merge", |s| {
-            s.repositories[0].assignments[0].actions = Some(ActionPermissions {
-                approve: false,
-                merge: true,
-            })
         }),
         ("repository_account", |s| {
             s.repositories[0].provider_account_id = Some("44".into())
@@ -399,6 +381,7 @@ fn active_and_interrupted_analysis_reject_relevant_input_and_authority_changes()
             )
             .unwrap();
         }
+
         assert_eq!(
             resumed.owned().unwrap().review,
             original,
@@ -413,6 +396,46 @@ fn active_and_interrupted_analysis_reject_relevant_input_and_authority_changes()
             "resume commit: {label}"
         );
     }
+}
+
+#[test]
+fn capability_edits_do_not_gate_analysis_and_retry_keeps_actual_prior_configuration() {
+    let (root, store, mut run) = fixture();
+    activate(&store, &mut run);
+    let captured = run.context.clone();
+    let history_bytes = std::fs::read(root.path().join("state/follow-ups.json")).unwrap();
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].assignments[0].comment = false;
+    settings.repositories[0].assignments[0].actions = Some(ActionPermissions {
+        reply: true,
+        approve: true,
+        merge: true,
+    });
+    store.save_settings(&settings).unwrap();
+    local_gate(&store, &run).unwrap();
+    super::super::validate_analysis_commit(&store, &run, true).unwrap();
+    assert_eq!(run.context, captured);
+    assert_eq!(
+        std::fs::read(root.path().join("state/follow-ups.json")).unwrap(),
+        history_bytes
+    );
+    run.analysis
+        .as_mut()
+        .unwrap()
+        .fail(&Failure::timeout().monitoring(), 101);
+    run.phase = Phase::Stopped;
+    save_to_store(&store, &run).unwrap();
+    settings.agents[0].prompt = "A deliberately changed lens.".into();
+    store.save_settings(&settings).unwrap();
+    let retried = request_analysis(&store, &run.id, true, 102).unwrap();
+    assert_eq!(retried.analysis_history.len(), 1);
+    assert_eq!(retried.analysis_history[0].context, captured);
+    assert_eq!(retried.analysis_history[0].operation, run.analysis.unwrap());
+    assert_eq!(
+        retried.context.selection.agent.prompt,
+        "A deliberately changed lens."
+    );
+    assert_eq!(retried.analysis.as_ref().unwrap().attempt_count, 0);
 }
 
 #[test]

@@ -13,10 +13,15 @@ async function actionFixture(store, observe = true, intelligence) {
     });
     Object.assign(agent, value);
   }
+  const repository = fixture.settings.repositories[0];
+  repository.assignments[0].comment = false;
+  repository.assignments[0].actions = {
+    reply: false,
+    approve: true,
+    merge: true,
+  };
   const review = fixture.review(9);
   review.trust_confirmed = false;
-  const repository = fixture.settings.repositories[0];
-  repository.assignments[0].actions = { approve: true, merge: true };
   review.job.work = {
     id: review.key,
     item_id: "action-iteration",
@@ -342,8 +347,7 @@ async function optOutInSettings(page) {
     name: "Edit assignment",
     exact: true,
   });
-  await modal.getByRole("checkbox", { name: /^Approve/ }).uncheck();
-  await modal.getByRole("checkbox", { name: /^Merge/ }).uncheck();
+  await modal.getByRole("radio", { name: "Neither", exact: true }).check();
   await modal
     .getByRole("button", { name: "Save assignment", exact: true })
     .click();
@@ -376,6 +380,7 @@ for (const destination of ["panel", "legacy queue"]) {
     await optOutInSettings(page);
     const settings = (await store("snapshot")).settings;
     expect(settings.repositories[0].assignments[0].actions).toEqual({
+      reply: false,
       approve: false,
       merge: false,
     });

@@ -3,6 +3,7 @@ import type { Agent, Doctrine, Policy, WatchedIdentity } from "./policy";
 import type { Repository } from "./repositories";
 
 export interface Settings {
+  capability_notice?: string;
   launch_at_login: boolean;
   defaults: Policy;
   capacity: number;
@@ -59,6 +60,7 @@ export type ResourceEdit =
 export interface AssignmentAuthority {
   primary: boolean;
   comment: boolean;
+  reply: boolean;
   approve: boolean;
   merge: boolean;
 }

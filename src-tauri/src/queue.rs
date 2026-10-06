@@ -79,6 +79,7 @@ pub struct Item {
 pub struct Snapshot {
     pub feedback: BTreeMap<String, Vec<crate::feedback::View>>,
     pub mentions: Vec<crate::feedback::Mention>,
+    pub pending_threads: Vec<crate::feedback::PendingThread>,
     pub global_scan: Option<monitoring::GlobalScan>,
     pub tracked: Vec<monitoring::TrackedPullRequest>,
     pub health: Vec<ScheduleHealth>,
@@ -127,6 +128,7 @@ pub(crate) fn normal_snapshot(
     let mut result = Snapshot {
         feedback: BTreeMap::new(),
         mentions: store.load_feedback()?.mentions,
+        pending_threads: store.load_feedback()?.pending_threads,
         global_scan: monitoring.global_scan,
         tracked: store.load_queue_state()?.tracked,
         health,
@@ -532,6 +534,24 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                     "Mention execution history is unavailable; no replay or clearance inferred."
                         .into(),
                 );
+            }
+        }
+        for intent in snapshot
+            .pending_threads
+            .iter()
+            .filter(|intent| intent.binding.matches(job) && intent.item_id == id)
+        {
+            if intent.follow_up_id.is_none()
+                || intent.blocked.is_some()
+                || intent.follow_up_id.as_ref().is_some_and(|id| {
+                    !snapshot
+                        .follow_ups
+                        .iter()
+                        .any(|candidate| &candidate.run.id == id)
+                })
+            {
+                states.push(State::Blocked);
+                warnings.insert(intent.blocked.clone().unwrap_or_else(|| "Observed discussion awaits durable primary assessment; no clearance inferred.".into()));
             }
         }
         for publication in snapshot

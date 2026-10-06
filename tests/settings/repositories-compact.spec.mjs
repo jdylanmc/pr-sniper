@@ -193,7 +193,7 @@ test("repository saves leave unsaved Preferences and the saved global schedule i
   expect((await store("snapshot")).settings).toEqual(saved);
 });
 
-test("all Comment Approve Merge combinations remain independent on the automatic sole primary", async ({
+test("all Publish Reply and approval modes remain explicit on the automatic sole primary", async ({
   page,
   store,
 }) => {
@@ -211,7 +211,7 @@ test("all Comment Approve Merge combinations remain independent on the automatic
   await provider(page);
   await start(page, store);
   const parent = await repositorySettings(page, "fixture/compact");
-  for (let mask = 0; mask < 8; mask++) {
+  for (let mask = 0; mask < 12; mask++) {
     await parent
       .locator(".assignment-row")
       .getByRole("button", { name: "Edit", exact: true })
@@ -225,15 +225,18 @@ test("all Comment Approve Merge combinations remain independent on the automatic
     ).toBeDisabled();
     if (!mask)
       await expect(
-        editor.getByRole("checkbox", { name: /^Approve/ }),
-      ).not.toBeChecked();
+        editor.getByRole("radio", { name: "Neither", exact: true }),
+      ).toBeChecked();
+    const action = ["none", "approve", "merge"][Math.floor(mask / 4)];
     const permissions = {
       comment: !!(mask & 1),
-      approve: !!(mask & 2),
-      merge: !!(mask & 4),
+      reply: !!(mask & 2),
+      approve: action !== "none",
+      merge: action === "merge",
     };
-    for (const [name, checked] of Object.entries(permissions))
-      await editor.locator(`[name=${name}]`).setChecked(checked);
+    await editor.locator("[name=comment]").setChecked(permissions.comment);
+    await editor.locator("[name=reply]").setChecked(permissions.reply);
+    await editor.locator(`[name=action][value=${action}]`).check();
     await editor.getByRole("button", { name: "Save assignment" }).click();
     await expect(editor).toHaveCount(0);
     const saved = await store("saved_resources");
@@ -243,7 +246,11 @@ test("all Comment Approve Merge combinations remain independent on the automatic
     expect(saved.settings.repositories[0].assignments[0]).toEqual({
       ...initial.repositories[0].assignments[0],
       comment: permissions.comment,
-      actions: { approve: permissions.approve, merge: permissions.merge },
+      actions: {
+        reply: permissions.reply,
+        approve: permissions.approve,
+        merge: permissions.merge,
+      },
     });
     expect(saved.settings.defaults).toEqual(initial.defaults);
     expect(saved.settings.agents).toEqual(initial.agents);
@@ -271,8 +278,8 @@ test("seven UI assignments stay distinct and explicit multiple-primary selection
       .getByRole("combobox", { name: "Agent", exact: true })
       .selectOption(id(100 + index));
     await editor.locator("[name=comment]").uncheck();
-    await expect(editor.locator("[name=approve]")).not.toBeChecked();
-    await expect(editor.locator("[name=merge]")).not.toBeChecked();
+    await expect(editor.locator("[name=action][value=none]")).toBeChecked();
+    await expect(editor.locator("[name=reply]")).not.toBeChecked();
     await editor
       .getByRole("button", { name: "Assign agent", exact: true })
       .click();
@@ -294,11 +301,11 @@ test("seven UI assignments stay distinct and explicit multiple-primary selection
       .getByRole("button", { name: "Edit", exact: true })
       .click();
     const editor = modal(page, "Edit assignment");
-    await expect(editor.locator("[name=merge]")).toBeDisabled();
+    await expect(editor.locator("[data-primary-permissions]")).toBeHidden();
     await editor.locator("[name=primary]").check();
-    await expect(editor.locator("[name=merge]")).toBeEnabled();
-    await expect(editor.locator("[name=merge]")).not.toBeChecked();
-    await expect(editor.locator("[name=approve]")).not.toBeChecked();
+    await expect(editor.locator("[data-primary-permissions]")).toBeVisible();
+    await expect(editor.locator("[name=action][value=none]")).toBeChecked();
+    await expect(editor.locator("[name=reply]")).not.toBeChecked();
     await expect(editor.locator("[name=comment]")).not.toBeChecked();
     await capture(page, testInfo, `independent-permissions-${index}`);
     await editor
@@ -479,7 +486,7 @@ test("unbind cancellation, write rejection and retry retain permissions, neighbo
       schedule: initial.defaults.schedule,
       comment: true,
       approve: false,
-      actions: { approve: true, merge: false },
+      actions: { reply: false, approve: true, merge: false },
     },
   ];
   await store("seed_settings", initial);
@@ -652,7 +659,7 @@ for (const resolution of ["Save", "Cancel"]) {
         schedule: initial.defaults.schedule,
         comment: true,
         approve: false,
-        actions: { approve: true, merge: false },
+        actions: { reply: false, approve: true, merge: false },
       },
     ];
     await store("seed_settings", initial);

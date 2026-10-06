@@ -6,6 +6,10 @@ use std::collections::{BTreeMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PullRequest {
+    /// Account-scoped comment observation supplied by the monitoring host,
+    /// never inferred from a provider review request or an action permission.
+    #[serde(skip_serializing)]
+    pub mentioned: bool,
     pub id: String,
     pub number: u64,
     pub title: String,
@@ -264,6 +268,7 @@ impl<T: Transport> GithubClient<T> {
                 }
             }
             result.push(PullRequest {
+                mentioned: false,
                 id,
                 number,
                 title: text(&detail["title"])?,
@@ -366,6 +371,7 @@ pub(super) fn polling_pull_request(value: &Value) -> Result<PullRequest, Connect
         None => return Err(ConnectionError::InvalidResponse),
     };
     Ok(PullRequest {
+        mentioned: false,
         id,
         number,
         title: text(&value["title"])?,

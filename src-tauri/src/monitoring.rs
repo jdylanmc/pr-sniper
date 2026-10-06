@@ -736,7 +736,7 @@ impl Monitor {
                 &current.account_id,
                 &pull,
             );
-            if !eligibility.eligible() {
+            if !eligibility.eligible() && !pull.mentioned {
                 continue;
             }
             let candidate = ActivationCandidate {
@@ -2311,8 +2311,10 @@ impl Monitor {
                     && (pull.state != Lifecycle::Open
                         || pull.draft
                         || (explicit_pull_id != Some(pull.id.as_str())
-                            && (!eligibility.eligible()
-                                || !(admission_candidate || eligibility.requested_reviewer))))
+                            && (!(eligibility.eligible() || pull.mentioned)
+                                || !(admission_candidate
+                                    || eligibility.requested_reviewer
+                                    || pull.mentioned))))
                 {
                     continue;
                 }
@@ -2628,6 +2630,17 @@ fn eligibility(
         all_authors,
         requested_reviewer,
     }
+}
+
+pub(crate) fn scan_admits(ticket: &PollTicket, pull: &PullRequest) -> bool {
+    eligibility(
+        &ticket.watched_authors,
+        &ticket.policy,
+        &ticket.provider_account_id,
+        pull,
+    )
+    .eligible()
+        || pull.mentioned
 }
 
 fn activation_admission_candidate(

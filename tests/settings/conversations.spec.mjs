@@ -270,7 +270,7 @@ for (const kind of ["reply", "mention"]) {
       );
     } else {
       await expect(conversation).toContainText(fixture.run.target.comment.body);
-      await expect(conversation).toContainText("Primary mention");
+      await expect(conversation).toContainText("Primary conversation");
     }
     await conversation
       .getByText("Original target and captured analysis context", {
@@ -300,7 +300,7 @@ for (const kind of ["reply", "mention"]) {
       "Iteration 1 (original-iteration)",
     );
     await expect(page.locator("[data-work-context]")).toContainText(
-      kind === "reply" ? "Targeted reply" : "Primary mention",
+      kind === "reply" ? "Targeted reply" : "Primary conversation",
     );
     await expect(page.locator("#agent-reviews article")).toHaveCount(0);
     await page.getByRole("button", { name: "Back", exact: true }).click();
@@ -609,12 +609,12 @@ for (const kind of ["reply", "mention"]) {
         );
         await expect(
           page.getByRole("button", { name: "Reconcile / retry reply" }),
-        ).toBeDisabled();
+        ).toBeEnabled();
         await expect(
           page.getByRole("checkbox", {
             name: /Publish or reconcile this thread/,
           }),
-        ).toBeVisible();
+        ).toHaveCount(0);
       }
       await expect(page.locator(".job-facts")).toContainText(
         "Reply / mention count1 for this Agent on this PR",
@@ -760,7 +760,7 @@ for (const stage of ["before-dispatch", "after-response"]) {
         "response",
       ]);
       await expect(page.locator("[data-work-context]")).toContainText(
-        "Primary mention",
+        "Primary conversation",
       );
       await expect(page.locator("#thread-follow-ups article")).toHaveCount(1);
       await expect(page.locator("#agent-reviews article")).toHaveCount(0);
@@ -1219,7 +1219,7 @@ test("a missing primary is explicit, durable and does not create a fake review o
     .click();
   await page
     .locator("[data-running-list] article")
-    .filter({ hasText: "Primary mention" })
+    .filter({ hasText: "Primary conversation" })
     .getByRole("button", { name: "Open job", exact: true })
     .click();
   await expect(page.locator("[data-item-evidence]")).not.toContainText(

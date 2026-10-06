@@ -51,7 +51,7 @@ for (const [scenario, expression, timezone] of [
       settings.defaults.schedule,
     );
     const modal = await assignment(page, "fixture/schedules", 0);
-    await modal.getByRole("checkbox", { name: /^Comment/ }).check();
+    await modal.getByRole("checkbox", { name: /^Publish Comment/ }).check();
     await saveAssignment(page, modal);
     saved = (await store("saved_resources")).settings;
     expect(saved.repositories[0].assignments[0]).toMatchObject({
@@ -286,17 +286,19 @@ test("primary and independent opt-ins are reachable without scoped polling or le
   await expect(primary).toBeChecked();
   await expect(primary).toBeDisabled();
   await expect(
-    modal.getByRole("checkbox", { name: /^Approve/ }),
+    modal.getByRole("radio", { name: "Approve", exact: true }),
   ).not.toBeChecked();
   await expect(
-    modal.getByRole("checkbox", { name: /^Merge/ }),
+    modal.getByRole("radio", { name: "Approve & Merge", exact: true }),
   ).not.toBeChecked();
   await expect(
     modal.locator(
       "[name=frequency],[name=timezone],[name=cron],[name=minutes]",
     ),
   ).toHaveCount(0);
-  await modal.getByRole("checkbox", { name: /^Merge/ }).check();
+  await modal
+    .getByRole("radio", { name: "Approve & Merge", exact: true })
+    .check();
   await modal
     .getByRole("button", { name: "Save assignment", exact: true })
     .click();
@@ -304,15 +306,17 @@ test("primary and independent opt-ins are reachable without scoped polling or le
   let saved = await store("saved_resources");
   expect(saved.settings.repositories[0].assignments[0]).toMatchObject({
     ...assignment,
-    actions: { approve: false, merge: true },
+    actions: { reply: false, approve: true, merge: true },
   });
   expect(saved.readiness.repositories[0].assignments[0][1]).toEqual({
     primary: true,
     comment: false,
-    approve: false,
+    reply: false,
+    approve: true,
     merge: true,
   });
   await closeDialog(page);
+  saved.settings.repositories[0].primary_assignment_id = assignment.id;
   saved.settings.repositories[0].assignments.push({
     ...assignment,
     id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
@@ -329,10 +333,10 @@ test("primary and independent opt-ins are reachable without scoped polling or le
   modal = page.getByRole("dialog", { name: "Edit assignment", exact: true });
   await modal.getByRole("checkbox", { name: /^Primary/ }).check();
   await expect(
-    modal.getByRole("checkbox", { name: /^Approve/ }),
+    modal.getByRole("radio", { name: "Approve", exact: true }),
   ).not.toBeChecked();
   await expect(
-    modal.getByRole("checkbox", { name: /^Merge/ }),
+    modal.getByRole("radio", { name: "Approve & Merge", exact: true }),
   ).not.toBeChecked();
   await modal
     .getByRole("button", { name: "Save assignment", exact: true })

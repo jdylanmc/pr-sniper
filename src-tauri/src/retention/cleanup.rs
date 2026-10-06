@@ -221,6 +221,16 @@ impl State {
             kind: crate::capacity::Kind::Mention,
             id: m.work_id.clone(),
         }));
+        work.extend(
+            self.feedback
+                .pending_threads
+                .iter()
+                .filter(|intent| intent.binding.matches_tracked(scope))
+                .map(|intent| WorkId {
+                    kind: crate::capacity::Kind::Reply,
+                    id: intent.work_id.clone(),
+                }),
+        );
         let mut operations = BTreeMap::new();
         for op in reviews
             .iter()
@@ -303,6 +313,13 @@ impl State {
                 .iter()
                 .map(|f| f.key.clone())
                 .chain(mentions.iter().map(|m| m.key.clone()))
+                .chain(
+                    self.feedback
+                        .pending_threads
+                        .iter()
+                        .filter(|intent| intent.binding.matches_tracked(scope))
+                        .map(|intent| intent.key.clone()),
+                )
                 .collect(),
             owned,
             notices: BTreeMap::new(),
@@ -329,6 +346,17 @@ impl State {
         self.feedback
             .mentions
             .retain(|m| !m.binding.matches_tracked(&receipt.scope));
+        self.feedback
+            .pending_threads
+            .retain(|intent| !intent.binding.matches_tracked(&receipt.scope));
+        for cursor in self
+            .feedback
+            .conversation_cursors
+            .iter_mut()
+            .filter(|cursor| cursor.binding.matches_tracked(&receipt.scope))
+        {
+            cursor.discussion.clear();
+        }
         self.notifications
             .notices
             .retain(|n| !receipt.notices.contains_key(&n.id));

@@ -710,6 +710,13 @@ export async function mountSettings(
     if (section === "preferences" || section === "capacity")
       renderPreferences();
     content.prepend(genieNote);
+    if (saved.capability_notice) {
+      const notice = document.createElement("p");
+      notice.className = "settings-hint";
+      notice.setAttribute("role", "status");
+      notice.textContent = saved.capability_notice;
+      content.prepend(notice);
+    }
     if (saved.doctrine_reset) {
       const notice = document.createElement("p");
       notice.className = "settings-hint";
@@ -1242,7 +1249,7 @@ export async function mountSettings(
         <label>Signature<input name="signature" required maxlength="80" value="${escape(existing?.signature ?? "PR Sniper \u{1F3AF}")}" /></label>
         <p class="settings-hint">Custom signature is saved for the signature-customization follow-up. Current publication uses the canonical PR Sniper signature.</p>
         <p class="settings-hint">No review or test prompt runs here. Saving an existing unconfigured Agent preserves its selection until you explicitly replace it.</p>
-        <p class="resource-impact">${assigned.length ? `Shared by ${assigned.length} repositories: ${escape(assigned.map((repository) => repository.name).join(", "))}. Remove or replace those assignments and save the repositories before deleting.` : "Not assigned to any repository."} Comment, Approve, Merge and primary designation belong to repository assignments, never this shared Agent. Completed evidence keeps its captured configuration.</p>${resourceActions("agent", !!existing)}</form>`,
+        <p class="resource-impact">${assigned.length ? `Shared by ${assigned.length} repositories: ${escape(assigned.map((repository) => repository.name).join(", "))}. Remove or replace those assignments and save the repositories before deleting.` : "Not assigned to any repository."} Publish Comment, Reply Comment, Approve &amp; Merge and primary designation belong to repository assignments, never this shared Agent. Completed evidence keeps its captured configuration.</p>${resourceActions("agent", !!existing)}</form>`,
       opener,
     );
     resourceEditor(
@@ -2409,14 +2416,10 @@ export async function mountSettings(
         <p class="settings-hint">Save authorizes all currently open and future matching pull requests. Eligible reviews start automatically; global monitoring off, pause and repository disablement still apply. Adding this row alone does not start monitoring.</p>
         <label for="repository-reviewer-trigger">Reviewer requests</label><select id="repository-reviewer-trigger" data-reviewer-trigger><option value="inherit">Use default (${saved.defaults.reviewer_assignment ? "on" : "off"})</option><option value="on">Include PRs explicitly requesting the acting account</option><option value="off">Do not admit through reviewer requests</option></select>
         <p class="settings-hint">Reviewer requests independently admit older or unwatched PRs. Once admitted, work stays tracked until verified closure or merge. Disablement and execution permissions still apply.</p></section>
-        <section class="repository-group"><h2>Automation overrides</h2>
-        <p class="settings-hint">Save repository authorizes automatic read-only reviews, including forks and later revisions. Review execution does not enable publication, approval or merge.</p>
-        <label for="repository-publication">Comment publication</label><select id="repository-publication" data-publication><option value="inherit">Use default (${saved.defaults.automatic_comment_publication ? "automatic" : "local-only"})</option><option value="automatic">Publish automatically after revalidation</option><option value="manual">Off: retain normal findings locally</option></select>
-        <p class="settings-hint">The assignment must also allow Comment. Uses the repository's GitHub account, never the Copilot account. This cannot approve or merge a pull request.</p>
-        </section><section class="repository-group"><div class="section-actions"><h2>Agents on this repository</h2><button class="primary" data-assign-agent ${agents().length ? "" : "disabled"}>Assign agent</button></div>
+        <section class="repository-group"><div class="section-actions"><h2>Agents on this repository</h2><button class="primary" data-assign-agent ${agents().length ? "" : "disabled"}>Assign agent</button></div>
         <div class="assignment-list"></div>
         ${agents().length ? "" : '<p class="settings-hint">Create an agent first, on the Agents tab.</p>'}
-        <p class="settings-hint">Each assignment receives its own normal pass. Newly assigned Agents get missing work at the next global scan; adding one does not start a scan. Primary routes top-level mentions of the acting account, without enabling Approve or Merge.</p>
+        <p class="settings-hint">Each assignment receives its own normal pass. Permissions belong here, not to the reusable Agent. Only the primary assesses eligible conversations on admitted open PRs. Primary selection grants no permissions; without a primary, reviews and permitted initial comments continue but replies, approval and merge are unavailable.</p>
         </section><section class="repository-group"><div class="section-actions"><h2>People you watch</h2><button data-add-people>Add people</button></div>
         <div class="watchlist"></div>
         <p class="settings-hint">Optional. A nonempty effective watched-author filter qualifies those authors. An empty effective author filter means all authors. Pull requests requesting the signed-in account also qualify when the reviewer-request trigger is enabled. Exact GitHub login, no wildcards.</p>
@@ -2664,23 +2667,6 @@ export async function mountSettings(
     };
     renderAssignments();
     renderWatchlist();
-    const publication =
-      modal.querySelector<HTMLSelectElement>("[data-publication]")!;
-    publication.value =
-      repository.overrides?.automatic_comment_publication === undefined
-        ? "inherit"
-        : repository.overrides.automatic_comment_publication
-          ? "automatic"
-          : "manual";
-    publication.onchange = () => {
-      repository.overrides ??= {};
-      if (publication.value === "inherit")
-        delete repository.overrides.automatic_comment_publication;
-      else
-        repository.overrides.automatic_comment_publication =
-          publication.value === "automatic";
-      changed();
-    };
     if (
       saved.repositories?.some(
         (r) => r.id === repository.id && r.name === repository.name,
@@ -2808,7 +2794,8 @@ export async function mountSettings(
         const agent = agents().find((a) => a.id === assignment.agent_id);
         const row = document.createElement("div");
         row.className = "assignment-row";
-        row.innerHTML = `<div><strong>${escape(agent?.name ?? "Deleted agent")}</strong><p>${primaryAssignmentId(repository) === assignment.id ? `Primary${assignments.length === 1 ? " (automatic)" : ""} \u00b7 ` : ""}${assignment.comment ? "Comments" : "Silent"}${assignment.actions?.approve ? " \u00b7 Approve opted in" : ""}${assignment.actions?.merge ? " \u00b7 Merge opted in (primary only)" : ""}</p><p>${escape(agent?.model ?? "Repair the shared Agent reference")} / one normal pass</p></div><button data-edit>Edit</button><button data-remove>Remove</button>`;
+        const primary = primaryAssignmentId(repository) === assignment.id;
+        row.innerHTML = `<div><strong>${escape(agent?.name ?? "Deleted agent")}</strong><p>${primary ? `Primary${assignments.length === 1 ? " (automatic)" : ""} \u00b7 ` : "Secondary \u00b7 "}${assignment.comment ? "Publish Comment" : "Initial findings local"}${primary && assignment.actions?.reply ? " \u00b7 Reply Comment" : ""}${primary && assignment.actions?.merge ? " \u00b7 Approve & Merge" : primary && assignment.actions?.approve ? " \u00b7 Approve" : ""}</p><p>${escape(agent?.model ?? "Repair the shared Agent reference")} / one normal pass</p></div><button data-edit>Edit</button><button data-remove>Remove</button>`;
         for (const action of ["edit", "remove"])
           row.querySelector<HTMLElement>(`[data-${action}]`)!.dataset.focusKey =
             `assignment:${assignment.id}:${action}`;
@@ -2887,16 +2874,29 @@ export async function mountSettings(
         .map((a) => option(a.id, a.name, existing?.agent_id ?? ""))
         .join("")}</select></label>
         <label class="repository-check"><input type="checkbox" name="primary" ${isPrimary ? "checked" : ""} ${sole ? "disabled" : ""} /><span>Primary<small>${sole ? "The sole assignment is primary automatically." : "At most one explicit primary per repository. Uncheck to leave none."}</small></span></label>
-        <div class="permission-row"><label><input type="checkbox" name="comment" ${existing?.comment ? "checked" : ""} /><span>Comment<small>Allow comment publication, independently of approval and merge.</small></span></label><label><input type="checkbox" name="approve" ${existing?.actions?.approve ? "checked" : ""} /><span>Approve<small>Opt in to the acting GitHub account's approval after current Agent clearance and a primary final full review. Never self-approval or policy bypass.</small></span></label><label><input type="checkbox" name="merge" ${existing?.actions?.merge ? "checked" : ""} ${isPrimary ? "" : "disabled"} /><span>Merge<small>Independent opt-in; primary only, after final review, green CI and verified provider policies. Does not require Approve or personal acknowledgment.</small></span></label></div>
-        <p class="settings-hint">Saving this assignment authorizes the selected Agent to review this repository's saved current and future matching pull requests and later revisions under its review-start setting. Primary selection never enables publication permissions. Polling is configured globally in Preferences. Saving commits this repository, not unrelated drafts.</p><p role="alert" hidden></p><div class="resource-actions"><button class="primary">${existing ? "Save assignment" : "Assign agent"}</button><button type="button" data-cancel-resource>Cancel</button></div></form>`,
+        <fieldset class="permission-row"><legend>Permissions</legend><label><input type="checkbox" name="comment" ${existing?.comment ? "checked" : ""} /><span>Publish Comment<small>Automatically publish revalidated initial findings. Off keeps initial findings local; it does not disable Reply Comment.</small></span></label>
+        <div data-primary-permissions ${isPrimary ? "" : "hidden"}><label><input type="checkbox" name="reply" ${isPrimary && existing?.actions?.reply ? "checked" : ""} /><span>Reply Comment<small>Publish meaningful responses to eligible other-user comments on admitted open PRs. Off keeps responses local; analysis still runs.</small></span></label>
+        <fieldset><legend>Approval and merge</legend><label><input type="radio" name="action" value="none" ${!isPrimary || (!existing?.actions?.approve && !existing?.actions?.merge) ? "checked" : ""} />Neither</label><label><input type="radio" name="action" value="approve" ${isPrimary && existing?.actions?.approve && !existing?.actions?.merge ? "checked" : ""} />Approve</label><label><input type="radio" name="action" value="merge" ${isPrimary && existing?.actions?.merge ? "checked" : ""} />Approve &amp; Merge</label><p class="settings-hint">Merge includes approval and follows its confirmed receipt. Final full review, current revision, non-draft state, green CI and provider policies remain required. Approve alone never merges.</p></fieldset></div></fieldset>
+        <p class="settings-hint" data-role-limitation>${isPrimary ? "Choosing primary grants no capability. Watch settings grant no permissions." : "Secondary Agents can only Publish Comment. Reply, approval and merge are primary-only."}</p>
+        <p class="settings-hint">Saving authorizes automatic read-only review of matching PRs and later revisions, not provider actions without their permissions. Uses the repository's GitHub identity, never the Copilot identity. Polling is configured globally. Saving commits this repository, not unrelated drafts.</p><p role="alert" hidden></p><div class="resource-actions"><button class="primary">${existing ? "Save assignment" : "Assign agent"}</button><button type="button" data-cancel-resource>Cancel</button></div></form>`,
       opener,
     );
     resourceEditor(modal);
     modal.classList.add("repository-editor", "assignment-editor");
     const primary = modal.querySelector<HTMLInputElement>("[name=primary]")!;
-    const merge = modal.querySelector<HTMLInputElement>("[name=merge]")!;
     primary.onchange = () => {
-      merge.disabled = !primary.checked;
+      modal.querySelector<HTMLElement>("[data-primary-permissions]")!.hidden =
+        !primary.checked;
+      if (!primary.checked) {
+        modal.querySelector<HTMLInputElement>("[name=reply]")!.checked = false;
+        modal.querySelector<HTMLInputElement>(
+          "[name=action][value=none]",
+        )!.checked = true;
+      }
+      modal.querySelector<HTMLElement>("[data-role-limitation]")!.textContent =
+        primary.checked
+          ? "Choosing primary grants no capability. Watch settings grant no permissions."
+          : "Secondary Agents can only Publish Comment. Reply, approval and merge are primary-only.";
     };
     modal.querySelector("form")!.onsubmit = async (event) => {
       event.preventDefault();
@@ -2905,6 +2905,9 @@ export async function mountSettings(
         const agentId =
           modal.querySelector<HTMLSelectElement>("[name=agent]")!.value;
         if (!agentId) throw "Choose an agent.";
+        const action = modal.querySelector<HTMLInputElement>(
+          "[name=action]:checked",
+        )!.value;
         const value: Assignment = {
           id: assignmentId,
           agent_id: agentId,
@@ -2913,9 +2916,11 @@ export async function mountSettings(
             modal.querySelector<HTMLInputElement>("[name=comment]")!.checked,
           approve: existing?.approve ?? false,
           actions: {
-            approve:
-              modal.querySelector<HTMLInputElement>("[name=approve]")!.checked,
-            merge: merge.checked,
+            reply:
+              primary.checked &&
+              modal.querySelector<HTMLInputElement>("[name=reply]")!.checked,
+            approve: primary.checked && action !== "none",
+            merge: primary.checked && action === "merge",
           },
         };
         const next = clone(repository);
@@ -2927,6 +2932,10 @@ export async function mountSettings(
         if (primary.checked && !sole) next.primary_assignment_id = value.id;
         else if (!primary.checked && next.primary_assignment_id === value.id)
           delete next.primary_assignment_id;
+        for (const assignment of next.assignments ?? []) {
+          if (primaryAssignmentId(next) !== assignment.id && assignment.actions)
+            assignment.actions = { reply: false, approve: false, merge: false };
+        }
         await commitResource(repositoryEdit(repository, next), modal);
         Object.assign(repository, next);
         modal.close();
@@ -3046,7 +3055,7 @@ export async function mountSettings(
       <label>Time zone<input id="global-timezone" value="${escape(schedule.timezone)}" /></label>
       </div><p class="settings-hint">Five fields: minute, hour, day, month, weekday. Evaluated in this IANA time zone, including its daylight-saving rules. One global scan covers enabled, configured repositories. Shared AI capacity drains admitted work independently of polling.${schedule.kind === "interval" ? ` Saved legacy interval: ${schedule.minutes} minutes. Polling is blocked until you explicitly choose a cron expression; no automatic conversion.` : ""}</p></fieldset>
       <fieldset aria-label="Review execution"><legend>Review execution</legend><p class="settings-hint">Eligible reviews run automatically through shared AI capacity. Pause automation or disable a repository to stop new work. Publication, approval and merge have separate permissions.</p></fieldset>
-      <fieldset aria-label="Comment publication"><legend>Comment publication</legend><label class="setting-row"><span>Publish review comments automatically<small>Default for assigned repositories that allow Comment. Revalidates revision, permissions and eligibility before publication. Never approves or merges.</small></span><input id="automatic-publication" type="checkbox" role="switch" ${draft.defaults.automatic_comment_publication ? "checked" : ""} /></label></fieldset>
+      <p class="settings-hint">Publication permissions are set on each repository's Agent assignments. Publish Comment and primary Reply Comment are independent; choosing primary grants neither.</p>
       <p class="settings-hint preferences-permissions">Approve and Merge remain separate repository-assignment permissions, never global grants.</p></div>
       <div class="preferences-boundary"><h2>Immediate controls</h2><span>Applied separately</span></div>
       <p class="settings-hint">Pause, notification opt-in and startup commit immediately. Save preferences and Reset changes do not apply or undo them.</p>
@@ -3132,14 +3141,6 @@ export async function mountSettings(
           else preferenceDisclosures.delete(details.id);
         };
       });
-    content.querySelector<HTMLInputElement>(
-      "#automatic-publication",
-    )!.onchange = (event) => {
-      draft.defaults.automatic_comment_publication = (
-        event.target as HTMLInputElement
-      ).checked;
-      changed();
-    };
     content.querySelector<HTMLInputElement>("#login")!.onchange = async (
       event,
     ) => {

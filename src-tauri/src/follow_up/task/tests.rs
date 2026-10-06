@@ -36,6 +36,7 @@ fn validate(value: serde_json::Value, previous: &str) -> Result<ReplyOutput, Fai
     };
     let context = ReviewContext {
         pull: crate::github::metadata::PullRequest {
+            mentioned: false,
             id: "9".into(),
             number: 1,
             title: "Review".into(),

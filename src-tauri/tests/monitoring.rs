@@ -183,6 +183,7 @@ fn pull(
     updated_at: &str,
 ) -> PullRequest {
     PullRequest {
+        mentioned: false,
         id: id.into(),
         number,
         title: format!("PR {number}"),

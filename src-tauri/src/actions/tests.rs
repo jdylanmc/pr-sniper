@@ -109,7 +109,7 @@ fn fixture(count: usize, approve: bool, merge: bool) -> (tempfile::TempDir, Stor
             serde_json::from_value(
                 json!({"id":format!("cccccccc-cccc-4ccc-8ccc-{i:012}"),"agent_id":agent,
             "schedule":settings.defaults.schedule,"comment":true,"approve":true,
-            "actions":{"approve":i==1&&approve,"merge":i==1&&merge}}),
+            "actions":{"approve":i==1&&(approve||merge),"merge":i==1&&merge}}),
             )
             .unwrap(),
         );
@@ -158,6 +158,7 @@ fn fixture(count: usize, approve: bool, merge: bool) -> (tempfile::TempDir, Stor
                     },
                 },
                 pull_requests: vec![PullRequest {
+                    mentioned: false,
                     id: "9".into(),
                     number: 1,
                     title: "Review".into(),
@@ -254,6 +255,7 @@ fn completed_final(store: &Store, item: &str) -> FinalReview {
     assert!(!prompt["normal_passes"].as_array().unwrap().is_empty());
     let context = crate::github::review::ReviewContext {
         pull: PullRequest {
+            mentioned: false,
             id: "9".into(),
             number: 1,
             title: "Review".into(),
@@ -340,7 +342,9 @@ fn fork_final_review_and_permitted_action_need_no_revision_consent() {
     host::complete(&store, &run, Ok(output()), NOW + 12).unwrap();
     let final_review = store.load_actions().unwrap().finals.remove(0);
     assert!(ready(&store, &final_review, &observation, Action::Approve).is_ok());
-    assert!(ready(&store, &final_review, &observation, Action::Merge).is_ok());
+    assert!(ready(&store, &final_review, &observation, Action::Merge)
+        .unwrap_err()
+        .contains("confirmed"));
     observation.head = "c".repeat(40);
     assert!(ready(&store, &final_review, &observation, Action::Approve).is_err());
 }
@@ -606,6 +610,7 @@ fn correction_action_read_error_opt_out_restores_personal_handoff_after_restart(
     );
     let mut settings = store.load_settings().unwrap();
     settings.repositories[0].assignments[0].actions = Some(ActionPermissions {
+        reply: false,
         approve: false,
         merge: false,
     });
@@ -725,6 +730,7 @@ fn correction_opt_out_preserves_pending_unknown_and_unverified_receipts_for_reco
         .unwrap();
         let mut settings = store.load_settings().unwrap();
         settings.repositories[0].assignments[0].actions = Some(ActionPermissions {
+            reply: false,
             approve: false,
             merge: false,
         });
@@ -857,6 +863,7 @@ fn all_current_agents_clear_and_local_only_handoff_precede_distinct_shared_final
     let mut settings = store.load_settings().unwrap();
     let mut new = settings.repositories[0].assignments[0].clone();
     new.id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd".into();
+    new.actions = None;
     settings.repositories[0].assignments.push(new);
     store.save_settings(&settings).unwrap();
     assert!(ready(&store, &final_review, &observed(), Action::Approve).is_err());
@@ -864,7 +871,7 @@ fn all_current_agents_clear_and_local_only_handoff_precede_distinct_shared_final
 }
 
 #[test]
-fn opt_ins_are_independent_legacy_flags_inert_and_no_primary_has_no_actions() {
+fn merge_implies_approval_but_waits_for_confirmation_and_no_primary_has_no_actions() {
     for (approve, merge) in [(false, false), (true, false), (false, true), (true, true)] {
         let (_root, store, item) = fixture(2, approve, merge);
         synchronize(&store, &item, Ok(observed()), NOW + 10).unwrap();
@@ -876,27 +883,28 @@ fn opt_ins_are_independent_legacy_flags_inert_and_no_primary_has_no_actions() {
             let final_review = completed_final(&store, &item);
             assert_eq!(
                 ready(&store, &final_review, &observed(), Action::Approve).is_ok(),
-                approve
+                approve || merge
             );
-            assert_eq!(
-                ready(&store, &final_review, &observed(), Action::Merge).is_ok(),
-                merge
-            );
+            assert!(ready(&store, &final_review, &observed(), Action::Merge).is_err());
         }
     }
     let (_root, store, item) = fixture(2, true, true);
     let mut settings = store.load_settings().unwrap();
     settings.repositories[0].primary_assignment_id = None;
+    assert!(store
+        .save_settings(&settings)
+        .unwrap_err()
+        .contains("Secondary"));
+    for assignment in &mut settings.repositories[0].assignments {
+        assignment.actions = None;
+    }
     store.save_settings(&settings).unwrap();
     synchronize(&store, &item, Ok(observed()), NOW + 10).unwrap();
     assert!(store.load_actions().unwrap().finals.is_empty());
-    assert!(queue::snapshot(&store, vec![]).unwrap().items[0]
-        .action_status
-        .as_ref()
-        .unwrap()
-        .blockers
-        .iter()
-        .any(|s| s.contains("No repository primary")));
+    let snapshot = queue::snapshot(&store, vec![]).unwrap();
+    let status = snapshot.items[0].action_status.as_ref().unwrap();
+    assert!(status.primary_assignment_id.is_none());
+    assert!(!status.permissions.approve && !status.permissions.merge);
 }
 
 #[test]
@@ -1265,20 +1273,41 @@ fn lost_responses_crash_before_receipt_and_external_merge_never_blindly_repeat()
         for crash in [false, true] {
             let (_root, store, item) = fixture(1, true, true);
             let run = completed_final(&store, &item);
-            let effect = prepare_effect(&store, &run.id, action, &observed(), NOW + 20).unwrap();
             let mut env = env(&store);
+            if action == Action::Merge {
+                let approval =
+                    prepare_effect(&store, &run.id, Action::Approve, &observed(), NOW + 19)
+                        .unwrap();
+                host::execute_action(&mut env, &approval).unwrap();
+            }
+            let before = env.wire.0.lock().unwrap().writes.len();
+            let current = env.wire.0.lock().unwrap().observation.clone();
+            let effect = prepare_effect(&store, &run.id, action, &current, NOW + 20).unwrap();
             env.wire.0.lock().unwrap().lost = !crash;
             env.fail_save = crash;
             let result = host::execute_action(&mut env, &effect);
             assert_eq!(result.is_err(), crash);
             assert_eq!(
-                store.load_actions().unwrap().effects[0].state,
+                store
+                    .load_actions()
+                    .unwrap()
+                    .effects
+                    .iter()
+                    .find(|saved| saved.id == effect.id)
+                    .unwrap()
+                    .state,
                 EffectState::Uncertain
             );
             restore(&store).unwrap();
             let current = env.wire.0.lock().unwrap().observation.clone();
             synchronize(&store, &item, Ok(current), NOW + 30).unwrap();
-            let saved = store.load_actions().unwrap().effects.remove(0);
+            let saved = store
+                .load_actions()
+                .unwrap()
+                .effects
+                .into_iter()
+                .find(|saved| saved.id == effect.id)
+                .unwrap();
             assert_eq!(saved.id, effect.id);
             if action == Action::Approve {
                 assert_eq!(saved.state, EffectState::Confirmed);
@@ -1287,7 +1316,7 @@ fn lost_responses_crash_before_receipt_and_external_merge_never_blindly_repeat()
                 assert_eq!(saved.state, EffectState::ExternalMerge);
                 assert!(saved.receipt.is_none());
             }
-            assert_eq!(env.wire.0.lock().unwrap().writes.len(), 1);
+            assert_eq!(env.wire.0.lock().unwrap().writes.len(), before + 1);
             assert!(host::execute_action(&mut env, &saved).is_err());
         }
     }
@@ -1381,7 +1410,8 @@ fn current_role_account_feedback_and_comment_changes_invalidate_final_evidence()
         match case {
             "role" => {
                 settings.repositories[0].primary_assignment_id =
-                    Some(settings.repositories[0].assignments[1].id.clone())
+                    Some(settings.repositories[0].assignments[1].id.clone());
+                settings.repositories[0].assignments[0].actions = None;
             }
             "permission" => {
                 settings.repositories[0].assignments[0]
@@ -1458,8 +1488,8 @@ fn current_role_account_feedback_and_comment_changes_invalidate_final_evidence()
 }
 
 #[test]
-fn an_existing_account_approval_is_not_a_reason_to_submit_another_vote() {
-    let (_root, store, item) = fixture(1, true, false);
+fn confirmed_existing_account_approval_allows_merge_without_another_or_fabricated_vote() {
+    let (_root, store, item) = fixture(1, true, true);
     let mut observation = observed();
     observation.reviews.push(ProviderReview {
         id: "100".into(),
@@ -1477,6 +1507,13 @@ fn an_existing_account_approval_is_not_a_reason_to_submit_another_vote() {
     assert!(ready(&store, &run, &observation, Action::Approve)
         .unwrap_err()
         .contains("already has an approval"));
+    assert!(ready(&store, &run, &observation, Action::Merge).is_ok());
+    assert!(
+        store.load_actions().unwrap().effects.is_empty(),
+        "External approval is not a fabricated PR Sniper receipt."
+    );
+    observation.reviews[0].state = "DISMISSED".into();
+    assert!(ready(&store, &run, &observation, Action::Merge).is_err());
 }
 
 struct RulesReadWire {
@@ -1909,7 +1946,7 @@ fn final_human_input_stays_a_blocker_instead_of_rerolling_after_an_unrelated_com
 }
 
 #[test]
-fn a_self_authored_pr_can_use_merge_only_but_never_automatic_self_approval() {
+fn a_self_authored_pr_cannot_merge_without_confirmed_approval_or_self_approve() {
     let (_root, store, item) = fixture(1, true, true);
     let mut settings = store.load_settings().unwrap();
     settings.repositories[0].watched_authors[0].id = "22".into();
@@ -1927,7 +1964,9 @@ fn a_self_authored_pr_can_use_merge_only_but_never_automatic_self_approval() {
     assert!(ready(&store, &final_review, &observation, Action::Approve)
         .unwrap_err()
         .contains("author"));
-    assert!(ready(&store, &final_review, &observation, Action::Merge).is_ok());
+    assert!(ready(&store, &final_review, &observation, Action::Merge)
+        .unwrap_err()
+        .contains("confirmed"));
 }
 
 #[test]
@@ -1965,11 +2004,13 @@ fn legacy_inert_flags_and_expired_unattempted_intents_never_become_provider_gran
             .unwrap()
             .permissions,
         ActionPermissions {
+            reply: false,
             approve: false,
             merge: false
         }
     );
     settings.repositories[0].assignments[0].actions = Some(ActionPermissions {
+        reply: false,
         approve: true,
         merge: false,
     });
