@@ -88,7 +88,9 @@ export async function providerFixture(page, store, handler) {
       ].includes(command)
         ? window
             .__repositoryFixture(command, args)
-            .catch((error) => Promise.reject(error.message))
+            .catch((error) =>
+              Promise.reject(error instanceof Error ? error.message : error),
+            )
         : original(command, args);
   });
   return state;

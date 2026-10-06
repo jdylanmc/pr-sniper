@@ -1403,6 +1403,7 @@ fn monitoring_setup_review(host: State<'_, Host>) -> Result<monitoring::SetupRev
 struct GithubRepositories {
     identity: github::Identity,
     repositories: Vec<github::provider::RemoteRepository>,
+    warnings: Vec<github::provider::RepositoryBrowseWarning>,
 }
 
 #[derive(Serialize)]
@@ -1651,10 +1652,11 @@ async fn list_provider_repositories(
             &account_id,
             || acquire_github_session(&host, &account_id),
             |identity, client, _| {
-                let repositories = client.owner_repositories(&owner)?;
+                let browser = client.owner_repository_browser(identity, &owner)?;
                 Ok(GithubRepositories {
                     identity: identity.clone(),
-                    repositories,
+                    repositories: browser.repositories,
+                    warnings: browser.warnings,
                 })
             },
         )
@@ -1667,6 +1669,7 @@ async fn list_provider_repositories(
 struct GithubRepositoryOwners {
     identity: github::Identity,
     owners: Vec<github::provider::RepositoryOwner>,
+    warnings: Vec<github::provider::RepositoryBrowseWarning>,
 }
 
 #[tauri::command]
@@ -1686,10 +1689,11 @@ async fn list_provider_repository_owners(
             &account_id,
             || acquire_github_session(&host, &account_id),
             |identity, client, _| {
-                let owners = client.repository_owners(identity)?;
+                let browser = client.repository_browser(identity)?;
                 Ok(GithubRepositoryOwners {
                     identity: identity.clone(),
-                    owners,
+                    owners: browser.owners,
+                    warnings: browser.warnings,
                 })
             },
         )
@@ -1799,13 +1803,6 @@ fn repository_read<T, C>(
                     ConnectionError::SignedOut
                         | ConnectionError::WrongIdentity
                         | ConnectionError::MissingScope
-                        | ConnectionError::Network
-                        | ConnectionError::Timeout
-                        | ConnectionError::RateLimited
-                        | ConnectionError::RateLimitedAfter(_)
-                        | ConnectionError::ProviderFailure
-                        | ConnectionError::ProviderFailureAfter(_)
-                        | ConnectionError::InvalidResponse
                 )
             {
                 auth.publish_session_failure(account_id, error);
@@ -1894,14 +1891,26 @@ mod repository_read_tests {
         generation: u64,
     ) -> Result<serde_json::Value, ConnectionError> {
         let result = match operation {
-            Operation::Owners => serde_json::to_value(GithubRepositoryOwners {
-                owners: client.repository_owners(identity)?,
-                identity: identity.clone(),
-            }),
-            Operation::Repositories => serde_json::to_value(GithubRepositories {
-                repositories: client.owner_repositories("owner")?,
-                identity: identity.clone(),
-            }),
+            Operation::Owners => {
+                let browser = client.repository_browser(identity)?;
+                serde_json::to_value(GithubRepositoryOwners {
+                    owners: browser.owners,
+                    warnings: browser.warnings,
+                    identity: identity.clone(),
+                })
+            }
+            Operation::Repositories => {
+                let browser = client.repository_browser(identity)?;
+                serde_json::to_value(GithubRepositories {
+                    repositories: browser
+                        .repositories
+                        .into_iter()
+                        .filter(|repo| repo.name.starts_with("owner/"))
+                        .collect(),
+                    warnings: browser.warnings,
+                    identity: identity.clone(),
+                })
+            }
             Operation::Resolve => serde_json::to_value(GithubRepositoryResolution {
                 repository: client.connect("owner/repo", Some(&identity.id))?.repository,
                 identity: identity.clone(),
@@ -2013,6 +2022,180 @@ mod repository_read_tests {
     fn repositories_completion_cannot_expire_a_replacement_connection() {
         assert_reconnected_completion(Operation::Repositories);
     }
+    struct CorporateProvider {
+        fail_second: bool,
+        wrong_identity: bool,
+    }
+
+    impl Transport for CorporateProvider {
+        fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+            let first = "/user/repos?affiliation=owner,collaborator,organization_member&visibility=all&per_page=100&page=1";
+            let second = first.trim_end_matches('1').to_string() + "2";
+            if path == second && self.fail_second {
+                return Err(ConnectionError::Network);
+            }
+            let (body, headers) = if path == "/user" {
+                (
+                    json!({"id": if self.wrong_identity { 44 } else { 22 }, "login": "fixture_corp"}),
+                    BTreeMap::new(),
+                )
+            } else {
+                assert!(
+                    !self.wrong_identity,
+                    "Wrong identities must not read any catalog"
+                );
+                assert!(path == first || path == second);
+                let owner = if path == first {
+                    "fixture_corp"
+                } else {
+                    "orbit"
+                };
+                let mut headers = BTreeMap::from([("x-oauth-scopes".into(), "repo".into())]);
+                if path == first {
+                    headers.insert(
+                        "link".into(),
+                        format!("<https://api.github.com{second}>; rel=\"next\""),
+                    );
+                }
+                (
+                    json!([{
+                        "id": if path == first { 101 } else { 102 },
+                        "full_name": format!("{owner}/repository"),
+                        "private": true,
+                        "owner": {"login": owner, "type": if path == first { "User" } else { "Organization" }}
+                    }]),
+                    headers,
+                )
+            };
+            Ok(Response {
+                status: 200,
+                headers,
+                body: serde_json::to_vec(&body).unwrap(),
+            })
+        }
+    }
+
+    fn corporate_read(
+        auth: &Mutex<GithubAuth>,
+        generations: &Mutex<BTreeMap<String, u64>>,
+        fail_second: bool,
+        wrong_identity: bool,
+    ) -> Result<serde_json::Value, RepositoryReadError> {
+        repository_read(
+            generations,
+            auth,
+            "22",
+            || {
+                let client = GithubClient::new(CorporateProvider {
+                    fail_second,
+                    wrong_identity,
+                });
+                Ok((client.current_identity()?, client))
+            },
+            |identity, client, _| {
+                let browser = client.repository_browser(identity)?;
+                Ok(
+                    json!({"identity": identity, "owners": browser.owners, "repositories": browser.repositories, "warnings": browser.warnings}),
+                )
+            },
+        )
+    }
+
+    #[test]
+    fn corporate_browser_partial_read_and_fresh_retry_use_the_verified_selected_account() {
+        let mut initial = GithubAuth::new();
+        initial.accounts.insert(
+            "22".into(),
+            GithubAccountState::Connected(identity("fixture_corp")),
+        );
+        initial.accounts.insert(
+            "44".into(),
+            GithubAccountState::Connected(github::Identity {
+                id: "44".into(),
+                login: "neighbor".into(),
+            }),
+        );
+        let auth = Mutex::new(initial);
+        let generations = Mutex::new(BTreeMap::from([("22".into(), 7), ("44".into(), 9)]));
+        let partial = corporate_read(&auth, &generations, true, false).unwrap();
+        assert_eq!(partial["identity"]["id"], "22");
+        assert_eq!(partial["repositories"].as_array().unwrap().len(), 1);
+        assert_eq!(partial["warnings"][0]["error"], "network");
+        assert_eq!(partial["warnings"][0]["page"], 2);
+        let fresh = corporate_read(&auth, &generations, false, false).unwrap();
+        assert_eq!(fresh["repositories"].as_array().unwrap().len(), 2);
+        assert_eq!(fresh["warnings"], json!([]));
+        assert_eq!(fresh["owners"][0]["login"], "fixture_corp");
+        let auth = auth.lock().unwrap();
+        assert!(auth.account_session_allowed("22").is_ok());
+        assert!(auth.account_session_allowed("44").is_ok());
+        assert_eq!(generations.lock().unwrap()["22"], 7);
+        assert_eq!(generations.lock().unwrap()["44"], 9);
+    }
+
+    #[test]
+    fn corporate_browser_identity_mismatch_stops_before_catalog_without_neighbor_fallback() {
+        let mut initial = GithubAuth::new();
+        initial.accounts.insert(
+            "22".into(),
+            GithubAccountState::Connected(identity("fixture_corp")),
+        );
+        initial.accounts.insert(
+            "44".into(),
+            GithubAccountState::Connected(github::Identity {
+                id: "44".into(),
+                login: "neighbor".into(),
+            }),
+        );
+        let auth = Mutex::new(initial);
+        let generations = Mutex::new(BTreeMap::new());
+        assert_eq!(
+            corporate_read(&auth, &generations, false, true),
+            Err(RepositoryReadError::Connection(
+                ConnectionError::WrongIdentity
+            ))
+        );
+        assert!(auth.lock().unwrap().account_session_allowed("44").is_ok());
+    }
+
+    #[test]
+    fn catalog_failures_do_not_turn_a_verified_account_into_reconnect_required() {
+        for error in [
+            ConnectionError::InvalidResponse,
+            ConnectionError::Network,
+            ConnectionError::Timeout,
+            ConnectionError::RateLimited,
+            ConnectionError::ProviderFailure,
+            ConnectionError::ProviderRejected,
+            ConnectionError::MissingReadPermission,
+            ConnectionError::OrganizationPolicyDenied,
+        ] {
+            let mut initial = GithubAuth::new();
+            initial.accounts.insert(
+                "22".into(),
+                GithubAccountState::Connected(identity("fixture_corp")),
+            );
+            let auth = Mutex::new(initial);
+            let generations = Mutex::new(BTreeMap::new());
+            assert_eq!(
+                repository_read(
+                    &generations,
+                    &auth,
+                    "22",
+                    || Ok((identity("fixture_corp"), ())),
+                    |_, (), _| Err::<(), _>(error),
+                ),
+                Err(RepositoryReadError::Connection(error))
+            );
+            assert!(matches!(
+                &auth.lock().unwrap().accounts["22"],
+                GithubAccountState::Connected(_)
+            ));
+            let fresh = corporate_read(&auth, &generations, false, false).unwrap();
+            assert_eq!(fresh["repositories"].as_array().unwrap().len(), 2);
+        }
+    }
+
     #[test]
     fn url_completion_cannot_expire_a_replacement_connection() {
         assert_reconnected_completion(Operation::Resolve);

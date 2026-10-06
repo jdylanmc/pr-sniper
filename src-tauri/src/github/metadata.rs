@@ -414,7 +414,7 @@ fn optional_text(value: Option<&Value>) -> Result<Option<String>, ConnectionErro
     }
 }
 
-fn next_page(
+pub(super) fn next_page(
     path: &str,
     response: &Response,
     advertised_last: &mut Option<u64>,
@@ -439,7 +439,23 @@ fn next_page(
     let mut next = None;
     let mut last = None;
     let mut relations = HashSet::new();
-    for item in link.split(',') {
+    // Repository affiliation parameters contain commas inside the target URL.
+    let mut start = 0;
+    let mut in_target = false;
+    let mut items = Vec::new();
+    for (index, byte) in link.bytes().enumerate() {
+        match byte {
+            b'<' => in_target = true,
+            b'>' => in_target = false,
+            b',' if !in_target => {
+                items.push(&link[start..index]);
+                start = index + 1;
+            }
+            _ => (),
+        }
+    }
+    items.push(&link[start..]);
+    for item in items {
         let (target, relation) = item
             .trim()
             .split_once(';')
