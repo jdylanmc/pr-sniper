@@ -67,6 +67,7 @@ async function install(page, store) {
               ? "owners"
               : "repositories",
         responses: state.responses,
+        sessionFailure: state.sessionFailure,
       });
     }
   });
@@ -547,14 +548,10 @@ test("refresh reconciles a vanished organization without discarding the selected
 for (const [failure, message, invalidates] of [
   [
     "unavailable-account",
-    "Reconnect the acting GitHub account before saving this repository.",
+    { stage: "session", account_id: "22", error: "signed_out" },
     true,
   ],
-  [
-    "changed-generation",
-    "GitHub connection changed. Resolve the repository again before saving.",
-    true,
-  ],
+  ["changed-generation", "authentication_changed", true],
   [
     "resource-conflict",
     "Resource changed in another window. Your draft has not been written; reload or explicitly repair it before saving.",
@@ -584,7 +581,13 @@ for (const [failure, message, invalidates] of [
     await browser.getByLabel("Repository owner").selectOption(corporate.login);
     await expect(browser.locator("[data-pick]")).toHaveCount(1);
     await browser.locator("[data-pick]").click();
-    await expect(browser.getByRole("alert")).toContainText(message);
+    await expect(browser.getByRole("alert")).toBeVisible();
+    if (failure === "unavailable-account")
+      await expect(browser.getByRole("alert")).toContainText(
+        "GitHub is disconnected",
+      );
+    if (failure === "resource-conflict")
+      await expect(browser.getByRole("alert")).toContainText(message);
     await expect(browser.locator("[data-pick]")).toHaveCount(
       invalidates ? 0 : 1,
     );
@@ -657,4 +660,144 @@ test("200-entry known-final no-Link catalog is complete, while unknown-last full
   await browser.getByLabel("Repository owner").selectOption(corporate.login);
   await expect(browser.locator("[data-pick]")).toHaveCount(100);
   await expect(browser.getByRole("alert")).toBeHidden();
+});
+
+for (const operation of ["retry", "selection", "credential-header"]) {
+  test(`unavailable native credential acquisition during ${operation} clears only the stale connected binding`, async ({
+    page,
+    store,
+  }) => {
+    const { state, fixture } = await install(page, store);
+    state.responses[22][`${catalog}2`].headers["x-github-sso"] =
+      "partial-results; organizations=123";
+    const browser = await open(page, store);
+    await browser.getByLabel("Repository owner").selectOption(corporate.login);
+    await expect(browser.locator("[data-pick]")).toHaveCount(1);
+    state.sessionFailure =
+      operation === "credential-header" ? "broken_cli" : "configuration";
+    fixture.accounts = [
+      {
+        ...corporate,
+        state: "reconnect_required",
+        reason:
+          operation === "credential-header"
+            ? "provider"
+            : "credentials_unavailable",
+      },
+      personal,
+    ];
+    if (operation === "retry") {
+      await browser.getByRole("button", { name: "Retry", exact: true }).click();
+    } else {
+      await browser.locator("[data-pick]").click();
+    }
+    await expect(browser.locator("[data-pick]")).toHaveCount(0);
+    await expect(browser.getByLabel("Repository owner")).toBeDisabled();
+    await expect(browser.getByLabel("Find a repository")).toBeDisabled();
+    await expect(browser.getByRole("alert")).toContainText("credential access");
+    await expect(browser.getByRole("status")).toHaveText(
+      "Repository browsing unavailable.",
+    );
+    await expect(
+      browser.getByRole("button", { name: "Retry", exact: true }),
+    ).toBeVisible();
+    expect((await store("snapshot")).settings.repositories).toBeUndefined();
+    await browser
+      .getByRole("button", { name: "Close dialog", exact: true })
+      .click();
+    state.sessionFailure = undefined;
+    await page
+      .getByRole("button", {
+        name: "Browse repositories as personal",
+        exact: true,
+      })
+      .click();
+    const neighbor = page.getByRole("dialog", {
+      name: "Browse repositories as personal",
+      exact: true,
+    });
+    await neighbor.getByLabel("Repository owner").selectOption(personal.login);
+    await expect(neighbor.locator("[data-pick]")).toContainText(
+      "personal/repository-201",
+    );
+    await neighbor
+      .getByRole("button", { name: "Close dialog", exact: true })
+      .click();
+    fixture.accounts = [corporate, personal];
+    await page
+      .getByRole("button", {
+        name: "Browse repositories as fixture_corp",
+        exact: true,
+      })
+      .click();
+    const fresh = page.getByRole("dialog", {
+      name: "Browse repositories as fixture_corp",
+      exact: true,
+    });
+    await fresh.getByLabel("Repository owner").selectOption(corporate.login);
+    await expect(fresh.locator("[data-pick]")).toContainText(
+      "fixture_corp/repository-101",
+    );
+  });
+}
+
+for (const failure of [
+  "catalog-configuration",
+  "partial-configuration",
+  "session-network",
+  "session-schema",
+]) {
+  test(`${failure} retains usable selected-account results rather than inventing auth loss`, async ({
+    page,
+    store,
+  }) => {
+    const { state } = await install(page, store);
+    state.responses[22][`${catalog}2`].headers["x-github-sso"] =
+      "partial-results; organizations=123";
+    const browser = await open(page, store);
+    await browser.getByLabel("Repository owner").selectOption(corporate.login);
+    await expect(browser.locator("[data-pick]")).toHaveCount(1);
+    if (failure.startsWith("session-"))
+      state.sessionFailure =
+        failure === "session-network" ? "network" : "invalid_response";
+    else
+      state.responses[22][
+        `${catalog}${failure === "catalog-configuration" ? 1 : 2}`
+      ] = { error: "configuration" };
+    await browser.getByRole("button", { name: "Retry", exact: true }).click();
+    await expect(browser.getByRole("alert")).toContainText(
+      failure === "session-network"
+        ? "Cannot reach GitHub"
+        : failure === "session-schema"
+          ? "malformed"
+          : "lookup configuration",
+    );
+    await expect(browser.locator("[data-pick]")).toHaveCount(1);
+    await expect(browser.getByLabel("Repository owner")).toBeEnabled();
+    await expect(browser.getByLabel("Find a repository")).toBeEnabled();
+    await expect(browser.getByRole("status")).toContainText("incomplete");
+    expect((await store("snapshot")).settings.repositories).toBeUndefined();
+  });
+}
+
+test("a session failure scoped to another account cannot invalidate this browser's cache", async ({
+  page,
+  store,
+}) => {
+  const { fixture } = await install(page, store);
+  const browser = await open(page, store);
+  await browser.getByLabel("Repository owner").selectOption(corporate.login);
+  await expect(browser.locator("[data-pick]")).toHaveCount(1);
+  const original = fixture.handler;
+  fixture.handler = async (command, args) => {
+    const result = await original(command, args);
+    if (command === "resolve_provider_repository")
+      throw { stage: "session", account_id: "44", error: "configuration" };
+    return result;
+  };
+  await browser.locator("[data-pick]").click();
+  await expect(browser.getByRole("alert")).toContainText("another account");
+  await expect(browser.locator("[data-pick]")).toHaveCount(1);
+  await expect(browser.getByLabel("Find a repository")).toBeEnabled();
+  expect((await store("snapshot")).settings.repositories).toBeUndefined();
 });

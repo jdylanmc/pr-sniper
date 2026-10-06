@@ -877,6 +877,25 @@ mod repository_save_account_tests {
         };
         assert!(validate_repository_save_account(&auth, &generations, &edit, None).is_err());
         assert!(validate_repository_save_account(&auth, &generations, &edit, Some(2)).is_err());
+        assert_eq!(
+            serde_json::to_value(
+                validate_repository_save_account(&auth, &generations, &edit, Some(2)).unwrap_err()
+            )
+            .unwrap(),
+            serde_json::json!("authentication_changed")
+        );
+        assert_eq!(
+            serde_json::to_value(resource_session_error(
+                &edit,
+                "Account coordination is unavailable."
+            ))
+            .unwrap(),
+            serde_json::json!({"stage":"session","account_id":"22","error":"configuration"})
+        );
+        assert_eq!(
+            serde_json::to_value(ResourceSaveError::from("Resource changed")).unwrap(),
+            serde_json::json!("Resource changed")
+        );
         assert!(validate_repository_save_account(&auth, &generations, &edit, Some(3)).is_ok());
         for invalid in ["unbound", "enabled", "unsupported"] {
             let mut value = repository.clone();
@@ -940,10 +959,18 @@ mod repository_save_account_tests {
             assert!(validate_repository_save_account(&auth, &generations, &edit, Some(3)).is_ok());
             auth.set_failure("22", failure);
             let result = validate_repository_save_account(&auth, &generations, &edit, Some(3))
-                .and_then(|()| store.save_resource(edit));
+                .and_then(|()| store.save_resource(edit).map_err(ResourceSaveError::from));
             assert_eq!(
-                result.err().unwrap(),
-                "Reconnect the acting GitHub account before saving this repository."
+                serde_json::to_value(result.err().unwrap()).unwrap(),
+                serde_json::json!({
+                    "stage": "session", "account_id": "22",
+                    "error": match failure {
+                        GithubAuthFailure::Expired => "signed_out",
+                        GithubAuthFailure::MissingScope => "missing_scope",
+                        GithubAuthFailure::WrongIdentity => "wrong_identity",
+                        _ => panic!("Unexpected test failure class"),
+                    }
+                })
             );
             assert!(store.load_settings().unwrap().repositories.is_empty());
             assert!(auth.account_session_allowed("44").is_ok());
@@ -1576,7 +1603,7 @@ fn save_resource(
     host: State<'_, Host>,
     edit: storage::ResourceEdit,
     account_generation: Option<u64>,
-) -> Result<SavedSettings, String> {
+) -> Result<SavedSettings, ResourceSaveError> {
     let intake_only = matches!(&edit,
         storage::ResourceEdit::Repository { expected: None, value: Some(repository), .. }
             if !repository.enabled);
@@ -1584,11 +1611,10 @@ fn save_resource(
         let generations = host
             .github_generations
             .lock()
-            .map_err(|_| "Account coordination is unavailable.")?;
-        let auth = host
-            .github_auth
-            .lock()
-            .map_err(|_| "GitHub connection state is unavailable.")?;
+            .map_err(|_| resource_session_error(&edit, "Account coordination is unavailable."))?;
+        let auth = host.github_auth.lock().map_err(|_| {
+            resource_session_error(&edit, "GitHub connection state is unavailable.")
+        })?;
         validate_repository_save_account(&auth, &generations, &edit, account_generation)?;
         let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
         let saved = store.save_resource(edit)?;
@@ -1615,12 +1641,53 @@ fn save_resource(
     Ok(result)
 }
 
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+enum ResourceSaveError {
+    Repository(RepositoryReadError),
+    Message(String),
+}
+
+impl From<String> for ResourceSaveError {
+    fn from(message: String) -> Self {
+        Self::Message(message)
+    }
+}
+
+impl From<&str> for ResourceSaveError {
+    fn from(message: &str) -> Self {
+        Self::Message(message.into())
+    }
+}
+
+impl From<RepositoryReadError> for ResourceSaveError {
+    fn from(error: RepositoryReadError) -> Self {
+        Self::Repository(error)
+    }
+}
+
+fn resource_session_error(edit: &storage::ResourceEdit, message: &str) -> ResourceSaveError {
+    if let storage::ResourceEdit::Repository {
+        value: Some(repository),
+        ..
+    } = edit
+    {
+        if repository.provider == storage::ProviderId::Github {
+            if let Some(account_id) = &repository.provider_account_id {
+                return RepositoryReadError::session(account_id, ConnectionError::Configuration)
+                    .into();
+            }
+        }
+    }
+    message.into()
+}
+
 fn validate_repository_save_account(
     auth: &GithubAuth,
     generations: &BTreeMap<String, u64>,
     edit: &storage::ResourceEdit,
     resolved_generation: Option<u64>,
-) -> Result<(), String> {
+) -> Result<(), ResourceSaveError> {
     if let storage::ResourceEdit::Repository {
         expected,
         value: Some(repository),
@@ -1646,17 +1713,14 @@ fn validate_repository_save_account(
         });
         if let Some(account_id) = &repository.provider_account_id {
             if repository.enabled || changed_binding || resolved_generation.is_some() {
-                auth.account_session_allowed(account_id).map_err(|_| {
-                    "Reconnect the acting GitHub account before saving this repository."
-                })?;
+                auth.account_session_allowed(account_id)
+                    .map_err(|error| RepositoryReadError::session(account_id, error))?;
             }
             let current_generation = generations.get(account_id).copied().unwrap_or(0);
             if (changed_binding && resolved_generation.is_none())
                 || resolved_generation.is_some_and(|generation| generation != current_generation)
             {
-                return Err(
-                    "GitHub connection changed. Resolve the repository again before saving.".into(),
-                );
+                return Err(RepositoryReadError::Superseded.into());
             }
         }
     }
@@ -1782,9 +1846,30 @@ async fn resolve_provider_repository(
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum RepositoryReadError {
+pub enum RepositoryReadError {
     Superseded,
+    Session {
+        account_id: String,
+        error: ConnectionError,
+    },
     Connection(ConnectionError),
+}
+
+impl RepositoryReadError {
+    pub fn session(account_id: &str, error: ConnectionError) -> Self {
+        Self::Session {
+            account_id: account_id.into(),
+            error,
+        }
+    }
+    pub fn catalog(account_id: &str, error: ConnectionError) -> Self {
+        match error {
+            ConnectionError::SignedOut
+            | ConnectionError::WrongIdentity
+            | ConnectionError::MissingScope => Self::session(account_id, error),
+            _ => Self::Connection(error),
+        }
+    }
 }
 
 impl From<ConnectionError> for RepositoryReadError {
@@ -1797,6 +1882,14 @@ impl Serialize for RepositoryReadError {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
             Self::Superseded => serializer.serialize_str("authentication_changed"),
+            Self::Session { account_id, error } => {
+                use serde::ser::SerializeStruct;
+                let mut fields = serializer.serialize_struct("RepositorySessionFailure", 3)?;
+                fields.serialize_field("stage", "session")?;
+                fields.serialize_field("account_id", account_id)?;
+                fields.serialize_field("error", error)?;
+                fields.end()
+            }
             Self::Connection(error) => error.serialize(serializer),
         }
     }
@@ -1810,12 +1903,13 @@ fn repository_read<T, C>(
     read: impl FnOnce(&github::Identity, C, u64) -> Result<T, ConnectionError>,
 ) -> Result<T, RepositoryReadError> {
     let generation = {
-        let generations = generations
-            .lock()
-            .map_err(|_| ConnectionError::Configuration)?;
+        let generations = generations.lock().map_err(|_| {
+            RepositoryReadError::session(account_id, ConnectionError::Configuration)
+        })?;
         auth.lock()
-            .map_err(|_| ConnectionError::Configuration)?
-            .account_session_allowed(account_id)?;
+            .map_err(|_| RepositoryReadError::session(account_id, ConnectionError::Configuration))?
+            .account_session_allowed(account_id)
+            .map_err(|error| RepositoryReadError::session(account_id, error))?;
         generations.get(account_id).copied().unwrap_or(0)
     };
     let (identity, result) = match acquire() {
@@ -1833,29 +1927,30 @@ fn repository_read<T, C>(
     // successful read nor an old auth failure owns a replacement connection.
     let generations = generations
         .lock()
-        .map_err(|_| ConnectionError::Configuration)?;
-    let mut auth = auth.lock().map_err(|_| ConnectionError::Configuration)?;
+        .map_err(|_| RepositoryReadError::session(account_id, ConnectionError::Configuration))?;
+    let mut auth = auth
+        .lock()
+        .map_err(|_| RepositoryReadError::session(account_id, ConnectionError::Configuration))?;
     if generations.get(account_id).copied().unwrap_or(0) != generation {
         return Err(RepositoryReadError::Superseded);
     }
     let session_failed = identity.is_none();
     if let Some(identity) = identity {
-        auth.publish_session_success(account_id, identity)?;
+        auth.publish_session_success(account_id, identity)
+            .map_err(|error| RepositoryReadError::session(account_id, error))?;
     }
     match result {
         Ok(value) => Ok(value),
         Err(error) => {
-            if session_failed
-                || matches!(
-                    error,
-                    ConnectionError::SignedOut
-                        | ConnectionError::WrongIdentity
-                        | ConnectionError::MissingScope
-                )
-            {
+            let failure = if session_failed {
+                RepositoryReadError::session(account_id, error)
+            } else {
+                RepositoryReadError::catalog(account_id, error)
+            };
+            if matches!(&failure, RepositoryReadError::Session { .. }) {
                 auth.publish_session_failure(account_id, error);
             }
-            Err(error.into())
+            Err(failure)
         }
     }
 }
@@ -2222,7 +2317,8 @@ mod repository_read_tests {
         let generations = Mutex::new(BTreeMap::new());
         assert_eq!(
             corporate_read(&auth, &generations, false, true),
-            Err(RepositoryReadError::Connection(
+            Err(RepositoryReadError::session(
+                "22",
                 ConnectionError::WrongIdentity
             ))
         );
@@ -2232,6 +2328,7 @@ mod repository_read_tests {
     #[test]
     fn catalog_failures_do_not_turn_a_verified_account_into_reconnect_required() {
         for error in [
+            ConnectionError::Configuration,
             ConnectionError::InvalidResponse,
             ConnectionError::Network,
             ConnectionError::Timeout,
@@ -2348,7 +2445,7 @@ mod repository_read_tests {
                 Err(if supersede {
                     RepositoryReadError::Superseded
                 } else {
-                    RepositoryReadError::Connection(ConnectionError::Configuration)
+                    RepositoryReadError::session("22", ConnectionError::Configuration)
                 })
             );
             let auth = auth.lock().unwrap();
@@ -2365,6 +2462,116 @@ mod repository_read_tests {
                     }
                 ));
             }
+        }
+    }
+
+    #[test]
+    fn actual_credential_load_and_refresh_save_failures_keep_the_session_stage() {
+        use github::token_store::{
+            AccountRegistry, AccountRegistryStore, CredentialKey, CredentialStore,
+            ProviderAccountId, RotationSafeStore, StoreError,
+        };
+        struct FailingCredentials {
+            fail_load: bool,
+            pair: github::oauth::TokenPair,
+        }
+        impl CredentialStore for FailingCredentials {
+            fn load(
+                &self,
+                key: &CredentialKey,
+            ) -> Result<Option<github::oauth::TokenPair>, StoreError> {
+                assert_eq!(key, &ProviderAccountId::github("22"));
+                if self.fail_load {
+                    Err(StoreError::Unavailable)
+                } else {
+                    Ok(Some(self.pair.clone()))
+                }
+            }
+            fn save(
+                &self,
+                key: &CredentialKey,
+                _: &github::oauth::TokenPair,
+            ) -> Result<(), StoreError> {
+                assert_eq!(key, &ProviderAccountId::github("22"));
+                Err(StoreError::Unavailable)
+            }
+            fn delete(&self, _: &CredentialKey) -> Result<(), StoreError> {
+                panic!("Acquisition must not delete credentials")
+            }
+        }
+        impl AccountRegistryStore for FailingCredentials {
+            fn load_registry(&self) -> Result<AccountRegistry, StoreError> {
+                panic!("Selected acquisition must not use the active registry")
+            }
+            fn save_registry(&self, _: &AccountRegistry) -> Result<(), StoreError> {
+                panic!("Acquisition must not change the registry")
+            }
+        }
+        for fail_load in [true, false] {
+            let credentials = RotationSafeStore::new(FailingCredentials {
+                fail_load,
+                pair: github::oauth::TokenPair::new(
+                    "fixture-access",
+                    "fixture-refresh",
+                    std::time::Duration::ZERO,
+                    std::time::Duration::from_secs(120),
+                ),
+            });
+            let mut initial = GithubAuth::new();
+            initial.accounts.insert(
+                "22".into(),
+                GithubAccountState::Connected(identity("original")),
+            );
+            initial.accounts.insert(
+                "44".into(),
+                GithubAccountState::Connected(github::Identity {
+                    id: "44".into(),
+                    login: "neighbor".into(),
+                }),
+            );
+            let auth = Mutex::new(initial);
+            let generations = Mutex::new(BTreeMap::new());
+            let result = repository_read(
+                &generations,
+                &auth,
+                "22",
+                || {
+                    credentials
+                        .refresh_if_needed(
+                            &ProviderAccountId::github("22"),
+                            SystemTime::now(),
+                            |_| {
+                                Ok(github::oauth::TokenPair::new(
+                                    "fixture-rotated",
+                                    "fixture-refresh",
+                                    std::time::Duration::from_secs(60),
+                                    std::time::Duration::from_secs(120),
+                                ))
+                            },
+                        )
+                        .map_err(rotation_connection_error)?;
+                    Ok((identity("original"), ()))
+                },
+                |_, (), _| -> Result<(), ConnectionError> {
+                    panic!("Unavailable credentials cannot read identity or catalog")
+                },
+            );
+            assert_eq!(
+                serde_json::to_value(result.unwrap_err()).unwrap(),
+                json!({
+                    "stage": "session", "account_id": "22", "error": "configuration"
+                })
+            );
+            let auth = auth.lock().unwrap();
+            assert!(matches!(
+                &auth.accounts["22"],
+                GithubAccountState::ReconnectRequired {
+                    reason: GithubAuthFailure::CredentialsUnavailable,
+                    ..
+                }
+            ));
+            assert!(auth.account_session_allowed("44").is_ok());
+            assert!(generations.lock().unwrap().is_empty());
         }
     }
 
@@ -2431,7 +2638,10 @@ mod repository_read_tests {
                         operation, identity, client, generation
                     )
                 ),
-                Err(RepositoryReadError::Connection(ConnectionError::SignedOut))
+                Err(RepositoryReadError::session(
+                    "22",
+                    ConnectionError::SignedOut
+                ))
             );
             let auth = auth.lock().unwrap();
             assert!(matches!(

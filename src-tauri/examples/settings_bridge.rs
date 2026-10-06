@@ -271,9 +271,7 @@ fn panel_dispatch(
 }
 
 // Synthetic HTTP responses cross the real provider parser, never live credentials.
-fn repository_browser_fixture(
-    args: &Value,
-) -> Result<Value, pr_sniper_lib::github::ConnectionError> {
+fn repository_browser_fixture(args: &Value) -> Result<Value, pr_sniper_lib::RepositoryReadError> {
     use pr_sniper_lib::github::{
         provider::{GithubClient, Response, Transport},
         ConnectionError,
@@ -304,18 +302,37 @@ fn repository_browser_fixture(
             })
         }
     }
+    let account_id = args["accountId"]
+        .as_str()
+        .ok_or(ConnectionError::Configuration)?;
+    if let Some(failure) = args["sessionFailure"].as_str() {
+        let error = match failure {
+            "configuration" => ConnectionError::Configuration,
+            "broken_cli" => ConnectionError::BrokenCli,
+            "network" => ConnectionError::Network,
+            "timeout" => ConnectionError::Timeout,
+            "invalid_response" => ConnectionError::InvalidResponse,
+            "provider_failure" => ConnectionError::ProviderFailure,
+            _ => return Err(ConnectionError::Configuration.into()),
+        };
+        return Err(pr_sniper_lib::RepositoryReadError::session(
+            account_id, error,
+        ));
+    }
+    let responses = args["responses"]
+        .get(account_id)
+        .ok_or(ConnectionError::Configuration)?;
+    let client = GithubClient::new(FixtureTransport(responses));
+    let identity = client
+        .current_identity()
+        .map_err(|error| pr_sniper_lib::RepositoryReadError::session(account_id, error))?;
+    if identity.id != account_id {
+        return Err(pr_sniper_lib::RepositoryReadError::session(
+            account_id,
+            ConnectionError::WrongIdentity,
+        ));
+    }
     let read = || -> Result<Value, ConnectionError> {
-        let account_id = args["accountId"]
-            .as_str()
-            .ok_or(ConnectionError::Configuration)?;
-        let responses = args["responses"]
-            .get(account_id)
-            .ok_or(ConnectionError::Configuration)?;
-        let client = GithubClient::new(FixtureTransport(responses));
-        let identity = client.current_identity()?;
-        if identity.id != account_id {
-            return Err(ConnectionError::WrongIdentity);
-        }
         if args["operation"].as_str() == Some("resolve") {
             let connection = client.connect(
                 args["repository"]
@@ -345,7 +362,9 @@ fn repository_browser_fixture(
             "warnings": browser.warnings,
         }))
     };
-    read()
+    // The actual native generation-fenced read owns publication; this fixture
+    // uses its same safe wire type and provider parsing without live credentials.
+    read().map_err(|error| pr_sniper_lib::RepositoryReadError::catalog(account_id, error))
 }
 
 fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
