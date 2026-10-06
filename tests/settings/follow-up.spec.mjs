@@ -117,7 +117,7 @@ test("a validated response with Reply Comment off stays local without a manual p
 }) => {
   await setup(page, [candidate("reply")]);
   const root = page.locator("#thread-follow-ups");
-  await expect(root).toContainText("Draft reply: The function returns 42.");
+  await expect(root).toContainText("Local response: The function returns 42.");
   await expect(root).toContainText("source.rs, head line 1: return 42;");
   const publish = root.getByRole("button", {
     name: "Publish reply",
@@ -147,6 +147,23 @@ test("quiet and human-judgment outcomes never offer publication", async ({
     "Retry this follow-up only after the human decision",
   );
   await expect(root).toContainText("No reply needed.");
+  await expect(root.getByRole("button")).toHaveCount(0);
+});
+
+test("answered human input remains historical evidence without another decision request", async ({
+  page,
+}) => {
+  const human = candidate("human_input_required");
+  human.human_gate = false;
+  human.superseded = true;
+  await setup(page, [human]);
+  const root = page.locator("#thread-follow-ups");
+  await expect(root).toContainText(
+    "Historical human-input outcome; this gate was answered by a later explicit assessment.",
+  );
+  await expect(root).not.toContainText(
+    "Retry this follow-up only after the human decision",
+  );
   await expect(root.getByRole("button")).toHaveCount(0);
 });
 

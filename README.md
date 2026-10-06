@@ -1098,6 +1098,9 @@ revision, draft/evidence and separate analysis/publication states. Existing
 primary's **Reply Comment** grant controls publication, independently of initial
 Publish Comment. Eligible analysis starts automatically even when Reply Comment
 is off; qualifying responses then remain local with a visible limitation.
+Completed local responses are evidence, not pending publication confirmations.
+Enabling Reply Comment later does not replay responses captured without that
+grant; new comments create new work. Attempted writes still require reconciliation.
 Manual confirmation cannot grant a missing capability. **Cancel follow-up**
 stops inference or withdraws permission before a reply; it cannot remove an
 already confirmed comment.
@@ -1116,6 +1119,11 @@ body. That state pauses automatic follow-ups for the thread; a later external
 comment can be started explicitly after the human decision. Quiet and human-input
 results have no publication action. Resolved, changed, superseded or stale
 threads stop rather than responding to an outdated conversation. Each follow-up
+keeps its actual history: only verified new-comment supersession or a validated
+explicit answer retires the corresponding old readiness gate, not genuine
+failures, cancellation or unsettled provider operations. Minimal human gates
+survive physical cleanup and reopening.
+Each follow-up
 stores an immutable `target` (original publication/review/root) separately from
 its `context` (current iteration and captured selection). Legacy `trust_confirmed`
 fields remain readable as historical evidence only, never an execution or

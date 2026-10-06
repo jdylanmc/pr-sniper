@@ -120,6 +120,48 @@ pub struct FollowUp {
 }
 
 impl FollowUp {
+    pub(crate) fn can_retire_assessment(&self) -> bool {
+        let safe_refusal = self.phase == Phase::Stopped
+            && self.result.is_none()
+            && self
+                .analysis
+                .as_ref()
+                .is_some_and(|operation| operation.failure == Some(OperationFailure::Superseded));
+        self.publication.is_none()
+            && !self.uncertain
+            && self.receipt.is_none()
+            && !self.cancelled
+            && self.analysis.as_ref().is_none_or(|operation| {
+                operation.state != OperationState::Running
+                    && (safe_refusal
+                        || !matches!(
+                            operation.state,
+                            OperationState::Failed | OperationState::ManualRetry
+                        ))
+            })
+            && (self.error.is_none() || safe_refusal)
+    }
+
+    pub(crate) fn captured_local_response(&self) -> bool {
+        self.publication.is_none()
+            && !self.uncertain
+            && self.receipt.is_none()
+            && self
+                .analysis
+                .as_ref()
+                .is_some_and(|operation| operation.state == OperationState::Completed)
+            && self
+                .result
+                .as_ref()
+                .is_some_and(|result| result.output.decision == ReplyDecision::Reply)
+            && self
+                .context
+                .selection
+                .configuration
+                .as_ref()
+                .is_none_or(|configuration| !configuration.authority.reply)
+    }
+
     pub fn thread(&self) -> Result<&Thread, String> {
         match &self.target {
             ConversationTarget::Owned(origin) => Ok(&origin.thread),

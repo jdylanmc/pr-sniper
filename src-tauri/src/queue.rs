@@ -345,11 +345,20 @@ fn follow_up_state(candidate: &follow_up::host::Candidate) -> Option<State> {
     match run.phase {
         Phase::WaitingStart => Some(State::Queued),
         Phase::Analyzing => Some(State::Reviewing),
-        Phase::WaitingPublication => Some(if candidate.automatic_publication {
-            State::AwaitingPublication
-        } else {
-            State::ConfirmationRequired
-        }),
+        Phase::WaitingPublication
+            if run.publication.is_none()
+                && !candidate.automatic_publication
+                && run
+                    .analysis
+                    .as_ref()
+                    .is_some_and(|operation| operation.state == OperationState::Completed)
+                && run.result.as_ref().is_some_and(|result| {
+                    result.output.decision == crate::follow_up::ReplyDecision::Reply
+                }) =>
+        {
+            None
+        }
+        Phase::WaitingPublication => Some(State::AwaitingPublication),
         Phase::Publishing => Some(State::AwaitingPublication),
         Phase::Stopped | Phase::Unresolved => Some(State::Failed),
         Phase::Quiet | Phase::Published => None,
@@ -447,40 +456,8 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                     .map(|w| &w.iteration_id)
                     != job.work.as_ref().map(|w| &w.iteration_id);
             if prior_iteration
-                && follow_up.run.publication.is_none()
-                && !follow_up.run.uncertain
+                && follow_up.run.can_retire_assessment()
                 && follow_up.run.phase != follow_up::Phase::HumanInputRequired
-            {
-                continue;
-            }
-            if follow_up.run.thread().is_ok() {
-                let feedback = snapshot.feedback.get(&id).and_then(|values| {
-                    values
-                        .iter()
-                        .find(|f| follow_up.run.owns_feedback(&f.context))
-                });
-                let needs_reconciliation = follow_up.run.uncertain
-                    || follow_up
-                        .run
-                        .publication
-                        .as_ref()
-                        .is_some_and(|op| op.state != OperationState::Completed);
-                if !needs_reconciliation
-                    && feedback.is_some_and(|f| {
-                        f.context.closed
-                            || f.context
-                                .thread
-                                .as_ref()
-                                .and_then(|t| t.latest_external(&job.account_id))
-                                .is_some_and(|c| c.id != follow_up.run.trigger_id)
-                    })
-                {
-                    continue;
-                }
-            }
-            if follow_up.run.cancelled
-                && follow_up.run.result.is_none()
-                && follow_up.run.publication.is_none()
             {
                 continue;
             }
