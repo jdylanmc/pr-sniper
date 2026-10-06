@@ -57,6 +57,10 @@ pub struct Settings {
     // An explicitly empty library is saved, never confused with uninitialized data.
     #[serde(default)]
     pub doctrines: Vec<Doctrine>,
+    #[serde(default = "doctrine_catalog_version")]
+    pub doctrine_catalog_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doctrine_reset: Option<DoctrineReset>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agents: Vec<Agent>,
     #[serde(default = "default_capacity")]
@@ -65,6 +69,26 @@ pub struct Settings {
 
 fn default_capacity() -> u32 {
     4
+}
+
+fn doctrine_catalog_version() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DoctrineReset {
+    pub previous_count: usize,
+    pub removed_references: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DoctrineCatalog {
+    pub source: String,
+    pub source_revision: String,
+    pub effective_revision: String,
+    pub count: usize,
 }
 
 impl Default for Settings {
@@ -78,6 +102,8 @@ impl Default for Settings {
             presets: Vec::new(),
             default_review_preset: None,
             doctrines: Vec::new(),
+            doctrine_catalog_version: doctrine_catalog_version(),
+            doctrine_reset: None,
             agents: Vec::new(),
             capacity: default_capacity(),
         }
@@ -163,6 +189,7 @@ pub struct ReviewPreset {
 #[derive(Debug, Serialize)]
 pub struct SavedSettings {
     pub settings: Settings,
+    pub doctrine_catalog: DoctrineCatalog,
     pub warning: Option<String>,
 }
 
@@ -299,6 +326,22 @@ impl RepositoryAuthorization {
 }
 
 impl Settings {
+    pub fn doctrine_catalog(&self) -> DoctrineCatalog {
+        use sha2::{Digest, Sha256};
+        let revision = |doctrines: &[Doctrine]| {
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(doctrines).expect("Doctrine strings serialize"))
+            )
+        };
+        DoctrineCatalog {
+            source: "config/settings.json; defaults: src-tauri/doctrines".into(),
+            source_revision: revision(&crate::doctrine_seeds::doctrines()),
+            effective_revision: revision(&self.doctrines),
+            count: self.doctrines.len(),
+        }
+    }
+
     fn materialize_presets(&mut self) {
         if let Some(id) = &self.default_review_preset {
             self.defaults.prompt = self
@@ -395,6 +438,12 @@ impl Settings {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if self.doctrine_catalog_version != doctrine_catalog_version() {
+            return Err(
+                "Unsupported doctrine catalog version. Use a compatible application before saving."
+                    .into(),
+            );
+        }
         self.defaults.validate()?;
         if self.capacity == 0 {
             return Err("AI capacity must be a positive whole number.".into());
@@ -1068,6 +1117,45 @@ impl Store {
         };
         let mut settings: Settings = serde_json::from_slice(&bytes)
             .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.")?;
+        #[derive(Deserialize)]
+        struct SavedCatalogVersion {
+            #[serde(default)]
+            doctrine_catalog_version: Option<u32>,
+        }
+        // API-created settings default to the current version; only unversioned
+        // on-disk pre-alpha settings need the one-time reconciliation.
+        let saved_version: SavedCatalogVersion = serde_json::from_slice(&bytes)
+            .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.")?;
+        let reconcile_doctrines = saved_version.doctrine_catalog_version.is_none();
+        if reconcile_doctrines {
+            let canonical = crate::doctrine_seeds::doctrines();
+            let mut removed_references = 0;
+            let valid = |title: &str| {
+                canonical
+                    .iter()
+                    .any(|d| d.title.trim().eq_ignore_ascii_case(title.trim()))
+            };
+            for agent in &mut settings.agents {
+                if let Some(titles) = &mut agent.doctrines {
+                    titles.retain(|title| {
+                        let keep = valid(title);
+                        removed_references += usize::from(!keep);
+                        keep
+                    });
+                }
+                if agent.doctrine.as_deref().is_some_and(|title| !valid(title)) {
+                    agent.doctrine = None;
+                    removed_references += 1;
+                }
+            }
+            if settings.doctrines != canonical || removed_references > 0 {
+                settings.doctrine_reset = Some(DoctrineReset {
+                    previous_count: settings.doctrines.len(),
+                    removed_references,
+                });
+            }
+            settings.doctrines = canonical;
+        }
         let migrated = settings
             .repositories
             .iter_mut()
@@ -1085,7 +1173,7 @@ impl Store {
         settings
             .validate()
             .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.")?;
-        if migrated {
+        if migrated || reconcile_doctrines {
             self.write_settings(&settings)?;
         }
         Ok(settings)
@@ -1211,7 +1299,11 @@ impl Store {
             "Settings saved, but host diagnostics could not be recorded. Check local storage permissions."
                 .to_string()
         });
-        SavedSettings { settings, warning }
+        SavedSettings {
+            doctrine_catalog: settings.doctrine_catalog(),
+            settings,
+            warning,
+        }
     }
 
     pub fn record(&self, event: DiagnosticEvent) -> Result<(), String> {

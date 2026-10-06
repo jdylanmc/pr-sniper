@@ -4,6 +4,83 @@ use std::{collections::HashSet, fs, path::Path};
 mod support;
 use support::Fixture;
 
+fn stale_library() -> Vec<Doctrine> {
+    [
+        "boundaries",
+        "code",
+        "context",
+        "cyclomatic-complexity",
+        "data-processing",
+        "data",
+        "debugging",
+        "distributed-data",
+        "documentation",
+        "domain",
+        "idempotency",
+        "integration-testing",
+        "laziness",
+        "machine",
+        "nimble",
+        "pragmatic",
+        "scout",
+        "sequencing",
+        "solid",
+        "tactical-strategic",
+        "test-seams",
+        "testing",
+        "worktrees",
+    ]
+    .into_iter()
+    .map(|title| Doctrine {
+        title: title.into(),
+        body: format!("Old {title} text."),
+    })
+    .collect()
+}
+
+#[test]
+fn stale_23_entry_saved_library_is_reconciled_once() {
+    let fixture = Fixture::new();
+    let path = fixture.path().join("config/settings.json");
+    fs::create_dir(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        serde_json::to_vec(&serde_json::json!({
+            "launch_at_login": false,
+            "doctrines": stale_library(),
+            "agents": [{
+                "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "name": "Retained reviewer", "model": "explicit-model",
+                "prompt": "Keep this prompt.", "signature": "Fixture",
+                "doctrine": "domain",
+                "doctrines": ["testing", "distributed-data", " CODE ", "worktrees"]
+            }, {
+                "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                "name": "Legacy reviewer", "model": "explicit-model",
+                "prompt": "Review correctness.", "signature": "Fixture", "doctrine": "domain"
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let settings = fixture.store().load_settings().unwrap();
+    assert_eq!(settings.doctrines, canonical_doctrines());
+    assert_eq!(settings.agents[0].doctrine_titles(), ["testing", " CODE "]);
+    assert_eq!(settings.agents[0].doctrine, None);
+    assert!(settings.agents[1].doctrine_titles().is_empty());
+    let reset = settings.doctrine_reset.as_ref().unwrap();
+    assert_eq!(reset.previous_count, 23);
+    assert_eq!(reset.removed_references, 4);
+    assert_eq!(settings.doctrine_catalog_version, 1);
+    let catalog = settings.doctrine_catalog();
+    assert_eq!(catalog.count, 10);
+    assert_eq!(catalog.source_revision, catalog.effective_revision);
+    assert_eq!(catalog.effective_revision.len(), 64);
+    let persisted = fs::read(&path).unwrap();
+    assert_eq!(fixture.store().load_settings().unwrap(), settings);
+    assert_eq!(fs::read(path).unwrap(), persisted);
+}
+
 fn canonical_doctrines() -> Vec<Doctrine> {
     let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
@@ -146,7 +223,7 @@ fn edited_created_deleted_and_explicitly_empty_libraries_survive_restart() {
 }
 
 #[test]
-fn existing_custom_empty_and_legacy_missing_libraries_are_not_reseeded() {
+fn versioned_custom_empty_and_missing_libraries_are_not_reseeded() {
     for library in [
         "",
         r#","doctrines":[]"#,
@@ -155,7 +232,8 @@ fn existing_custom_empty_and_legacy_missing_libraries_are_not_reseeded() {
         let fixture = Fixture::new();
         let path = fixture.path().join("config/settings.json");
         fs::create_dir(path.parent().unwrap()).unwrap();
-        let original = format!(r#"{{"launch_at_login":true{library}}}"#);
+        let original =
+            format!(r#"{{"launch_at_login":true,"doctrine_catalog_version":1{library}}}"#);
         fs::write(&path, &original).unwrap();
         let settings = fixture.store().load_settings().unwrap();
         assert!(settings.launch_at_login);
@@ -171,6 +249,110 @@ fn existing_custom_empty_and_legacy_missing_libraries_are_not_reseeded() {
         assert_eq!(fixture.store().load_settings().unwrap(), settings);
         let value: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         assert!(value["doctrines"].is_array());
+    }
+}
+
+#[test]
+fn pre_alpha_custom_and_empty_libraries_reset_but_later_edits_survive() {
+    for library in [
+        "",
+        r#","doctrines":[]"#,
+        r#","doctrines":[{"title":"mine","body":"Old text."}]"#,
+    ] {
+        let fixture = Fixture::new();
+        let path = fixture.path().join("config/settings.json");
+        fs::create_dir(path.parent().unwrap()).unwrap();
+        fs::write(&path, format!(r#"{{"launch_at_login":true{library}}}"#)).unwrap();
+        let initial = fixture.store().load_settings().unwrap();
+        assert!(initial.launch_at_login);
+        assert_eq!(initial.doctrines, canonical_doctrines());
+        assert!(initial.doctrine_reset.is_some());
+        let mut edited = initial.clone();
+        edited.doctrines = vec![Doctrine {
+            title: "mine".into(),
+            body: "New intentional text.".into(),
+        }];
+        fixture
+            .store()
+            .save_preferences(edited.clone(), &initial)
+            .unwrap();
+        assert_eq!(
+            Store::new(fixture.path().into()).load_settings().unwrap(),
+            edited
+        );
+        assert_ne!(
+            edited.doctrine_catalog().effective_revision,
+            edited.doctrine_catalog().source_revision
+        );
+    }
+}
+
+#[test]
+fn reset_failure_is_visible_retryable_and_does_not_touch_safety_state() {
+    let fixture = Fixture::new();
+    let path = fixture.path().join("config/settings.json");
+    fs::create_dir(path.parent().unwrap()).unwrap();
+    let original = serde_json::to_vec(&serde_json::json!({
+        "launch_at_login": false, "doctrines": stale_library()
+    }))
+    .unwrap();
+    fs::write(&path, &original).unwrap();
+    let state = fixture.path().join("state");
+    fs::create_dir(&state).unwrap();
+    for name in [
+        "reviews.json",
+        "publications.json",
+        "follow-ups.json",
+        "queue.json",
+        "monitoring.json",
+        "actions.json",
+    ] {
+        fs::write(state.join(name), b"retained safety evidence").unwrap();
+    }
+    let blocked = fixture.path().join("config/settings.json.tmp");
+    fs::create_dir(&blocked).unwrap();
+    assert_eq!(
+        fixture.store().load_settings().unwrap_err(),
+        "Cannot write settings."
+    );
+    assert_eq!(fs::read(&path).unwrap(), original);
+    fs::remove_dir(blocked).unwrap();
+    assert_eq!(
+        fixture.store().load_settings().unwrap().doctrines,
+        canonical_doctrines()
+    );
+    for name in [
+        "reviews.json",
+        "publications.json",
+        "follow-ups.json",
+        "queue.json",
+        "monitoring.json",
+        "actions.json",
+    ] {
+        assert_eq!(
+            fs::read(state.join(name)).unwrap(),
+            b"retained safety evidence"
+        );
+    }
+}
+
+#[test]
+fn versioned_catalogs_and_invalid_settings_are_not_silently_reset() {
+    let fixture = Fixture::new();
+    let mut intentional = fixture.store().load_settings().unwrap();
+    intentional.doctrines = stale_library();
+    fixture.store().save_settings(&intentional).unwrap();
+    assert_eq!(fixture.store().load_settings().unwrap(), intentional);
+    let path = fixture.path().join("config/settings.json");
+    for invalid in [
+        r#"{"launch_at_login":false,"doctrine_catalog_version":2,"doctrines":[]}"#,
+        r#"{"launch_at_login":false,"doctrine_catalog_version":1,"doctrine_catalog_version":1}"#,
+        r#"{"launch_at_login":false,"doctrines":[],"doctrines":[]}"#,
+        r#"{"launch_at_login":false,"unknown":"secret"}"#,
+    ] {
+        fs::write(&path, invalid).unwrap();
+        assert!(fixture.store().load_settings().is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), invalid);
     }
 }
 
