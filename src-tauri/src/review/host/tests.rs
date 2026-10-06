@@ -72,6 +72,96 @@ fn configuration_edits_and_eligibility_loss_invalidate_saved_attempts() {
 }
 
 #[test]
+fn doctrine_reconciliation_captures_real_dispatch_and_preserves_actual_running_evidence() {
+    let (root, store, template) = fixture();
+    let mut settings = store.load_settings().unwrap();
+    settings.doctrines = vec![
+        crate::storage::Doctrine {
+            title: "code".into(),
+            body: "Old code principles.".into(),
+        },
+        crate::storage::Doctrine {
+            title: "domain".into(),
+            body: "Obsolete domain principles.".into(),
+        },
+    ];
+    settings.agents[0].doctrines = Some(vec!["domain".into(), "code".into()]);
+    store.save_settings(&settings).unwrap();
+    request(&store, &template.key, true, 100).unwrap();
+    let actual = prepare_dispatch(&store, &template.key, 100).unwrap();
+    assert_eq!(actual.operation.state, OperationState::Running);
+    let actual_catalog = actual
+        .selection
+        .configuration
+        .as_ref()
+        .unwrap()
+        .doctrine_catalog
+        .clone();
+    let evidence_path = root.path().join("state/reviews.json");
+    let evidence = std::fs::read(&evidence_path).unwrap();
+    let mut legacy = serde_json::to_value(&settings).unwrap();
+    legacy
+        .as_object_mut()
+        .unwrap()
+        .remove("doctrine_catalog_version");
+    std::fs::write(
+        root.path().join("config/settings.json"),
+        serde_json::to_vec(&legacy).unwrap(),
+    )
+    .unwrap();
+    let resolved = store.load_settings().unwrap();
+    assert_eq!(resolved.doctrines.len(), 10);
+    assert_eq!(resolved.agents[0].doctrine_titles(), ["code"]);
+    assert_eq!(std::fs::read(&evidence_path).unwrap(), evidence);
+    let retained = store.load_reviews().unwrap().remove(0);
+    assert_eq!(retained.selection, actual.selection);
+    assert_eq!(
+        retained
+            .selection
+            .configuration
+            .as_ref()
+            .unwrap()
+            .doctrine_catalog,
+        actual_catalog
+    );
+    assert!(crate::review::validate_execution_selection(&store, &retained).is_err());
+
+    // Another admitted revision dispatches from the reconciled shared resource.
+    let mut next_job = template.job.clone();
+    next_job.head_sha = "c".repeat(40);
+    let next_key = key(&next_job, &template.assignment_id);
+    store.save_queue(std::slice::from_ref(&next_job)).unwrap();
+    request(&store, &next_key, true, 200).unwrap();
+    let next = prepare_dispatch(&store, &next_key, 200).unwrap();
+    let captured = next.selection.configuration.as_ref().unwrap();
+    assert_eq!(captured.doctrine_catalog, Some(resolved.doctrine_catalog()));
+    assert_eq!(
+        captured.doctrines,
+        vec![resolved
+            .doctrines
+            .iter()
+            .find(|d| d.title == "code")
+            .unwrap()
+            .clone()]
+    );
+    assert_eq!(
+        next.selection.doctrine.as_deref(),
+        Some(captured.doctrines[0].body.as_str())
+    );
+    assert_eq!(store.load_reviews().unwrap().len(), 2);
+    let mut edited = resolved.clone();
+    edited
+        .doctrines
+        .iter_mut()
+        .find(|d| d.title == "code")
+        .unwrap()
+        .body = "Later deliberate principles.".into();
+    store.save_preferences(edited, &resolved).unwrap();
+    assert_eq!(store.load_reviews().unwrap()[1].selection, next.selection);
+    assert!(crate::review::validate_execution_selection(&store, &next).is_err());
+}
+
+#[test]
 fn history_survives_assignment_removal_and_legacy_detections_stay_blocked() {
     let (_root, store, mut run) = fixture();
     run.operation.state = OperationState::Failed;

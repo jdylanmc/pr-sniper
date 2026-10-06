@@ -332,7 +332,13 @@ fn zero_one_many_doctrines_preserve_selection_order_and_legacy_loading() {
     settings.agents[0].doctrines = Some(vec!["Boundaries".into(), "Correctness".into()]);
     let first = resolve(&settings);
     settings.doctrines.reverse();
-    assert_eq!(resolve(&settings), first);
+    let reordered = resolve(&settings);
+    assert!(reordered.same_execution(&first));
+    assert_eq!(reordered.doctrine, first.doctrine);
+    assert_ne!(
+        reordered.configuration.as_ref().unwrap().doctrine_catalog,
+        first.configuration.as_ref().unwrap().doctrine_catalog
+    );
     assert_eq!(first.doctrine.as_deref(), Some("## Boundaries\n\nKeep authority explicit.\n\n## Correctness\n\nTrace state transitions."));
     assert_eq!(
         first.configuration.unwrap().doctrines[0].title,
@@ -525,6 +531,17 @@ fn snapshots_and_completed_evidence_do_not_change_after_edits_or_restart() {
     let interrupted = store.load_reviews().unwrap().remove(0);
     assert_eq!(interrupted.operation.state, OperationState::Interrupted);
     assert_eq!(interrupted.selection, selection);
+    let mut without_revision = serde_json::to_value(&selection).unwrap();
+    without_revision["configuration"]
+        .as_object_mut()
+        .unwrap()
+        .remove("doctrine_catalog");
+    let without_revision: Selection = serde_json::from_value(without_revision).unwrap();
+    assert!(without_revision
+        .configuration
+        .unwrap()
+        .doctrine_catalog
+        .is_none());
     let mut legacy = serde_json::to_value(selection).unwrap();
     legacy.as_object_mut().unwrap().remove("configuration");
     let legacy: Selection = serde_json::from_value(legacy).unwrap();

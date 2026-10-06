@@ -30,6 +30,9 @@ pub struct ExecutionConfiguration {
     pub authority: AssignmentAuthority,
     /// In Agent-selected order, with the exact saved title and full body.
     pub doctrines: Vec<Doctrine>,
+    /// Absent on older jobs; never inferred from a later library.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doctrine_catalog: Option<crate::storage::DoctrineCatalog>,
 }
 
 impl Selection {
@@ -146,6 +149,7 @@ impl Selection {
                 repository: repository.clone(),
                 authority: repository.assignment_authority(assignment),
                 doctrines,
+                doctrine_catalog: Some(settings.doctrine_catalog()),
             }),
         })
     }

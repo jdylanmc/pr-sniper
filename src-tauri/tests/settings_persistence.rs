@@ -205,6 +205,7 @@ fn ordinary_configuration_contains_only_nonsecret_settings() {
         serde_json::json!({
             "launch_at_login": true,
             "doctrines": [],
+            "doctrine_catalog_version": 1,
             "capacity": 4,
             "defaults": {
                 "schedule": {"kind":"cron","expression":"*/15 * * * *","timezone":"UTC"},
