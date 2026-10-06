@@ -24,6 +24,7 @@ export interface GithubAccount {
   account_id: string;
   login: string;
   state: "connected" | "reconnect_required";
+  connection_generation?: number;
   reason?: GithubAuthFailure;
   warning?: GithubAuthFailure;
 }
@@ -225,9 +226,9 @@ export function renderGithubAuth(
       state.textContent =
         account.state === "connected"
           ? account.warning
-            ? `Connected through the PR Sniper GitHub OAuth App. Last verification needs retry: ${failureMessage(account.warning)}`
+            ? `Connected through the PR Sniper GitHub OAuth App. Last verification needs retry: ${githubAccountFailureMessage(account.warning)}`
             : "Connected through the PR Sniper GitHub OAuth App."
-          : `Needs attention. ${failureMessage(account.reason)}`;
+          : `Needs attention. ${githubAccountFailureMessage(account.reason)}`;
       description.append(heading, state);
       const accountActions = document.createElement("div");
       accountActions.className = "github-auth-actions";
@@ -324,7 +325,7 @@ export function renderGithubAuth(
       );
       commandButton(actions, "Cancel", "cancel_github_auth");
     } else if (view.flow.state === "failed") {
-      status.textContent = failureMessage(view.flow.reason);
+      status.textContent = githubAccountFailureMessage(view.flow.reason);
       commandButton(
         actions,
         "Try GitHub sign-in again",
@@ -387,7 +388,7 @@ export function renderGithubAuth(
   refresh();
 }
 
-function failureMessage(reason?: GithubAuthFailure) {
+export function githubAccountFailureMessage(reason?: GithubAuthFailure) {
   return (
     {
       disconnected: "Disconnected. Reconnect to use this account again.",

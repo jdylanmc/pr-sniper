@@ -415,9 +415,10 @@ test("fresh Genie uses shared account choices and authorizes at repository Save,
     .getByRole("button", { name: "Add repository by URL", exact: true })
     .click();
   const add = modal(page, "Add repository by URL");
-  await expect(add.getByLabel("Acting GitHub account")).toHaveValue("");
+  await expect(add.getByLabel("Acting GitHub account")).toHaveValue("22");
+  await expect(add.getByLabel("Acting GitHub account")).toBeHidden();
+  await expect(add.getByRole("status")).toContainText("GitHub / fixture-code");
   await add.getByLabel("Repository URL").fill("fixture/genie");
-  await add.getByLabel("Acting GitHub account").selectOption("22");
   await add
     .getByRole("button", { name: "Add & configure", exact: true })
     .click();

@@ -165,7 +165,7 @@ test("owner browsing isolates results, retries errors, searches and reopens stab
   expect((await store("snapshot")).settings).toEqual(before);
 });
 
-test("URL requires an acting account, rejects malformed input and preserves alternate-account bindings", async ({
+test("URL requires explicit choice across accounts, rejects unsupported providers and preserves bindings", async ({
   page,
   store,
 }) => {
@@ -183,9 +183,10 @@ test("URL requires an acting account, rejects malformed input and preserves alte
   await form
     .getByLabel("Repository URL")
     .fill("https://dev.azure.com/org/project/repo");
-  await form.getByLabel("Acting GitHub account").selectOption("22");
-  await form.getByRole("button", { name: "Add & configure" }).click();
-  await expect(form.getByRole("alert")).toBeVisible();
+  await expect(form.getByRole("status")).toContainText("Azure DevOps");
+  await expect(
+    form.getByRole("button", { name: "Add & configure" }),
+  ).toBeDisabled();
   expect((await store("snapshot")).settings.repositories).toBeUndefined();
   await form.getByRole("button", { name: "Cancel", exact: true }).click();
   for (const accountId of ["22", "44", "22"]) {

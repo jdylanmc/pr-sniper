@@ -1,5 +1,9 @@
 import { test, expect } from "./fixtures.mjs";
-import { section, repositorySettings } from "./navigation.mjs";
+import {
+  section,
+  repositorySettings,
+  chooseRepositoryAccount,
+} from "./navigation.mjs";
 import {
   providerFixture,
   repositoryPage,
@@ -105,7 +109,7 @@ for (const accountId of ["22", "44"]) {
       exact: true,
     });
     await edit.getByLabel("Repository URL").fill("fixture/two");
-    await edit.getByLabel("Acting GitHub account").selectOption(accountId);
+    await chooseRepositoryAccount(edit, accountId);
     await edit
       .getByRole("button", { name: "Add & configure", exact: true })
       .click();
