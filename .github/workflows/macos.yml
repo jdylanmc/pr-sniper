@@ -24,6 +24,10 @@ jobs:
       - run: npm run format:check
       - run: npm run lint
       - run: npm test
+      - name: Verify bundled macOS Agent Intelligence (offline, no credentials or inference)
+        id: agent-intelligence-offline
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked --lib review::runtime::tests::bundled_runtime_intelligence_offline -- --exact --ignored --nocapture --test-threads=1
+        timeout-minutes: 2
       - run: npm run test:release
       - run: npm exec playwright install chromium
       - run: npm run test:settings
