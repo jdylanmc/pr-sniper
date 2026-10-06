@@ -491,6 +491,8 @@ for (const [embedded, genie] of [
 
 for (const failure of [
   "missing_scope",
+  "organization_policy_and_missing_scope",
+  "organization_policy_scope_and_rate_limit",
   "wrong_identity",
   "signed_out",
   "authentication_changed",
@@ -504,7 +506,19 @@ for (const failure of [
     await browser.getByLabel("Repository owner").selectOption(corporate.login);
     await expect(browser.locator("[data-pick]")).toHaveCount(1);
     const originalHandler = fixture.handler;
-    if (failure === "missing_scope") {
+    if (failure.startsWith("organization_policy")) {
+      state.responses[22]["/repos/fixture_corp/repository-101"] = response(
+        {
+          message:
+            "Although you appear to have the correct authorization credentials, the fixture-org organization has enabled OAuth App access restrictions, meaning that data access to third-parties is limited.",
+        },
+        {
+          "x-oauth-scopes": "read:user",
+          ...(failure.endsWith("rate_limit") ? { "retry-after": "60" } : {}),
+        },
+        403,
+      );
+    } else if (failure === "missing_scope") {
       state.responses[22]["/repos/fixture_corp/repository-101"].headers[
         "x-oauth-scopes"
       ] = "read:user";

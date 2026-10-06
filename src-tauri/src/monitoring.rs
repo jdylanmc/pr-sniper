@@ -2914,6 +2914,21 @@ pub(crate) fn check_error(error: ConnectionError) -> MonitoringError {
         ConnectionError::RateLimitedAfter(retry_after_seconds) => {
             (OperationFailure::RateLimited, Some(retry_after_seconds))
         }
+        ConnectionError::RateLimitedWithContext {
+            retry_after_seconds,
+            reset_at,
+            ..
+        } => {
+            let delay = match (retry_after_seconds, reset_at) {
+                (Some(delay), _) => Some(delay),
+                (None, Some(reset)) => match crate::now_seconds() {
+                    Ok(now) => Some(reset.saturating_sub(now).max(0)),
+                    Err(error) => return MonitoringError::Storage(error),
+                },
+                _ => None,
+            };
+            (OperationFailure::RateLimited, delay)
+        }
         ConnectionError::Network => (OperationFailure::Network, None),
         ConnectionError::ProviderFailure => (OperationFailure::Provider, None),
         ConnectionError::ProviderFailureAfter(retry_after_seconds) => {
@@ -2940,11 +2955,19 @@ fn connection_error_code(error: ConnectionError) -> &'static str {
         ConnectionError::MissingReadPermission => "MissingReadPermission",
         ConnectionError::RepositoryUnavailable => "RepositoryUnavailable",
         ConnectionError::MissingScope => "MissingScope",
+        ConnectionError::ScopeUnverified => "ScopeUnverified",
         ConnectionError::OrganizationPolicyDenied => "OrganizationPolicyDenied",
-        ConnectionError::RateLimited | ConnectionError::RateLimitedAfter(_) => "RateLimited",
+        ConnectionError::OrganizationPolicyDeniedWithMissingScope => {
+            "OrganizationPolicyDeniedWithMissingScope"
+        }
+        ConnectionError::RateLimited
+        | ConnectionError::RateLimitedAfter(_)
+        | ConnectionError::RateLimitedWithContext { .. } => "RateLimited",
         ConnectionError::Network => "Network",
         ConnectionError::ProviderFailure => "ProviderFailure",
-        ConnectionError::ProviderRejected => "ProviderRejected",
+        ConnectionError::ProviderRejected | ConnectionError::ProviderRejectedStatus(_) => {
+            "ProviderRejected"
+        }
         ConnectionError::ProviderFailureAfter(_) => "ProviderFailure",
         ConnectionError::IncompleteRead => "IncompleteRead",
         ConnectionError::RevisionChanged => "RevisionChanged",
@@ -3085,5 +3108,46 @@ pub fn next_run(schedule: &Schedule, now: i64) -> Result<i64, ConnectionError> {
                 .map(|time| time.timestamp())
                 .map_err(|_| ConnectionError::Configuration)
         }
+    }
+}
+
+#[cfg(test)]
+mod read_diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn contextual_rate_limit_preserves_retry_after_over_reset() {
+        let error = check_error(ConnectionError::RateLimitedWithContext {
+            retry_after_seconds: Some(60),
+            reset_at: Some(0),
+            organization_access_incomplete: true,
+            missing_repo_scope: false,
+        });
+        assert!(matches!(
+            error,
+            MonitoringError::Recoverable {
+                failure: OperationFailure::RateLimited,
+                retry_after_seconds: Some(60),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn contextual_rate_limit_uses_reset_when_retry_after_is_absent() {
+        let error = check_error(ConnectionError::RateLimitedWithContext {
+            retry_after_seconds: None,
+            reset_at: Some(0),
+            organization_access_incomplete: false,
+            missing_repo_scope: false,
+        });
+        assert!(matches!(
+            error,
+            MonitoringError::Recoverable {
+                failure: OperationFailure::RateLimited,
+                retry_after_seconds: Some(0),
+                ..
+            }
+        ));
     }
 }

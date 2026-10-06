@@ -27,6 +27,8 @@ const metadata = {
   permissions: null,
   owner: { login: "gaming-microsoft", type: "Organization" },
 };
+const policyMessage =
+  "Although you appear to have the correct authorization credentials, the fixture-org organization has enabled OAuth App access restrictions, meaning that data access to third-parties is limited. For more information visit https://example.invalid/private";
 
 async function install(page, store) {
   const state = {
@@ -35,15 +37,28 @@ async function install(page, store) {
         "/user": response(200, { id: 120949562, login: account.login }),
         [endpoint]: response(200, metadata),
         [pulls]: response(200, []),
+        "/user/repos?affiliation=owner,collaborator,organization_member&visibility=all&per_page=100&page=1":
+          response(200, [metadata]),
       },
       [neighbor.account_id]: {},
     },
   };
   const fixture = await providerFixture(page, store, (command, args) => {
-    if (command === "resolve_provider_repository")
+    if (
+      [
+        "resolve_provider_repository",
+        "list_provider_repository_owners",
+        "list_provider_repositories",
+      ].includes(command)
+    )
       return store("fixture_repository_browser", {
         ...args,
-        operation: "resolve",
+        operation:
+          command === "resolve_provider_repository"
+            ? "resolve"
+            : command === "list_provider_repository_owners"
+              ? "owners"
+              : "repositories",
         responses: state.responses,
         sessionFailure: state.sessionFailure,
       });
@@ -56,6 +71,8 @@ async function open(page, store, genie = false) {
   if (genie) await store("fixture_show_panel");
   await page.goto(genie ? "/" : "/?view=settings");
   if (genie) {
+    await expect(page.locator("[data-panel-heading]")).toHaveText("Welcome");
+    await expect(page.locator('[data-panel-view="genie"]')).toBeVisible();
     await page
       .getByRole("navigation", { name: "Application destinations" })
       .getByRole("button", { name: "Settings", exact: true })
@@ -121,6 +138,141 @@ for (const genie of [false, true]) {
     ]);
   });
 }
+
+for (const genie of [false, true]) {
+  for (const path of [endpoint, pulls]) {
+    for (const [name, failure, expected, forbidden] of [
+      [
+        "provider rejection",
+        response(422, { message: "synthetic-secret" }),
+        "HTTP 422",
+        "malformed or unsupported",
+      ],
+      [
+        "policy only",
+        response(403, { message: policyMessage }),
+        "organization authorization restriction",
+        "Reconnect this account",
+      ],
+      [
+        "policy and scope",
+        response(
+          403,
+          { message: policyMessage },
+          { "x-oauth-scopes": "read:user" },
+        ),
+        "authorization missing repo scope",
+        "GitHub denied read access",
+      ],
+      [
+        "partial authorization and rate limit",
+        response(
+          403,
+          { message: "API rate limit exceeded" },
+          {
+            "x-github-sso": "partial-results; organizations=123",
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": "1800000060",
+            "retry-after": "60",
+          },
+        ),
+        "Retry after 60 seconds",
+        "Reconnect this account",
+      ],
+    ]) {
+      test(`URL ${name} at ${path === endpoint ? "metadata" : "pulls"} (${genie ? "Genie" : "Settings"}) retains safe evidence and retries`, async ({
+        page,
+        store,
+      }) => {
+        const { state, fixture } = await install(page, store);
+        state.responses[account.account_id][path] = failure;
+        const dialog = await open(page, store, genie);
+        await submit(dialog);
+        const alert = dialog.getByRole("alert");
+        await expect(alert).toContainText(expected);
+        await expect(alert).not.toContainText(forbidden);
+        await expect(alert).not.toContainText("synthetic-secret");
+        await expect(alert).not.toContainText("https://example.invalid");
+        if (name.startsWith("policy")) {
+          await expect(alert).toContainText("organization");
+          await expect(alert).toContainText(
+            "Reconnecting alone cannot bypass organization policy",
+          );
+        }
+        if (name.startsWith("partial")) {
+          await expect(alert).toContainText("1800000060");
+          await expect(alert).toContainText("restricted or incomplete");
+        }
+        await expect(dialog.getByLabel("Repository URL")).toHaveValue(url);
+        await expect(dialog.getByLabel("Acting GitHub account")).toHaveValue(
+          account.account_id,
+        );
+        expect((await store("snapshot")).settings.repositories).toBeUndefined();
+        state.responses[account.account_id][path] = response(
+          200,
+          path === endpoint ? metadata : [],
+        );
+        await submit(dialog);
+        await expect(editor(page)).toBeVisible();
+        expect(
+          fixture.calls
+            .filter((c) => c.command === "resolve_provider_repository")
+            .every((c) => c.args.accountId === account.account_id),
+        ).toBe(true);
+      });
+    }
+  }
+  test(`URL unknown scope evidence (${genie ? "Genie" : "Settings"}) is not a scope grant or account revocation`, async ({
+    page,
+    store,
+  }) => {
+    const { state } = await install(page, store);
+    state.responses[account.account_id][endpoint] = response(200, metadata, {});
+    const dialog = await open(page, store, genie);
+    await submit(dialog);
+    await expect(dialog.getByRole("alert")).toContainText(
+      "No missing scope or grant is established",
+    );
+    await expect(dialog.getByRole("alert")).not.toContainText("Reconnect");
+    expect((await store("snapshot")).settings.repositories).toBeUndefined();
+    state.responses[account.account_id][endpoint] = response(200, metadata);
+    await submit(dialog);
+    await expect(editor(page)).toBeVisible();
+  });
+}
+
+test("unknown catalog scope retains the selected connected account and retries without a complete result", async ({
+  page,
+  store,
+}) => {
+  const { state } = await install(page, store);
+  const catalog =
+    "/user/repos?affiliation=owner,collaborator,organization_member&visibility=all&per_page=100&page=1";
+  state.responses[account.account_id][catalog] = response(200, [metadata], {});
+  await page.goto("/?view=settings");
+  await section(page, "Repositories");
+  await page
+    .getByRole("button", {
+      name: `Browse repositories as ${account.login}`,
+      exact: true,
+    })
+    .click();
+  const browser = page.getByRole("dialog", {
+    name: `Browse repositories as ${account.login}`,
+    exact: true,
+  });
+  await expect(browser.getByRole("alert")).toContainText(
+    "No missing scope or grant is established",
+  );
+  await expect(browser.getByRole("alert")).not.toContainText("Reconnect");
+  await expect(browser.locator("[data-pick]")).toHaveCount(0);
+  expect((await store("snapshot")).settings.repositories).toBeUndefined();
+  state.responses[account.account_id][catalog] = response(200, [metadata]);
+  await browser.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(browser.getByLabel("Repository owner")).toBeEnabled();
+  await browser.getByLabel("Repository owner").selectOption("gaming-microsoft");
+  await expect(browser.locator("[data-pick]")).toHaveCount(1);
+});
 
 for (const [name, failure, message] of [
   [
