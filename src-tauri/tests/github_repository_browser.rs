@@ -398,3 +398,65 @@ fn next_cannot_exceed_a_retained_advertised_last() {
     assert_eq!(browser.warnings[0].error, ConnectionError::IncompleteRead);
     assert_eq!(browser.warnings[0].page, 2);
 }
+
+#[test]
+fn full_known_final_page_without_link_stops_complete_without_another_request() {
+    let link = format!("<https://api.github.com{CATALOG}2>; rel=\"next\", <https://api.github.com{CATALOG}2>; rel=\"last\"");
+    for terminal_link in [
+        None,
+        Some(format!("<https://api.github.com{CATALOG}1>; rel=\"prev\", <https://api.github.com{CATALOG}1>; rel=\"first\"")),
+    ] {
+        let mut terminal = response(json!((101..=200).map(|id| repository(id, "orbit", "Organization")).collect::<Vec<_>>()));
+        if let Some(link) = terminal_link {
+            terminal.headers.insert("link".into(), link);
+        }
+        let client = GithubClient::new(Fixture::new(vec![
+            first(json!((1..=100).map(|id| repository(id, "orbit", "Organization")).collect::<Vec<_>>()), Some(&link)),
+            (format!("{CATALOG}2"), Ok(terminal)),
+        ]));
+        let browser = client.owner_repository_browser(&identity(), "orbit").unwrap();
+        assert_eq!(browser.repositories.len(), 200);
+        assert!(browser.warnings.is_empty());
+    }
+    let link = format!("<https://api.github.com{CATALOG}1>; rel=\"last\"");
+    let client = GithubClient::new(Fixture::new(vec![first(
+        json!((1..=100)
+            .map(|id| repository(id, "orbit", "Organization"))
+            .collect::<Vec<_>>()),
+        Some(&link),
+    )]));
+    let browser = client
+        .owner_repository_browser(&identity(), "orbit")
+        .unwrap();
+    assert_eq!(browser.repositories.len(), 100);
+    assert!(browser.warnings.is_empty());
+}
+
+#[test]
+fn full_pages_probe_only_when_the_last_page_is_unknown() {
+    for count in [100, 200] {
+        let mut pages = vec![first(
+            json!((1..=100)
+                .map(|id| repository(id, "orbit", "Organization"))
+                .collect::<Vec<_>>()),
+            None,
+        )];
+        if count == 200 {
+            pages.push((
+                format!("{CATALOG}2"),
+                Ok(response(json!((101..=200)
+                    .map(|id| repository(id, "orbit", "Organization"))
+                    .collect::<Vec<_>>()))),
+            ));
+        }
+        pages.push((
+            format!("{CATALOG}{}", count / 100 + 1),
+            Ok(response(json!([]))),
+        ));
+        let browser = GithubClient::new(Fixture::new(pages))
+            .owner_repository_browser(&identity(), "orbit")
+            .unwrap();
+        assert_eq!(browser.repositories.len(), count);
+        assert!(browser.warnings.is_empty());
+    }
+}

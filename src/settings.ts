@@ -1955,6 +1955,8 @@ export async function mountSettings(
         cause === "signed_out" ||
         cause === "missing_scope" ||
         cause ===
+          "Reconnect the acting GitHub account before saving this repository." ||
+        cause ===
           "GitHub connection changed. Resolve the repository again before saving."
       ) {
         loaded = false;
