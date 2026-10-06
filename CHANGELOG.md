@@ -97,6 +97,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   in repository lists and Settings/Genie. Keep configuration drafts and global
   pause separate, enable valid new configurations on Save, and preserve
   deliberate disablement with guarded, actionable enablement failures. (#118)
+- Distinguish hidden or absent organization repositories from read denial,
+  and surface selected-account scope and organization authorization recovery
+  without changing access grants. (#125)
 - Fix connected corporate-account repository browsing for enterprise-managed
   usernames. Retain accessible results with explicit partial authorization,
   metadata and pagination warnings, and make Retry use the selected account
