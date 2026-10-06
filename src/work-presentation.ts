@@ -227,6 +227,7 @@ export function renderIntelligenceDiagnostics(
     "Captured requests and actual session reports, not today's Agent settings. These are execution records, separate from the redacted host log.";
   details.append(note);
   let count = 0;
+  const seen = new Set<string>();
   const append = (
     id: string,
     selection: ReviewSelection,
@@ -236,6 +237,8 @@ export function renderIntelligenceDiagnostics(
       intelligence?: import("./policy").AgentIntelligence | null;
     } | null,
   ) => {
+    if (seen.has(id)) return;
+    seen.add(id);
     count++;
     const heading = document.createElement("h4");
     heading.textContent = `Job ${id}`;
@@ -274,6 +277,11 @@ export function renderIntelligenceDiagnostics(
       run.review?.selection ??
       (run.target?.kind === "owned" ? run.target.review.selection : undefined);
     if (selection) append(run.id, selection, run.result);
+  }
+  for (const item of snapshot.items ?? []) {
+    const execution = item.action_status?.final_review?.execution;
+    if (execution)
+      append(execution.operation.id, execution.selection, execution.result);
   }
   if (!count) details.append("No recorded job configuration available.");
   root.append(details);
