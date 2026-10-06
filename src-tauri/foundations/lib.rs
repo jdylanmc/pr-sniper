@@ -2,8 +2,6 @@
 //! These are production source files, not copies or alternate implementations.
 #[cfg(test)]
 mod copilot;
-#[path = "../src/discovery.rs"]
-pub mod discovery;
 #[path = "../src/doctrine_seeds.rs"]
 mod doctrine_seeds;
 pub mod github;

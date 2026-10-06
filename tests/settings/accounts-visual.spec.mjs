@@ -544,7 +544,10 @@ for (const [provider, role] of Object.entries(roles)) {
       .getByRole("button", { name: role.cancelLabel, exact: true })
       .click();
     await expect(card).not.toContainText("TEST-CODE");
-    const search = page.getByRole("searchbox", { name: "Find a repository" });
+    const search = page.getByRole("button", {
+      name: "Set up with Genie",
+      exact: true,
+    });
     await search.focus();
     held.resolve({ accounts: [], flow: connecting });
     await page.evaluate(() => window.__accountFixtureIdle());

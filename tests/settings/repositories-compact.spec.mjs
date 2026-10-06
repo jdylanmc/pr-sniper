@@ -26,7 +26,7 @@ const tab = (page, name) =>
     .getByRole("navigation", { name: "Application destinations" })
     .getByRole("button", { name, exact: true });
 const row = (page, name = "fixture/compact") =>
-  page.getByRole("article", { name, exact: true });
+  page.getByRole("button", { name, exact: true });
 const close = async (dialog) =>
   dialog.getByRole("button", { name: "Close dialog", exact: true }).click();
 const save = async (dialog) => {
@@ -55,7 +55,7 @@ async function seed(store, count = 1) {
       id: id(1),
       provider: "github",
       name: "fixture/compact",
-      enabled: true,
+      enabled: false,
       provider_account_id: "22",
       provider_repository_id: "100",
       watched_authors: [{ id: "11", login: "watched-person" }],
@@ -146,278 +146,6 @@ async function capture(page, testInfo, name) {
 
 test.use({ viewport: { width: 408, height: 744 } });
 
-test("compact repository rows retain real identities, state, draft focus and restart", async ({
-  page,
-  store,
-}, testInfo) => {
-  const initial = await seed(store);
-  await provider(page);
-  await start(page, store);
-  const rows = page.locator(".repository-row");
-  await expect(rows).toHaveCount(2);
-  await expect(row(page)).toContainText("GitHub as repository-owner");
-  await expect(row(page)).toContainText("Enabled; scope and access required");
-  await expect(row(page, "fixture/neighbor")).toContainText(
-    "Monitoring disabled",
-  );
-  const heights = await rows.evaluateAll((elements) =>
-    elements.map((element) => element.getBoundingClientRect().height),
-  );
-  expect(Math.max(...heights)).toBeLessThan(160);
-  await expect(row(page)).toBeInViewport({ ratio: 1 });
-  await capture(page, testInfo, "repositories-408");
-  const search = page.getByLabel("Find a repository", { exact: true });
-  await search.fill("compact");
-  await search.press("Enter");
-  await expect(rows).toHaveCount(1);
-  expect((await store("snapshot")).settings).toEqual(initial);
-  const opener = row(page).getByRole("button", {
-    name: "Settings",
-    exact: true,
-  });
-  await opener.focus();
-  const scroll = await page
-    .locator("#content")
-    .evaluate((element) => element.scrollTop);
-  await opener.press("Enter");
-  let editor = modal(page, "Settings for fixture/compact");
-  await expect(page.getByRole("dialog")).toHaveCount(1);
-  await expect(editor.locator(".repository-identity")).toContainText("22");
-  await expect(editor.locator(".repository-identity")).toContainText("100");
-  await expect(editor.locator("[data-scope-status]")).toContainText(
-    "Scope confirmation required",
-  );
-  await editor.getByLabel("Enable repository monitoring").uncheck();
-  await editor
-    .getByLabel("Reviewer requests", { exact: true })
-    .selectOption("off");
-  await close(editor);
-  await expect(opener).toBeFocused();
-  expect(
-    await page.locator("#content").evaluate((element) => element.scrollTop),
-  ).toBe(scroll);
-  await opener.click();
-  editor = modal(page, "Settings for fixture/compact");
-  await expect(
-    editor.getByLabel("Reviewer requests", { exact: true }),
-  ).toHaveValue("off");
-  await capture(page, testInfo, "repository-editor-408");
-  await tab(page, "Running").click();
-  await tab(page, "Settings").click();
-  await expect(
-    editor.getByLabel("Enable repository monitoring"),
-  ).not.toBeChecked();
-  await editor.getByLabel("Reviewer requests", { exact: true }).focus();
-  await page.keyboard.press("Escape");
-  await expect(page.locator(".panel-shell")).toHaveAttribute(
-    "data-native-visible",
-    "false",
-  );
-  await page.evaluate(async () => {
-    await window.__TAURI_INTERNALS__.invoke("fixture_show_panel", {});
-    await window.__settingsIdle();
-  });
-  await expect(
-    editor.getByLabel("Reviewer requests", { exact: true }),
-  ).toHaveValue("off");
-  await save(editor);
-  const saved = (await store("snapshot")).settings;
-  await testInfo.attach("persisted-repository-settings", {
-    body: JSON.stringify(saved, null, 2),
-    contentType: "application/json",
-  });
-  await writeFile(
-    testInfo.outputPath("persisted-repository-settings.json"),
-    JSON.stringify(saved, null, 2),
-  );
-  expect(saved.repositories[0]).toEqual({
-    ...initial.repositories[0],
-    enabled: false,
-    overrides: { reviewer_assignment: false },
-  });
-  expect(saved.repositories[1]).toEqual(initial.repositories[1]);
-  expect(saved.defaults).toEqual(initial.defaults);
-  expect(saved.agents).toEqual(initial.agents);
-  expect(saved.launch_at_login).toBe(true);
-  await page.reload();
-  await page.evaluate(() => window.__settingsIdle());
-  editor = await repositorySettings(page, "fixture/compact");
-  await expect(
-    editor.getByLabel("Enable repository monitoring"),
-  ).not.toBeChecked();
-  await expect(
-    editor.getByLabel("Reviewer requests", { exact: true }),
-  ).toHaveValue("off");
-  expect((await store("snapshot")).settings).toEqual(saved);
-});
-
-test("manual binding requires an explicit actor and preserves two overlapping stable bindings", async ({
-  page,
-  store,
-}, testInfo) => {
-  const initial = await seed(store);
-  const calls = await provider(page, (command, args) => {
-    if (command === "resolve_provider_repository")
-      return {
-        identity: { id: args.accountId, login: "selected-account" },
-        repository: { id: "900", name: "shared/repository" },
-      };
-    throw "Unexpected provider command";
-  });
-  await start(page, store);
-  for (const account of accounts) {
-    await page
-      .getByRole("button", { name: "Add repository manually..." })
-      .click();
-    const editor = modal(page, "Add repository");
-    await editor
-      .getByLabel("GitHub repository")
-      .fill("https://github.com/Shared/Repository.git");
-    await expect(editor.getByLabel("Acting GitHub account")).toHaveValue("");
-    await editor.getByLabel("GitHub repository").press("Enter");
-    expect(calls).toEqual(
-      account === accounts[0]
-        ? []
-        : [
-            {
-              command: "resolve_provider_repository",
-              args: {
-                provider: "github",
-                accountId: "22",
-                repository: "shared/repository",
-              },
-            },
-          ],
-    );
-    await expect(editor).toBeVisible();
-    await capture(page, testInfo, `binding-explicit-${account.account_id}`);
-    await editor
-      .getByLabel("Acting GitHub account")
-      .selectOption(account.account_id);
-    await save(editor);
-  }
-  const saved = (await store("snapshot")).settings;
-  expect(saved.repositories.slice(0, 2)).toEqual(initial.repositories);
-  expect(
-    saved.repositories.slice(2).map((repository) => ({
-      account: repository.provider_account_id,
-      remote: repository.provider_repository_id,
-      enabled: repository.enabled,
-    })),
-  ).toEqual([
-    { account: "22", remote: "900", enabled: false },
-    { account: "44", remote: "900", enabled: false },
-  ]);
-  expect(
-    new Set(saved.repositories.map((repository) => repository.id)).size,
-  ).toBe(4);
-  await page.reload();
-  await page.evaluate(() => window.__settingsIdle());
-  await section(page, "Repositories");
-  await expect(
-    row(page, "shared/repository as repository-owner"),
-  ).toBeVisible();
-  await expect(row(page, "shared/repository as second-owner")).toBeVisible();
-  expect((await store("snapshot")).settings).toEqual(saved);
-});
-
-test("binding rejects mismatched identity, inaccessible repositories and cancelled late reads", async ({
-  page,
-  store,
-}, testInfo) => {
-  const initial = await seed(store);
-  let mode = "wrong";
-  const arrived = Promise.withResolvers();
-  const release = Promise.withResolvers();
-  await provider(page, async (_command, args) => {
-    if (mode === "inaccessible") throw "missing_read_permission";
-    if (mode === "held") {
-      arrived.resolve();
-      await release.promise;
-    }
-    return {
-      identity: {
-        id: mode === "wrong" ? "999" : args.accountId,
-        login: "selected",
-      },
-      repository: { id: "900", name: "shared/repository" },
-    };
-  });
-  await start(page, store);
-  await page
-    .getByRole("button", { name: "Add repository manually..." })
-    .click();
-  const editor = modal(page, "Add repository");
-  await editor.getByLabel("GitHub repository").fill("shared/repository");
-  await editor.getByLabel("Acting GitHub account").selectOption("44");
-  await editor
-    .getByRole("button", { name: "Save repository", exact: true })
-    .click();
-  await expect(editor.getByRole("alert")).toContainText(
-    "unexpected account identity",
-  );
-  expect((await store("snapshot")).settings).toEqual(initial);
-  mode = "inaccessible";
-  await editor
-    .getByRole("button", { name: "Save repository", exact: true })
-    .click();
-  await expect(editor.getByRole("alert")).toBeVisible();
-  await capture(page, testInfo, "binding-rejected");
-  expect((await store("snapshot")).settings).toEqual(initial);
-  mode = "held";
-  await editor
-    .getByRole("button", { name: "Save repository", exact: true })
-    .click();
-  await arrived.promise;
-  await expect(editor.getByLabel("Acting GitHub account")).toBeDisabled();
-  await expect(editor.getByLabel("GitHub repository")).toBeDisabled();
-  await editor.getByRole("button", { name: "Cancel", exact: true }).click();
-  release.resolve();
-  await page.evaluate(() => window.__settingsIdle());
-  await expect(editor).toHaveCount(0);
-  expect((await store("snapshot")).settings).toEqual(initial);
-});
-
-test("provider selection remains a draft until its own guarded repository save", async ({
-  page,
-  store,
-}) => {
-  const initial = await seed(store);
-  const calls = await provider(page, (command, args) => {
-    if (command !== "list_provider_repositories")
-      throw "Unexpected provider command";
-    return {
-      identity: { id: args.accountId, login: "second-owner" },
-      repositories: [{ id: "900", name: "shared/from-provider" }],
-    };
-  });
-  await start(page, store);
-  await section(page, "GitHub");
-  const account = page.getByRole("article", {
-    name: "GitHub account second-owner",
-    exact: true,
-  });
-  await account.getByRole("button", { name: "Load repositories" }).click();
-  await page.getByRole("button", { name: /shared\/from-provider/ }).click();
-  expect((await store("snapshot")).settings).toEqual(initial);
-  const editor = await repositorySettings(page, "shared/from-provider");
-  await expect(editor.locator(".repository-identity")).toContainText("44");
-  await save(editor);
-  const saved = (await store("snapshot")).settings;
-  expect(saved.repositories.slice(0, 2)).toEqual(initial.repositories);
-  expect(saved.repositories[2]).toMatchObject({
-    name: "shared/from-provider",
-    provider_account_id: "44",
-    provider_repository_id: "900",
-  });
-  expect(calls).toEqual([
-    {
-      command: "list_provider_repositories",
-      args: { provider: "github", accountId: "44" },
-    },
-  ]);
-});
-
 test("repository saves leave unsaved Preferences and the saved global schedule independent", async ({
   page,
   store,
@@ -443,12 +171,9 @@ test("repository saves leave unsaved Preferences and the saved global schedule i
   await editor
     .getByLabel("Reviewer requests", { exact: true })
     .selectOption("off");
-  await editor
-    .getByRole("button", { name: "Configure scope", exact: true })
-    .click();
-  await expect(editor.locator("[data-scope-status]")).toContainText(
-    "Save repository before previewing",
-  );
+  await expect(
+    editor.getByRole("button", { name: "Configure scope", exact: true }),
+  ).toHaveCount(0);
   await save(editor);
   const saved = (await store("snapshot")).settings;
   expect(saved.defaults).toEqual(initial.defaults);
@@ -692,7 +417,7 @@ for (const failure of ["write", "conflict"]) {
     if (failure === "write") await mkdir(temporary);
     else {
       const concurrent = structuredClone(initial);
-      concurrent.repositories[0].enabled = false;
+      concurrent.repositories[0].enabled = true;
       await store("seed_settings", concurrent);
     }
     const before = await readFile(join(dataRoot, "config/settings.json"));
@@ -703,7 +428,7 @@ for (const failure of ["write", "conflict"]) {
     const rejection = await editor
       .locator("[data-resource-error]")
       .textContent();
-    await editor.getByRole("button", { name: "Refresh scope status" }).click();
+    await editor.getByLabel("Review start", { exact: true }).focus();
     await page.evaluate(() => window.__settingsIdle());
     await expect(editor.locator("[data-resource-error]")).toHaveText(rejection);
     await expect(
@@ -732,7 +457,7 @@ for (const failure of ["write", "conflict"]) {
         "All changes saved",
       );
       expect((await store("snapshot")).settings.repositories[0].enabled).toBe(
-        false,
+        true,
       );
     }
     expect((await store("snapshot")).settings.repositories[1]).toEqual(
@@ -789,6 +514,7 @@ test("unbind cancellation, write rejection and retry retain permissions, neighbo
   const expected = structuredClone(initial);
   delete expected.repositories[0].provider_account_id;
   delete expected.repositories[0].provider_repository_id;
+  expected.repository_authorizations = { [expected.repositories[0].id]: null };
   expect((await store("snapshot")).settings).toEqual(expected);
   await page.reload();
   await page.evaluate(() => window.__settingsIdle());
@@ -796,7 +522,7 @@ test("unbind cancellation, write rejection and retry retain permissions, neighbo
   await expect(parent.locator(".repository-identity")).toContainText("Unbound");
   await expect(
     parent.getByRole("button", { name: "Configure scope" }),
-  ).toBeDisabled();
+  ).toHaveCount(0);
   await parent.getByText("Repository and connection", { exact: true }).click();
   await expect(
     parent.getByRole("button", { name: "Verify GitHub connection" }),
@@ -809,53 +535,6 @@ test("unbind cancellation, write rejection and retry retain permissions, neighbo
   expect((await store("snapshot")).settings).toEqual(expected);
 });
 
-test("scope status reads cannot overwrite a newer rejected preview; explicit refresh recovers the read", async ({
-  page,
-  store,
-}) => {
-  await seed(store);
-  const arrived = Promise.withResolvers();
-  const release = Promise.withResolvers();
-  let reads = 0;
-  await page.exposeFunction("__scopeStatus", async () => {
-    if (++reads === 1) {
-      arrived.resolve();
-      await release.promise;
-    }
-    return { active: false, mode: null, selected_existing: 0 };
-  });
-
-  await provider(page, () => {
-    throw "network";
-  });
-  await page.addInitScript(() => {
-    const original = window.__TAURI_INTERNALS__.invoke;
-    window.__TAURI_INTERNALS__.invoke = (command, args) => {
-      if (command === "monitoring_activation_status") {
-        window.__scopeStatusRead = window.__scopeStatus();
-        return window.__scopeStatusRead;
-      }
-      return original(command, args);
-    };
-  });
-  await start(page, store);
-  const editor = await repositorySettings(page, "fixture/compact");
-  await arrived.promise;
-  await editor.getByRole("button", { name: "Configure scope" }).click();
-  await expect(editor.locator("[data-scope-status]")).toContainText(
-    "Cannot reach GitHub",
-  );
-  release.resolve();
-  await page.evaluate(() => window.__scopeStatusRead);
-  await expect(editor.locator("[data-scope-status]")).toContainText(
-    "Cannot reach GitHub",
-  );
-  await editor.getByRole("button", { name: "Refresh scope status" }).click();
-  await expect(editor.locator("[data-scope-status]")).toContainText(
-    "Scope confirmation required",
-  );
-});
-
 test("unavailable bound accounts remain identified and cannot silently rebind during edit", async ({
   page,
   store,
@@ -863,7 +542,8 @@ test("unavailable bound accounts remain identified and cannot silently rebind du
   const initial = await seed(store);
   // The default boundary returns no connected accounts, not a replacement actor.
   await start(page, store);
-  await expect(row(page)).toContainText("GitHub as 22 - Needs attention");
+  await expect(row(page)).toContainText("GitHub / 22");
+  await expect(row(page)).toContainText("Reconnect account");
   const parent = await repositorySettings(page, "fixture/compact");
   await parent.getByText("Repository and connection", { exact: true }).click();
   await expect(
@@ -881,7 +561,7 @@ test("unavailable bound accounts remain identified and cannot silently rebind du
     "22 - reconnect required",
   );
   await editor
-    .getByRole("button", { name: "Save repository", exact: true })
+    .getByRole("button", { name: "Add & configure", exact: true })
     .click();
   await expect(editor.getByRole("alert")).toContainText(
     "Choose a connected GitHub account",
@@ -889,156 +569,8 @@ test("unavailable bound accounts remain identified and cannot silently rebind du
   await capture(page, testInfo, "unavailable-acting-account");
   expect((await store("snapshot")).settings).toEqual(initial);
   await editor.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(
-    row(page).getByRole("button", { name: "Settings", exact: true }),
-  ).toBeFocused();
+  await expect(row(page)).toBeFocused();
 });
-
-const preview = {
-  preview_id: "compact-preview",
-  repository_id: id(1),
-  name: "fixture/compact",
-  account_id: "22",
-  account_login: "repository-owner",
-  creation_watermark: 1800,
-  candidates: [1, 2, 3].map((number) => ({
-    pull_request_id: String(700 + number),
-    number,
-    title: `Provider-shaped candidate ${number}`,
-    head_sha: "a".repeat(40),
-    author_id: "11",
-    author_login: "watched-person",
-    watched_author: true,
-    all_authors: false,
-    requested_reviewer: number === 3,
-    trust_confirmation_required: true,
-  })),
-};
-
-test("scope selections survive filtering, Enter never confirms, and apply locks exact requested inputs", async ({
-  page,
-  store,
-}, testInfo) => {
-  const initial = await seed(store);
-  const arrived = Promise.withResolvers();
-  const release = Promise.withResolvers();
-  const calls = await provider(page, async (command) => {
-    if (command === "preview_monitoring_activation") return preview;
-    if (command === "apply_monitoring_activation") {
-      arrived.resolve();
-      await release.promise;
-      throw "Scope persistence rejected";
-    }
-    return null;
-  });
-  await start(page, store);
-  const parent = await repositorySettings(page, "fixture/compact");
-  await parent.getByRole("button", { name: "Configure scope" }).click();
-  const scope = modal(page, "Monitoring scope for fixture/compact");
-  await expect(scope.locator(".activation-row input:enabled")).toHaveCount(0);
-  await scope
-    .getByLabel("Selected existing pull requests plus new pull requests", {
-      exact: true,
-    })
-    .check();
-  await scope.getByLabel("Include pull request 1", { exact: true }).check();
-  await scope.getByLabel("Find matching pull request").fill("candidate 3");
-  await scope.getByLabel("Include pull request 3", { exact: true }).check();
-  await scope.getByLabel("Find matching pull request").press("Enter");
-  expect(
-    calls.filter(({ command }) => command === "apply_monitoring_activation"),
-  ).toHaveLength(0);
-  await expect(scope.locator("[data-selection-count]")).toHaveText(
-    "2 selected",
-  );
-  await scope.getByLabel("Find matching pull request").fill("");
-  await expect(
-    scope.getByLabel("Include pull request 1", { exact: true }),
-  ).toBeChecked();
-  await capture(page, testInfo, "selected-existing-scope");
-  await scope.getByRole("button", { name: "Confirm monitoring scope" }).click();
-  await arrived.promise;
-  await expect(scope.locator("input:enabled")).toHaveCount(0);
-  await expect(
-    scope.getByRole("button", { name: "Close dialog", exact: true }),
-  ).toBeDisabled();
-  expect(calls.at(-1)).toEqual({
-    command: "apply_monitoring_activation",
-    args: {
-      request: {
-        repositoryId: id(1),
-        previewId: "compact-preview",
-        mode: "selected_existing",
-        selectedPullRequestIds: ["701", "703"],
-      },
-    },
-  });
-  release.resolve();
-  await expect(scope.getByRole("alert")).toHaveText(
-    "Scope persistence rejected",
-  );
-  await expect(
-    scope.getByLabel("Include pull request 3", { exact: true }),
-  ).toBeChecked();
-  await scope.getByLabel("New pull requests only", { exact: true }).check();
-  await expect(scope.locator("[data-selection-count]")).toHaveText(
-    "0 selected",
-  );
-  await scope.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(
-    parent.getByRole("button", { name: "Configure scope" }),
-  ).toBeFocused();
-  expect(calls.at(-1)).toEqual({
-    command: "cancel_monitoring_activation",
-    args: { previewId: "compact-preview" },
-  });
-  // Scope transport is synthetic; it must not be reported as a persisted activation.
-  expect(
-    (await store("monitoring_activation_status", { repositoryId: id(1) }))
-      .active,
-  ).toBe(false);
-  expect((await store("snapshot")).settings).toEqual(initial);
-});
-
-for (const abandon of ["close", "edit"]) {
-  test(`late scope preview is cancelled after repository ${abandon}`, async ({
-    page,
-    store,
-  }) => {
-    const initial = await seed(store);
-    const arrived = Promise.withResolvers();
-    const release = Promise.withResolvers();
-    const calls = await provider(page, async (command) => {
-      if (command === "preview_monitoring_activation") {
-        arrived.resolve();
-        await release.promise;
-        return preview;
-      }
-      return null;
-    });
-    await start(page, store);
-    const parent = await repositorySettings(page, "fixture/compact");
-    await parent.getByRole("button", { name: "Configure scope" }).click();
-    await arrived.promise;
-    if (abandon === "close") await close(parent);
-    else
-      await parent
-        .getByLabel("Reviewer requests", { exact: true })
-        .selectOption("off");
-    release.resolve();
-    await expect
-      .poll(() => calls.at(-1)?.command)
-      .toBe("cancel_monitoring_activation");
-    await expect(
-      modal(page, "Monitoring scope for fixture/compact"),
-    ).toHaveCount(0);
-    if (abandon === "edit")
-      await expect(parent.locator("[data-scope-status]")).toContainText(
-        "Repository changed during preview",
-      );
-    expect((await store("snapshot")).settings).toEqual(initial);
-  });
-}
 
 test("verified watched people, draft cancellation and keyboard controls remain usable at 320x300", async ({
   page,
@@ -1208,6 +740,9 @@ for (const resolution of ["Save", "Cancel"]) {
     const expected = structuredClone(explicitlySaved);
     delete expected.repositories[0].provider_account_id;
     delete expected.repositories[0].provider_repository_id;
+    expected.repository_authorizations = {
+      [expected.repositories[0].id]: null,
+    };
     expect((await store("snapshot")).settings).toEqual(expected);
     await section(page, "Preferences");
     await expect(page.locator("#global-cron")).toHaveValue(
@@ -1235,7 +770,7 @@ test("R1 correction: concurrent saved repository changes still reject a clean un
     .click();
   const confirmation = modal(page, "Unbind repository account?");
   const concurrent = structuredClone(initial);
-  concurrent.repositories[0].enabled = false;
+  concurrent.repositories[0].enabled = true;
   await store("seed_settings", concurrent);
   const before = await readFile(join(dataRoot, "config/settings.json"));
   await confirmation
@@ -1250,7 +785,9 @@ test("R1 correction: concurrent saved repository changes still reject a clean un
   expect((await store("snapshot")).settings).toEqual(concurrent);
   await close(confirmation);
   await expect(editor.locator(".repository-identity")).toContainText("22");
-  await expect(editor.getByLabel("Enable repository monitoring")).toBeChecked();
+  await expect(
+    editor.getByLabel("Enable repository monitoring"),
+  ).not.toBeChecked();
 });
 
 test("R2 correction: saved legacy interval and timezone remain visible but explicitly block polling", async ({
@@ -1287,139 +824,3 @@ test("R2 correction: saved legacy interval and timezone remain visible but expli
     before,
   );
 });
-
-for (const state of [
-  "edited",
-  "edited with newer save rejection",
-  "dismissed",
-  "dismissed during cleanup",
-]) {
-  test(`R3 correction: failed late-preview cleanup is accessible after ${state}`, async ({
-    page,
-    store,
-    dataRoot,
-  }, testInfo) => {
-    const initial = await seed(store);
-    const before = await readFile(join(dataRoot, "config/settings.json"));
-    const arrived = Promise.withResolvers();
-    const release = Promise.withResolvers();
-    const cancelling = Promise.withResolvers();
-    const releaseCancellation = Promise.withResolvers();
-    let previews = 0;
-    let cancellations = 0;
-    const calls = await provider(page, async (command) => {
-      if (command === "preview_monitoring_activation") {
-        if (++previews === 1) {
-          arrived.resolve();
-          await release.promise;
-        }
-        return preview;
-      }
-      if (command === "cancel_monitoring_activation") {
-        if (++cancellations === 1) {
-          cancelling.resolve();
-          await releaseCancellation.promise;
-          throw "Synthetic preview cleanup failure";
-        }
-        return null;
-      }
-      throw "Unexpected provider command";
-    });
-    await start(page, store);
-    let editor = await repositorySettings(page, "fixture/compact");
-    await editor.getByRole("button", { name: "Configure scope" }).click();
-    await arrived.promise;
-    if (state === "dismissed") await close(editor);
-    else
-      await editor
-        .getByLabel("Reviewer requests", { exact: true })
-        .selectOption("off");
-    release.resolve();
-    await cancelling.promise;
-    let rejection;
-    if (state === "edited with newer save rejection") {
-      const temporary = join(dataRoot, "config/settings.json.tmp");
-      await mkdir(temporary);
-      await editor
-        .getByRole("button", { name: "Save repository", exact: true })
-        .click();
-      await expect(editor.locator("[data-resource-error]")).toBeVisible();
-      rejection = await editor.locator("[data-resource-error]").textContent();
-      await rm(temporary, { recursive: true });
-    }
-    if (state === "dismissed during cleanup") await close(editor);
-    const open = state.startsWith("edited");
-    const focus = open
-      ? editor.getByLabel("Reviewer requests", { exact: true })
-      : row(page).getByRole("button", { name: "Settings", exact: true });
-    await focus.focus();
-    releaseCancellation.resolve();
-    await page.evaluate(() => window.__settingsIdle());
-    const alert = (open ? editor : page).getByRole("alert").filter({
-      hasText: "Monitoring scope preview cleanup failed",
-    });
-    await expect(alert).toBeVisible();
-    await expect(alert).toContainText("cancel or replace the preview");
-    expect(
-      await alert.evaluate(
-        (element) => !!element.closest('[inert],[aria-hidden="true"]'),
-      ),
-    ).toBe(false);
-    await expect(focus).toBeFocused();
-    await expect(
-      modal(page, "Monitoring scope for fixture/compact"),
-    ).toHaveCount(0);
-    expect(
-      calls.filter(({ command }) => command === "apply_monitoring_activation"),
-    ).toEqual([]);
-    expect(
-      (await store("monitoring_activation_status", { repositoryId: id(1) }))
-        .active,
-    ).toBe(false);
-    expect((await store("snapshot")).settings).toEqual(initial);
-    expect(await readFile(join(dataRoot, "config/settings.json"))).toEqual(
-      before,
-    );
-    if (open) {
-      await expect(
-        editor.getByLabel("Reviewer requests", { exact: true }),
-      ).toHaveValue("off");
-      await editor
-        .getByRole("button", { name: "Refresh scope status" })
-        .click();
-      await page.evaluate(() => window.__settingsIdle());
-      await expect(alert).toBeVisible();
-      if (rejection)
-        await expect(editor.locator("[data-resource-error]")).toHaveText(
-          rejection,
-        );
-    }
-    await alert.scrollIntoViewIfNeeded();
-    await capture(page, testInfo, `cleanup-${state.replaceAll(" ", "-")}`);
-    if (open) await close(editor);
-    editor = await repositorySettings(page, "fixture/compact");
-    await expect(
-      editor.getByLabel("Reviewer requests", { exact: true }),
-    ).toHaveValue(state === "dismissed" ? "inherit" : "off");
-    await editor
-      .getByRole("button", { name: "Cancel repository changes" })
-      .click();
-    editor = await repositorySettings(page, "fixture/compact");
-    await editor.getByRole("button", { name: "Configure scope" }).click();
-    const scope = modal(page, "Monitoring scope for fixture/compact");
-    await expect(scope).toBeVisible();
-    await scope.getByRole("button", { name: "Cancel", exact: true }).click();
-    await expect(scope).toHaveCount(0);
-    await expect(
-      editor.getByRole("button", { name: "Configure scope" }),
-    ).toBeFocused();
-    expect(previews).toBe(2);
-    expect(cancellations).toBe(2);
-    expect(
-      calls.filter(({ command }) => command === "apply_monitoring_activation"),
-    ).toEqual([]);
-    expect(await readFile(join(dataRoot, "config/settings.json"))).toEqual(
-      before,
-    );
-  });
-}

@@ -19,6 +19,26 @@ separate and are not undone or expanded here.
 
 ### Explicit supersession
 
+**Later human amendment, 2026-10-05:** the nano's "repository Save is
+authorization" amendment supersedes all separate repository scope activation
+and Genie final-consent clauses in this document and the historical issue
+snapshots. Earlier wording below remains identifiable as history, not a second
+authority. The approved native repository flow uses compact configured rows,
+an explicit GitHub acting account, personal/organization owner selection with
+complete accessible results, and validated URL intake. Add persists disabled
+and opens configuration; normal valid Save authorizes all current and future
+matching PRs without fetching or selecting a backlog.
+
+Authorization and configuration share the settings file's atomic replacement
+and compare-and-save boundary. Polling state materializes that durable record;
+its failure must remain explicit and recoverable, never undo a committed Save
+or silently lose authorization. Disabled or rebound configurations cannot reuse
+stale authority. Global pause/start, current identities, account generations,
+filters, sticky PR admission, revisions, iterations and action permissions remain
+independent. The retired `root_folder` field remains inert but round-trippable,
+including in first-upgrade expected snapshots. No speculative pause-policy
+flag, local discovery route, provider expansion or revision-trust gate is added.
+
 | Historical rule | vNext replacement | Preserved boundary |
 | --- | --- | --- |
 | MVP AC-011 and PR-021/022/025 per-revision trust confirmation; AC-005/PR-056 and prior vNext trust-gate references | October 5 consent amendment: saved Agent assignment plus confirmed monitoring scope authorize ongoing review; no repeated trust approval for forks, authors, revisions, retries, conversations or final reviews | Explicit start preference, read-only enforcement, account/model selection, revision validation, scope, independent action permissions and provider policy; existing setups remain authorized |

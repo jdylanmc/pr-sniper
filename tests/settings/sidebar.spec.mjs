@@ -16,25 +16,25 @@ import {
 
 test.use({ timezoneId: "America/New_York" });
 
-test("Settings exposes exactly four approved tabs and no prototype or retired controls", async ({
+test("Settings separates Accounts and Repositories without prototype or retired controls", async ({
   page,
   store,
   ipc,
 }) => {
   await page.goto("/?view=settings");
-  await expect(
-    page.getByText(
-      `PR Sniper polls scope-confirmed configured repositories while the ${process.platform === "win32" ? "system-tray" : "menu-bar"} app is active. Detection does not run reviews or publish comments.`,
-      { exact: true },
-    ),
-  ).toBeVisible();
   const nav = page.getByRole("navigation", { name: "Settings sections" });
   await expect(nav.getByRole("button")).toHaveText([
-    "Integrations",
+    "Accounts",
+    "Repositories",
     "Doctrines",
     "Agents",
     "Preferences",
   ]);
+  await section(page, "Repositories");
+  await expect(page.locator(".settings-savebar")).toBeHidden();
+  await expect(
+    page.getByRole("button", { name: "Add repository by URL" }),
+  ).toBeVisible();
   await expect(page.getByText("Interactive design preview")).toHaveCount(0);
   for (const name of [
     "People",
@@ -83,7 +83,7 @@ test("new assignments use the global policy while cancelled drafts never opt int
   store,
   dataRoot,
 }) => {
-  await seedAgent(store);
+  await seedAgent(store, "33");
   await store("save_repository", { repository: "fixture/local-time" });
   await page.goto("/?view=settings");
   const initial = (await store("snapshot")).settings;
@@ -123,71 +123,6 @@ test("new assignments use the global policy while cancelled drafts never opt int
   expect(saved.launch_at_login).toBe(false);
 });
 
-test("chosen-root discovery uses real metadata, searchable selection and stable saved identities", async ({
-  page,
-  store,
-  dataRoot,
-}) => {
-  const root = join(dataRoot, "repositories");
-  await mkdir(join(root, "atlas/.git"), { recursive: true });
-  await writeFile(
-    join(root, "atlas/.git/config"),
-    '[remote "origin"]\nurl = git@github.com:Orbit-Labs/Atlas-Desktop.git\n',
-  );
-  await mkdir(join(root, "local-only/.git"), { recursive: true });
-  await writeFile(
-    join(root, "local-only/.git/config"),
-    "[core]\nrepositoryformatversion = 0\n",
-  );
-  const calls = [];
-  await page.exposeFunction("__chooseFolder", () => {
-    calls.push(root);
-    return store("discover_repositories", { root });
-  });
-  await page.addInitScript(() => {
-    const invoke = window.__TAURI_INTERNALS__.invoke;
-    window.__TAURI_INTERNALS__.invoke = (command, args) =>
-      command === "choose_repository_folder"
-        ? window.__chooseFolder()
-        : invoke(command, args);
-  });
-  await page.goto("/?view=settings");
-  expect(calls).toHaveLength(0);
-  await page
-    .getByRole("button", { name: "Choose folder...", exact: true })
-    .click();
-  await expect(page.getByText("2 local repositories discovered")).toBeVisible();
-  await expect(
-    page.getByRole("checkbox", { name: "Monitor local-only", exact: true }),
-  ).toBeDisabled();
-  const monitored = page.getByRole("checkbox", {
-    name: "Monitor orbit-labs/atlas-desktop",
-    exact: true,
-  });
-  await monitored.check();
-  await expect(monitored).toBeFocused();
-  await saveChanges(page);
-  const persisted = (await store("snapshot")).settings;
-  expect(persisted.root_folder).toBe(toNamespacedPath(await realpath(root)));
-  expect(persisted.repositories[0]).toMatchObject({
-    name: "orbit-labs/atlas-desktop",
-    enabled: true,
-  });
-  await page.reload();
-  expect(calls).toHaveLength(1);
-  await monitored.uncheck();
-  await saveChanges(page);
-  expect((await store("snapshot")).settings.repositories[0]).toEqual({
-    ...persisted.repositories[0],
-    enabled: false,
-  });
-  await page.getByLabel("Find a repository", { exact: true }).fill("missing");
-  await expect(page.getByText("No matching repositories")).toBeVisible();
-  expect(await readFile(join(root, "atlas/.git/config"), "utf8")).toContain(
-    "Orbit-Labs/Atlas-Desktop",
-  );
-});
-
 test("repository People resolves stable identity, isolates neighbors and reports failed lookup", async ({
   page,
   store,
@@ -197,6 +132,7 @@ test("repository People resolves stable identity, isolates neighbors and reports
   const initial = (await store("snapshot")).settings;
   initial.repositories[0].provider_account_id = "101";
   initial.repositories[0].provider_repository_id = "1";
+  initial.repositories.forEach((repository) => (repository.enabled = false));
   await store("seed_settings", initial);
   let disconnected = false;
   const calls = [];
@@ -231,7 +167,7 @@ test("repository People resolves stable identity, isolates neighbors and reports
   let parent = await repositorySettings(page, "fixture/one");
   await expect(
     parent.getByText(
-      "Optional. A nonempty effective watched-author filter qualifies those authors. An empty effective author filter means all authors after scope confirmation. Pull requests requesting the signed-in account also qualify when the effective inherited reviewer-assignment trigger is enabled. Exact GitHub login, no wildcards.",
+      "Optional. A nonempty effective watched-author filter qualifies those authors. An empty effective author filter means all authors. Pull requests requesting the signed-in account also qualify when the reviewer-request trigger is enabled. Exact GitHub login, no wildcards.",
       { exact: true },
     ),
   ).toBeVisible();
@@ -269,7 +205,7 @@ test("repository People resolves stable identity, isolates neighbors and reports
     .click();
   await expect(
     parent.getByText(
-      "No people added for this repository. Inherited watched authors still apply; if the effective author filter is empty, all authors qualify after scope confirmation. Reviewer requests qualify when that trigger is enabled.",
+      "No people added for this repository. Inherited watched authors still apply; if the effective author filter is empty, all authors qualify under the saved configuration. Reviewer requests qualify when that trigger is enabled.",
     ),
   ).toBeVisible();
   await closeDialog(page);
@@ -350,7 +286,7 @@ for (const viewport of [
   { width: 1180, height: 800 },
   { width: 390, height: 844 },
 ]) {
-  test(`four-tab layout at ${viewport.width}x${viewport.height} keeps focus, content and save footer reachable`, async ({
+  test(`settings layout at ${viewport.width}x${viewport.height} keeps focus, content and applicable save footer reachable`, async ({
     page,
     store,
   }, testInfo) => {
@@ -364,21 +300,26 @@ for (const viewport of [
     ])
       await store("save_repository", { repository: `orbit-labs/${name}` });
     await page.goto("/?view=settings");
-    await expect(page.locator(".repository-row")).toHaveCount(5);
+    await section(page, "Repositories");
+    await expect(page.locator("[data-repository]")).toHaveCount(5);
+    const nextKey =
+      page.context().browser().browserType().name() === "webkit" &&
+      process.platform === "darwin"
+        ? "Alt+Tab"
+        : "Tab";
+    await page.keyboard.press(nextKey);
     await page
-      .getByRole("button", { name: "Choose folder...", exact: true })
+      .getByRole("button", { name: "Add repository by URL", exact: true })
       .focus();
     expect(
       await page.evaluate(
         () => getComputedStyle(document.activeElement).outlineStyle,
       ),
     ).toBe("solid");
-    await page.keyboard.press("Tab");
-    await expect(
-      page.getByLabel("Find a repository", { exact: true }),
-    ).toBeFocused();
+    await page.keyboard.press(nextKey);
+    await expect(page.locator("[data-repository]").first()).toBeFocused();
     for (const title of [
-      "Integrations",
+      "Repositories",
       "Doctrines",
       "Agents",
       "Preferences",
@@ -392,9 +333,13 @@ for (const viewport of [
           () => document.documentElement.scrollWidth <= innerWidth,
         ),
       ).toBe(true);
-      const footer = await page.locator("#save-settings").boundingBox();
-      expect(footer.y).toBeGreaterThanOrEqual(0);
-      expect(footer.y + footer.height).toBeLessThanOrEqual(viewport.height);
+      if (title === "Repositories")
+        await expect(page.locator(".settings-savebar")).toBeHidden();
+      else {
+        const footer = await page.locator("#save-settings").boundingBox();
+        expect(footer.y).toBeGreaterThanOrEqual(0);
+        expect(footer.y + footer.height).toBeLessThanOrEqual(viewport.height);
+      }
       await page.screenshot({
         path: testInfo.outputPath(`settings-${viewport.width}-${title}.png`),
       });
@@ -406,7 +351,7 @@ test("assignment comment choice stays independent of opt-in Approve and preserve
   page,
   store,
 }) => {
-  await seedAgent(store);
+  await seedAgent(store, "33");
   await store("save_repository", { repository: "fixture/project" });
   const initial = (await store("snapshot")).settings;
   initial.defaults.reviewer_assignment = false;

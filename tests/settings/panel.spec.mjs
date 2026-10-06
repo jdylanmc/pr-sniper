@@ -364,7 +364,7 @@ test("Running and Reviewed use real native jobs and exact kind identities withou
   expect((await store("monitoring_snapshot")).reviews).toEqual(before.reviews);
 });
 
-test("external auth blur and native-picker return retain unsaved preferences and connecting identity", async ({
+test("external auth blur and retained URL entry preserve unsaved preferences and connecting identity", async ({
   page,
   store,
 }) => {
@@ -389,10 +389,6 @@ test("external auth blur and native-picker return retain unsaved preferences and
               }
             : { state: "idle" },
         });
-      if (command === "choose_repository_folder")
-        return new Promise((resolve) => {
-          window.__finishPicker = () => resolve(null);
-        });
       return original(command, args);
     };
   });
@@ -410,18 +406,19 @@ test("external auth blur and native-picker return retain unsaved preferences and
   await expect(page.locator(".github-auth-card")).toContainText("FIXTURE-CODE");
   await section(page, "Repositories");
   await page
-    .getByRole("button", { name: "Choose folder...", exact: true })
+    .getByRole("button", { name: "Add repository by URL", exact: true })
     .click();
-  await expect
-    .poll(() => page.evaluate(() => typeof window.__finishPicker))
-    .toBe("function");
-  await page.evaluate(() => {
-    window.dispatchEvent(new Event("blur"));
-    window.__finishPicker();
-    window.dispatchEvent(new Event("focus"));
-  });
+  await page.getByLabel("Repository URL").fill("fixture/draft");
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await invoke(page, "hide_panel");
+  await invoke(page, "fixture_show_panel");
+  await expect(page.getByLabel("Repository URL")).toHaveValue("fixture/draft");
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
   await expect(
-    page.getByRole("button", { name: "Choose folder...", exact: true }),
+    page.getByRole("button", { name: "Add repository by URL", exact: true }),
   ).toBeEnabled();
   await section(page, "Preferences");
   await expect(cron).toHaveValue("*/23 * * * *");
@@ -603,8 +600,8 @@ for (const embedded of [true, false]) {
       await page.goto(embedded ? "/" : "/?view=settings");
       if (embedded) {
         await tab(page, "Settings").click();
-        await section(page, "Repositories");
       }
+      await section(page, "Repositories");
       const activate = async (control) => {
         if (activation === "pointer") await control.click();
         else if (activation === "nonfocusing")
@@ -614,10 +611,13 @@ for (const embedded of [true, false]) {
           await page.keyboard.press("Enter");
         }
       };
-      const opener = page
-        .getByRole("article", { name: "example/focus", exact: true })
-        .getByRole("button", { name: "Settings", exact: true });
-      await page.getByLabel("Find a repository", { exact: true }).focus();
+      const opener = page.getByRole("button", {
+        name: "example/focus",
+        exact: true,
+      });
+      await page
+        .getByRole("button", { name: "Add repository by URL", exact: true })
+        .focus();
       await activate(opener);
       const repository = page.getByRole("dialog", {
         name: "Settings for example/focus",
@@ -666,7 +666,7 @@ for (const embedded of [true, false]) {
         exact: true,
       });
       await editor
-        .getByLabel("GitHub repository", { exact: true })
+        .getByLabel("Repository URL", { exact: true })
         .fill("example/unsaved");
       await editor
         .getByRole("button", { name: "Close dialog", exact: true })

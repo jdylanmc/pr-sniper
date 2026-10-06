@@ -88,8 +88,6 @@ pub struct Session {
     revision: u64,
     visible: bool,
     #[serde(skip)]
-    focus_holds: usize,
-    #[serde(skip)]
     blur_from_tray: Option<Instant>,
     #[serde(skip)]
     tray_down_visible: Option<bool>,
@@ -138,7 +136,7 @@ impl Session {
         }
     }
     fn blur_can_hide(&self, epoch: u64) -> bool {
-        self.revision == epoch && self.visible && self.focus_holds == 0
+        self.revision == epoch && self.visible
     }
     fn should_toggle_closed(&mut self, now: Instant) -> bool {
         self.tray_down_visible.take().unwrap_or(
@@ -528,7 +526,7 @@ pub(crate) fn lost_focus(app: &tauri::AppHandle) {
             .session
             .lock()
             .map_err(|_| "Panel navigation unavailable.")?;
-        if !session.visible || session.focus_holds > 0 {
+        if !session.visible {
             return Ok(None);
         }
         if let Some(window) = app.get_webview_window(LABEL) {
@@ -591,52 +589,6 @@ pub(crate) fn lost_focus(app: &tauri::AppHandle) {
             );
         }
     });
-}
-
-pub(crate) struct NativeFocus {
-    app: tauri::AppHandle,
-}
-impl NativeFocus {
-    pub(crate) fn acquire(app: &tauri::AppHandle) -> Result<Self, String> {
-        let host = app.state::<Host>();
-        let mut session = host
-            .panel
-            .session
-            .lock()
-            .map_err(|_| "Panel focus unavailable.")?;
-        session.focus_holds += 1;
-        session.revision += 1;
-        Ok(Self { app: app.clone() })
-    }
-}
-impl Drop for NativeFocus {
-    fn drop(&mut self) {
-        let visible = (|| -> Result<bool, String> {
-            let host = self.app.state::<Host>();
-            let mut session = host
-                .panel
-                .session
-                .lock()
-                .map_err(|_| "Panel focus unavailable.")?;
-            session.focus_holds = session.focus_holds.saturating_sub(1);
-            session.revision += 1;
-            Ok(session.visible)
-        })();
-        match visible {
-            Ok(true) => {
-                if let Some(window) = self.app.get_webview_window(LABEL) {
-                    if window.set_focus().is_err() {
-                        crate::report(
-                            &self.app,
-                            "Cannot restore focus after native dialog.".into(),
-                        );
-                    }
-                }
-            }
-            Ok(false) => {}
-            Err(error) => crate::report(&self.app, error),
-        }
-    }
 }
 
 #[tauri::command]

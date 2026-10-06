@@ -30,6 +30,7 @@ export async function section(page, name) {
     }
     return;
   }
+  if (name === "Integrations") name = "Repositories";
   const mobile = page.getByLabel("Settings section", { exact: true });
   if (await mobile.isVisible()) {
     await mobile.selectOption({ label: name });
@@ -51,8 +52,8 @@ export async function closeDialog(page) {
 export async function repositorySettings(page, name) {
   await section(page, "Integrations");
   await page
-    .getByRole("article", { name, exact: true })
-    .getByRole("button", { name: "Settings", exact: true })
+    .locator("[data-repository]")
+    .filter({ has: page.locator("strong", { hasText: name }) })
     .click();
   return page.getByRole("dialog", {
     name: `Settings for ${name}`,
@@ -60,20 +61,77 @@ export async function repositorySettings(page, name) {
   });
 }
 
+export async function installRepositoryFixture(page) {
+  const installFixture = () => {
+    if (window.__urlTestAccount) return;
+    window.__urlTestAccount = true;
+    const invoke = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      if (command === "github_auth_state")
+        return {
+          accounts: [
+            {
+              provider: "github",
+              account_id: "22",
+              login: "fixture",
+              state: "connected",
+            },
+          ],
+          flow: { state: "idle" },
+        };
+      if (command === "resolve_provider_repository") {
+        const canonical = await invoke("canonical_repository_name", {
+          repository: args.repository,
+        });
+        let id = 1;
+        for (const c of canonical) id = (id * 31 + c.charCodeAt(0)) % 100000000;
+        return {
+          identity: { id: args.accountId, login: "fixture" },
+          repository: { id: String(id + 1), name: canonical },
+        };
+      }
+      return invoke(command, args);
+    };
+    window.dispatchEvent(new Event("pr-sniper:refresh-provider-accounts"));
+  };
+  const accounts = await page.evaluate(() =>
+    window.__TAURI_INTERNALS__.invoke("github_auth_state"),
+  );
+  if (!accounts.accounts.length) {
+    await page.addInitScript(installFixture);
+    await page.evaluate(installFixture);
+  }
+}
+
 export async function addRepository(page, name) {
+  await installRepositoryFixture(page);
   await section(page, "Integrations");
   await page
-    .getByRole("button", { name: "Add repository manually...", exact: true })
+    .getByRole("button", { name: "Add repository by URL", exact: true })
     .click();
   const modal = page.getByRole("dialog", {
-    name: "Add repository",
+    name: "Add repository by URL",
     exact: true,
   });
-  await modal.getByLabel("GitHub repository", { exact: true }).fill(name);
+  await modal.getByLabel("Repository URL", { exact: true }).fill(name);
+  const choices = modal.getByLabel("Acting GitHub account");
+  await choices.selectOption({ index: 1 });
   await modal
-    .getByRole("button", { name: "Save repository", exact: true })
+    .getByRole("button", { name: "Add & configure", exact: true })
     .click();
   await page.evaluate(() => window.__settingsIdle());
+  await expect(
+    page.locator(
+      'dialog[open] [data-save-repository], dialog[open] [role="alert"]:not([hidden])',
+    ),
+  ).toBeVisible();
+  const configured = page
+    .getByRole("dialog")
+    .filter({ has: page.locator("[data-save-repository]") });
+  if (await configured.count())
+    await configured
+      .getByRole("button", { name: "Cancel repository changes" })
+      .click();
   return modal;
 }
 
@@ -82,12 +140,9 @@ export async function saveChanges(page) {
     .getByLabel("Settings section", { exact: true })
     .inputValue();
   await section(page, "Integrations");
-  const dirty = page.locator('.repository-row[data-dirty="true"]');
+  const dirty = page.locator('[data-repository][data-dirty="true"]');
   while (await dirty.count()) {
-    await dirty
-      .first()
-      .getByRole("button", { name: "Settings", exact: true })
-      .click();
+    await dirty.first().click();
     const modal = page.getByRole("dialog");
     await modal
       .getByRole("button", { name: "Save repository", exact: true })
@@ -99,10 +154,9 @@ export async function saveChanges(page) {
     name: "Save preferences",
     exact: true,
   });
-  if (await preferences.isEnabled()) await preferences.click();
-  await expect(
-    page.getByText("All changes saved", { exact: true }),
-  ).toBeVisible();
+  if ((await preferences.isVisible()) && (await preferences.isEnabled()))
+    await preferences.click();
+  await expect(page.locator("#save-status")).toHaveText("All changes saved");
 }
 
 export async function startupPreference(page) {
@@ -118,9 +172,16 @@ export const fixtureAgent = {
   signature: "Fixture signature",
 };
 
-export async function seedAgent(store) {
+export async function seedAgent(store, aiAccountId) {
   const settings = (await store("snapshot")).settings;
-  settings.agents = [structuredClone(fixtureAgent)];
+  settings.agents = [
+    {
+      ...structuredClone(fixtureAgent),
+      ...(aiAccountId
+        ? { ai_account: { provider: "copilot", account_id: aiAccountId } }
+        : {}),
+    },
+  ];
   await store("seed_settings", settings);
   return settings;
 }

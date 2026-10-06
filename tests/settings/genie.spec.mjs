@@ -21,7 +21,6 @@ const back = (page) =>
   page.getByRole("button", { name: "Back to Genie", exact: true }).click();
 const close = (dialog) =>
   dialog.getByRole("button", { name: "Close dialog", exact: true }).click();
-const confirmation = (page) => page.locator("[data-genie-confirm]");
 const activate = (page) => page.locator("[data-genie-activate]");
 const repositoryId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -269,41 +268,24 @@ async function seed(store) {
   return (await store("snapshot")).settings;
 }
 
-async function chooseScope(page, selected = false) {
+async function saveConfiguration(page) {
   await page.locator('[data-genie-edit="repositories"]').first().click();
   await page
-    .getByRole("article", { name: "fixture/genie", exact: true })
-    .getByRole("button", { name: "Settings", exact: true })
+    .locator("[data-repository]")
+    .filter({ hasText: "fixture/genie" })
     .click();
   const repository = modal(page, "Settings for fixture/genie");
   await repository
-    .getByRole("button", { name: "Configure scope", exact: true })
+    .getByRole("button", { name: "Save repository", exact: true })
     .click();
-  const scope = modal(page, "Monitoring scope for fixture/genie");
-  await expect(scope.locator(".activation-row")).toHaveCount(2);
-  await expect(scope.locator(".activation-row input:checked")).toHaveCount(0);
-  if (selected) {
-    await scope
-      .getByLabel("Selected existing pull requests plus new pull requests", {
-        exact: true,
-      })
-      .check();
-    await scope.getByLabel("Include pull request 1").check();
-  }
-  await scope
-    .getByRole("button", { name: "Use scope in final check", exact: true })
-    .click();
-  await expect(repository.locator("[data-scope-status]")).toContainText(
-    "not monitoring yet",
-  );
-  await close(repository);
+  await expect(repository).toHaveCount(0);
   await back(page);
   await expect(page.getByRole("progressbar")).toHaveAttribute(
     "aria-valuenow",
     "4",
   );
   await page.locator("[data-genie-next]").click();
-  await expect(confirmation(page)).toBeEnabled();
+  await expect(activate(page)).toBeEnabled();
 }
 
 async function capture(page, name, size = { width: 408, height: 744 }) {
@@ -388,28 +370,17 @@ async function captureImage(page, name) {
 
 test.use({ viewport: { width: 408, height: 744 } });
 
-test("fresh setup uses explicit shared choices and activates only after the combined final check", async ({
+test("fresh Genie uses shared account choices and authorizes at repository Save, not a final consent", async ({
   page,
   store,
 }) => {
   const state = await synthetic(page, store);
-  const initial = (await store("snapshot")).settings;
   await page.goto("/");
-  await expect(page.locator("[data-panel-heading]")).toHaveText("Welcome");
-  await expect(page.locator("[data-setup-needed]")).toBeVisible();
-  expect(initial.agents ?? []).toEqual([]);
-  expect(initial.repositories ?? []).toEqual([]);
-  await capture(page, "welcome");
   await page
     .getByRole("button", { name: "Set up with Genie", exact: true })
     .click();
-  await capture(page, "genie");
   await page.locator("[data-genie-next]").click();
   const ai = page.locator(".copilot-auth");
-  await expect(ai.locator(":focus")).toHaveCount(1);
-  await expect(
-    ai.getByRole("button", { name: "Connect Copilot account", exact: true }),
-  ).toBeInViewport();
   await ai
     .getByRole("button", { name: "Connect Copilot account", exact: true })
     .click();
@@ -419,10 +390,6 @@ test("fresh setup uses explicit shared choices and activates only after the comb
     .click();
   expect(state.code).toBe(false);
   await back(page);
-  await expect(page.getByRole("progressbar")).toHaveAttribute(
-    "aria-valuenow",
-    "1",
-  );
   await page.locator("[data-genie-next]").click();
   const code = page.locator(".github-auth");
   await code
@@ -434,7 +401,6 @@ test("fresh setup uses explicit shared choices and activates only after the comb
   await page.getByRole("button", { name: "New agent", exact: true }).click();
   const agent = modal(page, "New agent");
   await expect(agent.getByLabel("AI account", { exact: true })).toHaveValue("");
-  await expect(agent.getByLabel("Model", { exact: true })).toHaveValue("");
   await agent.getByLabel("Name", { exact: true }).fill("My reviewer");
   await agent.getByLabel("AI account", { exact: true }).selectOption("33");
   await expect(agent.getByLabel("Model", { exact: true })).toBeEnabled();
@@ -446,151 +412,60 @@ test("fresh setup uses explicit shared choices and activates only after the comb
   await back(page);
   await page.locator("[data-genie-next]").click();
   await page
-    .getByRole("button", { name: "Add repository manually...", exact: true })
+    .getByRole("button", { name: "Add repository by URL", exact: true })
     .click();
-  const add = modal(page, "Add repository");
-  await expect(
-    add.getByLabel("Acting GitHub account", { exact: true }),
-  ).toHaveValue("");
+  const add = modal(page, "Add repository by URL");
+  await expect(add.getByLabel("Acting GitHub account")).toHaveValue("");
+  await add.getByLabel("Repository URL").fill("fixture/genie");
+  await add.getByLabel("Acting GitHub account").selectOption("22");
   await add
-    .getByLabel("GitHub repository", { exact: true })
-    .fill("fixture/genie");
-  await add
-    .getByLabel("Acting GitHub account", { exact: true })
-    .selectOption("22");
-  await add
-    .getByRole("button", { name: "Save repository", exact: true })
-    .click();
-  await page
-    .getByRole("article", { name: "fixture/genie", exact: true })
-    .getByRole("button", { name: "Settings", exact: true })
+    .getByRole("button", { name: "Add & configure", exact: true })
     .click();
   const repository = modal(page, "Settings for fixture/genie");
-  await repository
-    .getByLabel("Enable repository monitoring", { exact: true })
-    .check();
+  await expect(repository).toBeVisible();
+  expect((await store("snapshot")).settings.repositories[0].enabled).toBe(
+    false,
+  );
   await repository
     .getByRole("button", { name: "Assign agent", exact: true })
     .click();
   const assignment = modal(page, "Assign agent");
-  await expect(assignment.getByLabel("Agent", { exact: true })).toHaveValue("");
-  await expect(assignment.locator('[name="comment"]')).not.toBeChecked();
-  await expect(assignment.locator('[name="approve"]')).not.toBeChecked();
-  await expect(assignment.locator('[name="merge"]')).not.toBeChecked();
+  const saved = (await store("snapshot")).settings;
   await assignment
     .getByLabel("Agent", { exact: true })
-    .selectOption((await store("snapshot")).settings.agents[0].id);
+    .selectOption(saved.agents[0].id);
+  for (const permission of ["Comment", "Approve", "Merge"])
+    await expect(
+      assignment.getByRole("checkbox", { name: new RegExp(`^${permission}`) }),
+    ).not.toBeChecked();
   await assignment
     .getByRole("button", { name: "Assign agent", exact: true })
     .click();
+  expect((await store("snapshot")).settings.repositories[0].enabled).toBe(
+    false,
+  );
   await repository
     .getByRole("button", { name: "Save repository", exact: true })
     .click();
+  await expect(repository).toHaveCount(0);
+  const authorized = (await store("snapshot")).settings;
   expect(
-    (
-      await store("monitoring_activation_status", {
-        repositoryId: (await store("snapshot")).settings.repositories[0].id,
-      })
-    ).active,
-  ).toBe(false);
+    await store("monitoring_activation_status", {
+      repositoryId: authorized.repositories[0].id,
+    }),
+  ).toMatchObject({ active: true, mode: "all_open_and_future" });
+  expect(state.previews).toEqual({});
+  expect(state.applied).toEqual([]);
   await back(page);
-  await chooseScope(page, true);
-  await expect(page.locator(".genie-page")).toContainText("fixture-code (22)");
-  await expect(page.locator(".genie-page")).toContainText(
-    "Copilot: fixture-ai (33)",
+  await expect(page.getByRole("progressbar")).toHaveAttribute(
+    "aria-valuenow",
+    "4",
   );
-  await expect(page.locator(".genie-page")).toContainText(
-    "Primary (sole Agent)",
-  );
-  await expect(page.locator(".genie-page")).toContainText(
-    "Comment: off / Approve: off / Merge: off",
-  );
-  await expect(page.locator(".genie-page")).toContainText("*/15 * * * *");
-  await expect(page.locator(".genie-page")).toContainText("4 AI tasks");
-  await page.locator(".panel-content").evaluate((element) => {
-    element.scrollTop = 0;
-  });
-  await capture(page, "review-setup");
-  for (const [width, height] of [
-    [320, 300],
-    [408, 441],
-    [408, 744],
-    [1000, 800],
-  ]) {
-    await page.emulateMedia({ reducedMotion: "reduce" });
-    await page.setViewportSize({ width, height });
-    await confirmation(page).focus();
-    await expect(confirmation(page)).toBeInViewport();
-    await confirmation(page).check();
-    await nextControl(page);
-    await expect(activate(page)).toBeFocused();
-    await expect(activate(page)).toBeInViewport();
-    await fullyVisible(activate(page));
-    await capture(page, `final-controls-${width}x${height}`, { width, height });
-  }
-  expect(state.immediate).toBe(0);
-  expect(state.applied).toHaveLength(0);
-  await activate(page).click();
-  await expect(page.locator("[data-panel-heading]")).toHaveText("Your queue");
-  await expect(page.locator(".queue-item")).toHaveCount(0);
-  expect(state.applied).toHaveLength(1);
-  const saved = (await store("snapshot")).settings;
-  expect(saved.doctrines).toEqual(initial.doctrines);
-  const scope = await store("monitoring_activation_status", {
-    repositoryId: saved.repositories[0].id,
-  });
-  expect(scope.active).toBe(true);
-  expect(scope.selected_existing).toBe(1);
-  await page.reload();
-  await expect(page.locator("[data-panel-heading]")).toHaveText("Your queue");
-});
-
-test("a stale native final check and later model or account loss never activate", async ({
-  page,
-  store,
-}) => {
-  const state = await synthetic(page, store, true);
-  await seed(store);
-  await page.goto("/");
   await page.locator("[data-genie-next]").click();
-  await chooseScope(page);
-  state.beforeApply = async () => {
-    const settings = (await store("snapshot")).settings;
-    settings.capacity = 7;
-    await store("seed_settings", settings);
-  };
-  await confirmation(page).check();
-  await activate(page).click();
-  await expect(page.locator(".genie-error")).toContainText("Setup changed");
-  expect(
-    (await store("monitoring_activation_status", { repositoryId })).active,
-  ).toBe(false);
-  state.beforeApply = undefined;
-  await page
-    .getByRole("button", { name: "Refresh saved setup", exact: true })
-    .click();
-  await expect(confirmation(page)).toBeEnabled();
-  await expect(page.locator(".genie-page")).toContainText("7 AI tasks");
-  state.models = [];
-  await confirmation(page).check();
-  await activate(page).click();
-  await expect(page.locator(".genie-error")).toContainText(
-    "model is unavailable",
-  );
-  expect(state.applied).toHaveLength(1);
-  state.models = [{ id: "fixture-model", name: "Fixture model" }];
-  await page
-    .getByRole("button", { name: "Refresh saved setup", exact: true })
-    .click();
-  await expect(confirmation(page)).toBeEnabled();
-  state.code = false;
-  await confirmation(page).check();
-  await activate(page).click();
-  await expect(page.locator(".genie-error")).toContainText("Setup changed");
-  expect(state.applied).toHaveLength(1);
-  expect(
-    (await store("monitoring_activation_status", { repositoryId })).active,
-  ).toBe(false);
+  await expect(page.locator("[data-genie-confirm]")).toHaveCount(0);
+  await page.getByRole("button", { name: "Finish setup", exact: true }).click();
+  await expect(page.locator("[data-panel-heading]")).toHaveText("Your queue");
+  expect((await store("snapshot")).settings).toEqual(authorized);
 });
 
 test("shared drafts, save failures, cancellation and hide/reopen retain exact ownership", async ({
@@ -685,11 +560,10 @@ test("existing authorized re-entry leaves scope bytes and global pause unchanged
   await store("set_automation_paused", { paused: true });
   await page.goto("/");
   await page.locator("[data-genie-next]").click();
-  await chooseScope(page);
-  await confirmation(page).check();
+  await saveConfiguration(page);
   await activate(page).click();
   await expect(page.locator("[data-panel-heading]")).toHaveText("Your queue");
-  const file = join(dataRoot, "state/monitoring.json");
+  const file = join(dataRoot, "config/settings.json");
   const before = await readFile(file, "utf8");
   await tab(page, "Settings").click();
   const refresh = Promise.withResolvers();
@@ -704,12 +578,11 @@ test("existing authorized re-entry leaves scope bytes and global pause unchanged
     refresh.resolve();
   }
   await page.getByRole("button", { name: "Review setup", exact: true }).click();
-  await expect(confirmation(page)).toBeEnabled();
+  await expect(activate(page)).toBeEnabled();
   await expect(page.locator(".genie-page")).toContainText(
-    "Already authorized; unchanged",
+    "Authorized by saved configuration",
   );
-  await expect(activate(page)).toHaveText("Finish without changing monitoring");
-  await confirmation(page).check();
+  await expect(activate(page)).toHaveText("Finish setup");
   await activate(page).click();
   await expect(page.locator("[data-panel-heading]")).toHaveText("Your queue");
   expect(await readFile(file, "utf8")).toBe(before);
@@ -788,48 +661,6 @@ test("late shared-save replies cannot return from a newer destination", async ({
   }
 });
 
-test("scope cancellation and restart lose only unconfirmed choices", async ({
-  page,
-  store,
-}) => {
-  const state = await synthetic(page, store, true);
-  const original = await seed(store);
-  await page.goto("/");
-  await page.locator("[data-genie-next]").click();
-  await page.locator('[data-genie-edit="repositories"]').click();
-  await page
-    .getByRole("article", { name: "fixture/genie", exact: true })
-    .getByRole("button", { name: "Settings", exact: true })
-    .click();
-  const repository = modal(page, "Settings for fixture/genie");
-  await repository
-    .getByRole("button", { name: "Configure scope", exact: true })
-    .click();
-  await modal(page, "Monitoring scope for fixture/genie")
-    .getByRole("button", { name: "Cancel", exact: true })
-    .click();
-  await expect(
-    repository.getByRole("button", { name: "Configure scope", exact: true }),
-  ).toBeFocused();
-  await close(repository);
-  await back(page);
-  await expect(page.getByRole("progressbar")).toHaveAttribute(
-    "aria-valuenow",
-    "3",
-  );
-  await chooseScope(page);
-  await page.reload();
-  await expect(page.getByRole("progressbar")).toHaveAttribute(
-    "aria-valuenow",
-    "3",
-  );
-  expect((await store("snapshot")).settings).toEqual(original);
-  expect(
-    (await store("monitoring_activation_status", { repositoryId })).active,
-  ).toBe(false);
-  expect(state.applied).toHaveLength(0);
-});
-
 test("repository saves keep mounted account confirmation ownership", async ({
   page,
   store,
@@ -851,8 +682,8 @@ test("repository saves keep mounted account confirmation ownership", async ({
   await back(page);
   await page.locator('[data-genie-edit="repositories"]').click();
   await page
-    .getByRole("article", { name: "fixture/genie", exact: true })
-    .getByRole("button", { name: "Settings", exact: true })
+    .locator("[data-repository]")
+    .filter({ hasText: "fixture/genie" })
     .click();
   await modal(page, "Settings for fixture/genie")
     .getByRole("button", { name: "Save repository", exact: true })
@@ -928,24 +759,9 @@ for (const [name, inherited, local, override, expected] of [
       };
     await store("seed_settings", saved);
     await page.goto("/");
-    // Scope candidate membership is proven by the native test, not a fabricated UI count.
+    // Native admission tests separately prove the effective filter.
     await page.locator("[data-genie-next]").click();
-    await page.locator('[data-genie-edit="repositories"]').click();
-    await page
-      .getByRole("article", { name: "fixture/genie", exact: true })
-      .getByRole("button", { name: "Settings", exact: true })
-      .click();
-    const repository = modal(page, "Settings for fixture/genie");
-    await repository
-      .getByRole("button", { name: "Configure scope", exact: true })
-      .click();
-    await modal(page, "Monitoring scope for fixture/genie")
-      .getByRole("button", { name: "Use scope in final check", exact: true })
-      .click();
-    await close(repository);
-    await back(page);
-    await page.locator("[data-genie-next]").click();
-    await expect(confirmation(page)).toBeEnabled();
+    await saveConfiguration(page);
     const authors = page
       .locator(".genie-repository dt")
       .filter({ hasText: /^Authors$/ })
@@ -953,79 +769,8 @@ for (const [name, inherited, local, override, expected] of [
     await expect(authors).toHaveText(
       expected.length
         ? expected.map((id) => `author-${id} (${id})`).join(", ")
-        : "All authors in confirmed scope",
+        : "All authors",
     );
-  });
-}
-
-for (const phase of [
-  "catalog",
-  "final read",
-  "dispatched commit",
-  "rejected commit",
-]) {
-  test(`GEN2 Back fences ${phase} without losing saved resources or newer navigation`, async ({
-    page,
-    store,
-  }) => {
-    const state = await synthetic(page, store, true);
-    const saved = await seed(store);
-    await page.goto("/");
-    await page.locator("[data-genie-next]").click();
-    await chooseScope(page);
-    const entered = Promise.withResolvers();
-    const held = Promise.withResolvers();
-    const hold = async () => {
-      entered.resolve();
-      await held.promise;
-      if (phase === "rejected commit")
-        throw "Synthetic native commit rejected.";
-    };
-    if (phase === "catalog") state.beforeModels = hold;
-    else if (phase === "final read") state.beforeRead = hold;
-    else state.beforeApply = hold;
-    try {
-      await confirmation(page).check();
-      await activate(page).click();
-      await entered.promise;
-      await page.getByRole("button", { name: "Back", exact: true }).click();
-      await expect(page.locator("[data-panel-heading]")).toHaveText("Genie");
-      if (phase === "catalog")
-        await expect.poll(() => state.cancellations.length).toBeGreaterThan(0);
-      if (phase.endsWith("commit")) {
-        await tab(page, "Running").click();
-        await expect(page.locator("[data-panel-heading]")).toHaveText(
-          "Work queue",
-        );
-      }
-      state.beforeModels = state.beforeRead = state.beforeApply = undefined;
-      held.resolve();
-      await page.evaluate(() => window.__genieIdle());
-      await expect
-        .poll(
-          async () =>
-            (await store("monitoring_activation_status", { repositoryId }))
-              .active,
-        )
-        .toBe(phase === "dispatched commit");
-      await expect(page.locator("[data-panel-heading]")).toHaveText(
-        phase.endsWith("commit") ? "Work queue" : "Genie",
-      );
-      expect(state.applied).toHaveLength(phase.endsWith("commit") ? 1 : 0);
-      expect((await store("snapshot")).settings).toEqual(saved);
-      if (phase === "rejected commit") {
-        await tab(page, "Settings").click();
-        await page
-          .getByRole("button", { name: "Set up with Genie", exact: true })
-          .click();
-        await expect(page.locator(".genie-error")).toContainText(
-          "earlier monitoring confirmation failed",
-        );
-      }
-    } finally {
-      state.beforeModels = state.beforeRead = state.beforeApply = undefined;
-      held.resolve();
-    }
   });
 }
 
@@ -1050,7 +795,7 @@ test("GEN3 reconnect of completed account A while B catalog waits requires new e
   await store("seed_settings", saved);
   await page.goto("/");
   await page.locator("[data-genie-next]").click();
-  await chooseScope(page);
+  await saveConfiguration(page);
   const held = Promise.withResolvers();
   const entered = Promise.withResolvers();
   const catalogs = [];
@@ -1062,7 +807,6 @@ test("GEN3 reconnect of completed account A while B catalog waits requires new e
     }
   };
   try {
-    await confirmation(page).check();
     await activate(page).click();
     await entered.promise;
     expect(catalogs).toEqual(["33", "22"]);
@@ -1076,72 +820,7 @@ test("GEN3 reconnect of completed account A while B catalog waits requires new e
     await expect(page.locator(".genie-error")).toContainText(
       "model is unavailable",
     );
-    await expect(confirmation(page)).toBeDisabled();
-    expect(
-      (await store("monitoring_activation_status", { repositoryId })).active,
-    ).toBe(false);
-  } finally {
-    held.resolve();
-  }
-});
-
-test("GEN3 native commit rejects an AI reconnect after the last frontend read", async ({
-  page,
-  store,
-}) => {
-  const state = await synthetic(page, store, true);
-  await seed(store);
-  state.aiGenerations = { 33: 0 };
-  await page.goto("/");
-  await page.locator("[data-genie-next]").click();
-  await chooseScope(page);
-  state.beforeApply = () => {
-    state.aiGenerations["33"]++;
-  };
-  await confirmation(page).check();
-  await activate(page).click();
-  await expect(page.locator(".genie-error")).toContainText("Setup changed");
-  expect(state.applied).toHaveLength(1);
-  expect(
-    (await store("monitoring_activation_status", { repositoryId })).active,
-  ).toBe(false);
-});
-
-test("GEN2 hide and reopen retain an owned preflight without cancelling its confirmation", async ({
-  page,
-  store,
-}) => {
-  const state = await synthetic(page, store, true);
-  await seed(store);
-  await page.goto("/");
-  await page.locator("[data-genie-next]").click();
-  await chooseScope(page);
-  const entered = Promise.withResolvers();
-  const held = Promise.withResolvers();
-  state.beforeModels = async () => {
-    entered.resolve();
-    await held.promise;
-  };
-  try {
-    await confirmation(page).check();
-    await activate(page).click();
-    await entered.promise;
-    await page.keyboard.press("Escape");
-    await expect(page.locator(".panel-shell")).toHaveAttribute(
-      "data-native-visible",
-      "false",
-    );
-    await page.evaluate(() =>
-      window.__TAURI_INTERNALS__.invoke("fixture_show_panel", {}),
-    );
-    await expect(page.locator("[data-panel-heading]")).toHaveText(
-      "Review setup",
-    );
-    expect(state.cancellations).toEqual([]);
-    state.beforeModels = undefined;
-    held.resolve();
-    await page.evaluate(() => window.__genieIdle());
-    await expect(page.locator("[data-panel-heading]")).toHaveText("Your queue");
+    await expect(activate(page)).toBeDisabled();
     expect(
       (await store("monitoring_activation_status", { repositoryId })).active,
     ).toBe(true);

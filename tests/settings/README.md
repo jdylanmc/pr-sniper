@@ -1,5 +1,15 @@
 # Settings behavioral tests
 
+`repository-review-fixes.spec.mjs` follows the actual Manage Copilot accounts
+button in retained and standalone Settings, rejects rename/rebind collisions
+without leaving the originating editor, and checks incomplete enabled saves
+alongside explicit disabled repair. Legacy incomplete settings remain loadable.
+Enabled-save fixtures use explicit saved AI accounts/models; clearing the final
+assignment requires disabling monitoring before saving. Native
+`repository_read_tests` exercises all three intake commands' shared completion
+boundary with held provider successes/auth failures and real confirmation
+generation changes, both with and without an earlier disconnect.
+
 `settings-overview.spec.mjs` covers the grouped retained-panel Settings home:
 saved resource counts, separate Accounts/Repositories, all six destinations,
 Accounts category/provider drill-down at 408x744 and 320x300, inert coming-soon
@@ -23,19 +33,18 @@ the mounted card and persisted resources remain intact.
 
 `genie.spec.mjs` covers R41's fresh/partial/existing flows through the production
 Welcome, Genie and shared Settings editors. Repository and AI sign-in/model
-transport is explicitly synthetic; saved resources, readiness, scope validation
-and final expected-state checks use the isolated native Store bridge. It covers
-explicit account/model/Agent choices and safe-off new permissions, no activation
-before combined confirmation, selected-existing scope, stale configuration,
+transport is explicitly synthetic; saved resources, readiness, authorization
+and expected-state checks use the isolated native Store bridge. It covers
+explicit account/model/Agent choices and safe-off new permissions, authorization
+at repository Save with no second consent, stale configuration,
 model/account loss, failed saves, unrelated drafts, cancellation, restart,
 late replies, mounted account ownership and already-authorized re-entry.
 Re-entry holds the saved-setup refresh and waits for the explicit Review setup
 action afterward, rather than clicking a next button with cached step state.
-The bridge reconstructs only its originally staged synthetic preview between
-processes; `src-tauri/tests/genie.rs` separately checks real in-memory previews,
-batch atomicity, failed writes and changed resource/account/scope guards.
-Remediation cases compare displayed authors with native preview, poll-ticket and
-actual admission scope; hold final catalog/read/commit replies across Back;
+The historical native preview tests remain as compatibility coverage for old
+persisted admission modes; no production command exposes separate activation.
+Remediation cases compare displayed authors with native effective filters;
+hold catalog/read replies across Back;
 replace an AI connection after its catalog completes while another waits; and
 preserve deliberately inactive installs and newer/manual Settings destinations.
 The scoped Copilot unit case exercises the existing generation-before-auth
@@ -188,11 +197,11 @@ SETTINGS_TEST_PORT=1450 npm exec playwright -- test \
 Captures are under `<target>/visual-84-screenshots/{chromium,webkit}/`.
 They are browser/presentation evidence, not installed-app native acceptance.
 
-Run `npm ci`, then `npm run test:settings` with the repository's Rust toolchain
-on `PATH`. If Playwright reports a missing browser executable, install its
-matching Chromium build with `npm exec playwright install chromium`.
+Run `npm run test:settings` with the repository's Rust toolchain on `PATH`.
+Restore dependencies with `npm ci` only after a missing-dependency failure.
+If Playwright reports a missing browser executable, install its matching build.
 
-The tests serve the actual Vite production build and operate its four-tab
+The tests serve the actual Vite production build and operate its grouped
 Settings controls in an isolated Chromium session. Tauri IPC is replaced:
 storage requests launch the Rust example `settings_bridge`, which creates a
 fresh production `Store` at a test-owned temporary root. The fixture returns
@@ -215,12 +224,13 @@ that target. The default target is `src-tauri/target`.
 `?view=settings` / `?view=queue` component harnesses): all four destinations,
 one detail layer, exact Back row/scroll/focus, retained unsaved editors,
 Escape/close/hide/reopen, native route revisions, notification destinations,
-missing/escaped identities, external-auth and folder-dialog fixture returns,
+missing/escaped identities, external-auth and retained URL-editor returns,
 and 400px/small-monitor layout. Explicit pointer, keyboard and nonfocusing
 activation regressions cover row redraw, nested/replacement Settings editors,
-and retained drafts. `monitoring-activation.spec.mjs` also moves focus while a
-scope preview is pending to prove that closing its asynchronous dialog returns
-to the actual invoker. Final and conversation suites also exercise
+and retained drafts. `monitoring-activation.spec.mjs` exercises atomic Save
+authorization, write/conflict recovery, explicit disabled saves, unrelated
+Preferences, commit-time dismissal locks and Genie without second consent.
+Final and conversation suites also exercise
 their exact panel job routes. The bridge serializes the production native
 `panel::Session` only to carry it between fixture processes; the real host
 retains that session in memory. Only the Tauri event delivery and window
@@ -348,35 +358,40 @@ Store processes and UI reload, and preservation of the startup preference.
 The bridge and native command call the same production Store operation.
 
 The repository lifecycle test adds two records, then checks canonical URL
-rename, duplicate add/rename rejection, disable/re-enable, and confirmed
+reopening, stable-binding deduplication, disable/re-enable, and confirmed
 removal. Fresh reads protect immutable identity, the independent neighboring
 record, and the startup preference throughout. Both lifecycle commands call the
 same production Store operations as the native app.
 
-`repositories-compact.spec.mjs` covers the production 408x744 repository cards
-and editors, explicit overlapping acting-account bindings, provider selection,
-identity/access rejection, delayed-read cancellation, saved global schedule
+`provider-repository-setup.spec.mjs` covers personal/organization owner browsing,
+complete-result search, errors/retry, account and owner races, URL validation,
+stable per-account deduplication, disabled durable intake, immediate configuration,
+Save authorization and absence of local-discovery/scope controls. Its normal
+and compact screenshots use the actual app renderer and production Store bridge.
+`repositories-compact.spec.mjs` covers the production repository rows
+and editors, saved global schedule
 versus unsaved Preferences, every Comment/Approve/Merge combination, automatic
 and explicit primary roles, seven separate assignments and retained normal-job
-identities. It also checks guarded unbind/write/conflict recovery, scope-status
-ordering, filter-retained scope selections, non-submitting search Enter,
+identities. It also checks guarded unbind/write/conflict recovery,
 watched-person identity, exact Back focus/scroll, hide/reopen, restart and
 320x300 keyboard access. Tests initialize their unique Store/panel fixture
 before concurrent readers and use explicit readiness rather than sleeps.
 Corrective regressions require explicit Save/Cancel before dirty unbind,
 preserving assignment permissions, reviewer overrides, enablement and unrelated
 Preferences drafts. They retain clean unbind cancellation/write/conflict checks,
-label saved legacy intervals as polling-blocked without changing their bytes,
-and assert accessible late-preview cleanup errors after edits or dismissal,
-including a newer resource-save rejection and retry without scope confirmation.
+and label saved legacy intervals as polling-blocked without changing their bytes.
+Obsolete clone-discovery and scope-selection cases were replaced by the new
+provider intake and Save-authorization regressions, not retained as hidden routes.
 
 Run the suite headlessly with either `--browser=chromium` or `--browser=webkit`;
 screenshots use Playwright's per-test output directory. Repository, assignment,
 permission and preference assertions read fresh production Store processes.
-Provider identity, repository lookup and scope-preview/apply transports are
-explicit synthetic boundaries, not live-provider or persisted-activation proof.
-The unchanged native `monitoring`, `iterations` and `resources` test targets
-separately exercise actual scope persistence, cancellation/staleness, independent
+Provider identity and repository lookup transports are
+explicit synthetic boundaries, not live-provider proof.
+Native `github_connection`, `monitoring`, `iterations` and `resources` test targets
+exercise owner metadata/pagination, atomic authorization persistence, failed
+cross-store synchronization/recovery, legacy revocation receipts, first-upgrade
+folder-field CAS compatibility, all old/future matching PR admission, independent
 older reviewer admission, sticky tracking, seven-way scan fan-out/deduplication,
 next-scan additions, primary authority and resource guards. The panel-fixture
 coordination exception above is test-only; no native implementation is changed.

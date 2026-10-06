@@ -7,6 +7,7 @@ import {
   setAgentPrompt,
   repositorySettings,
   closeDialog,
+  section,
 } from "./navigation.mjs";
 
 test("reusable Agents keep independent repository assignments and preserve legacy policy exactly", async ({
@@ -45,9 +46,10 @@ test("reusable Agents keep independent repository assignments and preserve legac
     },
   ];
   initial.agents = [
-    fixtureAgent,
+    { ...fixtureAgent, ai_account: { provider: "copilot", account_id: "33" } },
     {
       ...fixtureAgent,
+      ai_account: { provider: "copilot", account_id: "33" },
       id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
       name: "Second reviewer",
       prompt: "Second Agent instructions.",
@@ -121,6 +123,7 @@ test("reusable Agents keep independent repository assignments and preserve legac
       .getByRole("button", { name: "Remove", exact: true })
       .click();
     await closeDialog(page);
+    await section(page, "Preferences");
     await page.locator("#reset-settings").click();
     const restored = await repositorySettings(page, repository);
     await expect(restored.locator(".assignment-row")).toHaveCount(

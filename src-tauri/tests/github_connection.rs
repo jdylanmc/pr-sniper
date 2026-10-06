@@ -37,6 +37,7 @@ impl Transport for ConnectionTransport {
             "/repos/jdylanmc/pr-sniper" => json!({
                 "id": 1376547672,
                 "full_name": "jdylanmc/pr-sniper",
+                "owner": {"login": "jdylanmc", "type": "User"},
                 "private": false,
                 "archived": false,
                 "disabled": false,
@@ -56,16 +57,19 @@ impl Transport for ConnectionTransport {
                 {
                     "id": 1376547672,
                     "full_name": "jdylanmc/pr-sniper",
+                    "owner": {"login": "jdylanmc", "type": "User"},
                     "private": true
                 },
                 {
                     "id": 200,
                     "full_name": "octo/public-repository",
+                    "owner": {"login": "octo", "type": "User"},
                     "private": false
                 },
                 {
                     "id": 300,
                     "full_name": "example-org/private-repository",
+                    "owner": {"login": "example-org", "type": "Organization"},
                     "private": true
                 }
             ]),
@@ -99,6 +103,41 @@ fn oauth_user_token_lists_owned_collaborator_and_organization_repositories() {
                 name: "example-org/private-repository".into(),
             },
         ])
+    );
+}
+
+#[test]
+fn owner_browser_distinguishes_personal_org_and_collaborator_ownership() {
+    let client = GithubClient::new(ConnectionTransport);
+    let identity = Identity {
+        id: "6954990".into(),
+        login: "jdylanmc".into(),
+    };
+    let owners = client.repository_owners(&identity).unwrap();
+    assert_eq!(
+        owners
+            .iter()
+            .map(|o| (o.login.as_str(), o.kind))
+            .collect::<Vec<_>>(),
+        vec![("example-org", "organization"), ("jdylanmc", "personal")]
+    );
+    assert_eq!(client.owner_repositories("jdylanmc").unwrap().len(), 1);
+    assert_eq!(
+        client.owner_repositories("example-org").unwrap()[0].id,
+        "300"
+    );
+    assert!(client.owner_repositories("").is_err());
+    assert!(client.owner_repositories("../octo").is_err());
+    assert_eq!(
+        GithubClient::new(PaginatedRepositories)
+            .owner_repositories("octo")
+            .unwrap()
+            .len(),
+        101
+    );
+    assert_eq!(
+        GithubClient::new(MissingScope).repository_owners(&identity),
+        Err(ConnectionError::MissingScope)
     );
 }
 
@@ -159,6 +198,58 @@ fn user_repository_discovery_exhausts_every_page() {
 }
 
 struct MissingScope;
+
+struct ShortPages {
+    fail_second: bool,
+}
+
+impl Transport for ShortPages {
+    fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+        let second = path.ends_with("page=2");
+        if second && self.fail_second {
+            return Err(ConnectionError::Network);
+        }
+        assert!(second || path.ends_with("page=1"));
+        Ok(Response {
+            status: 200,
+            headers: if second {
+                BTreeMap::from([("x-oauth-scopes".into(), "repo".into())])
+            } else {
+                BTreeMap::from([
+                    ("x-oauth-scopes".into(), "repo".into()),
+                    ("link".into(), "</user/repos?page=2>; rel=\"next\"".into()),
+                ])
+            },
+            body: serde_json::to_vec(&json!([{
+                "id": if second { 102 } else { 101 },
+                "full_name": if second { "orbit/two" } else { "orbit/one" },
+                "private": true,
+                "owner": {"login": "orbit", "type": "Organization"},
+            }]))
+            .unwrap(),
+        })
+    }
+}
+
+#[test]
+fn owner_catalog_follows_short_page_next_and_never_returns_partial_success() {
+    let identity = Identity {
+        id: "22".into(),
+        login: "personal".into(),
+    };
+    let client = GithubClient::new(ShortPages { fail_second: false });
+    assert_eq!(client.owner_repositories("orbit").unwrap().len(), 2);
+    assert_eq!(client.repository_owners(&identity).unwrap().len(), 2);
+    let client = GithubClient::new(ShortPages { fail_second: true });
+    assert_eq!(
+        client.owner_repositories("orbit"),
+        Err(ConnectionError::Network)
+    );
+    assert_eq!(
+        client.repository_owners(&identity),
+        Err(ConnectionError::Network)
+    );
+}
 
 impl Transport for MissingScope {
     fn get(&self, _path: &str) -> Result<Response, ConnectionError> {

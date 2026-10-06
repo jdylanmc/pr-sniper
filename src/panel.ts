@@ -313,7 +313,6 @@ export async function mountPanel(app: HTMLElement) {
         if (intent !== expected || route.tab !== "settings" || route.detail)
           return;
         controller.open(target, {
-          stage: origin.stage,
           back: () => void showSetup(owner, undefined, origin.back),
         });
       });

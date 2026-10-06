@@ -1,7 +1,13 @@
 import { test, expect } from "./fixtures.mjs";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { closeDialog, saveChanges, section, editAgent } from "./navigation.mjs";
+import {
+  closeDialog,
+  saveChanges,
+  section,
+  editAgent,
+  addRepository,
+} from "./navigation.mjs";
 
 const canonicalDirectory = new URL(
   "../../src-tauri/doctrines/",
@@ -132,19 +138,7 @@ test("saving Integrations first preserves the catalog through fresh Store proces
   dataRoot,
 }) => {
   await page.goto("/?view=settings");
-  await page
-    .getByRole("button", { name: "Add repository manually...", exact: true })
-    .click();
-  const modal = page.getByRole("dialog", {
-    name: "Add repository",
-    exact: true,
-  });
-  await modal
-    .getByLabel("GitHub repository", { exact: true })
-    .fill("fixture/project");
-  await modal
-    .getByRole("button", { name: "Save repository", exact: true })
-    .click();
+  await addRepository(page, "fixture/project");
   await saveChanges(page);
   expect((await diskSettings(dataRoot)).doctrines).toEqual(canonical);
   expect((await store("snapshot")).settings.repositories[0].name).toBe(

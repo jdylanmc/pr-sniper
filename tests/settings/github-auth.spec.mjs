@@ -1,5 +1,5 @@
 import { expect, test } from "./fixtures.mjs";
-import { closeDialog, saveChanges } from "./navigation.mjs";
+import { closeDialog, saveChanges, section } from "./navigation.mjs";
 
 const idle = (accounts = []) => ({ accounts, flow: { state: "idle" } });
 const connected = (accountId, login) => ({
@@ -261,7 +261,7 @@ for (const [warning, message] of [
     ).toBeEnabled();
     await expect(
       card.getByRole("button", { name: "Load repositories for jdylanmc" }),
-    ).toBeEnabled();
+    ).toHaveCount(0);
     await expect(
       card.getByRole("button", { name: "Reconnect jdylanmc" }),
     ).toBeEnabled();
@@ -293,50 +293,51 @@ test("overlapping repository access requires an explicit acting account choice",
           ],
           flow: { state: "idle" },
         });
-      if (command === "list_provider_repositories")
+      if (command === "resolve_provider_repository")
         return Promise.resolve({
           identity:
             args.accountId === "84"
               ? { id: "84", login: "hubot" }
               : { id: "6954990", login: "jdylanmc" },
-          repositories: [
-            {
-              id: "1376547672",
-              name: "jdylanmc/pr-sniper",
-            },
-          ],
+          repository: {
+            id: "1376547672",
+            name: "jdylanmc/pr-sniper",
+          },
         });
       return original(command, args);
     };
   });
   await page.goto("/?view=settings");
 
-  const card = page.locator(".github-auth-card");
-  await card
-    .getByRole("button", { name: "Load repositories for jdylanmc" })
-    .click();
-  await card
-    .getByRole("button", {
-      name: "Use jdylanmc/pr-sniper as jdylanmc",
-    })
-    .click();
-  await card
-    .getByRole("button", { name: "Load repositories for hubot" })
-    .click();
-  await card
-    .getByRole("button", {
-      name: "Use jdylanmc/pr-sniper as hubot",
-    })
-    .click();
+  await section(page, "Repositories");
+  for (const accountId of ["6954990", "84"]) {
+    await page
+      .getByRole("button", { name: "Add repository by URL", exact: true })
+      .click();
+    const modal = page.getByRole("dialog", {
+      name: "Add repository by URL",
+      exact: true,
+    });
+    await modal.getByLabel("Repository URL").fill("jdylanmc/pr-sniper");
+    await modal.getByLabel("Acting GitHub account").selectOption(accountId);
+    await modal.getByRole("button", { name: "Add & configure" }).click();
+    await page
+      .getByRole("dialog", {
+        name: "Settings for jdylanmc/pr-sniper",
+        exact: true,
+      })
+      .getByRole("button", { name: "Cancel repository changes" })
+      .click();
+  }
 
   await expect(
-    page.getByRole("article", {
+    page.getByRole("button", {
       name: "jdylanmc/pr-sniper as jdylanmc",
     }),
-  ).toContainText("GitHub as jdylanmc");
+  ).toContainText("GitHub / jdylanmc");
   await expect(
-    page.getByRole("article", { name: "jdylanmc/pr-sniper as hubot" }),
-  ).toContainText("GitHub as hubot");
+    page.getByRole("button", { name: "jdylanmc/pr-sniper as hubot" }),
+  ).toContainText("GitHub / hubot");
   await saveChanges(page);
   await page.evaluate(() => window.__settingsIdle());
   const snapshot = await store("snapshot");
@@ -357,13 +358,14 @@ test("overlapping repository access requires an explicit acting account choice",
   );
 
   await page.reload();
+  await section(page, "Repositories");
   await expect(
-    page.getByRole("article", {
+    page.getByRole("button", {
       name: "jdylanmc/pr-sniper as jdylanmc",
     }),
   ).toBeVisible();
   await expect(
-    page.getByRole("article", { name: "jdylanmc/pr-sniper as hubot" }),
+    page.getByRole("button", { name: "jdylanmc/pr-sniper as hubot" }),
   ).toBeVisible();
 });
 
@@ -428,18 +430,24 @@ test("manual account binding resolves an unaffiliated public repository for two 
   });
   await page.goto("/?view=settings");
 
+  await section(page, "Repositories");
   for (const account of accounts) {
-    await page
-      .getByRole("button", { name: "Add repository manually..." })
-      .click();
-    const modal = page.getByRole("dialog", { name: "Add repository" });
+    await page.getByRole("button", { name: "Add repository by URL" }).click();
+    const modal = page.getByRole("dialog", { name: "Add repository by URL" });
     await modal
-      .getByLabel("GitHub repository")
+      .getByLabel("Repository URL")
       .fill("third-party/public-repository");
     await modal
       .getByLabel("Acting GitHub account")
       .selectOption(account.account_id);
-    await modal.getByRole("button", { name: "Save repository" }).click();
+    await modal.getByRole("button", { name: "Add & configure" }).click();
+    await page
+      .getByRole("dialog", {
+        name: "Settings for third-party/public-repository",
+        exact: true,
+      })
+      .getByRole("button", { name: "Cancel repository changes" })
+      .click();
   }
   await saveChanges(page);
   await page.evaluate(() => window.__settingsIdle());
@@ -471,10 +479,10 @@ test("manual account binding resolves an unaffiliated public repository for two 
   );
 
   for (const account of accounts) {
-    const row = page.getByRole("article", {
+    const row = page.getByRole("button", {
       name: `third-party/public-repository as ${account.login}`,
     });
-    await row.getByRole("button", { name: "Settings" }).click();
+    await row.click();
     const modal = page.getByRole("dialog", {
       name: "Settings for third-party/public-repository",
       exact: true,

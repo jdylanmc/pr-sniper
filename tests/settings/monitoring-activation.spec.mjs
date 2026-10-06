@@ -1,392 +1,191 @@
-import { expect, test } from "./fixtures.mjs";
-import { closeDialog, repositorySettings, saveChanges } from "./navigation.mjs";
+import { test, expect } from "./fixtures.mjs";
+import {
+  providerFixture,
+  repositoryPage,
+  reviewer,
+} from "./repository-provider-fixture.mjs";
+import { repositorySettings, section } from "./navigation.mjs";
+import { mkdir, rmdir } from "node:fs/promises";
+import { join } from "node:path";
 
-const repositoryName = "fixture/activation";
-const repositoryAccount = {
-  provider: "github",
-  state: "connected",
-  account_id: "101",
-  login: "fixture-owner",
-};
-
-async function seedBoundRepository(store) {
-  await store("save_repository", { repository: repositoryName });
+async function configured(store, enabled = false) {
   const settings = (await store("snapshot")).settings;
-  Object.assign(settings.repositories[0], {
-    provider_account_id: repositoryAccount.account_id,
-    provider_repository_id: "900",
-  });
+  settings.agents = [reviewer];
+  settings.repositories = [
+    {
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      provider: "github",
+      name: "fixture/one",
+      enabled,
+      provider_account_id: "22",
+      provider_repository_id: "100",
+      assignments: [
+        {
+          id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          agent_id: reviewer.id,
+          schedule: settings.defaults.schedule,
+          comment: false,
+          actions: { approve: false, merge: false },
+        },
+      ],
+    },
+  ];
   await store("seed_settings", settings);
+  return (await store("snapshot")).settings;
 }
 
-function candidates(count) {
-  return Array.from({ length: count }, (_, index) => {
-    const number = index + 1;
-    return {
-      pull_request_id: String(number),
-      number,
-      title: `Pull request ${number}`,
-      head_sha: String(number).padStart(40, "a"),
-      author_id: String(10_000 + number),
-      author_login: `author-${number}`,
-      watched_author: true,
-      all_authors: false,
-      requested_reviewer: false,
-      trust_confirmation_required: false,
-    };
-  });
-}
-
-async function activationFixture(page, handler) {
-  await page.exposeFunction("__activationFixture", handler);
-  await page.addInitScript(() => {
-    const original = window.__TAURI_INTERNALS__.invoke;
-    window.__TAURI_INTERNALS__.invoke = (command, args) => {
-      if (command === "github_auth_state")
-        return Promise.resolve({
-          accounts: [
-            {
-              provider: "github",
-              state: "connected",
-              account_id: "101",
-              login: "fixture-owner",
-            },
-          ],
-          flow: { state: "idle" },
-        });
-      if (
-        [
-          "monitoring_activation_status",
-          "preview_monitoring_activation",
-          "apply_monitoring_activation",
-          "cancel_monitoring_activation",
-          "resolve_provider_person",
-        ].includes(command)
-      )
-        return window.__activationFixture(command, args ?? {});
-      return original(command, args);
-    };
-  });
-}
-
-for (const embedded of [true, false]) {
-  test(`${embedded ? "panel" : "legacy"} async scope dialog returns to its invoker rather than later focus`, async ({
+for (const failure of ["write", "conflict"]) {
+  test(`repository Save ${failure} cannot report authorization and retains draft for repair`, async ({
     page,
     store,
+    dataRoot,
   }) => {
-    await seedBoundRepository(store);
-    const preview = Promise.withResolvers();
-    await activationFixture(page, (command, args) => {
-      if (command === "monitoring_activation_status")
-        return { active: false, selected_existing: 0 };
-      if (command === "preview_monitoring_activation")
-        return preview.promise.then(() => ({
-          preview_id: "held-preview",
-          repository_id: args.repositoryId,
-          name: repositoryName,
-          account_id: "101",
-          account_login: "fixture-owner",
-          candidates: [],
-        }));
-      return null;
-    });
-    await page.goto(embedded ? "/" : "/?view=settings");
-    if (embedded)
-      await page
-        .getByRole("navigation", { name: "Application destinations" })
-        .getByRole("button", { name: "Settings", exact: true })
+    const initial = await configured(store);
+    await providerFixture(page, store);
+    await repositoryPage(page, store);
+    const editor = await repositorySettings(page, "fixture/one");
+    await editor.getByLabel("Enable repository monitoring on Save").check();
+    if (failure === "write")
+      await mkdir(join(dataRoot, "config/settings.json.tmp"));
+    else {
+      const next = structuredClone(initial);
+      next.repositories[0].overrides = { reviewer_assignment: false };
+      await store("seed_settings", next);
+    }
+    await editor
+      .getByRole("button", { name: "Save repository", exact: true })
+      .click();
+    await expect(editor.locator("[data-resource-error]")).toBeVisible();
+    await expect(
+      editor.getByLabel("Enable repository monitoring on Save"),
+    ).toBeChecked();
+    expect(
+      (await store("snapshot")).settings.repository_authorizations,
+    ).toBeUndefined();
+    expect((await store("snapshot")).settings.repositories[0].enabled).toBe(
+      false,
+    );
+    if (failure === "write") {
+      await rmdir(join(dataRoot, "config/settings.json.tmp"));
+      await editor
+        .getByRole("button", { name: "Save repository", exact: true })
         .click();
-    const repository = await repositorySettings(page, repositoryName);
-    const opener = repository.getByRole("button", { name: "Configure scope" });
-    try {
-      await opener.click();
-      await expect(opener).toBeDisabled();
-      await repository.getByLabel("Review start", { exact: true }).focus();
-      preview.resolve();
-      const scope = page.getByRole("dialog", {
-        name: `Monitoring scope for ${repositoryName}`,
-        exact: true,
-      });
-      await scope.getByRole("button", { name: "Cancel", exact: true }).click();
-      await expect(opener).toBeFocused();
-      await expect(repository).toBeVisible();
-    } finally {
-      preview.resolve();
+      await expect(editor).toHaveCount(0);
+      expect(
+        Object.keys(
+          (await store("snapshot")).settings.repository_authorizations,
+        ),
+      ).toHaveLength(1);
     }
   });
 }
 
-test("activation saves filter drafts then scopes 1,800 matching pull requests explicitly", async ({
+test("an explicit disabled Save and unrelated Preferences never enable a paused repository", async ({
   page,
   store,
 }) => {
-  await seedBoundRepository(store);
-  const previewCandidates = candidates(1_800);
-  let previewCalls = 0;
-  let applied;
-  let status = {
-    repository_id: "configuration",
-    active: false,
-    reason: "scope_confirmation_required",
-    mode: null,
-    selected_existing: 0,
-    creation_watermark: null,
-  };
-  await activationFixture(page, (command, args) => {
-    if (command === "resolve_provider_person")
-      return { id: "42", login: "octocat" };
-    if (command === "monitoring_activation_status") return status;
-    if (command === "preview_monitoring_activation") {
-      previewCalls++;
-      return {
-        preview_id: `preview-${previewCalls}`,
-        repository_id: args.repositoryId,
-        name: repositoryName,
-        account_id: "101",
-        account_login: "fixture-owner",
-        creation_watermark: 1_800,
-        candidates: previewCandidates,
-      };
-    }
-    if (command === "apply_monitoring_activation") {
-      applied = args.request;
-      status = {
-        repository_id: args.request.repositoryId,
-        active: true,
-        reason: null,
-        mode: args.request.mode,
-        selected_existing: args.request.selectedPullRequestIds.length,
-        creation_watermark: 1_800,
-      };
-      return status;
-    }
-    return null;
-  });
-  await page.goto("/?view=settings");
-
-  let repository = await repositorySettings(page, repositoryName);
-  await expect(repository.locator("[data-scope-status]")).toContainText(
-    "Scope confirmation required",
-  );
-  await repository.getByRole("button", { name: "Add people" }).click();
-  const picker = page.getByRole("dialog", { name: "Add people", exact: true });
-  await picker.getByLabel("GitHub login", { exact: true }).fill("octocat");
-  await picker.getByRole("button", { name: "Add person" }).click();
-  await repository.getByRole("button", { name: "Configure scope" }).click();
-  await expect(repository.locator("[data-scope-status]")).toContainText(
-    "Save repository before previewing monitoring scope",
-  );
-  expect(previewCalls).toBe(0);
-  await closeDialog(page);
-  await saveChanges(page);
-  expect(
-    (await store("snapshot")).settings.repositories[0].watched_authors,
-  ).toEqual([{ id: "42", login: "octocat" }]);
-
-  repository = await repositorySettings(page, repositoryName);
-  await repository.getByRole("button", { name: "Configure scope" }).click();
-  const scope = page.getByRole("dialog", {
-    name: `Monitoring scope for ${repositoryName}`,
-    exact: true,
-  });
-  await expect(scope.getByText("1800", { exact: true })).toBeVisible();
-  await expect(scope.locator(".activation-row")).toHaveCount(1_800);
-  await expect(scope.locator(".activation-row input:checked")).toHaveCount(0);
-  await expect(scope.locator(".activation-row input:enabled")).toHaveCount(0);
-
-  await scope
-    .getByLabel("Selected existing pull requests plus new pull requests", {
-      exact: true,
-    })
-    .check();
-  await scope
-    .getByLabel("Find matching pull request", { exact: true })
-    .fill("Pull request 1800");
-  await expect(scope.locator(".activation-row")).toHaveCount(1);
-  await scope.getByLabel("Include pull request 1800").check();
-  await expect(scope.getByText("1 selected", { exact: true })).toBeVisible();
-  await scope
-    .getByRole("button", { name: "Confirm monitoring scope", exact: true })
-    .click();
-
-  expect(applied).toEqual({
-    repositoryId: (await store("snapshot")).settings.repositories[0].id,
-    previewId: "preview-1",
-    mode: "selected_existing",
-    selectedPullRequestIds: ["1800"],
-  });
-  await expect(repository.locator("[data-scope-status]")).toContainText(
-    "Active for new pull requests and 1 selected existing pull request",
-  );
-});
-
-test("activation cancel and failed apply leave scope unchanged and retryable", async ({
-  page,
-  store,
-}) => {
-  await seedBoundRepository(store);
-  let preview = 0;
-  let cancelled = 0;
-  let failCancel = false;
-  let failApply = true;
-  const required = {
-    repository_id: "configuration",
-    active: false,
-    reason: "scope_confirmation_required",
-    mode: null,
-    selected_existing: 0,
-    creation_watermark: null,
-  };
-  await activationFixture(page, (command, args) => {
-    if (command === "monitoring_activation_status") return required;
-    if (command === "preview_monitoring_activation")
-      return {
-        preview_id: `preview-${++preview}`,
-        repository_id: args.repositoryId,
-        name: repositoryName,
-        account_id: "101",
-        account_login: "fixture-owner",
-        creation_watermark: 1,
-        candidates: candidates(1),
-      };
-    if (command === "cancel_monitoring_activation") {
-      if (failCancel) throw "cleanup failed";
-      cancelled++;
-      return null;
-    }
-    if (command === "apply_monitoring_activation" && failApply)
-      throw "Cannot write monitoring state.";
-    return {
-      ...required,
-      active: true,
-      reason: null,
-      mode: args.request.mode,
-      creation_watermark: 1,
-    };
-  });
-  await page.goto("/?view=settings");
-  const repository = await repositorySettings(page, repositoryName);
-  await repository.getByRole("button", { name: "Configure scope" }).click();
-  let scope = page.getByRole("dialog", {
-    name: `Monitoring scope for ${repositoryName}`,
-    exact: true,
-  });
-  await scope.getByRole("button", { name: "Cancel", exact: true }).click();
+  const initial = await configured(store);
+  await providerFixture(page, store);
+  await repositoryPage(page, store);
+  let editor = await repositorySettings(page, "fixture/one");
   await expect(
-    repository.getByRole("button", { name: "Configure scope" }),
-  ).toBeFocused();
-  expect(cancelled).toBe(1);
-  await expect(repository.locator("[data-scope-status]")).toContainText(
-    "Scope confirmation required",
-  );
-
-  await repository.getByRole("button", { name: "Configure scope" }).click();
-  scope = page.getByRole("dialog", {
-    name: `Monitoring scope for ${repositoryName}`,
-    exact: true,
-  });
-  await scope.press("Escape");
-  await expect(scope).not.toBeVisible();
-  await expect.poll(() => cancelled).toBe(2);
-
-  await repository.getByRole("button", { name: "Configure scope" }).click();
-  scope = page.getByRole("dialog", {
-    name: `Monitoring scope for ${repositoryName}`,
-    exact: true,
-  });
+    editor.getByLabel("Enable repository monitoring on Save"),
+  ).not.toBeChecked();
+  await editor
+    .getByRole("button", { name: "Save repository", exact: true })
+    .click();
+  await expect(editor).toHaveCount(0);
+  await section(page, "Preferences");
+  await page.getByLabel("AI capacity", { exact: true }).fill("7");
   await page
-    .locator(`dialog[aria-label="Settings for ${repositoryName}"]`)
-    .evaluate((element) => element.close());
-  await expect(scope).not.toBeVisible();
-  await expect.poll(() => cancelled).toBe(3);
-
-  let reopened = await repositorySettings(page, repositoryName);
-  failCancel = true;
-  await reopened.getByRole("button", { name: "Configure scope" }).click();
-  scope = page.getByRole("dialog", {
-    name: `Monitoring scope for ${repositoryName}`,
-    exact: true,
-  });
-  await scope.press("Escape");
-  await expect(page.locator("#error")).toContainText(
-    "Monitoring scope preview cleanup failed",
-  );
-  failCancel = false;
-
-  await reopened.getByRole("button", { name: "Configure scope" }).click();
-  scope = page.getByRole("dialog", {
-    name: `Monitoring scope for ${repositoryName}`,
-    exact: true,
-  });
-  await scope
-    .getByRole("button", { name: "Confirm monitoring scope", exact: true })
+    .getByRole("button", { name: "Save preferences", exact: true })
     .click();
-  await expect(scope.getByRole("alert")).toContainText(
-    "Cannot write monitoring state",
-  );
-  await expect(scope).toBeVisible();
-  failApply = false;
-  await scope
-    .getByRole("button", { name: "Confirm monitoring scope", exact: true })
-    .click();
-  await expect(scope).not.toBeVisible();
+  const saved = (await store("snapshot")).settings;
+  expect(saved.repositories).toEqual(initial.repositories);
+  expect(Object.values(saved.repository_authorizations ?? {})).toEqual([null]);
+  editor = await repositorySettings(page, "fixture/one");
+  await expect(
+    editor.getByLabel("Enable repository monitoring on Save"),
+  ).not.toBeChecked();
 });
 
-test("activation apply locks dismissal until the authoritative result returns", async ({
+test("Save locks dismissal until the native commit returns and does not issue a scope or provider read", async ({
   page,
   store,
+  ipc,
 }) => {
-  await seedBoundRepository(store);
-  const apply = Promise.withResolvers();
-  let status = {
-    repository_id: "configuration",
-    active: false,
-    reason: "scope_confirmation_required",
-    mode: null,
-    selected_existing: 0,
-    creation_watermark: null,
-  };
-  await activationFixture(page, (command, args) => {
-    if (command === "monitoring_activation_status") return status;
-    if (command === "preview_monitoring_activation")
-      return {
-        preview_id: "preview-held",
-        repository_id: args.repositoryId,
-        name: repositoryName,
-        account_id: "101",
-        account_login: "fixture-owner",
-        creation_watermark: 0,
-        candidates: [],
-      };
-    if (command === "apply_monitoring_activation") return apply.promise;
-    return null;
-  });
-  await page.goto("/?view=settings");
-  const repository = await repositorySettings(page, repositoryName);
-  await repository.getByRole("button", { name: "Configure scope" }).click();
-  const scope = page.getByRole("dialog", {
-    name: `Monitoring scope for ${repositoryName}`,
-    exact: true,
-  });
-  await scope
-    .getByRole("button", { name: "Confirm monitoring scope", exact: true })
-    .click();
-  await expect(
-    scope.getByRole("button", { name: "Close dialog", exact: true }),
-  ).toBeDisabled();
-  await scope.press("Escape");
-  await expect(scope).toBeVisible();
-  status = {
-    repository_id: "configuration",
-    active: true,
-    reason: null,
-    mode: "new_only",
-    selected_existing: 0,
-    creation_watermark: 0,
-  };
-  apply.resolve(status);
-  await expect(scope).not.toBeVisible();
-  await expect(repository.locator("[data-scope-status]")).toContainText(
-    "Active for new pull requests only",
-  );
+  await configured(store);
+  const fixture = await providerFixture(page, store);
+  await repositoryPage(page, store);
+  const editor = await repositorySettings(page, "fixture/one");
+  await editor.getByLabel("Enable repository monitoring on Save").check();
+  const held = ipc.holdNext("save_resource");
+  try {
+    await editor
+      .getByRole("button", { name: "Save repository", exact: true })
+      .click();
+    await held.arrived;
+    await expect(
+      editor.getByRole("button", { name: "Close dialog", exact: true }),
+    ).toBeDisabled();
+    await expect(
+      editor.getByRole("button", { name: "Cancel repository changes" }),
+    ).toBeDisabled();
+    expect((await store("snapshot")).settings.repositories[0].enabled).toBe(
+      true,
+    );
+    held.release();
+    await expect(editor).toHaveCount(0);
+    expect(
+      fixture.calls.filter((c) =>
+        /preview|activation|pull_requests|resolve_provider_repository/.test(
+          c.command,
+        ),
+      ),
+    ).toEqual([]);
+  } finally {
+    held.release();
+  }
 });
+
+for (const embedded of [true, false]) {
+  test(`Genie uses repository Save as authorization and finishes without a second consent (${embedded})`, async ({
+    page,
+    store,
+  }, info) => {
+    await configured(store);
+    await providerFixture(page, store);
+    await repositoryPage(page, store, embedded);
+    let editor = await repositorySettings(page, "fixture/one");
+    await editor.getByLabel("Enable repository monitoring on Save").check();
+    await editor
+      .getByRole("button", { name: "Save repository", exact: true })
+      .click();
+    await expect(editor).toHaveCount(0);
+    const authorized = (await store("snapshot")).settings;
+    await page
+      .getByRole("button", { name: "Set up with Genie", exact: true })
+      .click();
+    await expect(page.getByRole("progressbar")).toHaveAttribute(
+      "aria-valuenow",
+      "4",
+    );
+    await page.locator("[data-genie-next]").click();
+    await expect(
+      page.getByRole("button", { name: "Finish setup", exact: true }),
+    ).toBeEnabled();
+    await expect(page.locator("[data-genie-confirm]")).toHaveCount(0);
+    await expect(
+      page.getByText("All currently open and future matching PRs", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await page.screenshot({
+      path: info.outputPath("genie-saved-configuration.png"),
+    });
+    await page
+      .getByRole("button", { name: "Finish setup", exact: true })
+      .click();
+    expect((await store("snapshot")).settings).toEqual(authorized);
+  });
+}
