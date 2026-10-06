@@ -115,6 +115,11 @@ older jobs without a recorded revision say so rather than inferring today's
 catalog. Library changes still invalidate affected execution inputs through
 the existing review/publication guards.
 
+Successful resource saves refresh the library and repair Agent references
+renamed in another window together. Unrelated preference and repository drafts
+remain unsaved. Other concurrent Agent edits, including still-valid selection
+changes, retain compare-and-save protection rather than being silently adopted.
+
 ## Native boundary
 
 The application reuses its own secretless GitHub device-flow registration and
