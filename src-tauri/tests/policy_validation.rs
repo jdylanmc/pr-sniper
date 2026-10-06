@@ -222,7 +222,7 @@ fn sparse_overrides_preserve_false_empty_and_default_selector_as_explicit_values
         watched_authors: vec![],
         reviewer_assignment: false,
         selector: Selector::Default,
-        automatic_agent_start: false,
+        automatic_agent_start: true,
         automatic_comment_publication: true,
         ..defaults.clone()
     };

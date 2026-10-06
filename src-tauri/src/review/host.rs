@@ -117,12 +117,6 @@ pub(crate) fn request(
         return Err(error);
     }
     let selection = Selection::resolve(&settings, &candidate.job, &candidate.assignment_id)?;
-    if !manual
-        && !selection.policy.automatic_agent_start
-        && candidate.run.as_ref().is_none_or(|r| !r.manual_start)
-    {
-        return Err("Automatic start is disabled; explicitly start this review.".into());
-    }
     let mut reviews = store.load_reviews()?;
     if candidate
         .run

@@ -213,6 +213,101 @@ fn production_dispatch_enforces_four_of_seven_and_positive_limits_independent_of
 }
 
 #[test]
+fn false_legacy_defaults_and_overrides_start_automatically_without_granting_provider_actions() {
+    let (root, store) = fixture(2, 1, false);
+    let mut settings = store.load_settings().unwrap();
+    for repository in &mut settings.repositories {
+        repository.overrides.automatic_agent_start = Some(false);
+        repository.assignments[0].comment = false;
+    }
+    settings.agents[0].intelligence = serde_json::from_value(json!({
+        "reasoning_effort":"high","context_tier":"long_context"
+    }))
+    .unwrap();
+    store.save_settings(&settings).unwrap();
+    let reopened = Store::new(root.path().into());
+    let coordinator = Coordinator::default();
+    let mut workers = dispatch(&coordinator, &reopened, 100);
+    assert_eq!(workers.len(), 1);
+    assert_eq!(workers[0].key().id, "normal-1");
+    let Dispatch::Review(run, _) = &workers[0] else {
+        panic!("Normal review expected")
+    };
+    assert!(!run.manual_start);
+    assert_eq!(
+        run.selection.agent.intelligence,
+        settings.agents[0].intelligence
+    );
+    let authority = &run.selection.configuration.as_ref().unwrap().authority;
+    assert!(!authority.comment && !authority.approve && !authority.merge);
+    assert_eq!(coordinator.snapshot(&reopened, 100).unwrap().waiting, 1);
+    let next = finish(&coordinator, &reopened, workers.remove(0), None, 101);
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].key().id, "normal-2");
+    assert!(reopened.load_publications().unwrap().is_empty());
+    assert!(reopened.load_actions().unwrap().effects.is_empty());
+    assert!(reopened.load_monitoring_state().unwrap().health.is_empty());
+    let saved = reopened.load_settings().unwrap();
+    assert!(!saved.defaults.automatic_agent_start);
+    assert!(saved
+        .repositories
+        .iter()
+        .all(|r| r.overrides.automatic_agent_start == Some(false)));
+}
+
+#[test]
+fn automatic_start_preserves_pause_disable_assignment_and_account_gates() {
+    for gate in [
+        "pause",
+        "disabled",
+        "unassigned",
+        "missing_ai_account",
+        "account_access",
+    ] {
+        let (_root, store) = fixture(1, 1, false);
+        let mut settings = store.load_settings().unwrap();
+        settings.repositories[0].overrides.automatic_agent_start = Some(false);
+        let mut jobs = store.load_queue().unwrap();
+        match gate {
+            "pause" => store.save_automation(&Automation { paused: true }).unwrap(),
+            "disabled" => settings.repositories[0].enabled = false,
+            "unassigned" => settings.repositories[0].assignments.clear(),
+            "missing_ai_account" => settings.agents[0].ai_account = None,
+            "account_access" => {
+                jobs[0].waiting = crate::monitoring::WAITING_ACCOUNT_DISCONNECTED.into()
+            }
+            _ => unreachable!(),
+        }
+        store.save_settings(&settings).unwrap();
+        store.save_queue(&jobs).unwrap();
+        let coordinator = Coordinator::default();
+        assert!(dispatch(&coordinator, &store, 100).is_empty(), "{gate}");
+        let snapshot = coordinator.snapshot(&store, 100).unwrap();
+        assert_eq!(snapshot.active, 0, "{gate}");
+        if gate == "pause" {
+            assert!(snapshot.paused);
+            assert_eq!(snapshot.waiting, 1);
+        } else if gate == "unassigned" {
+            assert!(snapshot.work.is_empty());
+        } else {
+            assert_eq!(snapshot.blocked, 1, "{gate}");
+            assert!(snapshot.work[0].reason.is_some(), "{gate}");
+        }
+        assert_eq!(store.load_queue().unwrap(), jobs);
+        assert!(store.load_reviews().unwrap().is_empty());
+    }
+    let (_root, store) = fixture(1, 1, false);
+    let saved = store.load_settings().unwrap();
+    let mut invalid = saved.clone();
+    invalid.agents.clear();
+    assert_eq!(
+        store.save_settings(&invalid).unwrap_err(),
+        "The selected agent no longer exists. Choose a local agent."
+    );
+    assert_eq!(store.load_settings().unwrap(), saved);
+}
+
+#[test]
 fn mixed_fifo_skips_blocked_work_and_completion_refills_without_a_poll() {
     let (_root, store) = fixture(7, 1, true);
     let reply = add_reply(&store, 1);
@@ -283,12 +378,21 @@ fn four_shared_slots_run_mixed_jobs_and_leave_three_waiters() {
 }
 
 #[test]
-fn accepted_manual_intent_survives_restart_and_long_first_queue_wait() {
+fn legacy_manual_waits_automatically_resume_after_restart_and_long_capacity_wait() {
     let (_root, store) = fixture(7, 1, false);
     let coordinator = Coordinator::default();
-    assert!(dispatch(&coordinator, &store, 100).is_empty());
     for index in 1..=7 {
-        review::host::request(&store, &format!("normal-{index}"), true, 100).unwrap();
+        let mut run =
+            review::host::request(&store, &format!("normal-{index}"), false, 100).unwrap();
+        run.selection.policy.automatic_agent_start = false;
+        run.operation.state = OperationState::Interrupted;
+        let mut runs = store.load_reviews().unwrap();
+        let saved = runs
+            .iter_mut()
+            .find(|r| r.operation.id == run.operation.id)
+            .unwrap();
+        *saved = run;
+        store.save_reviews(&runs).unwrap();
     }
     let ids: Vec<_> = store
         .load_reviews()
@@ -306,7 +410,7 @@ fn accepted_manual_intent_survives_restart_and_long_first_queue_wait() {
             .collect::<Vec<_>>(),
         ids
     );
-    assert!(runs.iter().all(|r| r.manual_start));
+    assert!(runs.iter().all(|r| !r.manual_start));
     assert_eq!(runs[0].operation.initial_attempt_at, 10_000);
     assert_eq!(runs[0].operation.retry_deadline, 10_900);
     assert_eq!(runs[1].operation.attempt_count, 0);
@@ -327,13 +431,12 @@ fn rapid_concurrent_requests_share_one_reservation_owner() {
     let coordinator = Arc::new(Coordinator::default());
     let workers = Arc::new(Mutex::new(Vec::new()));
     std::thread::scope(|scope| {
-        for index in 1..=7 {
+        for _ in 1..=7 {
             let store = store.clone();
             let coordinator = coordinator.clone();
             let workers = workers.clone();
             scope.spawn(move || {
                 let store = store.lock().unwrap();
-                review::host::request(&store, &format!("normal-{index}"), true, 100).unwrap();
                 workers
                     .lock()
                     .unwrap()
@@ -344,7 +447,7 @@ fn rapid_concurrent_requests_share_one_reservation_owner() {
     let store = store.lock().unwrap();
     assert_eq!(workers.lock().unwrap().len(), 4);
     assert_eq!(coordinator.snapshot(&store, 100).unwrap().active, 4);
-    assert_eq!(store.load_reviews().unwrap().len(), 7);
+    assert_eq!(store.load_reviews().unwrap().len(), 4);
 }
 
 #[test]
@@ -598,15 +701,16 @@ fn future_final_and_mention_adapters_reserve_the_same_pool_as_normal_and_reply_w
 }
 
 #[test]
-fn blocked_first_request_retains_order_and_new_work_joins_the_tail() {
+fn disabled_first_request_retains_order_and_new_work_joins_the_tail() {
     let (_root, store) = fixture(3, 1, true);
     let mut settings = store.load_settings().unwrap();
-    settings.repositories[0].overrides.automatic_agent_start = Some(false);
+    settings.repositories[0].enabled = false;
     store.save_settings(&settings).unwrap();
     let coordinator = Coordinator::default();
     let first = dispatch(&coordinator, &store, 100).remove(0);
     assert_eq!(first.key().id, "normal-2");
-    review::host::request(&store, "normal-1", true, 101).unwrap();
+    settings.repositories[0].enabled = true;
+    store.save_settings(&settings).unwrap();
     let mut jobs = store.load_queue().unwrap();
     let mut new = jobs[2].clone();
     new.pull_request_id = "4".into();

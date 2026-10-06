@@ -9,8 +9,8 @@ The secondary/right-click menu retains **Status**, **Review Queue**,
 Settings can explicitly verify a configured GitHub connection and read complete
 pull-request metadata. The active tray process also polls enabled, account-bound
 GitHub repositories and persists eligible revisions in the Review Queue.
-Assigned Copilot Agents can review each admitted revision manually or through
-the automatic-start gate, with validated results kept locally. A separate
+Assigned Copilot Agents automatically review eligible admitted revisions through
+shared AI capacity, with validated results kept locally. A separate
 publication gate can submit one revision-bound GitHub `COMMENT` review.
 New external comments in verified owned threads can receive an evidence-backed
 follow-up, or remain quiet/wait for human judgment.
@@ -289,7 +289,7 @@ iteration. Published discussion remains on GitHub; unpublished terminal detail
 has no restore guarantee. There is no purge control or terminal-history screen.
 
 Preferences separates **Saved preferences** (the one global cron, time zone,
-machine capacity and independent automatic-start/comment defaults) from
+machine capacity and comment-publication defaults) from
 **Immediate controls** (pause, notification opt-in and startup).
 Save preferences and Reset changes do not apply or undo native controls.
 Capacity accepts the full positive 32-bit integer range, 1 through 4294967295,
@@ -525,8 +525,9 @@ are not native acceptance evidence.
 Repository **Settings** assigns reusable Agents with independent comment,
 Approve and Merge choices, and resolves watched people using the repository's
 explicit GitHub account. Existing global defaults and overrides remain
-preserved in storage. Review start and comment publication have separate
-automatic/manual gates. A sole assignment is primary automatically; multiple
+preserved in storage. Eligible review execution is always automatic; comment
+publication remains separately gated. Legacy start flags are readable but inert.
+A sole assignment is primary automatically; multiple
 assignments permit one explicit primary or none. Primary selection never opts
 into actions. Legacy inert `approve` flags remain preserved but are not grants;
 new choices live in assignment `actions`. Merge is effective only for the
@@ -741,7 +742,7 @@ publish comments.
 Repository Save commits authorization with configuration in one atomic settings
 replacement. No provider backlog snapshot is read during Save, and no additional
 scope confirmation is required. All currently open and future matching PRs are
-eligible at the next global scan, subject to saved start and execution policies.
+eligible at the next global scan, subject to execution gates.
 The separate polling cache can recover this authorization after a failed write
 or restart; synchronization failures remain visible. An unrelated preference
 save or config load never authorizes or enables an unconfigured/disabled row.
@@ -759,7 +760,7 @@ Agent assignments authorize ongoing read-only reviews,
 including forks, reviewer-requested PRs and later revisions, without a separate
 revision-trust prompt. Admission remains sticky after
 watchlist/reviewer removal, without bypassing current account,
-repository, start or publication gates. Repeated scans reuse each assignment's
+repository, pause, capacity or publication gates. Repeated scans reuse each assignment's
 normal job for the same PR iteration, regardless of later filter changes. Adding
 an Agent creates its missing job at the next scan without repeating completed
 unchanged passes. A new head supersedes old work; verified reopening creates a
@@ -781,9 +782,9 @@ destinations survive adoption; embedded originating reviews prevent replay when
 an older queue/review file is missing. Completed execution snapshots are never
 rewritten by scans. Reply work has its own ordinal and shares the durable queue
 order allocator; retries retain their separate operation attempt counts.
-Detection never
-clones a repository, starts an agent, executes repository code, mutates GitHub
-or publishes a review.
+Detection never clones a repository, executes repository code, mutates GitHub
+or publishes a review. Eligible admitted jobs are then drained by the shared
+read-only review runner.
 
 ## Local Copilot reviews
 
@@ -793,15 +794,23 @@ shows each assignment's detected revisions. Existing pre-review detections
 remain history until the next global scan; opening the queue does not
 silently start legacy work.
 
-**Start review** is explicit when automatic start is disabled. Enabling the
-**Preferences > Start eligible reviews automatically** default (or **Review
-start** in a repository's Settings) admits eligible assignment detections
-to the shared-capacity review runner. Saving repository configuration and its
+The human-approved [always-on review amendment (#120)](https://github.com/jdylanmc/pr-sniper/issues/51#issuecomment-6008945622)
+removes global/repository manual-start preferences and per-PR Start controls.
+Eligible assignment detections automatically enter the shared-capacity runner,
+and available capacity starts the oldest eligible work without another poll.
+Global pause, intentional repository disablement, admission/watch rules,
+assignment/account availability, capacity and surfaced failures remain gates.
+Legacy false start defaults/overrides and interrupted manual-wait records are
+readable but cannot block execution; no real app reset is needed or performed.
+Saving repository configuration and its
 assignments is the authorization boundary; no scope or revision-trust checkbox
 is required.
 **Cancel review** stops inference and requires an
 explicit retry; changing the account, Agent, prompt, doctrine, repository or
-start gate invalidates affected in-flight work.
+effective execution inputs invalidates affected in-flight work. Automatic review
+never grants comment publication, approval or merge. Human Queue handoffs remain
+personal review, not an initial execution gate. Capability/watch/schedule changes
+in #121-#123 and explicit PR intake in #119 remain separate deliveries.
 
 The host reads complete paginated changed-file metadata and immutable base/head
 trees through the bound repository account. Copilot gets only three host-owned
@@ -813,8 +822,8 @@ allowlist. Missing enforcement blocks the review regardless of setup consent.
 This is a constrained current-user process, **not an operating-system sandbox**.
 
 The independent AI account/model and configured review lens are pinned for the
-attempt. Head/base revisions, lifecycle, triggers, repository state and start
-permissions are rechecked before invocation; stale results are rejected.
+attempt. Head/base revisions, lifecycle, triggers, repository state and execution
+inputs are rechecked before invocation; stale results are rejected.
 Validated results contain a one-sentence synopsis, an ordered guide for every
 changed file, structured findings, a machine decision, and runtime/session/
 token metadata. Every changed file must actually have been read. Missing,
@@ -898,7 +907,7 @@ It reads every changed file and sees the peer results, owned feedback, complete
 bounded human discussion/review evidence and actual policy observations.
 `state/actions.json` retains its own immutable basis, FIFO identity, operation,
 attempt history and result without replacing normal review history.
-It uses shared AI capacity, start permissions, pause accounting and worker
+It uses automatic shared AI capacity, execution gates, pause accounting and worker
 teardown. Findings or human judgment stop actions; they require human handling
 or a new iteration rather than repeated same-iteration AI attempts to obtain a
 different answer.
@@ -1041,9 +1050,10 @@ does not replay the same comment through a new owner.
 
 **Review Queue > Thread follow-ups** shows the conversation, acting account,
 revision, draft/evidence and separate analysis/publication states. Existing
-automatic-start and automatic-comment defaults/overrides apply, and the
-assignment must allow **Comment**. With those gates off, use **Start follow-up**
-and a separate checked **Publish reply** confirmation. **Cancel follow-up**
+automatic-comment defaults/overrides apply, and the
+assignment must allow **Comment**. Eligible analysis starts automatically;
+publication with its automatic gate off needs a separate checked **Publish reply**
+confirmation. **Cancel follow-up**
 stops inference or withdraws permission before a reply; it cannot remove an
 already confirmed comment.
 

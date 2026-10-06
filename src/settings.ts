@@ -1959,12 +1959,11 @@ export async function mountSettings(
       `<section class="repository-identity"><h3>${escape(repository.name)}</h3><p class="settings-hint">${escape(repository.provider === "github" ? `GitHub acting account: ${githubAccounts.find((account) => account.account_id === repository.provider_account_id)?.login ?? repository.provider_account_id ?? "not selected"}.` : "Azure DevOps account binding is not available in this build.")}</p><dl><dt>Account ID</dt><dd>${escape(repository.provider_account_id ?? "Unbound")}</dd><dt>Repository ID</dt><dd>${escape(repository.provider_repository_id ?? "Not verified")}</dd></dl></section>
         <label class="repository-check"><input type="checkbox" data-repository-enabled ${repository.enabled || pendingSetup.has(repository.id) ? "checked" : ""} /><span>Enable repository monitoring on Save</span></label>
         <section class="repository-group"><h2>Pull requests to watch</h2>
-        <p class="settings-hint">Save authorizes all currently open and future matching pull requests. Global monitoring off and manual review start still apply. Adding this row alone does not start monitoring.</p>
+        <p class="settings-hint">Save authorizes all currently open and future matching pull requests. Eligible reviews start automatically; global monitoring off, pause and repository disablement still apply. Adding this row alone does not start monitoring.</p>
         <label for="repository-reviewer-trigger">Reviewer requests</label><select id="repository-reviewer-trigger" data-reviewer-trigger><option value="inherit">Use default (${saved.defaults.reviewer_assignment ? "on" : "off"})</option><option value="on">Include PRs explicitly requesting the acting account</option><option value="off">Do not admit through reviewer requests</option></select>
         <p class="settings-hint">Reviewer requests independently admit older or unwatched PRs. Once admitted, work stays tracked until verified closure or merge. Disablement and execution permissions still apply.</p></section>
         <section class="repository-group"><h2>Automation overrides</h2>
-        <label for="repository-review-start">Review start</label><select id="repository-review-start" data-review-start><option value="inherit">Use default (${saved.defaults.automatic_agent_start ? "automatic" : "manual"})</option><option value="automatic">Start automatically when eligible</option><option value="manual">Require manual start</option></select>
-        <p class="settings-hint">Save repository commits and authorizes this configuration, including forks and later revisions. Review start does not enable publication.</p>
+        <p class="settings-hint">Save repository authorizes automatic read-only reviews, including forks and later revisions. Review execution does not enable publication, approval or merge.</p>
         <label for="repository-publication">Comment publication</label><select id="repository-publication" data-publication><option value="inherit">Use default (${saved.defaults.automatic_comment_publication ? "automatic" : "local-only"})</option><option value="automatic">Publish automatically after revalidation</option><option value="manual">Off: retain normal findings locally</option></select>
         <p class="settings-hint">The assignment must also allow Comment. Uses the repository's GitHub account, never the Copilot account. This cannot approve or merge a pull request.</p>
         </section><section class="repository-group"><div class="section-actions"><h2>Agents on this repository</h2><button class="primary" data-assign-agent ${agents().length ? "" : "disabled"}>Assign agent</button></div>
@@ -2039,24 +2038,6 @@ export async function mountSettings(
     };
     renderAssignments();
     renderWatchlist();
-    const reviewStart = modal.querySelector<HTMLSelectElement>(
-      "[data-review-start]",
-    )!;
-    reviewStart.value =
-      repository.overrides?.automatic_agent_start === undefined
-        ? "inherit"
-        : repository.overrides.automatic_agent_start
-          ? "automatic"
-          : "manual";
-    reviewStart.onchange = () => {
-      repository.overrides ??= {};
-      if (reviewStart.value === "inherit")
-        delete repository.overrides.automatic_agent_start;
-      else
-        repository.overrides.automatic_agent_start =
-          reviewStart.value === "automatic";
-      changed();
-    };
     const publication =
       modal.querySelector<HTMLSelectElement>("[data-publication]")!;
     publication.value =
@@ -2429,7 +2410,7 @@ export async function mountSettings(
       <label>Schedule helper<select id="cron-helper"><option value="">Custom five-field expression</option><option value="*/15 * * * *">Every 15 minutes</option><option value="0 * * * *">Every hour</option><option value="0 9 * * MON-FRI">Weekdays at 09:00</option></select></label>
       <label>Time zone<input id="global-timezone" value="${escape(schedule.timezone)}" /></label>
       </div><p class="settings-hint">Five fields: minute, hour, day, month, weekday. Evaluated in this IANA time zone, including its daylight-saving rules. One global scan covers enabled, configured repositories. Shared AI capacity drains admitted work independently of polling.${schedule.kind === "interval" ? ` Saved legacy interval: ${schedule.minutes} minutes. Polling is blocked until you explicitly choose a cron expression; no automatic conversion.` : ""}</p></fieldset>
-      <fieldset aria-label="Review execution"><legend>Review execution</legend><label class="setting-row"><span>Start eligible reviews automatically<small>Default for saved, configured repositories. No per-revision confirmation; publication has its own gate.</small></span><input id="automatic-review-start" type="checkbox" role="switch" ${draft.defaults.automatic_agent_start ? "checked" : ""} /></label></fieldset>
+      <fieldset aria-label="Review execution"><legend>Review execution</legend><p class="settings-hint">Eligible reviews run automatically through shared AI capacity. Pause automation or disable a repository to stop new work. Publication, approval and merge have separate permissions.</p></fieldset>
       <fieldset aria-label="Comment publication"><legend>Comment publication</legend><label class="setting-row"><span>Publish review comments automatically<small>Default for assigned repositories that allow Comment. Revalidates revision, permissions and eligibility before publication. Never approves or merges.</small></span><input id="automatic-publication" type="checkbox" role="switch" ${draft.defaults.automatic_comment_publication ? "checked" : ""} /></label></fieldset>
       <p class="settings-hint preferences-permissions">Approve and Merge remain separate repository-assignment permissions, never global grants.</p></div>
       <div class="preferences-boundary"><h2>Immediate controls</h2><span>Applied separately</span></div>
@@ -2516,14 +2497,6 @@ export async function mountSettings(
           else preferenceDisclosures.delete(details.id);
         };
       });
-    content.querySelector<HTMLInputElement>(
-      "#automatic-review-start",
-    )!.onchange = (event) => {
-      draft.defaults.automatic_agent_start = (
-        event.target as HTMLInputElement
-      ).checked;
-      changed();
-    };
     content.querySelector<HTMLInputElement>(
       "#automatic-publication",
     )!.onchange = (event) => {

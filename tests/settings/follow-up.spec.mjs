@@ -106,17 +106,10 @@ test("follow-up analysis keeps job identity without legacy trust approval", asyn
   await expect(root).toContainText("external comment 101");
   await expect(root).toContainText("GitHub: repo-owner (22)");
   expect(await page.evaluate(() => window.__followUpActions)).toEqual([]);
-  await root
-    .getByRole("button", { name: "Start follow-up", exact: true })
-    .click();
-  await expect
-    .poll(() => page.evaluate(() => window.__followUpActions))
-    .toEqual([
-      {
-        command: "start_follow_up",
-        args: { id: "follow-up-1", publish: false },
-      },
-    ]);
+  await expect(
+    root.getByRole("button", { name: "Start follow-up", exact: true }),
+  ).toHaveCount(0);
+  await expect(root).toContainText("Execution is automatic when eligible");
 });
 
 test("validated draft requires separate publication confirmation", async ({
@@ -154,7 +147,9 @@ test("quiet and human-judgment outcomes never offer publication", async ({
   await setup(page, [human, quiet]);
   const root = page.locator("#thread-follow-ups");
   await expect(root).toContainText("Human input required. No automated reply.");
-  await expect(root).toContainText("Automatic follow-ups are paused");
+  await expect(root).toContainText(
+    "Retry this follow-up only after the human decision",
+  );
   await expect(root).toContainText("No reply needed.");
   await expect(root.getByRole("button")).toHaveCount(0);
 });

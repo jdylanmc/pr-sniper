@@ -163,13 +163,12 @@ test("compact saved controls persist exact cron, timezone and full u32 capacity 
   await capture(page, browserName, "saved-preferences");
   await page.locator("#cron-helper").selectOption("0 9 * * MON-FRI");
   await page.locator("#global-timezone").fill("America/New_York");
-  await page.locator("#automatic-review-start").check();
+  await expect(page.locator("#automatic-review-start")).toHaveCount(0);
   for (const capacity of [1, 20, 4294967295]) {
     await page.locator("#global-capacity").fill(String(capacity));
     await savePreferences(page);
     const expected = structuredClone(original);
     expected.capacity = capacity;
-    expected.defaults.automatic_agent_start = true;
     expected.defaults.schedule = {
       kind: "cron",
       expression: "0 9 * * MON-FRI",

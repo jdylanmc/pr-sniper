@@ -7,12 +7,9 @@ const waitingStates = [
   ],
   [
     "human_start",
-    "Automatic start is disabled; start an assigned Agent below.",
+    "Queued automatically; waiting for shared AI capacity or automation resume.",
   ],
-  [
-    "agent_unavailable",
-    "Automatic start is configured; an available assigned Agent can review this revision.",
-  ],
+  ["agent_unavailable", "Waiting for an available assigned Agent."],
   [
     "account_disconnected",
     "Not actionable: the acting GitHub account is disconnected.",
@@ -284,8 +281,7 @@ test("Review Queue renders acting schedule identity and every persisted detectio
     await expect(page.locator("#review-jobs")).toContainText(label);
   await expect(
     page.locator("#review-jobs article").filter({
-      hasText:
-        "Automatic start is configured; an available assigned Agent can review this revision.",
+      hasText: "Waiting for an available assigned Agent.",
     }),
   ).toHaveCount(1);
   await expect(page.locator("#review-jobs")).toContainText(
