@@ -278,7 +278,7 @@ test("failed refresh retains previous selected-account results visibly; later Re
   await expect(browser.locator("[data-pick]")).toHaveCount(2);
   state.responses[22][`${catalog}1`] = { error: "network" };
   await browser.getByRole("button", { name: "Retry", exact: true }).click();
-  await expect(browser.getByRole("status")).toContainText("Refresh failed");
+  await expect(browser.getByRole("status")).toContainText("Lookup failed");
   await expect(browser.locator("[data-pick]")).toHaveCount(2);
   await browser.getByLabel("Find a repository").fill("missing");
   await expect(browser.getByRole("status")).toContainText(
@@ -354,4 +354,192 @@ test("managed personal repository selection resolves through provider and persis
   await expect(page.locator("[data-repository]")).toContainText(
     "fixture_corp/repository-101",
   );
+});
+
+for (const [embedded, genie] of [
+  [false, false],
+  [true, false],
+  [true, true],
+]) {
+  test(`Retry restores recovered organization owners without changing the selected owner (${genie ? "Genie" : embedded ? "panel" : "standalone"})`, async ({
+    page,
+    store,
+  }) => {
+    const { state } = await install(page, store);
+    state.responses[22][`${catalog}2`] = { error: "network" };
+    const browser = await open(page, store, corporate, embedded, genie);
+    await browser.getByLabel("Repository owner").selectOption(corporate.login);
+    await expect(browser.locator("[data-pick]")).toHaveCount(1);
+    await browser.getByLabel("Find a repository").fill("101");
+    await browser.getByRole("button", { name: "Retry", exact: true }).click();
+    await expect(browser.getByRole("alert")).toContainText(
+      "Cannot reach GitHub",
+    );
+    await expect(browser.getByLabel("Repository owner")).toHaveValue(
+      corporate.login,
+    );
+    await expect(browser.locator("[data-pick]")).toHaveCount(1);
+    state.responses = responses();
+    await browser.getByRole("button", { name: "Retry", exact: true }).click();
+    await expect(browser.getByRole("alert")).toBeHidden();
+    await expect(
+      browser.getByLabel("Repository owner").locator("option"),
+    ).toContainText([
+      "Choose an owner",
+      "fixture_corp (personal)",
+      "orbit (organization)",
+    ]);
+    await expect(browser.getByLabel("Repository owner")).toHaveValue(
+      corporate.login,
+    );
+    await expect(browser.getByLabel("Find a repository")).toHaveValue("101");
+    await expect(browser.locator("[data-pick]")).toHaveCount(1);
+    await browser.getByLabel("Repository owner").selectOption("orbit");
+    await expect(browser.locator("[data-pick]")).toHaveCount(2);
+    expect(state.reads.every((read) => read.accountId === "22")).toBe(true);
+    expect((await store("snapshot")).settings.repositories).toBeUndefined();
+  });
+}
+
+for (const failure of [
+  "missing_scope",
+  "wrong_identity",
+  "signed_out",
+  "authentication_changed",
+]) {
+  test(`selection ${failure} clears the populated cache and recovers only through a fresh selected-account read`, async ({
+    page,
+    store,
+  }) => {
+    const { state, fixture } = await install(page, store);
+    const browser = await open(page, store);
+    await browser.getByLabel("Repository owner").selectOption(corporate.login);
+    await expect(browser.locator("[data-pick]")).toHaveCount(1);
+    const originalHandler = fixture.handler;
+    if (failure === "missing_scope") {
+      state.responses[22]["/repos/fixture_corp/repository-101"].headers[
+        "x-oauth-scopes"
+      ] = "read:user";
+    } else if (failure === "wrong_identity") {
+      state.responses[22]["/user"] = response({
+        id: 44,
+        login: personal.login,
+      });
+    } else if (failure === "signed_out") {
+      state.responses[22]["/user"] = response({}, {}, 401);
+    } else {
+      fixture.handler = async (command, args) => {
+        const result = await originalHandler(command, args);
+        // Native held-generation tests independently exercise this serialized rejection.
+        if (command === "resolve_provider_repository")
+          throw "authentication_changed";
+        return result;
+      };
+    }
+    await browser.locator("[data-pick]").click();
+    await expect(browser.getByRole("alert")).toBeVisible();
+    await expect(browser.locator("[data-pick]")).toHaveCount(0);
+    await expect(browser.getByLabel("Repository owner")).toBeDisabled();
+    await expect(browser.getByLabel("Find a repository")).toBeDisabled();
+    await expect(browser.getByRole("status")).toHaveText(
+      "Repository browsing unavailable.",
+    );
+    await expect(
+      browser.getByRole("button", { name: "Retry", exact: true }),
+    ).toBeVisible();
+    expect((await store("snapshot")).settings.repositories).toBeUndefined();
+    state.responses = responses();
+    fixture.handler = originalHandler;
+    const reads = state.reads.length;
+    await browser.getByRole("button", { name: "Retry", exact: true }).click();
+    await expect(browser.getByRole("alert")).toBeHidden();
+    await expect(browser.getByLabel("Repository owner")).toBeEnabled();
+    await browser.getByLabel("Repository owner").selectOption(corporate.login);
+    await expect(browser.locator("[data-pick]")).toContainText(
+      "fixture_corp/repository-101",
+    );
+    expect(state.reads.length).toBeGreaterThan(reads);
+    expect(state.reads.every((read) => read.accountId === "22")).toBe(true);
+  });
+}
+
+test("contradictory or empty pagination retains only verified preceding rows with visible Retry", async ({
+  page,
+  store,
+}) => {
+  const { state } = await install(page, store);
+  state.responses[22][`${catalog}1`].headers.link =
+    `<https://api.github.com${catalog}2>; rel="next", <https://api.github.com${catalog}1>; rel="last"`;
+  const browser = await open(page, store);
+  await expect(browser.getByRole("alert")).toContainText(
+    "Repository pagination (page 1)",
+  );
+  await browser.getByLabel("Repository owner").selectOption(corporate.login);
+  await expect(browser.locator("[data-pick]")).toHaveCount(1);
+  await expect(browser.getByRole("status")).toContainText(
+    "discovery is incomplete",
+  );
+  await expect(
+    browser.getByLabel("Repository owner").locator("option"),
+  ).not.toContainText(["orbit (organization)"]);
+  state.responses = responses();
+  state.responses[22][`${catalog}2`].body = [];
+  await browser.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(browser.getByRole("alert")).toContainText(
+    "Repository pagination (page 2)",
+  );
+  await expect(browser.locator("[data-pick]")).toHaveCount(1);
+  state.responses = responses();
+  await browser.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(browser.getByRole("alert")).toBeHidden();
+  await expect(
+    browser.getByLabel("Repository owner").locator("option"),
+  ).toContainText(["orbit (organization)"]);
+});
+
+test("ordinary selection denial preserves authorized rows with a visible failure and Retry", async ({
+  page,
+  store,
+}) => {
+  const { state } = await install(page, store);
+  const browser = await open(page, store);
+  await browser.getByLabel("Repository owner").selectOption(corporate.login);
+  await expect(browser.locator("[data-pick]")).toHaveCount(1);
+  state.responses[22]["/repos/fixture_corp/repository-101"] = response(
+    {},
+    {},
+    403,
+  );
+  await browser.locator("[data-pick]").click();
+  await expect(browser.getByRole("alert")).toContainText("denied read access");
+  await expect(browser.locator("[data-pick]")).toHaveCount(1);
+  await expect(browser.getByLabel("Find a repository")).toBeEnabled();
+  await expect(
+    browser.getByRole("button", { name: "Retry", exact: true }),
+  ).toBeVisible();
+  expect((await store("snapshot")).settings.repositories).toBeUndefined();
+});
+
+test("refresh reconciles a vanished organization without discarding the selected owner or search", async ({
+  page,
+  store,
+}) => {
+  const { state } = await install(page, store);
+  state.responses[22][`${catalog}2`].headers["x-github-sso"] =
+    "partial-results; organizations=123";
+  const browser = await open(page, store);
+  await browser.getByLabel("Repository owner").selectOption("orbit");
+  await expect(browser.locator("[data-pick]")).toHaveCount(2);
+  await browser.getByLabel("Find a repository").fill("103");
+  state.responses[22][`${catalog}1`] = response([
+    repository(101, corporate.login, "User"),
+  ]);
+  await browser.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(browser.getByRole("alert")).toBeHidden();
+  await expect(browser.getByLabel("Repository owner")).toHaveValue("orbit");
+  await expect(browser.getByLabel("Find a repository")).toHaveValue("103");
+  await expect(
+    browser.getByLabel("Repository owner").locator("option:checked"),
+  ).toHaveText("orbit (unavailable)");
+  await expect(browser.locator("[data-pick]")).toHaveCount(0);
 });

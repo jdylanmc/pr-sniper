@@ -1892,6 +1892,8 @@ export async function mountSettings(
                 requestedRoute !== routeGeneration
               )
                 return;
+              if (resolved.identity.id !== account.account_id)
+                throw "wrong_identity";
               if (resolved.repository.id !== selected.id)
                 throw "Repository identity changed. Refresh this owner and try again.";
               await addAndConfigure(
@@ -1901,10 +1903,7 @@ export async function mountSettings(
                 opener,
               );
             } catch (cause) {
-              if (current(read)) {
-                alert.textContent = reason(cause);
-                alert.hidden = false;
-              }
+              if (current(read)) showReadFailure(cause);
             } finally {
               selecting = false;
               if (current(read)) renderResults();
@@ -1929,6 +1928,50 @@ export async function mountSettings(
           }),
         ),
       ].join(" ");
+    };
+    const reconcileOwners = (
+      owners: { login: string; kind: string }[],
+      selected: string,
+    ) => {
+      owner.innerHTML =
+        option("", "Choose an owner", selected) +
+        owners
+          .map((o) => option(o.login, `${o.login} (${o.kind})`, selected))
+          .join("") +
+        (selected && !owners.some((o) => o.login === selected)
+          ? option(
+              selected,
+              `${selected} (${incomplete ? "not in loaded catalog" : "unavailable"})`,
+              selected,
+            )
+          : "");
+      owner.disabled = false;
+    };
+    const showReadFailure = (cause: unknown) => {
+      if (
+        !connected() ||
+        cause === "wrong_identity" ||
+        cause === "authentication_changed" ||
+        cause === "signed_out" ||
+        cause === "missing_scope" ||
+        cause ===
+          "GitHub connection changed. Resolve the repository again before saving."
+      ) {
+        loaded = false;
+        results = [];
+        resultsOwner = "";
+        owner.innerHTML = option("", "Choose an owner", "");
+        owner.disabled = true;
+        search.disabled = true;
+        list.replaceChildren();
+      }
+      incomplete = true;
+      status.textContent = loaded
+        ? "Lookup failed. Previously loaded results remain visible; discovery is incomplete."
+        : "Repository browsing unavailable.";
+      alert.textContent = reason(cause);
+      alert.hidden = false;
+      retry.hidden = false;
     };
     const load = async () => {
       const read = ++generation;
@@ -1959,21 +2002,17 @@ export async function mountSettings(
             accountId: account.account_id,
           });
           if (!current(read)) return;
-          if (result.identity.id !== account.account_id || !connected())
-            throw "Account changed. Reconnect and retry.";
-          owner.innerHTML =
-            option("", "Choose an owner", "") +
-            result.owners
-              .map((o) => option(o.login, `${o.login} (${o.kind})`, ""))
-              .join("");
-          owner.disabled = false;
+          if (result.identity.id !== account.account_id) throw "wrong_identity";
+          if (!connected()) throw "signed_out";
           showWarnings(result.warnings);
+          reconcileOwners(result.owners, "");
           status.textContent = incomplete
             ? "Some owners may be unavailable. Choose a loaded owner or retry discovery."
             : "Choose the personal account or an available organization.";
         } else {
           const result = await invoke<{
             identity: { id: string };
+            owners: { login: string; kind: string }[];
             repositories: { id: string; name: string }[];
             warnings?: RepositoryBrowseWarning[];
           }>("list_provider_repositories", {
@@ -1982,9 +2021,9 @@ export async function mountSettings(
             owner: ownerLogin,
           });
           if (!current(read)) return;
+          if (result.identity.id !== account.account_id) throw "wrong_identity";
+          if (!connected()) throw "signed_out";
           if (
-            result.identity.id !== account.account_id ||
-            !connected() ||
             result.repositories.some(
               (r) =>
                 r.name.split("/")[0].toLowerCase() !== ownerLogin.toLowerCase(),
@@ -1994,34 +2033,13 @@ export async function mountSettings(
           loaded = true;
           resultsOwner = ownerLogin;
           results = result.repositories;
-          owner.disabled = false;
           search.disabled = false;
           showWarnings(result.warnings);
+          reconcileOwners(result.owners, ownerLogin);
           renderResults();
         }
       } catch (cause) {
-        if (current(read)) {
-          if (
-            !connected() ||
-            cause === "wrong_identity" ||
-            cause === "authentication_changed" ||
-            cause === "signed_out" ||
-            cause === "missing_scope"
-          ) {
-            loaded = false;
-            results = [];
-            list.replaceChildren();
-            search.disabled = true;
-            owner.disabled = true;
-          }
-          status.textContent = loaded
-            ? "Refresh failed. Previously loaded results remain visible; discovery is incomplete."
-            : "Repository browsing unavailable.";
-          incomplete = true;
-          alert.textContent = reason(cause);
-          alert.hidden = false;
-          retry.hidden = false;
-        }
+        if (current(read)) showReadFailure(cause);
       }
     };
     owner.onchange = () => {
