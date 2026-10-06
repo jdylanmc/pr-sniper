@@ -70,7 +70,7 @@ pub(crate) fn options(
         .with_env_remove(remove))
 }
 
-fn environment_key_eq(left: &std::ffi::OsStr, right: &std::ffi::OsStr) -> bool {
+pub(crate) fn environment_key_eq(left: &std::ffi::OsStr, right: &std::ffi::OsStr) -> bool {
     #[cfg(windows)]
     {
         left.eq_ignore_ascii_case(right)

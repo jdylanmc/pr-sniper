@@ -241,7 +241,9 @@ async fn bundled_runtime_intelligence_offline() {
         ("COPILOT_PROVIDER_TYPE", "openai".to_string()),
         ("COPILOT_MODEL", "gpt-5".to_string()),
     ] {
-        options.env_remove.retain(|name| name != key);
+        options.env_remove.retain(|name| {
+            !crate::copilot::runtime::environment_key_eq(name, std::ffi::OsStr::new(key))
+        });
         options.env.push((key.into(), value.into()));
     }
     let (version, pid, evidence) = with_directory(root, async {

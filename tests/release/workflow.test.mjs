@@ -301,6 +301,7 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       "cargo test --manifest-path src-tauri\\Cargo.toml --locked --lib copilot::runtime::tests::cancelled_or_failed_startup_does_not_leave_a_child -- --exact --nocapture --test-threads=1",
       "cargo test --manifest-path src-tauri\\Cargo.toml --locked --all-targets -- --nocapture --test-threads=2 --skip cancelled_or_failed_startup_does_not_leave_a_child",
       "cargo test --manifest-path src-tauri\\Cargo.toml --locked --lib copilot::runtime::tests::bundled_runtime_handshakes_offline_without_credentials -- --exact --ignored --nocapture",
+      "cargo test --manifest-path src-tauri\\Cargo.toml --locked --lib review::runtime::tests::bundled_runtime_intelligence_offline -- --exact --ignored --nocapture --test-threads=1",
       "cargo clippy --manifest-path src-tauri\\Cargo.toml --locked --all-targets -- -D warnings",
       "npm exec playwright install chromium",
       "npm run test:settings",
@@ -312,6 +313,37 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
     ],
   );
   assert.equal(scripts.build, "tsc --noEmit && vite build");
+});
+
+test("both native workflows execute exact offline Intelligence acceptance without skip or live tests", () => {
+  for (const [job, platform, manifest, predecessor] of [
+    [ci.jobs.macos, "macOS", "src-tauri/Cargo.toml", "npm test"],
+    [
+      windows.jobs.windows,
+      "Windows",
+      "src-tauri\\Cargo.toml",
+      "cargo test --manifest-path src-tauri\\Cargo.toml --locked --lib copilot::runtime::tests::bundled_runtime_handshakes_offline_without_credentials -- --exact --ignored --nocapture",
+    ],
+  ]) {
+    const matches = job.steps.filter(
+      (step) => step.id === "agent-intelligence-offline",
+    );
+    assert.equal(matches.length, 1);
+    const step = matches[0];
+    assert.equal(
+      step.name,
+      `Verify bundled ${platform} Agent Intelligence (offline, no credentials or inference)`,
+    );
+    assert.equal(
+      step.run,
+      `cargo test --manifest-path ${manifest} --locked --lib review::runtime::tests::bundled_runtime_intelligence_offline -- --exact --ignored --nocapture --test-threads=1`,
+    );
+    assert.equal(step["timeout-minutes"], 2);
+    assert.equal(step.if, undefined);
+    assert.equal(step["continue-on-error"], undefined);
+    assert.equal(step.env, undefined);
+    assert.equal(job.steps[job.steps.indexOf(step) - 1].run, predecessor);
+  }
 });
 
 test("unsigned installers and disposable upgrade fixtures cannot become public release assets", () => {
