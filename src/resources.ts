@@ -12,7 +12,21 @@ export interface Settings {
   agents?: Agent[];
   presets?: { id: string; name: string; body: string }[];
   default_review_preset?: string;
+  doctrine_catalog_version?: number;
+  doctrine_reset?: { previous_count: number; removed_references: number };
 }
+
+export interface DoctrineCatalog {
+  source: string;
+  source_revision: string;
+  effective_revision: string;
+  count: number;
+}
+
+export const doctrineCatalogLabel = (catalog?: DoctrineCatalog | null) =>
+  catalog
+    ? `${catalog.count} doctrines / ${catalog.source} / source ${catalog.source_revision.slice(0, 12)} / effective ${catalog.effective_revision.slice(0, 12)}`
+    : "Doctrine catalog revision not captured.";
 
 export interface GlobalPreferences {
   defaults: Policy;
@@ -102,7 +116,11 @@ export function sameResource(left: unknown, right: unknown): boolean {
 export const validateResource = (edit: ResourceEdit) =>
   invoke<ResourceReadiness>("validate_resource", { edit });
 export const saveResource = (edit: ResourceEdit, accountGeneration?: number) =>
-  invoke<{ settings: Settings; warning: string | null }>("save_resource", {
+  invoke<{
+    settings: Settings;
+    doctrine_catalog: DoctrineCatalog;
+    warning: string | null;
+  }>("save_resource", {
     edit,
     accountGeneration,
   });
@@ -123,6 +141,7 @@ export interface ReviewSelection {
     repository: Repository;
     authority: AssignmentAuthority;
     doctrines: Doctrine[];
+    doctrine_catalog?: DoctrineCatalog;
   };
 }
 

@@ -394,6 +394,7 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
                 Err(error) => (None, Some(error)),
             };
             Ok(json!({
+                "doctrine_catalog": settings.as_ref().map(Settings::doctrine_catalog),
                 "settings": settings,
                 "login_registration": "absent",
                 "isolated": true,
