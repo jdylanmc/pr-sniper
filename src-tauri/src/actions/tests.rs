@@ -1479,6 +1479,201 @@ fn an_existing_account_approval_is_not_a_reason_to_submit_another_vote() {
         .contains("already has an approval"));
 }
 
+struct RulesReadWire {
+    wire: Wire,
+    status: u16,
+    headers: BTreeMap<String, String>,
+    body: Value,
+}
+
+impl Transport for RulesReadWire {
+    fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+        if path == "/repos/example/repo/rules/branches/main" {
+            return Ok(Response {
+                status: self.status,
+                headers: self.headers.clone(),
+                body: serde_json::to_vec(&self.body).unwrap(),
+            });
+        }
+        self.wire.get(path)
+    }
+}
+
+impl QueryTransport for RulesReadWire {
+    fn query(&self, query: &str, variables: Value) -> Result<Response, ConnectionError> {
+        self.wire.query(query, variables)
+    }
+}
+
+#[test]
+fn provider_rules_rate_limits_preserve_action_observation_failure_and_backoff() {
+    for status in [403, 429] {
+        for (extra_headers, expected, delay) in [
+            (vec![], ConnectionError::RateLimited, None),
+            (
+                vec![("retry-after", "60")],
+                ConnectionError::RateLimitedAfter(60),
+                Some(60),
+            ),
+            (
+                vec![("retry-after", "60"), ("x-ratelimit-reset", "1800000120")],
+                ConnectionError::RateLimitedWithContext {
+                    retry_after_seconds: Some(60),
+                    reset_at: Some(1_800_000_120),
+                    organization_access_incomplete: false,
+                    missing_repo_scope: false,
+                },
+                Some(60),
+            ),
+            (
+                vec![
+                    ("retry-after", "60"),
+                    ("x-ratelimit-reset", "1800000120"),
+                    ("x-github-sso", "partial-results; organizations=123"),
+                ],
+                ConnectionError::RateLimitedWithContext {
+                    retry_after_seconds: Some(60),
+                    reset_at: Some(1_800_000_120),
+                    organization_access_incomplete: true,
+                    missing_repo_scope: false,
+                },
+                Some(60),
+            ),
+        ] {
+            let (_root, store, item) = fixture(1, true, true);
+            let final_review = completed_final(&store, &item);
+            let settings = store.load_settings().unwrap();
+            let wire = env(&store).wire;
+            let repository = RemoteRepository {
+                id: "100".into(),
+                name: "example/repo".into(),
+            };
+            let mut baseline = GithubClient::new(wire.clone())
+                .action_observation(&repository, 1)
+                .unwrap();
+            // The host sets this from its separately verified connection.
+            baseline.write_capability = true;
+            assert!(ready(&store, &final_review, &baseline, Action::Approve).is_ok());
+            assert!(ready(&store, &final_review, &baseline, Action::Merge).is_ok());
+            let mut headers = BTreeMap::from([("x-ratelimit-remaining".into(), "0".into())]);
+            headers.extend(extra_headers.into_iter().map(|(k, v)| (k.into(), v.into())));
+            let error = GithubClient::new(RulesReadWire {
+                wire: wire.clone(),
+                status,
+                headers,
+                body: json!({"message":"API rate limit exceeded; fixture-private-body"}),
+            })
+            .action_observation(&repository, 1)
+            .unwrap_err();
+            assert_eq!(error, expected);
+            let failure = Failure::from(error);
+            assert_eq!(failure.kind, monitoring::OperationFailure::RateLimited);
+            assert_eq!(failure.retry_after_seconds, delay);
+            assert!(!failure.message.contains("fixture-private-body"));
+            synchronize(&store, &item, Err(failure), NOW + 21).unwrap();
+            let ledger = store.load_actions().unwrap();
+            assert!(ledger.observations[0].observation.is_none());
+            assert!(ledger.observations[0].error.is_some());
+            assert_eq!(
+                ledger.observations[0].retry_at,
+                Some(NOW + 21 + delay.unwrap_or(5))
+            );
+            assert_eq!(ledger.finals, vec![final_review.clone()]);
+            assert!(ledger.effects.is_empty());
+            assert_eq!(store.load_settings().unwrap(), settings);
+            validate_local(&store, &final_review).unwrap();
+            assert!(wire.0.lock().unwrap().writes.is_empty());
+        }
+    }
+}
+
+#[test]
+fn provider_rules_reset_only_rate_limit_preserves_reported_retry_interval() {
+    let (_root, store, item) = fixture(1, true, true);
+    let final_review = completed_final(&store, &item);
+    let wire = env(&store).wire;
+    let reset = crate::now_seconds().unwrap() + 120;
+    let error = GithubClient::new(RulesReadWire {
+        wire: wire.clone(),
+        status: 403,
+        headers: BTreeMap::from([
+            ("x-ratelimit-remaining".into(), "0".into()),
+            ("x-ratelimit-reset".into(), reset.to_string()),
+        ]),
+        body: json!({"message":"API rate limit exceeded; fixture-private-body"}),
+    })
+    .action_observation(
+        &RemoteRepository {
+            id: "100".into(),
+            name: "example/repo".into(),
+        },
+        1,
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        ConnectionError::RateLimitedWithContext {
+            retry_after_seconds: None,
+            reset_at: Some(reset),
+            organization_access_incomplete: false,
+            missing_repo_scope: false,
+        }
+    );
+    let before = crate::now_seconds().unwrap();
+    let failure = Failure::from(error);
+    let after = crate::now_seconds().unwrap();
+    assert_eq!(failure.kind, monitoring::OperationFailure::RateLimited);
+    let delay = failure.retry_after_seconds.unwrap();
+    assert!(delay >= reset.saturating_sub(after).max(0));
+    assert!(delay <= reset.saturating_sub(before).max(0));
+    assert!(!failure.message.contains("fixture-private-body"));
+    synchronize(&store, &item, Err(failure), NOW + 21).unwrap();
+    let ledger = store.load_actions().unwrap();
+    assert_eq!(ledger.observations[0].retry_at, Some(NOW + 21 + delay));
+    assert!(ledger.observations[0].observation.is_none());
+    assert_eq!(ledger.finals, vec![final_review.clone()]);
+    validate_local(&store, &final_review).unwrap();
+    assert!(ledger.effects.is_empty());
+    assert!(wire.0.lock().unwrap().writes.is_empty());
+}
+
+#[test]
+fn provider_rules_unsupported_or_denied_remain_approval_independent_and_merge_blocking() {
+    for (status, body) in [
+        (200, json!([{"unsupported_rule_shape":true}])),
+        (
+            403,
+            json!({"message":"Rules access denied; fixture-private-body"}),
+        ),
+    ] {
+        let (_root, store, _) = fixture(1, true, true);
+        let wire = env(&store).wire;
+        let mut observation = GithubClient::new(RulesReadWire {
+            wire: wire.clone(),
+            status,
+            headers: BTreeMap::new(),
+            body,
+        })
+        .action_observation(
+            &RemoteRepository {
+                id: "100".into(),
+                name: "example/repo".into(),
+            },
+            1,
+        )
+        .unwrap();
+        observation.write_capability = true;
+        assert!(observation.merge_rules.is_none());
+        assert!(observation.merge_rules_error.is_some());
+        assert!(observation.blocker(Action::Approve).is_none());
+        assert!(observation.blocker(Action::Merge).is_some());
+        assert!(!serde_json::to_string(&observation)
+            .unwrap()
+            .contains("fixture-private-body"));
+        assert!(wire.0.lock().unwrap().writes.is_empty());
+    }
+}
+
 struct ShapeWire {
     wire: Wire,
     case: &'static str,
