@@ -199,6 +199,49 @@ fn user_repository_discovery_exhausts_every_page() {
 
 struct MissingScope;
 
+struct ManagedAccountRepositories;
+
+impl Transport for ManagedAccountRepositories {
+    fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+        assert!(path.starts_with("/user/repos?"));
+        Ok(Response {
+            status: 200,
+            headers: BTreeMap::from([("x-oauth-scopes".into(), "repo".into())]),
+            body: serde_json::to_vec(&json!([
+                {
+                    "id": 101, "full_name": "fixture_corp/one", "private": true,
+                    "owner": {"login": "fixture_corp", "type": "User",
+                              "name": null, "extra_metadata": {"ignored": true}}
+                },
+                {
+                    "id": 102, "full_name": "orbit/two", "private": true,
+                    "owner": {"login": "orbit", "type": "Organization"}
+                }
+            ]))
+            .unwrap(),
+        })
+    }
+}
+
+#[test]
+fn managed_account_repository_metadata_does_not_invalidate_all_owners() {
+    let client = GithubClient::new(ManagedAccountRepositories);
+    let owners = client
+        .repository_owners(&Identity {
+            id: "22".into(),
+            login: "fixture_corp".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        owners.iter().map(|o| o.login.as_str()).collect::<Vec<_>>(),
+        ["fixture_corp", "orbit"]
+    );
+    assert_eq!(
+        client.owner_repositories("fixture_corp").unwrap()[0].id,
+        "101"
+    );
+}
+
 struct ShortPages {
     fail_second: bool,
 }
@@ -217,7 +260,7 @@ impl Transport for ShortPages {
             } else {
                 BTreeMap::from([
                     ("x-oauth-scopes".into(), "repo".into()),
-                    ("link".into(), "</user/repos?page=2>; rel=\"next\"".into()),
+                    ("link".into(), "<https://api.github.com/user/repos?affiliation=owner,collaborator,organization_member&visibility=all&per_page=100&page=2>; rel=\"next\"".into()),
                 ])
             },
             body: serde_json::to_vec(&json!([{

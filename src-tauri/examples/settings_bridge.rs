@@ -270,6 +270,104 @@ fn panel_dispatch(
     serde_json::to_value(snapshot).map_err(|_| "Cannot encode panel snapshot.".into())
 }
 
+// Synthetic HTTP responses cross the real provider parser, never live credentials.
+fn repository_browser_fixture(args: &Value) -> Result<Value, pr_sniper_lib::RepositoryReadError> {
+    use pr_sniper_lib::github::{
+        provider::{GithubClient, Response, Transport},
+        ConnectionError,
+    };
+    struct FixtureTransport<'a>(&'a Value);
+    impl Transport for FixtureTransport<'_> {
+        fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+            let response = self.0.get(path).ok_or(ConnectionError::Configuration)?;
+            if let Some(error) = response["error"].as_str() {
+                return Err(match error {
+                    "broken_cli" => ConnectionError::BrokenCli,
+                    "network" => ConnectionError::Network,
+                    "timeout" => ConnectionError::Timeout,
+                    _ => ConnectionError::Configuration,
+                });
+            }
+            Ok(Response {
+                status: response["status"]
+                    .as_u64()
+                    .and_then(|status| u16::try_from(status).ok())
+                    .ok_or(ConnectionError::Configuration)?,
+                headers: serde_json::from_value(response["headers"].clone())
+                    .map_err(|_| ConnectionError::Configuration)?,
+                body: match response["rawBody"].as_str() {
+                    Some(body) => body.as_bytes().to_vec(),
+                    None => serde_json::to_vec(&response["body"])
+                        .map_err(|_| ConnectionError::Configuration)?,
+                },
+            })
+        }
+    }
+    let account_id = args["accountId"]
+        .as_str()
+        .ok_or(ConnectionError::Configuration)?;
+    if let Some(failure) = args["sessionFailure"].as_str() {
+        let error = match failure {
+            "configuration" => ConnectionError::Configuration,
+            "broken_cli" => ConnectionError::BrokenCli,
+            "network" => ConnectionError::Network,
+            "timeout" => ConnectionError::Timeout,
+            "invalid_response" => ConnectionError::InvalidResponse,
+            "provider_failure" => ConnectionError::ProviderFailure,
+            _ => return Err(ConnectionError::Configuration.into()),
+        };
+        return Err(pr_sniper_lib::RepositoryReadError::session(
+            account_id, error,
+        ));
+    }
+    let responses = args["responses"]
+        .get(account_id)
+        .ok_or(ConnectionError::Configuration)?;
+    let client = GithubClient::new(FixtureTransport(responses));
+    let identity = client
+        .current_identity()
+        .map_err(|error| pr_sniper_lib::RepositoryReadError::session(account_id, error))?;
+    if identity.id != account_id {
+        return Err(pr_sniper_lib::RepositoryReadError::session(
+            account_id,
+            ConnectionError::WrongIdentity,
+        ));
+    }
+    let read = || -> Result<Value, ConnectionError> {
+        if args["operation"].as_str() == Some("resolve") {
+            let connection = client.connect(
+                args["repository"]
+                    .as_str()
+                    .ok_or(ConnectionError::Configuration)?,
+                Some(account_id),
+            )?;
+            return Ok(json!({
+                "identity": identity, "repository": connection.repository,
+                "account_generation": 0,
+            }));
+        }
+        let browser = match args["operation"].as_str() {
+            Some("owners") => client.repository_browser(&identity)?,
+            Some("repositories") => client.owner_repository_browser(
+                &identity,
+                args["owner"]
+                    .as_str()
+                    .ok_or(ConnectionError::Configuration)?,
+            )?,
+            _ => return Err(ConnectionError::Configuration),
+        };
+        Ok(json!({
+            "identity": identity,
+            "owners": browser.owners,
+            "repositories": browser.repositories,
+            "warnings": browser.warnings,
+        }))
+    };
+    // The actual native generation-fenced read owns publication; this fixture
+    // uses its same safe wire type and provider parsing without live credentials.
+    read().map_err(|error| pr_sniper_lib::RepositoryReadError::catalog(account_id, error))
+}
+
 fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
     match request.command.as_str() {
         "result_page" => serde_json::to_value(pr_sniper_lib::retention::page(
@@ -618,21 +716,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let request: Request = serde_json::from_str(&input)?;
     let store = Store::new(root.clone());
-    let result = if matches!(
-        request.command.as_str(),
-        "panel_snapshot"
-            | "panel_navigate"
-            | "hide_panel"
-            | "open_settings"
-            | "open_diagnostics"
-            | "open_queue_item"
-            | "fixture_show_panel"
-    ) {
-        panel_dispatch(&store, &root, &request, probe)
-    } else if probe.is_some() {
-        Err("Panel fixture probes require a panel command.".into())
+    let result = if request.command == "fixture_repository_browser" && probe.is_none() {
+        repository_browser_fixture(&request.args).map_err(|error| {
+            serde_json::to_value(error).expect("Connection errors are serializable")
+        })
     } else {
-        dispatch(&store, request)
+        let result = if matches!(
+            request.command.as_str(),
+            "panel_snapshot"
+                | "panel_navigate"
+                | "hide_panel"
+                | "open_settings"
+                | "open_diagnostics"
+                | "open_queue_item"
+                | "fixture_show_panel"
+        ) {
+            panel_dispatch(&store, &root, &request, probe)
+        } else if probe.is_some() {
+            Err("Panel fixture probes require a panel command.".into())
+        } else {
+            dispatch(&store, request)
+        };
+        result.map_err(Value::String)
     };
     let response = match result {
         Ok(value) => json!({ "ok": value }),

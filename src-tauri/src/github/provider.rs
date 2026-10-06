@@ -1,5 +1,5 @@
 use super::{verify_identity, ConnectionError, Identity};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -31,6 +31,47 @@ pub struct RepositoryOwner {
     pub login: String,
     pub kind: &'static str,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RepositoryBrowseWarning {
+    pub boundary: &'static str,
+    pub page: u64,
+    pub error: ConnectionError,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RepositoryBrowser {
+    pub owners: Vec<RepositoryOwner>,
+    pub repositories: Vec<RemoteRepository>,
+    pub warnings: Vec<RepositoryBrowseWarning>,
+}
+
+#[derive(Deserialize)]
+struct RepositoryMetadata {
+    id: u64,
+    full_name: String,
+    #[serde(rename = "private")]
+    _private: bool,
+    owner: Option<OwnerMetadata>,
+}
+
+#[derive(Deserialize)]
+struct OwnerMetadata {
+    login: String,
+    #[serde(rename = "type")]
+    kind: OwnerKind,
+}
+
+#[derive(Deserialize)]
+enum OwnerKind {
+    User,
+    Organization,
+}
+
+type RepositoryCatalog = (
+    Vec<(RemoteRepository, Option<RepositoryOwner>)>,
+    Vec<RepositoryBrowseWarning>,
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Capabilities {
@@ -77,29 +118,47 @@ impl<T: Transport> GithubClient<T> {
     }
 
     pub fn accessible_repositories(&self) -> Result<Vec<RemoteRepository>, ConnectionError> {
-        self.repository_catalog()
-            .map(|entries| entries.into_iter().map(|(repo, _)| repo).collect())
+        let (entries, warnings) = self.repository_catalog(false)?;
+        if let Some(warning) = warnings.first() {
+            return Err(warning.error);
+        }
+        Ok(entries.into_iter().map(|(repo, _)| repo).collect())
     }
 
     pub fn repository_owners(
         &self,
         identity: &Identity,
     ) -> Result<Vec<RepositoryOwner>, ConnectionError> {
-        let mut owners = BTreeMap::new();
-        owners.insert(identity.login.to_ascii_lowercase(), "personal");
-        for (repository, owner) in self.repository_catalog()? {
-            let owner = owner.ok_or(ConnectionError::InvalidResponse)?;
-            if repository.name.split('/').next() != Some(owner.login.as_str()) {
-                return Err(ConnectionError::InvalidResponse);
-            }
-            if owner.kind == "organization" {
-                owners.insert(owner.login, "organization");
-            }
+        let browser = self.repository_browser(identity)?;
+        if let Some(warning) = browser.warnings.first() {
+            return Err(warning.error);
         }
-        Ok(owners
-            .into_iter()
-            .map(|(login, kind)| RepositoryOwner { login, kind })
-            .collect())
+        Ok(browser.owners)
+    }
+
+    pub fn repository_browser(
+        &self,
+        identity: &Identity,
+    ) -> Result<RepositoryBrowser, ConnectionError> {
+        let (entries, warnings) = self.repository_catalog(true)?;
+        let mut owners = BTreeMap::from([(identity.login.to_ascii_lowercase(), "personal")]);
+        let mut repositories = Vec::new();
+        for (repository, owner) in entries {
+            if let Some(owner) = owner {
+                if owner.kind == "organization" {
+                    owners.insert(owner.login, "organization");
+                }
+            }
+            repositories.push(repository);
+        }
+        Ok(RepositoryBrowser {
+            owners: owners
+                .into_iter()
+                .map(|(login, kind)| RepositoryOwner { login, kind })
+                .collect(),
+            repositories,
+            warnings,
+        })
     }
 
     pub fn owner_repositories(
@@ -110,7 +169,7 @@ impl<T: Transport> GithubClient<T> {
             || owner.len() > 39
             || !owner
                 .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
         {
             return Err(ConnectionError::InvalidRepository);
         }
@@ -126,59 +185,186 @@ impl<T: Transport> GithubClient<T> {
             .collect())
     }
 
+    pub fn owner_repository_browser(
+        &self,
+        identity: &Identity,
+        owner: &str,
+    ) -> Result<RepositoryBrowser, ConnectionError> {
+        crate::storage::canonical_repository(&format!("{owner}/repository"))
+            .map_err(|_| ConnectionError::InvalidRepository)?;
+        let mut browser = self.repository_browser(identity)?;
+        browser.repositories.retain(|repository| {
+            repository
+                .name
+                .split('/')
+                .next()
+                .is_some_and(|login| login.eq_ignore_ascii_case(owner))
+        });
+        Ok(browser)
+    }
+
     fn repository_catalog(
         &self,
-    ) -> Result<Vec<(RemoteRepository, Option<RepositoryOwner>)>, ConnectionError> {
+        require_owner: bool,
+    ) -> Result<RepositoryCatalog, ConnectionError> {
         let mut result = Vec::new();
+        let mut warnings = Vec::new();
         let mut repository_ids = std::collections::HashSet::new();
+        let mut advertised_last = None;
+        let first = "/user/repos?affiliation=owner,collaborator,organization_member&visibility=all&per_page=100&page=1";
+        let mut path = first.to_string();
+        let mut explicit_next = false;
         for page in 1..=10_000 {
-            let (value, response) = self.read(&format!(
-                "/user/repos?affiliation=owner,collaborator,organization_member&visibility=all&per_page=100&page={page}"
-            ))?;
+            let page_read = self.transport.get(&path).and_then(|response| {
+                if !matches!(response.status, 200 | 401 | 403 | 404 | 429 | 500..=599) {
+                    return Err(ConnectionError::ProviderRejected);
+                }
+                parse_response(response)
+            });
+            let (value, response) = match page_read {
+                Ok(read) => read,
+                Err(error)
+                    if result.is_empty()
+                        || matches!(
+                            error,
+                            ConnectionError::SignedOut
+                                | ConnectionError::WrongIdentity
+                                | ConnectionError::MissingScope
+                        ) =>
+                {
+                    return Err(error)
+                }
+                Err(error) => {
+                    warnings.push(RepositoryBrowseWarning {
+                        boundary: "repository_page",
+                        page,
+                        error,
+                    });
+                    return Ok((result, warnings));
+                }
+            };
             if !has_scope(&response, "repo") {
                 return Err(ConnectionError::MissingScope);
             }
-            let repositories = value.as_array().ok_or(ConnectionError::InvalidResponse)?;
-            if repositories.len() > 100 {
-                return Err(ConnectionError::InvalidResponse);
-            }
-            for repository in repositories {
-                let id = decimal_id(&repository["id"])?;
-                let name = crate::storage::canonical_repository(
-                    repository["full_name"]
-                        .as_str()
-                        .ok_or(ConnectionError::InvalidResponse)?,
-                )
-                .map_err(|_| ConnectionError::InvalidResponse)?;
-                boolean(repository, "private")?;
-                if !repository_ids.insert(id.clone()) {
-                    return Err(ConnectionError::IncompleteRead);
-                }
-                let owner = repository["owner"]["login"].as_str().and_then(|login| {
-                    let kind = match repository["owner"]["type"].as_str()? {
-                        "User" => "personal",
-                        "Organization" => "organization",
-                        _ => return None,
-                    };
-                    Some(RepositoryOwner {
-                        login: login.to_ascii_lowercase(),
-                        kind,
-                    })
-                });
-                result.push((RemoteRepository { id, name }, owner));
-            }
-            let more = response
+            if response
                 .headers
-                .get("link")
-                .is_some_and(|link| link.contains("rel=\"next\""));
-            if more && repositories.is_empty() {
-                return Err(ConnectionError::IncompleteRead);
+                .get("x-github-sso")
+                .is_some_and(|value| value.starts_with("partial-results;"))
+            {
+                warnings.push(RepositoryBrowseWarning {
+                    boundary: "organization_access",
+                    page,
+                    error: ConnectionError::OrganizationPolicyDenied,
+                });
             }
-            if repositories.len() < 100 && !more {
-                return Ok(result);
+            let repositories = match value.as_array().filter(|array| array.len() <= 100) {
+                Some(repositories) => repositories,
+                None => {
+                    if result.is_empty() {
+                        return Err(ConnectionError::InvalidResponse);
+                    }
+                    warnings.push(RepositoryBrowseWarning {
+                        boundary: "repository_page",
+                        page,
+                        error: ConnectionError::InvalidResponse,
+                    });
+                    return Ok((result, warnings));
+                }
+            };
+            for value in repositories {
+                match Self::repository_metadata(value, require_owner) {
+                    Ok((repository, owner)) => {
+                        if repository_ids.insert(repository.id.clone()) {
+                            result.push((repository, owner));
+                        } else {
+                            warnings.push(RepositoryBrowseWarning {
+                                boundary: "pagination",
+                                page,
+                                error: ConnectionError::IncompleteRead,
+                            });
+                            return Ok((result, warnings));
+                        }
+                    }
+                    Err(error) => {
+                        warnings.push(RepositoryBrowseWarning {
+                            boundary: "repository_metadata",
+                            page,
+                            error,
+                        });
+                    }
+                }
+            }
+            let next = match super::metadata::next_page(&path, &response, &mut advertised_last) {
+                Ok(next) => next,
+                Err(error) => {
+                    warnings.push(RepositoryBrowseWarning {
+                        boundary: "pagination",
+                        page,
+                        error,
+                    });
+                    return Ok((result, warnings));
+                }
+            };
+            if repositories.is_empty() && (explicit_next || next.is_some()) {
+                warnings.push(RepositoryBrowseWarning {
+                    boundary: "pagination",
+                    page,
+                    error: ConnectionError::IncompleteRead,
+                });
+                return Ok((result, warnings));
+            }
+            explicit_next = next.is_some();
+            if let Some(next) = next {
+                path = next;
+            } else if repositories.len() == 100
+                && !response.headers.contains_key("link")
+                && advertised_last.is_none()
+            {
+                path = format!("{}{}", first.trim_end_matches('1'), page + 1);
+            } else {
+                return Ok((result, warnings));
             }
         }
-        Err(ConnectionError::IncompleteRead)
+        warnings.push(RepositoryBrowseWarning {
+            boundary: "pagination",
+            page: 10_000,
+            error: ConnectionError::IncompleteRead,
+        });
+        Ok((result, warnings))
+    }
+
+    fn repository_metadata(
+        value: &Value,
+        require_owner: bool,
+    ) -> Result<(RemoteRepository, Option<RepositoryOwner>), ConnectionError> {
+        let metadata: RepositoryMetadata =
+            serde_json::from_value(value.clone()).map_err(|_| ConnectionError::InvalidResponse)?;
+        if metadata.id == 0 {
+            return Err(ConnectionError::InvalidResponse);
+        }
+        let name = crate::storage::canonical_repository(&metadata.full_name)
+            .map_err(|_| ConnectionError::InvalidResponse)?;
+        let owner = metadata.owner.map(|owner| RepositoryOwner {
+            login: owner.login.to_ascii_lowercase(),
+            kind: match owner.kind {
+                OwnerKind::User => "personal",
+                OwnerKind::Organization => "organization",
+            },
+        });
+        if require_owner && owner.is_none()
+            || owner
+                .as_ref()
+                .is_some_and(|owner| name.split('/').next() != Some(owner.login.as_str()))
+        {
+            return Err(ConnectionError::InvalidResponse);
+        }
+        Ok((
+            RemoteRepository {
+                id: metadata.id.to_string(),
+                name,
+            },
+            owner,
+        ))
     }
 
     pub fn connect(

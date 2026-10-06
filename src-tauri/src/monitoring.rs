@@ -2943,6 +2943,7 @@ fn connection_error_code(error: ConnectionError) -> &'static str {
         ConnectionError::RateLimited | ConnectionError::RateLimitedAfter(_) => "RateLimited",
         ConnectionError::Network => "Network",
         ConnectionError::ProviderFailure => "ProviderFailure",
+        ConnectionError::ProviderRejected => "ProviderRejected",
         ConnectionError::ProviderFailureAfter(_) => "ProviderFailure",
         ConnectionError::IncompleteRead => "IncompleteRead",
         ConnectionError::RevisionChanged => "RevisionChanged",

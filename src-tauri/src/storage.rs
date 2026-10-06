@@ -712,7 +712,7 @@ pub fn canonical_repository(input: &str) -> Result<String, String> {
         && !parts[0].ends_with('-')
         && parts[0]
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
         && !parts[1].is_empty()
         && parts[1].len() <= 100
         && parts[1] != "."
