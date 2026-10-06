@@ -543,3 +543,118 @@ test("refresh reconciles a vanished organization without discarding the selected
   ).toHaveText("orbit (unavailable)");
   await expect(browser.locator("[data-pick]")).toHaveCount(0);
 });
+
+for (const [failure, message, invalidates] of [
+  [
+    "unavailable-account",
+    "Reconnect the acting GitHub account before saving this repository.",
+    true,
+  ],
+  [
+    "changed-generation",
+    "GitHub connection changed. Resolve the repository again before saving.",
+    true,
+  ],
+  [
+    "resource-conflict",
+    "Resource changed in another window. Your draft has not been written; reload or explicitly repair it before saving.",
+    false,
+  ],
+]) {
+  test(`save-time native ${failure} rejection preserves the correct access boundary before persistence`, async ({
+    page,
+    store,
+  }) => {
+    const { state } = await install(page, store);
+    await page.addInitScript((message) => {
+      const original = window.__TAURI_INTERNALS__.invoke;
+      window.__rejectRepositorySave = true;
+      window.__TAURI_INTERNALS__.invoke = (command, args) => {
+        if (
+          command === "save_resource" &&
+          args.edit.kind === "repository" &&
+          window.__rejectRepositorySave
+        ) {
+          return Promise.reject(message);
+        }
+        return original(command, args);
+      };
+    }, message);
+    const browser = await open(page, store);
+    await browser.getByLabel("Repository owner").selectOption(corporate.login);
+    await expect(browser.locator("[data-pick]")).toHaveCount(1);
+    await browser.locator("[data-pick]").click();
+    await expect(browser.getByRole("alert")).toContainText(message);
+    await expect(browser.locator("[data-pick]")).toHaveCount(
+      invalidates ? 0 : 1,
+    );
+    if (invalidates) {
+      await expect(browser.getByLabel("Repository owner")).toBeDisabled();
+      await expect(browser.getByLabel("Find a repository")).toBeDisabled();
+      await expect(browser.getByRole("status")).toHaveText(
+        "Repository browsing unavailable.",
+      );
+    } else {
+      await expect(browser.getByLabel("Repository owner")).toBeEnabled();
+      await expect(browser.getByLabel("Find a repository")).toBeEnabled();
+      await expect(browser.getByRole("status")).toContainText(
+        "discovery is incomplete",
+      );
+    }
+    await expect(
+      browser.getByRole("button", { name: "Retry", exact: true }),
+    ).toBeVisible();
+    expect((await store("snapshot")).settings.repositories).toBeUndefined();
+    expect(state.reads.at(-1).command).toBe("resolve_provider_repository");
+    const reads = state.reads.length;
+    await page.evaluate(() => {
+      window.__rejectRepositorySave = false;
+    });
+    await browser.getByRole("button", { name: "Retry", exact: true }).click();
+    await expect(browser.getByRole("alert")).toBeHidden();
+    await browser.getByLabel("Repository owner").selectOption(corporate.login);
+    await expect(browser.locator("[data-pick]")).toHaveCount(1);
+    expect(state.reads.length).toBeGreaterThan(reads);
+    expect(state.reads.every((read) => read.accountId === "22")).toBe(true);
+    await browser.locator("[data-pick]").click();
+    await expect(
+      page.getByRole("dialog", {
+        name: "Settings for fixture_corp/repository-101",
+        exact: true,
+      }),
+    ).toBeVisible();
+    expect(
+      (await store("snapshot")).settings.repositories[0].provider_account_id,
+    ).toBe("22");
+  });
+}
+
+test("200-entry known-final no-Link catalog is complete, while unknown-last full pages probe normally", async ({
+  page,
+  store,
+}) => {
+  const { state } = await install(page, store);
+  state.responses[22][`${catalog}1`].body = Array.from(
+    { length: 100 },
+    (_, index) => repository(index + 1, corporate.login, "User"),
+  );
+  state.responses[22][`${catalog}2`] = response(
+    Array.from({ length: 100 }, (_, index) => repository(index + 101, "orbit")),
+  );
+  state.responses[22][`${catalog}3`] = response([]);
+  const browser = await open(page, store);
+  await expect(browser.getByLabel("Repository owner")).toBeEnabled();
+  await expect(browser.getByRole("alert")).toBeHidden();
+  await browser.getByLabel("Repository owner").selectOption(corporate.login);
+  await expect(browser.locator("[data-pick]")).toHaveCount(100);
+  await expect(browser.getByRole("status")).toHaveText(
+    "100 accessible repositories loaded.",
+  );
+  await browser.getByLabel("Repository owner").selectOption("orbit");
+  await expect(browser.locator("[data-pick]")).toHaveCount(100);
+  await expect(browser.getByRole("alert")).toBeHidden();
+  delete state.responses[22][`${catalog}1`].headers.link;
+  await browser.getByLabel("Repository owner").selectOption(corporate.login);
+  await expect(browser.locator("[data-pick]")).toHaveCount(100);
+  await expect(browser.getByRole("alert")).toBeHidden();
+});

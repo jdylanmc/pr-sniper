@@ -316,7 +316,10 @@ impl<T: Transport> GithubClient<T> {
             explicit_next = next.is_some();
             if let Some(next) = next {
                 path = next;
-            } else if repositories.len() == 100 && !response.headers.contains_key("link") {
+            } else if repositories.len() == 100
+                && !response.headers.contains_key("link")
+                && advertised_last.is_none()
+            {
                 path = format!("{}{}", first.trim_end_matches('1'), page + 1);
             } else {
                 return Ok((result, warnings));

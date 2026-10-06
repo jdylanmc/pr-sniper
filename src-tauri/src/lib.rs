@@ -905,6 +905,52 @@ mod repository_save_account_tests {
         // Pausing an existing binding remains possible while disconnected.
         assert!(validate_repository_save_account(&auth, &generations, &edit, None).is_ok());
     }
+
+    #[test]
+    fn late_account_loss_rejects_the_native_commit_before_store_persistence() {
+        for failure in [
+            GithubAuthFailure::Expired,
+            GithubAuthFailure::MissingScope,
+            GithubAuthFailure::WrongIdentity,
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let store = Store::new(root.path().to_path_buf());
+            let mut auth = GithubAuth::new();
+            for (id, login) in [("22", "fixture_corp"), ("44", "neighbor")] {
+                auth.accounts.insert(
+                    id.into(),
+                    GithubAccountState::Connected(github::Identity {
+                        id: id.into(),
+                        login: login.into(),
+                    }),
+                );
+            }
+            let generations = BTreeMap::from([("22".into(), 3), ("44".into(), 7)]);
+            let repository: storage::Repository = serde_json::from_value(serde_json::json!({
+                "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "provider": "github",
+                "name": "fixture_corp/repository", "enabled": false,
+                "provider_account_id": "22", "provider_repository_id": "100"
+            }))
+            .unwrap();
+            let edit = storage::ResourceEdit::Repository {
+                id: repository.id.clone(),
+                expected: None,
+                value: Some(Box::new(repository)),
+            };
+            assert!(validate_repository_save_account(&auth, &generations, &edit, Some(3)).is_ok());
+            auth.set_failure("22", failure);
+            let result = validate_repository_save_account(&auth, &generations, &edit, Some(3))
+                .and_then(|()| store.save_resource(edit));
+            assert_eq!(
+                result.err().unwrap(),
+                "Reconnect the acting GitHub account before saving this repository."
+            );
+            assert!(store.load_settings().unwrap().repositories.is_empty());
+            assert!(auth.account_session_allowed("44").is_ok());
+            assert_eq!(generations["22"], 3);
+            assert_eq!(generations["44"], 7);
+        }
+    }
 }
 
 #[derive(Serialize)]
