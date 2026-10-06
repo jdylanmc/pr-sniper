@@ -88,11 +88,12 @@ async function open(
   return browseFromSettings(page, account, genie);
 }
 
-async function openPanelSettings(page) {
+async function openPanelSettings(page, clicked) {
   await page
     .getByRole("navigation", { name: "Application destinations" })
     .getByRole("button", { name: "Settings", exact: true })
     .click();
+  clicked?.();
   await expect(page.locator("[data-panel-heading]")).toHaveText("Settings");
   await expect(page.locator(".settings-overview")).toBeVisible();
   await expect(page.locator(".settings-window")).toHaveAttribute(
@@ -101,8 +102,9 @@ async function openPanelSettings(page) {
   );
 }
 
-async function browseFromSettings(page, account, genie) {
+async function browseFromSettings(page, account, genie, entryLookup) {
   if (genie) {
+    entryLookup?.();
     await page
       .locator(".settings-window")
       .getByRole("button", { name: "Set up with Genie", exact: true })
@@ -181,25 +183,53 @@ test("Genie repository browsing waits for the actual delayed Settings bootstrap"
   // The panel footer has its own snapshot; hold the subsequent Settings load.
   await expect(page.locator("[data-panel-version]")).toHaveText(/^v/);
   const held = ipc.holdNext("snapshot");
-  const navigation = openPanelSettings(page);
+  const clicked = Promise.withResolvers();
+  const order = [];
+  let released = false;
+  const opening = openPanelSettings(page, () => {
+    order.push("Settings click completed");
+    clicked.resolve();
+  }).then(() =>
+    browseFromSettings(page, corporate, true, () => {
+      order.push("Genie entry lookup");
+      expect(
+        released,
+        "Genie entry lookup preceded native Settings readiness",
+      ).toBe(true);
+    }),
+  );
+  const settled = opening.then(
+    (browser) => ({ browser }),
+    (cause) => ({ cause }),
+  );
   try {
     await held.arrived;
+    await clicked.promise;
     await expect(page.locator(".settings-window")).toBeVisible();
     await expect(page.locator("#save-status")).toHaveText(
       "Loading settings...",
     );
     await expect(page.locator('[data-panel-view="genie"]')).toBeHidden();
     expect(state.reads).toEqual([]);
+    expect(order).toEqual(["Settings click completed"]);
+    released = true;
+    order.push("Native Settings released");
     held.release();
-    await navigation;
-    const browser = await browseFromSettings(page, corporate, true);
+    const result = await settled;
+    if ("cause" in result) throw result.cause;
+    const { browser } = result;
+    expect(order).toEqual([
+      "Settings click completed",
+      "Native Settings released",
+      "Genie entry lookup",
+    ]);
     await expect(browser.getByLabel("Repository owner")).toBeEnabled();
     await browser.getByLabel("Repository owner").selectOption(corporate.login);
     await expect(browser.locator("[data-pick]")).toHaveCount(1);
     expect(state.reads.every((read) => read.accountId === "22")).toBe(true);
   } finally {
     held.release();
-    await navigation;
+    await settled;
   }
 });
 
