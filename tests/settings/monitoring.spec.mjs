@@ -308,9 +308,9 @@ test("Review Queue renders acting schedule identity and every persisted detectio
   });
   await page.getByRole("button", { name: "Check Now", exact: true }).click();
   await expect(
-    health.locator("p").filter({ hasText: "Global scan:" }),
+    health.locator("p").filter({ hasText: "Repository scans:" }),
   ).toContainText(
-    "Unavailable; configure a valid global cron schedule in Settings.",
+    "Unavailable; configure a valid inherited or repository cron schedule in Settings.",
   );
   await page.evaluate(() => {
     const invalidCron = window.__monitoringSnapshot.health.find(
@@ -320,7 +320,7 @@ test("Review Queue renders acting schedule identity and every persisted detectio
   });
   await page.getByRole("button", { name: "Check Now", exact: true }).click();
   await expect(
-    health.locator("p").filter({ hasText: "Global scan:" }),
+    health.locator("p").filter({ hasText: "Repository scans:" }),
   ).toContainText("No eligible repositories; no provider scan is scheduled.");
   await expect
     .poll(() => page.evaluate(() => window.__monitoringChecks))

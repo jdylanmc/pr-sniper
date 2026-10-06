@@ -972,11 +972,11 @@ export function renderMonitoring(
           snapshot.global_scan.next_run > 0
             ? time(snapshot.global_scan.next_run)
             : hasInvalidGlobalCron
-              ? "Unavailable; configure a valid global cron schedule in Settings"
+              ? "Unavailable; configure a valid inherited or repository cron schedule in Settings"
               : hasSchedulableRepository
-                ? "Unavailable; choose a global cron schedule in Settings"
+                ? "Unavailable; check saved repository schedules in Settings"
                 : "No eligible repositories; no provider scan is scheduled";
-        scan.textContent = `Global scan: ${snapshot.global_scan.schedule_key}. Next scan: ${nextScan}. Pending repositories: ${snapshot.global_scan.pending.length}.`;
+        scan.textContent = `Repository scans: ${snapshot.global_scan.schedule_key}. Next scan: ${nextScan}. Pending repositories: ${snapshot.global_scan.pending.length}.`;
         health.append(scan);
       }
       if (!snapshot.health.length) {

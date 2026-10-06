@@ -395,9 +395,6 @@ impl Settings {
 
     pub fn readiness(&self) -> ResourceReadiness {
         let mut issues = Vec::new();
-        if !matches!(self.defaults.schedule, Schedule::Cron { .. }) {
-            issues.push("Choose a global five-field cron schedule; the saved legacy interval is retained until explicitly replaced.".into());
-        }
         if !self.repositories.iter().any(|r| r.enabled) {
             issues.push("Select at least one repository. Monitoring has not been enabled.".into());
         }
@@ -406,6 +403,10 @@ impl Settings {
             .iter()
             .map(|repository| {
                 let mut issues = Vec::new();
+                let schedule = repository.overrides.schedule.as_ref().unwrap_or(&self.defaults.schedule);
+                if !matches!(schedule, Schedule::Cron { .. }) || schedule.validate().is_err() {
+                    issues.push("Choose a valid five-field cron schedule and IANA time zone for this repository, or repair its saved global schedule in Preferences.".into());
+                }
                 if repository.provider != ProviderId::Github
                     || repository.account_binding().is_none()
                 {
@@ -988,6 +989,23 @@ impl Store {
                         "A repository configuration's stable identity cannot be changed.".into(),
                     );
                 }
+                if let Some(value) = &value {
+                    if value.overrides.schedule
+                        != expected.as_ref().and_then(|r| r.overrides.schedule.clone())
+                        && value
+                            .overrides
+                            .schedule
+                            .as_ref()
+                            .is_some_and(|schedule| !matches!(schedule, Schedule::Cron { .. }))
+                    {
+                        return Err("Choose a repository five-field cron expression, or Use global schedule.".into());
+                    }
+                    if let Some(schedule) = &value.overrides.schedule {
+                        schedule.validate()?;
+                        crate::monitoring::next_run(schedule, chrono::Utc::now().timestamp())
+                            .map_err(|_| "This repository cron has no next occurrence. Choose a supported recurring five-field expression.")?;
+                    }
+                }
                 if let Some(index) = settings.repositories.iter().position(|r| r.id == id) {
                     if let Some(value) = value {
                         settings.repositories[index] = *value;
@@ -1006,6 +1024,11 @@ impl Store {
                     && !matches!(value.defaults.schedule, Schedule::Cron { .. })
                 {
                     return Err("Choose one global five-field cron expression.".into());
+                }
+                if value.defaults.schedule != expected.defaults.schedule {
+                    value.defaults.schedule.validate()?;
+                    crate::monitoring::next_run(&value.defaults.schedule, chrono::Utc::now().timestamp())
+                        .map_err(|_| "This global cron has no next occurrence. Choose a supported recurring five-field expression.")?;
                 }
                 settings.defaults = value.defaults;
                 settings.capacity = value.capacity;
@@ -1039,6 +1062,18 @@ impl Store {
         let unchanged_repository = matches!(&edit,
             ResourceEdit::Repository { expected: Some(expected), value: Some(value), .. }
                 if expected == value);
+        let schedule_only = match &edit {
+            ResourceEdit::Repository {
+                expected: Some(expected),
+                value: Some(value),
+                ..
+            } => {
+                let mut previous = (**expected).clone();
+                previous.overrides.schedule = value.overrides.schedule.clone();
+                previous == **value && expected != value
+            }
+            _ => false,
+        };
         let authorizing_id = match &edit {
             ResourceEdit::Repository {
                 id,
@@ -1066,9 +1101,9 @@ impl Store {
                     repository.name
                 ));
             }
-            if !matches!(settings.defaults.schedule, Schedule::Cron { .. }) {
+            if !matches!(repository.overrides.schedule.as_ref().unwrap_or(&settings.defaults.schedule), Schedule::Cron { .. }) {
                 return Err(format!(
-                    "{}: choose a global five-field cron schedule in Preferences before enabling monitoring.",
+                    "{}: choose a repository five-field cron override or a valid saved global schedule before enabling monitoring.",
                     repository.name
                 ));
             }
@@ -1105,11 +1140,12 @@ impl Store {
             }
         }
         if let Some(id) = authorizing_id.filter(|id| {
-            !unchanged_repository
-                || settings
-                    .repository_authorizations
-                    .get(id)
-                    .is_none_or(Option::is_none)
+            !schedule_only
+                && (!unchanged_repository
+                    || settings
+                        .repository_authorizations
+                        .get(id)
+                        .is_none_or(Option::is_none))
         }) {
             let repository = settings.repositories.iter().find(|r| r.id == id).unwrap();
             let binding = repository

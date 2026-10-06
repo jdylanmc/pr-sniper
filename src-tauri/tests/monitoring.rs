@@ -671,6 +671,490 @@ fn interval_cron_timezone_and_daylight_transitions_are_explicit() {
     );
 }
 
+fn cron(expression: &str, timezone: &str) -> Schedule {
+    Schedule::Cron {
+        expression: expression.into(),
+        timezone: timezone.into(),
+    }
+}
+
+fn save_cadence(store: &Store, index: usize, schedule: Option<Schedule>) -> Settings {
+    let saved = store.load_settings().unwrap();
+    let mut repository = saved.repositories[index].clone();
+    repository.overrides.schedule = schedule;
+    store
+        .save_resource(pr_sniper_lib::storage::ResourceEdit::Repository {
+            id: repository.id.clone(),
+            expected: Some(Box::new(saved.repositories[index].clone())),
+            value: Some(Box::new(repository)),
+        })
+        .unwrap()
+}
+
+#[test]
+fn repository_cadence_inheritance_global_edits_restart_and_override_removal_use_saved_timezones() {
+    let (_root, store) = store();
+    let saved = save_authorized_repository(&store);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let accounts = available_accounts(&[(ACCOUNT_ID, "actor")]);
+    let now = chrono::Utc
+        .with_ymd_and_hms(2026, 10, 6, 12, 0, 0)
+        .unwrap()
+        .timestamp();
+    monitor
+        .synchronize_configuration(&store, &accounts, now)
+        .unwrap();
+    assert_eq!(monitor.snapshot()[0].next_run, now + 900);
+    let override_saved = save_cadence(&store, 0, Some(cron("0 9 * * MON-FRI", "America/New_York")));
+    assert_eq!(
+        override_saved.repository_authorizations,
+        saved.repository_authorizations
+    );
+    let mut edited = override_saved.global_preferences();
+    edited.defaults.schedule = cron("*/5 * * * *", "Asia/Tokyo");
+    store
+        .save_resource(pr_sniper_lib::storage::ResourceEdit::Preferences {
+            expected: override_saved.global_preferences(),
+            value: edited,
+        })
+        .unwrap();
+    let reopened = Store::new(_root.path().to_path_buf());
+    let mut restarted = Monitor::restore(&reopened).unwrap();
+    restarted
+        .synchronize_configuration(&reopened, &accounts, now)
+        .unwrap();
+    let next = chrono::Utc
+        .with_ymd_and_hms(2026, 10, 6, 13, 0, 0)
+        .unwrap()
+        .timestamp();
+    assert_eq!(restarted.snapshot()[0].next_run, next);
+    let status = pr_sniper_lib::monitoring::repository_schedule_status(
+        &reopened,
+        &saved.repositories[0].id,
+        now,
+    )
+    .unwrap();
+    assert!(!status.inherited);
+    assert_eq!(status.next_run, Some(next));
+    assert_eq!(status.schedule, cron("0 9 * * MON-FRI", "America/New_York"));
+    save_cadence(&reopened, 0, None);
+    restarted
+        .synchronize_configuration(&reopened, &accounts, now)
+        .unwrap();
+    assert_eq!(restarted.snapshot()[0].next_run, now + 300);
+    assert_eq!(
+        restarted.snapshot()[0].schedule_key,
+        "cron:*/5 * * * *:Asia/Tokyo"
+    );
+}
+
+#[test]
+fn repository_override_is_schedulable_with_an_unconfigured_legacy_global_and_preserves_legacy_scope(
+) {
+    let (_root, store) = store();
+    let mut settings = store.load_settings().unwrap();
+    settings.defaults.schedule = Schedule::Interval {
+        minutes: 17,
+        timezone: "UTC".into(),
+    };
+    set_settings(&store, &settings);
+    let before = store.load_monitoring_state().unwrap();
+    let saved = save_cadence(&store, 0, Some(cron("*/5 * * * *", "UTC")));
+    assert!(saved.repository_authorizations.is_empty());
+    assert_eq!(
+        saved.readiness().repositories[0].issues,
+        Vec::<String>::new()
+    );
+    assert!(saved.readiness().configuration_ready);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let accounts = available_accounts(&[(ACCOUNT_ID, "actor")]);
+    monitor
+        .synchronize_configuration(&store, &accounts, 1_800_000_000)
+        .unwrap();
+    assert!(monitor.snapshot()[0].schedule_available);
+    assert_eq!(
+        store.load_monitoring_state().unwrap().activations,
+        before.activations
+    );
+    save_cadence(&store, 0, None);
+    monitor
+        .synchronize_configuration(&store, &accounts, 1_800_000_001)
+        .unwrap();
+    assert_eq!(monitor.snapshot()[0].next_run, 0);
+    let status = pr_sniper_lib::monitoring::repository_schedule_status(
+        &store,
+        &saved.repositories[0].id,
+        1_800_000_001,
+    )
+    .unwrap();
+    assert!(status.inherited);
+    assert!(status
+        .issue
+        .unwrap()
+        .contains("repair the saved global schedule"));
+}
+
+#[test]
+fn cadence_edits_keep_inflight_poll_results_and_pending_retry_budgets_valid() {
+    let (_root, store) = store();
+    save_authorized_repository(&store);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let now = 1_800_000_000;
+    let ticket = monitor.prepare_checks(&store, now, true).unwrap().remove(0);
+    save_cadence(&store, 0, Some(cron("0 * * * *", "America/New_York")));
+    monitor
+        .finish(
+            &store,
+            ticket,
+            Ok(poll_result(Vec::new(), "actor")),
+            now + 1,
+        )
+        .unwrap();
+    assert_eq!(
+        monitor.snapshot()[0].operation.as_ref().unwrap().state,
+        OperationState::Completed
+    );
+    let ticket = monitor
+        .prepare_checks(&store, now + 2, true)
+        .unwrap()
+        .remove(0);
+    monitor
+        .finish(
+            &store,
+            ticket,
+            Err(ConnectionError::RateLimitedAfter(30)),
+            now + 3,
+        )
+        .unwrap_err();
+    let retry = monitor.snapshot()[0].operation.clone().unwrap();
+    save_cadence(&store, 0, Some(cron("*/5 * * * *", "Asia/Tokyo")));
+    assert!(monitor
+        .prepare_checks(&store, now + 4, true)
+        .unwrap()
+        .is_empty());
+    assert_eq!(monitor.snapshot()[0].operation.as_ref().unwrap(), &retry);
+    assert_eq!(monitor.snapshot()[0].next_run, now + 33);
+    let ticket = monitor
+        .prepare_checks(&store, now + 33, false)
+        .unwrap()
+        .remove(0);
+    monitor
+        .finish(
+            &store,
+            ticket,
+            Ok(poll_result(Vec::new(), "actor")),
+            now + 34,
+        )
+        .unwrap();
+    assert!(monitor.snapshot()[0].next_run > now + 34);
+    assert!(monitor
+        .prepare_checks(&store, now + 35, false)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn repository_cadence_native_scheduler_preserves_spring_and_fall_dst_semantics() {
+    let (_root, store) = store();
+    save_authorized_repository(&store);
+    let zone = chrono_tz::America::New_York;
+    for (cron_text, before, expected) in [
+        (
+            "30 2 * * *",
+            zone.with_ymd_and_hms(2026, 3, 8, 1, 0, 0)
+                .unwrap()
+                .timestamp(),
+            zone.with_ymd_and_hms(2026, 3, 8, 3, 0, 0)
+                .unwrap()
+                .timestamp(),
+        ),
+        (
+            "30 1 * * *",
+            zone.with_ymd_and_hms(2026, 11, 1, 0, 30, 0)
+                .unwrap()
+                .timestamp(),
+            zone.with_ymd_and_hms(2026, 11, 1, 1, 30, 0)
+                .earliest()
+                .unwrap()
+                .timestamp(),
+        ),
+    ] {
+        save_cadence(&store, 0, Some(cron(cron_text, "America/New_York")));
+        let mut restarted = Monitor::restore(&store).unwrap();
+        assert!(restarted
+            .prepare_checks(&store, before, false)
+            .unwrap()
+            .is_empty());
+        assert_eq!(restarted.snapshot()[0].next_run, expected);
+        let ticket = restarted
+            .prepare_checks(&store, expected, false)
+            .unwrap()
+            .remove(0);
+        restarted
+            .finish(
+                &store,
+                ticket,
+                Ok(poll_result(Vec::new(), "actor")),
+                expected + 1,
+            )
+            .unwrap();
+        let next_day = zone
+            .with_ymd_and_hms(2026, 11, 2, 1, 30, 0)
+            .unwrap()
+            .timestamp();
+        if cron_text == "30 1 * * *" {
+            assert_eq!(restarted.snapshot()[0].next_run, next_day);
+            assert!(restarted
+                .prepare_checks(&store, expected + 3600, false)
+                .unwrap()
+                .is_empty());
+        }
+    }
+}
+
+#[test]
+fn changed_cadence_does_not_create_another_unchanged_iteration_or_normal_job() {
+    let (_root, store) = store();
+    save_authorized_repository(&store);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let now = 1_800_000_000;
+    let observation = pull("9", 1, "11", "author", &[], HEAD_A, "2027-01-15T00:00:00Z");
+    check(
+        &mut monitor,
+        &store,
+        now,
+        vec![observation.clone()],
+        "actor",
+    )
+    .unwrap();
+    let before = store.load_queue_state().unwrap();
+    save_cadence(&store, 0, Some(cron("*/5 * * * *", "Asia/Tokyo")));
+    assert!(monitor
+        .prepare_checks(&store, now + 2, false)
+        .unwrap()
+        .is_empty());
+    let due = monitor.snapshot()[0].next_run;
+    let ticket = monitor
+        .prepare_checks(&store, due, false)
+        .unwrap()
+        .remove(0);
+    monitor
+        .finish(
+            &store,
+            ticket,
+            Ok(poll_result(vec![observation], "actor")),
+            due + 1,
+        )
+        .unwrap();
+    let after = store.load_queue_state().unwrap();
+    assert_eq!(after.jobs, before.jobs);
+    assert_eq!(after.next_enqueue_order, before.next_enqueue_order);
+    assert_eq!(
+        after.tracked[0].iteration_id,
+        before.tracked[0].iteration_id
+    );
+    assert_eq!(after.tracked[0].iteration, before.tracked[0].iteration);
+}
+
+#[test]
+fn cadence_reload_retimes_unstarted_due_discovery_without_cancelling_the_shared_binding_read() {
+    let (_root, store) = store();
+    let mut settings = store.load_settings().unwrap();
+    settings.defaults.schedule = cron("*/5 * * * *", "UTC");
+    let mut second = settings.repositories[0].clone();
+    second.id = "00000000-0000-4000-8000-000000000002".into();
+    second.provider_account_id = Some("23".into());
+    settings.repositories.push(second);
+    set_settings(&store, &settings);
+    activate_repository(&store, &settings.repositories[1].id, 0, BTreeMap::new());
+    let accounts = available_accounts(&[("22", "actor"), ("23", "other")]);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let now = chrono::Utc
+        .with_ymd_and_hms(2026, 10, 6, 12, 0, 0)
+        .unwrap()
+        .timestamp();
+    assert!(monitor
+        .prepare_checks_with_accounts(&store, &accounts, now, false)
+        .unwrap()
+        .is_empty());
+    let ticket = monitor
+        .prepare_checks_with_accounts(&store, &accounts, now + 300, false)
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        store
+            .load_monitoring_state()
+            .unwrap()
+            .global_scan
+            .unwrap()
+            .pending
+            .len(),
+        2
+    );
+    save_cadence(&store, 1, Some(cron("0 * * * *", "UTC")));
+    monitor
+        .synchronize_configuration(&store, &accounts, now + 301)
+        .unwrap();
+    assert!(monitor.snapshot()[0].in_flight);
+    assert_eq!(monitor.snapshot()[1].next_run, now + 3600);
+    assert_eq!(
+        store
+            .load_monitoring_state()
+            .unwrap()
+            .global_scan
+            .unwrap()
+            .pending
+            .len(),
+        1
+    );
+    monitor
+        .finish_with_accounts(
+            &store,
+            &accounts,
+            ticket,
+            Ok(poll_result(Vec::new(), "actor")),
+            now + 302,
+        )
+        .unwrap();
+    assert!(monitor
+        .prepare_checks_with_accounts(&store, &accounts, now + 303, false)
+        .unwrap()
+        .is_empty());
+}
+
+#[derive(Clone)]
+struct CadenceProvider {
+    requests: Arc<Mutex<Vec<String>>>,
+}
+
+impl Transport for CadenceProvider {
+    fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+        self.requests.lock().unwrap().push(path.into());
+        let body = if path == "/user" {
+            json!({"id":22,"login":"actor"})
+        } else if path == "/repos/example/repo" || path == "/repos/example/other" {
+            let other = path.ends_with("/other");
+            json!({"id":if other {200} else {100}, "full_name":if other {"example/other"} else {"example/repo"},
+                "private":false,"archived":false,"disabled":false,"permissions":{"pull":true}})
+        } else if path.contains("/pulls?") {
+            json!([])
+        } else {
+            return Err(ConnectionError::InvalidResponse);
+        };
+        Ok(Response {
+            status: 200,
+            headers: BTreeMap::from([("x-oauth-scopes".into(), "repo".into())]),
+            body: serde_json::to_vec(&body).unwrap(),
+        })
+    }
+}
+
+#[test]
+fn due_repository_isolation_uses_real_provider_request_counts_and_pause_disabled_gates() {
+    let (_root, store) = store();
+    let mut settings = store.load_settings().unwrap();
+    settings.defaults.schedule = cron("*/5 * * * *", "UTC");
+    let mut other = settings.repositories[0].clone();
+    other.id = "00000000-0000-4000-8000-000000000002".into();
+    other.name = "example/other".into();
+    other.provider_repository_id = Some("200".into());
+    other.overrides.schedule = Some(cron("0 * * * *", "UTC"));
+    settings.repositories.push(other);
+    set_settings(&store, &settings);
+    activate_repository(&store, &settings.repositories[1].id, 0, BTreeMap::new());
+    let accounts = available_accounts(&[(ACCOUNT_ID, "actor")]);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let client = GithubClient::new(CadenceProvider {
+        requests: requests.clone(),
+    });
+    let now = chrono::Utc
+        .with_ymd_and_hms(2026, 10, 6, 12, 0, 0)
+        .unwrap()
+        .timestamp();
+    assert!(monitor
+        .prepare_checks_with_accounts(&store, &accounts, now, false)
+        .unwrap()
+        .is_empty());
+    assert!(requests.lock().unwrap().is_empty());
+    for minute in [5, 10, 60] {
+        let due = now + minute * 60;
+        let tickets = monitor
+            .prepare_checks_with_accounts(&store, &accounts, due, false)
+            .unwrap();
+        assert_eq!(tickets.len(), if minute == 60 { 2 } else { 1 });
+        for ticket in tickets {
+            let connection = client
+                .connect(&ticket.name, Some(&ticket.provider_account_id))
+                .unwrap();
+            let pulls = client.poll_pull_requests(&connection.repository).unwrap();
+            monitor
+                .finish_with_accounts(
+                    &store,
+                    &accounts,
+                    ticket,
+                    Ok(PollResult {
+                        connection,
+                        pull_requests: pulls,
+                    }),
+                    due + 1,
+                )
+                .unwrap();
+        }
+        if minute == 5 {
+            let settings = store.load_settings().unwrap();
+            let mut preferences = settings.global_preferences();
+            preferences.defaults.schedule = cron("*/10 * * * *", "UTC");
+            store
+                .save_resource(pr_sniper_lib::storage::ResourceEdit::Preferences {
+                    expected: settings.global_preferences(),
+                    value: preferences,
+                })
+                .unwrap();
+            monitor
+                .synchronize_configuration(&store, &accounts, due + 2)
+                .unwrap();
+            let health = monitor.snapshot();
+            assert_eq!(health[0].next_run, now + 600);
+            assert_eq!(health[1].next_run, now + 3600);
+            assert_eq!(health[1].schedule_key, "cron:0 * * * *:UTC");
+        }
+    }
+    let count = |name: &str| {
+        requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|p| p.starts_with(&format!("/repos/{name}/pulls?state=open&sort=")))
+            .count()
+    };
+    assert_eq!(count("example/repo"), 3);
+    assert_eq!(count("example/other"), 1);
+    let before = requests.lock().unwrap().len();
+    store
+        .save_automation(&pr_sniper_lib::capacity::Automation { paused: true })
+        .unwrap();
+    save_cadence(&store, 1, Some(cron("* * * * *", "UTC")));
+    assert!(monitor
+        .prepare_checks_with_accounts(&store, &accounts, now + 7200, true)
+        .unwrap()
+        .is_empty());
+    let mut disabled = store.load_settings().unwrap();
+    disabled
+        .repositories
+        .iter_mut()
+        .for_each(|r| r.enabled = false);
+    set_settings(&store, &disabled);
+    store
+        .save_automation(&pr_sniper_lib::capacity::Automation { paused: false })
+        .unwrap();
+    assert!(monitor
+        .prepare_checks_with_accounts(&store, &accounts, now + 7201, true)
+        .unwrap()
+        .is_empty());
+    assert_eq!(requests.lock().unwrap().len(), before);
+}
+
 #[test]
 fn configured_repository_requires_explicit_scope_before_any_check() {
     let (_root, store) = unactivated_store();

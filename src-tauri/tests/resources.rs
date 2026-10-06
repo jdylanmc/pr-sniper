@@ -61,6 +61,40 @@ fn agent_edit(expected: &Settings, name: &str) -> ResourceEdit {
 }
 
 #[test]
+fn repository_schedule_rejects_invalid_cron_timezone_and_unsupported_occurrences_atomically() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    store.save_settings(&settings()).unwrap();
+    for (expression, timezone, message) in [
+        ("not a cron", "UTC", "five-field"),
+        ("0 */5 * * * *", "UTC", "five-field"),
+        ("*/5 * * * *", "Not/A_Zone", "IANA"),
+        ("0 0 31 2 *", "UTC", "no next occurrence"),
+    ] {
+        let before = store.load_settings().unwrap();
+        let bytes = std::fs::read(fixture.path().join("config/settings.json")).unwrap();
+        let mut changed = before.repositories[0].clone();
+        changed.overrides.schedule = Some(pr_sniper_lib::policy::Schedule::Cron {
+            expression: expression.into(),
+            timezone: timezone.into(),
+        });
+        let error = store
+            .save_resource(ResourceEdit::Repository {
+                id: REPO.into(),
+                expected: Some(Box::new(before.repositories[0].clone())),
+                value: Some(Box::new(changed)),
+            })
+            .unwrap_err();
+        assert!(error.contains(message), "{error}");
+        assert_eq!(
+            std::fs::read(fixture.path().join("config/settings.json")).unwrap(),
+            bytes
+        );
+        assert_eq!(store.load_settings().unwrap(), before);
+    }
+}
+
+#[test]
 fn intelligence_resource_save_restart_and_job_snapshots_survive_later_agent_edits() {
     use pr_sniper_lib::storage::{AgentIntelligence, Store};
     let fixture = Fixture::new();

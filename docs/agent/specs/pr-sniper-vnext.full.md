@@ -35,6 +35,30 @@ Direct watch presentation (#121), repository cadence (#123), explicit PR intake
 (#119) and other visual bugs are not claimed implemented by this reconciliation.
 Product grants are unrelated to development-agent publication/merge authority.
 
+## Scoped repository cadence reconciliation (#123)
+
+The [approved October 5 amendment](https://github.com/jdylanmc/pr-sniper/issues/51#issuecomment-6008945622)
+and [nano cadence amendment](./pr-sniper-vnext.nano.md#inherited-repository-cadence-amendment-123)
+supersede D01, VN-002/PD-001, AC-002 and the historical repository-schedule
+exclusion in this document. Repositories inherit the saved global cron/time zone
+until explicitly overridden. Global changes affect inheritors only; override
+removal restores actual inheritance. Shared editors retain drafts on invalid
+cron/time-zone errors and show effective cadence/time zone/native next scan.
+
+Each repository's due instant gates its provider discovery/reconciliation read.
+Existing daylight-saving, missed-occurrence, backoff, cancellation, restart and
+binding-serialization semantics remain; valid overrides do not depend on an
+unrelated Preferences draft or legacy global interval. Global pause and
+repository disablement suppress every cadence. The shared AI dispatcher drains
+already-admitted work independently of polling. Cadence-only edits are not
+review input, activation consent or provider permission: retain running/actual
+snapshots and unchanged-iteration deduplication. No per-Agent timers, new
+scheduling framework, database or policy engine are introduced.
+
+Unrelated historical requirements below remain historical authority within their
+scope. Capability/watch/account-browser deliveries (#121/#122/#124) are not
+implemented by this reconciliation.
+
 ## Scoped always-on review reconciliation (#120)
 
 The [human-approved October 5 amendment](https://github.com/jdylanmc/pr-sniper/issues/51#issuecomment-6008945622)
@@ -53,7 +77,8 @@ reset or broad migration is needed. Actual job snapshots and uncertain provider
 write receipts are not erased or reconstructed. Review execution is read-only
 and grants no publication, approval or merge authority. All unrelated historical
 requirements remain except for the explicitly superseded capability rules above;
-#119, #121 and #123 are separate deliveries, not implementation claims here.
+#119/#121 and the capability/cadence amendments above are separate deliveries,
+not implementation claims of the always-on reconciliation.
 
 - Spec ID: SPEC-PR-SNIPER-VNEXT
 - Source: docs/agent/discovery/pr-sniper-vnext.md

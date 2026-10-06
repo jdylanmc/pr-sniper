@@ -1,5 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Agent, Doctrine, Policy, WatchedIdentity } from "./policy";
+import type {
+  Agent,
+  Doctrine,
+  Policy,
+  Schedule,
+  WatchedIdentity,
+} from "./policy";
+import { scheduleDescription } from "./policy";
 import type { Repository } from "./repositories";
 
 export interface Settings {
@@ -102,6 +109,30 @@ export interface SetupReview {
 }
 
 export const savedResources = () => invoke<SavedResources>("saved_resources");
+export interface RepositoryScheduleStatus {
+  inherited: boolean;
+  schedule: Schedule;
+  next_run: number | null;
+  issue: string | null;
+  enabled: boolean;
+  paused: boolean;
+}
+export const repositoryScheduleStatus = (repositoryId: string) =>
+  invoke<RepositoryScheduleStatus>("repository_schedule_status", {
+    repositoryId,
+  });
+export function scheduleStatusText(status: RepositoryScheduleStatus): string {
+  const { schedule } = status;
+  const next =
+    status.next_run === null
+      ? `Unavailable: ${status.issue}`
+      : new Intl.DateTimeFormat(undefined, {
+          dateStyle: "medium",
+          timeStyle: "short",
+          timeZone: schedule.timezone,
+        }).format(new Date(status.next_run * 1000));
+  return `${status.inherited ? "Use global schedule" : "Repository override"}: ${scheduleDescription(schedule)} / ${schedule.timezone}. Next scan: ${next}.${status.paused ? " Global monitoring is paused; no scans run." : ""}${!status.enabled ? " Repository is disabled; no scans run." : ""}`;
+}
 export function sameResource(left: unknown, right: unknown): boolean {
   const ordered = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(ordered);

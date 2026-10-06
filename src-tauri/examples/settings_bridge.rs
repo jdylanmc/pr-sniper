@@ -610,6 +610,20 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             }
             Ok(Value::Null)
         }
+        "repository_schedule_status" => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| "Clock is before the Unix epoch.")?
+                .as_secs() as i64;
+            serde_json::to_value(pr_sniper_lib::monitoring::repository_schedule_status(
+                store,
+                request.args["repositoryId"]
+                    .as_str()
+                    .ok_or("Repository identity required.")?,
+                now,
+            )?)
+            .map_err(|_| "Cannot encode schedule status.".into())
+        }
         "monitoring_snapshot" => serde_json::to_value(pr_sniper_lib::queue::snapshot(
             store,
             store

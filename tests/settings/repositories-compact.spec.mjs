@@ -157,16 +157,16 @@ test("repository saves leave unsaved Preferences and the saved global schedule i
   await page.locator("#global-cron").fill("invalid unsaved cron");
   await page.locator("#global-capacity").fill("9");
   const editor = await repositorySettings(page, "fixture/compact");
-  await expect(editor.locator("[data-global-schedule]")).toContainText(
+  await expect(editor.locator("[data-repository-schedule]")).toContainText(
     "7 */2 * * MON-FRI",
   );
-  await expect(editor.locator("[data-global-schedule]")).toContainText(
+  await expect(editor.locator("[data-repository-schedule]")).toContainText(
     "America/New_York",
   );
   await expect(
     editor.locator("[name=cron],[name=minutes],[name=timezone],#global-cron"),
   ).toHaveCount(0);
-  await editor.locator("[data-global-schedule]").scrollIntoViewIfNeeded();
+  await editor.locator("[data-repository-schedule]").scrollIntoViewIfNeeded();
   await capture(page, testInfo, "saved-global-schedule");
   await editor
     .getByLabel("Reviewer requests", { exact: true })
@@ -820,11 +820,11 @@ test("R2 correction: saved legacy interval and timezone remain visible but expli
   await provider(page);
   await start(page, store);
   const editor = await repositorySettings(page, "fixture/compact");
-  const schedule = editor.locator("[data-global-schedule]");
-  await expect(schedule).toContainText("Every 7 minutes");
+  const schedule = editor.locator("[data-repository-schedule]");
+  await expect(schedule).toContainText("Legacy interval: 7 minutes");
   await expect(schedule).toContainText("America/New_York");
   await expect(schedule).toContainText(
-    "Polling is blocked until you choose a global five-field cron schedule in Preferences",
+    "repair the saved global schedule in Preferences",
   );
   await expect(
     editor.locator("[name=cron],[name=minutes],[name=timezone],#global-cron"),

@@ -791,6 +791,38 @@ for (const [name, inherited, local, override, expected] of [
   });
 }
 
+test("repository override is summarized by shared Genie with native next scan and no global draft", async ({
+  page,
+  store,
+}) => {
+  await synthetic(page, store, true);
+  const saved = await seed(store);
+  saved.repositories[0].overrides = {
+    schedule: {
+      kind: "cron",
+      expression: "0 9 * * MON-FRI",
+      timezone: "America/New_York",
+    },
+  };
+  await store("seed_settings", saved);
+  await page.goto("/");
+  await page.locator("[data-genie-next]").click();
+  await saveConfiguration(page);
+  const schedule = page
+    .locator(".genie-repository dt")
+    .filter({ hasText: /^Schedule$/ })
+    .locator("+ dd");
+  await expect(schedule).toContainText(
+    "Repository override: Weekdays at 09:00 / America/New_York. Next scan:",
+  );
+  const status = await store("repository_schedule_status", { repositoryId });
+  expect(status.next_run).toBeGreaterThan(0);
+  expect(status.schedule).toEqual(saved.repositories[0].overrides.schedule);
+  await expect(page.locator(".genie-page")).toContainText(
+    "Global default schedule",
+  );
+});
+
 test("GEN3 reconnect of completed account A while B catalog waits requires new evidence", async ({
   page,
   store,

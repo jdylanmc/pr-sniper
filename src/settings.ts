@@ -27,7 +27,7 @@ import {
   primaryAssignmentId,
   repositoryProviderContext,
 } from "./repositories";
-import { doctrineTitles } from "./policy";
+import { doctrineTitles, schedulePresets, scheduleDescription } from "./policy";
 import {
   type Settings,
   type DoctrineCatalog,
@@ -38,6 +38,8 @@ import {
   savedResources,
   saveResource,
   sameResource,
+  repositoryScheduleStatus,
+  scheduleStatusText,
 } from "./resources";
 import "./settings.css";
 import { createDialogs } from "./dialogs";
@@ -1737,7 +1739,7 @@ export async function mountSettings(
               repository,
               saved.repositories?.find((r) => r.id === repository.id),
             )}" data-repository="${escape(repository.id)}" data-focus-key="repository:${escape(repository.id)}:settings">
-          <span class="settings-row-copy"><strong>${escape(repository.name)}</strong><small>${repository.provider === "github" ? "GitHub" : "Azure DevOps"} / ${escape(account?.login ?? "Account unavailable")}</small><small data-repository-monitoring-detail="${escape(repository.id)}">${escape(repositoryMonitoringDetail(committed))}</small></span>
+          <span class="settings-row-copy"><strong>${escape(repository.name)}</strong><small>${repository.provider === "github" ? "GitHub" : "Azure DevOps"} / ${escape(account?.login ?? "Account unavailable")}</small><small data-repository-monitoring-detail="${escape(repository.id)}">${escape(repositoryMonitoringDetail(committed))}</small><small data-saved-schedule>Reading saved schedule...</small></span>
           <span class="settings-row-value" data-monitoring-state="${state.toLowerCase()}">${state}${
             sameResource(
               repository,
@@ -1792,6 +1794,19 @@ export async function mountSettings(
       list
         .querySelectorAll<HTMLButtonElement>("[data-repository]")
         .forEach((button) => {
+          const summary = button.querySelector<HTMLElement>(
+            "[data-saved-schedule]",
+          )!;
+          void repositoryScheduleStatus(button.dataset.repository!).then(
+            (status) => {
+              if (summary.isConnected)
+                summary.textContent = scheduleStatusText(status);
+            },
+            (cause) => {
+              if (summary.isConnected)
+                summary.textContent = `Saved schedule unavailable: ${reason(cause)}`;
+            },
+          );
           button.onclick = () =>
             repositoryDialog(
               repositories().find((r) => r.id === button.dataset.repository)!,
@@ -2406,7 +2421,7 @@ export async function mountSettings(
     repository: ConfiguredRepository,
     opener: HTMLElement,
   ) {
-    const schedule = saved.defaults.schedule;
+    const schedule = repository.overrides?.schedule ?? saved.defaults.schedule;
     const pendingPull = pendingPullRequests.get(repository.id);
     const modal = dialog(
       `Settings for ${repository.name}`,
@@ -2419,11 +2434,19 @@ export async function mountSettings(
         <section class="repository-group"><div class="section-actions"><h2>Agents on this repository</h2><button class="primary" data-assign-agent ${agents().length ? "" : "disabled"}>Assign agent</button></div>
         <div class="assignment-list"></div>
         ${agents().length ? "" : '<p class="settings-hint">Create an agent first, on the Agents tab.</p>'}
-        <p class="settings-hint">Each assignment receives its own normal pass. Permissions belong here, not to the reusable Agent. Only the primary assesses eligible conversations on admitted open PRs. Primary selection grants no permissions; without a primary, reviews and permitted initial comments continue but replies, approval and merge are unavailable.</p>
+        <p class="settings-hint">Each assignment receives its own normal pass. Newly assigned Agents get missing work at the next repository scan; adding one does not start a scan. Permissions belong here, not to the reusable Agent. Only the primary assesses eligible conversations on admitted open PRs. Primary selection grants no permissions; without a primary, reviews and permitted initial comments continue but replies, approval and merge are unavailable.</p>
         </section><section class="repository-group"><div class="section-actions"><h2>People you watch</h2><button data-add-people>Add people</button></div>
         <div class="watchlist"></div>
         <p class="settings-hint">Optional. A nonempty effective watched-author filter qualifies those authors. An empty effective author filter means all authors. Pull requests requesting the signed-in account also qualify when the reviewer-request trigger is enabled. Exact GitHub login, no wildcards.</p>
-        </section><section class="repository-group" data-global-schedule><h2>Saved global schedule</h2><p>${schedule.kind === "cron" ? `<code>${escape(schedule.expression)}</code>` : `Every ${schedule.minutes} minutes (saved legacy schedule)`} / ${escape(schedule.timezone)}</p><p class="settings-hint">${schedule.kind === "cron" ? "One schedule scans enabled repositories. Change it in Preferences;" : "Polling is blocked until you choose a global five-field cron schedule in Preferences. The saved legacy interval is retained;"} repository and Agent assignments have no separate polling controls.</p></section>
+        </section><section class="repository-group" data-repository-schedule><h2>Monitoring schedule</h2>
+        <label for="repository-schedule-mode">Schedule</label><select id="repository-schedule-mode"><option value="inherit">Use global schedule</option><option value="override">Repository override</option></select>
+        <div data-schedule-override ${repository.overrides?.schedule ? "" : "hidden"}>
+        <label for="repository-cadence">Cadence</label><select id="repository-cadence"><option value="">Advanced cron</option>${schedulePresets.map(([cron, label]) => option(cron, label, "")).join("")}</select>
+        <label for="repository-cron">Cron expression<input id="repository-cron" value="${escape(schedule.kind === "cron" ? schedule.expression : "")}" placeholder="*/15 * * * *" /></label>
+        <label for="repository-timezone">Time zone<input id="repository-timezone" value="${escape(schedule.timezone)}" /></label></div>
+        <p class="settings-hint" data-cadence-description>${escape(scheduleDescription(schedule))} / ${escape(schedule.timezone)}</p>
+        <p class="settings-hint">Five fields: minute, hour, day, month, weekday. Uses this IANA time zone and its daylight-saving rules. Global changes affect inheriting repositories only. No per-Agent schedules. Cadence does not change pause, disablement, capacity or action permissions.</p>
+        <p class="settings-hint" data-effective-schedule aria-live="polite">Reading saved schedule...</p></section>
         <details class="repository-group"><summary>Repository and connection</summary><dl class="repository-binding-details"><dt>Account ID</dt><dd>${escape(repository.provider_account_id ?? "Unbound")}</dd><dt>Repository ID</dt><dd>${escape(repository.provider_repository_id ?? "Not verified")}</dd></dl><div class="settings-actions"><button id="rename-repository">Edit repository</button><button data-unbind-repository ${repository.provider_account_id ? "" : "disabled"}>Unbind account</button><button id="remove-repository">Remove repository</button></div><div class="connection"></div></details>
         <p class="settings-hint">Save applies only this repository. Back retains its draft for this session; Cancel discards it. Earlier assignment saves stay applied.</p>
         <p class="settings-hint" role="status" data-explicit-pr-status ${pendingPull ? "" : "hidden"}>${pendingPull ? `PR #${pendingPull.number} will be queued after valid Save, even outside watch filters. Pause, repository disablement, account/Agent availability and capacity still apply.` : ""}</p>
@@ -2483,6 +2506,65 @@ export async function mountSettings(
           updateRepositoryIntake = undefined;
       },
       { once: true },
+    );
+    const mode = modal.querySelector<HTMLSelectElement>(
+      "#repository-schedule-mode",
+    )!;
+    const cron = modal.querySelector<HTMLInputElement>("#repository-cron")!;
+    const timezone = modal.querySelector<HTMLInputElement>(
+      "#repository-timezone",
+    )!;
+    const cadence = modal.querySelector<HTMLSelectElement>(
+      "#repository-cadence",
+    )!;
+    const override = modal.querySelector<HTMLElement>(
+      "[data-schedule-override]",
+    )!;
+    const description = modal.querySelector<HTMLElement>(
+      "[data-cadence-description]",
+    )!;
+    mode.value = repository.overrides?.schedule ? "override" : "inherit";
+    const describe = () => {
+      const effective =
+        repository.overrides?.schedule ?? saved.defaults.schedule;
+      description.textContent = `${scheduleDescription(effective)} / ${effective.timezone}${mode.value === "inherit" ? " (saved global; Preferences drafts do not apply)" : " (draft; Save to apply)"}`;
+      cadence.value = schedulePresets.some(([value]) => value === cron.value)
+        ? cron.value
+        : "";
+    };
+    const updateSchedule = () => {
+      repository.overrides ??= {};
+      override.hidden = mode.value === "inherit";
+      if (mode.value === "inherit") delete repository.overrides.schedule;
+      else
+        repository.overrides.schedule = {
+          kind: "cron",
+          expression: cron.value,
+          timezone: timezone.value,
+        };
+      describe();
+      changed();
+    };
+    mode.onchange = updateSchedule;
+    cron.oninput = updateSchedule;
+    timezone.oninput = updateSchedule;
+    cadence.onchange = () => {
+      if (cadence.value) cron.value = cadence.value;
+      updateSchedule();
+      if (!cadence.value) cron.focus();
+    };
+    describe();
+    const effective = modal.querySelector<HTMLElement>(
+      "[data-effective-schedule]",
+    )!;
+    void repositoryScheduleStatus(repository.id).then(
+      (status) => {
+        if (effective.isConnected)
+          effective.textContent = `Saved schedule. ${scheduleStatusText(status)}`;
+      },
+      (cause) => {
+        if (effective.isConnected) effective.textContent = reason(cause);
+      },
     );
     const monitoring = modal.querySelector<HTMLInputElement>(
       "[data-repository-enabled]",
@@ -3051,9 +3133,9 @@ export async function mountSettings(
       <p class="preferences-warning">Lowering capacity stops surplus AI work and queues fresh attempts. Completed evidence and provider receipts remain.</p>
       <div class="preferences-schedule">
       <label>Cron expression<input id="global-cron" value="${escape(schedule.kind === "cron" ? schedule.expression : "")}" placeholder="*/15 * * * *" /></label>
-      <label>Schedule helper<select id="cron-helper"><option value="">Custom five-field expression</option><option value="*/15 * * * *">Every 15 minutes</option><option value="0 * * * *">Every hour</option><option value="0 9 * * MON-FRI">Weekdays at 09:00</option></select></label>
+      <label>Schedule helper<select id="cron-helper"><option value="">Custom five-field expression</option>${schedulePresets.map(([cron, label]) => option(cron, label, "")).join("")}</select></label>
       <label>Time zone<input id="global-timezone" value="${escape(schedule.timezone)}" /></label>
-      </div><p class="settings-hint">Five fields: minute, hour, day, month, weekday. Evaluated in this IANA time zone, including its daylight-saving rules. One global scan covers enabled, configured repositories. Shared AI capacity drains admitted work independently of polling.${schedule.kind === "interval" ? ` Saved legacy interval: ${schedule.minutes} minutes. Polling is blocked until you explicitly choose a cron expression; no automatic conversion.` : ""}</p></fieldset>
+      </div><p class="settings-hint">Five fields: minute, hour, day, month, weekday. Evaluated in this IANA time zone, including its daylight-saving rules. Repositories inherit this saved schedule unless explicitly overridden. Shared AI capacity drains admitted work independently of polling.${schedule.kind === "interval" ? ` Saved legacy interval: ${schedule.minutes} minutes. Inheriting repositories cannot poll until you explicitly choose a cron expression; no automatic conversion.` : ""}</p></fieldset>
       <fieldset aria-label="Review execution"><legend>Review execution</legend><p class="settings-hint">Eligible reviews run automatically through shared AI capacity. Pause automation or disable a repository to stop new work. Publication, approval and merge have separate permissions.</p></fieldset>
       <p class="settings-hint">Publication permissions are set on each repository's Agent assignments. Publish Comment and primary Reply Comment are independent; choosing primary grants neither.</p>
       <p class="settings-hint preferences-permissions">Approve and Merge remain separate repository-assignment permissions, never global grants.</p></div>
