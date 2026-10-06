@@ -210,7 +210,7 @@ export async function mountSettings(
       .join("")}</select></label></aside>`
   }
     <div class="settings-main"><div class="settings-genie-entry"><button type="button" data-open-genie>Set up with Genie</button><button type="button" data-return-genie hidden>Back to Genie</button><p data-genie-save-note hidden>Each save is applied immediately. Close hides this editor; Back and Cancel follow the unsaved-field guidance below. Repository Save is authorization; no further scope confirmation is needed.</p></div><header class="settings-heading"><h1 tabindex="-1">Settings</h1><p>Sign in to an AI subscription, then connect the repositories it should watch.</p></header>
-    <p id="error" role="alert" hidden></p><section id="content"></section>
+    <p id="error" role="alert" hidden></p><div data-catalog-conflict hidden><p role="alert">Resource saved. Agents changed in another window. The previous doctrine catalog and Agent selections are retained until you reload. Close open editors first; unrelated preference and repository drafts stay intact.</p><button type="button" data-reload-catalog>Reload Agents and doctrines</button></div><section id="content"></section>
     <footer class="settings-savebar"><span role="status" id="save-status">Loading settings...</span><button id="reload-settings" hidden>Discard draft and reload</button><button id="reset-settings" disabled>Reset changes</button><button class="primary" id="save-settings" disabled>Save preferences</button></footer></div>`;
   const content = app.querySelector<HTMLElement>("#content")!;
   const error = app.querySelector<HTMLElement>("#error")!;
@@ -218,6 +218,12 @@ export async function mountSettings(
   const save = app.querySelector<HTMLButtonElement>("#save-settings")!;
   const reset = app.querySelector<HTMLButtonElement>("#reset-settings")!;
   const reload = app.querySelector<HTMLButtonElement>("#reload-settings")!;
+  const catalogNotice = app.querySelector<HTMLElement>(
+    "[data-catalog-conflict]",
+  )!;
+  const reloadCatalog = app.querySelector<HTMLButtonElement>(
+    "[data-reload-catalog]",
+  )!;
   const accountParking = document.createElement("div");
   accountParking.hidden = true;
   // Keep native sign-in widgets mounted off-page without their layout selectors.
@@ -251,6 +257,7 @@ export async function mountSettings(
   let startupPending = false;
   let startupError = "";
   let conflict = false;
+  let catalogConflict = false;
   let revision = 0;
   let routeGeneration = 0;
   app
@@ -353,13 +360,17 @@ export async function mountSettings(
     revision++;
     status.textContent = busy
       ? "Working..."
-      : dirty()
-        ? "Unsaved changes"
-        : "All changes saved";
+      : catalogConflict
+        ? "Resource saved; reload Agents and doctrines. Drafts retained."
+        : dirty()
+          ? "Unsaved changes"
+          : "All changes saved";
     save.disabled = !preferencesDirty() || busy;
     reset.disabled = !dirty() || busy;
     reload.hidden = !conflict;
     reload.disabled = busy;
+    catalogNotice.hidden = !catalogConflict;
+    reloadCatalog.disabled = busy;
   }
 
   async function commitResource(
@@ -368,6 +379,8 @@ export async function mountSettings(
     accountGeneration?: number,
   ) {
     if (busy) throw "Another resource save is in progress. Try again.";
+    if (catalogConflict && (edit.kind === "agent" || edit.kind === "doctrine"))
+      throw "Resource changed in another window. Your draft has not been written. Close this editor and reload Agents and doctrines before saving.";
     busy = true;
     changed();
     if (modal) modal.dataset.closeLocked = "true";
@@ -383,32 +396,21 @@ export async function mountSettings(
     controls.forEach(({ control }) => (control.disabled = true));
     try {
       const result = await saveResource(edit, accountGeneration);
-      snapshot.doctrine_catalog = result.doctrine_catalog;
-      const key = (title: string) => title.trim().toLowerCase();
-      const titles = new Set(
-        (result.settings.doctrines ?? []).map((d) => key(d.title)),
+      const accepted = clone(saved);
+      acceptResource(accepted, clone(result.settings), edit);
+      // The submitted edit proves only its own changes, not external Agent
+      // edits. Keep the old catalog/reference snapshot until explicit reload.
+      catalogConflict ||= !sameResource(
+        accepted.agents ?? [],
+        result.settings.agents ?? [],
       );
       for (const settings of [saved, draft]) {
+        if (catalogConflict && edit.kind === "doctrine") continue;
         acceptResource(settings, clone(result.settings), edit);
-        // Adopt dependent reference repairs with the library, not unrelated
-        // Agent edits or still-valid selection changes and their CAS baselines.
-        for (const agent of settings.agents ?? []) {
-          const references = [
-            ...(agent.doctrine ? [agent.doctrine] : []),
-            ...(agent.doctrines ?? []),
-          ];
-          if (references.every((title) => titles.has(key(title)))) continue;
-          const committed = result.settings.agents?.find(
-            (a) => a.id === agent.id,
-          );
-          if (!committed) continue;
-          if (committed.doctrine === undefined) delete agent.doctrine;
-          else agent.doctrine = committed.doctrine;
-          if (committed.doctrines === undefined) delete agent.doctrines;
-          else agent.doctrines = clone(committed.doctrines);
-        }
-        settings.doctrines = clone(result.settings.doctrines ?? []);
+        if (!catalogConflict)
+          settings.doctrines = clone(result.settings.doctrines ?? []);
       }
+      if (!catalogConflict) snapshot.doctrine_catalog = result.doctrine_catalog;
       if (result.warning) showError(result.warning);
     } catch (cause) {
       if (reason(cause).startsWith("Resource changed")) conflict = true;
@@ -2436,7 +2438,7 @@ export async function mountSettings(
             draft.launch_at_login = fresh.settings.launch_at_login;
             saved.launch_at_login = fresh.settings.launch_at_login;
           }
-          snapshot = fresh;
+          snapshot = { ...fresh, doctrine_catalog: snapshot.doctrine_catalog };
           if (!fresh.settings) snapshot.login_registration = null;
           if (fresh.error) errors.push(fresh.error);
           else if (!fresh.settings)
@@ -2510,9 +2512,17 @@ export async function mountSettings(
       render();
     }
   };
-  reload.onclick = async () => {
-    if (busy || !conflict) return;
-    dialogs.closeAll();
+  reload.onclick = () => reloadSettings(false);
+  reloadCatalog.onclick = () => reloadSettings(true);
+  async function reloadSettings(catalogOnly: boolean) {
+    if (busy || !(catalogOnly ? catalogConflict : conflict)) return;
+    if (catalogOnly && dialogs.hasOpen()) {
+      showError(
+        "Close open editors before reloading Agents and doctrines. Your drafts are still available.",
+      );
+      return;
+    }
+    if (!catalogOnly) dialogs.closeAll();
     clearError();
     busy = true;
     changed();
@@ -2537,9 +2547,22 @@ export async function mountSettings(
         return;
       }
       snapshot = state;
-      saved = clone(state.settings);
-      draft = clone(saved);
-      conflict = false;
+      if (catalogOnly) {
+        for (const settings of [saved, draft]) {
+          settings.agents = clone(state.settings.agents ?? []);
+          settings.doctrines = clone(state.settings.doctrines ?? []);
+          settings.doctrine_catalog_version =
+            state.settings.doctrine_catalog_version;
+          settings.doctrine_reset = state.settings.doctrine_reset
+            ? clone(state.settings.doctrine_reset)
+            : undefined;
+        }
+      } else {
+        saved = clone(state.settings);
+        draft = clone(saved);
+        conflict = false;
+      }
+      catalogConflict = false;
       if (state.error) showError(state.error);
     } catch {
       showError(
@@ -2552,7 +2575,7 @@ export async function mountSettings(
       busy = false;
       render();
     }
-  };
+  }
   reset.onclick = () => {
     if (!busy) {
       draft = clone(saved);
@@ -2566,6 +2589,7 @@ export async function mountSettings(
       const state = await invoke<Snapshot>("snapshot");
       if (
         requestRevision !== revision ||
+        catalogConflict ||
         dirty() ||
         busy ||
         startupPending ||
@@ -2599,6 +2623,7 @@ export async function mountSettings(
     } catch {
       if (
         requestRevision !== revision ||
+        catalogConflict ||
         dirty() ||
         busy ||
         startupPending ||

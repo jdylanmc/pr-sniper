@@ -115,10 +115,14 @@ older jobs without a recorded revision say so rather than inferring today's
 catalog. Library changes still invalidate affected execution inputs through
 the existing review/publication guards.
 
-Successful resource saves refresh the library and repair Agent references
-renamed in another window together. Unrelated preference and repository drafts
-remain unsaved. Other concurrent Agent edits, including still-valid selection
-changes, retain compare-and-save protection rather than being silently adopted.
+Resource saves refresh the shared library only when the submitted edit explains
+the returned Agent state. External Agent changes, including doctrine renames,
+retain the previous coherent library, selections and revision with an explicit
+reload notice. The resource save is still persisted; Agent/doctrine saves are
+blocked until you close open editors and choose **Reload Agents and doctrines**.
+That explicit refresh adopts the current Agents and library together, preserving
+unrelated preference and repository drafts. It never guesses whether changed
+selection order or reused doctrine titles were merely mechanical renames.
 
 ## Native boundary
 
