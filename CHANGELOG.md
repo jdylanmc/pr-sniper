@@ -14,6 +14,11 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- Automatically queue and run eligible admitted reviews without manual-start
+  preferences or a per-PR Start click. Preserve pause, disabled repositories,
+  account/assignment availability, shared capacity, retries and independent
+  publication/approval/merge permissions; legacy start flags no longer block
+  work or rewrite captured evidence. (#120)
 - Update the browser-only visual prototype with account/organization repository
   browsing, URL entry, and compact drill-in rows. Newly added repositories open
   configuration with monitoring off.
@@ -21,12 +26,12 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   connected account and personal or organization owner, add verified URLs, and
   configure compact drill-in rows. Repository Save authorizes all currently open
   and future matching PRs, persisted atomically with the configuration, while
-  preserving global pause and independent review-start/action permissions. (#114)
+  preserving global pause and independent action permissions. (#114)
 - Use saved Agent assignments and repository configuration as ongoing review
   consent. Remove repeated revision-trust prompts from normal/retry, conversation
   and final reviews without changing read-only execution, revision validation or
   separate publication/approval/merge permissions. Existing blocked queue records
-  can proceed under their saved automatic-start policy.
+  can proceed under the current execution gates.
 - Group Accounts into AI Tooling and Git Repository provider lists before
   showing individual integration details. Preserve sign-in flows and nested
   Back focus; label unavailable providers Coming soon without setup actions.
