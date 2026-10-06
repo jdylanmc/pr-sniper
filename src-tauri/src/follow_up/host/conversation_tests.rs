@@ -86,7 +86,8 @@ fn tracking_fixture(count: usize) -> (tempfile::TempDir, Store) {
     let mut settings: Settings = serde_json::from_value(json!({"launch_at_login":false,"doctrines":[],
         "repositories":[{"id":REPO,"provider":"github","name":"example/repo","enabled":true,
             "provider_account_id":"22","provider_repository_id":"100","watched_authors":[{"id":"11","login":"author"}]}]})).unwrap();
-    settings.defaults.automatic_agent_start = true;
+    settings.defaults.automatic_agent_start = false;
+    settings.repositories[0].overrides.automatic_agent_start = Some(false);
     for i in 1..=count {
         let agent = format!("aaaaaaaa-aaaa-4aaa-8aaa-{i:012}");
         settings.agents.push(serde_json::from_value(json!({"id":agent,"name":format!("Agent {i}"),"model":"model",

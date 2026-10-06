@@ -139,7 +139,7 @@ fn start_at(store: &Store, run: &mut FollowUp, manual: bool, now: i64) {
         store,
         run,
         candidate.blocked,
-        candidate.automatic_start,
+        candidate.human_gate,
         manual,
         now,
     )
@@ -334,7 +334,6 @@ fn active_and_interrupted_analysis_reject_relevant_input_and_authority_changes()
         ("policy_prompt", |s| {
             s.defaults.prompt = "Different policy.".into()
         }),
-        ("start_policy", |s| s.defaults.automatic_agent_start = false),
         ("publication_policy", |s| {
             s.defaults.automatic_comment_publication = true
         }),
@@ -394,7 +393,7 @@ fn active_and_interrupted_analysis_reject_relevant_input_and_authority_changes()
                 &store,
                 &mut resumed,
                 candidate.blocked,
-                candidate.automatic_start,
+                candidate.human_gate,
                 false,
                 102,
             )
@@ -417,37 +416,39 @@ fn active_and_interrupted_analysis_reject_relevant_input_and_authority_changes()
 }
 
 #[test]
-fn analysis_gates_keep_cancellation_detection_and_explicit_start_checks() {
+fn analysis_gates_keep_cancellation_and_detection_without_a_manual_start_preference() {
     for change in [
         "cancelled",
         "removed",
         "head",
         "account",
         "superseded",
-        "start",
+        "legacy_start",
     ] {
         let (_root, store, mut run) = fixture();
-        if change == "start" {
+        if change == "legacy_start" {
             let mut settings = store.load_settings().unwrap();
             settings.defaults.automatic_agent_start = false;
+            settings.repositories[0].overrides.automatic_agent_start = Some(false);
             store.save_settings(&settings).unwrap();
             run.context.selection =
                 Selection::resolve(&settings, &run.context.job, ASSIGNMENT).unwrap();
+            run.context.selection.policy.automatic_agent_start = false;
             save_to_store(&store, &run).unwrap();
             let candidate = candidates(&store).unwrap().remove(0);
-            assert!(!candidate.automatic_start);
-            assert!(prepare_analysis(
+            assert!(candidate.automatic_start);
+            prepare_analysis(
                 &store,
                 &mut run,
                 candidate.blocked,
-                candidate.automatic_start,
+                candidate.human_gate,
                 false,
                 100,
             )
-            .is_err());
-            assert!(local_gate(&store, &run).is_err());
-            assert!(super::super::validate_analysis_commit(&store, &run, true).is_err());
-            start(&store, &mut run, true);
+            .unwrap();
+            save_to_store(&store, &run).unwrap();
+            assert!(!run.manual_start);
+            assert!(!run.context.selection.policy.automatic_agent_start);
             local_gate(&store, &run).unwrap();
             super::super::validate_analysis_commit(&store, &run, true).unwrap();
             continue;
@@ -495,7 +496,7 @@ fn completed_reply_candidates_and_history_never_recapture_current_settings() {
         &store,
         &mut run,
         candidate.blocked,
-        candidate.automatic_start,
+        candidate.human_gate,
         true,
         102,
     )

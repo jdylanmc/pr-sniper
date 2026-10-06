@@ -182,7 +182,7 @@ fn ready_requires_all_current_assignments_and_does_not_survive_configuration_cha
     store
         .save_queue(&[run.job.clone(), second.clone()])
         .unwrap();
-    assert_eq!(state(&store), State::ConfirmationRequired);
+    assert_eq!(state(&store), State::Queued);
     let mut second_run = run.clone();
     second_run.job = second;
     second_run.assignment_id = assignment.id;
@@ -364,13 +364,13 @@ fn review_matching_requires_the_actual_assignment_without_changing_persisted_key
 }
 
 #[test]
-fn start_and_retry_states_are_distinct_from_handoff_and_survive_restoration() {
+fn automatic_queue_and_retry_states_are_distinct_from_handoff_and_survive_restoration() {
     let root = tempfile::tempdir().unwrap();
     let store = Store::new(root.path().into());
     let mut run = review(1);
     seed(&store, &[run.clone()], &[]);
     store.save_reviews(&[]).unwrap();
-    assert_eq!(state(&store), State::ConfirmationRequired);
+    assert_eq!(state(&store), State::Queued);
     let mut configuration = settings();
     configuration.defaults.automatic_agent_start = true;
     store.save_settings(&configuration).unwrap();

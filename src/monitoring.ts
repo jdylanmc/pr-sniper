@@ -210,9 +210,10 @@ function waitingLabel(waiting: string) {
     case "trust_confirmation":
       return "Waiting for review under the saved Agent assignment.";
     case "human_start":
-      return "Automatic start is disabled; start an assigned Agent below.";
+    case "ai_capacity":
+      return "Queued automatically; waiting for shared AI capacity or automation resume.";
     case "agent_unavailable":
-      return "Automatic start is configured; an available assigned Agent can review this revision.";
+      return "Waiting for an available assigned Agent.";
     case "account_disconnected":
       return "Not actionable: the acting GitHub account is disconnected.";
     case "repository_disabled":
@@ -801,7 +802,7 @@ export function renderMonitoring(
       state.textContent = run
         ? `${run.phase}. State: ${run.operation.state}; attempt ${run.operation.attempt_count}; deadline ${run.operation.attempt_count === 0 ? "starts at first execution" : time(run.operation.retry_deadline)}. Copilot account: ${run.selection.agent.ai_account?.account_id ?? "not captured"}; model: ${run.selection.agent.model}.`
         : (candidate.blocked ??
-          "Waiting for manual start or the automatic start gate.");
+          "Queued automatically; waiting for shared AI capacity or automation resume.");
       row.append(state);
       const singleJob = options.panel && panelDetail?.type === "job";
       if (!singleJob && run && run.operation.attempt_count > 0)
@@ -913,7 +914,7 @@ export function renderMonitoring(
           (p) => p.review_operation_id === run.operation.id,
         );
         if (publication) renderPublication(row, candidate, publication);
-      } else if (!candidate.blocked) {
+      } else if (!candidate.blocked && run) {
         const isRunning = run?.operation.state === "running";
         const isQueued =
           !!run && ["queued", "interrupted"].includes(run.operation.state);
@@ -923,9 +924,7 @@ export function renderMonitoring(
           ? "Cancel review"
           : isQueued
             ? "Cancel queued review"
-            : run
-              ? "Retry review"
-              : "Start review";
+            : "Retry review";
         button.disabled = pending.has(candidate.key);
         button.addEventListener("click", () => {
           button.disabled = true;

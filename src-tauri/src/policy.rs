@@ -63,6 +63,7 @@ pub struct Policy {
     pub adapter: Adapter,
     pub selector: Selector,
     pub prompt: String,
+    /// Legacy configuration/evidence only; eligible reviews always start automatically.
     pub automatic_agent_start: bool,
     pub automatic_comment_publication: bool,
 }
@@ -201,6 +202,7 @@ pub struct PolicyOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Readable legacy preference, not an execution gate.
     pub automatic_agent_start: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automatic_comment_publication: Option<bool>,
@@ -236,9 +238,7 @@ impl PolicyOverrides {
                 .prompt
                 .clone()
                 .unwrap_or_else(|| defaults.prompt.clone()),
-            automatic_agent_start: self
-                .automatic_agent_start
-                .unwrap_or(defaults.automatic_agent_start),
+            automatic_agent_start: true,
             automatic_comment_publication: self
                 .automatic_comment_publication
                 .unwrap_or(defaults.automatic_comment_publication),

@@ -14,7 +14,8 @@ test("retained job inspector restores a legacy trust wait without a consent cont
   const fixture = await queueFixture(store);
   const review = fixture.review(9);
   review.job.waiting = "trust_confirmation";
-  fixture.settings.defaults.automatic_agent_start = true;
+  fixture.settings.defaults.automatic_agent_start = false;
+  fixture.settings.repositories[0].overrides = { automatic_agent_start: false };
   await store("seed_settings", fixture.settings);
   await store("seed_queue_state", {
     jobs: [review.job],
@@ -38,22 +39,24 @@ test("retained job inspector restores a legacy trust wait without a consent cont
   await expect(page.getByText(/Trust confirmation required/i)).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "Start review", exact: true }),
-  ).toBeEnabled();
-  await page
-    .getByRole("button", { name: "Start review", exact: true })
-    .scrollIntoViewIfNeeded();
+  ).toHaveCount(0);
+  await expect(page.locator("[data-monitor-detail]")).toContainText(
+    "Queued automatically",
+  );
   await page.screenshot({
     path: testInfo.outputPath("job-without-trust-prompt.png"),
   });
 });
 
-test("automatic review start is explicit, inherited and saved without enabling publication", async ({
+test("Settings removes legacy start controls without changing disablement or publication", async ({
   page,
   store,
 }) => {
   await store("save_repository", { repository: "fixture/review-policy" });
   const setup = (await store("snapshot")).settings;
   setup.repositories[0].enabled = false;
+  setup.defaults.automatic_agent_start = false;
+  setup.repositories[0].overrides = { automatic_agent_start: false };
   await store("seed_settings", setup);
   await page.goto("/?view=settings");
   const initial = (await store("snapshot")).settings;
@@ -61,45 +64,41 @@ test("automatic review start is explicit, inherited and saved without enabling p
   const automatic = page.getByRole("switch", {
     name: /^Start eligible reviews automatically/,
   });
-  await expect(automatic).not.toBeChecked();
-  await automatic.check();
-  expect(
-    (await store("snapshot")).settings.defaults.automatic_agent_start,
-  ).toBe(false);
+  await expect(automatic).toHaveCount(0);
+  await expect(
+    page.getByText(/Eligible reviews run automatically/),
+  ).toBeVisible();
+  await page.locator("#global-capacity").fill("5");
   await saveChanges(page);
   let settings = (await store("snapshot")).settings;
-  expect(settings.defaults.automatic_agent_start).toBe(true);
+  expect(settings.defaults.automatic_agent_start).toBe(false);
   expect(settings.repositories[0].enabled).toBe(false);
   expect(settings.defaults.automatic_comment_publication).toBe(
     initial.defaults.automatic_comment_publication,
   );
   await section(page, "Integrations");
   let modal = await repositorySettings(page, "fixture/review-policy");
-  await expect(modal.getByLabel("Review start", { exact: true })).toHaveValue(
-    "inherit",
+  await expect(modal.getByLabel("Review start", { exact: true })).toHaveCount(
+    0,
   );
-  await modal
-    .getByLabel("Review start", { exact: true })
-    .selectOption("manual");
+  await expect(modal).toContainText(
+    "Save repository authorizes automatic read-only reviews",
+  );
   await closeDialog(page);
   await saveChanges(page);
   settings = (await store("snapshot")).settings;
   expect(settings.repositories[0].overrides.automatic_agent_start).toBe(false);
   await page.reload();
   modal = await repositorySettings(page, "fixture/review-policy");
-  await expect(modal.getByLabel("Review start", { exact: true })).toHaveValue(
-    "manual",
+  await expect(modal.getByLabel("Review start", { exact: true })).toHaveCount(
+    0,
   );
-  await modal
-    .getByLabel("Review start", { exact: true })
-    .selectOption("inherit");
   await closeDialog(page);
   await saveChanges(page);
   settings = (await store("snapshot")).settings;
-  expect(
-    settings.repositories[0].overrides?.automatic_agent_start,
-  ).toBeUndefined();
-  expect(settings.defaults.automatic_agent_start).toBe(true);
+  expect(settings.repositories[0].overrides?.automatic_agent_start).toBe(false);
+  expect(settings.defaults.automatic_agent_start).toBe(false);
+  expect(settings.repositories[0].enabled).toBe(false);
 });
 
 function candidate() {
@@ -248,24 +247,27 @@ for (const mode of ["planned", "captured", "legacy", "queued", "failed-zero"]) {
   });
 }
 
-test("review start uses the exact candidate without an extra trust prompt", async ({
+test("review retry uses the exact failed candidate without an extra trust prompt", async ({
   page,
 }) => {
-  await page.addInitScript((review) => {
-    const original = window.__TAURI_INTERNALS__.invoke;
-    window.__reviewActions = [];
-    window.__TAURI_INTERNALS__.invoke = (command, args) => {
-      if (command === "monitoring_snapshot")
-        return Promise.resolve({ health: [], jobs: [], reviews: [review] });
-      if (command === "start_review") {
-        window.__reviewActions.push({ command, args });
-        return Promise.resolve();
-      }
-      return original(command, args);
-    };
-  }, candidate());
+  await page.addInitScript(
+    (review) => {
+      const original = window.__TAURI_INTERNALS__.invoke;
+      window.__reviewActions = [];
+      window.__TAURI_INTERNALS__.invoke = (command, args) => {
+        if (command === "monitoring_snapshot")
+          return Promise.resolve({ health: [], jobs: [], reviews: [review] });
+        if (command === "start_review") {
+          window.__reviewActions.push({ command, args });
+          return Promise.resolve();
+        }
+        return original(command, args);
+      };
+    },
+    { ...candidate(), run: run("failed") },
+  );
   await page.goto("/?view=queue");
-  const start = page.getByRole("button", { name: "Start review", exact: true });
+  const start = page.getByRole("button", { name: "Retry review", exact: true });
   await expect(page.getByRole("checkbox")).toHaveCount(0);
   await expect(start).toBeEnabled();
   await start.click();
