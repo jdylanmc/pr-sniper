@@ -388,7 +388,7 @@ for (const destination of ["panel", "legacy queue"]) {
         .click();
     }
     await expect(page.locator("#handoff-queue")).toContainText(
-      "Ready for your final review",
+      destination === "panel" ? "Ready for you" : "Ready for your final review",
     );
     if (destination === "panel")
       await page
@@ -807,7 +807,7 @@ test("unknown effects expose original reconciliation rather than another approve
     "Failed / recovery required",
   );
   await expect(page.locator("#handoff-queue")).not.toContainText(
-    "Ready for your final review",
+    "Ready for you",
   );
   await page
     .getByRole("button", { name: "Evidence and actions", exact: true })

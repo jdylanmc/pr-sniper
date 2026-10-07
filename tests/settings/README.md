@@ -20,6 +20,55 @@ same-login connection replacement. Existing session-cache, scope-loss and
 precommit controls remain covering evidence. No tests require live accounts,
 Keychain access, provider writes or desktop automation.
 
+`queue-visual.spec.mjs` exercises the production retained Queue with the real
+isolated Store bridge. Empty, populated and attention-only fixtures reconcile
+the approved `prototypes/v2/evidence/configured-queue.png` design with human-only
+handoffs: orange Ready for you and white Needs attention summaries, an actual
+capacity link to Running, and the same compact card structure when empty.
+Counts come from the existing native projection; no sample work, Agent lane,
+manual-start gate or personal-review acknowledgment is introduced.
+
+Captures include the actual renderer and a side-by-side comparison (approved
+panel crop left, actual Queue right). Image color samples and measured summary/
+card landmarks use the approved capture's 408x744 panel at desktop coordinates
+(813,42). Explicit tolerances allow platform typography and truthful captions,
+not the prototype's obsolete counts, Agent queue or workflow. Same-Store reloads
+must preserve screenshots within a 0.1% changed-pixel allowance for isolated
+rasterization differences (16 intensity levels per channel). Measurement artifacts include reference and
+actual image hashes. Keyboard/Back/refresh and unavailable-destination cases
+retain exact item identity and scroll/focus; media cases cover light/dark
+(the panel intentionally retains its approved light content), forced colors,
+reduced motion, tiny viewports, 1x/2x device scale and doubled actual text sizes.
+These browser/accessibility-tree checks do not establish native outer corners,
+desktop tray behavior or a live screen-reader session.
+
+Queue's heading, summary and error banner share its retained content scroller,
+including exact saved evidence and utility routes.
+Only the brand header, navigation and utilities stay pinned; other destinations
+keep their existing heading/summary placement. Short Queue panels lay out navigation
+at each label's intrinsic width and give the complete hide/quit guidance a footer
+row, rather than wrapping one label or squeezing guidance into a narrow column.
+No text size, counts or errors are reduced to make the evidence fit.
+
+The three combined regressions capture screenshots and measured content,
+navigation, footer and individual-control bounds before keyboard interaction:
+320x440 at 200% actual text, 320x300 with a monitoring-read error, and 320x300
+with both. The scrolling viewport must remain at least 64px high, every pinned
+control must fit completely, unknown counts remain unknown, and ordinary
+keyboard traversal must open the exact last handoff and retain scroll/focus on
+Back. Doubled card text persists across real row redraws. macOS WebKit uses
+Option+Tab for all-controls traversal, matching the existing Genie seam.
+Use `--browser webkit` with the same focused command to check the second engine.
+
+After the ordinary frontend and Store-bridge build, run only this lane's checks
+on an available private port, for example:
+
+```sh
+SETTINGS_TEST_PORT=1652 npm exec playwright -- test \
+  --config tests/settings/playwright.config.mjs queue-visual.spec.mjs \
+  --output /absolute/private/queue-visual
+```
+
 `agent-intelligence.spec.mjs` exercises advertised reasoning efforts, context
 tiers and token capacities through the shared Agent editor and real native
 resource saves/restarts. Account/model changes retain incompatible deliberate
@@ -320,7 +369,7 @@ cleanup and bounded contention deterministically, without timing sleeps as
 assertions. The test fixture reaps only the children it created, even on failure.
 The ordinary-command burst also requires every exact revision to survive.
 
-The conversation state-presentation loop completes the initial native Job view
+Each named conversation state-presentation case completes the initial native Job view
 and its reads, then completes the Queue UI navigation and its reads before
 directly requesting the exact Job again. IPC idle alone is not a route-completion
 contract: a queued UI command may not have dispatched yet, and the initial shell
@@ -569,6 +618,12 @@ stopped/backoff operations for both owned replies and primary mentions. Complete
 analysis is combined with quiet, human judgment, waiting/publishing, rejected,
 uncertain and confirmed publication states; unknown outcomes retain the original
 reconciliation controls, and only actual AI reservations animate.
+All 19 states for each kind are independently named tests (38 total), with fresh
+real Store fixtures and the unchanged 30-second per-test budget. State settings,
+snapshot/status/receipt/count oracles, Job -> Queue -> Job ordering and inspector
+captures are unchanged. Later cases explicitly retain the compact viewport and
+reduced motion previously inherited from the running-state capture; no cumulative
+19-case timeout, retry or skipped state is introduced.
 Native conversation tests exercise production scan admission,
 normal/reply/mention FIFO dispatch, provider comment pagination, scoped mention
 matching, current-head observation with immutable root provenance, exact

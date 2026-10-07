@@ -89,6 +89,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   compact identity and Change action. Require explicit choice across accounts,
   preserve saved actors through disconnect/recovery, and never borrow Copilot
   or CLI identity for repository access. (#117)
+- Restore the approved compact Queue summaries, handoff cards and designed empty
+  state, with truthful ready/attention counts, exact read-only evidence navigation
+  and Agent execution kept in Running. Preserve keyboard focus, accessibility
+  media and small-panel layouts. (#130)
 - Fix connected corporate-account repository browsing for enterprise-managed
   usernames. Retain accessible results with explicit partial authorization,
   metadata and pagination warnings, and make Retry use the selected account
