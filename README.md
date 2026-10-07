@@ -512,6 +512,10 @@ Account access, assigned Agents, capacity, current-revision checks and separate
 action permissions still apply. Intake failures remain visible without undoing
 a committed configuration Save; retrying Save does not duplicate admitted work.
 Ordinary repository URLs do not create explicit PR work.
+Back retains the explicit-PR draft for this session; Cancel discards it.
+Neither undoes configuration or admission already submitted by Save.
+Replacing the URL creates a new intake intent: an earlier completion cannot
+erase it, and earlier failures are identified separately from the current PR.
 
 Selecting adds a durable disabled, unassigned row and immediately opens its
 configuration. Existing stable account/repository bindings reopen without reset;
