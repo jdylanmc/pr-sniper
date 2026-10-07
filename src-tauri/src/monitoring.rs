@@ -500,6 +500,12 @@ pub struct PollResult {
     pub pull_requests: Vec<PullRequest>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ExplicitAdmission {
+    pub queued: bool,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonitoringError {
     Recoverable {
@@ -1114,6 +1120,106 @@ impl Monitor {
             }
         }
         Ok(())
+    }
+
+    pub fn admit_explicit_pull_request(
+        &mut self,
+        store: &Store,
+        accounts: &BTreeMap<String, AccountAvailability>,
+        expected: &crate::storage::Repository,
+        resolved: crate::github::intake::ResolvedTarget,
+        now: i64,
+    ) -> Result<ExplicitAdmission, String> {
+        let settings = store.load_settings()?;
+        if !settings
+            .repositories
+            .iter()
+            .any(|repository| repository == expected)
+        {
+            return Err("Repository configuration changed. Save the current configuration and retry this pull request.".into());
+        }
+        let pull = resolved
+            .pull_request
+            .ok_or("This URL does not identify a pull request.")?;
+        let binding = expected
+            .account_binding()
+            .ok_or("Choose a connected GitHub repository account.")?;
+        if resolved.connection.identity.id != binding.account.account_id
+            || resolved.connection.repository.id != binding.repository.repository_id
+            || resolved.connection.repository.name != expected.name
+            || pull.base_repository_id != binding.repository.repository_id
+            || !resolved.connection.capabilities.read
+        {
+            return Err("The pull request or acting repository account changed. Verify the URL using the saved account and retry.".into());
+        }
+        if !accounts
+            .get(&binding.account.account_id)
+            .is_some_and(|account| account.connected)
+        {
+            return Err("The saved GitHub account is unavailable. Reconnect it and retry this pull request.".into());
+        }
+        if !expected.enabled {
+            return Ok(ExplicitAdmission {
+                queued: false,
+                message: format!("PR #{} is not queued: this repository is disabled. Enable it and save to queue the requested PR.", pull.number),
+            });
+        }
+        if pull.state != Lifecycle::Open || pull.draft {
+            return Err(format!("PR #{} is not ready for review: it must be open and not a draft. Update it on GitHub and retry.", pull.number));
+        }
+        if expected.assignments.is_empty() {
+            return Err("Assign a saved Agent before queueing this pull request.".into());
+        }
+        self.synchronize_configuration(store, accounts, now)?;
+        let configured = configured_schedules(&settings);
+        let configuration = configured
+            .iter()
+            .find(|c| c.repository_id == expected.id)
+            .ok_or("Repository configuration is unavailable.")?;
+        let activation = self.state.activations.get(&expected.id).ok_or(
+            "Save this repository's valid configuration before queueing the pull request.",
+        )?;
+        let ticket = PollTicket {
+            health_key: configuration.health_key.clone(),
+            assignment_id: None,
+            repository_id: expected.id.clone(),
+            name: expected.name.clone(),
+            provider_account_id: binding.account.account_id,
+            provider_repository_id: binding.repository.repository_id,
+            policy: configuration.policy.clone(),
+            watched_authors: configuration.watched_authors.clone(),
+            trigger_policy: configuration
+                .trigger_policy
+                .clone()
+                .ok_or("Repository watch settings are invalid.")?,
+            updated_after: None,
+            activation_version: activation.version.clone(),
+            account_generation: 0,
+            assignments: configuration.assignments.clone(),
+            tracked: Vec::new(),
+        };
+        let number = pull.number;
+        let pull_id = pull.id.clone();
+        self.commit_success(
+            store,
+            &configured,
+            &ticket,
+            PollResult {
+                connection: resolved.connection,
+                pull_requests: vec![pull],
+            },
+            now,
+            Some(&pull_id),
+        )
+        .map_err(|error| error.message().to_string())?;
+        self.synchronize_jobs(store, &configured, accounts)?;
+        store.save_monitoring_state(&self.state)?;
+        let paused = store.load_automation()?.paused;
+        Ok(ExplicitAdmission {
+            queued: true,
+            message: format!("PR #{number} is admitted to the review queue{} Existing work for this iteration is reused. Account, Agent availability and shared capacity still gate execution; no action permissions were granted.",
+                if paused { "; monitoring is paused, so it will not run until resumed." } else { "." }),
+        })
     }
 
     pub fn cancel_pending_checks(&mut self, store: &Store) -> Result<(), String> {
@@ -1965,7 +2071,7 @@ impl Monitor {
         let outcome = match self.synchronize_jobs(store, &configured, accounts) {
             Ok(()) => match result {
                 Ok(result) => self
-                    .commit_success(store, &configured, &ticket, result, now)
+                    .commit_success(store, &configured, &ticket, result, now, None)
                     .and_then(|login| {
                         if let Some(health) = self.state.health.get_mut(&ticket.health_key) {
                             health.conversation_admission_pending = true;
@@ -2114,6 +2220,7 @@ impl Monitor {
         ticket: &PollTicket,
         result: PollResult,
         now: i64,
+        explicit_pull_id: Option<&str>,
     ) -> Result<String, MonitoringError> {
         let configuration = configured
             .iter()
@@ -2203,8 +2310,9 @@ impl Monitor {
                 if legacy.is_none()
                     && (pull.state != Lifecycle::Open
                         || pull.draft
-                        || !eligibility.eligible()
-                        || !(admission_candidate || eligibility.requested_reviewer))
+                        || (explicit_pull_id != Some(pull.id.as_str())
+                            && (!eligibility.eligible()
+                                || !(admission_candidate || eligibility.requested_reviewer))))
                 {
                     continue;
                 }
@@ -2451,17 +2559,19 @@ impl Monitor {
         self.state
             .activations
             .insert(ticket.repository_id.clone(), activation);
-        self.state.cursors.insert(
-            ticket.health_key.clone(),
-            PollCursor {
-                name: ticket.name.clone(),
-                account_id: result.connection.identity.id,
-                repository_id: result.connection.repository.id,
-                trigger_policy: ticket.trigger_policy.clone(),
-                updated_after: newest
-                    .map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
-            },
-        );
+        if explicit_pull_id.is_none() {
+            self.state.cursors.insert(
+                ticket.health_key.clone(),
+                PollCursor {
+                    name: ticket.name.clone(),
+                    account_id: result.connection.identity.id,
+                    repository_id: result.connection.repository.id,
+                    trigger_policy: ticket.trigger_policy.clone(),
+                    updated_after: newest
+                        .map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+                },
+            );
+        }
         Ok(result.connection.identity.login)
     }
 }

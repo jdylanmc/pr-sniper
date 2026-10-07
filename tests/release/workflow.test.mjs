@@ -706,7 +706,7 @@ test("hosted macOS WebKit adds a read-only pinned full-engine gate without nativ
       "rustup show active-toolchain",
       "npm ci",
       "npm exec playwright install webkit",
-      "npm run test:settings -- --browser=webkit",
+      "npm run test:settings -- --browser=webkit --workers=2",
     ],
   );
   for (const step of job.steps) {
@@ -721,4 +721,25 @@ test("hosted macOS WebKit adds a read-only pinned full-engine gate without nativ
     readFileSync("rust-toolchain.toml", "utf8"),
     /\[toolchain\]\s+channel = "\d+\.\d+\.\d+"/,
   );
+});
+
+test("WebKit bounded full-suite execution uses isolated file workers without extending deadlines", async () => {
+  const webkit = parse(
+    readFileSync(".github/workflows/macos-webkit.yml", "utf8"),
+  );
+  const job = webkit.jobs.webkit;
+  const suite = job.steps.find((step) =>
+    step.run?.startsWith("npm run test:settings"),
+  );
+  assert.equal(job["timeout-minutes"], 60);
+  assert.equal(suite["timeout-minutes"], 30);
+  assert.equal(
+    suite.run,
+    "npm run test:settings -- --browser=webkit --workers=2",
+  );
+  const { default: browser } =
+    await import("../settings/playwright.config.mjs");
+  assert.equal(browser.fullyParallel, false);
+  assert.equal(browser.workers, 1);
+  assert.equal(browser.retries, 0);
 });

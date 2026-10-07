@@ -503,6 +503,20 @@ administrator. No retry substitutes another account or the GitHub CLI login.
 GitHub account, and validates stable repository identity. AI accounts are not
 repository accounts; Azure DevOps remains Coming soon.
 
+GitHub PR URLs such as `https://github.com/owner/repository/pull/302`
+resolve both the repository and that exact PR. After valid **Save repository**,
+the requested PR is admitted immediately, even outside watch filters, without
+waiting for cron. Repeated URLs reuse existing work for the same iteration.
+Pause retains queued work; a deliberately disabled repository stays blocked.
+Account access, assigned Agents, capacity, current-revision checks and separate
+action permissions still apply. Intake failures remain visible without undoing
+a committed configuration Save; retrying Save does not duplicate admitted work.
+Ordinary repository URLs do not create explicit PR work.
+Back retains the explicit-PR draft for this session; Cancel discards it.
+Neither undoes configuration or admission already submitted by Save.
+Replacing the URL creates a new intake intent: an earlier completion cannot
+erase it, and earlier failures are identified separately from the current PR.
+
 Selecting adds a durable disabled, unassigned row and immediately opens its
 configuration. Existing stable account/repository bindings reopen without reset;
 the same remote can intentionally have different acting-account bindings.

@@ -129,6 +129,207 @@ fn result(pulls: Vec<PullRequest>) -> PollResult {
     }
 }
 
+fn explicit_configuration(count: usize) -> (Fixture, Store, Monitor) {
+    let (fixture, store, _) = configured(count);
+    let expected = store.load_settings().unwrap().repositories.remove(0);
+    store
+        .save_resource(ResourceEdit::Repository {
+            id: expected.id.clone(),
+            expected: Some(Box::new(expected.clone())),
+            value: Some(Box::new(expected)),
+        })
+        .unwrap();
+    let monitor = Monitor::restore(&store).unwrap();
+    (fixture, store, monitor)
+}
+
+fn explicit(
+    monitor: &mut Monitor,
+    store: &Store,
+    pull: PullRequest,
+) -> Result<monitoring::ExplicitAdmission, String> {
+    let expected = store.load_settings().unwrap().repositories.remove(0);
+    let resolved = result(vec![]);
+    monitor.admit_explicit_pull_request(
+        store,
+        &BTreeMap::from([(
+            "22".into(),
+            monitoring::AccountAvailability {
+                login: "acting-account".into(),
+                connected: true,
+            },
+        )]),
+        &expected,
+        pr_sniper_lib::github::intake::ResolvedTarget {
+            connection: resolved.connection,
+            pull_request: Some(pull),
+        },
+        NOW,
+    )
+}
+
+#[test]
+fn explicit_out_of_filter_pr_queues_immediately_and_reuses_completed_iteration() {
+    let (_fixture, store, mut monitor) = explicit_configuration(1);
+    let mut requested = pull('a');
+    requested.author.as_mut().unwrap().id = "99".into();
+    assert!(
+        explicit(&mut monitor, &store, requested.clone())
+            .unwrap()
+            .queued
+    );
+    let jobs = store.load_queue().unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert!(!jobs[0].watched_author && !jobs[0].all_authors && !jobs[0].requested_reviewer);
+    let settings = store.load_settings().unwrap();
+    assert!(monitoring::review_policy(&settings, &jobs[0], Some(&requested)).is_ok());
+    let review = completed(&settings, &jobs[0]);
+    store.save_reviews(&[review]).unwrap();
+    assert!(
+        explicit(&mut monitor, &store, requested.clone())
+            .unwrap()
+            .queued
+    );
+    assert_eq!(store.load_queue().unwrap(), jobs);
+    let mut restored = Monitor::restore(&store).unwrap();
+    assert!(
+        explicit(&mut restored, &store, requested.clone())
+            .unwrap()
+            .queued
+    );
+    assert_eq!(store.load_queue().unwrap(), jobs);
+    scan(&mut restored, &store, vec![requested.clone()], NOW + 3);
+    assert_eq!(store.load_queue().unwrap(), jobs);
+    let batch = pr_sniper_lib::capacity::Coordinator::default()
+        .dispatch(&store, NOW + 1)
+        .unwrap();
+    assert!(batch.errors.is_empty(), "{:?}", batch.errors);
+    assert!(
+        batch.dispatched.is_empty(),
+        "completed iteration must not run twice"
+    );
+    requested.head_sha = "b".repeat(40);
+    explicit(&mut restored, &store, requested).unwrap();
+    assert_eq!(store.load_queue_state().unwrap().tracked[0].iteration, 2);
+    assert_eq!(store.load_queue().unwrap().len(), 2);
+}
+
+#[test]
+fn explicit_pr_queue_survives_pause_and_drains_without_another_poll() {
+    let (_fixture, store, mut monitor) = explicit_configuration(2);
+    let mut settings = store.load_settings().unwrap();
+    settings.capacity = 1;
+    store.save_settings(&settings).unwrap();
+    store
+        .save_automation(&pr_sniper_lib::capacity::Automation { paused: true })
+        .unwrap();
+    let admission = explicit(&mut monitor, &store, pull('a')).unwrap();
+    assert!(admission.queued && admission.message.contains("paused"));
+    assert_eq!(store.load_queue().unwrap().len(), 2);
+    let coordinator = pr_sniper_lib::capacity::Coordinator::default();
+    assert!(coordinator
+        .dispatch(&store, NOW)
+        .unwrap()
+        .dispatched
+        .is_empty());
+    assert_eq!(store.load_queue().unwrap().len(), 2);
+    store
+        .save_automation(&pr_sniper_lib::capacity::Automation { paused: false })
+        .unwrap();
+    let batch = coordinator.dispatch(&store, NOW + 1).unwrap();
+    assert!(batch.errors.is_empty(), "{:?}", batch.errors);
+    assert_eq!(batch.dispatched.len(), 1);
+    assert!(coordinator
+        .dispatch(&store, NOW + 2)
+        .unwrap()
+        .dispatched
+        .is_empty());
+    assert!(store.load_publications().unwrap().is_empty());
+    assert!(store.load_actions().unwrap().effects.is_empty());
+}
+
+#[test]
+fn explicit_pr_rejects_stale_saved_configuration_without_queueing_work() {
+    let (_fixture, store, mut monitor) = explicit_configuration(1);
+    let mut expected = store.load_settings().unwrap().repositories.remove(0);
+    expected.enabled = false;
+    let resolved = result(vec![]);
+    let error = monitor
+        .admit_explicit_pull_request(
+            &store,
+            &BTreeMap::new(),
+            &expected,
+            pr_sniper_lib::github::intake::ResolvedTarget {
+                connection: resolved.connection,
+                pull_request: Some(pull('a')),
+            },
+            NOW,
+        )
+        .unwrap_err();
+    assert!(error.contains("configuration changed"));
+    assert!(store.load_queue().unwrap().is_empty());
+}
+
+#[test]
+fn explicit_pr_requires_saved_repository_authorization_not_just_a_url() {
+    let (_fixture, store, mut monitor) = explicit_configuration(1);
+    let mut settings = store.load_settings().unwrap();
+    settings.repository_authorizations.insert(REPO.into(), None);
+    store.save_settings(&settings).unwrap();
+    assert!(explicit(&mut monitor, &store, pull('a'))
+        .unwrap_err()
+        .contains("Save this repository"));
+    assert!(store.load_queue().unwrap().is_empty());
+}
+
+#[test]
+fn explicit_pr_cannot_bypass_disabled_account_agent_or_revision_gates() {
+    let (_fixture, store, mut monitor) = explicit_configuration(1);
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].enabled = false;
+    store.save_settings(&settings).unwrap();
+    let admission = explicit(&mut monitor, &store, pull('a')).unwrap();
+    assert!(!admission.queued && admission.message.contains("disabled"));
+    assert!(store.load_queue().unwrap().is_empty());
+    settings.repositories[0].enabled = true;
+    store.save_settings(&settings).unwrap();
+    let expected = settings.repositories[0].clone();
+    let resolved = result(vec![]);
+    assert!(monitor
+        .admit_explicit_pull_request(
+            &store,
+            &BTreeMap::new(),
+            &expected,
+            pr_sniper_lib::github::intake::ResolvedTarget {
+                connection: resolved.connection,
+                pull_request: Some(pull('a')),
+            },
+            NOW
+        )
+        .unwrap_err()
+        .contains("unavailable"));
+    let mut wrong = pull('a');
+    wrong.base_repository_id = "999".into();
+    assert!(explicit(&mut monitor, &store, wrong).is_err());
+    assert!(store.load_queue().unwrap().is_empty());
+    explicit(&mut monitor, &store, pull('a')).unwrap();
+    let job = store.load_queue().unwrap().remove(0);
+    let mut changed = pull('b');
+    assert!(monitoring::review_policy(&settings, &job, Some(&changed)).is_err());
+    changed = pull('a');
+    changed.draft = true;
+    assert!(explicit(&mut monitor, &store, changed).is_err());
+    settings.agents[0].ai_account = None;
+    store.save_settings(&settings).unwrap();
+    let coordinator = pr_sniper_lib::capacity::Coordinator::default();
+    assert!(coordinator
+        .dispatch(&store, NOW)
+        .unwrap()
+        .dispatched
+        .is_empty());
+    assert_eq!(coordinator.snapshot(&store, NOW).unwrap().blocked, 1);
+}
+
 fn scan(monitor: &mut Monitor, store: &Store, pulls: Vec<PullRequest>, at: i64) {
     let tickets = monitor.prepare_checks(store, at, true).unwrap();
     assert_eq!(tickets.len(), 1);
