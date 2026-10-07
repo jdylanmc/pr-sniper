@@ -271,6 +271,7 @@ test("held IPC replies retain concurrency after panel ownership ends", async ({
       visible: false,
       revision: before.revision + 3,
     });
+
     const saved = await store("save_repository", {
       repository: "example/held-reply",
     });
@@ -287,6 +288,50 @@ test("held IPC replies retain concurrency after panel ownership ends", async ({
     held.release();
     await reply;
   }
+});
+
+test("independent native Store roots commit overlapping staged mutations without sharing routes", async ({
+  dataRoot,
+  store,
+  probe,
+}) => {
+  await store("fixture_show_panel");
+  const otherRoot = join(dataRoot, "parallel-worker-root");
+  await mkdir(otherRoot);
+  const seed = probe("fixture_show_panel", {}, "loaded", otherRoot);
+  await seed.wait("loaded");
+  seed.release();
+  expect((await seed.response()).ok.route).toEqual({ tab: "queue" });
+
+  const first = probe("open_settings", {}, "staged");
+  await first.wait("staged");
+  const second = probe(
+    "panel_navigate",
+    { route: { tab: "running" } },
+    "staged",
+    otherRoot,
+  );
+  await second.wait("staged");
+  expect(
+    JSON.parse(await readFile(sessionPath(dataRoot), "utf8")).route,
+  ).toEqual({ tab: "queue" });
+  expect(
+    JSON.parse(await readFile(sessionPath(otherRoot), "utf8")).route,
+  ).toEqual({ tab: "queue" });
+
+  second.release();
+  expect((await second.response()).ok.route).toEqual({ tab: "running" });
+  expect(
+    JSON.parse(await readFile(sessionPath(dataRoot), "utf8")).route,
+  ).toEqual({ tab: "queue" });
+  first.release();
+  expect((await first.response()).ok.route).toEqual({ tab: "settings" });
+  expect(
+    JSON.parse(await readFile(sessionPath(dataRoot), "utf8")).route,
+  ).toEqual({ tab: "settings" });
+  expect(
+    JSON.parse(await readFile(sessionPath(otherRoot), "utf8")).route,
+  ).toEqual({ tab: "running" });
 });
 
 test("malformed session bytes are refused without replacement or successful defaults", async ({
