@@ -1123,6 +1123,9 @@ keeps its actual history: only verified new-comment supersession or a validated
 explicit answer retires the corresponding old readiness gate, not genuine
 failures, cancellation or unsettled provider operations. Minimal human gates
 survive physical cleanup and reopening.
+Queuing or interrupting a retry does not settle a genuine prior analysis failure;
+only a validated completed explicit recovery does. Successful result persistence
+rechecks the bound top-level trigger and captured discussion as well as threads.
 Each follow-up
 stores an immutable `target` (original publication/review/root) separately from
 its `context` (current iteration and captured selection). Legacy `trust_confirmed`

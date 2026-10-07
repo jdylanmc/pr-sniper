@@ -322,6 +322,9 @@ fn review_state(
 fn follow_up_state(candidate: &follow_up::host::Candidate) -> Option<State> {
     use follow_up::Phase;
     let run = &candidate.run;
+    if run.has_unsettled_analysis_failure() {
+        return Some(State::Failed);
+    }
     if matches!(run.phase, Phase::Quiet | Phase::Published) && !run.uncertain && run.error.is_none()
     {
         return None;
@@ -463,6 +466,9 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             }
             if let Some(state) = follow_up_state(follow_up) {
                 states.push(state);
+            }
+            if follow_up.run.has_unsettled_analysis_failure() {
+                warnings.insert("A prior analysis failure requires validated explicit recovery; queuing a retry is not settlement.".into());
             }
             for error in [&follow_up.blocked, &follow_up.run.error]
                 .into_iter()

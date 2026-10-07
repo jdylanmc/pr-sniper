@@ -1090,6 +1090,208 @@ fn pipeline_post_task_human_judgment_is_not_safe_supersession() {
     assert_eq!(store.load_follow_ups().unwrap()[0], run);
 }
 
+#[test]
+fn currentmain_top_level_success_commit_requires_current_trigger_and_discussion() {
+    for change in [
+        "unchanged",
+        "edit",
+        "delete",
+        "append",
+        "missing",
+        "binding",
+    ] {
+        let (_root, store, _, _) = fixture(1);
+        clear_local_review(&store);
+        let mut settings = store.load_settings().unwrap();
+        settings.repositories[0].assignments[0].comment = false;
+        settings.repositories[0].assignments[0]
+            .actions
+            .as_mut()
+            .unwrap()
+            .reply = false;
+        store.save_settings(&settings).unwrap();
+        let original = mention("701", "Explain the return value.");
+        let ticket = poll(&store, 'a', NOW + 10);
+        admit_scan(
+            &store,
+            &ticket,
+            mention_scan(vec![original.clone()]),
+            NOW + 12,
+        )
+        .unwrap();
+        let mut run =
+            prepare_dispatch(&store, &store.load_follow_ups().unwrap()[0].id, NOW + 20).unwrap();
+        let result = output_for(&run, ReplyDecision::Quiet, vec![]);
+        let captured = run.clone();
+        analysis_checkpoint(
+            &mut AnalysisObservation {
+                store: &store,
+                observation: Ok(Observation::Mention {
+                    comment: Some(original.clone()),
+                    replies: vec![original.clone()],
+                }),
+            },
+            &run,
+        )
+        .unwrap();
+        let comments = match change {
+            "edit" => vec![TopComment {
+                body: "Changed question".into(),
+                updated_at: "2026-10-01T00:00:00Z".into(),
+                ..original.clone()
+            }],
+            "delete" => vec![],
+            "append" => vec![original.clone(), mention("702", "Another discussion fact.")],
+            _ => vec![original],
+        };
+        let ticket = poll(&store, 'a', NOW + 30);
+        admit_scan(&store, &ticket, mention_scan(comments), NOW + 32).unwrap();
+        if change == "missing" || change == "binding" {
+            let mut ledger = store.load_feedback().unwrap();
+            if change == "missing" {
+                ledger.conversation_cursors.clear();
+            } else {
+                ledger.conversation_cursors[0].binding.account_id = "44".into();
+            }
+            store.save_feedback(&ledger).unwrap();
+        }
+        let outcome = complete_analysis(&store, &mut run, Ok(result), true, NOW + 33);
+        if change == "unchanged" {
+            outcome.unwrap();
+            assert_eq!(current_state(&store), crate::queue::State::MachineSignedOff);
+        } else {
+            assert_eq!(
+                outcome.unwrap_err().kind,
+                monitoring::OperationFailure::Permanent,
+                "{change}"
+            );
+            let saved = &store.load_follow_ups().unwrap()[0];
+            assert!(saved.result.is_none(), "{change}");
+            assert_eq!(saved.target, captured.target);
+            assert_eq!(saved.discussion, captured.discussion);
+            assert_eq!(saved.context, captured.context);
+            assert_ne!(
+                current_state(&store),
+                crate::queue::State::MachineSignedOff,
+                "{change}"
+            );
+        }
+    }
+}
+
+#[test]
+fn currentmain_failed_retry_stays_unsettled_until_validated_explicit_recovery() {
+    for owned in [false, true] {
+        for recovery in ["queued", "interrupted", "superseded", "completed"] {
+            let (_root, store, origin, thread) = fixture(1);
+            let mut thread = if owned {
+                thread
+            } else {
+                clear_local_review(&store);
+                let mut settings = store.load_settings().unwrap();
+                settings.repositories[0].assignments[0].comment = false;
+                store.save_settings(&settings).unwrap();
+                unowned_thread(&thread)
+            };
+            if owned {
+                explanation(&mut thread, "11");
+                observe(&store, &origin, &thread, 'a', vec![], NOW + 10);
+            } else {
+                observe_general(&store, &thread, 'a', NOW + 10);
+            }
+            let id = store.load_follow_ups().unwrap()[0].id.clone();
+            let mut run = prepare_dispatch(&store, &id, NOW + 20).unwrap();
+            complete_analysis(
+                &store,
+                &mut run,
+                Err(Failure::permanent("Incomplete source evidence.")),
+                true,
+                NOW + 21,
+            )
+            .unwrap_err();
+            let mut retry = request_analysis(&store, &id, true, NOW + 22).unwrap();
+            let history = retry.analysis_history.clone();
+            assert_eq!(history.len(), 1);
+            if recovery != "queued" {
+                retry
+                    .analysis
+                    .as_mut()
+                    .unwrap()
+                    .begin_ai_attempt(NOW + 23)
+                    .unwrap();
+                save_to_store(&store, &retry).unwrap();
+                match recovery {
+                    "interrupted" => super::super::super::restore(&store).unwrap(),
+                    "superseded" => {
+                        complete_analysis(
+                            &store,
+                            &mut retry,
+                            Err(Failure {
+                                kind: monitoring::OperationFailure::Superseded,
+                                ..Failure::permanent(super::super::super::SUPERSEDED_TRIGGER)
+                            }),
+                            true,
+                            NOW + 24,
+                        )
+                        .unwrap_err();
+                    }
+                    _ => {
+                        let result = output_for(&retry, ReplyDecision::Quiet, vec![]);
+                        complete_analysis(&store, &mut retry, Ok(result), true, NOW + 24).unwrap();
+                    }
+                }
+            }
+            let mut next = thread.comments.last().unwrap().clone();
+            next.id = if owned { "102" } else { "801" }.into();
+            next.reply_to = Some(thread.comments[0].id.clone());
+            thread.comments.push(next);
+            if owned {
+                observe(&store, &origin, &thread, 'a', vec![], NOW + 30);
+            } else {
+                observe_general(&store, &thread, 'a', NOW + 30);
+            }
+            let frozen = store.load_follow_ups().unwrap()[0].clone();
+            if recovery != "completed" {
+                assert_eq!(
+                    frozen
+                        .validate_observed_trigger(&Observation::Owned(thread.clone()))
+                        .unwrap_err()
+                        .kind,
+                    monitoring::OperationFailure::Permanent
+                );
+            }
+            let mut latest =
+                prepare_dispatch(&store, &store.load_follow_ups().unwrap()[1].id, NOW + 40)
+                    .unwrap();
+            let assessments = if owned {
+                vec![assessment(
+                    &latest.context.feedback[0].id,
+                    Disposition::Cleared,
+                )]
+            } else {
+                vec![]
+            };
+            let result = output_for(&latest, ReplyDecision::Quiet, assessments);
+            complete_analysis(&store, &mut latest, Ok(result), true, NOW + 41).unwrap();
+            assert_eq!(store.load_follow_ups().unwrap()[0], frozen);
+            assert_eq!(frozen.analysis_history, history);
+            if recovery == "completed" {
+                assert_eq!(current_state(&store), crate::queue::State::MachineSignedOff);
+            } else {
+                assert!(
+                    !candidates(&store).unwrap()[0].superseded,
+                    "{owned}/{recovery}"
+                );
+                assert_ne!(
+                    current_state(&store),
+                    crate::queue::State::MachineSignedOff,
+                    "{owned}/{recovery}"
+                );
+            }
+        }
+    }
+}
+
 struct AnalysisObservation<'a> {
     store: &'a Store,
     observation: Result<Observation, Failure>,
