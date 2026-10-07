@@ -890,6 +890,80 @@ mod repository_save_account_tests {
     use super::*;
 
     #[test]
+    fn monitoring_enable_rechecks_account_and_generation_but_disable_needs_no_provider_session() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::new(root.path().to_path_buf());
+        let mut settings = store.load_settings().unwrap();
+        let repository: storage::Repository = serde_json::from_value(serde_json::json!({
+            "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "provider":"github",
+            "name":"owner/repo", "enabled":false,
+            "provider_account_id":"22", "provider_repository_id":"100",
+            "assignments":[{
+                "id":"cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                "agent_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "schedule":{"kind":"interval","minutes":5,"timezone":"UTC"},
+                "comment":false,"approve":false
+            }]
+        }))
+        .unwrap();
+        settings.repositories.push(repository.clone());
+        settings.agents.push(
+            serde_json::from_value(serde_json::json!({
+                "id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "name":"Reviewer","model":"fixture-model","prompt":"Find defects.","signature":"fixture",
+                "ai_account":{"provider":"copilot","account_id":"33"}
+            }))
+            .unwrap(),
+        );
+        store.save_settings(&settings).unwrap();
+        let mut auth = GithubAuth::new();
+        auth.accounts.insert(
+            "22".into(),
+            GithubAccountState::Connected(github::Identity {
+                id: "22".into(),
+                login: "actor".into(),
+            }),
+        );
+        let generations = BTreeMap::from([("22".into(), 3)]);
+        let mut enabled = repository.clone();
+        enabled.enabled = true;
+        let enable = storage::ResourceEdit::Repository {
+            id: repository.id.clone(),
+            expected: Some(Box::new(repository.clone())),
+            value: Some(Box::new(enabled.clone())),
+        };
+        assert!(validate_repository_save_account(&auth, &generations, &enable, Some(2)).is_err());
+        auth.set_failure("22", GithubAuthFailure::Expired);
+        assert!(validate_repository_save_account(&auth, &generations, &enable, Some(3)).is_err());
+        assert_eq!(store.load_settings().unwrap(), settings);
+        auth.accounts.insert(
+            "22".into(),
+            GithubAccountState::Connected(github::Identity {
+                id: "22".into(),
+                login: "actor".into(),
+            }),
+        );
+        validate_repository_save_account(&auth, &generations, &enable, Some(3)).unwrap();
+        let committed = store.save_resource(enable).unwrap();
+        auth.set_failure("22", GithubAuthFailure::Expired);
+        // Account failure is operational state, never a user disablement.
+        assert!(store.load_settings().unwrap().repositories[0].enabled);
+        let disable = storage::ResourceEdit::Repository {
+            id: repository.id.clone(),
+            expected: Some(Box::new(enabled)),
+            value: Some(Box::new(repository)),
+        };
+        validate_repository_save_account(&auth, &generations, &disable, None).unwrap();
+        let disabled = store.save_resource(disable).unwrap();
+        assert!(!disabled.repositories[0].enabled);
+        assert_eq!(disabled.agents, committed.agents);
+        assert!(disabled
+            .repository_authorizations
+            .values()
+            .all(Option::is_none));
+    }
+
+    #[test]
     fn resolved_binding_generation_and_connected_identity_are_checked_at_commit() {
         let mut auth = GithubAuth::new();
         auth.accounts.insert(

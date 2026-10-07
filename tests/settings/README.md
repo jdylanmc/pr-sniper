@@ -69,6 +69,44 @@ SETTINGS_TEST_PORT=1652 npm exec playwright -- test \
   --output /absolute/private/queue-visual
 ```
 
+Repository-writing library/bootstrap fixtures use explicit synthetic stable
+account/repository bindings through `seedBoundRepositories`; enabled legacy
+unbound rows are not valid enabled-save inputs. The helper changes only the
+new fixture bindings, not monitoring intent, schedules, assignments or authority.
+`resources.spec.mjs` keeps an independent native-byte regression for rejecting
+unbound enabled assignment saves and preserving legacy state without a grant.
+Connection checks scope their status to the connection section, separately from
+the repository's monitoring status. Shared Save helpers assert actual errors
+stay hidden on success before asserting dismissal; they never force-close a
+rejected save or repair invalid state behind the caller's back.
+
+`repository-monitoring.spec.mjs` covers persistent listing/editor monitoring
+switches through resource-scoped native Store saves, authorization and reload.
+Global pause remains separate, intentionally disabled saves stay disabled, and
+quick switches use saved configuration without consuming unrelated or repository
+field drafts. Invalid enablement and compare-save conflicts retain drafts and
+show errors without optimistic enabled state. New intake stays disabled until
+configuration Save; a deliberate off choice survives assignment saves and Back.
+Compact keyboard/focus, forced-colors and reduced-motion cases use isolated
+browser fixtures, not the native desktop. Native resource and account-precommit
+tests separately cover schedule/binding/assignment validity, account loss,
+generation changes and durable authorization.
+Failed new configuration Save is followed by a nested assignment Save with
+independent native settings-byte and authorization assertions: only a later
+valid configuration Save may enable the new row. Nested saves refresh actual
+saved monitoring state/details without consuming the pending setup choice.
+At 320px and 408px, panel and standalone controls also receive actual 100%/200%
+computed text sizes. Tests check row, copy, state, switch and switch-text
+containment inside the clipping list, visible keyboard focus and Space
+activation before and after redraw; document overflow alone is not that oracle.
+Short standalone 280x300 and 320x300 panes also test doubled text with the whole
+computed focus outline inside every clipping ancestor, including after a
+paused save or actionable account rejection. The repository heading scrolls
+with content in short standalone panes instead of starving the list viewport.
+Scroll padding and target margin retain the existing external focus outline.
+Tab reaches the switch, ordinary scrolling reveals its full focus target, and
+the same drill-in/editor and native pause/authorization semantics remain intact.
+
 `agent-intelligence.spec.mjs` exercises advertised reasoning efforts, context
 tiers and token capacities through the shared Agent editor and real native
 resource saves/restarts. Account/model changes retain incompatible deliberate

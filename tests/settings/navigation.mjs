@@ -61,6 +61,25 @@ export async function repositorySettings(page, name) {
   });
 }
 
+export function repositoryConnectionStatus(dialog) {
+  return dialog.locator(".connection").getByRole("status");
+}
+
+export async function seedBoundRepositories(store, names) {
+  for (const name of names)
+    await store("save_repository", { repository: name });
+  const settings = (await store("snapshot")).settings;
+  for (const [index, name] of names.entries()) {
+    const repository = settings.repositories.find((r) => r.name === name);
+    Object.assign(repository, {
+      provider_account_id: "22",
+      provider_repository_id: String(100 + index),
+    });
+  }
+  await store("seed_settings", settings);
+  return (await store("snapshot")).settings;
+}
+
 export async function installRepositoryFixture(page) {
   const installFixture = () => {
     if (window.__urlTestAccount) return;
@@ -155,6 +174,8 @@ export async function saveChanges(page) {
     await modal
       .getByRole("button", { name: "Save repository", exact: true })
       .click();
+    await page.evaluate(() => window.__settingsIdle());
+    await expect(modal.locator("[data-resource-error]")).toBeHidden();
     await expect(modal).toHaveCount(0);
   }
   await section(page, previous[0].toUpperCase() + previous.slice(1));
@@ -264,6 +285,8 @@ export async function saveAssignment(page, modal) {
       name: /^(Assign agent|Save assignment)$/,
     })
     .click();
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(modal.getByRole("alert")).toBeHidden();
   await expect(modal).toHaveCount(0);
   await closeDialog(page);
 }

@@ -7,6 +7,7 @@ import {
   seedAgent,
   setAgentPrompt,
   editAgent,
+  repositoryConnectionStatus,
 } from "./navigation.mjs";
 
 async function connection(page, name = "jdylanmc/pr-sniper") {
@@ -135,8 +136,10 @@ test("verifying GitHub preserves drafts and does not enable automation", async (
   await card
     .getByRole("button", { name: "Verify GitHub connection", exact: true })
     .click();
-  await expect(card.getByRole("status")).toContainText("jdylanmc (6954990)");
-  await expect(card.getByRole("status")).toContainText(
+  await expect(repositoryConnectionStatus(card)).toContainText(
+    "jdylanmc (6954990)",
+  );
+  await expect(repositoryConnectionStatus(card)).toContainText(
     "not publication authorization",
   );
   await closeDialog(page);
@@ -180,7 +183,7 @@ for (const [error, expected] of [
     await card
       .getByRole("button", { name: "Verify GitHub connection", exact: true })
       .click();
-    await expect(card.getByRole("status")).toContainText(expected);
+    await expect(repositoryConnectionStatus(card)).toContainText(expected);
     await expect(
       card.getByRole("button", { name: "Read PR metadata", exact: true }),
     ).toBeDisabled();
@@ -204,8 +207,8 @@ for (const [comment, message] of [
     await card
       .getByRole("button", { name: "Verify GitHub connection", exact: true })
       .click();
-    await expect(card.getByRole("status")).toContainText(message);
-    await expect(card.getByRole("status")).toContainText(
+    await expect(repositoryConnectionStatus(card)).toContainText(message);
+    await expect(repositoryConnectionStatus(card)).toContainText(
       "not publication authorization",
     );
   });
@@ -248,7 +251,7 @@ test("metadata pins verified identities, renders all files safely and clears fai
   await card
     .getByRole("button", { name: "Read PR metadata", exact: true })
     .click();
-  await expect(card.getByRole("status")).toContainText(
+  await expect(repositoryConnectionStatus(card)).toContainText(
     "1 PRs, 2 changed files",
   );
   await card.locator(".connection summary").click();
@@ -262,7 +265,7 @@ test("metadata pins verified identities, renders all files safely and clears fai
   await card
     .getByRole("button", { name: "Read PR metadata", exact: true })
     .click();
-  await expect(card.getByRole("status")).toContainText(
+  await expect(repositoryConnectionStatus(card)).toContainText(
     "changed during the read",
   );
   await expect(card.locator(".connection summary")).toHaveCount(0);
@@ -289,7 +292,9 @@ test("retargeting a repository revalidates its stable binding", async ({
   await card
     .getByRole("button", { name: "Verify GitHub connection", exact: true })
     .click();
-  await expect(card.getByRole("status")).toContainText("jdylanmc (6954990)");
+  await expect(repositoryConnectionStatus(card)).toContainText(
+    "jdylanmc (6954990)",
+  );
   await card
     .getByRole("button", { name: "Edit repository", exact: true })
     .click();
@@ -316,7 +321,7 @@ test("retargeting a repository revalidates its stable binding", async ({
     }),
   ]);
   const target = await connection(page, "other/target");
-  await expect(target.getByRole("status")).toContainText(
+  await expect(repositoryConnectionStatus(target)).toContainText(
     "Not verified. Acting account 6954990",
   );
   await expect(
@@ -345,7 +350,7 @@ test("metadata replaces stale capability evidence for the same account and repos
   await card
     .getByRole("button", { name: "Verify GitHub connection", exact: true })
     .click();
-  await expect(card.getByRole("status")).toContainText(
+  await expect(repositoryConnectionStatus(card)).toContainText(
     "Comment scope available",
   );
   for (const message of [
@@ -356,8 +361,8 @@ test("metadata replaces stale capability evidence for the same account and repos
     await card
       .getByRole("button", { name: "Read PR metadata", exact: true })
       .click();
-    await expect(card.getByRole("status")).toContainText(message);
-    await expect(card.getByRole("status")).toContainText(
+    await expect(repositoryConnectionStatus(card)).toContainText(message);
+    await expect(repositoryConnectionStatus(card)).toContainText(
       "Complete metadata: 0 PRs",
     );
   }
@@ -476,8 +481,12 @@ test("disconnecting one account clears only its repository evidence", async ({
   await first
     .getByRole("button", { name: "Read PR metadata", exact: true })
     .click();
-  await expect(first.getByRole("status")).toContainText("account-a (101)");
-  await expect(first.getByRole("status")).toContainText("Complete metadata");
+  await expect(repositoryConnectionStatus(first)).toContainText(
+    "account-a (101)",
+  );
+  await expect(repositoryConnectionStatus(first)).toContainText(
+    "Complete metadata",
+  );
   await expect(first.locator(".connection summary")).toHaveText(
     "#31 Account A evidence - open - 1 files",
   );
@@ -498,8 +507,12 @@ test("disconnecting one account clears only its repository evidence", async ({
   await second
     .getByRole("button", { name: "Read PR metadata", exact: true })
     .click();
-  await expect(second.getByRole("status")).toContainText("account-b (202)");
-  await expect(second.getByRole("status")).toContainText("Complete metadata");
+  await expect(repositoryConnectionStatus(second)).toContainText(
+    "account-b (202)",
+  );
+  await expect(repositoryConnectionStatus(second)).toContainText(
+    "Complete metadata",
+  );
   await expect(second.locator(".connection summary")).toHaveText(
     "#32 Account B evidence - open - 1 files",
   );
@@ -520,7 +533,9 @@ test("disconnecting one account clears only its repository evidence", async ({
     settings.repositories[0],
     "Account unavailable",
   );
-  await expect(first.getByRole("status")).toContainText("Needs attention");
+  await expect(repositoryConnectionStatus(first)).toContainText(
+    "Needs attention",
+  );
   await expect(first.locator(".connection summary")).toHaveCount(0);
   await expect(
     first.getByRole("button", {
@@ -534,8 +549,12 @@ test("disconnecting one account clears only its repository evidence", async ({
   await closeDialog(page);
 
   second = await boundConnection(page, settings.repositories[1], "account-b");
-  await expect(second.getByRole("status")).toContainText("account-b (202)");
-  await expect(second.getByRole("status")).toContainText("Complete metadata");
+  await expect(repositoryConnectionStatus(second)).toContainText(
+    "account-b (202)",
+  );
+  await expect(repositoryConnectionStatus(second)).toContainText(
+    "Complete metadata",
+  );
   await expect(second.locator(".connection summary")).toHaveText(
     "#32 Account B evidence - open - 1 files",
   );
@@ -604,7 +623,7 @@ test("disconnecting one account clears only its repository evidence", async ({
     settings.repositories[0],
     "Account unavailable",
   );
-  await expect(unavailable.getByRole("status")).toContainText(
+  await expect(repositoryConnectionStatus(unavailable)).toContainText(
     "Needs attention",
   );
   await unavailable
@@ -701,7 +720,9 @@ test("missing repo scope disables every binding for one account only", async ({
   await first
     .getByRole("button", { name: "Verify GitHub connection", exact: true })
     .click();
-  await expect(first.getByRole("status")).toContainText("Needs attention");
+  await expect(repositoryConnectionStatus(first)).toContainText(
+    "Needs attention",
+  );
   await expect(page.locator(".github-auth-card")).toContainText(
     "no longer grants the required repo scope",
   );
@@ -826,7 +847,9 @@ for (const [commandError, stateReason] of [
       await card
         .getByRole("button", { name: "Read PR metadata", exact: true })
         .click();
-      await expect(card.getByRole("status")).toContainText("Complete metadata");
+      await expect(repositoryConnectionStatus(card)).toContainText(
+        "Complete metadata",
+      );
       await closeDialog(page);
     }
 
@@ -847,7 +870,9 @@ for (const [commandError, stateReason] of [
     await closeDialog(page);
 
     card = await connection(page, "octo/two");
-    await expect(card.getByRole("status")).toContainText("Needs attention");
+    await expect(repositoryConnectionStatus(card)).toContainText(
+      "Needs attention",
+    );
     await expect(card.locator(".connection summary")).toHaveCount(0);
     await expect(
       card.getByRole("button", {
@@ -934,7 +959,9 @@ for (const [commandError, warning, message] of [
       await card
         .getByRole("button", { name: "Read PR metadata", exact: true })
         .click();
-      await expect(card.getByRole("status")).toContainText("Complete metadata");
+      await expect(repositoryConnectionStatus(card)).toContainText(
+        "Complete metadata",
+      );
       await closeDialog(page);
     }
 

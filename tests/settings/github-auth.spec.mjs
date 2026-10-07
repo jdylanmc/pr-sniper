@@ -1,5 +1,10 @@
 import { expect, test } from "./fixtures.mjs";
-import { closeDialog, saveChanges, section } from "./navigation.mjs";
+import {
+  closeDialog,
+  saveChanges,
+  section,
+  repositoryConnectionStatus,
+} from "./navigation.mjs";
 
 const idle = (accounts = []) => ({ accounts, flow: { state: "idle" } });
 const connected = (accountId, login) => ({
@@ -491,7 +496,7 @@ test("manual account binding resolves an unaffiliated public repository for two 
     await modal
       .getByRole("button", { name: "Verify GitHub connection", exact: true })
       .click();
-    await expect(modal.getByRole("status")).toContainText(
+    await expect(repositoryConnectionStatus(modal)).toContainText(
       `Verified ${account.login} (${account.account_id})`,
     );
     await closeDialog(page);

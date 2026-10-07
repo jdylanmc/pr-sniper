@@ -1,6 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { test, expect } from "./fixtures.mjs";
-import { saveChanges, seedAgent, section } from "./navigation.mjs";
+import {
+  saveChanges,
+  seedAgent,
+  section,
+  seedBoundRepositories,
+} from "./navigation.mjs";
 
 test("production CSS retains all five Settings and three panel viewport fallbacks", async () => {
   const html = await readFile(
@@ -84,7 +89,7 @@ for (const viewport of [
       });
       await route.fulfill({ response, body });
     });
-    await store("save_repository", { repository: "octo/legacy-viewport" });
+    await seedBoundRepositories(store, ["octo/legacy-viewport"]);
     const settings = await seedAgent(store, "33");
     settings.repositories[0].assignments = Array.from(
       { length: 12 },
