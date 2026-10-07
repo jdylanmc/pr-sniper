@@ -6,6 +6,37 @@ quit lifecycle; a vanilla TypeScript/Vite frontend provides small local surfaces
 without a component framework. Closing a window hides it, while quitting ends
 the event loop; there is no scheduler or child process in this foundation.
 
+The retained tray panel uses the approved v2 surface's 19-point corner radius.
+The window and WebView are transparent, and only the panel document's root/body
+backgrounds are cleared; legacy standalone surfaces keep their existing theme.
+On macOS the AppKit content-view layer clips the entire WKWebView subtree, with
+the same CSS contour for headers, content, footers and in-panel overlays. The
+layer follows the view's bounds, uses the actual backing scale for rasterization
+and keeps its radius in points. Apply before each show/reopen and refresh on
+resize, backing-scale and theme events, invalidating the native window shadow.
+No delegate replacement, retained native pointer, global observer, timer or
+custom shadow window is introduced; Tauri owns teardown and tray placement.
+Failed handle/layer/scale or native-state checks return visible panel errors.
+
+Transparent WKWebView composition requires Tauri's pinned `macos-private-api`
+feature and matching `macOSPrivateApi` configuration. Wry 0.55.1 disables the
+WebKit `drawsBackground` private KVC property and sets the under-page background;
+Tao clears NSWindow's background and opacity. This is not an App Store
+compatibility claim. Windows uses the existing Tauri/Tao transparent WebView2
+and undecorated native-shadow frame path, including Windows 11 system rounding,
+not an AppKit port or a custom Win32 region that would disable DWM rounding.
+The compositor owns Windows' outer frame radius; exact macOS-radius parity and
+older Windows frame/shadow behavior require separate native observation.
+
+Builds, geometry tests, source/config contracts and headless browser captures
+do not prove native corner pixels, capture compositing, shadow or tray anchoring.
+Before native acceptance, an authorized operator must inspect the actual panel
+at supported display scales, show/hide/reopen and monitor changes, scrolling,
+focus/hover and editor overlays, dark/high-contrast/reduced-transparency modes
+and capture. Check transparent corner pixels, rounded content containment and
+the native shadow/tray anchor together. No native desktop automation,
+provisioning or profile launch is authorized by this documentation.
+
 Configuration and host diagnostics occupy separate `config/` and `state/`
 directories under the application data root. Settings are strict typed JSON,
 replaced atomically, not a database or future job schema. Diagnostics accept only

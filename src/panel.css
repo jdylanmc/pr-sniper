@@ -1,4 +1,10 @@
+:root[data-surface="panel"],
+:root[data-surface="panel"] body {
+  background: transparent;
+  overflow: hidden;
+}
 .panel-shell {
+  --panel-radius: 19px;
   --panel-navy: #243247;
   --panel-teal: #64b8be;
   --panel-accent: #f68743;
@@ -15,6 +21,9 @@
   margin: 0;
   padding: 0;
   overflow: hidden;
+  border-radius: var(--panel-radius);
+  clip-path: inset(0 round var(--panel-radius));
+  isolation: isolate;
   color: var(--panel-ink);
   background: var(--panel-mist);
   color-scheme: light;

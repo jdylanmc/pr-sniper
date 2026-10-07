@@ -4349,6 +4349,15 @@ pub fn run() {
                 }
             } else if let tauri::WindowEvent::Focused(false) = event {
                 panel::lost_focus(window.app_handle());
+            } else if matches!(
+                event,
+                tauri::WindowEvent::Resized(_)
+                    | tauri::WindowEvent::ScaleFactorChanged { .. }
+                    | tauri::WindowEvent::ThemeChanged(_)
+            ) {
+                if let Err(error) = panel::refresh_surface(window) {
+                    report(window.app_handle(), error.to_string());
+                }
             }
         })
         .build(tauri::generate_context!())

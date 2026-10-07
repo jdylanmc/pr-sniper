@@ -9,6 +9,9 @@ use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, Webvie
 pub const LABEL: &str = "panel";
 pub const EVENT: &str = "pr-sniper:panel";
 
+mod surface;
+pub(crate) use surface::refresh as refresh_surface;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tab {
@@ -403,6 +406,9 @@ pub(crate) async fn show(app: &tauri::AppHandle, route: Option<Route>) -> Result
             .title("PR Sniper")
             .inner_size(408.0, 744.0)
             .decorations(false)
+            .transparent(true)
+            .background_color(tauri::utils::config::Color(0, 0, 0, 0))
+            .shadow(true)
             .resizable(false)
             .skip_taskbar(true)
             .always_on_top(true)
@@ -428,6 +434,7 @@ pub(crate) async fn show(app: &tauri::AppHandle, route: Option<Route>) -> Result
                 }
             }
             let warning = position(&present_app, &window)?;
+            refresh_surface(&window.as_ref().window()).map_err(|error| error.to_string())?;
             window
                 .show()
                 .map_err(|_| "Cannot show the application panel.")?;
