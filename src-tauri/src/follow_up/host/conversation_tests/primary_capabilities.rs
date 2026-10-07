@@ -14,6 +14,90 @@ fn binding() -> MentionBinding {
 }
 
 #[test]
+fn primary_general_reply_ignores_cadence_changes_without_rewriting_context_or_provider_receipts() {
+    use crate::{policy::Schedule, storage::ResourceEdit};
+    let (root, store, origin, thread) = fixture(1);
+    let original = store.load_settings().unwrap();
+    let mut repository = original.repositories[0].clone();
+    repository.assignments[0].comment = false;
+    repository.assignments[0].actions = Some(ActionPermissions {
+        reply: true,
+        approve: false,
+        merge: false,
+    });
+    repository.overrides.automatic_comment_publication = Some(true);
+    repository.overrides.schedule = Some(Schedule::Cron {
+        expression: "0 9 1 * *".into(),
+        timezone: "America/New_York".into(),
+    });
+    let saved = store
+        .save_resource(ResourceEdit::Repository {
+            id: REPO.into(),
+            expected: Some(Box::new(original.repositories[0].clone())),
+            value: Some(Box::new(repository)),
+        })
+        .unwrap();
+    let history = std::fs::read(root.path().join("state/publications.json")).unwrap();
+    let reviews = store.load_reviews().unwrap();
+    observe(
+        &store,
+        &origin,
+        &thread,
+        'a',
+        vec![mention("701", "How does the return value work?")],
+        NOW + 10,
+    );
+    let capacity = Capacity::default();
+    let Dispatch::Reply(mut run, token) = capacity
+        .dispatch(&store, NOW + 20)
+        .unwrap()
+        .dispatched
+        .remove(0)
+    else {
+        panic!("Current primary general reply expected without another cron poll")
+    };
+    let captured = run.context.clone();
+    let mut retimed = saved.repositories[0].clone();
+    retimed.overrides.schedule = Some(Schedule::Cron {
+        expression: "0 * * * *".into(),
+        timezone: "UTC".into(),
+    });
+    retimed.overrides.automatic_comment_publication = Some(false);
+    let current = store
+        .save_resource(ResourceEdit::Repository {
+            id: REPO.into(),
+            expected: Some(Box::new(saved.repositories[0].clone())),
+            value: Some(Box::new(retimed)),
+        })
+        .unwrap();
+    assert_eq!(
+        current.repositories[0].assignments,
+        saved.repositories[0].assignments
+    );
+    assert!(capacity
+        .dispatch(&store, NOW + 21)
+        .unwrap()
+        .dispatched
+        .is_empty());
+    assert!(!token.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(run
+        .authority(&current, &run.context.job)
+        .is_ok_and(|grant| grant));
+    let result = output_for(&run, ReplyDecision::Reply, vec![]);
+    complete_analysis(&store, &mut run, Ok(result), true, NOW + 22).unwrap();
+    let candidate = candidates(&store).unwrap().remove(0);
+    assert_eq!(candidate.run.context, captured);
+    assert!(candidate.automatic_publication);
+    assert!(candidate.blocked.is_none());
+    assert_eq!(store.load_reviews().unwrap(), reviews);
+    assert_eq!(
+        std::fs::read(root.path().join("state/publications.json")).unwrap(),
+        history
+    );
+    assert!(store.load_actions().unwrap().effects.is_empty());
+}
+
+#[test]
 fn publish_and_reply_matrix_uses_real_store_dispatch_and_validated_task_output() {
     for publish in [false, true] {
         for reply in [false, true] {

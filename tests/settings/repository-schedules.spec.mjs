@@ -696,6 +696,77 @@ for (const change of ["override", "global"]) {
   });
 }
 
+test("primary capability Save and cadence-only Save remain independent with retired publication flags inert", async ({
+  page,
+  store,
+}) => {
+  const settings = await seed(store);
+  settings.repositories[0].enabled = true;
+  settings.defaults.automatic_comment_publication = true;
+  settings.repositories[0].overrides = { automatic_comment_publication: true };
+  await store("seed_settings", settings);
+  await providerFixture(page, store);
+  await repositoryPage(page, store);
+  let editor = await repositorySettings(page, "fixture/one");
+  await expect(
+    editor.getByText("Automation overrides", { exact: true }),
+  ).toHaveCount(0);
+  await editor
+    .locator(".assignment-row")
+    .getByRole("button", { name: "Edit", exact: true })
+    .click();
+  const assignment = page.getByRole("dialog", {
+    name: "Edit assignment",
+    exact: true,
+  });
+  await assignment.getByRole("checkbox", { name: /^Publish Comment/ }).check();
+  await assignment.getByRole("checkbox", { name: /^Reply Comment/ }).check();
+  await assignment.getByRole("radio", { name: "Approve", exact: true }).check();
+  await assignment
+    .getByRole("button", { name: "Save assignment", exact: true })
+    .click();
+  await expect(assignment).toHaveCount(0);
+  const granted = (await store("snapshot")).settings;
+  expect(granted.repositories[0].assignments[0]).toMatchObject({
+    comment: true,
+    actions: { reply: true, approve: true, merge: false },
+  });
+  await editor.getByLabel("Schedule", { exact: true }).selectOption("override");
+  await editor.getByLabel("Cadence", { exact: true }).selectOption("0 * * * *");
+  await save(editor);
+  const retimed = (await store("snapshot")).settings;
+  expect(retimed.repositories[0].assignments).toEqual(
+    granted.repositories[0].assignments,
+  );
+  expect(retimed.repository_authorizations).toEqual(
+    granted.repository_authorizations,
+  );
+  expect(retimed.repositories[0].overrides.automatic_comment_publication).toBe(
+    true,
+  );
+  const authority = (await store("saved_resources")).readiness.repositories[0]
+    .assignments[0][1];
+  expect(authority).toEqual({
+    primary: true,
+    comment: true,
+    reply: true,
+    approve: true,
+    merge: false,
+  });
+  await page.reload();
+  await section(page, "Repositories");
+  editor = await repositorySettings(page, "fixture/one");
+  await expect(editor.getByLabel("Schedule", { exact: true })).toHaveValue(
+    "override",
+  );
+  await expect(
+    editor.getByLabel("Cron expression", { exact: true }),
+  ).toHaveValue("0 * * * *");
+  expect(
+    (await store("snapshot")).settings.repositories[0].assignments,
+  ).toEqual(granted.repositories[0].assignments);
+});
+
 test("a failed NEW native refresh retires the old scan promise and exposes its actual failure", async ({
   page,
   store,
