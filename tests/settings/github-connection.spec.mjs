@@ -15,19 +15,24 @@ async function connection(page, name = "jdylanmc/pr-sniper") {
   return modal;
 }
 
-async function boundConnection(page, name, actingAccount) {
+async function boundConnection(page, repository, accountCaption) {
   await section(page, "Integrations");
-  await page
-    .getByRole("button", {
-      name: `${name} as ${actingAccount}`,
-      exact: true,
-    })
-    .click();
+  const row = page.locator(`[data-repository="${repository.id}"]`);
+  await expect(row).toHaveCount(1);
+  await expect(row).toHaveAccessibleName(
+    `${repository.name} as ${accountCaption}`,
+  );
+  await expect(row).toContainText(`GitHub / ${accountCaption}`);
+  await row.click();
   const modal = page.getByRole("dialog", {
-    name: `Settings for ${name}`,
+    name: `Settings for ${repository.name}`,
     exact: true,
   });
   await modal.getByText("Repository and connection", { exact: true }).click();
+  await expect(modal.locator(".repository-binding-details dd")).toHaveText([
+    repository.provider_account_id,
+    repository.provider_repository_id,
+  ]);
   return modal;
 }
 
@@ -390,7 +395,9 @@ test("disconnecting one account clears only its repository evidence", async ({
       login: "account-b",
     },
   ];
+  const calls = [];
   await page.exposeFunction("__githubAccountSwitch", (command, args) => {
+    calls.push({ command, args });
     if (command === "disconnect_github_auth") {
       accounts = accounts.filter(
         (account) => account.account_id !== args.accountId,
@@ -423,7 +430,23 @@ test("disconnecting one account clears only its repository evidence", async ({
           repository,
           capabilities: { read: true, comment: "available" },
         },
-        pull_requests: [],
+        pull_requests: [
+          {
+            number: first ? 31 : 32,
+            title: first ? "Account A evidence" : "Account B evidence",
+            state: "open",
+            draft: false,
+            head_sha: (first ? "a" : "b").repeat(40),
+            author: { id: "42", login: "author" },
+            requested_reviewers: [identity],
+            files: [
+              {
+                path: first ? "account-a.rs" : "account-b.rs",
+                status: "modified",
+              },
+            ],
+          },
+        ],
       };
     }
     return state;
@@ -442,7 +465,11 @@ test("disconnecting one account clears only its repository evidence", async ({
   });
   await page.goto("/?view=settings");
 
-  let first = await boundConnection(page, "jdylanmc/pr-sniper", "account-a");
+  let first = await boundConnection(
+    page,
+    settings.repositories[0],
+    "account-a",
+  );
   await first
     .getByRole("button", { name: "Verify GitHub connection", exact: true })
     .click();
@@ -451,9 +478,20 @@ test("disconnecting one account clears only its repository evidence", async ({
     .click();
   await expect(first.getByRole("status")).toContainText("account-a (101)");
   await expect(first.getByRole("status")).toContainText("Complete metadata");
+  await expect(first.locator(".connection summary")).toHaveText(
+    "#31 Account A evidence - open - 1 files",
+  );
+  await first.locator(".connection summary").click();
+  await expect(first.locator(".connection li")).toHaveText(
+    "modified: account-a.rs",
+  );
   await closeDialog(page);
 
-  let second = await boundConnection(page, "jdylanmc/pr-sniper", "account-b");
+  let second = await boundConnection(
+    page,
+    settings.repositories[1],
+    "account-b",
+  );
   await second
     .getByRole("button", { name: "Verify GitHub connection", exact: true })
     .click();
@@ -462,6 +500,13 @@ test("disconnecting one account clears only its repository evidence", async ({
     .click();
   await expect(second.getByRole("status")).toContainText("account-b (202)");
   await expect(second.getByRole("status")).toContainText("Complete metadata");
+  await expect(second.locator(".connection summary")).toHaveText(
+    "#32 Account B evidence - open - 1 files",
+  );
+  await second.locator(".connection summary").click();
+  await expect(second.locator(".connection li")).toHaveText(
+    "modified: account-b.rs",
+  );
   await closeDialog(page);
 
   const auth = page.locator(".github-auth-card");
@@ -470,7 +515,11 @@ test("disconnecting one account clears only its repository evidence", async ({
   await expect(auth).not.toContainText("account-a (101)");
   await expect(auth).toContainText("account-b (202)");
 
-  first = await boundConnection(page, "jdylanmc/pr-sniper", "101");
+  first = await boundConnection(
+    page,
+    settings.repositories[0],
+    "Account unavailable",
+  );
   await expect(first.getByRole("status")).toContainText("Needs attention");
   await expect(first.locator(".connection summary")).toHaveCount(0);
   await expect(
@@ -484,14 +533,62 @@ test("disconnecting one account clears only its repository evidence", async ({
   ).toBeDisabled();
   await closeDialog(page);
 
-  second = await boundConnection(page, "jdylanmc/pr-sniper", "account-b");
+  second = await boundConnection(page, settings.repositories[1], "account-b");
   await expect(second.getByRole("status")).toContainText("account-b (202)");
   await expect(second.getByRole("status")).toContainText("Complete metadata");
+  await expect(second.locator(".connection summary")).toHaveText(
+    "#32 Account B evidence - open - 1 files",
+  );
+  await second.locator(".connection summary").click();
+  await expect(second.locator(".connection li")).toHaveText(
+    "modified: account-b.rs",
+  );
+  await expect(
+    second.getByRole("button", { name: "Read PR metadata", exact: true }),
+  ).toBeEnabled();
+  expect(
+    calls.filter((call) =>
+      ["verify_provider_connection", "read_provider_metadata"].includes(
+        call.command,
+      ),
+    ),
+  ).toEqual([
+    {
+      command: "verify_provider_connection",
+      args: { id: settings.repositories[0].id },
+    },
+    {
+      command: "read_provider_metadata",
+      args: {
+        id: settings.repositories[0].id,
+        expectedAccountId: "101",
+        expectedRepositoryId: "1376547672",
+      },
+    },
+    {
+      command: "verify_provider_connection",
+      args: { id: settings.repositories[1].id },
+    },
+    {
+      command: "read_provider_metadata",
+      args: {
+        id: settings.repositories[1].id,
+        expectedAccountId: "202",
+        expectedRepositoryId: "1376547672",
+      },
+    },
+  ]);
+  expect(
+    calls.filter((call) => call.command === "disconnect_github_auth"),
+  ).toEqual([
+    { command: "disconnect_github_auth", args: { accountId: "101" } },
+  ]);
   await expect(page.locator("body")).not.toContainText("gh auth login");
   await expect(page.locator("body")).not.toContainText(
     "current GitHub CLI account",
   );
   const persisted = (await store("snapshot")).settings.repositories;
+  expect(persisted).toEqual(settings.repositories);
   expect(
     persisted.find((repository) => repository.provider_account_id === "101")
       .overrides.automatic_agent_start,
@@ -502,7 +599,11 @@ test("disconnecting one account clears only its repository evidence", async ({
   ).toBe(false);
 
   await page.reload();
-  const unavailable = await boundConnection(page, "jdylanmc/pr-sniper", "101");
+  const unavailable = await boundConnection(
+    page,
+    settings.repositories[0],
+    "Account unavailable",
+  );
   await expect(unavailable.getByRole("status")).toContainText(
     "Needs attention",
   );
