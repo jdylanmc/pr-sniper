@@ -2557,15 +2557,21 @@ export async function mountSettings(
     const effective = modal.querySelector<HTMLElement>(
       "[data-effective-schedule]",
     )!;
-    void repositoryScheduleStatus(repository.id).then(
-      (status) => {
-        if (effective.isConnected)
-          effective.textContent = `Saved schedule. ${scheduleStatusText(status)}`;
-      },
-      (cause) => {
-        if (effective.isConnected) effective.textContent = reason(cause);
-      },
-    );
+    let scheduleRead = 0;
+    const refreshSchedule = () => {
+      const read = ++scheduleRead;
+      void repositoryScheduleStatus(repository.id).then(
+        (status) => {
+          if (read === scheduleRead && effective.isConnected)
+            effective.textContent = `Saved schedule. ${scheduleStatusText(status)}`;
+        },
+        (cause) => {
+          if (read === scheduleRead && effective.isConnected)
+            effective.textContent = reason(cause);
+        },
+      );
+    };
+    refreshSchedule();
     const monitoring = modal.querySelector<HTMLInputElement>(
       "[data-repository-enabled]",
     )!;
@@ -2597,6 +2603,7 @@ export async function mountSettings(
     };
     const refreshSavedMonitoring = () => {
       updateMonitoring();
+      refreshSchedule();
       refreshRepositoryRows?.();
     };
     updateMonitoring();
@@ -2619,13 +2626,13 @@ export async function mountSettings(
       try {
         await toggleRepositoryMonitoring(repository.id, enabled, modal);
         monitoring.checked = repository.enabled;
-        updateMonitoring();
-        refreshRepositoryRows?.();
+        refreshSavedMonitoring();
         void refreshRepositoryAutomation(updateMonitoring);
       } catch (cause) {
         alert.textContent = reason(cause);
         alert.hidden = false;
         updateMonitoring();
+        refreshSchedule();
       }
     };
     const reviewerTrigger = modal.querySelector<HTMLSelectElement>(

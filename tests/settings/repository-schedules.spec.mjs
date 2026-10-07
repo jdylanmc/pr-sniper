@@ -436,21 +436,117 @@ test("impossible inherited cron is unconfigured; override removal and enable fai
     "inherit",
   );
   expect((await store("snapshot")).settings).toEqual(valid);
-  await editor.getByLabel("Enable repository monitoring on Save").uncheck();
+  await editor.getByRole("switch", { name: "Monitor fixture/one" }).click();
+  await expect(editor.locator("[data-repository-monitoring-state]")).toHaveText(
+    "Disabled",
+  );
+  await expect(editor.getByLabel("Schedule", { exact: true })).toHaveValue(
+    "inherit",
+  );
   await save(editor);
   const disabled = (await store("snapshot")).settings;
   expect(disabled.repositories[0].enabled).toBe(false);
   expect(disabled.repositories[0].overrides?.schedule).toBeUndefined();
   editor = await repositorySettings(page, "fixture/one");
-  await editor.getByLabel("Enable repository monitoring on Save").check();
-  await editor
-    .getByRole("button", { name: "Save repository", exact: true })
-    .click();
+  await editor.getByRole("switch", { name: "Monitor fixture/one" }).click();
   await expect(editor.locator("[data-resource-error]")).toContainText(
     "no next occurrence",
   );
   await expect(
-    editor.getByLabel("Enable repository monitoring on Save"),
-  ).toBeChecked();
+    editor.getByRole("switch", { name: "Monitor fixture/one" }),
+  ).not.toBeChecked();
   expect((await store("snapshot")).settings).toEqual(disabled);
+});
+
+test("saved-only monitoring toggles retain cadence and Preferences drafts and supersede stale next-scan replies", async ({
+  page,
+  store,
+  ipc,
+}) => {
+  const settings = await seed(store);
+  settings.repositories[0].enabled = true;
+  settings.repositories[0].overrides = {
+    schedule: { kind: "cron", expression: "0 * * * *", timezone: "UTC" },
+  };
+  await store("seed_settings", settings);
+  await seedHealth(store, settings.repositories[0], {
+    schedule_key: "cron:0 * * * *:UTC",
+    schedule_available: true,
+    next_run: 2000000000,
+    last_failure: null,
+    operation: null,
+  });
+  await providerFixture(page, store);
+  await repositoryPage(page, store);
+  await section(page, "Preferences");
+  await page.locator("#global-cron").fill("invalid global draft");
+  await page.locator("#global-capacity").fill("9");
+  await section(page, "Repositories");
+  await page.evaluate(() => window.__settingsIdle());
+  const held = ipc.holdNext("repository_schedule_status");
+  try {
+    const editor = await repositorySettings(page, "fixture/one");
+    await held.arrived;
+    await editor
+      .getByLabel("Cron expression", { exact: true })
+      .fill("invalid repository draft");
+    const switchControl = editor.getByRole("switch", {
+      name: "Monitor fixture/one",
+    });
+    await switchControl.click();
+    await expect(
+      editor.locator("[data-repository-monitoring-state]"),
+    ).toHaveText("Disabled");
+    await expect(editor.locator("[data-effective-schedule]")).toContainText(
+      "Next scan: Not scheduled.",
+    );
+    await expect(editor.locator("[data-effective-schedule]")).toContainText(
+      "Repository is disabled",
+    );
+    held.release();
+    await page.evaluate(() => window.__settingsIdle());
+    await expect(editor.locator("[data-effective-schedule]")).toContainText(
+      "Repository is disabled",
+    );
+    await expect(
+      editor.getByLabel("Cron expression", { exact: true }),
+    ).toHaveValue("invalid repository draft");
+    const disabled = (await store("snapshot")).settings;
+    expect(disabled.repositories[0].enabled).toBe(false);
+    expect(disabled.repositories[0].overrides.schedule).toEqual(
+      settings.repositories[0].overrides.schedule,
+    );
+    expect(disabled.repositories[1]).toEqual(settings.repositories[1]);
+    expect(disabled.defaults).toEqual(settings.defaults);
+    expect(disabled.capacity).toBe(settings.capacity);
+    await store("set_automation_paused", { paused: true });
+    await switchControl.click();
+    await expect(
+      editor.locator("[data-repository-monitoring-state]"),
+    ).toHaveText("Enabled");
+    await expect(editor.locator("[data-effective-schedule]")).toContainText(
+      "Global monitoring is paused",
+    );
+    await expect(
+      editor.getByLabel("Cron expression", { exact: true }),
+    ).toHaveValue("invalid repository draft");
+    const enabled = (await store("snapshot")).settings;
+    expect(enabled.repositories[0].enabled).toBe(true);
+    expect(enabled.repositories[0].overrides.schedule).toEqual(
+      settings.repositories[0].overrides.schedule,
+    );
+    expect(enabled.defaults).toEqual(settings.defaults);
+    expect(enabled.capacity).toBe(settings.capacity);
+    expect((await store("automation_snapshot")).paused).toBe(true);
+    await editor
+      .getByRole("button", { name: "Close dialog", exact: true })
+      .click();
+    await section(page, "Preferences");
+    await expect(page.locator("#global-cron")).toHaveValue(
+      "invalid global draft",
+    );
+    await expect(page.locator("#global-capacity")).toHaveValue("9");
+  } finally {
+    held.release();
+  }
 });
