@@ -264,9 +264,10 @@ bundling after its checks passed. These are bounded infrastructure budgets, not
 changes to individual test timeouts, application deadlines, assertions or
 fail-fast behavior. WebKit's cold Store-bridge build and full browser suite share
 the existing 30-minute step budget inside its 60-minute job limit. Hosted WebKit
-uses two isolated file workers to keep that bounded gate from serializing the
-entire growing suite behind the cold build. Cases within each file remain
-sequential; each test keeps its private native Store root and FIFO operations.
+and Windows use two isolated file workers to keep their unchanged bounded gates
+from serializing the entire growing suite behind the cold build. Cases within
+each file remain sequential; each test keeps its private native Store root and
+FIFO operations.
 Local defaults remain one worker, zero retries and unchanged test deadlines.
 No case, assertion, build, credential restriction or CI deadline is removed.
 

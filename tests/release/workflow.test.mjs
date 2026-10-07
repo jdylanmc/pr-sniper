@@ -304,7 +304,7 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       "cargo test --manifest-path src-tauri\\Cargo.toml --locked --lib review::runtime::tests::bundled_runtime_intelligence_offline -- --exact --ignored --nocapture --test-threads=1",
       "cargo clippy --manifest-path src-tauri\\Cargo.toml --locked --all-targets -- -D warnings",
       "npm exec playwright install chromium",
-      "npm run test:settings",
+      "npm run test:settings -- --workers=2",
       "npm run build:windows",
       "npm run bundle:windows",
       ".\\scripts\\windows-artifact.ps1",
@@ -736,6 +736,26 @@ test("WebKit bounded full-suite execution uses isolated file workers without ext
   assert.equal(
     suite.run,
     "npm run test:settings -- --browser=webkit --workers=2",
+  );
+  const { default: browser } =
+    await import("../settings/playwright.config.mjs");
+  assert.equal(browser.fullyParallel, false);
+  assert.equal(browser.workers, 1);
+  assert.equal(browser.retries, 0);
+});
+
+test("Windows bounded full-suite execution uses isolated file workers without extending deadlines", async () => {
+  const windows = parse(readFileSync(".github/workflows/windows.yml", "utf8"));
+  const job = windows.jobs.windows;
+  const suite = job.steps.find((step) =>
+    step.run?.startsWith("npm run test:settings"),
+  );
+  assert.equal(job["timeout-minutes"], 60);
+  assert.equal(suite["timeout-minutes"], 15);
+  assert.equal(suite.run, "npm run test:settings -- --workers=2");
+  assert.equal(
+    scripts["test:settings"],
+    "npm run build && cargo build --manifest-path src-tauri/Cargo.toml --locked --example settings_bridge && playwright test --config tests/settings/playwright.config.mjs",
   );
   const { default: browser } =
     await import("../settings/playwright.config.mjs");
