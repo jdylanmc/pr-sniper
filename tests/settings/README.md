@@ -107,6 +107,61 @@ Scroll padding and target margin retain the existing external focus outline.
 Tab reaches the switch, ordinary scrolling reveals its full focus target, and
 the same drill-in/editor and native pause/authorization semantics remain intact.
 
+`corporate-repository-url.spec.mjs` exercises Settings and Genie URL intake
+with synthetic account-keyed HTTP responses through the real native
+`GithubClient` parser and isolated Store, not final-result-only UI stubs.
+It covers authorized private organization metadata with nullable optional
+fields, stable account mismatch, ambiguous 404, scope, organization authorization,
+read denial, expired authorization, transport/provider/schema failures, retry
+without losing URL/account, disabled initial persistence and late cancellation.
+`corporate_repository_url` additionally compares browser and URL stable identities,
+supported HTTPS/name variants, explicit denial and canonical/schema guards.
+Native `repository_read_tests` and `repository_save_account_tests` protect actual
+session publication, generation changes and precommit authority separately;
+the process-per-command browser bridge does not simulate a live Keychain,
+credential refresh, confirmation race or installed corporate entitlement.
+
+GitHub's [troubleshooting contract](https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api)
+states that 404 also hides unauthorized private resources. URL verification
+therefore never treats 404 as definitive absence or definite read denial.
+Explicit OAuth scope evidence can distinguish a missing required `repo` scope
+from an otherwise unclassified 403, without overriding single-sign-on or rate-limit
+classification. Optional permissions metadata is not a default read grant:
+admission still requires authenticated repository metadata and a successful
+pull-request read. Required identity/private/archive/disabled fields remain
+validated against GitHub's [repository contract](https://docs.github.com/en/rest/repos/repos#get-a-repository).
+Live organization access or app restrictions require authorized evidence; these
+fixtures cannot establish the cause of the original installed corporate failure.
+
+Fix-wave regressions separate absent scope evidence (`scope_unverified`, no
+admission and no account-wide scope-revocation claim) from an explicit scope
+list missing `repo`. Unverified later catalog pages retain only preceding
+verified records with a visible incomplete-read warning. HTTP rejection status
+is retained separately from malformed successful JSON/schema, including 422.
+Confirmed rate limits retain Retry-After/reset timestamps and relevant partial
+organization visibility; a partial-results SSO marker alone does not prove
+required authorization. Native rate scheduling prefers Retry-After, otherwise
+uses the reported reset time.
+
+Organization policy recognition at URL repository/pulls boundaries is narrow:
+the known 403 OAuth App restriction message template or an explicit required
+SSO marker, not any generic 403 or arbitrary OAuth-related wording. Combined
+policy/scope evidence explains both administrator approval and the selected
+account's missing scope; only actual scope deficiency invalidates that actor's
+session. Rate-limit recovery remains primary when also evidenced, with the
+other safe facts retained. Unknown wording stays a conditional denial, never
+a guessed policy diagnosis. These cases use real provider parsing, native
+session/precommit guards and Store-backed Settings/Genie tests in Chromium and
+WebKit; no live entitlement or real Keychain/CredStore proof is implied.
+
+The exact `actions::tests::provider_rules_` native selectors exercise rules
+HTTP 403/429 through actual action observation and persisted retry state.
+Plain, Retry-After and contextual reset/partial-authorization limits all remain
+failures, preserving current authority and captured finals without provider
+writes. Reset-only limits retain their measured retry interval. Unsupported
+or denied rules remain approval-independent and merge-blocking; they are not
+silently reclassified as transient failures or accepted merge policy.
+
 `agent-intelligence.spec.mjs` exercises advertised reasoning efforts, context
 tiers and token capacities through the shared Agent editor and real native
 resource saves/restarts. Account/model changes retain incompatible deliberate

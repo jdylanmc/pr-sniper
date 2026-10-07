@@ -59,6 +59,61 @@ fn first(body: Value, link: Option<&str>) -> (String, Result<Response, Connectio
 }
 
 #[test]
+fn unknown_later_scope_retains_only_previously_verified_pages_with_a_warning() {
+    let link = format!("<https://api.github.com{CATALOG}2>; rel=\"next\"");
+    let mut unknown = response(json!([repository(102, "orbit", "Organization")]));
+    unknown.headers.clear();
+    let client = GithubClient::new(Fixture::new(vec![
+        first(
+            json!([repository(101, "fixture_corp", "User")]),
+            Some(&link),
+        ),
+        (format!("{CATALOG}2"), Ok(unknown)),
+    ]));
+    let browser = client.repository_browser(&identity()).unwrap();
+    assert_eq!(browser.repositories.len(), 1);
+    assert_eq!(browser.repositories[0].id, "101");
+    assert_eq!(browser.warnings.len(), 1);
+    assert_eq!(browser.warnings[0].error, ConnectionError::ScopeUnverified);
+    assert_eq!(browser.warnings[0].page, 2);
+}
+
+#[test]
+fn partial_sso_rate_limited_page_keeps_verified_catalog_and_both_failure_facts() {
+    let link = format!("<https://api.github.com{CATALOG}2>; rel=\"next\"");
+    let mut limited = response(json!({"message":"API rate limit exceeded"}));
+    limited.status = 403;
+    limited.headers.extend(BTreeMap::from([
+        (
+            "x-github-sso".into(),
+            "partial-results; organizations=123".into(),
+        ),
+        ("x-ratelimit-remaining".into(), "0".into()),
+        ("x-ratelimit-reset".into(), "1800000060".into()),
+        ("retry-after".into(), "60".into()),
+    ]));
+    let client = GithubClient::new(Fixture::new(vec![
+        first(
+            json!([repository(101, "fixture_corp", "User")]),
+            Some(&link),
+        ),
+        (format!("{CATALOG}2"), Ok(limited)),
+    ]));
+    let browser = client.repository_browser(&identity()).unwrap();
+    assert_eq!(browser.repositories.len(), 1);
+    assert_eq!(browser.warnings.len(), 1);
+    assert_eq!(
+        browser.warnings[0].error,
+        ConnectionError::RateLimitedWithContext {
+            retry_after_seconds: Some(60),
+            reset_at: Some(1800000060),
+            organization_access_incomplete: true,
+            missing_repo_scope: false,
+        }
+    );
+}
+
+#[test]
 fn corporate_personal_and_org_results_follow_short_pages_and_actual_links() {
     let link = format!("<https://api.github.com{CATALOG}2>; rel=\"next\", <https://api.github.com{CATALOG}2>; rel=\"last\"");
     let client = GithubClient::new(Fixture::new(vec![
@@ -222,7 +277,7 @@ fn catalog_schema_transport_provider_and_authorization_failures_remain_distinct(
             422,
             b"{}".to_vec(),
             BTreeMap::new(),
-            ConnectionError::ProviderRejected,
+            ConnectionError::ProviderRejectedStatus(422),
         ),
     ] {
         let client = GithubClient::new(Fixture::new(vec![(

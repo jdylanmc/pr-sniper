@@ -732,15 +732,22 @@ fn failure_from_oauth_error(error: github::oauth::OAuthError) -> GithubAuthFailu
 
 fn failure_from_connection_error(error: ConnectionError) -> GithubAuthFailure {
     match error {
+        ConnectionError::RateLimitedWithContext {
+            missing_repo_scope: true,
+            ..
+        } => GithubAuthFailure::MissingScope,
         ConnectionError::Network => GithubAuthFailure::Network,
-        ConnectionError::RateLimited | ConnectionError::RateLimitedAfter(_) => {
-            GithubAuthFailure::RateLimited
-        }
+        ConnectionError::RateLimited
+        | ConnectionError::RateLimitedAfter(_)
+        | ConnectionError::RateLimitedWithContext { .. } => GithubAuthFailure::RateLimited,
         ConnectionError::Timeout => GithubAuthFailure::Timeout,
         ConnectionError::InvalidResponse => GithubAuthFailure::InvalidResponse,
         ConnectionError::SignedOut => GithubAuthFailure::Expired,
         ConnectionError::WrongIdentity => GithubAuthFailure::WrongIdentity,
-        ConnectionError::MissingScope => GithubAuthFailure::MissingScope,
+        ConnectionError::MissingScope
+        | ConnectionError::OrganizationPolicyDeniedWithMissingScope => {
+            GithubAuthFailure::MissingScope
+        }
         ConnectionError::Configuration => GithubAuthFailure::CredentialsUnavailable,
         _ => GithubAuthFailure::Provider,
     }
@@ -766,10 +773,12 @@ fn apply_account_connection_failure<T>(
             ConnectionError::SignedOut
                 | ConnectionError::WrongIdentity
                 | ConnectionError::MissingScope
+                | ConnectionError::OrganizationPolicyDeniedWithMissingScope
                 | ConnectionError::Network
                 | ConnectionError::Timeout
                 | ConnectionError::RateLimited
                 | ConnectionError::RateLimitedAfter(_)
+                | ConnectionError::RateLimitedWithContext { .. }
                 | ConnectionError::ProviderFailure
                 | ConnectionError::ProviderFailureAfter(_)
                 | ConnectionError::InvalidResponse
@@ -1976,7 +1985,14 @@ impl RepositoryReadError {
         match error {
             ConnectionError::SignedOut
             | ConnectionError::WrongIdentity
-            | ConnectionError::MissingScope => Self::session(account_id, error),
+            | ConnectionError::MissingScope
+            | ConnectionError::OrganizationPolicyDeniedWithMissingScope => {
+                Self::session(account_id, error)
+            }
+            ConnectionError::RateLimitedWithContext {
+                missing_repo_scope: true,
+                ..
+            } => Self::session(account_id, error),
             _ => Self::Connection(error),
         }
     }
@@ -2682,6 +2698,166 @@ mod repository_read_tests {
     }
 
     #[test]
+    fn url_diagnostic_evidence_preserves_selected_native_session_and_precommit_guards() {
+        struct UrlResponse {
+            status: u16,
+            body: serde_json::Value,
+            headers: BTreeMap<String, String>,
+        }
+        impl Transport for UrlResponse {
+            fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+                let (status, body, headers) = match path {
+                    "/user" => (
+                        200,
+                        json!({"id":22,"login":"fixture_corp"}),
+                        BTreeMap::new(),
+                    ),
+                    "/repos/owner/repo" => (self.status, self.body.clone(), self.headers.clone()),
+                    _ => panic!("Rejected URL lookup cannot reach any additional endpoint: {path}"),
+                };
+                Ok(Response {
+                    status,
+                    body: serde_json::to_vec(&body).unwrap(),
+                    headers,
+                })
+            }
+        }
+        let policy = json!({"message":"Although you appear to have the correct authorization credentials, the fixture-org organization has enabled OAuth App access restrictions, meaning that data access to third-parties is limited."});
+        let valid = json!({"id":100,"full_name":"owner/repo","private":true,"archived":false,"disabled":false});
+        for (status, body, headers, expected, unusable) in [
+            (200, valid, vec![], ConnectionError::ScopeUnverified, false),
+            (
+                403,
+                json!({}),
+                vec![],
+                ConnectionError::MissingReadPermission,
+                false,
+            ),
+            (
+                422,
+                json!({"message":"Validation failed"}),
+                vec![],
+                ConnectionError::ProviderRejectedStatus(422),
+                false,
+            ),
+            (
+                403,
+                policy.clone(),
+                vec![("x-oauth-scopes", "repo")],
+                ConnectionError::OrganizationPolicyDenied,
+                false,
+            ),
+            (
+                403,
+                policy,
+                vec![("x-oauth-scopes", "read:user")],
+                ConnectionError::OrganizationPolicyDeniedWithMissingScope,
+                true,
+            ),
+            (
+                403,
+                json!({"message":"Although you appear to have the correct authorization credentials, the fixture-org organization has enabled OAuth App access restrictions, meaning that data access to third-parties is limited."}),
+                vec![("x-oauth-scopes", "read:user"), ("retry-after", "60")],
+                ConnectionError::RateLimitedWithContext {
+                    retry_after_seconds: Some(60),
+                    reset_at: None,
+                    organization_access_incomplete: true,
+                    missing_repo_scope: true,
+                },
+                true,
+            ),
+            (
+                403,
+                json!({"message":"API rate limit exceeded"}),
+                vec![
+                    ("x-github-sso", "partial-results; organizations=123"),
+                    ("x-ratelimit-remaining", "0"),
+                    ("retry-after", "60"),
+                ],
+                ConnectionError::RateLimitedWithContext {
+                    retry_after_seconds: Some(60),
+                    reset_at: None,
+                    organization_access_incomplete: true,
+                    missing_repo_scope: false,
+                },
+                false,
+            ),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let store = Store::new(root.path().into());
+            let mut initial = GithubAuth::new();
+            initial.accounts.insert(
+                "22".into(),
+                GithubAccountState::Connected(identity("fixture_corp")),
+            );
+            initial.accounts.insert(
+                "44".into(),
+                GithubAccountState::Connected(github::Identity {
+                    id: "44".into(),
+                    login: "neighbor".into(),
+                }),
+            );
+            let auth = Mutex::new(initial);
+            let generations = Mutex::new(BTreeMap::from([("22".into(), 7), ("44".into(), 9)]));
+            let result = repository_read(
+                &generations,
+                &auth,
+                "22",
+                || {
+                    let client = GithubClient::new(UrlResponse {
+                        status,
+                        body,
+                        headers: headers
+                            .into_iter()
+                            .map(|(k, v)| (k.into(), v.into()))
+                            .collect(),
+                    });
+                    Ok((client.current_identity()?, client))
+                },
+                |actor, client, _| {
+                    client.connect("https://github.com/owner/repo/", Some(&actor.id))
+                },
+            );
+            assert_eq!(
+                result.unwrap_err(),
+                if unusable {
+                    RepositoryReadError::session("22", expected)
+                } else {
+                    RepositoryReadError::Connection(expected)
+                }
+            );
+            let auth = auth.lock().unwrap();
+            assert_eq!(auth.account_session_allowed("22").is_err(), unusable);
+            assert!(auth.account_session_allowed("44").is_ok());
+            assert_eq!(generations.lock().unwrap()["22"], 7);
+            assert!(store.load_settings().unwrap().repositories.is_empty());
+            if unusable {
+                let repository: storage::Repository = serde_json::from_value(json!({
+                    "id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","provider":"github",
+                    "name":"owner/repo","enabled":false,"provider_account_id":"22","provider_repository_id":"100"
+                })).unwrap();
+                let edit = storage::ResourceEdit::Repository {
+                    id: repository.id.clone(),
+                    expected: None,
+                    value: Some(Box::new(repository)),
+                };
+                assert!(validate_repository_save_account(
+                    &auth,
+                    &generations.lock().unwrap(),
+                    &edit,
+                    Some(7)
+                )
+                .is_err());
+            } else {
+                assert!(matches!(
+                    auth.accounts["22"],
+                    GithubAccountState::Connected(_)
+                ));
+            }
+        }
+    }
+
+    #[test]
     fn catalog_failures_do_not_turn_a_verified_account_into_reconnect_required() {
         for error in [
             ConnectionError::BrokenCli,
@@ -2693,6 +2869,8 @@ mod repository_read_tests {
             ConnectionError::ProviderFailure,
             ConnectionError::ProviderRejected,
             ConnectionError::MissingReadPermission,
+            ConnectionError::RepositoryUnavailable,
+            ConnectionError::ScopeUnverified,
             ConnectionError::OrganizationPolicyDenied,
         ] {
             let mut initial = GithubAuth::new();
