@@ -1,5 +1,9 @@
 import { test, expect } from "./fixtures.mjs";
-import { fixtureAgent, section } from "./navigation.mjs";
+import {
+  fixtureAgent,
+  section,
+  chooseRepositoryAccount,
+} from "./navigation.mjs";
 import { holdFocusFrames } from "./focus-frames.mjs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -242,7 +246,7 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       await modal
         .getByLabel("Repository URL", { exact: true })
         .fill("fixture/added");
-      await modal.getByLabel("Acting GitHub account").selectOption("22");
+      await chooseRepositoryAccount(modal, "22");
       await modal
         .getByRole("button", { name: "Add & configure", exact: true })
         .click();
@@ -793,7 +797,9 @@ for (const mode of ["panel", "legacy"]) {
       };
     });
     await openSettings(page, mode);
-    const opener = repoOpener(page, "fixture/target as 102");
+    const opener = page.locator(
+      `[data-repository="${settings.repositories[1].id}"]`,
+    );
     await opener.click();
     await page.evaluate(() => {
       window.__holdAccountRefresh = true;

@@ -519,7 +519,9 @@ test("unbind cancellation, write rejection and retry retain permissions, neighbo
   await page.reload();
   await page.evaluate(() => window.__settingsIdle());
   parent = await repositorySettings(page, "fixture/compact");
-  await expect(parent.locator(".repository-identity")).toContainText("Unbound");
+  await expect(parent.locator(".repository-identity")).toContainText(
+    "No account selected",
+  );
   await expect(
     parent.getByRole("button", { name: "Configure scope" }),
   ).toHaveCount(0);
@@ -542,7 +544,7 @@ test("unavailable bound accounts remain identified and cannot silently rebind du
   const initial = await seed(store);
   // The default boundary returns no connected accounts, not a replacement actor.
   await start(page, store);
-  await expect(row(page)).toContainText("GitHub / 22");
+  await expect(row(page)).toContainText("GitHub / Account unavailable");
   await expect(row(page)).toContainText("Reconnect account");
   const parent = await repositorySettings(page, "fixture/compact");
   await parent.getByText("Repository and connection", { exact: true }).click();
@@ -558,14 +560,15 @@ test("unavailable bound accounts remain identified and cannot silently rebind du
   const editor = modal(page, "Edit repository");
   await expect(editor.getByLabel("Acting GitHub account")).toHaveValue("22");
   await expect(editor.locator("[name=account] option:checked")).toHaveText(
-    "22 - reconnect required",
+    "Saved account - reconnect required",
   );
-  await editor
-    .getByRole("button", { name: "Add & configure", exact: true })
-    .click();
-  await expect(editor.getByRole("alert")).toContainText(
-    "Choose a connected GitHub account",
-  );
+  await expect(
+    editor.getByRole("button", { name: "Add & configure", exact: true }),
+  ).toBeDisabled();
+  await expect(editor.getByRole("status")).toContainText("Reconnect");
+  await expect(
+    editor.getByRole("button", { name: "Reconnect GitHub account" }),
+  ).toBeVisible();
   await capture(page, testInfo, "unavailable-acting-account");
   expect((await store("snapshot")).settings).toEqual(initial);
   await editor.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -784,7 +787,9 @@ test("R1 correction: concurrent saved repository changes still reject a clean un
   );
   expect((await store("snapshot")).settings).toEqual(concurrent);
   await close(confirmation);
-  await expect(editor.locator(".repository-identity")).toContainText("22");
+  await expect(editor.locator(".repository-identity")).toContainText(
+    "repository-owner",
+  );
   await expect(
     editor.getByLabel("Enable repository monitoring"),
   ).not.toBeChecked();

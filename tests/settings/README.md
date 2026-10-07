@@ -1,5 +1,25 @@
 # Settings behavioral tests
 
+`repository-account-inference.spec.mjs` exercises the shared URL intake with
+zero, sole and multiple compatible Git Repository connections. Sole-account
+inference is compact; ambiguous selection uses a named native select with
+keyboard typeahead and an accessible label. Copilot-only, unsupported,
+unconfirmed and missing-scope connections cannot supply the repository actor.
+Change captures the chosen ID in the actual resolution request and real Store
+binding; late URL/account/disconnect/generation updates cannot commit stale
+results. Account read failures, provider warnings and nested recovery retain
+input, identity and focus. Unsupported URLs never borrow a GitHub actor, and
+recognizing a PR URL does not implement explicit PR admission.
+
+Transport responses in those browser tests are synthetic; persistence uses
+the isolated native Store bridge. The offline native
+`repository_read_tests::repository_intake_saves_the_verified_actor_and_rejects_same_login_replacement`
+test crosses the selected-session/provider resolution, current-binding guard
+and Store boundaries with confirmed in-memory account generations, including
+same-login connection replacement. Existing session-cache, scope-loss and
+precommit controls remain covering evidence. No tests require live accounts,
+Keychain access, provider writes or desktop automation.
+
 `agent-intelligence.spec.mjs` exercises advertised reasoning efforts, context
 tiers and token capacities through the shared Agent editor and real native
 resource saves/restarts. Account/model changes retain incompatible deliberate

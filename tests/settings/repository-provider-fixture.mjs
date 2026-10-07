@@ -83,6 +83,9 @@ export async function providerFixture(page, store, handler) {
     window.__TAURI_INTERNALS__.invoke = (command, args = {}) =>
       [
         "github_auth_state",
+        "start_github_browser_auth",
+        "confirm_github_account",
+        "cancel_github_auth",
         "copilot_auth_state",
         "list_copilot_models",
         "list_provider_repository_owners",
