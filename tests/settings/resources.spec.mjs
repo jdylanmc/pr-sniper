@@ -9,6 +9,7 @@ import {
   closeDialog,
   assignment,
   saveAssignment,
+  seedBoundRepositories,
 } from "./navigation.mjs";
 
 for (const [scenario, expression, timezone] of [
@@ -21,7 +22,7 @@ for (const [scenario, expression, timezone] of [
     store,
   }) => {
     await seedAgent(store, "33");
-    await store("save_repository", { repository: "fixture/schedules" });
+    await seedBoundRepositories(store, ["fixture/schedules"]);
     const settings = (await store("snapshot")).settings;
     settings.defaults.schedule = {
       kind: "cron",
@@ -76,6 +77,42 @@ for (const [scenario, expression, timezone] of [
     );
   });
 }
+
+test("legacy unbound enabled fixture rejects assignment Save without changing bytes or granting authority", async ({
+  store,
+  dataRoot,
+}) => {
+  await seedAgent(store, "33");
+  await store("save_repository", { repository: "fixture/unbound" });
+  const before = (await store("snapshot")).settings;
+  const repository = before.repositories[0];
+  const proposed = structuredClone(repository);
+  proposed.assignments = [
+    {
+      id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      agent_id: before.agents[0].id,
+      schedule: before.defaults.schedule,
+      comment: false,
+    },
+  ];
+  const path = join(dataRoot, "config/settings.json");
+  const bytes = await readFile(path);
+  await expect(
+    store("save_resource", {
+      edit: {
+        kind: "repository",
+        id: repository.id,
+        expected: repository,
+        value: proposed,
+      },
+    }),
+  ).rejects.toContain("bind a supported GitHub account and repository");
+  expect(await readFile(path)).toEqual(bytes);
+  expect((await store("snapshot")).settings).toEqual(before);
+  const seeded = await seedBoundRepositories(store, ["fixture/explicit-bound"]);
+  expect(seeded.repositories[0]).toEqual(repository);
+  expect(seeded.repository_authorizations ?? {}).toEqual({});
+});
 
 test("Agent saves immediately while unrelated preference and repository drafts stay unsaved", async ({
   page,
@@ -224,7 +261,7 @@ test("primary and independent opt-ins are reachable without scoped polling or le
   store,
 }) => {
   await seedAgent(store, "33");
-  await store("save_repository", { repository: "fixture/primary" });
+  await seedBoundRepositories(store, ["fixture/primary"]);
   const settings = (await store("snapshot")).settings;
   const assignment = {
     id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",

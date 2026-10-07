@@ -12,6 +12,7 @@ import {
   saveChanges,
   repositorySettings,
   closeDialog,
+  seedBoundRepositories,
 } from "./navigation.mjs";
 
 test.use({ timezoneId: "America/New_York" });
@@ -84,7 +85,7 @@ test("new assignments use the global policy while cancelled drafts never opt int
   dataRoot,
 }) => {
   await seedAgent(store, "33");
-  await store("save_repository", { repository: "fixture/local-time" });
+  await seedBoundRepositories(store, ["fixture/local-time"]);
   await page.goto("/?view=settings");
   const initial = (await store("snapshot")).settings;
   expect(initial.doctrines).toHaveLength(10);
@@ -352,7 +353,7 @@ test("assignment comment choice stays independent of opt-in Approve and preserve
   store,
 }) => {
   await seedAgent(store, "33");
-  await store("save_repository", { repository: "fixture/project" });
+  await seedBoundRepositories(store, ["fixture/project"]);
   const initial = (await store("snapshot")).settings;
   initial.defaults.reviewer_assignment = false;
   initial.defaults.selector = { kind: "agent", value: "my-reviewer" };

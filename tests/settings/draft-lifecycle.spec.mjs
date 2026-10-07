@@ -12,13 +12,13 @@ import {
   setAgentPrompt,
   editAgent,
   repositorySettings,
+  seedBoundRepositories,
 } from "./navigation.mjs";
 
 test.beforeEach(async ({ page, store }) => {
   await store("seed_settings", { launch_at_login: true });
   await seedAgent(store, "33");
-  for (const repository of ["octo/hello-world", "neighbor/keep-me"])
-    await store("save_repository", { repository });
+  await seedBoundRepositories(store, ["octo/hello-world", "neighbor/keep-me"]);
   await page.goto("/?view=settings");
 });
 
