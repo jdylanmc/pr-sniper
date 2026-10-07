@@ -56,16 +56,28 @@ export async function providerFixture(page, store, handler) {
           { id: "200", name: `${args.owner}/two` },
         ],
       };
-    if (command === "resolve_provider_repository")
+    if (command === "resolve_provider_repository") {
+      const target = await store("fixture_repository_url_target", {
+        repository: args.repository,
+      });
       return {
         identity: { id: args.accountId },
         repository: {
           id: args.repository.includes("two") ? "200" : "100",
-          name: await store("canonical_repository_name", {
-            repository: args.repository,
-          }),
+          name: target.name,
         },
+        account_generation: 0,
+        ...(target.pull_request_number
+          ? {
+              pull_request: {
+                id: "9",
+                number: target.pull_request_number,
+                title: "Requested PR",
+              },
+            }
+          : {}),
       };
+    }
     if (command === "monitoring_setup_review")
       return store("fixture_setup_review", {
         repositoryAccounts: Object.fromEntries(
@@ -91,6 +103,7 @@ export async function providerFixture(page, store, handler) {
         "list_provider_repository_owners",
         "list_provider_repositories",
         "resolve_provider_repository",
+        "admit_explicit_pull_request",
         "monitoring_setup_review",
       ].includes(command)
         ? window

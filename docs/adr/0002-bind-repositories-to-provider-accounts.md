@@ -28,3 +28,20 @@ the selected identity and repository access; current connection generation and
 availability are checked again before committing. Numeric IDs remain available
 inside connection details, not as primary configuration labels. Recognizing
 GitHub from a PR URL does not itself admit or queue that PR.
+
+An explicit PR URL resolves the containing repository and exact PR using that
+account. Adding still opens configuration without authorizing work. After a
+valid repository Save, native intake rechecks the saved configuration and
+connection generation, fetches the exact current PR and admits it through the
+existing durable iteration/job reconciliation without waiting for cron.
+Explicit admission overrides discovery predicates only; it does not change
+watch choices or grant provider actions. Repeated URLs reuse the same normal
+pass for an unchanged iteration, including completed evidence.
+
+Global pause retains queued work without execution. Intentionally disabled
+repositories return a visible blocked explanation, rather than enabling
+themselves or queueing unauthorized work. Account access, saved Agents, shared
+capacity and current revision/provider-action checks remain effective.
+Failed intake does not undo a committed configuration Save; it remains visible
+and can be retried without duplicating already-admitted work. Ordinary
+repository URLs retain their existing Save and scheduled-discovery behavior.

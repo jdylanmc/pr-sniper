@@ -1604,6 +1604,8 @@ struct GithubRepositoryResolution {
     identity: github::Identity,
     repository: github::provider::RemoteRepository,
     account_generation: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pull_request: Option<github::metadata::PullRequest>,
 }
 
 fn record(app: &tauri::AppHandle, event: DiagnosticEvent) {
@@ -1951,17 +1953,151 @@ async fn resolve_provider_repository(
             &account_id,
             || acquire_github_session(&host, &account_id),
             |identity, client, generation| {
-                let connection = client.connect(&repository, Some(&identity.id))?;
+                let target = client.resolve_repository_target(&repository, &identity.id)?;
                 Ok(GithubRepositoryResolution {
                     identity: identity.clone(),
-                    repository: connection.repository,
+                    repository: target.connection.repository,
                     account_generation: generation,
+                    pull_request: target.pull_request,
                 })
             },
         )
     })
     .await
     .map_err(|_| RepositoryReadError::Connection(ConnectionError::ProviderFailure))?
+}
+
+#[tauri::command]
+async fn admit_explicit_pull_request(
+    app: tauri::AppHandle,
+    expected: storage::Repository,
+    number: u64,
+    account_generation: u64,
+) -> Result<monitoring::ExplicitAdmission, ResourceSaveError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<Host>();
+        let account_id = expected
+            .provider_account_id
+            .as_deref()
+            .ok_or("Choose a connected GitHub repository account.")?;
+        if expected.provider != storage::ProviderId::Github || number == 0 {
+            return Err("Use a supported GitHub pull request URL.".into());
+        }
+        let (resolved, read_generation) = repository_read(
+            &host.github_generations,
+            &host.github_auth,
+            account_id,
+            || acquire_github_session(&host, account_id),
+            |identity, client, generation| {
+                let target = client.resolve_repository_target(
+                    &format!("https://github.com/{}/pull/{number}", expected.name),
+                    &identity.id,
+                )?;
+                Ok((target, generation))
+            },
+        )?;
+        let generations = host
+            .github_generations
+            .lock()
+            .map_err(|_| "GitHub account coordination is unavailable.")?;
+        let auth = host
+            .github_auth
+            .lock()
+            .map_err(|_| "GitHub connection state is unavailable.")?;
+        validate_explicit_intake_generation(
+            &auth,
+            &generations,
+            account_id,
+            account_generation,
+            read_generation,
+        )?;
+        let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+        let now = now_seconds()?;
+        let admission = host
+            .monitor
+            .lock()
+            .map_err(|_| "Monitoring is unavailable.")?
+            .admit_explicit_pull_request(
+                &store,
+                &auth.monitoring_accounts(),
+                &expected,
+                resolved,
+                now,
+            )?;
+        let batch = if admission.queued {
+            Some(host.ai.dispatch(&store, now)?)
+        } else {
+            None
+        };
+        drop(store);
+        drop(auth);
+        drop(generations);
+        if let Some(batch) = batch {
+            capacity::launch_batch(&app, batch);
+        }
+        Ok(admission)
+    })
+    .await
+    .map_err(|_| {
+        ResourceSaveError::Message(
+            "Pull request intake could not finish. Retry; existing queued work will be reused."
+                .into(),
+        )
+    })?
+}
+
+fn validate_explicit_intake_generation(
+    auth: &GithubAuth,
+    generations: &BTreeMap<String, u64>,
+    account_id: &str,
+    requested: u64,
+    observed: u64,
+) -> Result<(), RepositoryReadError> {
+    if requested != observed || generations.get(account_id).copied().unwrap_or(0) != requested {
+        return Err(RepositoryReadError::Superseded);
+    }
+    auth.account_session_allowed(account_id)
+        .map_err(|error| RepositoryReadError::session(account_id, error))
+}
+
+#[cfg(test)]
+mod explicit_intake_account_tests {
+    use super::*;
+
+    #[test]
+    fn queue_commit_requires_the_resolved_connected_actor_generation() {
+        let mut auth = GithubAuth::new();
+        auth.accounts.insert(
+            "22".into(),
+            GithubAccountState::Connected(github::Identity {
+                id: "22".into(),
+                login: "selected".into(),
+            }),
+        );
+        auth.accounts.insert(
+            "44".into(),
+            GithubAccountState::Connected(github::Identity {
+                id: "44".into(),
+                login: "neighbor".into(),
+            }),
+        );
+        let mut generations = BTreeMap::from([("22".into(), 3), ("44".into(), 9)]);
+        assert!(validate_explicit_intake_generation(&auth, &generations, "22", 3, 3).is_ok());
+        assert_eq!(
+            validate_explicit_intake_generation(&auth, &generations, "22", 2, 3),
+            Err(RepositoryReadError::Superseded)
+        );
+        generations.insert("22".into(), 4);
+        assert_eq!(
+            validate_explicit_intake_generation(&auth, &generations, "22", 3, 3),
+            Err(RepositoryReadError::Superseded)
+        );
+        auth.accounts.remove("22");
+        assert!(
+            matches!(validate_explicit_intake_generation(&auth, &generations, "22", 4, 4), Err(RepositoryReadError::Session { account_id, .. }) if account_id == "22")
+        );
+        assert!(validate_explicit_intake_generation(&auth, &generations, "44", 9, 9).is_ok());
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -2189,6 +2325,7 @@ mod repository_read_tests {
                 repository: client.connect("owner/repo", Some(&identity.id))?.repository,
                 identity: identity.clone(),
                 account_generation: generation,
+                pull_request: None,
             }),
         }
         .unwrap();
@@ -3916,6 +4053,7 @@ pub fn run() {
             list_provider_repositories,
             list_provider_repository_owners,
             resolve_provider_repository,
+            admit_explicit_pull_request,
             save_login,
             save_defaults,
             save_repository_policy,
