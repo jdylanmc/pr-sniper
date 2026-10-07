@@ -243,6 +243,108 @@ fn inherited_future_validation_covers_public_policy_and_preference_enable_paths_
 }
 
 #[test]
+fn disabled_legacy_interval_assignment_edits_preserve_policy_but_enabled_save_requires_actual_cron()
+{
+    use pr_sniper_lib::{
+        monitoring::{repository_schedule_status, Monitor},
+        policy::{Schedule, Selector},
+    };
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let mut legacy = settings();
+    legacy.defaults.schedule = Schedule::Cron {
+        expression: "0 9 * * MON-FRI".into(),
+        timezone: "America/New_York".into(),
+    };
+    legacy.repositories[0].enabled = false;
+    legacy.repositories[0].overrides.schedule = Some(Schedule::Interval {
+        minutes: 7,
+        timezone: "UTC".into(),
+    });
+    legacy.repositories[0].overrides.selector = Some(Selector::Agent {
+        value: "legacy-reviewer".into(),
+    });
+    legacy.repositories[0].overrides.prompt =
+        Some("Keep the legacy repository instructions.".into());
+    legacy.repositories[0]
+        .overrides
+        .automatic_comment_publication = Some(true);
+    store.save_settings(&legacy).unwrap();
+    let before = store.load_settings().unwrap();
+    let mut repository = before.repositories[0].clone();
+    let mut assignment = repository.assignments[0].clone();
+    assignment.id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd".into();
+    assignment.schedule = before.defaults.schedule.clone();
+    repository.assignments.push(assignment.clone());
+    let saved = store
+        .save_resource(ResourceEdit::Repository {
+            id: REPO.into(),
+            expected: Some(Box::new(before.repositories[0].clone())),
+            value: Some(Box::new(repository)),
+        })
+        .unwrap();
+    assert!(!saved.repositories[0].enabled);
+    assert_eq!(saved.defaults, before.defaults);
+    assert_eq!(
+        saved.repositories[0].overrides,
+        before.repositories[0].overrides
+    );
+    assert_eq!(
+        saved.repositories[0].assignments[0],
+        before.repositories[0].assignments[0]
+    );
+    assert_eq!(saved.repositories[0].assignments[1], assignment);
+    assert_eq!(saved.repository_authorizations.get(REPO), Some(&None));
+    let mut monitor = Monitor::restore(&store).unwrap();
+    assert!(monitor
+        .prepare_checks(&store, 1_800_000_000, false)
+        .unwrap()
+        .is_empty());
+    let mut enabled = saved.repositories[0].clone();
+    enabled.enabled = true;
+    assert!(store
+        .save_resource(ResourceEdit::Repository {
+            id: REPO.into(),
+            expected: Some(Box::new(saved.repositories[0].clone())),
+            value: Some(Box::new(enabled.clone())),
+        })
+        .unwrap_err()
+        .contains("five-field cron"));
+    assert_eq!(store.load_settings().unwrap(), saved);
+    enabled.overrides.schedule = Some(before.defaults.schedule.clone());
+    let valid = store
+        .save_resource(ResourceEdit::Repository {
+            id: REPO.into(),
+            expected: Some(Box::new(saved.repositories[0].clone())),
+            value: Some(Box::new(enabled)),
+        })
+        .unwrap();
+    assert!(valid.repositories[0].enabled);
+    assert_eq!(
+        valid.repositories[0].assignments,
+        saved.repositories[0].assignments
+    );
+    monitor
+        .synchronize_configuration(
+            &store,
+            &std::collections::BTreeMap::from([(
+                "22".into(),
+                pr_sniper_lib::monitoring::AccountAvailability {
+                    login: "fixture".into(),
+                    connected: true,
+                },
+            )]),
+            1_800_000_000,
+        )
+        .unwrap();
+    let status = repository_schedule_status(&store, REPO, 1_800_000_000).unwrap();
+    assert_eq!(status.schedule, before.defaults.schedule);
+    assert!(!status.inherited);
+    assert_eq!(status.next_run, Some(monitor.snapshot()[0].next_run));
+    assert!(status.issue.is_none());
+}
+
+#[test]
 fn intelligence_resource_save_restart_and_job_snapshots_survive_later_agent_edits() {
     use pr_sniper_lib::storage::{AgentIntelligence, Store};
     let fixture = Fixture::new();

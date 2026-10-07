@@ -38,6 +38,8 @@ test("reusable Agents keep independent repository assignments and preserve legac
     prompt: "Keep the legacy repository instructions.",
     automatic_comment_publication: true,
   };
+  // Preserve the archival interval through the intentional disabled-repair path.
+  initial.repositories[0].enabled = false;
   initial.presets = [
     {
       id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -92,6 +94,13 @@ test("reusable Agents keep independent repository assignments and preserve legac
   ).toHaveLength(2);
   await saveChanges(page);
   let saved = (await store("snapshot")).settings;
+  expect(saved.repositories.map(({ enabled }) => enabled)).toEqual(
+    initial.repositories.map(({ enabled }) => enabled),
+  );
+  expect(Object.values(saved.repository_authorizations ?? {})).toEqual([
+    null,
+    null,
+  ]);
   expect(
     saved.repositories[0].assignments.map(({ schedule }) => schedule),
   ).toEqual([initial.defaults.schedule, initial.defaults.schedule]);
@@ -103,6 +112,9 @@ test("reusable Agents keep independent repository assignments and preserve legac
   await saveChanges(page);
   await page.reload();
   saved = (await store("snapshot")).settings;
+  expect(saved.repositories.map(({ enabled }) => enabled)).toEqual(
+    initial.repositories.map(({ enabled }) => enabled),
+  );
   expect(saved.agents[0].prompt).toBe("Updated shared Agent instructions.");
   expect(saved.agents[1]).toEqual(initial.agents[1]);
   expect(saved.repositories.map(({ assignments }) => assignments)).toEqual(
