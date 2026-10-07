@@ -375,8 +375,7 @@ impl<T: Transport> GithubClient<T> {
         repository: &str,
         expected_account_id: Option<&str>,
     ) -> Result<Connection, ConnectionError> {
-        let name = crate::storage::canonical_repository(repository)
-            .map_err(|_| ConnectionError::InvalidRepository)?;
+        let name = super::intake::repository_target(repository)?.name;
         let (user, _) = self.read("/user")?;
         let identity = verify_identity(&user, expected_account_id)?;
         let (repo, response) = self.read_repository(&format!("/repos/{name}"))?;

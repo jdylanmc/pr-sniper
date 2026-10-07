@@ -270,39 +270,42 @@ fn panel_dispatch(
     serde_json::to_value(snapshot).map_err(|_| "Cannot encode panel snapshot.".into())
 }
 
+struct RepositoryFixtureTransport<'a>(&'a Value);
+impl pr_sniper_lib::github::provider::Transport for RepositoryFixtureTransport<'_> {
+    fn get(
+        &self,
+        path: &str,
+    ) -> Result<pr_sniper_lib::github::provider::Response, pr_sniper_lib::github::ConnectionError>
+    {
+        use pr_sniper_lib::github::{provider::Response, ConnectionError};
+        let response = self.0.get(path).ok_or(ConnectionError::Configuration)?;
+        if let Some(error) = response["error"].as_str() {
+            return Err(match error {
+                "broken_cli" => ConnectionError::BrokenCli,
+                "network" => ConnectionError::Network,
+                "timeout" => ConnectionError::Timeout,
+                _ => ConnectionError::Configuration,
+            });
+        }
+        Ok(Response {
+            status: response["status"]
+                .as_u64()
+                .and_then(|status| u16::try_from(status).ok())
+                .ok_or(ConnectionError::Configuration)?,
+            headers: serde_json::from_value(response["headers"].clone())
+                .map_err(|_| ConnectionError::Configuration)?,
+            body: match response["rawBody"].as_str() {
+                Some(body) => body.as_bytes().to_vec(),
+                None => serde_json::to_vec(&response["body"])
+                    .map_err(|_| ConnectionError::Configuration)?,
+            },
+        })
+    }
+}
+
 // Synthetic HTTP responses cross the real provider parser, never live credentials.
 fn repository_browser_fixture(args: &Value) -> Result<Value, pr_sniper_lib::RepositoryReadError> {
-    use pr_sniper_lib::github::{
-        provider::{GithubClient, Response, Transport},
-        ConnectionError,
-    };
-    struct FixtureTransport<'a>(&'a Value);
-    impl Transport for FixtureTransport<'_> {
-        fn get(&self, path: &str) -> Result<Response, ConnectionError> {
-            let response = self.0.get(path).ok_or(ConnectionError::Configuration)?;
-            if let Some(error) = response["error"].as_str() {
-                return Err(match error {
-                    "broken_cli" => ConnectionError::BrokenCli,
-                    "network" => ConnectionError::Network,
-                    "timeout" => ConnectionError::Timeout,
-                    _ => ConnectionError::Configuration,
-                });
-            }
-            Ok(Response {
-                status: response["status"]
-                    .as_u64()
-                    .and_then(|status| u16::try_from(status).ok())
-                    .ok_or(ConnectionError::Configuration)?,
-                headers: serde_json::from_value(response["headers"].clone())
-                    .map_err(|_| ConnectionError::Configuration)?,
-                body: match response["rawBody"].as_str() {
-                    Some(body) => body.as_bytes().to_vec(),
-                    None => serde_json::to_vec(&response["body"])
-                        .map_err(|_| ConnectionError::Configuration)?,
-                },
-            })
-        }
-    }
+    use pr_sniper_lib::github::{provider::GithubClient, ConnectionError};
     let account_id = args["accountId"]
         .as_str()
         .ok_or(ConnectionError::Configuration)?;
@@ -323,7 +326,7 @@ fn repository_browser_fixture(args: &Value) -> Result<Value, pr_sniper_lib::Repo
     let responses = args["responses"]
         .get(account_id)
         .ok_or(ConnectionError::Configuration)?;
-    let client = GithubClient::new(FixtureTransport(responses));
+    let client = GithubClient::new(RepositoryFixtureTransport(responses));
     let identity = client
         .current_identity()
         .map_err(|error| pr_sniper_lib::RepositoryReadError::session(account_id, error))?;
@@ -335,15 +338,16 @@ fn repository_browser_fixture(args: &Value) -> Result<Value, pr_sniper_lib::Repo
     }
     let read = || -> Result<Value, ConnectionError> {
         if args["operation"].as_str() == Some("resolve") {
-            let connection = client.connect(
+            let target = client.resolve_repository_target(
                 args["repository"]
                     .as_str()
                     .ok_or(ConnectionError::Configuration)?,
-                Some(account_id),
+                account_id,
             )?;
             return Ok(json!({
-                "identity": identity, "repository": connection.repository,
+                "identity": identity, "repository": target.connection.repository,
                 "account_generation": 0,
+                "pull_request": target.pull_request,
             }));
         }
         let browser = match args["operation"].as_str() {
@@ -368,8 +372,69 @@ fn repository_browser_fixture(args: &Value) -> Result<Value, pr_sniper_lib::Repo
     read().map_err(|error| pr_sniper_lib::RepositoryReadError::catalog(account_id, error))
 }
 
+fn explicit_intake_fixture(store: &Store, args: &Value) -> Result<Value, String> {
+    use pr_sniper_lib::{
+        github::provider::GithubClient,
+        monitoring::{AccountAvailability, Monitor},
+    };
+    use std::collections::BTreeMap;
+    let expected: pr_sniper_lib::storage::Repository =
+        serde_json::from_value(args["expected"].clone())
+            .map_err(|_| "Invalid synthetic repository configuration.")?;
+    let account = expected
+        .provider_account_id
+        .as_deref()
+        .ok_or("Repository account required.")?;
+    if args["accountGeneration"].as_u64() != Some(0) {
+        return Err("authentication_changed".into());
+    }
+    let number = args["number"]
+        .as_u64()
+        .filter(|n| *n > 0)
+        .ok_or("PR number required.")?;
+    let responses = args["responses"]
+        .get(account)
+        .ok_or("Synthetic selected-account responses required.")?;
+    let target = GithubClient::new(RepositoryFixtureTransport(responses))
+        .resolve_repository_target(
+            &format!("https://github.com/{}/pull/{number}", expected.name),
+            account,
+        )
+        .map_err(|error| {
+            serde_json::to_value(error)
+                .unwrap()
+                .as_str()
+                .unwrap_or("provider_failure")
+                .to_string()
+        })?;
+    let accounts = BTreeMap::from([(
+        account.to_string(),
+        AccountAvailability {
+            login: target.connection.identity.login.clone(),
+            connected: true,
+        },
+    )]);
+    let result = Monitor::restore(store)?.admit_explicit_pull_request(
+        store,
+        &accounts,
+        &expected,
+        target,
+        1_800_000_000,
+    )?;
+    serde_json::to_value(result).map_err(|_| "Cannot encode synthetic PR intake.".into())
+}
+
 fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
     match request.command.as_str() {
+        "fixture_explicit_pr_intake" => explicit_intake_fixture(store, &request.args),
+        "fixture_repository_url_target" => {
+            let input = request.args["repository"]
+                .as_str()
+                .ok_or("Repository URL required.")?;
+            let target = pr_sniper_lib::github::intake::repository_target(input)
+                .map_err(|_| "Enter a supported GitHub repository or pull request URL.")?;
+            serde_json::to_value(target).map_err(|_| "Cannot encode repository target.".into())
+        }
         "result_page" => serde_json::to_value(pr_sniper_lib::retention::page(
             store,
             serde_json::from_value(request.args["request"].clone())

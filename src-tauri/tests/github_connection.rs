@@ -27,6 +27,18 @@ fn verified_account_uses_decimal_id_not_graphql_node_id() {
 
 struct ConnectionTransport;
 
+#[test]
+fn explicit_pr_url_resolves_containing_repository() {
+    let connection = GithubClient::new(ConnectionTransport)
+        .connect(
+            "https://github.com/jdylanmc/pr-sniper/pull/302",
+            Some("6954990"),
+        )
+        .unwrap();
+    assert_eq!(connection.repository.name, "jdylanmc/pr-sniper");
+    assert_eq!(connection.identity.id, "6954990");
+}
+
 impl Transport for ConnectionTransport {
     fn get(&self, path: &str) -> Result<Response, ConnectionError> {
         let body = match path {
