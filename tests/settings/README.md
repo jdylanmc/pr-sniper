@@ -88,6 +88,13 @@ At 320px and 408px, panel and standalone controls also receive actual 100%/200%
 computed text sizes. Tests check row, copy, state, switch and switch-text
 containment inside the clipping list, visible keyboard focus and Space
 activation before and after redraw; document overflow alone is not that oracle.
+Short standalone 280x300 and 320x300 panes also test doubled text with the whole
+computed focus outline inside every clipping ancestor, including after a
+paused save or actionable account rejection. The repository heading scrolls
+with content in short standalone panes instead of starving the list viewport.
+Scroll padding and target margin retain the existing external focus outline.
+Tab reaches the switch, ordinary scrolling reveals its full focus target, and
+the same drill-in/editor and native pause/authorization semantics remain intact.
 
 `agent-intelligence.spec.mjs` exercises advertised reasoning efforts, context
 tiers and token capacities through the shared Agent editor and real native
