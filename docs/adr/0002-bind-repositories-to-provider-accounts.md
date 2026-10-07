@@ -45,3 +45,9 @@ capacity and current revision/provider-action checks remain effective.
 Failed intake does not undo a committed configuration Save; it remains visible
 and can be retried without duplicating already-admitted work. Ordinary
 repository URLs retain their existing Save and scheduled-discovery behavior.
+
+Pending explicit intake belongs to its exact URL-resolution intent. Save
+captures that intent before asynchronous work; its completion cannot consume a
+replacement. Back retains the draft, while explicit Cancel discards it without
+undoing a submitted Save or durable admitted work. Late failures remain visible
+under their original PR identity; they do not overwrite a replacement's status.

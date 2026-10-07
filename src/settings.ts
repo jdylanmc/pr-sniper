@@ -54,6 +54,13 @@ interface ResolvedRepository {
   account_generation: number;
   pull_request?: { id: string; number: number; title: string };
 }
+interface ExplicitPullRequestIntent {
+  number: number;
+  accountId: string;
+  repositoryId: string;
+  generation: number;
+  failure?: string;
+}
 interface RepositoryBrowseWarning {
   boundary:
     | "repository_page"
@@ -350,15 +357,15 @@ export async function mountSettings(
   const setupMonitoringOff = new Set<string>();
   let repositoryAutomation: AutomationSnapshot | undefined;
   let repositoryAutomationRead = 0;
-  const pendingPullRequests = new Map<
-    string,
-    {
-      number: number;
-      accountId: string;
-      repositoryId: string;
-      generation: number;
-    }
-  >();
+  const pendingPullRequests = new Map<string, ExplicitPullRequestIntent>();
+  let updateRepositoryIntake:
+    | ((
+        id: string,
+        intent: ExplicitPullRequestIntent,
+        message: string,
+        failed: boolean,
+      ) => boolean)
+    | undefined;
   let copilotAccounts: CopilotAccount[] = [];
   let updateAgentAccounts: (() => void) | undefined;
   let updateRepositoryAccounts: (() => void) | undefined;
@@ -2417,7 +2424,8 @@ export async function mountSettings(
         <details class="repository-group"><summary>Repository and connection</summary><dl class="repository-binding-details"><dt>Account ID</dt><dd>${escape(repository.provider_account_id ?? "Unbound")}</dd><dt>Repository ID</dt><dd>${escape(repository.provider_repository_id ?? "Not verified")}</dd></dl><div class="settings-actions"><button id="rename-repository">Edit repository</button><button data-unbind-repository ${repository.provider_account_id ? "" : "disabled"}>Unbind account</button><button id="remove-repository">Remove repository</button></div><div class="connection"></div></details>
         <p class="settings-hint">Save applies only this repository. Back retains its draft for this session; Cancel discards it. Earlier assignment saves stay applied.</p>
         <p class="settings-hint" role="status" data-explicit-pr-status ${pendingPull ? "" : "hidden"}>${pendingPull ? `PR #${pendingPull.number} will be queued after valid Save, even outside watch filters. Pause, repository disablement, account/Agent availability and capacity still apply.` : ""}</p>
-        <p role="alert" data-resource-error hidden></p><div class="resource-actions"><button class="primary" data-save-repository>Save repository</button><button data-cancel-repository aria-label="Cancel repository changes">Cancel</button></div>`,
+        <p role="alert" data-earlier-intake-error hidden></p>
+        <p role="alert" data-resource-error ${pendingPull?.failure ? "" : "hidden"}>${escape(pendingPull?.failure ?? "")}</p><div class="resource-actions"><button class="primary" data-save-repository>Save repository</button><button data-cancel-repository aria-label="Cancel repository changes">Cancel</button></div>`,
       opener,
     );
     compactEditor(
@@ -2425,6 +2433,54 @@ export async function mountSettings(
       "Back to repositories; retain unsaved repository changes",
     );
     modal.classList.add("repository-editor");
+    const currentEditor = () =>
+      modal.open &&
+      modal.isConnected &&
+      !app.closest("[hidden]") &&
+      !modal.closest('[aria-hidden="true"]');
+    const updateIntake = (
+      id: string,
+      intent: ExplicitPullRequestIntent,
+      message: string,
+      failed: boolean,
+    ) => {
+      if (!currentEditor()) return false;
+      if (
+        id !== repository.id ||
+        intent !== pendingPull ||
+        pendingPullRequests.get(id) !== intent
+      ) {
+        if (!failed) return false;
+        const notice = modal.querySelector<HTMLElement>(
+          "[data-earlier-intake-error]",
+        )!;
+        notice.textContent = message;
+        notice.hidden = false;
+        return true;
+      }
+      const alert = modal.querySelector<HTMLElement>("[data-resource-error]")!;
+      if (failed) {
+        alert.textContent = message;
+        alert.hidden = false;
+      } else {
+        const status = modal.querySelector<HTMLElement>(
+          "[data-explicit-pr-status]",
+        )!;
+        status.textContent = message;
+        status.hidden = false;
+        alert.hidden = true;
+      }
+      return true;
+    };
+    updateRepositoryIntake = updateIntake;
+    modal.addEventListener(
+      "pr-sniper:dialog-closed",
+      () => {
+        if (updateRepositoryIntake === updateIntake)
+          updateRepositoryIntake = undefined;
+      },
+      { once: true },
+    );
     const monitoring = modal.querySelector<HTMLInputElement>(
       "[data-repository-enabled]",
     )!;
@@ -2507,14 +2563,17 @@ export async function mountSettings(
     };
     modal.querySelector<HTMLButtonElement>("[data-save-repository]")!.onclick =
       async () => {
+        const requestedPull = pendingPullRequests.get(repository.id);
+        const saveRoute = routeGeneration;
         try {
           const proposed = clone(repository);
           proposed.enabled = monitoring.checked;
           await commitResource(repositoryEdit(repository, proposed), modal);
           pendingSetup.delete(repository.id);
           setupMonitoringOff.delete(repository.id);
-          const requestedPull = pendingPullRequests.get(repository.id);
           if (requestedPull) {
+            if (pendingPullRequests.get(repository.id) !== requestedPull)
+              throw `Configuration saved, but the earlier PR #${requestedPull.number} request was replaced or canceled. Save the current request's configuration to queue it.`;
             const committed = saved.repositories?.find(
               (r) => r.id === repository.id,
             );
@@ -2528,7 +2587,6 @@ export async function mountSettings(
               "[data-save-repository]",
             )!;
             saveButton.disabled = true;
-            modal.dataset.closeLocked = "true";
             try {
               const admission = await invoke<{
                 queued: boolean;
@@ -2538,36 +2596,65 @@ export async function mountSettings(
                 number: requestedPull.number,
                 accountGeneration: requestedPull.generation,
               });
-              const status = modal.querySelector<HTMLElement>(
-                "[data-explicit-pr-status]",
-              )!;
-              status.textContent = admission.message;
-              status.hidden = false;
-              modal.querySelector<HTMLElement>(
-                "[data-resource-error]",
-              )!.hidden = true;
-              if (admission.queued) pendingPullRequests.delete(repository.id);
+              if (pendingPullRequests.get(repository.id) === requestedPull) {
+                if (
+                  requestedPull.failure &&
+                  error.textContent === requestedPull.failure
+                )
+                  clearError();
+                delete requestedPull.failure;
+                updateRepositoryIntake?.(
+                  repository.id,
+                  requestedPull,
+                  admission.message,
+                  false,
+                );
+                if (admission.queued) pendingPullRequests.delete(repository.id);
+              }
             } catch (cause) {
-              throw `Configuration saved. PR #${requestedPull.number} intake needs attention; retry Save to reuse any existing work. ${reason(cause)}`;
+              const ownsIntent =
+                pendingPullRequests.get(repository.id) === requestedPull;
+              const message = `Configuration saved. PR #${requestedPull.number} intake for ${repository.name} needs attention; ${ownsIntent ? "retry Save to reuse any existing work" : "the current request is unchanged; enter the earlier PR URL again to retry"}. ${reason(cause)}`;
+              if (ownsIntent) requestedPull.failure = message;
+              if (
+                !updateRepositoryIntake?.(
+                  repository.id,
+                  requestedPull,
+                  message,
+                  true,
+                )
+              )
+                showError(message);
+              if (repositorySessionFailure(cause))
+                window.dispatchEvent(
+                  new Event("pr-sniper:refresh-provider-accounts"),
+                );
             } finally {
               saveButton.disabled = false;
-              delete modal.dataset.closeLocked;
             }
             return;
           }
-          modal.close();
-          render();
+          if (currentEditor() && saveRoute === routeGeneration) {
+            modal.close();
+            render();
+          }
         } catch (cause) {
-          const alert = modal.querySelector<HTMLElement>(
-            "[data-resource-error]",
-          )!;
-          alert.textContent = reason(cause);
-          alert.hidden = false;
+          if (currentEditor() && saveRoute === routeGeneration) {
+            const alert = modal.querySelector<HTMLElement>(
+              "[data-resource-error]",
+            )!;
+            alert.textContent = reason(cause);
+            alert.hidden = false;
+          } else {
+            showError(`${repository.name}: ${reason(cause)}`);
+          }
         }
       };
     modal.querySelector<HTMLButtonElement>(
       "[data-cancel-repository]",
     )!.onclick = () => {
+      if (pendingPull && pendingPullRequests.get(repository.id) === pendingPull)
+        pendingPullRequests.delete(repository.id);
       acceptResource(draft, clone(saved), repositoryEdit(repository));
       if (!repositories().some((item) => item.id === repository.id))
         opener.dataset.focusKey = `repository:${repository.name}:settings`;
@@ -2651,6 +2738,7 @@ export async function mountSettings(
         async () => {
           try {
             await commitResource(repositoryEdit(repository, null), confirm);
+            pendingPullRequests.delete(repository.id);
             confirm.close();
             modal.close();
             render();
@@ -2688,6 +2776,7 @@ export async function mountSettings(
         delete next.provider_repository_id;
         try {
           await commitResource(repositoryEdit(repository, next), confirm);
+          pendingPullRequests.delete(repository.id);
           confirm.close();
           modal.close();
           render();
@@ -3197,6 +3286,7 @@ export async function mountSettings(
       } else {
         saved = clone(state.settings);
         draft = clone(saved);
+        pendingPullRequests.clear();
         conflict = false;
       }
       catalogConflict = false;
@@ -3216,6 +3306,7 @@ export async function mountSettings(
   reset.onclick = () => {
     if (!busy) {
       draft = clone(saved);
+      pendingPullRequests.clear();
       clearError();
       render();
     }
