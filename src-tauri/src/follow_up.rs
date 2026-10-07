@@ -152,6 +152,7 @@ impl FollowUp {
                             })
                     });
                 if !self.has_provider_work()
+                    && !self.has_unsettled_analysis_failure()
                     && !self.cancelled
                     && self.error.is_none()
                     && !human
@@ -247,6 +248,35 @@ impl FollowUp {
             &comparable,
             &self.context.feedback,
         )?;
+        if let ConversationTarget::Mention { comment } = &self.target {
+            let mut cursors = ledger
+                .conversation_cursors
+                .iter()
+                .filter(|cursor| cursor.binding.matches(job) && cursor.comments_initialized);
+            let cursor = cursors.next().ok_or_else(|| {
+                Failure::permanent(
+                    "Current top-level discussion is unavailable; no stale analysis accepted.",
+                )
+            })?;
+            if cursors.next().is_some() {
+                return Err(Failure::permanent(
+                    "Current top-level discussion is ambiguous.",
+                ));
+            }
+            let observation = Observation::Mention {
+                comment: cursor
+                    .discussion
+                    .iter()
+                    .find(|current| current.id == comment.id)
+                    .cloned(),
+                replies: cursor.discussion.clone(),
+            };
+            if !self.fresh_observation(&observation) {
+                return Err(Failure::permanent(
+                    "The bound top-level trigger or captured discussion changed during analysis.",
+                ));
+            }
+        }
         if let Some(thread) = observed {
             self.validate_observed_trigger(&Observation::Owned(thread))?;
         } else if let Ok(thread) = self.thread() {
@@ -282,6 +312,36 @@ impl FollowUp {
         crate::feedback::validate_captured_context(store, job, &current, &self.context.feedback)
     }
 
+    pub(crate) fn has_unsettled_analysis_failure(&self) -> bool {
+        let failed = |operation: &JobOperation| {
+            operation
+                .failure
+                .as_ref()
+                .is_some_and(|failure| *failure != OperationFailure::Superseded)
+                || (operation.failure != Some(OperationFailure::Superseded)
+                    && matches!(
+                        operation.state,
+                        OperationState::Failed | OperationState::ManualRetry
+                    ))
+        };
+        let prior_failure = self
+            .analysis_history
+            .iter()
+            .any(|attempt| failed(&attempt.operation))
+            || self.history.iter().any(|operation| {
+                matches!(
+                    operation.operation_type.as_str(),
+                    "thread_analysis" | "mention_analysis" | "reply_analysis"
+                ) && failed(operation)
+            });
+        let recovered = self.manual_start
+            && self.result.is_some()
+            && self.analysis.as_ref().is_some_and(|operation| {
+                operation.state == OperationState::Completed && operation.failure.is_none()
+            });
+        prior_failure && !recovered
+    }
+
     pub(crate) fn can_retire_assessment(&self) -> bool {
         let safe_refusal = self.phase == Phase::Stopped
             && self.result.is_none()
@@ -290,6 +350,7 @@ impl FollowUp {
                 .as_ref()
                 .is_some_and(|operation| operation.failure == Some(OperationFailure::Superseded));
         !self.has_provider_work()
+            && !self.has_unsettled_analysis_failure()
             && !self.cancelled
             && self.analysis.as_ref().is_none_or(|operation| {
                 operation.state != OperationState::Running
@@ -1113,7 +1174,7 @@ pub fn validate_analysis_commit(
     }
     run.authority(&settings, job).map_err(Failure::permanent)?;
     run.validate_analysis_base(job)?;
-    if run.context.feedback_checked {
+    if run.context.feedback_checked || matches!(run.target, ConversationTarget::Mention { .. }) {
         run.validate_analysis_feedback(store, job)?;
     }
     Ok(())

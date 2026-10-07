@@ -1292,7 +1292,7 @@ fn local_gate(store: &Store, run: &FollowUp) -> Result<(), Failure> {
     if run.publication.is_none() {
         run.validate_analysis_base(job)?;
     }
-    if run.context.feedback_checked {
+    if run.context.feedback_checked || matches!(run.target, ConversationTarget::Mention { .. }) {
         if run.publication.is_none() {
             run.validate_analysis_feedback(store, job)?;
         } else {
