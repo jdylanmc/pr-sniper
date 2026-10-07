@@ -1,6 +1,6 @@
 use super::*;
 
-fn peer_approval() -> ProviderReview {
+pub(super) fn peer_approval() -> ProviderReview {
     ProviderReview {
         id: "144".into(),
         actor_id: "44".into(),
@@ -11,7 +11,7 @@ fn peer_approval() -> ProviderReview {
     }
 }
 
-fn prepare_final(store: &Store, item: &str, observation: &Observation) -> FinalReview {
+pub(super) fn prepare_final(store: &Store, item: &str, observation: &Observation) -> FinalReview {
     let mut settings = store.load_settings().unwrap();
     settings.repositories[0].assignments[0].comment = false;
     store.save_settings(&settings).unwrap();
