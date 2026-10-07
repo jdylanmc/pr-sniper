@@ -281,6 +281,101 @@ fn explicit_out_of_filter_pr_queues_immediately_and_reuses_completed_iteration()
 }
 
 #[test]
+fn explicit_intake_with_custom_cadence_preserves_scan_clock_and_completed_execution_across_schedule_edits(
+) {
+    use pr_sniper_lib::policy::Schedule;
+    let (_fixture, store, _) = explicit_configuration(1);
+    let initial = store.load_settings().unwrap();
+    let mut repository = initial.repositories[0].clone();
+    repository.overrides.schedule = Some(Schedule::Cron {
+        expression: "0 9 1 * *".into(),
+        timezone: "America/New_York".into(),
+    });
+    let saved = store
+        .save_resource(ResourceEdit::Repository {
+            id: REPO.into(),
+            expected: Some(Box::new(initial.repositories[0].clone())),
+            value: Some(Box::new(repository)),
+        })
+        .unwrap();
+    let accounts = BTreeMap::from([(
+        "22".into(),
+        monitoring::AccountAvailability {
+            login: "acting-account".into(),
+            connected: true,
+        },
+    )]);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    scan(&mut monitor, &store, vec![], NOW - 5);
+    monitor
+        .synchronize_configuration(&store, &accounts, NOW)
+        .unwrap();
+    let before = monitor.snapshot();
+    let cursors = store.load_monitoring_state().unwrap().cursors;
+    assert!(before[0].next_run > NOW);
+    assert_eq!(before[0].last_success, Some(NOW - 4));
+    assert!(monitor
+        .prepare_checks_with_accounts(&store, &accounts, NOW, false)
+        .unwrap()
+        .is_empty());
+    store
+        .save_automation(&pr_sniper_lib::capacity::Automation { paused: true })
+        .unwrap();
+    let mut requested = pull('a');
+    requested.author.as_mut().unwrap().id = "99".into();
+    let admission = explicit(&mut monitor, &store, requested.clone()).unwrap();
+    assert!(admission.queued && admission.message.contains("paused"));
+    let jobs = store.load_queue().unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert!(!jobs[0].watched_author);
+    assert_eq!(
+        monitor.snapshot(),
+        before,
+        "Explicit admission is not a completed or advanced cron scan."
+    );
+    assert_eq!(store.load_monitoring_state().unwrap().cursors, cursors);
+    assert_eq!(
+        store.load_settings().unwrap().repository_authorizations,
+        saved.repository_authorizations
+    );
+    let coordinator = pr_sniper_lib::capacity::Coordinator::default();
+    assert!(coordinator
+        .dispatch(&store, NOW)
+        .unwrap()
+        .dispatched
+        .is_empty());
+    let captured = completed(&saved, &jobs[0]);
+    store.save_reviews(std::slice::from_ref(&captured)).unwrap();
+    store
+        .save_automation(&pr_sniper_lib::capacity::Automation { paused: false })
+        .unwrap();
+    let current = store.load_settings().unwrap();
+    let mut retimed = current.repositories[0].clone();
+    retimed.overrides.schedule = Some(Schedule::Cron {
+        expression: "0 * * * *".into(),
+        timezone: "UTC".into(),
+    });
+    let edited = store
+        .save_resource(ResourceEdit::Repository {
+            id: REPO.into(),
+            expected: Some(Box::new(current.repositories[0].clone())),
+            value: Some(Box::new(retimed)),
+        })
+        .unwrap();
+    let selection =
+        Selection::resolve(&edited, &jobs[0], jobs[0].assignment_id.as_ref().unwrap()).unwrap();
+    assert!(captured.selection.same_execution(&selection));
+    assert!(explicit(&mut monitor, &store, requested).unwrap().queued);
+    assert_eq!(store.load_queue().unwrap(), jobs);
+    assert_eq!(store.load_reviews().unwrap(), vec![captured]);
+    let batch = coordinator.dispatch(&store, NOW + 1).unwrap();
+    assert!(batch.errors.is_empty());
+    assert!(batch.dispatched.is_empty());
+    assert!(store.load_publications().unwrap().is_empty());
+    assert!(store.load_actions().unwrap().effects.is_empty());
+}
+
+#[test]
 fn explicit_pr_queue_survives_pause_and_drains_without_another_poll() {
     let (_fixture, store, mut monitor) = explicit_configuration(2);
     let mut settings = store.load_settings().unwrap();

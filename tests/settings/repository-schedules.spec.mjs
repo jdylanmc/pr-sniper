@@ -637,7 +637,8 @@ for (const change of ["override", "global"]) {
         await editor
           .getByLabel("Cadence", { exact: true })
           .selectOption("0 * * * *");
-        held = ipc.holdNext("repository_schedule_status");
+        // Save refreshes the editor and existing row before the final post-close row.
+        held = ipc.holdNext("repository_schedule_status", 2);
         await save(editor);
       } else {
         await editor
