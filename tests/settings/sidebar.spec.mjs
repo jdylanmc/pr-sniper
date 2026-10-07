@@ -389,8 +389,24 @@ test("assignment comment choice stays independent of opt-in Approve and preserve
   await expect(page.locator("#reset-settings")).toBeDisabled();
   modal = await assignment(page, "fixture/project", 0);
   await expect(modal.getByRole("checkbox", { name: /^Comment/ })).toBeChecked();
-  expect((await store("snapshot")).settings).toEqual({
+  const updated = (await store("snapshot")).settings;
+  const repositoryId = saved.repositories[0].id;
+  const authorization = {
+    version: expect.any(String),
+    name: "fixture/project",
+    account_id: "22",
+    repository_id: "100",
+  };
+  expect(updated.repository_authorizations[repositoryId]).toEqual(
+    authorization,
+  );
+  expect(updated.repository_authorizations[repositoryId].version).not.toBe("");
+  expect(updated.repository_authorizations[repositoryId].version).not.toBe(
+    saved.repository_authorizations[repositoryId].version,
+  );
+  expect(updated).toEqual({
     ...saved,
+    repository_authorizations: { [repositoryId]: authorization },
     repositories: [
       {
         ...saved.repositories[0],
