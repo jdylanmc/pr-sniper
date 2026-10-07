@@ -174,6 +174,73 @@ function holdOldAdmission(state, store) {
   return { arrived: arrived.promise, release: () => gate.resolve() };
 }
 
+test("held explicit PR Save preserves assignment capabilities across replacement intent", async ({
+  page,
+  store,
+}) => {
+  const { state } = await setup(page, store);
+  let editor = await enter(page);
+  await assign(page, editor);
+  await editor
+    .locator(".assignment-row")
+    .getByRole("button", { name: "Edit", exact: true })
+    .click();
+  const assignment = page.getByRole("dialog", {
+    name: "Edit assignment",
+    exact: true,
+  });
+  await assignment.getByRole("checkbox", { name: /^Publish Comment/ }).check();
+  await assignment.getByRole("checkbox", { name: /^Reply Comment/ }).check();
+  await assignment.getByRole("radio", { name: "Approve", exact: true }).check();
+  await assignment
+    .getByRole("button", { name: "Save assignment", exact: true })
+    .click();
+  const configured = (await store("snapshot")).settings.repositories[0];
+  expect(configured.assignments[0]).toMatchObject({
+    comment: true,
+    actions: { reply: true, approve: true, merge: false },
+  });
+  const held = holdOldAdmission(state, store);
+  await editor
+    .getByRole("button", { name: "Save repository", exact: true })
+    .click();
+  await held.arrived;
+  try {
+    editor = await replaceUrl(page, editor, 303);
+    held.release();
+    await page.evaluate(() => window.__settingsIdle());
+    await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
+      "PR #303",
+    );
+    await editor
+      .getByRole("button", { name: "Save repository", exact: true })
+      .click();
+    await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
+      "PR #303 is admitted",
+    );
+    const saved = await store("saved_resources");
+    expect(saved.settings.repositories[0].assignments).toEqual(
+      configured.assignments,
+    );
+    expect(saved.settings.repositories[0].primary_assignment_id).toBe(
+      configured.primary_assignment_id,
+    );
+    expect(saved.readiness.repositories[0].assignments[0][1]).toEqual({
+      primary: true,
+      comment: true,
+      reply: true,
+      approve: true,
+      merge: false,
+    });
+    expect(
+      (await store("monitoring_snapshot")).jobs.map((job) => job.number),
+    ).toEqual([302, 303]);
+    expect((await store("automation_snapshot")).paused).toBe(true);
+  } finally {
+    held.release();
+  }
+});
+
 for (const genie of [false, true]) {
   for (const existing of [false, true]) {
     test(`Cancel discards explicit PR intent before later ordinary Save (${genie ? "Genie" : "Settings"}; ${existing ? "existing" : "new"} repository)`, async ({
