@@ -85,6 +85,11 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- Resolve GitHub pull-request URLs to the exact PR and queue it immediately
+  after valid repository Save, even outside watch filters. Reuse unchanged
+  iteration work while preserving pause, disabled repositories, account/Agent
+  availability, capacity, revisions and independent action permissions; show
+  intake failures with explicit retry. (#119)
 - Infer a sole confirmed GitHub repository connection from URL intake, with a
   compact identity and Change action. Require explicit choice across accounts,
   preserve saved actors through disconnect/recovery, and never borrow Copilot
