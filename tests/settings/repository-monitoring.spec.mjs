@@ -213,6 +213,207 @@ test("nested assignment Save refreshes the editor and listing from actual saved 
   );
 });
 
+for (const width of [280, 320]) {
+  for (const failedAccount of [false, true]) {
+    test(`short standalone ${width}x300 at 200% text keeps the full switch focus visible (${failedAccount ? "account error" : "global pause"})`, async ({
+      page,
+      store,
+    }, info) => {
+      const initial = await seed(store);
+      await store("save_resource", {
+        edit: {
+          kind: "repository",
+          id: repoId,
+          expected: initial.repositories[0],
+          value: { ...initial.repositories[0], enabled: true },
+        },
+      });
+      await store("set_automation_paused", { paused: true });
+      const fixture = await providerFixture(page, store);
+      if (failedAccount) {
+        fixture.accounts[0] = {
+          ...fixture.accounts[0],
+          state: "reconnect_required",
+          reason: "expired",
+        };
+        await page.addInitScript(() => {
+          const invoke = window.__TAURI_INTERNALS__.invoke;
+          window.__TAURI_INTERNALS__.invoke = (command, args) =>
+            command === "save_resource" && args.edit?.value?.enabled
+              ? Promise.reject({
+                  stage: "session",
+                  account_id: "22",
+                  error: "signed_out",
+                })
+              : invoke(command, args);
+        });
+      }
+      await page.setViewportSize({ width, height: 300 });
+      await page.emulateMedia({
+        forcedColors: "active",
+        reducedMotion: "reduce",
+      });
+      await repositoryPage(page, store, false);
+      const list = page.locator(".repository-list");
+      const open = page.locator(`[data-repository="${repoId}"]`);
+      await expect(open).toContainText(
+        failedAccount ? "Reconnect account" : "Global Monitoring paused",
+      );
+      const originalSize = await toggle(page).evaluate((node) =>
+        parseFloat(getComputedStyle(node).fontSize),
+      );
+      const nextKey =
+        page.context().browser().browserType().name() === "webkit" &&
+        process.platform === "darwin"
+          ? "Alt+Tab"
+          : "Tab";
+      const enlargeText = () =>
+        list.evaluate((root) => {
+          const sizes = [...root.querySelectorAll("*")].map((node) => [
+            node,
+            parseFloat(getComputedStyle(node).fontSize),
+          ]);
+          for (const [node, size] of sizes)
+            node.style.fontSize = `${size * 2}px`;
+        });
+      const fullFocus = async (phase) => {
+        await toggle(page).scrollIntoViewIfNeeded();
+        await expect(toggle(page)).toBeFocused();
+        const geometry = await toggle(page).evaluate((node) => {
+          const rect = node.getBoundingClientRect();
+          const style = getComputedStyle(node);
+          const outline =
+            parseFloat(style.outlineWidth) +
+            Math.max(0, parseFloat(style.outlineOffset));
+          const focus = {
+            left: rect.left - outline,
+            right: rect.right + outline,
+            top: rect.top - outline,
+            bottom: rect.bottom + outline,
+          };
+          const clips = [];
+          for (
+            let parent = node.parentElement;
+            parent;
+            parent = parent.parentElement
+          ) {
+            const overflow = getComputedStyle(parent);
+            const clipsX = ["auto", "scroll", "hidden", "clip"].includes(
+              overflow.overflowX,
+            );
+            const clipsY = ["auto", "scroll", "hidden", "clip"].includes(
+              overflow.overflowY,
+            );
+            if (clipsX || clipsY) {
+              const bounds = parent.getBoundingClientRect();
+              clips.push({
+                name: `${parent.tagName}#${parent.id}.${parent.className}`,
+                clipsX,
+                clipsY,
+                left: bounds.left + parent.clientLeft,
+                right: bounds.left + parent.clientLeft + parent.clientWidth,
+                top: bounds.top + parent.clientTop,
+                bottom: bounds.top + parent.clientTop + parent.clientHeight,
+                clientHeight: parent.clientHeight,
+              });
+            }
+          }
+          return {
+            browserViewport: { width: innerWidth, height: innerHeight },
+            control: {
+              top: rect.top,
+              bottom: rect.bottom,
+              height: rect.height,
+            },
+            fontSize: parseFloat(style.fontSize),
+            outline,
+            focus,
+            clips,
+          };
+        });
+        await writeFile(
+          info.outputPath(`${phase}-geometry.json`),
+          JSON.stringify({ ...geometry, nextKey }, null, 2),
+        );
+        await page.screenshot({ path: info.outputPath(`${phase}-focus.png`) });
+        expect(geometry.fontSize).toBe(originalSize * 2);
+        expect(geometry.outline).toBeGreaterThan(0);
+        expect(geometry.focus.left).toBeGreaterThanOrEqual(0);
+        expect(geometry.focus.right).toBeLessThanOrEqual(width);
+        expect(geometry.focus.top).toBeGreaterThanOrEqual(0);
+        expect(geometry.focus.bottom).toBeLessThanOrEqual(300);
+        expect(geometry.clips.length).toBeGreaterThan(0);
+        for (const clip of geometry.clips) {
+          if (clip.clipsX) {
+            expect(geometry.focus.left, clip.name).toBeGreaterThanOrEqual(
+              clip.left,
+            );
+            expect(geometry.focus.right, clip.name).toBeLessThanOrEqual(
+              clip.right,
+            );
+          }
+          if (clip.clipsY) {
+            expect(geometry.focus.top, clip.name).toBeGreaterThanOrEqual(
+              clip.top,
+            );
+            expect(geometry.focus.bottom, clip.name).toBeLessThanOrEqual(
+              clip.bottom,
+            );
+          }
+        }
+      };
+      await enlargeText();
+      await open.focus();
+      await page.keyboard.press(nextKey);
+      await fullFocus("enabled");
+      await page.keyboard.press("Space");
+      await expect(toggle(page)).toHaveAttribute("aria-checked", "false");
+      await enlargeText();
+      await fullFocus("disabled");
+      await page.keyboard.press("Space");
+      if (failedAccount) {
+        const error = page.locator("#error");
+        await expect(error).toContainText(
+          "Connect the PR Sniper GitHub OAuth App",
+        );
+        await expect(toggle(page)).toHaveAttribute("aria-checked", "false");
+        await error.scrollIntoViewIfNeeded();
+        await expect(error).toBeInViewport();
+        await page.screenshot({
+          path: info.outputPath("actionable-error.png"),
+        });
+      } else {
+        await expect(toggle(page)).toHaveAttribute("aria-checked", "true");
+        await expect(open).toContainText("Global Monitoring paused");
+      }
+      await enlargeText();
+      await fullFocus(failedAccount ? "rejected-enable" : "paused-enable");
+      const saved = (await store("snapshot")).settings;
+      expect(saved.repositories[0].enabled).toBe(!failedAccount);
+      expect(saved.repository_authorizations[repoId]).toEqual(
+        failedAccount
+          ? null
+          : expect.objectContaining({ account_id: "22", repository_id: "100" }),
+      );
+      expect((await store("automation_snapshot")).paused).toBe(true);
+      expect(saved.repositories[1]).toEqual(initial.repositories[1]);
+      expect(
+        fixture.calls.some((call) =>
+          /resolve|preview|activation|pull_requests/.test(call.command),
+        ),
+      ).toBe(false);
+      await open.click();
+      await expect(
+        editor(page).locator("[data-repository-monitoring-state]"),
+      ).toHaveText(failedAccount ? "Disabled" : "Enabled");
+      await editor(page)
+        .getByRole("button", { name: "Close dialog", exact: true })
+        .click();
+      await expect(open).toBeFocused();
+    });
+  }
+}
+
 for (const embedded of [true, false]) {
   for (const width of [320, 408]) {
     for (const textScale of [1, 2]) {
