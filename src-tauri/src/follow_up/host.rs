@@ -1313,6 +1313,10 @@ fn local_gate(store: &Store, run: &FollowUp) -> Result<(), Failure> {
     Ok(())
 }
 
+fn native_gate_result(check: Result<(), Failure>) -> Result<Option<String>, Failure> {
+    check.map(|_| None)
+}
+
 impl Environment for Native {
     fn now(&self) -> Result<i64, Failure> {
         now_seconds().map_err(Failure::permanent)
@@ -1450,8 +1454,8 @@ impl Environment for Native {
                 .request_revision_check(&store, job, self.now()?)
                 .map_err(Failure::permanent)?;
         }
-        if let Err(error) = local {
-            return Ok(Some(error.message));
+        if local.is_err() {
+            return native_gate_result(local);
         }
         if let Observation::Owned(thread) = observed {
             if !matches!(run.target, ConversationTarget::Thread { .. })
@@ -1466,7 +1470,7 @@ impl Environment for Native {
                     .into(),
             ));
         }
-        Ok(gate.err().map(|e| e.message))
+        native_gate_result(gate)
     }
     fn reply(&mut self, run: &FollowUp) -> Result<String, WriteFailure> {
         let prepared = (|| {

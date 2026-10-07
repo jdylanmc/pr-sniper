@@ -675,6 +675,115 @@ fn adjacent_completed_local_reply_is_not_an_impossible_confirmation_or_replayed_
     }
 }
 
+#[test]
+fn interleaved_owned_scan_preserves_native_gate_cause_until_new_work_settles() {
+    for checkpoint in ["before_send", "final_verification"] {
+        let (_root, store, origin, mut thread) = fixture(1);
+        explanation(&mut thread, "11");
+        observe(&store, &origin, &thread, 'a', vec![], NOW + 10);
+        let mut old =
+            prepare_dispatch(&store, &store.load_follow_ups().unwrap()[0].id, NOW + 20).unwrap();
+        let captured = old.clone();
+        let mut environment = AnalysisObservation {
+            store: &store,
+            observation: Ok(Observation::Owned(thread.clone())),
+        };
+        analysis_checkpoint(&mut environment, &old).unwrap();
+        if checkpoint == "final_verification" {
+            output_for(&old, ReplyDecision::Quiet, vec![]);
+        }
+        // Keep the completed provider read of A while the real scan commits B.
+        explanation(&mut thread, "11");
+        thread.comments.last_mut().unwrap().id = "102".into();
+        observe(&store, &origin, &thread, 'a', vec![], NOW + 30);
+        let Observation::Owned(held) = environment.observation.as_ref().unwrap() else {
+            panic!("Owned observation expected");
+        };
+        assert_eq!(held.comments.last().unwrap().id, "101");
+        assert_eq!(
+            store.load_feedback().unwrap().records[0]
+                .context
+                .thread
+                .as_ref()
+                .unwrap()
+                .comments
+                .last()
+                .unwrap()
+                .id,
+            "102"
+        );
+        let error = analysis_checkpoint(&mut environment, &old).unwrap_err();
+        assert_eq!(error.kind, monitoring::OperationFailure::Superseded);
+        complete_analysis(&store, &mut old, Err(error), true, NOW + 31).unwrap_err();
+        let saved = store.load_follow_ups().unwrap()[0].clone();
+        assert_eq!(saved.context, captured.context);
+        assert_eq!(saved.target, captured.target);
+        assert_eq!(saved.history, captured.history);
+        assert_eq!(
+            saved.analysis.as_ref().unwrap().failure,
+            Some(monitoring::OperationFailure::Superseded)
+        );
+        assert!(saved.analysis.as_ref().unwrap().next_attempt_at.is_none());
+        assert_ne!(current_state(&store), crate::queue::State::MachineSignedOff);
+        let mut latest =
+            prepare_dispatch(&store, &store.load_follow_ups().unwrap()[1].id, NOW + 40).unwrap();
+        let result = output_for(
+            &latest,
+            ReplyDecision::Quiet,
+            vec![assessment(
+                &latest.context.feedback[0].id,
+                Disposition::Cleared,
+            )],
+        );
+        complete_analysis(&store, &mut latest, Ok(result), true, NOW + 41).unwrap();
+        assert_eq!(current_state(&store), crate::queue::State::MachineSignedOff);
+        assert_eq!(store.load_follow_ups().unwrap()[0], saved);
+    }
+}
+
+#[test]
+fn native_gate_preserves_real_failure_fields_and_aggregate_attention() {
+    for failure in [
+        Failure::permanent(super::super::super::SUPERSEDED_TRIGGER),
+        Failure {
+            kind: monitoring::OperationFailure::Network,
+            retry_after_seconds: Some(17),
+            ..Failure::permanent(super::super::super::SUPERSEDED_TRIGGER)
+        },
+        Failure::cancelled(),
+    ] {
+        let (_root, store, origin, mut thread) = fixture(1);
+        explanation(&mut thread, "11");
+        observe(&store, &origin, &thread, 'a', vec![], NOW + 10);
+        let mut old =
+            prepare_dispatch(&store, &store.load_follow_ups().unwrap()[0].id, NOW + 20).unwrap();
+        let actual = native_gate_result(Err(failure.clone())).unwrap_err();
+        assert_eq!(actual.kind, failure.kind);
+        assert_eq!(actual.message, failure.message);
+        assert_eq!(actual.cancelled, failure.cancelled);
+        assert_eq!(actual.retry_after_seconds, failure.retry_after_seconds);
+        complete_analysis(&store, &mut old, Err(actual), true, NOW + 21).unwrap_err();
+        let saved = store.load_follow_ups().unwrap()[0].clone();
+        explanation(&mut thread, "11");
+        thread.comments.last_mut().unwrap().id = "102".into();
+        observe(&store, &origin, &thread, 'a', vec![], NOW + 30);
+        let mut latest =
+            prepare_dispatch(&store, &store.load_follow_ups().unwrap()[1].id, NOW + 40).unwrap();
+        let result = output_for(
+            &latest,
+            ReplyDecision::Quiet,
+            vec![assessment(
+                &latest.context.feedback[0].id,
+                Disposition::Cleared,
+            )],
+        );
+        complete_analysis(&store, &mut latest, Ok(result), true, NOW + 41).unwrap();
+        assert_eq!(current_state(&store), crate::queue::State::Failed);
+        assert!(!candidates(&store).unwrap()[0].superseded);
+        assert_eq!(store.load_follow_ups().unwrap()[0], saved);
+    }
+}
+
 struct AnalysisObservation<'a> {
     store: &'a Store,
     observation: Result<Observation, Failure>,
@@ -695,7 +804,9 @@ impl Environment for AnalysisObservation<'_> {
         run: &FollowUp,
         observation: &Observation,
     ) -> Result<Option<String>, Failure> {
-        local_gate(self.store, run)?;
+        if let Some(reason) = native_gate_result(local_gate(self.store, run))? {
+            return Ok(Some(reason));
+        }
         Ok((!run.fresh_observation(observation)).then(|| "Discussion changed.".into()))
     }
     fn reply(&mut self, _: &FollowUp) -> Result<String, WriteFailure> {
