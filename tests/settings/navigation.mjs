@@ -115,7 +115,8 @@ export async function addRepository(page, name) {
   });
   await modal.getByLabel("Repository URL", { exact: true }).fill(name);
   const choices = modal.getByLabel("Acting GitHub account");
-  await choices.selectOption({ index: 1 });
+  if (await choices.isVisible()) await choices.selectOption({ index: 1 });
+  else await expect(choices).not.toHaveValue("");
   await modal
     .getByRole("button", { name: "Add & configure", exact: true })
     .click();
@@ -133,6 +134,13 @@ export async function addRepository(page, name) {
       .getByRole("button", { name: "Cancel repository changes" })
       .click();
   return modal;
+}
+
+export async function chooseRepositoryAccount(dialog, accountId) {
+  const choice = dialog.getByLabel("Acting GitHub account", { exact: true });
+  if (!(await choice.isVisible()))
+    await dialog.getByRole("button", { name: "Change", exact: true }).click();
+  await choice.selectOption(accountId);
 }
 
 export async function saveChanges(page) {

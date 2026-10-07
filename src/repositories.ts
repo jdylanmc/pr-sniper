@@ -17,6 +17,24 @@ export interface Repository {
   review_preset?: string;
 }
 
+// This identifies the intake context, not repository access or PR admission.
+// Native resolution still validates the complete input with the chosen account.
+export function repositoryProviderContext(
+  input: string,
+): "github" | "azure_devops" | "unsupported" | "invalid" {
+  const value = input.trim();
+  if (!value.includes("://")) return "github";
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    if (host === "github.com") return "github";
+    if (host === "dev.azure.com" || host.endsWith(".visualstudio.com"))
+      return "azure_devops";
+  } catch {
+    return "invalid";
+  }
+  return "unsupported";
+}
+
 export function primaryAssignmentId(
   repository: Repository,
 ): string | undefined {

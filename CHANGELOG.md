@@ -53,7 +53,7 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   Expose the independent reviewer-request override, guarded account unbinding
   and the saved global schedule without adding scoped polling controls.
   Preserve separate Comment/Approve/Merge choices, primary roles, resource
-  save guards and session drafts; manual binding requires explicit account choice.
+  save guards and session drafts; ambiguous binding requires explicit account choice.
 - Match the approved compact Agent and doctrine libraries with shared-resource
   editors, full prompt/principles, explicit account/model choices, filter-retained
   doctrine selections and visible shared-use/deletion consequences. Save applies
@@ -85,6 +85,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- Infer a sole confirmed GitHub repository connection from URL intake, with a
+  compact identity and Change action. Require explicit choice across accounts,
+  preserve saved actors through disconnect/recovery, and never borrow Copilot
+  or CLI identity for repository access. (#117)
 - Fix connected corporate-account repository browsing for enterprise-managed
   usernames. Retain accessible results with explicit partial authorization,
   metadata and pagination warnings, and make Retry use the selected account

@@ -11,3 +11,20 @@ accessible repository automatically. Azure DevOps must follow the same account-c
 implemented, while still surfacing organization, project, tenant and
 authorization restrictions; this decision does not select its authentication
 mechanism or activate Azure DevOps in the MVP.
+
+Repository URL intake infers the GitHub provider and may select a sole
+compatible, confirmed Git Repository connection. Multiple compatible
+connections require an explicit choice; neither a last-used account nor the
+process-wide GitHub CLI identity resolves ambiguity. A compact identity and
+Change action expose the selected actor. Copilot AI access is a separate role,
+even when its GitHub login matches. No usable repository connection offers
+sign-in/reconnect; an account-state read failure offers Retry rather than
+pretending the catalog is empty.
+
+Inference ends at intake. The saved account/repository binding remains explicit
+and is never replaced after disconnect, revocation or another account appearing.
+Account or URL changes invalidate pending resolution. Native resolution verifies
+the selected identity and repository access; current connection generation and
+availability are checked again before committing. Numeric IDs remain available
+inside connection details, not as primary configuration labels. Recognizing
+GitHub from a PR URL does not itself admit or queue that PR.

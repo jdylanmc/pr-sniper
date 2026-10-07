@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { renderConnection } from "./connections";
-import { renderGithubAuth, type GithubAccount } from "./github-auth";
+import {
+  renderGithubAuth,
+  githubAccountFailureMessage,
+  type GithubAccount,
+} from "./github-auth";
 import {
   renderCopilotAuth,
   modelSelectable,
@@ -14,7 +18,11 @@ import {
   type CopilotModel,
 } from "./copilot";
 import type { Agent, Doctrine, Assignment, WatchedIdentity } from "./policy";
-import { type Repository, primaryAssignmentId } from "./repositories";
+import {
+  type Repository,
+  primaryAssignmentId,
+  repositoryProviderContext,
+} from "./repositories";
 import { doctrineTitles } from "./policy";
 import {
   type Settings,
@@ -1567,7 +1575,11 @@ export async function mountSettings(
       accountContent.querySelector(".github-auth")!,
       (accounts) => {
         repositoryAccountsState = accounts ? "ready" : "unavailable";
-        githubAccounts = accounts ?? [];
+        githubAccounts = (accounts ?? []).filter(
+          (a) =>
+            a.provider === "github" &&
+            (a.state === "connected" || a.state === "reconnect_required"),
+        );
         updateRepositoryAccounts?.();
         refreshRepositoryRows?.();
       },
@@ -1615,13 +1627,13 @@ export async function mountSettings(
             const label =
               repositories().filter((r) => r.name === repository.name).length >
               1
-                ? `${repository.name} as ${account?.login ?? repository.provider_account_id ?? repository.id}`
+                ? `${repository.name} as ${account?.login ?? "Account unavailable"}`
                 : repository.name;
             return `<button type="button" class="native-repository-row" aria-label="${escape(label)}" data-dirty="${!sameResource(
               repository,
               saved.repositories?.find((r) => r.id === repository.id),
             )}" data-repository="${escape(repository.id)}" data-focus-key="repository:${escape(repository.id)}:settings">
-          <span class="settings-row-copy"><strong>${escape(repository.name)}</strong><small>${repository.provider === "github" ? "GitHub" : "Azure DevOps"} / ${escape(account?.login ?? repository.provider_account_id ?? "Account required")}</small></span>
+          <span class="settings-row-copy"><strong>${escape(repository.name)}</strong><small>${repository.provider === "github" ? "GitHub" : "Azure DevOps"} / ${escape(account?.login ?? "Account unavailable")}</small></span>
           <span class="settings-row-value">${state}${
             sameResource(
               repository,
@@ -1641,7 +1653,7 @@ export async function mountSettings(
             : githubAccounts
                 .map(
                   (account) =>
-                    `<div class="native-repository-row"><span class="settings-row-copy"><strong>${escape(account.login)}</strong><small>GitHub / ${escape(account.account_id)}${account.state === "connected" ? "" : " / Reconnect in Accounts"}</small></span><button type="button" data-browse-account="${escape(account.account_id)}" aria-label="Browse repositories as ${escape(account.login)}" ${account.state === "connected" ? "" : "disabled"}><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/></svg></button></div>`,
+                    `<div class="native-repository-row"><span class="settings-row-copy"><strong>${escape(account.login)}</strong><small>GitHub repository access${account.state === "connected" ? "" : " / Reconnect in Accounts"}</small></span><button type="button" data-browse-account="${escape(account.account_id)}" aria-label="Browse repositories as ${escape(account.login)}" ${account.state === "connected" ? "" : "disabled"}><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/></svg></button></div>`,
                 )
                 .join("") ||
               '<p class="settings-empty">Connect a GitHub account in Accounts to browse repositories.</p>';
@@ -1697,7 +1709,10 @@ export async function mountSettings(
     if (
       resolved.identity.id !== accountId ||
       !githubAccounts.some(
-        (a) => a.account_id === accountId && a.state === "connected",
+        (a) =>
+          a.provider === "github" &&
+          a.account_id === accountId &&
+          a.state === "connected",
       )
     )
       throw "The acting account changed or disconnected. Reconnect and try again.";
@@ -1749,8 +1764,10 @@ export async function mountSettings(
     const modal = dialog(
       repository ? "Edit repository" : "Add repository by URL",
       `<form><label>Repository URL<input name="repository" required value="${escape(repository?.name ?? "")}" placeholder="https://github.com/owner/repository" autocomplete="off" /></label>
-      <label>Acting GitHub account<select name="account" required></select></label>
-      <p class="settings-hint">GitHub URL or owner/repository. Choose the acting account explicitly. Adding opens configuration without starting monitoring.</p>
+      <div class="repository-actor"><p class="settings-hint" role="status" id="repository-actor-status"></p><button type="button" data-change-account hidden>Change</button></div>
+      <label data-account-choice hidden>Acting GitHub account<select name="account" aria-describedby="repository-actor-status"></select></label>
+      <div class="settings-actions"><button type="button" data-recover-account hidden>Connect GitHub account</button><button type="button" data-retry-account hidden>Retry reading accounts</button></div>
+      <p class="settings-hint">GitHub URL or owner/repository. Uses Git Repository access, not your Copilot AI connection. Adding opens configuration without starting monitoring.</p>
       <p role="alert" hidden></p><div class="resource-actions"><button type="button" data-cancel-resource>Cancel</button><button type="submit" class="primary">Add &amp; configure</button></div></form>`,
       opener,
     );
@@ -1758,73 +1775,233 @@ export async function mountSettings(
     modal.classList.add("repository-editor");
     const account = modal.querySelector<HTMLSelectElement>("[name=account]")!;
     account.setAttribute("aria-label", "Acting GitHub account");
-    let initialAccount = true;
+    const input = modal.querySelector<HTMLInputElement>("[name=repository]")!;
+    const status = modal.querySelector<HTMLElement>("[role=status]")!;
+    const choice = modal.querySelector<HTMLElement>("[data-account-choice]")!;
+    const change = modal.querySelector<HTMLButtonElement>(
+      "[data-change-account]",
+    )!;
+    const recover = modal.querySelector<HTMLButtonElement>(
+      "[data-recover-account]",
+    )!;
+    const retry = modal.querySelector<HTMLButtonElement>(
+      "[data-retry-account]",
+    )!;
+    const submit = modal.querySelector<HTMLButtonElement>(
+      'button[type="submit"]',
+    )!;
+    const alert = modal.querySelector<HTMLElement>("[role=alert]")!;
+    // Once selected, the actor is pinned even when discovery fails or another
+    // account appears. Only the operator's Change choice can replace it.
+    let selectedId = repository?.provider_account_id ?? "";
+    let selectedLogin = githubAccounts.find(
+      (a) => a.account_id === selectedId,
+    )?.login;
+    let choosing = false;
+    let choiceRequired = !!repository;
+    let generation = 0;
+    let submitting = false;
+    let selectedSnapshot = "";
+    let renderedChoices = "";
+    const compatible = () =>
+      githubAccounts.filter(
+        (a) => a.provider === "github" && a.state === "connected",
+      );
+    const selected = () =>
+      compatible().find((a) => a.account_id === selectedId);
+    const invalidate = () => {
+      generation++;
+      if (submitting) {
+        submitting = false;
+        alert.textContent =
+          "The URL or account connection changed. Your input is retained; add and configure again to verify current access.";
+        alert.hidden = false;
+      }
+    };
     const update = () => {
       if (!modal.isConnected) return;
-      const selected = initialAccount
-        ? (repository?.provider_account_id ?? "")
-        : account.value;
-      initialAccount = false;
-      account.innerHTML =
-        option("", "Choose a GitHub account", selected) +
-        githubAccounts
-          .map(
-            (a) =>
-              `<option value="${escape(a.account_id)}" ${selected === a.account_id ? "selected" : ""} ${a.state === "connected" ? "" : "disabled"}>${escape(a.login)} (${escape(a.account_id)})${a.state === "connected" ? "" : " / Reconnect required"}</option>`,
-          )
-          .join("") +
-        (selected && !githubAccounts.some((a) => a.account_id === selected)
-          ? `<option selected disabled value="${escape(selected)}">${escape(selected)} - reconnect required</option>`
+      const provider = repositoryProviderContext(input.value);
+      const available = compatible();
+      if (
+        !selectedId &&
+        provider === "github" &&
+        repositoryAccountsState === "ready"
+      ) {
+        if (available.length > 1) choiceRequired = true;
+        if (!choiceRequired && available.length === 1)
+          selectedId = available[0].account_id;
+      }
+      const actor = selected();
+      const unavailable = githubAccounts.find(
+        (a) => a.provider === "github" && a.account_id === selectedId,
+      );
+      selectedLogin = actor?.login ?? selectedLogin;
+      const snapshot = JSON.stringify(actor ?? null);
+      if (snapshot !== selectedSnapshot) invalidate();
+      selectedSnapshot = snapshot;
+      const choices =
+        option("", "Choose a GitHub account", "") +
+        available.map((a) => option(a.account_id, a.login, "")).join("") +
+        (selectedId && !actor
+          ? `<option selected disabled value="${escape(selectedId)}">${escape(selectedLogin ?? "Saved account")} - reconnect required</option>`
           : "");
+      if (renderedChoices !== choices) {
+        account.innerHTML = choices;
+        renderedChoices = choices;
+      }
+      if (account.value !== selectedId) account.value = selectedId;
+      const github = provider === "github";
+      const ready = repositoryAccountsState === "ready";
+      const reconnect =
+        !!selectedId ||
+        githubAccounts.some(
+          (a) => a.provider === "github" && a.state === "reconnect_required",
+        );
+      choice.hidden =
+        !github || (!choosing && (!ready || !!selectedId || !available.length));
+      account.disabled = !github || busy;
+      change.hidden = !github || !selectedId || choosing;
+      recover.hidden = !github || !ready || !!actor;
+      recover.textContent = reconnect
+        ? "Reconnect GitHub account"
+        : "Connect GitHub account";
+      retry.hidden = !github || repositoryAccountsState !== "unavailable";
+      submit.disabled = !github || !ready || !actor || submitting || busy;
+      status.textContent = !github
+        ? provider === "azure_devops"
+          ? "Azure DevOps repository connections are coming soon. This URL cannot use a GitHub account."
+          : provider === "invalid"
+            ? "Enter a valid HTTPS repository URL or owner/repository."
+            : "This repository provider is not supported. Use a GitHub repository URL."
+        : repositoryAccountsState === "unavailable"
+          ? "GitHub repository accounts are unavailable. Retry reading accounts; your URL and selected identity are retained."
+          : !ready
+            ? "Reading GitHub repository accounts..."
+            : actor
+              ? `GitHub / ${actor.login}${actor.warning ? " / Verification needs retry; current access will be checked before saving." : ""}`
+              : selectedId
+                ? `Reconnect ${selectedLogin ?? "the saved GitHub account"} for repository access, or explicitly Change the account. ${unavailable?.reason ? githubAccountFailureMessage(unavailable.reason) : "No other identity was selected."}`
+                : available.length
+                  ? "Choose a GitHub repository account before validating this URL. No account is selected."
+                  : reconnect
+                    ? "Reconnect a GitHub repository account in Accounts. Its authorization is unavailable; Copilot AI access is separate."
+                    : "Connect a GitHub repository account to continue. Copilot AI access is separate; confirm the returned identity before using it.";
+    };
+    input.oninput = () => {
+      invalidate();
+      update();
+    };
+    change.onclick = () => {
+      choosing = true;
+      update();
+      if (!choice.hidden) account.focus();
+    };
+    account.onchange = () => {
+      invalidate();
+      selectedId = account.value;
+      selectedLogin = selected()?.login;
+      choiceRequired = true;
+      choosing = true;
+      update();
+    };
+    account.onfocus = () => {
+      choosing = true;
+    };
+    retry.onclick = () =>
+      window.dispatchEvent(new Event("pr-sniper:refresh-provider-accounts"));
+    recover.onclick = () => {
+      // Reuse the mounted Git Repository connection, including its existing
+      // confirmation flow. Closing recovery returns to this untouched URL draft.
+      const auth = accountContent?.querySelector<HTMLElement>(".github-auth");
+      const parent = auth?.parentElement;
+      if (!auth || !parent) {
+        alert.textContent =
+          "GitHub account controls are unavailable. Close this editor and retry Accounts.";
+        alert.hidden = false;
+        return;
+      }
+      const recovery = dialog(
+        "GitHub repository accounts",
+        "<div data-repository-auth></div>",
+        recover,
+      );
+      compactEditor(
+        recovery,
+        "Back to repository URL; retain input and account",
+      );
+      recovery.querySelector("[data-repository-auth]")!.append(auth);
+      recovery.addEventListener(
+        "pr-sniper:dialog-closed",
+        () => parent.append(auth),
+        { once: true },
+      );
+      window.dispatchEvent(new Event("pr-sniper:refresh-provider-accounts"));
     };
     updateRepositoryAccounts = update;
     update();
-    let submitting = false;
+    modal.addEventListener(
+      "pr-sniper:dialog-closed",
+      () => {
+        invalidate();
+        if (updateRepositoryAccounts === update)
+          updateRepositoryAccounts = undefined;
+      },
+      { once: true },
+    );
     modal.querySelector("form")!.onsubmit = async (event) => {
       event.preventDefault();
       if (submitting) return;
-      const accountId = account.value;
+      const accountId = selectedId;
+      const actor = selected();
       const requestedRoute = routeGeneration;
-      const input = modal.querySelector<HTMLInputElement>("[name=repository]")!;
-      const controls = [
-        ...modal.querySelectorAll<
-          HTMLInputElement | HTMLSelectElement | HTMLButtonElement
-        >('input,select,button[type="submit"]'),
-      ];
-      const alert = modal.querySelector<HTMLElement>("[role=alert]")!;
+      const read = ++generation;
+      const repositoryInput = input.value;
       submitting = true;
-      controls.forEach((c) => (c.disabled = true));
+      alert.hidden = true;
+      update();
       try {
-        if (
-          !githubAccounts.some(
-            (a) => a.account_id === accountId && a.state === "connected",
-          )
-        )
+        if (repositoryProviderContext(repositoryInput) !== "github")
+          throw "This repository provider is not supported. Use a GitHub repository URL.";
+        if (repositoryAccountsState !== "ready" || !actor)
           throw "Choose a connected GitHub account in Accounts, then retry.";
         const resolved = await invoke<ResolvedRepository>(
           "resolve_provider_repository",
           {
             provider: "github",
             accountId,
-            repository: input.value,
+            repository: repositoryInput,
           },
         );
         if (
           !modal.open ||
           !modal.isConnected ||
           app.closest("[hidden]") ||
-          requestedRoute !== routeGeneration
+          requestedRoute !== routeGeneration ||
+          read !== generation
         )
           return;
+        if (
+          resolved.identity.id !== accountId ||
+          (actor.connection_generation !== undefined &&
+            actor.connection_generation !== resolved.account_generation)
+        )
+          throw "The selected GitHub connection changed. Retry to verify its current access; no repository was saved.";
         await addAndConfigure(accountId, resolved, modal, opener, repository);
       } catch (cause) {
-        if (modal.open) {
+        if (modal.open && read === generation) {
+          submitting = false;
           alert.textContent = reason(cause);
           alert.hidden = false;
+          if (repositorySessionFailure(cause))
+            window.dispatchEvent(
+              new Event("pr-sniper:refresh-provider-accounts"),
+            );
         }
       } finally {
-        submitting = false;
-        controls.forEach((c) => (c.disabled = false));
+        if (read === generation) {
+          submitting = false;
+          update();
+        }
       }
     };
   }
@@ -1832,7 +2009,7 @@ export async function mountSettings(
   function browseRepositories(account: GithubAccount, opener: HTMLElement) {
     const modal = dialog(
       `Browse repositories as ${account.login}`,
-      `<p class="settings-hint">Acting GitHub account: ${escape(account.login)} (${escape(account.account_id)}).</p>
+      `<p class="settings-hint">Acting GitHub account: ${escape(account.login)}.</p>
       <label>Repository owner<select data-owner aria-label="Repository owner" disabled><option value="">Choose an owner</option></select></label>
       <label>Find a repository<input type="search" data-owner-search placeholder="Search this owner..." disabled /></label>
       <p role="status">Loading available owners...</p><p role="alert" hidden></p><button data-retry hidden>Retry</button>
@@ -2085,7 +2262,7 @@ export async function mountSettings(
     const schedule = saved.defaults.schedule;
     const modal = dialog(
       `Settings for ${repository.name}`,
-      `<section class="repository-identity"><h3>${escape(repository.name)}</h3><p class="settings-hint">${escape(repository.provider === "github" ? `GitHub acting account: ${githubAccounts.find((account) => account.account_id === repository.provider_account_id)?.login ?? repository.provider_account_id ?? "not selected"}.` : "Azure DevOps account binding is not available in this build.")}</p><dl><dt>Account ID</dt><dd>${escape(repository.provider_account_id ?? "Unbound")}</dd><dt>Repository ID</dt><dd>${escape(repository.provider_repository_id ?? "Not verified")}</dd></dl></section>
+      `<section class="repository-identity"><h3>${escape(repository.name)}</h3><p class="settings-hint">${escape(repository.provider === "github" ? `GitHub acting account: ${githubAccounts.find((account) => account.account_id === repository.provider_account_id)?.login ?? (repository.provider_account_id ? "Saved account unavailable" : "No account selected")}.` : "Azure DevOps account binding is not available in this build.")}</p></section>
         <label class="repository-check"><input type="checkbox" data-repository-enabled ${repository.enabled || pendingSetup.has(repository.id) ? "checked" : ""} /><span>Enable repository monitoring on Save</span></label>
         <section class="repository-group"><h2>Pull requests to watch</h2>
         <p class="settings-hint">Save authorizes all currently open and future matching pull requests. Eligible reviews start automatically; global monitoring off, pause and repository disablement still apply. Adding this row alone does not start monitoring.</p>
@@ -2103,7 +2280,7 @@ export async function mountSettings(
         <div class="watchlist"></div>
         <p class="settings-hint">Optional. A nonempty effective watched-author filter qualifies those authors. An empty effective author filter means all authors. Pull requests requesting the signed-in account also qualify when the reviewer-request trigger is enabled. Exact GitHub login, no wildcards.</p>
         </section><section class="repository-group" data-global-schedule><h2>Saved global schedule</h2><p>${schedule.kind === "cron" ? `<code>${escape(schedule.expression)}</code>` : `Every ${schedule.minutes} minutes (saved legacy schedule)`} / ${escape(schedule.timezone)}</p><p class="settings-hint">${schedule.kind === "cron" ? "One schedule scans enabled repositories. Change it in Preferences;" : "Polling is blocked until you choose a global five-field cron schedule in Preferences. The saved legacy interval is retained;"} repository and Agent assignments have no separate polling controls.</p></section>
-        <details class="repository-group"><summary>Repository and connection</summary><div class="settings-actions"><button id="rename-repository">Edit repository</button><button data-unbind-repository ${repository.provider_account_id ? "" : "disabled"}>Unbind account</button><button id="remove-repository">Remove repository</button></div><div class="connection"></div></details>
+        <details class="repository-group"><summary>Repository and connection</summary><dl class="repository-binding-details"><dt>Account ID</dt><dd>${escape(repository.provider_account_id ?? "Unbound")}</dd><dt>Repository ID</dt><dd>${escape(repository.provider_repository_id ?? "Not verified")}</dd></dl><div class="settings-actions"><button id="rename-repository">Edit repository</button><button data-unbind-repository ${repository.provider_account_id ? "" : "disabled"}>Unbind account</button><button id="remove-repository">Remove repository</button></div><div class="connection"></div></details>
         <p class="settings-hint">Save applies only this repository. Back retains its draft for this session; Cancel discards it. Earlier assignment saves stay applied.</p>
         <p role="alert" data-resource-error hidden></p><div class="resource-actions"><button class="primary" data-save-repository>Save repository</button><button data-cancel-repository aria-label="Cancel repository changes">Cancel</button></div>`,
       opener,

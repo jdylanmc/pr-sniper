@@ -163,6 +163,8 @@ enum GithubAccountView {
         login: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         warning: Option<GithubAuthFailure>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        connection_generation: Option<u64>,
     },
     ReconnectRequired {
         provider: &'static str,
@@ -200,6 +202,7 @@ impl GithubAuth {
                     account_id: identity.id.clone(),
                     login: identity.login.clone(),
                     warning: None,
+                    connection_generation: None,
                 },
                 GithubAccountState::ReconnectRequired { identity, reason }
                     if reason.retryable_without_reconnect() =>
@@ -209,6 +212,7 @@ impl GithubAuth {
                         account_id: identity.id.clone(),
                         login: identity.login.clone(),
                         warning: Some(*reason),
+                        connection_generation: None,
                     }
                 }
                 GithubAccountState::ReconnectRequired { identity, reason } => {
@@ -225,6 +229,21 @@ impl GithubAuth {
             accounts,
             flow: self.flow_view(),
         }
+    }
+
+    fn repository_view(&self, generations: &BTreeMap<String, u64>) -> GithubAuthView {
+        let mut view = self.view();
+        for account in &mut view.accounts {
+            if let GithubAccountView::Connected {
+                account_id,
+                connection_generation,
+                ..
+            } = account
+            {
+                *connection_generation = Some(generations.get(account_id).copied().unwrap_or(0));
+            }
+        }
+        view
     }
 
     fn flow_view(&self) -> GithubFlowView {
@@ -258,6 +277,7 @@ impl GithubAuth {
                     account_id: identity.id.clone(),
                     login: identity.login.clone(),
                     warning: None,
+                    connection_generation: None,
                 },
                 GithubAccountState::ReconnectRequired { identity, reason } => {
                     GithubAccountView::ReconnectRequired {
@@ -2631,6 +2651,115 @@ mod repository_read_tests {
     fn url_completion_cannot_expire_a_replacement_connection() {
         assert_reconnected_completion(Operation::Resolve);
     }
+
+    #[test]
+    fn repository_intake_saves_the_verified_actor_and_rejects_same_login_replacement() {
+        for replace_connection in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let store = Store::new(root.path().into());
+            let mut initial = GithubAuth::new();
+            initial.accounts.insert(
+                "22".into(),
+                GithubAccountState::Connected(identity("original")),
+            );
+            initial.accounts.insert(
+                "44".into(),
+                GithubAccountState::Connected(github::Identity {
+                    id: "44".into(),
+                    login: "neighbor".into(),
+                }),
+            );
+            let auth = Mutex::new(initial);
+            let generations = Mutex::new(BTreeMap::from([("22".into(), 7), ("44".into(), 9)]));
+            let view = serde_json::to_value(
+                auth.lock()
+                    .unwrap()
+                    .repository_view(&generations.lock().unwrap()),
+            )
+            .unwrap();
+            assert_eq!(view["accounts"][0]["connection_generation"], 7);
+            assert_eq!(view["accounts"][0]["provider"], "github");
+            assert!(
+                serde_json::to_value(auth.lock().unwrap().copilot_view()).unwrap()["accounts"][0]
+                    .get("connection_generation")
+                    .is_none(),
+                "AI connections cannot supply repository generation evidence"
+            );
+            let resolved = repository_read(
+                &generations,
+                &auth,
+                "22",
+                || {
+                    acquire(HeldProvider {
+                        operation: Operation::Resolve,
+                        signed_out: false,
+                        barrier: None,
+                    })
+                },
+                |identity, client, generation| {
+                    read_operation(Operation::Resolve, identity, client, generation)
+                },
+            )
+            .unwrap();
+            assert_eq!(resolved["identity"]["id"], "22");
+            let repository: storage::Repository = serde_json::from_value(json!({
+                "id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "provider":"github",
+                "name":resolved["repository"]["name"], "enabled":false,
+                "provider_account_id":"22", "provider_repository_id":resolved["repository"]["id"]
+            }))
+            .unwrap();
+            let edit = storage::ResourceEdit::Repository {
+                id: repository.id.clone(),
+                expected: None,
+                value: Some(Box::new(repository)),
+            };
+            if replace_connection {
+                let mut generations = generations.lock().unwrap();
+                let mut auth = auth.lock().unwrap();
+                auth.pending = Some(PendingGithubAccount {
+                    identity: identity("original"),
+                    pair: github::oauth::TokenPair::new(
+                        "fixture-access",
+                        "fixture-refresh",
+                        std::time::Duration::from_secs(60),
+                        std::time::Duration::from_secs(120),
+                    ),
+                });
+                auth.confirm_repository_with(&mut generations, |_, _| Ok(()))
+                    .unwrap();
+                let view = serde_json::to_value(auth.repository_view(&generations)).unwrap();
+                assert_eq!(view["accounts"][0]["connection_generation"], 8);
+            }
+            let result = validate_repository_save_account(
+                &auth.lock().unwrap(),
+                &generations.lock().unwrap(),
+                &edit,
+                resolved["account_generation"].as_u64(),
+            )
+            .and_then(|()| store.save_resource(edit).map_err(ResourceSaveError::from));
+            let saved = store.load_settings().unwrap();
+            if replace_connection {
+                assert_eq!(
+                    serde_json::to_value(result.unwrap_err()).unwrap(),
+                    json!("authentication_changed")
+                );
+                assert!(saved.repositories.is_empty());
+            } else {
+                result.unwrap();
+                assert_eq!(
+                    saved.repositories[0].provider_account_id.as_deref(),
+                    Some("22")
+                );
+                assert_eq!(
+                    saved.repositories[0].provider_repository_id.as_deref(),
+                    Some("100")
+                );
+            }
+            assert!(auth.lock().unwrap().account_session_allowed("44").is_ok());
+            assert_eq!(generations.lock().unwrap()["44"], 9);
+        }
+    }
+
     #[test]
     fn failed_replacement_confirmation_does_not_advance_generation_or_replace_account() {
         let mut generations = BTreeMap::from([("22".into(), 7)]);
@@ -2991,11 +3120,15 @@ fn diagnostics(host: State<'_, Host>) -> Result<Vec<Diagnostic>, String> {
 
 #[tauri::command]
 fn github_auth_state(host: State<'_, Host>) -> Result<GithubAuthView, String> {
+    let generations = host
+        .github_generations
+        .lock()
+        .map_err(|_| "GitHub account coordination is unavailable.")?;
     Ok(host
         .github_auth
         .lock()
         .map_err(|_| "GitHub connection state is unavailable.")?
-        .view())
+        .repository_view(&generations))
 }
 
 #[tauri::command]
@@ -3139,7 +3272,7 @@ fn confirm_github_account(host: State<'_, Host>) -> Result<GithubAuthView, Strin
     if persistence == OAuthAccountPersistence::SavedWithLegacyCleanupPending {
         eprintln!("GitHub OAuth account connected; legacy credential cleanup remains pending.");
     }
-    Ok(auth.view())
+    Ok(auth.repository_view(&generations))
 }
 
 #[tauri::command]
