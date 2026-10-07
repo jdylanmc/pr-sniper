@@ -355,68 +355,73 @@ for (const kind of ["reply", "mention"]) {
     );
   });
 
-  test(`${kind} inspector presents only its own waiting, active, stopping, failed, superseded and done state`, async ({
-    page,
-    store,
-  }) => {
-    const fixture = await feedbackFixture(store);
-    fixture.review.job.work = {
-      id: "conversation-parent",
-      item_id: "conversation-item",
-      iteration_id: "conversation-iteration",
-      iteration: 1,
-      pass_ordinal: 1,
-      enqueue_order: 1,
-      agent_id: fixture.settings.agents[0].id,
-      trigger: "admission",
-      admission: {
-        watched_author: true,
-        all_authors: false,
-        requested_reviewer: false,
-      },
-    };
-    fixture.review.key = "conversation-parent";
-    const run = reply(fixture);
-    if (kind === "mention") {
-      run.target = {
-        kind: "mention",
-        comment: {
-          id: "101",
-          body: "@local-operator clarify this change.",
-          author_id: "11",
-          author_login: "pr-author",
-          created_at: "2026-09-30T00:01:00Z",
-          updated_at: "2026-09-30T00:01:00Z",
+  for (const [index, [state, label]] of [
+    ["queued", "Waiting"],
+    ["running", "Running"],
+    ["stopping", "Stopping"],
+    ["failed", "Failed"],
+    ["manual_retry", "Failed"],
+    ["backoff", "Retry queued"],
+    ["superseded", "Superseded"],
+    ["cancelled", "Stopped"],
+    ["completed", "Done"],
+    ["human_input_required", "Human input required"],
+    ["waiting_publication", "Awaiting publication"],
+    ["publishing", "Publishing"],
+    ["publication_failed", "Publication failed"],
+    ["publication_backoff", "Publication retry queued"],
+    ["unresolved", "Outcome unknown"],
+    ["unresolved_cancelled", "Outcome unknown"],
+    ["published", "Published"],
+    ["receipt_recovery", "Publication retry queued"],
+    ["stale_after_publication", "Published; stale evidence"],
+  ].entries()) {
+    test(`${kind} inspector presents only its own ${state} state (${label})`, async ({
+      page,
+      store,
+    }) => {
+      if (index >= 2) {
+        // The former running-state capture set these for every later case.
+        await page.setViewportSize({ width: 408, height: 744 });
+        await page.emulateMedia({ reducedMotion: "reduce" });
+      }
+      const fixture = await feedbackFixture(store);
+      fixture.review.job.work = {
+        id: "conversation-parent",
+        item_id: "conversation-item",
+        iteration_id: "conversation-iteration",
+        iteration: 1,
+        pass_ordinal: 1,
+        enqueue_order: 1,
+        agent_id: fixture.settings.agents[0].id,
+        trigger: "admission",
+        admission: {
+          watched_author: true,
+          all_authors: false,
+          requested_reviewer: false,
         },
       };
-    }
-    fixture.state.follow_ups = [run];
-    await store("seed_queue_state", fixture.state);
-    run.context.selection = (
-      await store("monitoring_snapshot")
-    ).reviews[0].planned_selection;
-    await nativeCapacity(page, []);
-    for (const [state, label] of [
-      ["queued", "Waiting"],
-      ["running", "Running"],
-      ["stopping", "Stopping"],
-      ["failed", "Failed"],
-      ["manual_retry", "Failed"],
-      ["backoff", "Retry queued"],
-      ["superseded", "Superseded"],
-      ["cancelled", "Stopped"],
-      ["completed", "Done"],
-      ["human_input_required", "Human input required"],
-      ["waiting_publication", "Awaiting publication"],
-      ["publishing", "Publishing"],
-      ["publication_failed", "Publication failed"],
-      ["publication_backoff", "Publication retry queued"],
-      ["unresolved", "Outcome unknown"],
-      ["unresolved_cancelled", "Outcome unknown"],
-      ["published", "Published"],
-      ["receipt_recovery", "Publication retry queued"],
-      ["stale_after_publication", "Published; stale evidence"],
-    ]) {
+      fixture.review.key = "conversation-parent";
+      const run = reply(fixture);
+      if (kind === "mention") {
+        run.target = {
+          kind: "mention",
+          comment: {
+            id: "101",
+            body: "@local-operator clarify this change.",
+            author_id: "11",
+            author_login: "pr-author",
+            created_at: "2026-09-30T00:01:00Z",
+            updated_at: "2026-09-30T00:01:00Z",
+          },
+        };
+      }
+      fixture.state.follow_ups = [run];
+      await store("seed_queue_state", fixture.state);
+      run.context.selection = (
+        await store("monitoring_snapshot")
+      ).reviews[0].planned_selection;
+      await nativeCapacity(page, []);
       const publication = [
         "publishing",
         "publication_failed",
@@ -616,8 +621,8 @@ for (const kind of ["reply", "mention"]) {
       );
       if (["running", "failed", "unresolved"].includes(state))
         await captureInspector(page, `${kind}-${state}`);
-    }
-  });
+    });
+  }
 }
 
 for (const stage of ["before-dispatch", "after-response"]) {

@@ -369,7 +369,7 @@ cleanup and bounded contention deterministically, without timing sleeps as
 assertions. The test fixture reaps only the children it created, even on failure.
 The ordinary-command burst also requires every exact revision to survive.
 
-The conversation state-presentation loop completes the initial native Job view
+Each named conversation state-presentation case completes the initial native Job view
 and its reads, then completes the Queue UI navigation and its reads before
 directly requesting the exact Job again. IPC idle alone is not a route-completion
 contract: a queued UI command may not have dispatched yet, and the initial shell
@@ -618,6 +618,12 @@ stopped/backoff operations for both owned replies and primary mentions. Complete
 analysis is combined with quiet, human judgment, waiting/publishing, rejected,
 uncertain and confirmed publication states; unknown outcomes retain the original
 reconciliation controls, and only actual AI reservations animate.
+All 19 states for each kind are independently named tests (38 total), with fresh
+real Store fixtures and the unchanged 30-second per-test budget. State settings,
+snapshot/status/receipt/count oracles, Job -> Queue -> Job ordering and inspector
+captures are unchanged. Later cases explicitly retain the compact viewport and
+reduced motion previously inherited from the running-state capture; no cumulative
+19-case timeout, retry or skipped state is introduced.
 Native conversation tests exercise production scan admission,
 normal/reply/mention FIFO dispatch, provider comment pagination, scoped mention
 matching, current-head observation with immutable root provenance, exact
