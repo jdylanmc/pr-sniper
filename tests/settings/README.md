@@ -69,6 +69,17 @@ SETTINGS_TEST_PORT=1652 npm exec playwright -- test \
   --output /absolute/private/queue-visual
 ```
 
+Repository-writing library/bootstrap fixtures use explicit synthetic stable
+account/repository bindings through `seedBoundRepositories`; enabled legacy
+unbound rows are not valid enabled-save inputs. The helper changes only the
+new fixture bindings, not monitoring intent, schedules, assignments or authority.
+`resources.spec.mjs` keeps an independent native-byte regression for rejecting
+unbound enabled assignment saves and preserving legacy state without a grant.
+Connection checks scope their status to the connection section, separately from
+the repository's monitoring status. Shared Save helpers assert actual errors
+stay hidden on success before asserting dismissal; they never force-close a
+rejected save or repair invalid state behind the caller's back.
+
 `repository-monitoring.spec.mjs` covers persistent listing/editor monitoring
 switches through resource-scoped native Store saves, authorization and reload.
 Global pause remains separate, intentionally disabled saves stay disabled, and
