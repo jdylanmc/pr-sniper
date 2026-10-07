@@ -605,7 +605,7 @@ pub fn validate_conversation_context(
     )
 }
 
-fn validate_captured_context(
+pub(crate) fn validate_captured_context(
     store: &Store,
     job: &QueueJob,
     current: &[Context],

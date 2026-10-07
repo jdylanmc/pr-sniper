@@ -651,6 +651,12 @@ fn analysis_result_commit_fences_account_cancellation_and_late_settings_changes(
         .store
         .save_follow_ups(std::slice::from_ref(&run))
         .unwrap();
+    assert!(follow_up::validate_analysis_commit(&fixture.store, &run, true).is_err());
+    run.body = None;
+    fixture
+        .store
+        .save_follow_ups(std::slice::from_ref(&run))
+        .unwrap();
     assert!(follow_up::validate_analysis_commit(&fixture.store, &run, true).is_ok());
     assert!(follow_up::validate_analysis_commit(&fixture.store, &run, false).is_err());
     let mut cancelled = run.clone();

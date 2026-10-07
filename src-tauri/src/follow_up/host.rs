@@ -1289,26 +1289,20 @@ fn local_gate(store: &Store, run: &FollowUp) -> Result<(), Failure> {
             "Follow-up selection changed; explicit retry required.",
         ));
     }
+    if run.publication.is_none() {
+        run.validate_analysis_base(job)?;
+    }
     if run.context.feedback_checked {
         if run.publication.is_none() {
-            if let Some(thread) = ledger.records.iter().find_map(|record| {
-                (crate::feedback::same_pr(&record.job, job)
-                    && record.job.configuration_id == job.configuration_id
-                    && record.observed_head == job.head_sha
-                    && record.context.unavailable.is_none()
-                    && run.owns_feedback(&record.context))
-                .then_some(record.context.thread.as_ref())
-                .flatten()
-            }) {
-                validate_observed_trigger(run, &Observation::Owned(thread.clone()))?;
-            }
+            run.validate_analysis_feedback(store, job)?;
+        } else {
+            crate::feedback::validate_conversation_context(
+                store,
+                job,
+                &run.context.selection.agent.id,
+                &run.context.feedback,
+            )?;
         }
-        crate::feedback::validate_conversation_context(
-            store,
-            job,
-            &run.context.selection.agent.id,
-            &run.context.feedback,
-        )?;
     }
     Ok(())
 }
@@ -1454,6 +1448,7 @@ impl Environment for Native {
                 .request_revision_check(&store, job, self.now()?)
                 .map_err(Failure::permanent)?;
         }
+        native_gate_result(gate)?;
         if local.is_err() {
             return native_gate_result(local);
         }
@@ -1463,6 +1458,9 @@ impl Environment for Native {
             {
                 return Ok(Some("Original thread provenance changed.".into()));
             }
+            if run.publication.is_none() {
+                run.validate_observed_trigger(observed)?;
+            }
         }
         if !run.fresh_observation(observed) {
             return Ok(Some(
@@ -1470,7 +1468,7 @@ impl Environment for Native {
                     .into(),
             ));
         }
-        native_gate_result(gate)
+        Ok(None)
     }
     fn reply(&mut self, run: &FollowUp) -> Result<String, WriteFailure> {
         let prepared = (|| {
@@ -1610,40 +1608,11 @@ impl Native {
     }
 }
 
-fn validate_observed_trigger(run: &FollowUp, observation: &Observation) -> Result<(), Failure> {
-    if let Observation::Owned(thread) = observation {
-        let latest = thread.latest_other_user(&run.context.job.account_id);
-        if latest.map(|comment| &comment.id) != Some(&run.trigger_id) {
-            let captured = run.thread().map_err(Failure::permanent)?;
-            if run.publication.is_none()
-                && !run.uncertain
-                && run.receipt.is_none()
-                && !thread.resolved
-                && thread.id == captured.id
-                && thread.comments.starts_with(&captured.comments)
-                && latest.is_some_and(|comment| {
-                    !captured.comments.iter().any(|old| old.id == comment.id)
-                })
-            {
-                return Err(Failure {
-                    kind: monitoring::OperationFailure::Superseded,
-                    ..Failure::permanent(super::SUPERSEDED_TRIGGER)
-                });
-            }
-            return Err(Failure::permanent(
-                "The conversation trigger changed without verified new-comment supersession.",
-            ));
-        }
-    }
-    Ok(())
-}
-
 fn analysis_checkpoint(
     environment: &mut impl Environment,
     run: &FollowUp,
 ) -> Result<Observation, Failure> {
     let observation = environment.observe(run)?;
-    validate_observed_trigger(run, &observation)?;
     if let Some(reason) = environment.gate(run, &observation)? {
         return Err(analysis_gate_failure(reason));
     }
@@ -1658,7 +1627,8 @@ async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure>
         let snapshot = run.clone();
         let (context, client, observation) = tauri::async_runtime::spawn_blocking(move || {
             let observation = worker.observe(&snapshot)?;
-            validate_observed_trigger(&snapshot, &observation)?;
+            worker.local(&snapshot)?;
+            snapshot.validate_observed_trigger(&observation)?;
             let mut current = snapshot.clone();
             if let Observation::Mention { replies, .. } = &observation {
                 current.discussion = replies.clone();
@@ -1740,7 +1710,8 @@ async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure>
             .review(request, native.cancelled.clone(), deadline)
             .await?;
         let mut final_native = native.clone();
-        let final_run = run.clone();
+        let mut final_run = run.clone();
+        final_run.result = Some(result.clone());
         tauri::async_runtime::spawn_blocking(move || {
             analysis_checkpoint(&mut final_native, &final_run).map(|_| ())
         })
@@ -1793,6 +1764,30 @@ pub(crate) fn complete_analysis(
             "A newer analysis attempt owns this follow-up.",
         ));
     }
+    if current.has_provider_work() || run.has_provider_work() {
+        return match outcome {
+            Err(error) => Err(error),
+            Ok(_) => Err(Failure::permanent(
+                "Provider reply work cannot be overwritten by an analysis result.",
+            )),
+        };
+    }
+    if outcome.is_ok()
+        && (current.result.is_some()
+            || current.error.is_some()
+            || current.analysis.as_ref().is_some_and(|operation| {
+                matches!(
+                    operation.state,
+                    OperationState::Completed
+                        | OperationState::Failed
+                        | OperationState::ManualRetry
+                )
+            }))
+    {
+        return Err(Failure::permanent(
+            "An existing analysis outcome cannot be replaced by another successful result.",
+        ));
+    }
     run.analysis = current.analysis;
     if !current.cancelled
         && run
@@ -1809,7 +1804,7 @@ pub(crate) fn complete_analysis(
         let mut checked = run.clone();
         checked.result = Some(result.clone());
         crate::feedback::owned_reply_assessment(&checked)?;
-        super::validate_analysis_commit(store, run, account_allowed)?;
+        super::validate_analysis_commit(store, &checked, account_allowed)?;
         Ok(result)
     });
     match outcome {
