@@ -399,16 +399,21 @@ fn r2_missing_closed_compact_root_blocks_unreferenced_republication() {
 fn r3_full_and_compact_settlement_parity_preserves_unsettled_replies() {
     for retained in [false, true] {
         for closure in [false, true] {
-            for unsettled in ["none", "uncertain", "incomplete"] {
-                let (_root, store, _monitor) = fixture();
+            for disposition in [
+                "safe_superseded",
+                "failed",
+                "cancelled",
+                "human",
+                "uncertain",
+                "incomplete",
+            ] {
+                let (_root, store, mut monitor) = fixture();
                 let (mut review, publication, mut follow) = evidence(&store);
                 // Isolate the conversation's contribution to readiness.
                 review.result.as_mut().unwrap().output.findings.clear();
                 review.result.as_mut().unwrap().output.decision =
                     crate::review::Decision::MachineSignOff;
                 store.save_reviews(&[review]).unwrap();
-                follow.phase = FollowPhase::Stopped;
-                follow.error = Some("Original reply stopped.".into());
                 follow.context.feedback_checked = true;
                 if retained {
                     follow.target = crate::follow_up::ConversationTarget::Retained(Box::new(
@@ -420,6 +425,7 @@ fn r3_full_and_compact_settlement_parity_preserves_unsettled_replies() {
                 }
                 let context = store.load_feedback().unwrap().records.remove(0).context;
                 assert!(follow.owns_feedback(&context));
+                follow.context.feedback = vec![context.clone()];
                 for field in ["publication", "agent", "assignment", "head", "root"] {
                     let mut foreign = context.clone();
                     match field {
@@ -431,28 +437,116 @@ fn r3_full_and_compact_settlement_parity_preserves_unsettled_replies() {
                     }
                     assert!(!follow.owns_feedback(&foreign));
                 }
-                if unsettled != "none" {
+                let mut newer = thread();
+                let mut comment = newer.comments.last().unwrap().clone();
+                comment.id = "newer-trigger".into();
+                comment.body = "A new external question.".into();
+                newer.comments.push(comment);
+                let failure = if disposition == "safe_superseded" {
+                    let failure = follow
+                        .validate_observed_trigger(&crate::follow_up::Observation::Owned(
+                            newer.clone(),
+                        ))
+                        .unwrap_err();
+                    assert_eq!(
+                        failure.kind,
+                        crate::monitoring::OperationFailure::Superseded
+                    );
+                    failure
+                } else {
+                    crate::review::Failure::permanent("Original analysis failed.")
+                };
+                follow.phase = FollowPhase::Stopped;
+                follow.error = Some(failure.message.clone());
+                follow
+                    .analysis
+                    .as_mut()
+                    .unwrap()
+                    .fail(&failure.monitoring(), NOW + 2);
+                if disposition == "cancelled" {
+                    follow.cancelled = true;
+                } else if disposition == "human" {
+                    follow.phase = FollowPhase::HumanInputRequired;
+                    follow.error = None;
+                    follow.analysis.as_mut().unwrap().state = OperationState::Completed;
+                    follow.analysis.as_mut().unwrap().failure = None;
+                }
+                if matches!(disposition, "uncertain" | "incomplete") {
+                    follow.error = None;
+                    follow.analysis.as_mut().unwrap().state = OperationState::Completed;
+                    follow.analysis.as_mut().unwrap().failure = None;
                     let mut op = follow.operation("reply_publish", NOW + 2);
                     op.state = OperationState::Failed;
                     op.attempted_mutation = Some("reply".into());
                     follow.publication = Some(op);
-                    follow.uncertain = unsettled == "uncertain";
+                    follow.uncertain = disposition == "uncertain";
                 }
                 store.save_follow_ups(&[follow.clone()]).unwrap();
-                let mut observed = thread();
+                let mut observed = newer;
                 if closure {
                     observed.resolved = true;
-                } else {
-                    observed.comments[1].id = "newer-trigger".into();
                 }
+                let ticket = monitor
+                    .prepare_checks(&store, NOW + 3, true)
+                    .unwrap()
+                    .remove(0);
+                monitor
+                    .finish(
+                        &store,
+                        ticket.clone(),
+                        Ok(PollResult {
+                            connection: Connection {
+                                identity: Identity {
+                                    id: "22".into(),
+                                    login: "actor".into(),
+                                },
+                                repository: RemoteRepository {
+                                    id: "100".into(),
+                                    name: "example/repo".into(),
+                                },
+                                capabilities: Capabilities {
+                                    read: true,
+                                    comment: CommentCapability::Available,
+                                },
+                            },
+                            pull_requests: vec![pull(1, Lifecycle::Open)],
+                        }),
+                        NOW + 4,
+                    )
+                    .unwrap();
                 let mut feedback = store.load_feedback().unwrap();
                 feedback
-                    .observe(&publication, &"a".repeat(40), &[observed])
+                    .observe(
+                        &publication,
+                        &"a".repeat(40),
+                        std::slice::from_ref(&observed),
+                    )
                     .unwrap();
                 store.save_feedback(&feedback).unwrap();
+                crate::follow_up::host::admit_scan(
+                    &store,
+                    &ticket,
+                    crate::follow_up::host::Scan {
+                        threads: vec![(
+                            crate::feedback::MentionBinding {
+                                configuration_id: follow.context.job.configuration_id.clone(),
+                                account_id: follow.context.job.account_id.clone(),
+                                account_login: follow.context.job.account_login.clone(),
+                                repository_id: follow.context.job.repository_id.clone(),
+                                repository_name: follow.context.job.repository_name.clone(),
+                                pull_request_id: follow.context.job.pull_request_id.clone(),
+                                number: follow.context.job.number,
+                            },
+                            vec![observed],
+                        )],
+                        ..Default::default()
+                    },
+                    NOW + 5,
+                )
+                .unwrap();
                 let snapshot = crate::queue::normal_snapshot(&store, vec![]).unwrap();
                 let state = snapshot.items[0].state;
-                if unsettled == "none" {
+                if disposition == "safe_superseded" {
                     assert_eq!(
                         state,
                         if closure {
@@ -460,12 +554,30 @@ fn r3_full_and_compact_settlement_parity_preserves_unsettled_replies() {
                         } else {
                             crate::queue::State::WaitingForAuthor
                         },
-                        "retained={retained}, closure={closure}"
+                        "retained={retained}, closure={closure}, disposition={disposition}"
+                    );
+                } else if disposition == "human" {
+                    assert_eq!(
+                        state,
+                        if closure {
+                            crate::queue::State::Blocked
+                        } else {
+                            crate::queue::State::WaitingForHuman
+                        },
+                        "retained={retained}, closure={closure}, disposition={disposition}"
                     );
                 } else {
-                    assert_eq!(state, crate::queue::State::Failed);
-                    assert_eq!(store.load_follow_ups().unwrap(), vec![follow]);
+                    assert_eq!(
+                        state,
+                        crate::queue::State::Failed,
+                        "retained={retained}, closure={closure}, disposition={disposition}"
+                    );
                 }
+                assert_eq!(
+                    store.load_follow_ups().unwrap(),
+                    vec![follow],
+                    "retained={retained}, closure={closure}, disposition={disposition}"
+                );
             }
         }
     }
