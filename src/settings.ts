@@ -52,6 +52,7 @@ interface ResolvedRepository {
   identity: { id: string };
   repository: { id: string; name: string };
   account_generation: number;
+  pull_request?: { id: string; number: number; title: string };
 }
 interface RepositoryBrowseWarning {
   boundary:
@@ -198,6 +199,10 @@ const reason = (error: unknown): string => {
   const details = describeReadFailureDetails(error);
   if (details) return details;
   const errors: Record<string, string> = {
+    invalid_repository:
+      "Enter owner/repository, an HTTPS github.com repository URL, or a pull request URL with a positive PR number. Other providers and embedded credentials are not supported.",
+    revision_changed:
+      "The pull request revision changed during this lookup. Retry to verify its current revision.",
     signed_out:
       "GitHub is disconnected. Connect the PR Sniper GitHub OAuth App, then try again.",
     missing_read_permission:
@@ -345,6 +350,15 @@ export async function mountSettings(
   const setupMonitoringOff = new Set<string>();
   let repositoryAutomation: AutomationSnapshot | undefined;
   let repositoryAutomationRead = 0;
+  const pendingPullRequests = new Map<
+    string,
+    {
+      number: number;
+      accountId: string;
+      repositoryId: string;
+      generation: number;
+    }
+  >();
   let copilotAccounts: CopilotAccount[] = [];
   let updateAgentAccounts: (() => void) | undefined;
   let updateRepositoryAccounts: (() => void) | undefined;
@@ -1855,6 +1869,16 @@ export async function mountSettings(
       if (!previous) pendingSetup.add(value.id);
       repository = repositories().find((r) => r.id === value.id)!;
     }
+    if (resolved.pull_request) {
+      pendingPullRequests.set(repository.id, {
+        number: resolved.pull_request.number,
+        accountId,
+        repositoryId: resolved.repository.id,
+        generation: resolved.account_generation,
+      });
+    } else {
+      pendingPullRequests.delete(repository.id);
+    }
     modal.close();
     render();
     if (app.closest("[hidden]") || requestedRoute !== routeGeneration) return;
@@ -1876,7 +1900,7 @@ export async function mountSettings(
       <div class="repository-actor"><p class="settings-hint" role="status" id="repository-actor-status"></p><button type="button" data-change-account hidden>Change</button></div>
       <label data-account-choice hidden>Acting GitHub account<select name="account" aria-describedby="repository-actor-status"></select></label>
       <div class="settings-actions"><button type="button" data-recover-account hidden>Connect GitHub account</button><button type="button" data-retry-account hidden>Retry reading accounts</button></div>
-      <p class="settings-hint">GitHub URL or owner/repository. Uses Git Repository access, not your Copilot AI connection. Adding opens configuration without starting monitoring.</p>
+      <p class="settings-hint">GitHub repository or pull request URL, or owner/repository. Uses Git Repository access, not your Copilot AI connection. Adding opens configuration; Save queues a requested PR regardless of watch filters, without granting action permissions.</p>
       <p role="alert" hidden></p><div class="resource-actions"><button type="button" data-cancel-resource>Cancel</button><button type="submit" class="primary">Add &amp; configure</button></div></form>`,
       opener,
     );
@@ -2099,7 +2123,7 @@ export async function mountSettings(
       } catch (cause) {
         if (modal.open && read === generation) {
           submitting = false;
-          alert.textContent = reason(cause);
+          alert.textContent = `Cannot resolve this repository or pull request using the selected GitHub account. ${reason(cause)}`;
           alert.hidden = false;
           if (repositorySessionFailure(cause))
             window.dispatchEvent(
@@ -2369,6 +2393,7 @@ export async function mountSettings(
     opener: HTMLElement,
   ) {
     const schedule = saved.defaults.schedule;
+    const pendingPull = pendingPullRequests.get(repository.id);
     const modal = dialog(
       `Settings for ${repository.name}`,
       `<section class="repository-identity"><h3>${escape(repository.name)}</h3><p class="settings-hint">${escape(repository.provider === "github" ? `GitHub acting account: ${githubAccounts.find((account) => account.account_id === repository.provider_account_id)?.login ?? (repository.provider_account_id ? "Saved account unavailable" : "No account selected")}.` : "Azure DevOps account binding is not available in this build.")}</p></section>
@@ -2391,6 +2416,7 @@ export async function mountSettings(
         </section><section class="repository-group" data-global-schedule><h2>Saved global schedule</h2><p>${schedule.kind === "cron" ? `<code>${escape(schedule.expression)}</code>` : `Every ${schedule.minutes} minutes (saved legacy schedule)`} / ${escape(schedule.timezone)}</p><p class="settings-hint">${schedule.kind === "cron" ? "One schedule scans enabled repositories. Change it in Preferences;" : "Polling is blocked until you choose a global five-field cron schedule in Preferences. The saved legacy interval is retained;"} repository and Agent assignments have no separate polling controls.</p></section>
         <details class="repository-group"><summary>Repository and connection</summary><dl class="repository-binding-details"><dt>Account ID</dt><dd>${escape(repository.provider_account_id ?? "Unbound")}</dd><dt>Repository ID</dt><dd>${escape(repository.provider_repository_id ?? "Not verified")}</dd></dl><div class="settings-actions"><button id="rename-repository">Edit repository</button><button data-unbind-repository ${repository.provider_account_id ? "" : "disabled"}>Unbind account</button><button id="remove-repository">Remove repository</button></div><div class="connection"></div></details>
         <p class="settings-hint">Save applies only this repository. Back retains its draft for this session; Cancel discards it. Earlier assignment saves stay applied.</p>
+        <p class="settings-hint" role="status" data-explicit-pr-status ${pendingPull ? "" : "hidden"}>${pendingPull ? `PR #${pendingPull.number} will be queued after valid Save, even outside watch filters. Pause, repository disablement, account/Agent availability and capacity still apply.` : ""}</p>
         <p role="alert" data-resource-error hidden></p><div class="resource-actions"><button class="primary" data-save-repository>Save repository</button><button data-cancel-repository aria-label="Cancel repository changes">Cancel</button></div>`,
       opener,
     );
@@ -2487,6 +2513,48 @@ export async function mountSettings(
           await commitResource(repositoryEdit(repository, proposed), modal);
           pendingSetup.delete(repository.id);
           setupMonitoringOff.delete(repository.id);
+          const requestedPull = pendingPullRequests.get(repository.id);
+          if (requestedPull) {
+            const committed = saved.repositories?.find(
+              (r) => r.id === repository.id,
+            );
+            if (
+              !committed ||
+              committed.provider_account_id !== requestedPull.accountId ||
+              committed.provider_repository_id !== requestedPull.repositoryId
+            )
+              throw "Configuration saved, but the requested PR's repository account changed. Enter its URL again under the saved account.";
+            const saveButton = modal.querySelector<HTMLButtonElement>(
+              "[data-save-repository]",
+            )!;
+            saveButton.disabled = true;
+            modal.dataset.closeLocked = "true";
+            try {
+              const admission = await invoke<{
+                queued: boolean;
+                message: string;
+              }>("admit_explicit_pull_request", {
+                expected: committed,
+                number: requestedPull.number,
+                accountGeneration: requestedPull.generation,
+              });
+              const status = modal.querySelector<HTMLElement>(
+                "[data-explicit-pr-status]",
+              )!;
+              status.textContent = admission.message;
+              status.hidden = false;
+              modal.querySelector<HTMLElement>(
+                "[data-resource-error]",
+              )!.hidden = true;
+              if (admission.queued) pendingPullRequests.delete(repository.id);
+            } catch (cause) {
+              throw `Configuration saved. PR #${requestedPull.number} intake needs attention; retry Save to reuse any existing work. ${reason(cause)}`;
+            } finally {
+              saveButton.disabled = false;
+              delete modal.dataset.closeLocked;
+            }
+            return;
+          }
           modal.close();
           render();
         } catch (cause) {

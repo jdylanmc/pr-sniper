@@ -133,7 +133,7 @@ for (const [name, accounts] of [
   });
 }
 
-test("unsupported URL never borrows a GitHub identity and PR context does not admit PR work", async ({
+test("unsupported URL never borrows a GitHub identity and PR intake waits for configuration Save", async ({
   page,
   store,
 }) => {
@@ -166,11 +166,16 @@ test("unsupported URL never borrows a GitHub identity and PR context does not ad
     .fill("https://github.com/orbit/one/pull/7");
   await expect(dialog.getByRole("status")).toContainText("GitHub / fixture");
   await dialog.getByRole("button", { name: "Add & configure" }).click();
-  await expect(dialog.getByRole("alert")).toContainText("repository URL");
+  await expect(
+    page.getByRole("dialog", { name: "Settings for orbit/one" }),
+  ).toBeVisible();
   expect(
     fixture.calls.filter((c) => c.command === "resolve_provider_repository"),
   ).toHaveLength(1);
-  expect((await store("snapshot")).settings.repositories).toBeUndefined();
+  expect((await store("snapshot")).settings.repositories[0].enabled).toBe(
+    false,
+  );
+  expect((await store("monitoring_snapshot")).jobs).toEqual([]);
 });
 
 test("explicit Change uses the named repository account, not the AI connection", async ({
