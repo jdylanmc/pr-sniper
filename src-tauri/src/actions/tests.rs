@@ -1585,9 +1585,13 @@ fn provider_rules_rate_limits_preserve_action_observation_failure_and_backoff() 
             ),
         ] {
             let (_root, store, item) = fixture(1, true, true);
-            let final_review = completed_final(&store, &item);
-            let settings = store.load_settings().unwrap();
             let wire = env(&store).wire;
+            wire.0
+                .lock()
+                .unwrap()
+                .observation
+                .reviews
+                .push(fixwave::peer_approval());
             let repository = RemoteRepository {
                 id: "100".into(),
                 name: "example/repo".into(),
@@ -1597,6 +1601,8 @@ fn provider_rules_rate_limits_preserve_action_observation_failure_and_backoff() 
                 .unwrap();
             // The host sets this from its separately verified connection.
             baseline.write_capability = true;
+            let final_review = fixwave::prepare_final(&store, &item, &baseline);
+            let settings = store.load_settings().unwrap();
             assert!(ready(&store, &final_review, &baseline, Action::Approve).is_ok());
             assert!(ready(&store, &final_review, &baseline, Action::Merge).is_ok());
             let mut headers = BTreeMap::from([("x-ratelimit-remaining".into(), "0".into())]);
