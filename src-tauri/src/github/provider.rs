@@ -215,12 +215,7 @@ impl<T: Transport> GithubClient<T> {
         let mut path = first.to_string();
         let mut explicit_next = false;
         for page in 1..=10_000 {
-            let page_read = self.transport.get(&path).and_then(|response| {
-                if !matches!(response.status, 200 | 401 | 403 | 404 | 429 | 500..=599) {
-                    return Err(ConnectionError::ProviderRejected);
-                }
-                parse_response(response)
-            });
+            let page_read = self.transport.get(&path).and_then(parse_response);
             let (value, response) = match page_read {
                 Ok(read) => read,
                 Err(error)
@@ -243,8 +238,16 @@ impl<T: Transport> GithubClient<T> {
                     return Ok((result, warnings));
                 }
             };
-            if !has_scope(&response, "repo") {
-                return Err(ConnectionError::MissingScope);
+            if let Err(error) = require_repo_scope(&response) {
+                if result.is_empty() || error == ConnectionError::MissingScope {
+                    return Err(error);
+                }
+                warnings.push(RepositoryBrowseWarning {
+                    boundary: "repository_page",
+                    page,
+                    error,
+                });
+                return Ok((result, warnings));
             }
             if response
                 .headers
@@ -376,7 +379,7 @@ impl<T: Transport> GithubClient<T> {
             .map_err(|_| ConnectionError::InvalidRepository)?;
         let (user, _) = self.read("/user")?;
         let identity = verify_identity(&user, expected_account_id)?;
-        let (repo, response) = self.read(&format!("/repos/{name}"))?;
+        let (repo, response) = self.read_repository(&format!("/repos/{name}"))?;
         let id = decimal_id(&repo["id"])?;
         let remote_name = repo["full_name"]
             .as_str()
@@ -385,15 +388,14 @@ impl<T: Transport> GithubClient<T> {
             return Err(ConnectionError::RepositoryChanged);
         }
         let private = boolean(&repo, "private")?;
-        if !has_scope(&response, "repo") {
-            return Err(ConnectionError::MissingScope);
-        }
+        require_repo_scope(&response)?;
         let archived = boolean(&repo, "archived")?;
         let disabled = boolean(&repo, "disabled")?;
         if repo["permissions"]["pull"].as_bool() == Some(false) || disabled {
             return Err(ConnectionError::MissingReadPermission);
         }
-        let (pulls, _) = self.read(&format!("/repos/{name}/pulls?state=open&per_page=1"))?;
+        let (pulls, _) =
+            self.read_repository(&format!("/repos/{name}/pulls?state=open&per_page=1"))?;
         if !pulls.is_array() {
             return Err(ConnectionError::InvalidResponse);
         }
@@ -425,6 +427,45 @@ impl<T: Transport> GithubClient<T> {
     pub(super) fn read(&self, path: &str) -> Result<(Value, Response), ConnectionError> {
         parse_response(self.transport.get(path)?)
     }
+
+    fn read_repository(&self, path: &str) -> Result<(Value, Response), ConnectionError> {
+        let response = self.transport.get(path)?;
+        // GitHub hides unauthorized private resources behind the same 404 as
+        // absent repositories. Neither absence nor a definite denial is proven.
+        if response.status == 404 {
+            return Err(ConnectionError::RepositoryUnavailable);
+        }
+        let missing_scope =
+            response.headers.contains_key("x-oauth-scopes") && !has_scope(&response, "repo");
+        let organization_policy = oauth_app_restricted(&response);
+        match parse_response(response) {
+            Err(ConnectionError::RateLimitedWithContext {
+                retry_after_seconds,
+                reset_at,
+                organization_access_incomplete,
+                ..
+            }) if missing_scope => Err(ConnectionError::RateLimitedWithContext {
+                retry_after_seconds,
+                reset_at,
+                organization_access_incomplete,
+                missing_repo_scope: true,
+            }),
+            Err(ConnectionError::OrganizationPolicyDenied) if missing_scope => {
+                Err(ConnectionError::OrganizationPolicyDeniedWithMissingScope)
+            }
+            Err(ConnectionError::MissingReadPermission) if organization_policy => {
+                Err(if missing_scope {
+                    ConnectionError::OrganizationPolicyDeniedWithMissingScope
+                } else {
+                    ConnectionError::OrganizationPolicyDenied
+                })
+            }
+            Err(ConnectionError::MissingReadPermission) if missing_scope => {
+                Err(ConnectionError::MissingScope)
+            }
+            result => result,
+        }
+    }
 }
 
 pub(super) fn parse_response(response: Response) -> Result<(Value, Response), ConnectionError> {
@@ -444,18 +485,18 @@ pub(super) fn parse_response(response: Response) -> Result<(Value, Response), Co
     match response.status {
         200 => (),
         401 => return Err(ConnectionError::SignedOut),
-        429 => return Err(rate_limited(retry_after_seconds)),
-        403 if response.headers.contains_key("x-github-sso") => {
-            return Err(ConnectionError::OrganizationPolicyDenied)
-        }
+        429 => return Err(rate_limited(&response, retry_after_seconds)),
         403 if response
             .headers
             .get("x-ratelimit-remaining")
             .is_some_and(|v| v == "0")
-            || response.headers.contains_key("retry-after")
+            || retry_after_seconds.is_some()
             || rate_limit_message =>
         {
-            return Err(rate_limited(retry_after_seconds))
+            return Err(rate_limited(&response, retry_after_seconds))
+        }
+        403 if sso_marker(&response) == Some("required") => {
+            return Err(ConnectionError::OrganizationPolicyDenied)
         }
 
         403 | 404 => return Err(ConnectionError::MissingReadPermission),
@@ -465,18 +506,64 @@ pub(super) fn parse_response(response: Response) -> Result<(Value, Response), Co
                 ConnectionError::ProviderFailureAfter,
             ))
         }
-        _ => return Err(ConnectionError::InvalidResponse),
+        status => return Err(ConnectionError::ProviderRejectedStatus(status)),
     }
     let value =
         serde_json::from_slice(&response.body).map_err(|_| ConnectionError::InvalidResponse)?;
     Ok((value, response))
 }
 
-fn rate_limited(retry_after_seconds: Option<i64>) -> ConnectionError {
+fn rate_limited(response: &Response, retry_after_seconds: Option<i64>) -> ConnectionError {
+    let reset_at = response
+        .headers
+        .get("x-ratelimit-reset")
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| *value >= 0);
+    let organization_access_incomplete =
+        matches!(sso_marker(response), Some("partial-results" | "required"))
+            || oauth_app_restricted(response);
+    if reset_at.is_some() || organization_access_incomplete {
+        return ConnectionError::RateLimitedWithContext {
+            retry_after_seconds,
+            reset_at,
+            organization_access_incomplete,
+            missing_repo_scope: false,
+        };
+    }
     retry_after_seconds.map_or(
         ConnectionError::RateLimited,
         ConnectionError::RateLimitedAfter,
     )
+}
+
+fn sso_marker(response: &Response) -> Option<&str> {
+    response
+        .headers
+        .get("x-github-sso")?
+        .split(';')
+        .next()
+        .map(str::trim)
+}
+
+fn oauth_app_restricted(response: &Response) -> bool {
+    response.status == 403
+        && serde_json::from_slice::<Value>(&response.body)
+            .ok()
+            .and_then(|body| body["message"].as_str().map(str::to_owned))
+            .is_some_and(|message| {
+                message.starts_with("Although you appear to have the correct authorization credentials, the ")
+                    && message.contains(" organization has enabled OAuth App access restrictions, meaning that data access to third-parties is limited.")
+            })
+}
+
+fn require_repo_scope(response: &Response) -> Result<(), ConnectionError> {
+    if !response.headers.contains_key("x-oauth-scopes") {
+        return Err(ConnectionError::ScopeUnverified);
+    }
+    if !has_scope(response, "repo") {
+        return Err(ConnectionError::MissingScope);
+    }
+    Ok(())
 }
 
 fn has_scope(response: &Response, expected: &str) -> bool {

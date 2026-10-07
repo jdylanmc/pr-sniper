@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import { renderConnection } from "./connections";
+import {
+  describeReadFailureDetails,
+  readFailureMissingScope,
+  renderConnection,
+} from "./connections";
 import {
   renderGithubAuth,
   githubAccountFailureMessage,
@@ -191,11 +195,15 @@ const reason = (error: unknown): string => {
       ? "The selected GitHub session is unavailable. Check secure credential access or reconnect this account, then retry."
       : reason(session.error);
   }
+  const details = describeReadFailureDetails(error);
+  if (details) return details;
   const errors: Record<string, string> = {
     signed_out:
       "GitHub is disconnected. Connect the PR Sniper GitHub OAuth App, then try again.",
     missing_read_permission:
       "GitHub denied read access for this account. Verify repository access and this app's organization authorization with your administrator, then retry.",
+    repository_unavailable:
+      "GitHub could not find this repository or hides it from the selected account. Check the URL and this account's repository access; for a private organization, check the PR Sniper OAuth App's organization approval and single sign-on authorization with its administrator, then retry. A 404 does not prove the repository is absent.",
     rate_limited: "GitHub rate limited this lookup. Wait before trying again.",
     network: "Cannot reach GitHub. Check your network and try again.",
     timeout: "GitHub lookup timed out. Try again.",
@@ -204,9 +212,13 @@ const reason = (error: unknown): string => {
     incomplete_read:
       "GitHub did not return a complete repository list. More repositories may be unavailable; retry.",
     missing_scope:
-      "Reconnect the GitHub account with the required repository access, then retry.",
+      "The selected GitHub authorization does not grant the required repo scope. Reconnect this account in Accounts and review the PR Sniper OAuth App's public/private repository access request, then retry.",
+    scope_unverified:
+      "GitHub did not provide the scope evidence needed to verify this read. No missing scope or grant is established. Retry this selected account; if it persists, check this app's authorization in GitHub. No repository was accepted from this unverified read.",
     organization_policy_denied:
-      "GitHub organization policy or single sign-on denied access. Authorize this app for that organization, then retry.",
+      "GitHub reported an organization authorization restriction. Check the PR Sniper OAuth App's organization approval and single sign-on authorization in GitHub; if restricted, ask the organization administrator for access, then retry. Reconnecting alone cannot bypass organization policy.",
+    organization_policy_denied_with_missing_scope:
+      "GitHub reported an organization authorization restriction and an authorization missing repo scope. Ask the organization administrator to approve the PR Sniper OAuth App; also reconnect this selected account in Accounts with repository access. Reconnecting alone cannot bypass organization policy.",
     repository_changed:
       "The repository identity changed. Refresh the owner or check the URL, then retry.",
     authentication_changed:
@@ -214,7 +226,7 @@ const reason = (error: unknown): string => {
     provider_failure:
       "GitHub lookup failed. Check provider health and try again.",
     provider_rejected:
-      "GitHub rejected this lookup. Check the selected account and provider policy before retrying.",
+      "GitHub rejected this lookup. Check the current repository URL/input and provider policy before retrying; this does not establish a missing scope.",
     wrong_identity:
       "GitHub returned a different account. Reconnect the selected account; no other account will be used.",
     configuration:
@@ -2253,7 +2265,7 @@ export async function mountSettings(
           (error === "wrong_identity" ||
             error === "authentication_changed" ||
             error === "signed_out" ||
-            error === "missing_scope" ||
+            readFailureMissingScope(error) ||
             (session && (error === "configuration" || error === "broken_cli"))))
       ) {
         loaded = false;

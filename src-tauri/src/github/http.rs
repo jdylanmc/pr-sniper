@@ -121,6 +121,7 @@ impl HttpTransport {
             "link",
             "x-oauth-scopes",
             "x-ratelimit-remaining",
+            "x-ratelimit-reset",
             "retry-after",
             "x-github-sso",
         ] {
@@ -178,7 +179,12 @@ pub async fn current_identity_async(pair: &TokenPair) -> Result<super::Identity,
         })?;
     let status = response.status().as_u16();
     let mut headers = BTreeMap::new();
-    for name in ["x-ratelimit-remaining", "retry-after", "x-github-sso"] {
+    for name in [
+        "x-ratelimit-remaining",
+        "x-ratelimit-reset",
+        "retry-after",
+        "x-github-sso",
+    ] {
         if let Some(value) = response.headers().get(name) {
             headers.insert(
                 name.into(),

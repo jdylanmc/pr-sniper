@@ -370,7 +370,7 @@ impl<T: QueryTransport> GithubClient<T> {
             Ok((rules,response)) if !response.headers.contains_key("link") && rules.as_array()
                 .is_some_and(|r|r.len()<=1000&&r.iter().all(|rule|rule["type"].as_str().is_some()))=>(rules.as_array().cloned(),None),
             Ok(_)=>(None,Some("Active repository merge rules were incomplete or unsupported; direct merge is unavailable.".into())),
-            Err(error @ (ConnectionError::RateLimited|ConnectionError::RateLimitedAfter(_)|ConnectionError::Network
+            Err(error @ (ConnectionError::RateLimited|ConnectionError::RateLimitedAfter(_)|ConnectionError::RateLimitedWithContext { .. }|ConnectionError::Network
                 |ConnectionError::Timeout|ConnectionError::ProviderFailure|ConnectionError::ProviderFailureAfter(_)))=>return Err(error),
             Err(error)=>(None,Some(format!("Active repository merge rules are unavailable ({error:?}); approval eligibility remains separate."))),
         };
