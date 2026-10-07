@@ -92,6 +92,16 @@ const labels: Record<QueueItem["state"], string> = {
   merged: "Merged on GitHub",
 };
 
+const compactSummaries: Partial<Record<QueueItem["state"], string>> = {
+  machine_signed_off: "",
+  waiting_for_human: "Read the saved findings and conversation.",
+  confirmation_required: "Review the exact work and its permissions.",
+  failed: "Inspect the failed or unresolved operation.",
+  blocked: "Check configuration and account access.",
+  stale: "Check the latest revision before acting.",
+  stale_after_publication: "Check the latest revision before acting.",
+};
+
 export function humanQueue(items: QueueItem[]): QueueItem[] {
   const current = new Map<string, QueueItem>();
   for (const item of items) {
@@ -154,6 +164,7 @@ export function renderQueue(
   refresh: () => Promise<void>,
   options: { compact?: boolean; externalSelection?: boolean } = {},
 ) {
+  if (options.compact) root.setAttribute("aria-label", "Human handoffs");
   const fromUrl = () => new URLSearchParams(location.hash.slice(1)).get("item");
   let selected: string | null | undefined = fromUrl();
   let items: QueueItem[] = [];
@@ -235,10 +246,13 @@ export function renderQueue(
       "Ready PRs and work that needs your input come first. Published findings wait on the PR author. GitHub approval and merge status are not inferred.";
     if (!options.compact) root.append(intro);
     if (!items.length) {
-      const empty = document.createElement("p");
-      empty.textContent = options.compact
-        ? "You're all caught up. Human handoffs and actionable problems appear here; Agent work is in Running. Configure monitoring in Settings, or use Status to Check Now."
-        : "No detected pull requests yet. Configure monitoring in Settings, then Check Now.";
+      const empty = document.createElement(options.compact ? "div" : "p");
+      if (options.compact) {
+        empty.className = "queue-empty";
+        empty.innerHTML = `<svg class="panel-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16l2 14H2L4 4Zm-1 9h5l2 3h4l2-3h5M7 8h10"/></svg><h3>You're all caught up</h3><p>The next human handoff will appear here.</p><p class="queue-empty-guidance">Agent work stays in Running. Manage monitoring in Settings.</p>`;
+      } else
+        empty.textContent =
+          "No detected pull requests yet. Configure monitoring in Settings, then Check Now.";
       root.append(empty);
     }
     for (const item of items) {
@@ -253,7 +267,10 @@ export function renderQueue(
       );
       const state = document.createElement("p");
       state.className = "queue-state";
-      state.textContent = labels[item.state];
+      state.textContent =
+        options.compact && item.state === "machine_signed_off"
+          ? "Ready for you"
+          : labels[item.state];
       const heading = document.createElement("h3");
       heading.textContent = options.compact
         ? item.job.title
@@ -279,15 +296,9 @@ export function renderQueue(
         reference.className = "queue-reference";
         reference.textContent = `${item.job.repository_name} #${item.job.number}`;
         summary.className = "queue-summary-text";
-        summary.textContent =
-          item.state === "machine_signed_off"
-            ? `${item.review_keys.length}/${item.review_keys.length} Agents clear`
-            : item.state === "waiting_for_human"
-              ? "Read the saved findings and conversation."
-              : item.state === "confirmation_required"
-                ? "Review the exact work and its permissions."
-                : item.summary;
-        row.append(top, heading, reference, summary);
+        summary.textContent = compactSummaries[item.state] ?? item.summary;
+        row.append(top, heading, reference);
+        if (summary.textContent) row.append(summary);
         const receipts =
           item.action_status?.effects.filter((effect) => effect.receipt) ?? [];
         for (const effect of receipts) {
@@ -339,6 +350,11 @@ export function renderQueue(
         evidence.replaceChildren(label);
       }
       evidence.setAttribute("aria-pressed", String(matches(item)));
+      if (options.compact)
+        evidence.setAttribute(
+          "aria-description",
+          `${item.job.repository_name} #${item.job.number}: ${item.job.title}`,
+        );
       evidence.onclick = () => choose(item.id, true, evidence);
       const github = document.createElement("button");
       github.type = "button";

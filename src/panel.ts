@@ -74,7 +74,15 @@ export async function mountPanel(app: HTMLElement) {
   app.className = "panel-shell";
   app.innerHTML = `<header class="panel-header"><img src="${crosshair}" alt="" /><strong>PR Sniper</strong><span data-setup-needed hidden>Setup needed</span><div data-header-automation></div><button type="button" data-panel-hide aria-label="Hide PR Sniper panel" title="Close hides only; background work continues">${icon("m7 7 10 10M7 17 17 7")}</button></header>
     <div class="panel-context"><button type="button" data-panel-back aria-label="Back" hidden>${icon("m14 6-6 6 6 6M8 12h12")}</button><h1 tabindex="-1" data-panel-heading>Your queue</h1><img class="panel-art" src="${sniperArt}" alt="" /></div>
-    <div class="panel-summary" data-panel-summary><strong data-summary-main>Reading queue...</strong><span data-summary-detail></span></div>
+    <div class="panel-summary" data-panel-summary>
+      <div data-work-summary><strong data-summary-main>Reading queue...</strong></div>
+      <dl class="queue-metrics" aria-label="Human handoffs" data-queue-metrics hidden>
+        <div class="queue-metric" data-queue-ready-card><dt>Ready for you${icon(destinations.queue.icon)}</dt><dd><strong data-queue-ready>?</strong><span>need your eyes</span></dd></div>
+        <div class="queue-metric" data-queue-attention-card><dt>Needs attention${icon("M12 8v5m0 3h.01M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18")}</dt><dd><strong data-queue-attention>?</strong><span>need your input</span></dd></div>
+      </dl>
+      <button type="button" class="queue-work-link" data-queue-work hidden aria-label="View Agent work in Running"><span class="queue-capacity" data-queue-capacity aria-hidden="true">?</span><span><strong>Agent work in Running</strong><span data-queue-work-status>Work state unavailable</span></span>${icon("m9 5 7 7-7 7")}</button>
+      <div class="queue-list-heading"><h2 data-queue-heading hidden>Over to you</h2><span data-summary-detail></span></div>
+    </div>
     <p class="panel-error" role="alert" data-panel-error hidden></p>
     <div class="panel-content">
       <div data-panel-view="monitor"></div>
@@ -112,6 +120,8 @@ export async function mountPanel(app: HTMLElement) {
   const error = app.querySelector<HTMLElement>("[data-panel-error]")!;
   const heading = app.querySelector<HTMLElement>("[data-panel-heading]")!;
   const content = app.querySelector<HTMLElement>(".panel-content")!;
+  const context = app.querySelector<HTMLElement>(".panel-context")!;
+  const summary = app.querySelector<HTMLElement>("[data-panel-summary]")!;
   const back = app.querySelector<HTMLButtonElement>("[data-panel-back]")!;
   const views = {
     monitor: app.querySelector<HTMLElement>('[data-panel-view="monitor"]')!,
@@ -340,6 +350,14 @@ export async function mountPanel(app: HTMLElement) {
 
   function drawSummary() {
     const summary = app.querySelector<HTMLElement>("[data-panel-summary]")!;
+    const queue = route.tab === "queue";
+    summary.dataset.summaryKind = queue ? "queue" : "work";
+    summary.querySelector<HTMLElement>("[data-queue-metrics]")!.hidden = !queue;
+    summary.querySelector<HTMLElement>("[data-queue-work]")!.hidden = !queue;
+    summary.querySelector<HTMLElement>("[data-queue-heading]")!.hidden = !queue;
+    summary.querySelector<HTMLElement>("[data-work-summary]")!.className = queue
+      ? "sr-only"
+      : "";
     summary.hidden =
       setupVisible() ||
       !!route.detail ||
@@ -355,15 +373,28 @@ export async function mountPanel(app: HTMLElement) {
         : "Occupancy unknown";
     } else {
       const items = humanQueue(snapshot?.items ?? []);
+      const known = Array.isArray(snapshot?.items);
       const ready = items.filter(
         (item) => item.state === "machine_signed_off",
       ).length;
-      main.textContent = snapshot
+      main.textContent = known
         ? `${items.length} for you`
         : "Queue unavailable";
-      detail.textContent = snapshot
+      detail.textContent = known
         ? `${ready} ready / ${items.length - ready} need attention`
-        : "";
+        : "Handoffs unavailable";
+      summary.querySelector<HTMLElement>("[data-queue-ready]")!.textContent =
+        known ? String(ready) : "?";
+      summary.querySelector<HTMLElement>(
+        "[data-queue-attention]",
+      )!.textContent = known ? String(items.length - ready) : "?";
+      summary.querySelector<HTMLElement>("[data-queue-capacity]")!.textContent =
+        automation ? `${automation.active}/${automation.capacity}` : "?";
+      summary.querySelector<HTMLElement>(
+        "[data-queue-work-status]",
+      )!.textContent = automation
+        ? `${automation.active - automation.stopping} running${automation.stopping ? ` / ${automation.stopping} stopping` : ""} / ${automation.waiting} waiting${automation.blocked ? ` / ${automation.blocked} blocked` : ""}${automation.paused ? " / paused" : ""}`
+        : "Work state unavailable";
     }
   }
   function metadata(
@@ -685,6 +716,22 @@ export async function mountPanel(app: HTMLElement) {
     app.dataset.detail = String(!!route.detail);
     app.dataset.evidence = route.detail?.type ?? "";
     app.dataset.setup = String(setupVisible());
+    const scrollQueue = route.tab === "queue" && !setupVisible();
+    app.dataset.scrollQueue = String(scrollQueue);
+    if (scrollQueue) {
+      content.tabIndex = 0;
+      content.setAttribute("role", "region");
+      content.setAttribute("aria-label", "Queue content");
+    } else {
+      content.removeAttribute("tabindex");
+      content.removeAttribute("role");
+      content.removeAttribute("aria-label");
+    }
+    // Queue chrome shares the evidence scroll budget; navigation stays pinned.
+    if (scrollQueue && context.parentElement !== content)
+      content.prepend(context, summary, error);
+    else if (!scrollQueue && context.parentElement === content)
+      content.before(context, summary, error);
     drawSummary();
     for (const button of app.querySelectorAll<HTMLButtonElement>(
       "[data-panel-tab]",
@@ -771,6 +818,8 @@ export async function mountPanel(app: HTMLElement) {
       }
       void navigate({ tab: button.dataset.panelTab as PanelTab });
     };
+  app.querySelector<HTMLButtonElement>("[data-queue-work]")!.onclick = () =>
+    void navigate({ tab: "running" });
   app.querySelector<HTMLButtonElement>("[data-panel-status]")!.onclick = () =>
     void navigate({ tab: route.tab, detail: { type: "status" } });
   app.querySelector<HTMLButtonElement>("[data-panel-diagnostics]")!.onclick =
