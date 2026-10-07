@@ -671,7 +671,9 @@ for (const resolution of ["Save", "Cancel"]) {
     await editor
       .getByLabel("Reviewer requests", { exact: true })
       .selectOption("off");
-    await editor.getByLabel("Enable repository monitoring").uncheck();
+    await expect(
+      editor.getByRole("switch", { name: "Monitor fixture/compact" }),
+    ).not.toBeChecked();
     await editor
       .getByText("Repository and connection", { exact: true })
       .click();
@@ -691,7 +693,7 @@ for (const resolution of ["Save", "Cancel"]) {
       editor.getByLabel("Reviewer requests", { exact: true }),
     ).toHaveValue("off");
     await expect(
-      editor.getByLabel("Enable repository monitoring"),
+      editor.getByRole("switch", { name: "Monitor fixture/compact" }),
     ).not.toBeChecked();
     expect(await readFile(settingsPath)).toEqual(before);
     expect((await store("snapshot")).settings).toEqual(initial);
@@ -705,7 +707,7 @@ for (const resolution of ["Save", "Cancel"]) {
       editor.getByLabel("Reviewer requests", { exact: true }),
     ).toHaveValue("off");
     await expect(
-      editor.getByLabel("Enable repository monitoring"),
+      editor.getByRole("switch", { name: "Monitor fixture/compact" }),
     ).not.toBeChecked();
     if (resolution === "Save") await save(editor);
     else
@@ -791,7 +793,7 @@ test("R1 correction: concurrent saved repository changes still reject a clean un
     "repository-owner",
   );
   await expect(
-    editor.getByLabel("Enable repository monitoring"),
+    editor.getByRole("switch", { name: "Monitor fixture/compact" }),
   ).not.toBeChecked();
 });
 

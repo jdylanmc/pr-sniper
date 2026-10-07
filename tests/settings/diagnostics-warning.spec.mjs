@@ -29,6 +29,8 @@ for (const action of ["add", "enable", "remove", "agent", "assignment"]) {
         enabled: false,
       });
       const configured = (await store("snapshot")).settings;
+      configured.repositories[0].provider_account_id = "22";
+      configured.repositories[0].provider_repository_id = "100";
       configured.repositories[0].assignments = [
         {
           id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
@@ -38,6 +40,12 @@ for (const action of ["add", "enable", "remove", "agent", "assignment"]) {
           approve: false,
         },
       ];
+      await store("seed_settings", configured);
+    }
+    if (action === "assignment") {
+      const configured = (await store("snapshot")).settings;
+      configured.repositories[0].provider_account_id = "22";
+      configured.repositories[0].provider_repository_id = "100";
       await store("seed_settings", configured);
     }
     const before = (await store("snapshot")).settings;
@@ -52,7 +60,12 @@ for (const action of ["add", "enable", "remove", "agent", "assignment"]) {
     if (action === "add") await addRepository(page, "neighbor/new");
     else if (action === "enable") {
       const editor = await repositorySettings(page, repository.name);
-      await editor.getByLabel("Enable repository monitoring on Save").check();
+      await editor
+        .getByRole("switch", { name: "Monitor octo/hello-world" })
+        .click();
+      await expect(
+        editor.locator("[data-repository-monitoring-state]"),
+      ).toHaveText("Enabled");
       await closeDialog(page);
     } else if (action === "remove") {
       const modal = await repositorySettings(page, repository.name);
@@ -74,9 +87,7 @@ for (const action of ["add", "enable", "remove", "agent", "assignment"]) {
       await saveAssignment(page, modal);
     }
     await page.evaluate(() => window.__settingsIdle());
-    if (action === "enable")
-      expect((await store("snapshot")).settings).toEqual(before);
-    else expect((await store("snapshot")).settings).not.toEqual(before);
+    expect((await store("snapshot")).settings).not.toEqual(before);
     await saveChanges(page);
     await expect(page.locator("#error")).toContainText(/diagnostic/i);
     const saved = (await store("snapshot")).settings;
@@ -91,7 +102,7 @@ for (const action of ["add", "enable", "remove", "agent", "assignment"]) {
       expect(saved.repositories[0].enabled).toBe(true);
       const editor = await repositorySettings(page, repository.name);
       await expect(
-        editor.getByLabel("Enable repository monitoring on Save"),
+        editor.getByRole("switch", { name: "Monitor octo/hello-world" }),
       ).toBeChecked();
       await closeDialog(page);
     } else if (action === "remove") {

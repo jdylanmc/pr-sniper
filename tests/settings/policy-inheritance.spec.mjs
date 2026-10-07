@@ -8,14 +8,14 @@ import {
   repositorySettings,
   closeDialog,
   section,
+  seedBoundRepositories,
 } from "./navigation.mjs";
 
 test("reusable Agents keep independent repository assignments and preserve legacy policy exactly", async ({
   page,
   store,
 }) => {
-  for (const repository of ["octo/hello-world", "neighbor/keep-me"])
-    await store("save_repository", { repository });
+  await seedBoundRepositories(store, ["octo/hello-world", "neighbor/keep-me"]);
   const initial = (await store("snapshot")).settings;
   initial.defaults = {
     ...initial.defaults,

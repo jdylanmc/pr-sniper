@@ -122,6 +122,7 @@
 }
 .settings-window .native-repository-list,
 .settings-window .repository-library .repository-list.native-repository-list {
+  grid-template-columns: minmax(0, 1fr);
   background: #ffffff;
   border: 1px solid #eff2f5;
   border-radius: 12px;
@@ -165,6 +166,47 @@
 .native-repository-row strong,
 .native-repository-row small {
   overflow-wrap: anywhere;
+}
+.settings-window .repository-monitoring-row {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 8px 0 0;
+}
+.settings-window .repository-open {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 160px;
+  flex-wrap: wrap;
+  min-width: 0;
+  padding: 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  white-space: normal;
+}
+.repository-open .settings-row-copy {
+  min-width: 0;
+}
+.repository-monitoring-toggle {
+  flex: none;
+  margin: 6px 0 6px auto;
+}
+.settings-window [data-monitoring-state] {
+  font-weight: 600;
+}
+.settings-window [data-monitoring-state="enabled"] {
+  color: #28777d;
+}
+@media (forced-colors: active) {
+  .settings-window [data-monitoring-state] {
+    color: CanvasText;
+  }
 }
 .settings-window .repository-library #add-repository {
   background: #f68743;
@@ -1043,6 +1085,23 @@
   .dialog-head,
   .dialog-body {
     padding: 18px;
+  }
+}
+
+@media (max-width: 600px) and (max-height: 400px) {
+  .settings-window:not(.settings-page)[data-settings-section="repositories"]
+    .settings-main {
+    overflow-y: auto;
+    scroll-padding-block: 6px;
+  }
+  .settings-window:not(.settings-page)[data-settings-section="repositories"]
+    .repository-monitoring-toggle {
+    scroll-margin-block: 6px;
+  }
+  .settings-window:not(.settings-page)[data-settings-section="repositories"]
+    #content {
+    flex: none;
+    overflow: visible;
   }
 }
 

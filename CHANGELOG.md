@@ -93,6 +93,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   state, with truthful ready/attention counts, exact read-only evidence navigation
   and Agent execution kept in Running. Preserve keyboard focus, accessibility
   media and small-panel layouts. (#130)
+- Make repository monitoring an explicit, persistent Enabled/Disabled control
+  in repository lists and Settings/Genie. Keep configuration drafts and global
+  pause separate, enable valid new configurations on Save, and preserve
+  deliberate disablement with guarded, actionable enablement failures. (#118)
 - Fix connected corporate-account repository browsing for enterprise-managed
   usernames. Retain accessible results with explicit partial authorization,
   metadata and pagination warnings, and make Retry use the selected account

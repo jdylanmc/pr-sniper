@@ -12,13 +12,13 @@ import {
   setAgentPrompt,
   editAgent,
   repositorySettings,
+  seedBoundRepositories,
 } from "./navigation.mjs";
 
 test.beforeEach(async ({ page, store }) => {
   await store("seed_settings", { launch_at_login: true });
   await seedAgent(store, "33");
-  for (const repository of ["octo/hello-world", "neighbor/keep-me"])
-    await store("save_repository", { repository });
+  await seedBoundRepositories(store, ["octo/hello-world", "neighbor/keep-me"]);
   await page.goto("/?view=settings");
 });
 
@@ -34,8 +34,11 @@ for (const action of ["add", "disable"]) {
     else {
       const repository = await repositorySettings(page, "octo/hello-world");
       await repository
-        .getByLabel("Enable repository monitoring on Save")
-        .uncheck();
+        .getByRole("switch", { name: "Monitor octo/hello-world" })
+        .click();
+      await expect(
+        repository.locator("[data-repository-monitoring-state]"),
+      ).toHaveText("Disabled");
       await closeDialog(page);
     }
     const modal = await editAgent(page);
