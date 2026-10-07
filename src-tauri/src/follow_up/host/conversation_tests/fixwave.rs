@@ -115,7 +115,9 @@ fn fixwave_settled_new_unowned_work_does_not_keep_superseded_analysis_failed() {
     comment.published_at = "2026-10-01T00:00:00Z".into();
     thread.comments.push(comment);
     observe_general(&store, &thread, 'a', NOW + 30);
-    let failure = validate_observed_trigger(&old, &Observation::Owned(thread.clone())).unwrap_err();
+    let failure = old
+        .validate_observed_trigger(&Observation::Owned(thread.clone()))
+        .unwrap_err();
     complete_analysis(&store, &mut old, Err(failure), true, NOW + 32).unwrap_err();
     let saved_old = store
         .load_follow_ups()
@@ -784,6 +786,310 @@ fn native_gate_preserves_real_failure_fields_and_aggregate_attention() {
     }
 }
 
+#[test]
+fn pipeline_successful_result_commit_classifies_a_scan_after_final_verification() {
+    for owned in [true, false] {
+        let (_root, store, origin, thread) = fixture(1);
+        let mut thread = if owned {
+            thread
+        } else {
+            clear_local_review(&store);
+            let mut settings = store.load_settings().unwrap();
+            settings.repositories[0].assignments[0].comment = false;
+            store.save_settings(&settings).unwrap();
+            unowned_thread(&thread)
+        };
+        if owned {
+            explanation(&mut thread, "11");
+            observe(&store, &origin, &thread, 'a', vec![], NOW + 10);
+        } else {
+            observe_general(&store, &thread, 'a', NOW + 10);
+        }
+        let mut old =
+            prepare_dispatch(&store, &store.load_follow_ups().unwrap()[0].id, NOW + 20).unwrap();
+        let result = output_for(&old, ReplyDecision::Quiet, vec![]);
+        let captured = old.clone();
+        let mut verified = old.clone();
+        verified.result = Some(result.clone());
+        analysis_checkpoint(
+            &mut AnalysisObservation {
+                store: &store,
+                observation: Ok(Observation::Owned(thread.clone())),
+            },
+            &verified,
+        )
+        .unwrap();
+        let mut comment = thread.comments.last().unwrap().clone();
+        comment.id = if owned { "102" } else { "801" }.into();
+        comment.reply_to = Some(thread.comments[0].id.clone());
+        thread.comments.push(comment);
+        if owned {
+            observe(&store, &origin, &thread, 'a', vec![], NOW + 30);
+        } else {
+            observe_general(&store, &thread, 'a', NOW + 30);
+        }
+        let error = complete_analysis(&store, &mut old, Ok(result), true, NOW + 31).unwrap_err();
+        assert_eq!(error.kind, monitoring::OperationFailure::Superseded);
+        let saved = store.load_follow_ups().unwrap()[0].clone();
+        assert_eq!(saved.context, captured.context);
+        assert_eq!(saved.target, captured.target);
+        assert_eq!(saved.history, captured.history);
+        assert!(saved.result.is_none());
+        assert_eq!(
+            saved.analysis.as_ref().unwrap().failure,
+            Some(monitoring::OperationFailure::Superseded)
+        );
+        assert!(saved.analysis.as_ref().unwrap().next_attempt_at.is_none());
+        assert_ne!(current_state(&store), crate::queue::State::MachineSignedOff);
+        let mut latest =
+            prepare_dispatch(&store, &store.load_follow_ups().unwrap()[1].id, NOW + 40).unwrap();
+        let assessments = if owned {
+            vec![assessment(
+                &latest.context.feedback[0].id,
+                Disposition::Cleared,
+            )]
+        } else {
+            vec![]
+        };
+        let result = output_for(&latest, ReplyDecision::Quiet, assessments);
+        complete_analysis(&store, &mut latest, Ok(result), true, NOW + 41).unwrap();
+        assert_eq!(current_state(&store), crate::queue::State::MachineSignedOff);
+        assert_eq!(store.load_follow_ups().unwrap()[0], saved);
+    }
+}
+
+#[test]
+fn pipeline_success_commit_keeps_other_invalidations_and_human_output_as_refusals() {
+    for cause in [
+        "account",
+        "primary",
+        "model",
+        "repository_account",
+        "repository_id",
+        "head",
+        "base",
+        "edit",
+        "closed",
+        "unavailable",
+        "other_context",
+        "observation_failure",
+        "human_output",
+        "human_assessment",
+        "cancel",
+    ] {
+        let (_root, store, origin, mut thread) = fixture(2);
+        explanation(&mut thread, "11");
+        observe(&store, &origin, &thread, 'a', vec![], NOW + 10);
+        let mut run =
+            prepare_dispatch(&store, &store.load_follow_ups().unwrap()[0].id, NOW + 20).unwrap();
+        let result = output_for(
+            &run,
+            if cause == "human_output" {
+                ReplyDecision::HumanInputRequired
+            } else {
+                ReplyDecision::Quiet
+            },
+            if cause == "human_assessment" {
+                vec![assessment(
+                    &run.context.feedback[0].id,
+                    Disposition::HumanInputRequired,
+                )]
+            } else {
+                vec![]
+            },
+        );
+        if cause == "edit" {
+            thread.comments[1].body = "Edited prior question".into();
+        }
+        if cause == "closed" {
+            thread.resolved = true;
+        }
+        explanation(&mut thread, "11");
+        thread.comments.last_mut().unwrap().id = "102".into();
+        observe(&store, &origin, &thread, 'a', vec![], NOW + 30);
+        match cause {
+            "primary" | "model" | "repository_account" | "repository_id" => {
+                let mut settings = store.load_settings().unwrap();
+                if cause == "primary" {
+                    settings.repositories[0].assignments[0].actions = None;
+                    settings.repositories[0].primary_assignment_id =
+                        Some(settings.repositories[0].assignments[1].id.clone());
+                } else if cause == "model" {
+                    settings.agents[0].model = "changed-model".into();
+                } else if cause == "repository_account" {
+                    settings.repositories[0].provider_account_id = Some("44".into());
+                } else {
+                    settings.repositories[0].provider_repository_id = Some("101".into());
+                }
+                store.save_settings(&settings).unwrap();
+            }
+            "base" | "head" => {
+                let mut queue = store.load_queue_state().unwrap();
+                for job in &mut queue.jobs {
+                    if cause == "base" {
+                        job.observed_base_sha = Some("c".repeat(40));
+                    } else {
+                        job.head_sha = "c".repeat(40);
+                    }
+                }
+                store.save_queue_state(&queue).unwrap();
+            }
+            "unavailable" | "other_context" => {
+                let mut ledger = store.load_feedback().unwrap();
+                if cause == "unavailable" {
+                    ledger.records[0].context.unavailable = Some("Observation incomplete.".into());
+                } else {
+                    ledger.records[0].context.title = "Another changed input".into();
+                }
+                store.save_feedback(&ledger).unwrap();
+            }
+            "cancel" => {
+                cancel_in_store(&store, &Capacity::default(), None, &run.id, NOW + 30).unwrap()
+            }
+            "observation_failure" => {
+                let mut monitor = store.load_monitoring_state().unwrap();
+                for health in monitor.health.values_mut() {
+                    health.last_failure = Some("Verified observation is unavailable.".into());
+                }
+                store.save_monitoring_state(&monitor).unwrap();
+            }
+            _ => {}
+        }
+        let error = complete_analysis(&store, &mut run, Ok(result), cause != "account", NOW + 31)
+            .unwrap_err();
+        assert_eq!(
+            error.kind,
+            monitoring::OperationFailure::Permanent,
+            "{cause}"
+        );
+        assert!(!candidates(&store).unwrap()[0].superseded, "{cause}");
+    }
+}
+
+#[test]
+fn pipeline_success_never_overwrites_failed_human_or_provider_work_after_new_comment() {
+    for cause in ["failed", "human", "uncertain", "write_history"] {
+        let (_root, store, origin, mut thread) = fixture(1);
+        explanation(&mut thread, "11");
+        observe(&store, &origin, &thread, 'a', vec![], NOW + 10);
+        let mut run =
+            prepare_dispatch(&store, &store.load_follow_ups().unwrap()[0].id, NOW + 20).unwrap();
+        let result = output_for(&run, ReplyDecision::Quiet, vec![]);
+        match cause {
+            "failed" => {
+                complete_analysis(
+                    &store,
+                    &mut run,
+                    Err(Failure::permanent("Genuine earlier provider failure.")),
+                    true,
+                    NOW + 21,
+                )
+                .unwrap_err();
+            }
+            "human" => {
+                let human = output_for(&run, ReplyDecision::HumanInputRequired, vec![]);
+                complete_analysis(&store, &mut run, Ok(human), true, NOW + 21).unwrap();
+            }
+            _ => {
+                let mut protected = run.clone();
+                let mut operation = protected.operation("thread_reply", NOW + 21);
+                operation.attempted_mutation = Some("thread_reply".into());
+                if cause == "uncertain" {
+                    protected.publication = Some(operation);
+                    protected.uncertain = true;
+                    protected.body = Some("Frozen original reply body.".into());
+                    protected.phase = Phase::Unresolved;
+                } else {
+                    protected.history.push(operation);
+                }
+                save_to_store(&store, &protected).unwrap();
+            }
+        }
+        let frozen = store.load_follow_ups().unwrap()[0].clone();
+        explanation(&mut thread, "11");
+        thread.comments.last_mut().unwrap().id = "102".into();
+        observe(&store, &origin, &thread, 'a', vec![], NOW + 30);
+        let error = complete_analysis(&store, &mut run, Ok(result), true, NOW + 31).unwrap_err();
+        assert_eq!(
+            error.kind,
+            monitoring::OperationFailure::Permanent,
+            "{cause}"
+        );
+        assert_eq!(store.load_follow_ups().unwrap()[0], frozen, "{cause}");
+        assert!(!candidates(&store).unwrap()[0].superseded, "{cause}");
+    }
+}
+
+#[test]
+fn pipeline_applying_cleanup_journal_refuses_success_without_altering_analysis() {
+    let (_root, store, origin, mut thread) = fixture(1);
+    explanation(&mut thread, "11");
+    observe(&store, &origin, &thread, 'a', vec![], NOW + 10);
+    let mut run =
+        prepare_dispatch(&store, &store.load_follow_ups().unwrap()[0].id, NOW + 20).unwrap();
+    let result = output_for(&run, ReplyDecision::Quiet, vec![]);
+    explanation(&mut thread, "11");
+    thread.comments.last_mut().unwrap().id = "102".into();
+    observe(&store, &origin, &thread, 'a', vec![], NOW + 30);
+    let bytes = store.read_state("follow-ups.json").unwrap();
+    let mut scope = store.load_queue_state().unwrap().tracked[0].clone();
+    scope.lifecycle = Lifecycle::Closed;
+    scope.terminal_observed = true;
+    store
+        .write_state(
+            "retention.json",
+            &crate::retention::Ledger {
+                receipts: vec![],
+                pending: Some(crate::retention::Pending {
+                    applying: true,
+                    receipt: crate::retention::Receipt {
+                        scope,
+                        enqueue_watermark: 0,
+                        items: Default::default(),
+                        work: Default::default(),
+                        completions: vec![],
+                        pass_ordinals: Default::default(),
+                        reply_ordinals: Default::default(),
+                        operations: vec![],
+                        publications: vec![],
+                        effects: vec![],
+                        follow_up_keys: Default::default(),
+                        owned: vec![],
+                        notices: Default::default(),
+                    },
+                }),
+            },
+        )
+        .unwrap();
+    let error = complete_analysis(&store, &mut run, Ok(result), true, NOW + 31).unwrap_err();
+    assert_eq!(error.kind, monitoring::OperationFailure::Permanent);
+    assert!(error.message.contains("cleanup"));
+    assert_eq!(store.read_state("follow-ups.json").unwrap(), bytes);
+}
+
+#[test]
+fn pipeline_post_task_human_judgment_is_not_safe_supersession() {
+    let (_root, store, origin, mut thread) = fixture(1);
+    explanation(&mut thread, "11");
+    observe(&store, &origin, &thread, 'a', vec![], NOW + 10);
+    let run = prepare_dispatch(&store, &store.load_follow_ups().unwrap()[0].id, NOW + 20).unwrap();
+    let mut final_run = run.clone();
+    final_run.result = Some(output_for(&run, ReplyDecision::HumanInputRequired, vec![]));
+    explanation(&mut thread, "11");
+    thread.comments.last_mut().unwrap().id = "102".into();
+    observe(&store, &origin, &thread, 'a', vec![], NOW + 30);
+    let error = analysis_checkpoint(
+        &mut AnalysisObservation {
+            store: &store,
+            observation: Ok(Observation::Owned(thread)),
+        },
+        &final_run,
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, monitoring::OperationFailure::Permanent);
+    assert_eq!(store.load_follow_ups().unwrap()[0], run);
+}
+
 struct AnalysisObservation<'a> {
     store: &'a Store,
     observation: Result<Observation, Failure>,
@@ -807,6 +1113,7 @@ impl Environment for AnalysisObservation<'_> {
         if let Some(reason) = native_gate_result(local_gate(self.store, run))? {
             return Ok(Some(reason));
         }
+        run.validate_observed_trigger(observation)?;
         Ok((!run.fresh_observation(observation)).then(|| "Discussion changed.".into()))
     }
     fn reply(&mut self, _: &FollowUp) -> Result<String, WriteFailure> {

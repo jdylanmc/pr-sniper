@@ -120,6 +120,168 @@ pub struct FollowUp {
 }
 
 impl FollowUp {
+    pub(crate) fn has_provider_work(&self) -> bool {
+        self.publication.is_some()
+            || self.uncertain
+            || self.receipt.is_some()
+            || self.body.is_some()
+            || self.history.iter().any(|operation| {
+                operation.attempted_mutation.is_some()
+                    || operation.confirmed_receipt.is_some()
+                    || matches!(
+                        operation.operation_type.as_str(),
+                        "thread_reply" | "mention_reply"
+                    )
+            })
+    }
+
+    pub(crate) fn validate_observed_trigger(
+        &self,
+        observation: &Observation,
+    ) -> Result<(), Failure> {
+        if let Observation::Owned(thread) = observation {
+            let latest = thread.latest_other_user(&self.context.job.account_id);
+            if latest.map(|comment| &comment.id) != Some(&self.trigger_id) {
+                let captured = self.thread().map_err(Failure::permanent)?;
+                let human = self.phase == Phase::HumanInputRequired
+                    || self.result.as_ref().is_some_and(|result| {
+                        result.output.decision == ReplyDecision::HumanInputRequired
+                            || result.output.feedback_assessments.iter().any(|assessment| {
+                                assessment.disposition
+                                    == crate::feedback::Disposition::HumanInputRequired
+                            })
+                    });
+                if !self.has_provider_work()
+                    && !self.cancelled
+                    && self.error.is_none()
+                    && !human
+                    && !thread.resolved
+                    && thread.id == captured.id
+                    && thread.comments.starts_with(&captured.comments)
+                    && latest.is_some_and(|comment| {
+                        !captured.comments.iter().any(|old| old.id == comment.id)
+                    })
+                {
+                    return Err(Failure {
+                        kind: OperationFailure::Superseded,
+                        ..Failure::permanent(SUPERSEDED_TRIGGER)
+                    });
+                }
+                return Err(Failure::permanent(
+                    "The conversation trigger changed without verified new-comment supersession.",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_analysis_base(
+        &self,
+        job: &crate::monitoring::QueueJob,
+    ) -> Result<(), Failure> {
+        if job
+            .observed_base_sha
+            .as_ref()
+            .zip(self.context.job.observed_base_sha.as_ref())
+            .is_some_and(|(current, captured)| current != captured)
+            || job
+                .observed_base_sha
+                .as_ref()
+                .zip(
+                    self.result
+                        .as_ref()
+                        .and_then(|result| result.reviewed_base_sha.as_ref()),
+                )
+                .is_some_and(|(current, reviewed)| current != reviewed)
+        {
+            return Err(Failure::permanent(
+                "The reviewed base changed during analysis.",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_analysis_feedback(
+        &self,
+        store: &Store,
+        job: &crate::monitoring::QueueJob,
+    ) -> Result<(), Failure> {
+        let ledger = store.load_feedback().map_err(Failure::permanent)?;
+        if self
+            .thread()
+            .is_ok_and(|thread| ledger.conversation_closed(job, &thread.id))
+        {
+            return Err(Failure::permanent(
+                "This human-closed discussion cannot receive a new analysis or reply.",
+            ));
+        }
+
+        let current =
+            crate::feedback::conversation_contexts(store, job, &self.context.selection.agent.id)?;
+        let mut comparable = current.clone();
+        let observed = current.iter().enumerate().find_map(|(index, context)| {
+            if !self.owns_feedback(context)
+                || !ledger.records.iter().any(|record| {
+                    record.context == *context
+                        && record.job.configuration_id == job.configuration_id
+                        && crate::feedback::same_pr(&record.job, job)
+                        && record.observed_head == job.head_sha
+                })
+            {
+                return None;
+            }
+            let observed = context.thread.clone()?;
+            let captured = self
+                .context
+                .feedback
+                .iter()
+                .find(|old| old.id == context.id)?;
+            comparable[index].thread = captured.thread.clone();
+            Some(observed)
+        });
+        // Ignore only the target's discussion snapshot while checking every other
+        // captured input and observation-health guard; nothing stored is rewritten.
+        crate::feedback::validate_captured_context(
+            store,
+            job,
+            &comparable,
+            &self.context.feedback,
+        )?;
+        if let Some(thread) = observed {
+            self.validate_observed_trigger(&Observation::Owned(thread))?;
+        } else if let Ok(thread) = self.thread() {
+            let latest = ledger
+                .conversation_cursors
+                .iter()
+                .find(|cursor| cursor.binding.matches(job))
+                .and_then(|cursor| cursor.thread_triggers.get(&thread.id))
+                .and_then(Option::as_ref);
+            if let Some(latest) = latest.filter(|latest| *latest != &self.trigger_id) {
+                let intent = ledger
+                    .pending_threads
+                    .iter()
+                    .find(|intent| {
+                        intent.binding.matches(job)
+                            && intent.item_id == crate::queue::item_id(job)
+                            && intent.thread.id == thread.id
+                            && intent
+                                .thread
+                                .latest_other_user(&job.account_id)
+                                .is_some_and(|comment| &comment.id == latest)
+                            && intent.follow_up_id.is_some()
+                            && intent.blocked.is_none()
+                    })
+                    .ok_or_else(|| {
+                        Failure::permanent(
+                    "Newer discussion evidence is not durably admitted; no supersession inferred."
+                )
+                    })?;
+                self.validate_observed_trigger(&Observation::Owned(intent.thread.clone()))?;
+            }
+        }
+        crate::feedback::validate_captured_context(store, job, &current, &self.context.feedback)
+    }
+
     pub(crate) fn can_retire_assessment(&self) -> bool {
         let safe_refusal = self.phase == Phase::Stopped
             && self.result.is_none()
@@ -127,9 +289,7 @@ impl FollowUp {
                 .analysis
                 .as_ref()
                 .is_some_and(|operation| operation.failure == Some(OperationFailure::Superseded));
-        self.publication.is_none()
-            && !self.uncertain
-            && self.receipt.is_none()
+        !self.has_provider_work()
             && !self.cancelled
             && self.analysis.as_ref().is_none_or(|operation| {
                 operation.state != OperationState::Running
@@ -927,6 +1087,11 @@ pub fn validate_analysis_commit(
     if current.cancelled {
         return Err(Failure::permanent("Thread follow-up was cancelled."));
     }
+    if run.has_provider_work() || current.has_provider_work() {
+        return Err(Failure::permanent(
+            "Provider reply work cannot be overwritten by an analysis result.",
+        ));
+    }
     let settings = store.load_settings().map_err(Failure::permanent)?;
     let jobs = store.load_queue().map_err(Failure::permanent)?;
     let job = jobs
@@ -947,13 +1112,9 @@ pub fn validate_analysis_commit(
         ));
     }
     run.authority(&settings, job).map_err(Failure::permanent)?;
+    run.validate_analysis_base(job)?;
     if run.context.feedback_checked {
-        crate::feedback::validate_conversation_context(
-            store,
-            &run.context.job,
-            &run.context.selection.agent.id,
-            &run.context.feedback,
-        )?;
+        run.validate_analysis_feedback(store, job)?;
     }
     Ok(())
 }
