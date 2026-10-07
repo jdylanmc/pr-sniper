@@ -170,6 +170,71 @@ fn explicit(
 }
 
 #[test]
+fn explicit_intake_preserves_primary_and_secondary_capabilities_without_granting_actions() {
+    for reply in [None, Some(false), Some(true)] {
+        let (_fixture, store, _) = explicit_configuration(2);
+        let settings = store.load_settings().unwrap();
+        let mut repository = settings.repositories[0].clone();
+        repository.primary_assignment_id = reply.map(|_| repository.assignments[0].id.clone());
+        for (index, assignment) in repository.assignments.iter_mut().enumerate() {
+            assignment.comment = false;
+            assignment.actions = Some(
+                serde_json::from_value(json!({
+                    "reply":index == 0 && reply == Some(true),
+                    "approve":false,"merge":false
+                }))
+                .unwrap(),
+            );
+        }
+        let before = store
+            .save_resource(ResourceEdit::Repository {
+                id: REPO.into(),
+                expected: Some(Box::new(settings.repositories[0].clone())),
+                value: Some(Box::new(repository)),
+            })
+            .unwrap();
+        store
+            .save_automation(&pr_sniper_lib::capacity::Automation { paused: true })
+            .unwrap();
+        let mut monitor = Monitor::restore(&store).unwrap();
+        let mut requested = pull('a');
+        requested.author.as_mut().unwrap().id = "99".into();
+        assert!(
+            explicit(&mut monitor, &store, requested.clone())
+                .unwrap()
+                .queued
+        );
+        let jobs = store.load_queue().unwrap();
+        assert_eq!(jobs.len(), 2);
+        for job in &jobs {
+            assert!(!job.watched_author && !job.all_authors && !job.requested_reviewer);
+            assert!(monitoring::review_policy(&before, job, Some(&requested)).is_ok());
+            let repository = &before.repositories[0];
+            let assignment = repository
+                .assignments
+                .iter()
+                .find(|assignment| Some(&assignment.id) == job.assignment_id.as_ref())
+                .unwrap();
+            let authority = repository.assignment_authority(assignment);
+            let primary = reply.is_some() && assignment.id == repository.assignments[0].id;
+            assert_eq!(authority.primary, primary);
+            assert_eq!(authority.reply, primary && reply == Some(true));
+            assert!(!authority.comment && !authority.approve && !authority.merge);
+        }
+        assert_eq!(store.load_settings().unwrap(), before);
+        assert!(store.load_follow_ups().unwrap().is_empty());
+        assert!(store.load_publications().unwrap().is_empty());
+        let actions = store.load_actions().unwrap();
+        assert!(actions.finals.is_empty() && actions.effects.is_empty());
+        assert!(pr_sniper_lib::capacity::Coordinator::default()
+            .dispatch(&store, NOW + 1)
+            .unwrap()
+            .dispatched
+            .is_empty());
+    }
+}
+
+#[test]
 fn explicit_out_of_filter_pr_queues_immediately_and_reuses_completed_iteration() {
     let (_fixture, store, mut monitor) = explicit_configuration(1);
     let mut requested = pull('a');
