@@ -20,8 +20,13 @@ pub struct TopComment {
 }
 
 impl TopComment {
-    pub fn mentions(&self, login: &str, account: &str) -> bool {
-        if self.author_id.as_deref() == Some(account) && self.body.contains("<!-- pr-sniper:") {
+    pub fn eligible_other_user(&self, account: &str) -> bool {
+        self.author_id.as_deref().is_some_and(|id| id != account)
+            && !self.body.contains("<!-- pr-sniper:")
+            && !self.body.trim().is_empty()
+    }
+    pub fn mentions(&self, login: &str, _account: &str) -> bool {
+        if self.body.contains("<!-- pr-sniper:") {
             return false;
         }
         let text = self.body.to_ascii_lowercase();

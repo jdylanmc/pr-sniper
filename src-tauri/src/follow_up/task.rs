@@ -47,6 +47,10 @@ pub(crate) enum ConversationInput {
     Mention {
         comment: crate::github::conversation::TopComment,
     },
+    General {
+        comment: crate::github::conversation::TopComment,
+        discussion: Vec<crate::github::conversation::TopComment>,
+    },
 }
 
 pub(crate) struct ReplyTask {
@@ -101,7 +105,7 @@ impl Task for ReplyTask {
         for assessment in &output.feedback_assessments {
             let root = match &self.conversation {
                 ConversationInput::Owned { thread } => &thread.root()?.id,
-                ConversationInput::Mention { .. } => {
+                ConversationInput::Mention { .. } | ConversationInput::General { .. } => {
                     return Err(Failure::permanent(
                         "A mention cannot clear owned-thread feedback.",
                     ))
@@ -149,6 +153,12 @@ impl Task for ReplyTask {
                 thread.comments.iter().map(|c| c.body.as_str()).collect()
             }
             ConversationInput::Mention { comment } => vec![comment.body.as_str()],
+            ConversationInput::General {
+                comment,
+                discussion,
+            } => std::iter::once(comment.body.as_str())
+                .chain(discussion.iter().map(|c| c.body.as_str()))
+                .collect(),
         };
         let repeated = messages.iter().any(|body_text| {
             let previous = normalized(body_text);

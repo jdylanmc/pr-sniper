@@ -579,6 +579,54 @@ impl ActionEnvironment for Native {
 pub(crate) struct Coordinator {
     pub(crate) active: Mutex<bool>,
 }
+pub(crate) fn prepare_next_effect(
+    store: &Store,
+    item_id: &str,
+    now: i64,
+) -> Result<Option<Effect>, String> {
+    let ledger = store.load_actions()?;
+    let Some(observation) = ledger
+        .observations
+        .iter()
+        .find(|observed| observed.item_id == item_id)
+        .and_then(|observed| observed.observation.as_ref())
+    else {
+        return Ok(None);
+    };
+    if let Some(effect) = ledger
+        .effects
+        .iter()
+        .find(|effect| effect.item_id == item_id && effect.state == EffectState::Prepared)
+    {
+        return Ok(Some(effect.clone()));
+    }
+    for action in [Action::Approve, Action::Merge] {
+        if action == Action::Approve
+            && crate::actions::provider_approval(observation).is_some()
+            && ledger.finals.iter().any(|run| {
+                run.basis.item_id == item_id
+                    && run.basis.permissions.merge
+                    && validate_local(store, run).is_ok()
+            })
+        {
+            continue;
+        }
+        if ledger
+            .effects
+            .iter()
+            .any(|effect| effect.item_id == item_id && effect.action == action)
+        {
+            continue;
+        }
+        if let Some(run) = ledger.finals.iter().rev().find(|run| {
+            run.basis.item_id == item_id && ready(store, run, observation, action).is_ok()
+        }) {
+            return prepare_effect(store, &run.id, action, observation, now).map(Some);
+        }
+    }
+    Ok(None)
+}
+
 impl Coordinator {
     pub(crate) fn finished(&self) -> bool {
         self.active.lock().is_ok_and(|v| !*v)
@@ -682,46 +730,7 @@ impl Coordinator {
                         .lock()
                         .map_err(|_| "Action storage unavailable.")?;
                     synchronize(&store, &target.id, observed, now_seconds()?)?;
-                    let ledger = store.load_actions()?;
-                    let observation = ledger
-                        .observations
-                        .iter()
-                        .find(|o| o.item_id == target.id)
-                        .and_then(|o| o.observation.as_ref());
-                    let mut chosen = None;
-                    if let Some(observation) = observation {
-                        chosen = ledger
-                            .effects
-                            .iter()
-                            .find(|e| e.item_id == target.id && e.state == EffectState::Prepared)
-                            .cloned();
-                        for action in [Action::Approve, Action::Merge] {
-                            if chosen.is_some() {
-                                break;
-                            }
-                            if ledger
-                                .effects
-                                .iter()
-                                .any(|e| e.item_id == target.id && e.action == action)
-                            {
-                                continue;
-                            }
-                            if let Some(run) = ledger.finals.iter().rev().find(|f| {
-                                f.basis.item_id == target.id
-                                    && ready(&store, f, observation, action).is_ok()
-                            }) {
-                                chosen = Some(prepare_effect(
-                                    &store,
-                                    &run.id,
-                                    action,
-                                    observation,
-                                    now_seconds()?,
-                                )?);
-                                break;
-                            }
-                        }
-                    }
-                    chosen
+                    prepare_next_effect(&store, &target.id, now_seconds()?)?
                 };
                 if let Some(effect) = effect {
                     let owner = format!("action:{}", effect.id);

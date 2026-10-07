@@ -66,6 +66,7 @@ impl MentionBinding {
             && self.repository_id == job.repository_id
             && self.pull_request_id == job.pull_request_id
     }
+
     pub fn matches_tracked(&self, pr: &TrackedPullRequest) -> bool {
         pr.provider == "github"
             && self.configuration_id == pr.configuration_id
@@ -96,6 +97,138 @@ impl MentionBinding {
             comment
         ])
         .to_string()
+    }
+}
+
+impl Ledger {
+    pub(crate) fn conversation_cursor(&mut self, binding: &MentionBinding) -> usize {
+        if let Some(index) = self
+            .conversation_cursors
+            .iter()
+            .position(|cursor| cursor.binding.key("") == binding.key(""))
+        {
+            return index;
+        }
+        self.conversation_cursors.push(ConversationCursor {
+            binding: binding.clone(),
+            comments: Default::default(),
+            threads: Default::default(),
+            comments_initialized: false,
+            threads_initialized: false,
+            discussion: Vec::new(),
+            closed_threads: Default::default(),
+            thread_triggers: Default::default(),
+            human_boundaries: Default::default(),
+        });
+        self.conversation_cursors.len() - 1
+    }
+
+    pub(crate) fn observe_human_boundaries(&mut self, runs: &[FollowUp]) {
+        for run in runs {
+            let Ok(thread) = run.thread() else {
+                continue;
+            };
+            let human = run.phase == crate::follow_up::Phase::HumanInputRequired;
+            let answered = run.manual_start
+                && !run.cancelled
+                && !run.uncertain
+                && run.error.is_none()
+                && run
+                    .analysis
+                    .as_ref()
+                    .is_some_and(|operation| operation.state == OperationState::Completed)
+                && run.result.as_ref().is_some_and(|result| {
+                    result.output.decision != ReplyDecision::HumanInputRequired
+                });
+            if !human && !answered {
+                continue;
+            }
+            let job = &run.context.job;
+            let index = self.conversation_cursor(&MentionBinding {
+                configuration_id: job.configuration_id.clone(),
+                account_id: job.account_id.clone(),
+                account_login: job.account_login.clone(),
+                repository_id: job.repository_id.clone(),
+                repository_name: job.repository_name.clone(),
+                pull_request_id: job.pull_request_id.clone(),
+                number: job.number,
+            });
+            let boundary = self.conversation_cursors[index]
+                .human_boundaries
+                .entry(thread.id.clone())
+                .or_default();
+            if human {
+                boundary.required_order = Some(
+                    boundary
+                        .required_order
+                        .unwrap_or(0)
+                        .max(run.enqueue_order.unwrap_or(0)),
+                );
+            }
+            if answered {
+                if let Some(order) = run.enqueue_order {
+                    boundary.answered_order = Some(boundary.answered_order.unwrap_or(0).max(order));
+                }
+            }
+        }
+    }
+
+    pub(crate) fn human_gated(&self, job: &QueueJob, thread_id: &str) -> bool {
+        self.conversation_cursors
+            .iter()
+            .filter(|cursor| cursor.binding.matches(job))
+            .filter_map(|cursor| cursor.human_boundaries.get(thread_id))
+            .any(|boundary| {
+                boundary.required_order.is_some_and(|required| {
+                    boundary
+                        .answered_order
+                        .is_none_or(|answered| answered <= required)
+                })
+            })
+    }
+
+    pub(crate) fn human_answered(&self, job: &QueueJob, thread_id: &str) -> bool {
+        self.conversation_cursors
+            .iter()
+            .filter(|cursor| cursor.binding.matches(job))
+            .filter_map(|cursor| cursor.human_boundaries.get(thread_id))
+            .any(|boundary| {
+                boundary
+                    .answered_order
+                    .is_some_and(|answered| answered > boundary.required_order.unwrap_or(0))
+            })
+    }
+
+    pub(crate) fn thread_superseded(&self, run: &FollowUp) -> bool {
+        let Ok(thread) = run.thread() else {
+            return false;
+        };
+        if !run.can_retire_assessment() {
+            return false;
+        }
+        if run.phase == crate::follow_up::Phase::HumanInputRequired {
+            return self.human_answered(&run.context.job, &thread.id);
+        }
+        self.conversation_cursors
+            .iter()
+            .filter(|cursor| cursor.binding.matches(&run.context.job))
+            .any(|cursor| {
+                cursor.closed_threads.contains(&thread.id)
+                    || (cursor
+                        .thread_triggers
+                        .get(&thread.id)
+                        .is_some_and(|latest| {
+                            latest.as_deref().is_some_and(|id| id != run.trigger_id)
+                        }))
+            })
+    }
+}
+
+impl Ledger {
+    pub(crate) fn conversation_closed(&self, job: &QueueJob, thread_id: &str) -> bool {
+        self.conversation_cursors
+            .iter()
+            .any(|cursor| cursor.binding.matches(job) && cursor.closed_threads.contains(thread_id))
     }
 }
 
@@ -169,6 +302,47 @@ impl Mention {
 pub struct Ledger {
     pub records: Vec<Record>,
     pub mentions: Vec<Mention>,
+    #[serde(default)]
+    pub conversation_cursors: Vec<ConversationCursor>,
+    #[serde(default)]
+    pub pending_threads: Vec<PendingThread>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConversationCursor {
+    pub binding: MentionBinding,
+    pub comments: HashSet<String>,
+    pub threads: HashSet<String>,
+    pub comments_initialized: bool,
+    pub threads_initialized: bool,
+    pub discussion: Vec<TopComment>,
+    pub closed_threads: HashSet<String>,
+    #[serde(default)]
+    pub thread_triggers: std::collections::BTreeMap<String, Option<String>>,
+    #[serde(default)]
+    pub human_boundaries: std::collections::BTreeMap<String, HumanBoundary>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HumanBoundary {
+    pub required_order: Option<u64>,
+    pub answered_order: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PendingThread {
+    pub binding: MentionBinding,
+    pub item_id: String,
+    pub thread: Thread,
+    pub key: String,
+    pub work_id: String,
+    pub enqueue_order: u64,
+    pub enqueued_at: i64,
+    pub follow_up_id: Option<String>,
+    pub blocked: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -338,7 +512,15 @@ impl Ledger {
 }
 
 pub fn contexts(store: &Store, job: &QueueJob, agent: &str) -> Result<Vec<Context>, Failure> {
-    contexts_excluding(store, job, agent, None)
+    contexts_excluding(store, job, agent, None, false)
+}
+
+pub fn conversation_contexts(
+    store: &Store,
+    job: &QueueJob,
+    agent: &str,
+) -> Result<Vec<Context>, Failure> {
+    contexts_excluding(store, job, agent, None, true)
 }
 
 fn contexts_excluding(
@@ -346,6 +528,7 @@ fn contexts_excluding(
     job: &QueueJob,
     agent: &str,
     own_operation: Option<&str>,
+    include_current_peers: bool,
 ) -> Result<Vec<Context>, Failure> {
     let ledger = store.load_feedback().map_err(Failure::permanent)?;
     let publications = store.load_publications().map_err(Failure::permanent)?;
@@ -366,7 +549,8 @@ fn contexts_excluding(
         for root in &receipt.comment_ids {
             let id = root_key(job, root);
             let record = ledger.records.iter().find(|r| r.context.id == id);
-            if !earlier
+            if !include_current_peers
+                && !earlier
                 && origin.review.selection.agent.id != agent
                 && !record.is_some_and(|r| r.context.closed)
             {
@@ -404,7 +588,30 @@ pub fn validate_context(
     agent: &str,
     captured: &[Context],
 ) -> Result<(), Failure> {
-    if contexts(store, job, agent)? != captured {
+    validate_captured_context(store, job, &contexts(store, job, agent)?, captured)
+}
+
+pub fn validate_conversation_context(
+    store: &Store,
+    job: &QueueJob,
+    agent: &str,
+    captured: &[Context],
+) -> Result<(), Failure> {
+    validate_captured_context(
+        store,
+        job,
+        &conversation_contexts(store, job, agent)?,
+        captured,
+    )
+}
+
+pub(crate) fn validate_captured_context(
+    store: &Store,
+    job: &QueueJob,
+    current: &[Context],
+    captured: &[Context],
+) -> Result<(), Failure> {
+    if current != captured {
         return Err(Failure::permanent(
             "Owned feedback changed during analysis; no stale assessment accepted.",
         ));
@@ -527,6 +734,7 @@ pub fn publication_gate(store: &Store, review: &crate::review::ReviewRun) -> Res
             &review.job,
             &review.selection.agent.id,
             Some(&review.operation.id),
+            false,
         )
         .map_err(|e| e.message)?;
         if &current != captured {
@@ -690,7 +898,7 @@ pub fn owned_reply_assessment(run: &FollowUp) -> Result<(), Failure> {
     validate_assessments(
         &result.output.feedback_assessments,
         &run.context.feedback,
-        &run.context.selection.agent.id,
+        run.assessment_owner(),
         false,
     )?;
     if matches!(run.target, ConversationTarget::Mention { .. })

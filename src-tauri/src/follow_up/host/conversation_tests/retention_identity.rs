@@ -228,6 +228,9 @@ fn r8_superseded_intent_does_not_block_current_handoff_but_uncertainty_and_human
         let (root, store) = tracking_fixture(2);
         let mut settings = store.load_settings().unwrap();
         settings.defaults.automatic_comment_publication = false;
+        for assignment in &mut settings.repositories[0].assignments {
+            assignment.comment = false;
+        }
         if prior != "unstarted" {
             settings.repositories[0].primary_assignment_id =
                 Some(settings.repositories[0].assignments[0].id.clone());

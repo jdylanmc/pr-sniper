@@ -190,6 +190,8 @@ pub fn automatic_policy(
     if current.agent != review.selection.agent
         || current.doctrine != review.selection.doctrine
         || current.preset != review.selection.preset
+        || current.policy.prompt != review.selection.policy.prompt
+        || current.policy.adapter != review.selection.policy.adapter
     {
         return Err("The review lens changed; run a new review before publishing.".into());
     }
@@ -202,7 +204,7 @@ pub fn automatic_policy(
     if !assignment.comment {
         return Err("Comments are disabled for this Agent assignment.".into());
     }
-    Ok(current.policy.automatic_comment_publication)
+    Ok(true)
 }
 
 pub fn evaluate_gate(
@@ -233,7 +235,9 @@ pub struct GatePermissions {
     pub active: bool,
     pub can_comment: bool,
     pub cancelled: bool,
+    /// Retained operation evidence; current assignment permission governs writes.
     pub automatic: bool,
+    /// Retained operation evidence, not a publication grant.
     pub confirmed: bool,
 }
 
@@ -248,8 +252,8 @@ pub fn evaluate_review_gate(
         active,
         can_comment,
         cancelled,
-        automatic,
-        confirmed,
+        automatic: _,
+        confirmed: _,
     } = permissions;
     let head_changed = pull.head_sha != review.job.head_sha;
     let stale = head_changed
@@ -264,15 +268,9 @@ pub fn evaluate_review_gate(
     let policy = current_job
         .ok_or_else(|| "Review detection is no longer available.".to_string())
         .and_then(|job| automatic_policy(settings, review, job));
-    let mut stop = match policy {
-        Err(error) => Some(error),
-        Ok(current) if current != automatic => {
-            Some("The publication gate changed; confirm again before retrying.".into())
-        }
-        _ => None,
-    };
-    if cancelled || (!confirmed && !automatic) {
-        stop = Some("Publication confirmation was withdrawn.".into());
+    let mut stop = policy.err();
+    if cancelled {
+        stop = Some("Publication was cancelled; no new provider write is authorized.".into());
     } else if !active {
         stop = Some("Monitoring scope is no longer active.".into());
     }

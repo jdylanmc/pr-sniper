@@ -132,6 +132,16 @@ impl Thread {
             .map(|(_, comment)| comment)
     }
 
+    pub fn latest_other_user(&self, account: &str) -> Option<&Comment> {
+        self.comments
+            .iter()
+            .filter(|comment| {
+                comment.author_id.as_deref().is_some_and(|id| id != account)
+                    && !comment.body.contains("<!-- pr-sniper:")
+            })
+            .max_by_key(|comment| (&comment.published_at, &comment.id))
+    }
+
     pub fn owned_by(&self, publication: &impl Provenance) -> bool {
         let Ok(root) = self.root() else {
             return false;
@@ -186,7 +196,44 @@ impl<T: QueryTransport> GithubClient<T> {
         current_head: &str,
     ) -> Result<Vec<Thread>, ConnectionError> {
         let publication = publication.ownership()?;
-        let name = crate::storage::canonical_repository(&publication.repository_name)
+        self.review_threads(
+            &publication.repository_name,
+            &publication.repository_id,
+            &publication.pull_request_id,
+            publication.number,
+            current_head,
+            Some(&publication),
+        )
+    }
+
+    pub fn review_threads_at(
+        &self,
+        repository_name: &str,
+        repository_id: &str,
+        pull_request_id: &str,
+        number: u64,
+        current_head: &str,
+    ) -> Result<Vec<Thread>, ConnectionError> {
+        self.review_threads(
+            repository_name,
+            repository_id,
+            pull_request_id,
+            number,
+            current_head,
+            None,
+        )
+    }
+
+    fn review_threads(
+        &self,
+        repository_name: &str,
+        repository_id: &str,
+        pull_request_id: &str,
+        number: u64,
+        current_head: &str,
+        ownership: Option<&Ownership>,
+    ) -> Result<Vec<Thread>, ConnectionError> {
+        let name = crate::storage::canonical_repository(repository_name)
             .map_err(|_| ConnectionError::InvalidRepository)?;
         let (owner, name) = name
             .split_once('/')
@@ -205,17 +252,18 @@ impl<T: QueryTransport> GithubClient<T> {
         let mut ids = BTreeSet::new();
         let mut expected = None;
         let mut count = 0;
+        let mut bytes = 0;
         let mut result = Vec::new();
         loop {
             let data = self.graph(
                 &query,
-                json!({"owner":owner,"name":name,"number":publication.number,
+                json!({"owner":owner,"name":name,"number":number,
                 "cursor":cursor,"commentCursor":Value::Null}),
             )?;
             let repo = &data["repository"];
             let pull = &repo["pullRequest"];
-            if number(&repo["databaseId"])? != publication.repository_id
-                || number(&pull["fullDatabaseId"])? != publication.pull_request_id
+            if self::number(&repo["databaseId"])? != repository_id
+                || self::number(&pull["fullDatabaseId"])? != pull_request_id
             {
                 return Err(ConnectionError::RepositoryChanged);
             }
@@ -229,6 +277,9 @@ impl<T: QueryTransport> GithubClient<T> {
                     return Err(ConnectionError::IncompleteRead);
                 }
                 count += 1;
+                if count > 1000 {
+                    return Err(ConnectionError::IncompleteRead);
+                }
                 let comments = node["comments"]["nodes"]
                     .as_array()
                     .ok_or(ConnectionError::InvalidResponse)?;
@@ -238,13 +289,21 @@ impl<T: QueryTransport> GithubClient<T> {
                     }
                     continue;
                 };
-                let root_id = number(&first["fullDatabaseId"])?;
-                if !publication.root_ids.contains(&root_id) {
+                let root = self::number(&first["fullDatabaseId"])?;
+                if ownership.is_some_and(|proof| !proof.root_ids.contains(&root)) {
                     continue;
                 }
                 let thread = self.complete_thread(node)?;
-                if !thread.owned_by(&publication) {
+                if ownership.is_some_and(|proof| !thread.owned_by(proof)) {
                     return Err(ConnectionError::InvalidResponse);
+                }
+                bytes += thread
+                    .comments
+                    .iter()
+                    .map(|comment| comment.body.len())
+                    .sum::<usize>();
+                if bytes > 2 * 1024 * 1024 {
+                    return Err(ConnectionError::IncompleteRead);
                 }
                 result.push(thread);
             }
@@ -265,6 +324,23 @@ impl<T: QueryTransport> GithubClient<T> {
         id: &str,
     ) -> Result<Option<Thread>, ConnectionError> {
         let publication = publication.ownership()?;
+        let thread =
+            self.review_thread(&publication.repository_id, &publication.pull_request_id, id)?;
+        if thread
+            .as_ref()
+            .is_some_and(|thread| !thread.owned_by(&publication))
+        {
+            return Err(ConnectionError::InvalidResponse);
+        }
+        Ok(thread)
+    }
+
+    pub fn review_thread(
+        &self,
+        repository_id: &str,
+        pull_request_id: &str,
+        id: &str,
+    ) -> Result<Option<Thread>, ConnectionError> {
         let query = format!(
             r#"query($id:ID!,$commentCursor:String) {{
           node(id:$id) {{ ... on PullRequestReviewThread {{
@@ -278,13 +354,13 @@ impl<T: QueryTransport> GithubClient<T> {
         if node.is_null() {
             return Ok(None);
         }
-        if number(&node["repository"]["databaseId"])? != publication.repository_id
-            || number(&node["pullRequest"]["fullDatabaseId"])? != publication.pull_request_id
+        if number(&node["repository"]["databaseId"])? != repository_id
+            || number(&node["pullRequest"]["fullDatabaseId"])? != pull_request_id
         {
             return Err(ConnectionError::RepositoryChanged);
         }
         let thread = self.complete_thread(node)?;
-        if thread.id != id || !thread.owned_by(&publication) {
+        if thread.id != id {
             return Err(ConnectionError::InvalidResponse);
         }
         Ok(Some(thread))
@@ -377,15 +453,36 @@ impl<T: MutationTransport> GithubClient<T> {
             failure: error.into(),
             uncertain: false,
         })?;
+        self.reply_to_review_thread(
+            &publication.repository_name,
+            publication.number,
+            &publication.account_id,
+            root_id,
+            body,
+        )
+    }
+
+    pub fn reply_to_review_thread(
+        &self,
+        repository_name: &str,
+        number: u64,
+        account_id: &str,
+        root_id: &str,
+        body: &str,
+    ) -> Result<String, WriteFailure> {
         let request = (|| {
-            let name = crate::storage::canonical_repository(&publication.repository_name)
+            let name = crate::storage::canonical_repository(repository_name)
                 .map_err(Failure::permanent)?;
-            if root_id.parse::<u64>().is_err() || root_id == "0" {
+            if root_id.parse::<u64>().is_err()
+                || root_id == "0"
+                || number == 0
+                || body.chars().count() > 65_536
+            {
                 return Err(Failure::permanent("Invalid owned root comment identity."));
             }
             Ok(format!(
                 "/repos/{name}/pulls/{}/comments/{root_id}/replies",
-                publication.number
+                number
             ))
         })()
         .map_err(|failure| WriteFailure {
@@ -413,17 +510,17 @@ impl<T: MutationTransport> GithubClient<T> {
             let value: Value = serde_json::from_slice(&response.body)
                 .map_err(|_| ConnectionError::InvalidResponse)?;
             if value["body"].as_str() != Some(body)
-                || number(&value["user"]["id"])? != publication.account_id
-                || number(&value["in_reply_to_id"])? != root_id
+                || self::number(&value["user"]["id"])? != account_id
+                || self::number(&value["in_reply_to_id"])? != root_id
                 || value["pull_request_url"].as_str()
                     != Some(&format!(
                         "https://api.github.com/repos/{}/pulls/{}",
-                        publication.repository_name, publication.number
+                        repository_name, number
                     ))
             {
                 return Err(ConnectionError::InvalidResponse);
             }
-            number(&value["id"])
+            self::number(&value["id"])
         })();
         parsed.map_err(|error| WriteFailure {
             failure: error.into(),

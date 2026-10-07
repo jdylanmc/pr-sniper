@@ -79,6 +79,7 @@ pub struct Item {
 pub struct Snapshot {
     pub feedback: BTreeMap<String, Vec<crate::feedback::View>>,
     pub mentions: Vec<crate::feedback::Mention>,
+    pub pending_threads: Vec<crate::feedback::PendingThread>,
     pub global_scan: Option<monitoring::GlobalScan>,
     pub tracked: Vec<monitoring::TrackedPullRequest>,
     pub health: Vec<ScheduleHealth>,
@@ -127,6 +128,7 @@ pub(crate) fn normal_snapshot(
     let mut result = Snapshot {
         feedback: BTreeMap::new(),
         mentions: store.load_feedback()?.mentions,
+        pending_threads: store.load_feedback()?.pending_threads,
         global_scan: monitoring.global_scan,
         tracked: store.load_queue_state()?.tracked,
         health,
@@ -251,17 +253,16 @@ fn review_state(
     {
         return State::Blocked;
     }
-    let comments = current.policy.automatic_comment_publication
-        && settings
-            .repositories
-            .iter()
-            .find(|r| r.id == candidate.job.configuration_id)
-            .and_then(|r| {
-                r.assignments
-                    .iter()
-                    .find(|a| a.id == candidate.assignment_id)
-            })
-            .is_some_and(|a| a.comment);
+    let comments = settings
+        .repositories
+        .iter()
+        .find(|r| r.id == candidate.job.configuration_id)
+        .and_then(|r| {
+            r.assignments
+                .iter()
+                .find(|a| a.id == candidate.assignment_id)
+        })
+        .is_some_and(|a| a.comment);
     if comments || publication.is_some() {
         if batch.is_some_and(|p| p.blocked.is_some()) {
             return State::Blocked;
@@ -321,6 +322,9 @@ fn review_state(
 fn follow_up_state(candidate: &follow_up::host::Candidate) -> Option<State> {
     use follow_up::Phase;
     let run = &candidate.run;
+    if run.has_unsettled_analysis_failure() {
+        return Some(State::Failed);
+    }
     if matches!(run.phase, Phase::Quiet | Phase::Published) && !run.uncertain && run.error.is_none()
     {
         return None;
@@ -344,11 +348,20 @@ fn follow_up_state(candidate: &follow_up::host::Candidate) -> Option<State> {
     match run.phase {
         Phase::WaitingStart => Some(State::Queued),
         Phase::Analyzing => Some(State::Reviewing),
-        Phase::WaitingPublication => Some(if candidate.automatic_publication {
-            State::AwaitingPublication
-        } else {
-            State::ConfirmationRequired
-        }),
+        Phase::WaitingPublication
+            if run.publication.is_none()
+                && !candidate.automatic_publication
+                && run
+                    .analysis
+                    .as_ref()
+                    .is_some_and(|operation| operation.state == OperationState::Completed)
+                && run.result.as_ref().is_some_and(|result| {
+                    result.output.decision == crate::follow_up::ReplyDecision::Reply
+                }) =>
+        {
+            None
+        }
+        Phase::WaitingPublication => Some(State::AwaitingPublication),
         Phase::Publishing => Some(State::AwaitingPublication),
         Phase::Stopped | Phase::Unresolved => Some(State::Failed),
         Phase::Quiet | Phase::Published => None,
@@ -433,6 +446,9 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             }
         }
         for follow_up in &follow_ups {
+            if follow_up.superseded {
+                continue;
+            }
             let prior_iteration = follow_up.run.context.job.head_sha != job.head_sha
                 || follow_up
                     .run
@@ -443,45 +459,16 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                     .map(|w| &w.iteration_id)
                     != job.work.as_ref().map(|w| &w.iteration_id);
             if prior_iteration
-                && follow_up.run.publication.is_none()
-                && !follow_up.run.uncertain
+                && follow_up.run.can_retire_assessment()
                 && follow_up.run.phase != follow_up::Phase::HumanInputRequired
-            {
-                continue;
-            }
-            if follow_up.run.thread().is_ok() {
-                let feedback = snapshot.feedback.get(&id).and_then(|values| {
-                    values
-                        .iter()
-                        .find(|f| follow_up.run.owns_feedback(&f.context))
-                });
-                let needs_reconciliation = follow_up.run.uncertain
-                    || follow_up
-                        .run
-                        .publication
-                        .as_ref()
-                        .is_some_and(|op| op.state != OperationState::Completed);
-                if !needs_reconciliation
-                    && feedback.is_some_and(|f| {
-                        f.context.closed
-                            || f.context
-                                .thread
-                                .as_ref()
-                                .and_then(|t| t.latest_external(&job.account_id))
-                                .is_some_and(|c| c.id != follow_up.run.trigger_id)
-                    })
-                {
-                    continue;
-                }
-            }
-            if follow_up.run.cancelled
-                && follow_up.run.result.is_none()
-                && follow_up.run.publication.is_none()
             {
                 continue;
             }
             if let Some(state) = follow_up_state(follow_up) {
                 states.push(state);
+            }
+            if follow_up.run.has_unsettled_analysis_failure() {
+                warnings.insert("A prior analysis failure requires validated explicit recovery; queuing a retry is not settlement.".into());
             }
             for error in [&follow_up.blocked, &follow_up.run.error]
                 .into_iter()
@@ -532,6 +519,24 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                     "Mention execution history is unavailable; no replay or clearance inferred."
                         .into(),
                 );
+            }
+        }
+        for intent in snapshot
+            .pending_threads
+            .iter()
+            .filter(|intent| intent.binding.matches(job) && intent.item_id == id)
+        {
+            if intent.follow_up_id.is_none()
+                || intent.blocked.is_some()
+                || intent.follow_up_id.as_ref().is_some_and(|id| {
+                    !snapshot
+                        .follow_ups
+                        .iter()
+                        .any(|candidate| &candidate.run.id == id)
+                })
+            {
+                states.push(State::Blocked);
+                warnings.insert(intent.blocked.clone().unwrap_or_else(|| "Observed discussion awaits durable primary assessment; no clearance inferred.".into()));
             }
         }
         for publication in snapshot

@@ -14,10 +14,16 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- Replace Automation overrides with repository-assignment capabilities:
+  independent Publish Comment and primary Reply Comment, plus Approve or
+  Approve & Merge after confirmed approval. Route eligible admitted-PR
+  conversations to the primary without replaying history or changing original
+  feedback ownership, and preserve actual job snapshots and uncertain-write
+  recovery. (#122)
 - Automatically queue and run eligible admitted reviews without manual-start
   preferences or a per-PR Start click. Preserve pause, disabled repositories,
   account/assignment availability, shared capacity, retries and independent
-  publication/approval/merge permissions; legacy start flags no longer block
+  comment/reply and approval capabilities; legacy start flags no longer block
   work or rewrite captured evidence. (#120)
 - Update the browser-only visual prototype with account/organization repository
   browsing, URL entry, and compact drill-in rows. Newly added repositories open
@@ -30,7 +36,7 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 - Use saved Agent assignments and repository configuration as ongoing review
   consent. Remove repeated revision-trust prompts from normal/retry, conversation
   and final reviews without changing read-only execution, revision validation or
-  separate publication/approval/merge permissions. Existing blocked queue records
+  separate comment/reply and approval capabilities. Existing blocked queue records
   can proceed under the current execution gates.
 - Group Accounts into AI Tooling and Git Repository provider lists before
   showing individual integration details. Preserve sign-in flows and nested
@@ -52,7 +58,7 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   real account binding, watched identities and assignments.
   Expose the independent reviewer-request override, guarded account unbinding
   and the saved global schedule without adding scoped polling controls.
-  Preserve separate Comment/Approve/Merge choices, primary roles, resource
+  Preserve explicit assignment capabilities, primary roles, resource
   save guards and session drafts; ambiguous binding requires explicit account choice.
 - Match the approved compact Agent and doctrine libraries with shared-resource
   editors, full prompt/principles, explicit account/model choices, filter-retained

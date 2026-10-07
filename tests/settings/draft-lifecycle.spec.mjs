@@ -70,13 +70,13 @@ for (const other of ["agent", "neighbor"]) {
   }) => {
     const before = (await store("snapshot")).settings;
     let modal = await assignment(page, "octo/hello-world");
-    await modal.getByRole("checkbox", { name: /^Comment/ }).uncheck();
+    await modal.getByRole("checkbox", { name: /^Publish Comment/ }).uncheck();
     await saveAssignment(page, modal);
     if (other === "agent")
       await setAgentPrompt(page, "Updated reusable Agent.");
     else {
       modal = await assignment(page, "neighbor/keep-me");
-      await modal.getByRole("checkbox", { name: /^Comment/ }).check();
+      await modal.getByRole("checkbox", { name: /^Publish Comment/ }).check();
       await saveAssignment(page, modal);
     }
     expect(
@@ -84,7 +84,7 @@ for (const other of ["agent", "neighbor"]) {
     ).toBe(false);
     modal = await assignment(page, "octo/hello-world", 0);
     await expect(
-      modal.getByRole("checkbox", { name: /^Comment/ }),
+      modal.getByRole("checkbox", { name: /^Publish Comment/ }),
     ).not.toBeChecked();
     await closeDialog(page);
     await closeDialog(page);
@@ -182,7 +182,7 @@ test("failed assignment save restores the draft and independent opt-in controls"
 }) => {
   const before = await readFile(join(dataRoot, "config/settings.json"));
   const modal = await assignment(page, "octo/hello-world");
-  await modal.getByRole("checkbox", { name: /^Comment/ }).uncheck();
+  await modal.getByRole("checkbox", { name: /^Publish Comment/ }).uncheck();
   await mkdir(join(dataRoot, "config/settings.json.tmp"));
   await modal
     .locator("form")
@@ -198,9 +198,11 @@ test("failed assignment save restores the draft and independent opt-in controls"
     modal.getByRole("combobox", { name: "Agent", exact: true }),
   ).toBeEnabled();
   await expect(
-    modal.getByRole("checkbox", { name: /^Comment/ }),
+    modal.getByRole("checkbox", { name: /^Publish Comment/ }),
   ).not.toBeChecked();
-  await expect(modal.getByRole("checkbox", { name: /^Approve/ })).toBeEnabled();
+  await expect(
+    modal.getByRole("radio", { name: "Approve", exact: true }),
+  ).toBeEnabled();
   expect(await readFile(join(dataRoot, "config/settings.json"))).toEqual(
     before,
   );

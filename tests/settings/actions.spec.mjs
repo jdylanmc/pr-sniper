@@ -13,10 +13,15 @@ async function actionFixture(store, observe = true, intelligence) {
     });
     Object.assign(agent, value);
   }
+  const repository = fixture.settings.repositories[0];
+  repository.assignments[0].comment = false;
+  repository.assignments[0].actions = {
+    reply: false,
+    approve: true,
+    merge: true,
+  };
   const review = fixture.review(9);
   review.trust_confirmed = false;
-  const repository = fixture.settings.repositories[0];
-  repository.assignments[0].actions = { approve: true, merge: true };
   review.job.work = {
     id: review.key,
     item_id: "action-iteration",
@@ -114,6 +119,80 @@ async function actionFixture(store, observe = true, intelligence) {
     : { finals: [], effects: [], observations: [] };
   return { ...fixture, state, observation, actions, review };
 }
+
+test("confirmed peer approval is shown without fabricating a merging author's vote", async ({
+  page,
+  store,
+}) => {
+  const fixture = await actionFixture(store, false);
+  fixture.observation.author_id = "22";
+  fixture.observation.reviews = [
+    {
+      id: "144",
+      actor_id: "44",
+      head: fixture.review.job.head_sha,
+      state: "APPROVED",
+      body: "A confirmed peer approval.",
+      submitted_at: "2026-09-30T00:00:00Z",
+    },
+  ];
+  await store("seed_action_observation", {
+    itemId: "action-iteration",
+    observation: fixture.observation,
+  });
+  await page.goto("/?view=queue");
+  await expect(page.locator("#handoff-queue")).toContainText(
+    "Confirmed provider approval 144 by reviewer 44",
+  );
+  await expect(page.locator("#handoff-queue")).toContainText(
+    "not an inferred PR Sniper approval receipt",
+  );
+  const snapshot = await store("monitoring_snapshot");
+  expect(snapshot.items[0].action_status.provider_approval).toMatchObject({
+    id: "144",
+    actor_id: "44",
+  });
+  expect(snapshot.items[0].action_status.effects).toEqual([]);
+  expect(snapshot.items[0].action_status.blockers).not.toContain(
+    "GitHub does not allow the PR author to approve their own PR.",
+  );
+});
+
+test("retired global and repository publication flags cannot change assignment readiness", async ({
+  page,
+  store,
+}) => {
+  const fixture = await actionFixture(store, false);
+  for (const publish of [false, true]) {
+    for (const global of [false, true]) {
+      for (const override of [undefined, false, true]) {
+        const settings = structuredClone(fixture.settings);
+        settings.defaults.automatic_comment_publication = global;
+        settings.repositories[0].assignments[0].comment = publish;
+        settings.repositories[0].assignments[0].actions.reply = !publish;
+        settings.repositories[0].overrides = {
+          automatic_comment_publication: override,
+        };
+        await store("seed_settings", settings);
+        const snapshot = await store("monitoring_snapshot");
+        expect(snapshot.items[0].state).toBe(
+          publish ? "awaiting_publication" : "machine_signed_off",
+        );
+        expect(snapshot.publications[0].automatic).toBe(publish);
+        expect(snapshot.publications[0].local_only).toBe(!publish);
+        await page.goto("/?view=queue");
+        if (publish)
+          await expect(page.locator("#agent-reviews")).toContainText(
+            "Publication: automatic when eligible",
+          );
+        else
+          await expect(page.locator("#agent-reviews")).toContainText(
+            "Local-only evidence",
+          );
+      }
+    }
+  }
+});
 
 for (const surface of ["standalone", "panel"]) {
   for (const state of [
@@ -342,8 +421,7 @@ async function optOutInSettings(page) {
     name: "Edit assignment",
     exact: true,
   });
-  await modal.getByRole("checkbox", { name: /^Approve/ }).uncheck();
-  await modal.getByRole("checkbox", { name: /^Merge/ }).uncheck();
+  await modal.getByRole("radio", { name: "Neither", exact: true }).check();
   await modal
     .getByRole("button", { name: "Save assignment", exact: true })
     .click();
@@ -376,6 +454,7 @@ for (const destination of ["panel", "legacy queue"]) {
     await optOutInSettings(page);
     const settings = (await store("snapshot")).settings;
     expect(settings.repositories[0].assignments[0].actions).toEqual({
+      reply: false,
       approve: false,
       merge: false,
     });

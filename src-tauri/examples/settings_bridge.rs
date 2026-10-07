@@ -49,6 +49,7 @@ fn setup_fixture_preview(
     };
     let pulls = (1..=2)
         .map(|number| PullRequest {
+            mentioned: false,
             id: number.to_string(),
             number,
             title: format!("Synthetic PR {number}"),

@@ -112,29 +112,25 @@ test("follow-up analysis keeps job identity without legacy trust approval", asyn
   await expect(root).toContainText("Execution is automatic when eligible");
 });
 
-test("validated draft requires separate publication confirmation", async ({
+test("a validated response with Reply Comment off stays local without a manual permission bypass", async ({
   page,
 }) => {
   await setup(page, [candidate("reply")]);
   const root = page.locator("#thread-follow-ups");
-  await expect(root).toContainText("Draft reply: The function returns 42.");
+  await expect(root).toContainText("Local response: The function returns 42.");
   await expect(root).toContainText("source.rs, head line 1: return 42;");
   const publish = root.getByRole("button", {
     name: "Publish reply",
     exact: true,
   });
-  await expect(publish).toBeDisabled();
-  await root.getByRole("checkbox", { name: /Publish or reconcile/ }).check();
-  await publish.click();
-  await expect
-    .poll(() => page.evaluate(() => window.__followUpActions))
-    .toEqual([
-      {
-        command: "start_follow_up",
-        args: { id: "follow-up-1", publish: true },
-      },
-    ]);
-  await expect(publish).toBeDisabled();
+  await expect(publish).toHaveCount(0);
+  await expect(
+    root.getByRole("checkbox", { name: /Publish or reconcile/ }),
+  ).toHaveCount(0);
+  await expect(root).toContainText(
+    "Reply Comment: off; analysis continues and qualifying responses remain local",
+  );
+  expect(await page.evaluate(() => window.__followUpActions)).toEqual([]);
 });
 
 test("quiet and human-judgment outcomes never offer publication", async ({
@@ -151,6 +147,23 @@ test("quiet and human-judgment outcomes never offer publication", async ({
     "Retry this follow-up only after the human decision",
   );
   await expect(root).toContainText("No reply needed.");
+  await expect(root.getByRole("button")).toHaveCount(0);
+});
+
+test("answered human input remains historical evidence without another decision request", async ({
+  page,
+}) => {
+  const human = candidate("human_input_required");
+  human.human_gate = false;
+  human.superseded = true;
+  await setup(page, [human]);
+  const root = page.locator("#thread-follow-ups");
+  await expect(root).toContainText(
+    "Historical human-input outcome; this gate was answered by a later explicit assessment.",
+  );
+  await expect(root).not.toContainText(
+    "Retry this follow-up only after the human decision",
+  );
   await expect(root.getByRole("button")).toHaveCount(0);
 });
 
@@ -182,8 +195,8 @@ test("uncertain replies require reconciliation while confirmed replies cannot be
     root.getByRole("button", { name: "Cancel follow-up" }),
   ).toHaveCount(0);
   const retry = root.getByRole("button", { name: "Reconcile / retry reply" });
-  await expect(retry).toBeDisabled();
-  await root.getByRole("checkbox").check();
+  await expect(retry).toBeEnabled();
+  await expect(root.getByRole("checkbox")).toHaveCount(0);
   await retry.click();
   await expect
     .poll(() => page.evaluate(() => window.__followUpActions))
@@ -219,4 +232,34 @@ test("running follow-up is cancellable and conversation text is never HTML", asy
   await expect
     .poll(() => page.evaluate(() => window.__followUpActions))
     .toEqual([{ command: "cancel_follow_up", args: { id: "follow-up-1" } }]);
+});
+
+test("prior executed analysis keeps its recorded model and identity after a retry", async ({
+  page,
+}) => {
+  const retried = candidate("quiet");
+  const prior = structuredClone(retried.run.review);
+  prior.selection.agent.name = "Original primary";
+  prior.selection.agent.model = "actual-prior-model";
+  retried.run.review.selection.agent.name = "Current primary";
+  retried.run.review.selection.agent.model = "current-model";
+  retried.run.analysis_history = [
+    {
+      context: prior,
+      operation: {
+        state: "failed",
+        attempt_count: 1,
+        retry_deadline: 1_800_000_900,
+      },
+    },
+  ];
+  await setup(page, [retried]);
+  const history = page
+    .locator("#thread-follow-ups")
+    .getByText("Prior executed analysis attempts", { exact: true });
+  await history.click();
+  const details = history.locator("..");
+  await expect(details).toContainText("Original primary");
+  await expect(details).toContainText("actual-prior-model");
+  await expect(details).not.toContainText("Current primary");
 });

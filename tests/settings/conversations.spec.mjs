@@ -154,6 +154,78 @@ function reply(fixture, head = "a".repeat(40)) {
   };
 }
 
+test("completed local reply stays settled and cannot replay when Reply Comment is enabled", async ({
+  page,
+  store,
+}) => {
+  const fixture = await feedbackFixture(store);
+  const assignment = fixture.settings.repositories[0].assignments[0];
+  assignment.comment = false;
+  assignment.actions = { reply: false, approve: false, merge: false };
+  await store("seed_settings", fixture.settings);
+  fixture.review.result.output.findings = [];
+  fixture.review.result.output.decision = "machine_sign_off";
+  fixture.state.publications = [];
+  fixture.state.feedback.records = [];
+  await store("seed_queue_state", fixture.state);
+  const run = reply(fixture);
+  run.target = { kind: "thread", thread: fixture.thread };
+  run.context.selection = (
+    await store("monitoring_snapshot")
+  ).reviews[0].planned_selection;
+  run.context.feedback = [];
+  run.analysis = {
+    ...fixture.review.operation,
+    id: "local-analysis",
+    operation_type: "thread_analysis",
+  };
+  run.phase = "waiting_publication";
+  run.result = {
+    ...fixture.review.result,
+    output: {
+      decision: "reply",
+      body: "The function returns the expected 42.",
+      new_information: "Verified return value.",
+      reason: "Verified source.",
+      evidence: [
+        { path: "source.rs", side: "head", line: 1, quote: "return 42;" },
+      ],
+      feedback_assessments: [],
+    },
+  };
+  fixture.state.follow_ups = [run];
+  await store("seed_queue_state", fixture.state);
+  const before = await store("monitoring_snapshot");
+  expect(before.items[0].state).toBe("machine_signed_off");
+  expect(before.follow_ups[0].automatic_publication).toBe(false);
+  const captured = before.follow_ups[0].run;
+  await page.goto("/?view=queue");
+  await expect(page.locator("#thread-follow-ups")).toContainText(
+    "Local response: The function returns the expected 42.",
+  );
+  await expect(
+    page
+      .locator("#thread-follow-ups")
+      .getByRole("button", { name: "Publish reply" }),
+  ).toHaveCount(0);
+  assignment.actions.reply = true;
+  await store("seed_settings", fixture.settings);
+  const after = await store("monitoring_snapshot");
+  expect(after.items[0].state).toBe("machine_signed_off");
+  expect(after.follow_ups[0].automatic_publication).toBe(false);
+  expect(after.follow_ups[0].run).toEqual(captured);
+  await store("panel_navigate", {
+    route: {
+      tab: "running",
+      detail: { type: "job", kind: "reply", id: run.id },
+    },
+  });
+  await page.goto("/");
+  await expect(
+    page.getByText("Completed locally", { exact: true }),
+  ).toBeVisible();
+});
+
 async function reopenedConversationFixture(store, kind, legacy = false) {
   const fixture = await feedbackFixture(store);
   const original = fixture.review;
@@ -270,7 +342,7 @@ for (const kind of ["reply", "mention"]) {
       );
     } else {
       await expect(conversation).toContainText(fixture.run.target.comment.body);
-      await expect(conversation).toContainText("Primary mention");
+      await expect(conversation).toContainText("Primary conversation");
     }
     await conversation
       .getByText("Original target and captured analysis context", {
@@ -300,7 +372,7 @@ for (const kind of ["reply", "mention"]) {
       "Iteration 1 (original-iteration)",
     );
     await expect(page.locator("[data-work-context]")).toContainText(
-      kind === "reply" ? "Targeted reply" : "Primary mention",
+      kind === "reply" ? "Targeted reply" : "Primary conversation",
     );
     await expect(page.locator("#agent-reviews article")).toHaveCount(0);
     await page.getByRole("button", { name: "Back", exact: true }).click();
@@ -386,6 +458,12 @@ for (const kind of ["reply", "mention"]) {
         await page.emulateMedia({ reducedMotion: "reduce" });
       }
       const fixture = await feedbackFixture(store);
+      fixture.settings.repositories[0].assignments[0].actions = {
+        reply: true,
+        approve: false,
+        merge: false,
+      };
+      await store("seed_settings", fixture.settings);
       fixture.review.job.work = {
         id: "conversation-parent",
         item_id: "conversation-item",
@@ -609,12 +687,12 @@ for (const kind of ["reply", "mention"]) {
         );
         await expect(
           page.getByRole("button", { name: "Reconcile / retry reply" }),
-        ).toBeDisabled();
+        ).toBeEnabled();
         await expect(
           page.getByRole("checkbox", {
             name: /Publish or reconcile this thread/,
           }),
-        ).toBeVisible();
+        ).toHaveCount(0);
       }
       await expect(page.locator(".job-facts")).toContainText(
         "Reply / mention count1 for this Agent on this PR",
@@ -760,7 +838,7 @@ for (const stage of ["before-dispatch", "after-response"]) {
         "response",
       ]);
       await expect(page.locator("[data-work-context]")).toContainText(
-        "Primary mention",
+        "Primary conversation",
       );
       await expect(page.locator("#thread-follow-ups article")).toHaveCount(1);
       await expect(page.locator("#agent-reviews article")).toHaveCount(0);
@@ -1219,7 +1297,7 @@ test("a missing primary is explicit, durable and does not create a fake review o
     .click();
   await page
     .locator("[data-running-list] article")
-    .filter({ hasText: "Primary mention" })
+    .filter({ hasText: "Primary conversation" })
     .getByRole("button", { name: "Open job", exact: true })
     .click();
   await expect(page.locator("[data-item-evidence]")).not.toContainText(

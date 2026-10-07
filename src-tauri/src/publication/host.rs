@@ -64,8 +64,7 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
             }
             Candidate {
                 local_only: publication.is_none() && (
-                    settings.effective_policy(&review.job.configuration_id).is_none_or(|p|!p.automatic_comment_publication)
-                    || !settings.repositories.iter().find(|r|r.id==review.job.configuration_id)
+                    !settings.repositories.iter().find(|r|r.id==review.job.configuration_id)
                         .is_some_and(|r|r.assignments.iter().any(|a|a.id==review.assignment_id&&a.comment))),
                 automatic: policy.as_ref().copied().unwrap_or(false),
                 blocked: policy.err(),

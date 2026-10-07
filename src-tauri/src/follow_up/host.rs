@@ -28,21 +28,22 @@ pub(crate) struct Observed {
 
 #[derive(Default)]
 pub(crate) struct Scan {
-    retained: Vec<crate::retention::Observed>,
-    feedback: Vec<Observed>,
-    mentions: Vec<(
+    pub(crate) retained: Vec<crate::retention::Observed>,
+    pub(crate) feedback: Vec<Observed>,
+    pub(crate) mentions: Vec<(
         crate::feedback::MentionBinding,
         Vec<github::conversation::TopComment>,
     )>,
+    pub(crate) threads: Vec<(crate::feedback::MentionBinding, Vec<Thread>)>,
 }
 
 pub(crate) fn scan(
     app: &tauri::AppHandle,
     ticket: &PollTicket,
-    pulls: &[PullRequest],
+    pulls: &mut [PullRequest],
     identity: &github::Identity,
 ) -> Result<Scan, github::ConnectionError> {
-    let (origins, tracked, retained) = {
+    let (origins, tracked, retained, cursors) = {
         let host = app.state::<Host>();
         let store = host
             .store
@@ -57,6 +58,10 @@ pub(crate) fn scan(
                 .tracked,
             crate::retention::scan_origins(&store, ticket, pulls)
                 .map_err(|_| github::ConnectionError::Configuration)?,
+            store
+                .load_feedback()
+                .map_err(|_| github::ConnectionError::Configuration)?
+                .conversation_cursors,
         )
     };
     let guard_app = app.clone();
@@ -132,36 +137,49 @@ pub(crate) fn scan(
             threads,
         });
     }
-    for tracked in tracked.iter().filter(|p| {
-        p.configuration_id == ticket.repository_id && p.account_id == ticket.provider_account_id
-    }) {
-        if !pulls.iter().any(|p| {
-            p.id == tracked.pull_request_id
-                && p.state == github::metadata::Lifecycle::Open
-                && !p.draft
-        }) {
-            continue;
-        }
+    for pull in pulls
+        .iter_mut()
+        .filter(|pull| pull.state == github::metadata::Lifecycle::Open && !pull.draft)
+    {
         let binding = crate::feedback::MentionBinding {
             configuration_id: ticket.repository_id.clone(),
             account_id: identity.id.clone(),
             account_login: identity.login.clone(),
             repository_id: ticket.provider_repository_id.clone(),
             repository_name: ticket.name.clone(),
-            pull_request_id: tracked.pull_request_id.clone(),
-            number: tracked.number,
+            pull_request_id: pull.id.clone(),
+            number: pull.number,
         };
-        let comments = client
-            .top_comments(
-                &RemoteRepository {
-                    id: binding.repository_id.clone(),
-                    name: binding.repository_name.clone(),
-                },
+        let comments = client.top_comments(
+            &RemoteRepository {
+                id: binding.repository_id.clone(),
+                name: binding.repository_name.clone(),
+            },
+            binding.number,
+        )?;
+        let cursor = cursors
+            .iter()
+            .find(|cursor| cursor.binding.key("") == binding.key(""));
+        pull.mentioned = cursor.is_some_and(|cursor| cursor.comments_initialized)
+            && comments.iter().any(|comment| {
+                comment.eligible_other_user(&identity.id)
+                    && comment.mentions(&identity.login, &identity.id)
+                    && cursor.is_none_or(|cursor| !cursor.comments.contains(&comment.id))
+            });
+        let admitted = tracked.iter().any(|tracked| {
+            binding.matches_tracked(tracked)
+                && tracked.lifecycle == github::metadata::Lifecycle::Open
+        }) || monitoring::scan_admits(ticket, pull);
+        if admitted {
+            let threads = client.review_threads_at(
+                &binding.repository_name,
+                &binding.repository_id,
+                &binding.pull_request_id,
                 binding.number,
-            )?
-            .into_iter()
-            .filter(|c| c.mentions(&identity.login, &identity.id))
-            .collect();
+                &pull.head_sha,
+            )?;
+            result.threads.push((binding.clone(), threads));
+        }
         result.mentions.push((binding, comments));
     }
     Ok(result)
@@ -170,7 +188,7 @@ pub(crate) fn scan(
 pub(crate) fn admit_scan(
     store: &Store,
     ticket: &PollTicket,
-    observations: Scan,
+    mut observations: Scan,
     now: i64,
 ) -> Result<(), String> {
     let settings = store.load_settings()?;
@@ -178,6 +196,45 @@ pub(crate) fn admit_scan(
     let jobs = &queue.jobs;
     let mut ledger = store.load_feedback()?;
     let publications = store.load_publications()?;
+    // Capture history as context, with one durable observation cursor per PR.
+    // Pending intents are saved before execution; permission activation never
+    // replays this baseline or changes the original feedback provenance.
+    for observation in &observations.feedback {
+        let job = &observation.origin.review.job;
+        merge_thread_observation(
+            &mut observations.threads,
+            crate::feedback::MentionBinding {
+                configuration_id: if job.configuration_id.is_empty() {
+                    ticket.repository_id.clone()
+                } else {
+                    job.configuration_id.clone()
+                },
+                account_id: job.account_id.clone(),
+                account_login: String::new(),
+                repository_id: job.repository_id.clone(),
+                repository_name: job.repository_name.clone(),
+                pull_request_id: job.pull_request_id.clone(),
+                number: job.number,
+            },
+            observation.threads.clone(),
+        )?;
+    }
+    for observation in &observations.retained {
+        let proof = &observation.origin.proof;
+        merge_thread_observation(
+            &mut observations.threads,
+            crate::feedback::MentionBinding {
+                configuration_id: proof.configuration_id.clone(),
+                account_id: proof.account_id.clone(),
+                account_login: String::new(),
+                repository_id: proof.repository_id.clone(),
+                repository_name: proof.repository_name.clone(),
+                pull_request_id: proof.pull_request_id.clone(),
+                number: proof.number,
+            },
+            observation.threads.clone(),
+        )?;
+    }
     for observation in &observations.feedback {
         let proof = observation
             .origin
@@ -197,66 +254,38 @@ pub(crate) fn admit_scan(
     ledger = store.load_feedback()?;
     let mut runs = store.load_follow_ups()?;
     let before = runs.len();
-    for observation in observations.feedback {
-        let origin = &observation.origin;
-        if !ticket.assignments.iter().any(|a| {
-            a.assignment_id == origin.review.assignment_id
-                && a.agent_id == origin.review.selection.agent.id
-        }) {
-            continue;
-        }
-        let Some(job) = super::current_owner_job(jobs, &origin.review) else {
-            continue;
-        };
-        if job.head_sha != observation.head
-            || monitoring::review_policy(&settings, job, None).is_err()
-        {
-            continue;
-        }
-        let Ok(selection) = Selection::resolve(&settings, job, &origin.review.assignment_id) else {
-            continue;
-        };
-        if selection.agent.id != origin.review.selection.agent.id {
-            continue;
-        }
-        for thread in observation.threads {
-            let root_id =
-                crate::feedback::root_key(job, &thread.root().map_err(|_| "Invalid root.")?.id);
-            if thread.resolved
-                || !thread.can_reply
-                || ledger
-                    .records
-                    .iter()
-                    .any(|r| r.context.id == root_id && r.context.closed)
-                || thread.latest_external(&job.account_id).is_none()
-            {
-                continue;
-            }
-            let mut run = FollowUp::new(origin, thread)?;
-            if crate::retention::known_key(store, &run.key)? {
-                continue;
-            }
-            run.context = ConversationContext {
-                assignment_id: origin.review.assignment_id.clone(),
-                job: job.clone(),
-                selection: selection.clone(),
-                trust_confirmed: origin.review.matches_job(job) && origin.review.trust_confirmed,
-                feedback: crate::feedback::contexts(store, job, &selection.agent.id)
-                    .map_err(|e| e.message)?,
-                feedback_checked: true,
-            };
-            if super::admit_stored(store, &mut runs, run)? {
-                let work = runs
-                    .last_mut()
-                    .ok_or("The admitted follow-up was not retained.")?;
-                work.enqueue_order = Some(store.allocate_enqueue_order()?);
-                work.enqueued_at = Some(now);
-            }
-        }
-    }
+    admit_thread_intents(
+        store,
+        &queue.tracked,
+        &mut ledger,
+        observations.threads,
+        now,
+    )?;
     for (binding, comments) in observations.mentions {
+        let tracked = if queue
+            .tracked
+            .iter()
+            .any(|tracked| binding.matches_tracked(tracked))
+        {
+            Some(binding.tracked(&queue.tracked)?)
+        } else {
+            None
+        };
+        let index = conversation_cursor(&mut ledger, &binding);
+        let initialized = ledger.conversation_cursors[index].comments_initialized;
+        ledger.conversation_cursors[index].comments_initialized = true;
+        if tracked.is_some() {
+            ledger.conversation_cursors[index].discussion = comments.clone();
+        }
         for comment in comments {
-            if !comment.mentions(&binding.account_login, &binding.account_id) {
+            let newly_observed = ledger.conversation_cursors[index]
+                .comments
+                .insert(comment.id.clone());
+            if tracked.is_none()
+                || !initialized
+                || !newly_observed
+                || !comment.eligible_other_user(&binding.account_id)
+            {
                 continue;
             }
             let key = binding.key(&comment.id);
@@ -299,12 +328,13 @@ pub(crate) fn admit_scan(
                 binding: binding.clone(),
                 comment,
                 follow_up_id: None,
-                blocked: Some("Mention observed; execution admission is pending.".into()),
+                blocked: Some("Comment observed; primary assessment admission is pending.".into()),
             });
         }
     }
     // Commit observation identity/order before materializing any mention execution or linkage.
     store.save_feedback(&ledger)?;
+    materialize_thread_intents(store, ticket, &settings, jobs, &mut ledger, &mut runs)?;
     // Recover saved intent even when this poll does not rediscover the remote comment.
     for mention in ledger.mentions.iter_mut().filter(|m| {
         m.binding.configuration_id == ticket.repository_id
@@ -368,7 +398,7 @@ pub(crate) fn admit_scan(
                 })
                 .ok_or("The primary's current iteration is unavailable.")?;
             let selection = Selection::resolve(&settings, job, primary)?;
-            let feedback = crate::feedback::contexts(store, job, &selection.agent.id)
+            let feedback = crate::feedback::conversation_contexts(store, job, &selection.agent.id)
                 .map_err(|e| e.message)?;
             let mut run = FollowUp::mention(
                 mention.comment.clone(),
@@ -382,6 +412,12 @@ pub(crate) fn admit_scan(
                 },
             );
             run.id = mention.work_id.clone();
+            run.discussion = ledger
+                .conversation_cursors
+                .iter()
+                .find(|cursor| cursor.binding.key("") == binding.key(""))
+                .map(|cursor| cursor.discussion.clone())
+                .unwrap_or_default();
             Ok(run)
         })();
         match route {
@@ -406,6 +442,211 @@ pub(crate) fn admit_scan(
     Ok(())
 }
 
+fn conversation_cursor(
+    ledger: &mut crate::feedback::Ledger,
+    binding: &crate::feedback::MentionBinding,
+) -> usize {
+    ledger.conversation_cursor(binding)
+}
+
+fn merge_thread_observation(
+    observations: &mut Vec<(crate::feedback::MentionBinding, Vec<Thread>)>,
+    binding: crate::feedback::MentionBinding,
+    threads: Vec<Thread>,
+) -> Result<(), String> {
+    if let Some((_, current)) = observations
+        .iter_mut()
+        .find(|(existing, _)| existing.key("") == binding.key(""))
+    {
+        for thread in threads {
+            if let Some(existing) = current.iter().find(|existing| existing.id == thread.id) {
+                if existing != &thread {
+                    return Err(
+                        "Discussion changed between complete observations; retry the scan.".into(),
+                    );
+                }
+            } else {
+                current.push(thread);
+            }
+        }
+    } else {
+        observations.push((binding, threads));
+    }
+    Ok(())
+}
+
+fn primary_context(
+    store: &Store,
+    settings: &crate::storage::Settings,
+    jobs: &[monitoring::QueueJob],
+    binding: &crate::feedback::MentionBinding,
+    item_id: &str,
+) -> Result<ConversationContext, String> {
+    let repository = settings
+        .repositories
+        .iter()
+        .find(|r| r.id == binding.configuration_id)
+        .ok_or("Repository removed.")?;
+    let primary = repository
+        .primary_assignment_id()
+        .ok_or("No primary assigned; conversation retained locally without fallback.")?;
+    let job = jobs
+        .iter()
+        .rev()
+        .find(|job| {
+            binding.matches(job)
+                && crate::queue::item_id(job) == item_id
+                && job.assignment_id.as_deref() == Some(primary)
+                && monitoring::review_policy(settings, job, None).is_ok()
+        })
+        .ok_or("The current primary's admitted iteration is unavailable.")?;
+    let selection = Selection::resolve(settings, job, primary)?;
+    Ok(ConversationContext {
+        assignment_id: primary.into(),
+        job: job.clone(),
+        feedback: crate::feedback::conversation_contexts(store, job, &selection.agent.id)
+            .map_err(|e| e.message)?,
+        selection,
+        trust_confirmed: false,
+        feedback_checked: true,
+    })
+}
+
+fn admit_thread_intents(
+    store: &Store,
+    tracked: &[monitoring::TrackedPullRequest],
+    ledger: &mut crate::feedback::Ledger,
+    observations: Vec<(crate::feedback::MentionBinding, Vec<Thread>)>,
+    now: i64,
+) -> Result<(), String> {
+    for (binding, threads) in observations {
+        let pr = binding.tracked(tracked)?;
+        if pr.lifecycle != github::metadata::Lifecycle::Open {
+            continue;
+        }
+        let index = conversation_cursor(ledger, &binding);
+        let initialized = ledger.conversation_cursors[index].threads_initialized;
+        ledger.conversation_cursors[index].threads_initialized = true;
+        for thread in threads {
+            if thread.resolved {
+                ledger.conversation_cursors[index]
+                    .closed_threads
+                    .insert(thread.id.clone());
+            }
+            let external = thread.latest_other_user(&binding.account_id);
+            ledger.conversation_cursors[index].thread_triggers.insert(
+                thread.id.clone(),
+                external.map(|comment| comment.id.clone()),
+            );
+            let key = external.map(|comment| {
+                serde_json::json!([
+                    "thread",
+                    "github",
+                    binding.account_id,
+                    binding.configuration_id,
+                    binding.repository_id,
+                    binding.pull_request_id,
+                    thread.id,
+                    comment.id
+                ])
+                .to_string()
+            });
+            // Record every historical external identity, not just the current
+            // last comment, so deletion cannot replay an older conversation.
+            let mut fresh = false;
+            for comment in &thread.comments {
+                let observed = serde_json::json!([thread.id, comment.id]).to_string();
+                let added = ledger.conversation_cursors[index].threads.insert(observed);
+                if external.is_some_and(|external| external.id == comment.id) {
+                    fresh = added;
+                }
+            }
+            let root = thread.root().map_err(|_| "Invalid discussion root.")?;
+            let closed = ledger.records.iter().any(|record| {
+                record.context.root_id == root.id
+                    && binding.matches(&record.job)
+                    && record.context.closed
+            });
+            let Some(key) = key else {
+                continue;
+            };
+            if !initialized
+                || !fresh
+                || ledger.conversation_cursors[index]
+                    .closed_threads
+                    .contains(&thread.id)
+                || closed
+                || ledger
+                    .pending_threads
+                    .iter()
+                    .any(|intent| intent.key == key)
+                || crate::retention::known_key(store, &key)?
+            {
+                continue;
+            }
+            ledger.pending_threads.push(crate::feedback::PendingThread {
+                binding: binding.clone(),
+                item_id: pr.item_id.clone(),
+                thread,
+                key,
+                work_id: uuid::Uuid::new_v4().to_string(),
+                enqueue_order: store.allocate_enqueue_order()?,
+                enqueued_at: now,
+                follow_up_id: None,
+                blocked: Some("Primary assessment pending.".into()),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn materialize_thread_intents(
+    store: &Store,
+    ticket: &PollTicket,
+    settings: &crate::storage::Settings,
+    jobs: &[monitoring::QueueJob],
+    ledger: &mut crate::feedback::Ledger,
+    runs: &mut Vec<FollowUp>,
+) -> Result<(), String> {
+    for intent in ledger.pending_threads.iter_mut().filter(|intent| {
+        intent.binding.configuration_id == ticket.repository_id
+            && intent.binding.account_id == ticket.provider_account_id
+            && intent.binding.repository_id == ticket.provider_repository_id
+    }) {
+        if let Some(run) = runs.iter().find(|run| run.key == intent.key) {
+            if run.id != intent.work_id
+                || crate::queue::item_id(&run.context.job) != intent.item_id
+                || !intent.binding.matches(&run.context.job)
+                || run.enqueue_order != Some(intent.enqueue_order)
+                || run.enqueued_at != Some(intent.enqueued_at)
+            {
+                return Err("Discussion execution conflicts with its durable intent; no replacement was created.".into());
+            }
+            intent.follow_up_id = Some(run.id.clone());
+            intent.blocked = None;
+            continue;
+        }
+        if intent.follow_up_id.is_some() {
+            intent.blocked = Some("Discussion execution history is unavailable; reconcile the original intent instead of replaying it.".into());
+            continue;
+        }
+        let route = primary_context(store, settings, jobs, &intent.binding, &intent.item_id)
+            .and_then(|context| FollowUp::general_thread(intent.thread.clone(), context));
+        match route {
+            Ok(mut run) => {
+                run.id = intent.work_id.clone();
+                run.enqueue_order = Some(intent.enqueue_order);
+                run.enqueued_at = Some(intent.enqueued_at);
+                intent.follow_up_id = Some(run.id.clone());
+                super::admit_stored(store, runs, run)?;
+                intent.blocked = None;
+            }
+            Err(reason) => intent.blocked = Some(reason),
+        }
+    }
+    Ok(())
+}
+
 #[derive(Serialize)]
 pub(crate) struct Candidate {
     #[serde(serialize_with = "serialize_run")]
@@ -414,7 +655,9 @@ pub(crate) struct Candidate {
     pub(crate) blocked: Option<String>,
     pub(crate) automatic_start: bool,
     pub(crate) automatic_publication: bool,
+    pub(crate) captured_local_response: bool,
     pub(crate) human_gate: bool,
+    pub(crate) superseded: bool,
 }
 
 fn serialize_run<S: serde::Serializer>(run: &FollowUp, serializer: S) -> Result<S::Ok, S::Error> {
@@ -432,19 +675,34 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
     let runs = store.load_follow_ups()?;
     let settings = store.load_settings()?;
     let jobs = store.load_queue()?;
-    let human_threads: std::collections::BTreeSet<_> = crate::retention::load(store)?
-        .receipts
-        .into_iter()
-        .flat_map(|r| r.owned)
-        .flat_map(|o| {
-            o.human_input_threads
-                .into_iter()
-                .map(move |id| (o.proof.account_id.clone(), id))
-        })
-        .collect();
+    let mut feedback_ledger = store.load_feedback()?;
+    feedback_ledger.observe_human_boundaries(&runs);
+    let retained = crate::retention::load(store)?;
     Ok(runs
         .iter()
-        .map(|run| {
+        .map(|saved_run| {
+            let mut pending = saved_run.clone();
+            if !pending.cancelled && pending.result.is_none() && pending.publication.is_none()
+                && pending.analysis_history.is_empty()
+                && pending.history.iter().all(|operation| operation.attempt_count == 0)
+                && pending.analysis.as_ref().is_none_or(|operation| operation.attempt_count == 0 && operation.state != OperationState::Running)
+            {
+                let job = &pending.context.job;
+                let binding = crate::feedback::MentionBinding {
+                    configuration_id: job.configuration_id.clone(), account_id: job.account_id.clone(),
+                    account_login: String::new(), repository_id: job.repository_id.clone(),
+                    repository_name: job.repository_name.clone(), pull_request_id: job.pull_request_id.clone(), number: job.number,
+                };
+                if let Ok(context) = primary_context(store, &settings, &jobs, &binding, &crate::queue::item_id(job)) {
+                    if context.assignment_id != pending.context.assignment_id
+                        || context.selection.agent != pending.context.selection.agent
+                        || context.job != pending.context.job {
+                        if let Some(operation) = pending.analysis.take() { pending.retain_analysis_attempt(operation); }
+                        pending.context = context;
+                    }
+                }
+            }
+            let run = &pending;
             let policy = jobs
                 .iter()
                 .find(|j| run.matches_job(j))
@@ -460,14 +718,17 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
                         );
                     }
                     run.authority(&settings, job)?;
+                    if run.thread().is_ok_and(|thread| feedback_ledger.conversation_closed(job, &thread.id)) {
+                        return Err("This discussion was human-closed; it cannot be resurrected by a new comment or role change.".into());
+                    }
                     if run.context.feedback_checked {
-                        let feedback = crate::feedback::contexts(store,job,&selection.agent.id).map_err(|e|e.message)?;
+                        let feedback = crate::feedback::conversation_contexts(store,job,&selection.agent.id).map_err(|e|e.message)?;
                         if feedback.iter().any(|c| run.owns_feedback(c) && c.closed) {
                             return Err("This owned discussion was closed externally; no new analysis or reply is authorized.".into());
                         }
                     }
                     if run.context.feedback_checked && (run.result.is_some() || run.publication.is_some()) {
-                        crate::feedback::validate_context(
+                        crate::feedback::validate_conversation_context(
                             store,
                             job,
                             &run.context.selection.agent.id,
@@ -477,26 +738,21 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
                     }
                     Ok(selection)
                 });
-            let human_gate = run.thread().is_ok_and(|t|
-                human_threads.contains(&(run.context.job.account_id.clone(), t.id.clone())))
-                || runs.iter().any(|other| {
-                other
-                    .thread()
-                    .ok()
-                    .zip(run.thread().ok())
-                    .is_some_and(|(a, b)| a.id == b.id)
-                    && other.context.job.account_id == run.context.job.account_id
-                    && other.phase == Phase::HumanInputRequired
-            });
+            let human_gate = run.thread().is_ok_and(|thread| feedback_ledger.human_gated(&run.context.job, &thread.id)
+                || (!feedback_ledger.human_answered(&run.context.job, &thread.id)
+                    && retained.receipts.iter().any(|receipt| crate::retention::Binding::tracked(&receipt.scope).matches(&run.context.job)
+                        && receipt.owned.iter().any(|owned| owned.human_input_threads.contains(&thread.id)))));
             Candidate {
                 planned_selection: policy.as_ref().ok().cloned(),
                 run: run.clone(),
                 blocked: policy.as_ref().err().cloned(),
                 automatic_start: policy.is_ok() && !human_gate,
-                automatic_publication: policy
-                    .as_ref()
-                    .is_ok_and(|s| s.policy.automatic_comment_publication),
+                automatic_publication: policy.is_ok() && jobs.iter().find(|job| run.matches_job(job))
+                    .is_some_and(|job| run.authority(&settings, job).is_ok_and(|grant| grant))
+                    && !run.captured_local_response(),
                 human_gate,
+                superseded: feedback_ledger.thread_superseded(run),
+                captured_local_response: run.captured_local_response(),
             }
         })
         .collect())
@@ -603,6 +859,12 @@ impl Coordinator {
             let mut run = candidate.run;
             let now = now_seconds()?;
             if publish {
+                if run.captured_local_response() {
+                    return Err("This response completed locally without a Reply Comment grant. Historical local responses are not replayed; a new comment creates new work.".into());
+                }
+                if !candidate.automatic_publication && !run.uncertain && run.receipt.is_none() {
+                    return Err("Reply Comment permission is off. This response remains local; manual confirmation cannot grant a capability.".into());
+                }
                 if run
                     .result
                     .as_ref()
@@ -724,15 +986,7 @@ pub(crate) fn prepare_analysis(
     {
         return Err("This analysis is running or stopping; wait for teardown.".into());
     }
-    if run.analysis.is_none()
-        || manual
-            && run.analysis.as_ref().is_some_and(|op| {
-                !matches!(
-                    op.state,
-                    OperationState::Queued | OperationState::Interrupted
-                )
-            })
-    {
+    if run.analysis.is_none() || manual {
         let settings = store.load_settings()?;
         let jobs = store.load_queue()?;
         let job = jobs
@@ -740,16 +994,16 @@ pub(crate) fn prepare_analysis(
             .find(|j| run.matches_job(j))
             .ok_or("The reviewed revision is no longer available.")?;
         let selection = Selection::resolve(&settings, job, &run.context.assignment_id)?;
-        if !run.context.selection.same_execution(&selection) {
+        if let Some(previous) = run.analysis.take() {
+            run.retain_analysis_attempt(previous);
+        }
+        if !run.same_analysis_execution(&selection) {
             run.context.selection = selection;
         }
         if run.context.feedback_checked {
             run.context.feedback =
-                crate::feedback::contexts(store, job, &run.context.selection.agent.id)
+                crate::feedback::conversation_contexts(store, job, &run.context.selection.agent.id)
                     .map_err(|e| e.message)?;
-        }
-        if let Some(previous) = run.analysis.take() {
-            run.history.push(previous);
         }
         run.analysis = Some(run.operation(
             if run.kind() == crate::capacity::Kind::Mention {
@@ -1020,21 +1274,41 @@ fn local_gate(store: &Store, run: &FollowUp) -> Result<(), Failure> {
     let selection = Selection::resolve(&settings, job, &run.context.assignment_id)
         .map_err(Failure::permanent)?;
     let automatic = run.authority(&settings, job).map_err(Failure::permanent)?;
+    let ledger = store.load_feedback().map_err(Failure::permanent)?;
+    if run
+        .thread()
+        .is_ok_and(|thread| ledger.conversation_closed(job, &thread.id))
+    {
+        return Err(Failure::permanent(
+            "This human-closed discussion cannot receive a new analysis or reply.",
+        ));
+    }
     run.check_publication_grant(&current, automatic)?;
-    if run.publication.is_none() && !selection.same_execution(&run.context.selection) {
+    if run.publication.is_none() && !run.same_analysis_execution(&selection) {
         return Err(Failure::permanent(
             "Follow-up selection changed; explicit retry required.",
         ));
     }
-    if run.context.feedback_checked {
-        crate::feedback::validate_context(
-            store,
-            job,
-            &run.context.selection.agent.id,
-            &run.context.feedback,
-        )?;
+    if run.publication.is_none() {
+        run.validate_analysis_base(job)?;
+    }
+    if run.context.feedback_checked || matches!(run.target, ConversationTarget::Mention { .. }) {
+        if run.publication.is_none() {
+            run.validate_analysis_feedback(store, job)?;
+        } else {
+            crate::feedback::validate_conversation_context(
+                store,
+                job,
+                &run.context.selection.agent.id,
+                &run.context.feedback,
+            )?;
+        }
     }
     Ok(())
+}
+
+fn native_gate_result(check: Result<(), Failure>) -> Result<Option<String>, Failure> {
+    check.map(|_| None)
 }
 
 impl Environment for Native {
@@ -1111,6 +1385,18 @@ impl Environment for Native {
                     replies,
                 })
             }
+            ConversationTarget::Thread { thread } => Ok(Observation::Owned(
+                client
+                    .review_thread(
+                        &run.context.job.repository_id,
+                        &run.context.job.pull_request_id,
+                        &thread.id,
+                    )
+                    .map_err(|e| self.read_failure(e))?
+                    .ok_or_else(|| {
+                        Failure::permanent("The review discussion is no longer available.")
+                    })?,
+            )),
         }
     }
     fn gate(&mut self, run: &FollowUp, observed: &Observation) -> Result<Option<String>, Failure> {
@@ -1162,12 +1448,18 @@ impl Environment for Native {
                 .request_revision_check(&store, job, self.now()?)
                 .map_err(Failure::permanent)?;
         }
-        if let Err(error) = local {
-            return Ok(Some(error.message));
+        native_gate_result(gate)?;
+        if local.is_err() {
+            return native_gate_result(local);
         }
         if let Observation::Owned(thread) = observed {
-            if !thread.owned_by(&self.origin_without_lock(&store, run)?) {
+            if !matches!(run.target, ConversationTarget::Thread { .. })
+                && !thread.owned_by(&self.origin_without_lock(&store, run)?)
+            {
                 return Ok(Some("Original thread provenance changed.".into()));
+            }
+            if run.publication.is_none() {
+                run.validate_observed_trigger(observed)?;
             }
         }
         if !run.fresh_observation(observed) {
@@ -1176,7 +1468,7 @@ impl Environment for Native {
                     .into(),
             ));
         }
-        Ok(gate.err().map(|e| e.message))
+        Ok(None)
     }
     fn reply(&mut self, run: &FollowUp) -> Result<String, WriteFailure> {
         let prepared = (|| {
@@ -1233,6 +1525,19 @@ impl Environment for Native {
                 },
                 run.context.job.number,
                 &run.context.job.account_id,
+                body,
+            ),
+            ConversationTarget::Thread { thread } => prepared.0.reply_to_review_thread(
+                &run.context.job.repository_name,
+                run.context.job.number,
+                &run.context.job.account_id,
+                &thread
+                    .root()
+                    .map_err(|error| WriteFailure {
+                        failure: error.into(),
+                        uncertain: false,
+                    })?
+                    .id,
                 body,
             ),
         }
@@ -1303,6 +1608,17 @@ impl Native {
     }
 }
 
+fn analysis_checkpoint(
+    environment: &mut impl Environment,
+    run: &FollowUp,
+) -> Result<Observation, Failure> {
+    let observation = environment.observe(run)?;
+    if let Some(reason) = environment.gate(run, &observation)? {
+        return Err(analysis_gate_failure(reason));
+    }
+    Ok(observation)
+}
+
 async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure> {
     run.phase = Phase::Analyzing;
     native.save(run)?;
@@ -1311,18 +1627,12 @@ async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure>
         let snapshot = run.clone();
         let (context, client, observation) = tauri::async_runtime::spawn_blocking(move || {
             let observation = worker.observe(&snapshot)?;
-            if let Observation::Owned(thread) = &observation {
-                if thread
-                    .latest_external(&snapshot.context.job.account_id)
-                    .map(|c| &c.id)
-                    != Some(&snapshot.trigger_id)
-                {
-                    return Err(Failure::permanent(
-                        "A later external comment superseded this follow-up.",
-                    ));
-                }
-            }
+            worker.local(&snapshot)?;
+            snapshot.validate_observed_trigger(&observation)?;
             let mut current = snapshot.clone();
+            if let Observation::Mention { replies, .. } = &observation {
+                current.discussion = replies.clone();
+            }
             if current.manual_start {
                 if let Observation::Owned(thread) = &observation {
                     *current.thread_mut().map_err(Failure::permanent)? = thread.clone();
@@ -1357,8 +1667,9 @@ async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure>
         })
         .await
         .map_err(|_| Failure::permanent("Follow-up preparation failed."))??;
-        if let Observation::Owned(thread) = observation {
-            *run.thread_mut().map_err(Failure::permanent)? = thread;
+        match observation {
+            Observation::Owned(thread) => *run.thread_mut().map_err(Failure::permanent)? = thread,
+            Observation::Mention { replies, .. } => run.discussion = replies,
         }
         let expected_base = context.pull.base_sha.clone();
         run.context.job.observed_base_sha = Some(expected_base.clone());
@@ -1372,7 +1683,7 @@ async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure>
                 conversation: run.input(),
                 trigger_id: run.trigger_id.clone(),
                 feedback: run.context.feedback.clone(),
-                owner_agent_id: run.context.selection.agent.id.clone(),
+                owner_agent_id: run.assessment_owner().into(),
             },
             context,
             client,
@@ -1381,11 +1692,7 @@ async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure>
             local_gate: Arc::new(move || local_native.local(&local_run)),
             before_send: Arc::new(move || {
                 let mut native = before_native.clone();
-                let observation = native.observe(&before_run)?;
-                match native.gate(&before_run, &observation)? {
-                    Some(reason) => Err(analysis_gate_failure(reason)),
-                    None => Ok(()),
-                }
+                analysis_checkpoint(&mut native, &before_run).map(|_| ())
             }),
         };
         let remaining = run
@@ -1403,13 +1710,10 @@ async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure>
             .review(request, native.cancelled.clone(), deadline)
             .await?;
         let mut final_native = native.clone();
-        let final_run = run.clone();
+        let mut final_run = run.clone();
+        final_run.result = Some(result.clone());
         tauri::async_runtime::spawn_blocking(move || {
-            let observation = final_native.observe(&final_run)?;
-            match final_native.gate(&final_run, &observation)? {
-                Some(reason) => Err(analysis_gate_failure(reason)),
-                None => Ok(()),
-            }
+            analysis_checkpoint(&mut final_native, &final_run).map(|_| ())
         })
         .await
         .map_err(|_| Failure::permanent("Final follow-up verification failed."))??;
@@ -1460,6 +1764,30 @@ pub(crate) fn complete_analysis(
             "A newer analysis attempt owns this follow-up.",
         ));
     }
+    if current.has_provider_work() || run.has_provider_work() {
+        return match outcome {
+            Err(error) => Err(error),
+            Ok(_) => Err(Failure::permanent(
+                "Provider reply work cannot be overwritten by an analysis result.",
+            )),
+        };
+    }
+    if outcome.is_ok()
+        && (current.result.is_some()
+            || current.error.is_some()
+            || current.analysis.as_ref().is_some_and(|operation| {
+                matches!(
+                    operation.state,
+                    OperationState::Completed
+                        | OperationState::Failed
+                        | OperationState::ManualRetry
+                )
+            }))
+    {
+        return Err(Failure::permanent(
+            "An existing analysis outcome cannot be replaced by another successful result.",
+        ));
+    }
     run.analysis = current.analysis;
     if !current.cancelled
         && run
@@ -1476,7 +1804,7 @@ pub(crate) fn complete_analysis(
         let mut checked = run.clone();
         checked.result = Some(result.clone());
         crate::feedback::owned_reply_assessment(&checked)?;
-        super::validate_analysis_commit(store, run, account_allowed)?;
+        super::validate_analysis_commit(store, &checked, account_allowed)?;
         Ok(result)
     });
     match outcome {

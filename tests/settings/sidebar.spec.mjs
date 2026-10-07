@@ -98,17 +98,19 @@ test("new assignments use the global policy while cancelled drafts never opt int
   expect(zone).toBe("America/New_York");
   let modal = await assignment(page, "fixture/local-time");
   await expect(modal.getByLabel("Time zone", { exact: true })).toHaveCount(0);
-  await modal.getByRole("checkbox", { name: /^Comment/ }).uncheck();
+  await modal.getByRole("checkbox", { name: /^Publish Comment/ }).uncheck();
   await closeDialog(page);
   await closeDialog(page);
   expect((await store("snapshot")).settings).toEqual(initial);
   modal = await assignment(page, "fixture/local-time");
   await expect(
-    modal.getByRole("checkbox", { name: /^Comment/ }),
+    modal.getByRole("checkbox", { name: /^Publish Comment/ }),
   ).not.toBeChecked();
-  await modal.getByRole("checkbox", { name: /^Comment/ }).check();
-  await expect(modal.getByRole("checkbox", { name: /^Comment/ })).toBeChecked();
-  await modal.getByRole("checkbox", { name: /^Comment/ }).uncheck();
+  await modal.getByRole("checkbox", { name: /^Publish Comment/ }).check();
+  await expect(
+    modal.getByRole("checkbox", { name: /^Publish Comment/ }),
+  ).toBeChecked();
+  await modal.getByRole("checkbox", { name: /^Publish Comment/ }).uncheck();
   await saveAssignment(page, modal);
   await saveChanges(page);
   const saved = JSON.parse(
@@ -366,10 +368,12 @@ test("assignment comment choice stays independent of opt-in Approve and preserve
   await store("seed_settings", initial);
   await page.goto("/?view=settings");
   let modal = await assignment(page, "fixture/project");
-  await modal.getByRole("checkbox", { name: /^Comment/ }).uncheck();
-  await expect(modal.getByRole("checkbox", { name: /^Approve/ })).toBeEnabled();
+  await modal.getByRole("checkbox", { name: /^Publish Comment/ }).uncheck();
   await expect(
-    modal.getByRole("checkbox", { name: /^Approve/ }),
+    modal.getByRole("radio", { name: "Approve", exact: true }),
+  ).toBeEnabled();
+  await expect(
+    modal.getByRole("radio", { name: "Approve", exact: true }),
   ).not.toBeChecked();
   await saveAssignment(page, modal);
   await saveChanges(page);
@@ -382,13 +386,15 @@ test("assignment comment choice stays independent of opt-in Approve and preserve
   await page.reload();
   modal = await assignment(page, "fixture/project", 0);
   await expect(
-    modal.getByRole("checkbox", { name: /^Comment/ }),
+    modal.getByRole("checkbox", { name: /^Publish Comment/ }),
   ).not.toBeChecked();
-  await modal.getByRole("checkbox", { name: /^Comment/ }).check();
+  await modal.getByRole("checkbox", { name: /^Publish Comment/ }).check();
   await saveAssignment(page, modal);
   await expect(page.locator("#reset-settings")).toBeDisabled();
   modal = await assignment(page, "fixture/project", 0);
-  await expect(modal.getByRole("checkbox", { name: /^Comment/ })).toBeChecked();
+  await expect(
+    modal.getByRole("checkbox", { name: /^Publish Comment/ }),
+  ).toBeChecked();
   const updated = (await store("snapshot")).settings;
   const repositoryId = saved.repositories[0].id;
   const authorization = {

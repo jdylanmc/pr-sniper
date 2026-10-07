@@ -523,6 +523,7 @@ fn final_authors_equal_preview_poll_and_actual_admission_for_all_inheritance_cas
         let pulls: Vec<_> = ["11", "12", "13", "99"]
             .into_iter()
             .map(|id| PullRequest {
+                mentioned: false,
                 id: id.into(),
                 number: id.parse().unwrap(),
                 title: format!("PR {id}"),

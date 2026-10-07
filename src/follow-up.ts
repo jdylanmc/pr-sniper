@@ -31,7 +31,9 @@ export interface FollowUpCandidate {
   blocked: string | null;
   automatic_start: boolean;
   automatic_publication: boolean;
+  captured_local_response?: boolean;
   human_gate: boolean;
+  superseded?: boolean;
   run: {
     reply_ordinal?: number | null;
     enqueue_order?: number | null;
@@ -45,6 +47,8 @@ export interface FollowUpCandidate {
     analysis: Operation | null;
     publication: Operation | null;
     context?: ConversationContext;
+    analysis_history?: { context: ConversationContext; operation: Operation }[];
+    discussion?: { id: string; body: string; author_login: string | null }[];
     target?:
       | {
           kind: "owned";
@@ -55,6 +59,10 @@ export interface FollowUpCandidate {
       | {
           kind: "mention";
           comment: { id: string; body: string; author_login: string | null };
+        }
+      | {
+          kind: "thread" | "retained";
+          thread: ConversationThread;
         };
     review?: ConversationContext;
     thread?: ConversationThread;
@@ -77,7 +85,6 @@ export function renderFollowUps(
   showError: (message: string) => void,
   refresh: () => Promise<void>,
 ) {
-  const consent = new Set<string>();
   const expanded = new Set<string>();
   const pending = new Set<string>();
   let signature = "";
@@ -104,7 +111,6 @@ export function renderFollowUps(
       );
     } finally {
       pending.delete(id);
-      consent.delete(id);
       signature = "";
       await refresh();
     }
@@ -127,7 +133,7 @@ export function renderFollowUps(
     }
     if (!candidates.length && !mentions.some((m) => m.blocked)) {
       root.textContent =
-        "No new external comments in verified PR Sniper-owned threads.";
+        "No new eligible other-user comments on admitted open pull requests.";
       return;
     }
     for (const candidate of candidates) {
@@ -142,10 +148,12 @@ export function renderFollowUps(
       }
       const job = execution.job;
       const thread =
-        run.target?.kind === "owned" ? run.target.thread : run.thread;
+        run.target && "thread" in run.target ? run.target.thread : run.thread;
       const comments =
         run.target?.kind === "mention"
-          ? [run.target.comment]
+          ? run.discussion?.length
+            ? run.discussion
+            : [run.target.comment]
           : (thread?.comments ?? []);
       const row = document.createElement("article");
       row.className = "review-run";
@@ -153,13 +161,13 @@ export function renderFollowUps(
       heading.textContent = `${job.repository_name} #${job.number} / ${execution.selection.agent.name}`;
       const identity = document.createElement("p");
       identity.className = "hint";
-      identity.textContent = `GitHub: ${job.account_login} (${job.account_id}); analysis head ${job.head_sha}. ${run.target?.kind === "mention" ? "Primary mention" : `Thread ${thread?.id ?? "unavailable"}`}; external comment ${run.trigger_id}. Copilot account: ${execution.selection.agent.ai_account?.account_id ?? "unavailable"}; model: ${execution.selection.agent.model}.`;
+      identity.textContent = `GitHub: ${job.account_login} (${job.account_id}); analysis head ${job.head_sha}. ${run.target?.kind === "mention" ? "Primary conversation" : `Thread ${thread?.id ?? "unavailable"}`}; external comment ${run.trigger_id}. Copilot account: ${execution.selection.agent.ai_account?.account_id ?? "unavailable"}; model: ${execution.selection.agent.model}.`;
       if (run.target?.kind === "owned")
         identity.append(
           ` Original root head ${run.target.review.job.head_sha}; publication ${run.target.publication_id}.`,
         );
       const state = document.createElement("p");
-      state.textContent = `Follow-up: ${run.phase.replaceAll("_", " ")}. Execution is automatic when eligible; reply publication: ${candidate.automatic_publication ? "automatic" : "confirmation required"}.`;
+      state.textContent = `Follow-up: ${run.phase.replaceAll("_", " ")}. Execution is automatic when eligible; Reply Comment: ${candidate.captured_local_response ? "not granted for this captured response; later permission changes do not replay it" : candidate.automatic_publication ? "permitted after revalidation" : "off; analysis continues and qualifying responses remain local"}. Initial Publish Comment is independent.`;
       row.append(heading, identity, state);
       if (configuration && (run.analysis?.attempt_count || run.result))
         renderConfiguration(
@@ -167,6 +175,23 @@ export function renderFollowUps(
           "Captured conversation configuration",
           execution.selection,
         );
+      if (run.analysis_history?.length) {
+        const history = document.createElement("details");
+        const title = document.createElement("summary");
+        title.textContent = "Prior executed analysis attempts";
+        history.append(title);
+        for (const attempt of run.analysis_history) {
+          const state = document.createElement("p");
+          state.textContent = `Attempt ${attempt.operation.attempt_count}: ${attempt.operation.state}. ${attempt.context.job.repository_name} #${attempt.context.job.number}, head ${attempt.context.job.head_sha}.`;
+          history.append(state);
+          renderConfiguration(
+            history,
+            "Actual prior analysis configuration",
+            attempt.context.selection,
+          );
+        }
+        row.append(history);
+      }
       if (
         (configuration && !run.analysis?.attempt_count && !run.result) ||
         (run.analysis &&
@@ -254,8 +279,8 @@ export function renderFollowUps(
           run.result.output.decision === "quiet"
             ? `No reply needed. ${run.result.output.reason}`
             : run.result.output.decision === "human_input_required"
-              ? `Human input required. No automated reply. ${run.result.output.reason}`
-              : `Draft reply: ${run.result.output.body}`;
+              ? `${candidate.superseded && !candidate.human_gate ? "Historical human-input outcome; this gate was answered by a later explicit assessment." : "Human input required. No automated reply."} ${run.result.output.reason}`
+              : `${!candidate.automatic_publication && !run.publication && !run.uncertain && !run.receipt ? "Local response" : "Draft reply"}: ${run.result.output.body}`;
         row.append(decision);
         for (const evidence of run.result.output.evidence) {
           const source = document.createElement("p");
@@ -287,7 +312,11 @@ export function renderFollowUps(
       } else if (
         !terminal &&
         (!candidate.blocked || run.publication) &&
-        (publishing || run.analysis || run.cancelled || candidate.human_gate)
+        (publishing || run.analysis || run.cancelled || candidate.human_gate) &&
+        (!publishing ||
+          candidate.automatic_publication ||
+          run.uncertain ||
+          run.receipt)
       ) {
         const button = document.createElement("button");
         button.textContent = publishing
@@ -298,27 +327,8 @@ export function renderFollowUps(
             ? "Retry after human decision"
             : "Retry follow-up";
         const update = () => {
-          button.disabled =
-            pending.has(run.id) ||
-            (!!publishing && working) ||
-            (!!publishing && !consent.has(run.id));
+          button.disabled = pending.has(run.id) || (!!publishing && working);
         };
-        if (publishing) {
-          const label = document.createElement("label");
-          const checkbox = document.createElement("input");
-          checkbox.type = "checkbox";
-          checkbox.checked = consent.has(run.id);
-          label.append(
-            checkbox,
-            `Publish or reconcile this thread/comment/revision as ${job.account_login} (${job.account_id}), not approval.`,
-          );
-          checkbox.onchange = () => {
-            if (checkbox.checked) consent.add(run.id);
-            else consent.delete(run.id);
-            update();
-          };
-          row.append(label);
-        }
         update();
         button.onclick = () => {
           button.disabled = true;

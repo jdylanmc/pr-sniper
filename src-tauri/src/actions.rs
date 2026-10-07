@@ -31,19 +31,25 @@ pub struct Basis {
 
 impl Basis {
     fn same_execution(&self, other: &Self) -> bool {
-        // Preserve the full action basis; only retired start data is inert.
+        // Preserve the full action basis; retired automation preferences are inert.
         let mut current = self.clone();
         current.selection.policy.automatic_agent_start =
             other.selection.policy.automatic_agent_start;
+        current.selection.policy.automatic_comment_publication =
+            other.selection.policy.automatic_comment_publication;
         if let (Some(left), Some(right)) = (
             current.selection.configuration.as_mut(),
             other.selection.configuration.as_ref(),
         ) {
             left.repository.overrides.automatic_agent_start =
                 right.repository.overrides.automatic_agent_start;
+            left.repository.overrides.automatic_comment_publication =
+                right.repository.overrides.automatic_comment_publication;
         }
         current.repository.overrides.automatic_agent_start =
             other.repository.overrides.automatic_agent_start;
+        current.repository.overrides.automatic_comment_publication =
+            other.repository.overrides.automatic_comment_publication;
         if monitoring::actionable(&current.job) && monitoring::actionable(&other.job) {
             current.job.waiting = other.job.waiting.clone();
         }
@@ -140,6 +146,7 @@ pub struct Status {
     pub machine_clear: bool,
     pub personal_review: &'static str,
     pub permissions: ActionPermissions,
+    pub provider_approval: Option<crate::github::actions::ProviderReview>,
     pub final_review: Option<FinalReview>,
     pub effects: Vec<Effect>,
     pub blockers: Vec<String>,
@@ -220,10 +227,8 @@ pub fn basis(store: &Store, item_id: &str) -> Result<Basis, String> {
         .map(|a| repository.assignment_authority(a))
         .ok_or("Primary unavailable.")?;
     let permissions = ActionPermissions {
-        approve: repository
-            .assignments
-            .iter()
-            .any(|a| repository.assignment_authority(a).approve),
+        reply: authority.reply,
+        approve: authority.approve,
         merge: authority.merge,
     };
     let feedback = feedback::contexts(store, &job, &selection.agent.id).map_err(|e| e.message)?;
@@ -602,10 +607,39 @@ pub fn ready(
     } {
         return Err("This provider action is not opted in.".into());
     }
+    if action == Action::Merge && provider_approval(observation).is_none() {
+        return Err(
+            "Merge requires confirmed current-revision provider approval before transmission."
+                .into(),
+        );
+    }
     if let Some(reason) = observation.blocker(action) {
         return Err(reason);
     }
     Ok(())
+}
+
+pub(crate) fn provider_approval(
+    observation: &Observation,
+) -> Option<&crate::github::actions::ProviderReview> {
+    let mut reviewers = std::collections::HashSet::new();
+    observation.reviews.iter().rev().find(|review| {
+        matches!(
+            review.state.as_str(),
+            "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED"
+        ) && reviewers.insert(&review.actor_id)
+            && review.state == "APPROVED"
+            && review.actor_id != observation.author_id
+            && review.head == observation.head
+            && [&review.id, &review.actor_id].iter().all(|id| {
+                id.parse::<u64>()
+                    .is_ok_and(|value| value > 0 && value.to_string() == **id)
+            })
+            && review
+                .submitted_at
+                .as_deref()
+                .is_some_and(|time| chrono::DateTime::parse_from_rfc3339(time).is_ok())
+    })
 }
 
 pub fn prepare_effect(
@@ -954,6 +988,10 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
         };
         let primary = repository.primary_assignment_id();
         let permissions = ActionPermissions {
+            reply: repository
+                .assignments
+                .iter()
+                .any(|a| repository.assignment_authority(a).reply),
             approve: repository
                 .assignments
                 .iter()
@@ -1003,7 +1041,11 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
         }
         if let Some(observation) = observed.and_then(|o| o.observation.as_ref()) {
             for (action, enabled) in [
-                (Action::Approve, permissions.approve),
+                (
+                    Action::Approve,
+                    permissions.approve
+                        && !(permissions.merge && provider_approval(observation).is_some()),
+                ),
                 (Action::Merge, permissions.merge),
             ] {
                 if enabled {
@@ -1063,7 +1105,11 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
             if run.execution.operation.state == OperationState::Completed {
                 if let Some(observation) = observed.and_then(|o| o.observation.as_ref()) {
                     for (action, enabled) in [
-                        (Action::Approve, permissions.approve),
+                        (
+                            Action::Approve,
+                            permissions.approve
+                                && !(permissions.merge && provider_approval(observation).is_some()),
+                        ),
                         (Action::Merge, permissions.merge),
                     ] {
                         if enabled && !effects.iter().any(|e| e.action == action) {
@@ -1118,6 +1164,10 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
                 "Not inferred."
             },
             permissions,
+            provider_approval: observed
+                .and_then(|o| o.observation.as_ref())
+                .and_then(provider_approval)
+                .cloned(),
             final_review,
             effects,
             blockers,

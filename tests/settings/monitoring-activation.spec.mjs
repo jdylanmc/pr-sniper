@@ -25,7 +25,7 @@ async function configured(store, enabled = false) {
           agent_id: reviewer.id,
           schedule: settings.defaults.schedule,
           comment: false,
-          actions: { approve: false, merge: false },
+          actions: { reply: false, approve: false, merge: false },
         },
       ],
     },

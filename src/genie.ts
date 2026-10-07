@@ -240,7 +240,7 @@ export function mountGenie(
           <dt>Authors</dt><dd>${watched.length ? escape(watched.map((a) => `${a.login} (${a.id})`).join(", ")) : "All authors"}</dd>
           <dt>Review requests</dt><dd>${policy.reviewer_assignment ? "Acting-account requests can admit older or unwatched PRs" : "Off"}</dd>
           <dt>Review execution</dt><dd>Automatic when eligible; pause, disablement, account access and capacity still apply</dd>
-          <dt>Comment gate</dt><dd>${policy.automatic_comment_publication ? "Automatic only with assignment permission" : "Local-only until separately authorized"}</dd></dl>
+          <dt>Publication</dt><dd>Separate Publish Comment and primary Reply Comment permissions; unpermitted output stays local</dd></dl>
           ${(repository.assignments ?? [])
             .map((assignment) => {
               const agent = settings.agents?.find(
@@ -251,10 +251,10 @@ export function mountGenie(
               const rights = authority?.assignments.find(
                 ([id]) => id === assignment.id,
               )?.[1];
-              return `<div class="genie-agent-summary"><strong>${escape(agent?.name ?? "Missing Agent")}${rights?.primary ? ` / Primary${repository.assignments?.length === 1 ? " (sole Agent)" : ""}` : ""}</strong><p>${escape(agent?.model ?? "No model")} / Copilot: ${escape(ai?.login ?? "Not connected")} (${escape(agent?.ai_account?.account_id ?? "unselected")})${ai?.connected ? "" : " / reconnect required"}</p><p>Comment: ${rights?.comment ? "allowed" : "off"} / Approve: ${rights?.approve ? "allowed" : "off"} / Merge: ${rights?.merge ? "allowed" : "off"}</p><p>Doctrines: ${escape(agent ? doctrineTitles(agent).join(", ") || "None" : "Unavailable")}</p></div>`;
+              return `<div class="genie-agent-summary"><strong>${escape(agent?.name ?? "Missing Agent")}${rights?.primary ? ` / Primary${repository.assignments?.length === 1 ? " (sole Agent)" : ""}` : " / Secondary"}</strong><p>${escape(agent?.model ?? "No model")} / Copilot: ${escape(ai?.login ?? "Not connected")} (${escape(agent?.ai_account?.account_id ?? "unselected")})${ai?.connected ? "" : " / reconnect required"}</p><p>Publish Comment: ${rights?.comment ? "allowed" : "off"} / Reply Comment: ${rights?.reply ? "allowed" : "off"} / ${rights?.merge ? "Approve & Merge: allowed" : `Approve: ${rights?.approve ? "allowed" : "off"}`}</p><p>Doctrines: ${escape(agent ? doctrineTitles(agent).join(", ") || "None" : "Unavailable")}</p></div>`;
             })
             .join("")}
-          ${!authority?.primary_assignment_id ? '<p class="genie-note">No primary: automatic approval and merge are unavailable.</p>' : ""}
+          ${!authority?.primary_assignment_id ? '<p class="genie-note">No primary: replies, approval and merge are unavailable. Normal reviews and permitted initial comments continue.</p>' : ""}
           <button class="genie-text" type="button" data-genie-edit="repositories" data-genie-focus="repository-${escape(repository.id)}">Edit repositories</button></section>`;
         })
         .join("")}

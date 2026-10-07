@@ -12,8 +12,10 @@ GitHub repositories and persists eligible revisions in the Review Queue.
 Assigned Copilot Agents automatically review eligible admitted revisions through
 shared AI capacity, with validated results kept locally. A separate
 publication gate can submit one revision-bound GitHub `COMMENT` review.
-New external comments in verified owned threads can receive an evidence-backed
-follow-up, or remain quiet/wait for human judgment.
+The repository's primary assesses new eligible other-user comments on admitted
+open PRs, including non-mentions and secondary/unowned threads. Reply Comment
+permits evidence-backed publication; without it responses stay local, or remain
+quiet/wait for human judgment.
 Settings manages independent Copilot
 AI accounts with browser sign-in and per-Agent account/model selection; see
 [Copilot Settings](docs/copilot-settings.md). Product scope lives in the
@@ -551,16 +553,22 @@ its layout with unsupported viewport units and dialog APIs. The app requires
 macOS 13.5 or later; build targets do not polyfill runtime APIs, and these simulations
 are not native acceptance evidence.
 
-Repository **Settings** assigns reusable Agents with independent comment,
-Approve and Merge choices, and resolves watched people using the repository's
+Repository **Settings** assigns reusable Agents with direct repository-scoped
+**Publish Comment**, primary **Reply Comment**, **Approve** or **Approve & Merge**
+permissions, and resolves watched people using the repository's
 explicit GitHub account. Existing global defaults and overrides remain
 preserved in storage. Eligible review execution is always automatic; comment
-publication remains separately gated. Legacy start flags are readable but inert.
+publication remains separately gated. Legacy start/publication defaults and
+overrides are readable historical data, not execution or publication authority.
 A sole assignment is primary automatically; multiple
 assignments permit one explicit primary or none. Primary selection never opts
 into actions. Legacy inert `approve` flags remain preserved but are not grants;
-new choices live in assignment `actions`. Merge is effective only for the
-primary, and no primary means no effective approval or merge. Opted-in provider
+new choices live in assignment `comment` and `actions.reply/approve/merge`.
+Secondaries can only Publish Comment. No primary means no replies, approval or
+merge; normal reviews and permitted initial comments continue. Merge includes
+approval and follows its confirmed receipt. Obsolete secondary action grants are
+disabled with a visible notice, never auto-promoted; actual jobs/receipts are
+unchanged. Opted-in provider
 actions require aggregate clearance and the primary final-review path below.
 Its compact editor exposes the stable account/repository IDs, enablement,
 saved author filters, independent reviewer-request override, verified
@@ -950,8 +958,10 @@ retains a visible stopping slot; it is not treated as a superseded attempt.
 Approval and merge are independent native operations, never Agent tools.
 Approval is one acting-account vote, not one vote per configured Agent. It can
 contribute before the provider has collected its other required approvals, but
-cannot self-approve a GitHub PR or replace an existing account vote. Merge is
-primary-only and additionally requires current-head green checks, satisfied
+cannot self-approve a GitHub PR or replace an existing account vote. Approve alone
+never merges. Approve & Merge includes approval permission and additionally
+requires independently confirmed current-revision provider approval from an
+eligible reviewer (not necessarily the merger), current-head green checks, satisfied
 provider reviews/rules, conflict-free **CLEAN** readiness, no unresolved threads
 (even outdated ones), no required/active merge queue, and a provider-selected
 enabled merge method. Admin-bypass capability is neither queried nor used.
@@ -1001,9 +1011,10 @@ approval/merge acceptance evidence.
 
 ## Revision-safe comment publication
 
-An assignment must allow **Comment**. The **Preferences > Publish review
-comments automatically** default and each repository's **Comment publication**
-override choose automatic normal publication or **off/local-only** evidence.
+An assignment must allow **Publish Comment** for automatic initial publication.
+The retired global default/repository policy dropdowns have no authority.
+Without this grant, initial findings stay local. Primary **Reply Comment** is
+independent: either publication grant can be enabled without the other.
 Review Queue shows the acting repository GitHub account, exact head, local
 findings, publication state and confirmed provider receipts. Off does not create
 an author-wait state or an invented manual-publication task. Genuine historical
@@ -1059,7 +1070,7 @@ local review cannot hide an active, uncertain or confirmed publication.
 Live mutation acceptance requires an explicitly authorized disposable PR and
 cleanup; deterministic provider fixtures do not claim a live publication pass.
 
-## Owned-thread follow-ups
+## Primary conversation follow-ups
 
 Each repository read also checks all captured assignments' unresolved threads
 rooted in their confirmed PR Sniper inline comments. Ownership requires the saved review and
@@ -1069,20 +1080,28 @@ resolution state and complete paginated published conversations. Unpublished
 pending comments are excluded, so private drafts cannot trigger public replies.
 Comment discovery failures use the existing poll operation's retry budget.
 
-The latest published external comment creates a durable key containing provider,
-account, configuration, owned-thread ID, comment ID and original reviewed head. Multiple
+The primary alone assesses eligible other-user comments on admitted open PRs,
+including unowned threads, secondary-authored threads and non-mentions. The
+first complete observation establishes a durable history baseline; history is
+context, not an activation backlog. New comments and already-pending work create
+durable keys containing provider/account/configuration/repository/PR/thread and
+trigger identity, not the responder role or a later head. Multiple
 new comments between polls are coalesced into that latest trigger while the full
 published conversation remains context. PR Sniper's own signed replies cannot
-trigger themselves; an actual human comment through the same account can.
+trigger themselves; same-acting-account comments and signed machine output are
+not other-user reply triggers.
 Repeated polling/restart does not create another job for the same key. A push
 does not replay the same comment through a new owner.
 
 **Review Queue > Thread follow-ups** shows the conversation, acting account,
 revision, draft/evidence and separate analysis/publication states. Existing
-automatic-comment defaults/overrides apply, and the
-assignment must allow **Comment**. Eligible analysis starts automatically;
-publication with its automatic gate off needs a separate checked **Publish reply**
-confirmation. **Cancel follow-up**
+primary's **Reply Comment** grant controls publication, independently of initial
+Publish Comment. Eligible analysis starts automatically even when Reply Comment
+is off; qualifying responses then remain local with a visible limitation.
+Completed local responses are evidence, not pending publication confirmations.
+Enabling Reply Comment later does not replay responses captured without that
+grant; new comments create new work. Attempted writes still require reconciliation.
+Manual confirmation cannot grant a missing capability. **Cancel follow-up**
 stops inference or withdraws permission before a reply; it cannot remove an
 already confirmed comment.
 
@@ -1100,12 +1119,21 @@ body. That state pauses automatic follow-ups for the thread; a later external
 comment can be started explicitly after the human decision. Quiet and human-input
 results have no publication action. Resolved, changed, superseded or stale
 threads stop rather than responding to an outdated conversation. Each follow-up
+keeps its actual history: only verified new-comment supersession or a validated
+explicit answer retires the corresponding old readiness gate, not genuine
+failures, cancellation or unsettled provider operations. Minimal human gates
+survive physical cleanup and reopening.
+Queuing or interrupting a retry does not settle a genuine prior analysis failure;
+only a validated completed explicit recovery does. Successful result persistence
+rechecks the bound top-level trigger and captured discussion as well as threads.
+Each follow-up
 stores an immutable `target` (original publication/review/root) separately from
 its `context` (current iteration and captured selection). Legacy `trust_confirmed`
 fields remain readable as historical evidence only, never an execution or
 publication gate. A new author
-reply may analyze a later admitted iteration through the same original Agent;
-it never rewrites the old review/head or transfers ownership to a replacement.
+reply may analyze a later admitted iteration through the current primary.
+Routing changes do not rewrite original feedback ownership, old review/head,
+executed configuration or frozen uncertain provider intents.
 Normal passes on that iteration still fan out independently.
 
 Replies are posted only to the verified root comment, end with ` PR Sniper`,
@@ -1136,7 +1164,8 @@ observations never mean resolved.
 
 New full reviews receive earlier open and closed feedback as untrusted context.
 They must reassess every earlier open concern owned by their Agent using stable
-feedback IDs. Reply analysis may reassess only its own concern; an explicit
+feedback IDs. Primary reply analysis may reassess only the original target
+thread's concern, without replacing its original author/ownership; an explicit
 clearance requires rationale and exact verified source evidence. An explanation
 can therefore clear a concern without a push or another full review. Merely
 analyzing, replying, or choosing quiet never clears it. Local reassessment is
@@ -1161,20 +1190,24 @@ checks; local clearance never resolves a GitHub thread.
 
 ### Primary acting-account mentions
 
-For already tracked open PRs, scans read bounded, complete top-level issue-comment
+Scans read bounded, complete top-level issue-comment
 pages (up to 1,000 comments and 1 MiB of bodies). A standalone `@login` matching
 the live repository acting GitHub identity routes one response to the current
 primary; it never addresses the separate Copilot identity or all Agents.
-No primary, unavailable model/account selection or missing current iteration is
-visible blocked work with retained FIFO order. Mentions do not admit new PRs.
+The existing acting-account mention signal may admit an otherwise-unwatched PR
+when a newly observed other-user mention is found; general non-mention reply
+permission never discovers/admit every repository PR. No primary, unavailable
+model/account selection or missing current iteration is visible blocked work
+with retained FIFO order. The direct watch-choice redesign remains #121 work.
 
 Mention intent is keyed by provider/account/repository/PR/comment identity, not
-primary identity. Once assigned, it is not replayed through a later primary.
-Signed machine output cannot loop; legitimate same-account human comments remain
-eligible. Edited/deleted triggers block new replies, but an existing uncertain
+primary identity. Unexecuted pending work revalidates the current primary.
+Executed evidence and uncertain bodies stay immutable, not replayed under another
+Agent. Signed machine output and same-acting-account comments cannot loop.
+Edited/deleted triggers block new replies, but an existing uncertain
 reply can still reconcile its exact signed body and acting-account receipt.
 Top-level responses link the original comment and reuse the constrained reply
-schema, shared `Kind::Mention` AI capacity, explicit start/comment permissions,
+schema, shared `Kind::Mention` AI capacity, automatic eligible analysis and Reply Comment permission,
 serial reply publication, pause handling and no-blind-repost recovery. No fake
 review or publication is created for a mention.
 

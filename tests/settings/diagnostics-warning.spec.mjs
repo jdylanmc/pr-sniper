@@ -83,7 +83,7 @@ for (const action of ["add", "enable", "remove", "agent", "assignment"]) {
       await setAgentPrompt(page, "Persist despite diagnostics failure.");
     else {
       const modal = await assignment(page, repository.name);
-      await modal.getByRole("checkbox", { name: /^Comment/ }).uncheck();
+      await modal.getByRole("checkbox", { name: /^Publish Comment/ }).uncheck();
       await saveAssignment(page, modal);
     }
     await page.evaluate(() => window.__settingsIdle());

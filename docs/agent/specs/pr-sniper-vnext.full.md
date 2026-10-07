@@ -1,5 +1,40 @@
 # PR Sniper vNext Experience - Supporting Requirements
 
+## Scoped primary-capability reconciliation (#122)
+
+The [approved tracker amendment](https://github.com/jdylanmc/pr-sniper/issues/51#issuecomment-6008945622)
+and [nano primary-capability amendment](./pr-sniper-vnext.nano.md#primary-assignment-capabilities-and-conversations-122)
+control conflicts with VN-005/006/008, PD-004/005/006 and historical D05/D06
+below. D25-D27 replace secondary-owned/mention-only reply routing and
+independent merge-only permissions, not the unrelated specification.
+
+Assignment grants are direct Publish Comment and primary-only Reply Comment,
+Approve or Approve & Merge. Primary selection grants none. Merge includes
+approval permission and follows separately confirmed applicable current-revision
+provider approval, without requiring the merger's own vote or fabricating an
+application receipt for another reviewer's approval;
+approve-only never merges. Obsolete secondary grants are disabled, not preserved
+through auto-promotion. Current configuration reconciliation must not reset
+real application data or alter actual job evidence/provider-operation receipts.
+
+The primary assesses general eligible other-user comments on admitted open PRs,
+using original thread context and its own captured Agent identity/signature.
+Original concern ownership and human closure remain unchanged. Reply controls
+publication independently of initial Publish Comment; publication-off output
+stays local without disabling automatic read-only analysis. Baseline history is
+context, not work. Newly observed comments and durable pending intents retain
+exact identities and queue order across restart, role changes and write failure.
+No secondary fan-out, impersonation, historical activation flood, new manual
+start/consent gate, policy bypass or inferred provider success is permitted.
+
+The final full primary review, cleared peer passes/concerns, relevant-state
+freshness, non-draft state, provider capabilities, CI/policy checks, independent
+receipts and uncertain-write recovery remain mandatory. Watch selections are
+discovery signals, not grants; general Reply does not admit every repository PR.
+Direct watch presentation (#121), repository cadence (#123), explicit PR intake
+(#119) and other visual bugs are not claimed implemented by this reconciliation.
+Product grants are unrelated to development-agent publication/merge authority.
+
 ## Scoped always-on review reconciliation (#120)
 
 The [human-approved October 5 amendment](https://github.com/jdylanmc/pr-sniper/issues/51#issuecomment-6008945622)
@@ -17,8 +52,8 @@ Start flags are retained only as readable legacy configuration/evidence; no
 reset or broad migration is needed. Actual job snapshots and uncertain provider
 write receipts are not erased or reconstructed. Review execution is read-only
 and grants no publication, approval or merge authority. All unrelated historical
-requirements remain, including existing independent action grants; #119 and
-#121-#123 are separate deliveries, not implementation claims here. - Supporting Requirements
+requirements remain except for the explicitly superseded capability rules above;
+#119, #121 and #123 are separate deliveries, not implementation claims here.
 
 - Spec ID: SPEC-PR-SNIPER-VNEXT
 - Source: docs/agent/discovery/pr-sniper-vnext.md

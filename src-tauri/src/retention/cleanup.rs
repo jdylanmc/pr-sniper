@@ -221,6 +221,16 @@ impl State {
             kind: crate::capacity::Kind::Mention,
             id: m.work_id.clone(),
         }));
+        work.extend(
+            self.feedback
+                .pending_threads
+                .iter()
+                .filter(|intent| intent.binding.matches_tracked(scope))
+                .map(|intent| WorkId {
+                    kind: crate::capacity::Kind::Reply,
+                    id: intent.work_id.clone(),
+                }),
+        );
         let mut operations = BTreeMap::new();
         for op in reviews
             .iter()
@@ -303,6 +313,13 @@ impl State {
                 .iter()
                 .map(|f| f.key.clone())
                 .chain(mentions.iter().map(|m| m.key.clone()))
+                .chain(
+                    self.feedback
+                        .pending_threads
+                        .iter()
+                        .filter(|intent| intent.binding.matches_tracked(scope))
+                        .map(|intent| intent.key.clone()),
+                )
                 .collect(),
             owned,
             notices: BTreeMap::new(),
@@ -312,6 +329,7 @@ impl State {
     fn compact(mut self, store: &Store, receipt: &Receipt) -> Result<(), String> {
         mark_activity_pending(store)?;
         let binding = Binding::tracked(&receipt.scope);
+        self.feedback.observe_human_boundaries(&self.follow_ups);
         self.follow_ups.retain(|f| !binding.matches(&f.context.job));
         self.publications
             .retain(|p| !binding.matches(&p.review.job));
@@ -329,6 +347,17 @@ impl State {
         self.feedback
             .mentions
             .retain(|m| !m.binding.matches_tracked(&receipt.scope));
+        self.feedback
+            .pending_threads
+            .retain(|intent| !intent.binding.matches_tracked(&receipt.scope));
+        for cursor in self
+            .feedback
+            .conversation_cursors
+            .iter_mut()
+            .filter(|cursor| cursor.binding.matches_tracked(&receipt.scope))
+        {
+            cursor.discussion.clear();
+        }
         self.notifications
             .notices
             .retain(|n| !receipt.notices.contains_key(&n.id));
@@ -339,13 +368,14 @@ impl State {
                 .any(|item| source == &format!("queue:{item}"))
         });
         self.queue.jobs.retain(|j| !binding.matches(j));
-        // Follow-ups first: legacy decoding may need the original publication.
+        // Persist minimal conversation gates before deleting their source runs.
+        // Follow-ups precede publications because legacy decoding needs the origin.
         // Repeating every write is intentional; the journal is the recovery fence.
+        store.write_state("feedback.json", &self.feedback)?;
         store.write_state("follow-ups.json", &self.follow_ups)?;
         store.write_state("publications.json", &self.publications)?;
         store.write_state("reviews.json", &self.reviews)?;
         store.write_state("actions.json", &self.actions)?;
-        store.write_state("feedback.json", &self.feedback)?;
         store.write_state("notifications.json", &self.notifications)?;
         store.write_state("queue.json", &self.queue)?;
         super::paging::discard(store, &receipt.items)

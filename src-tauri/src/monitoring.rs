@@ -50,6 +50,7 @@ pub enum OperationFailure {
     Network,
     Provider,
     Permanent,
+    Superseded,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -736,7 +737,7 @@ impl Monitor {
                 &current.account_id,
                 &pull,
             );
-            if !eligibility.eligible() {
+            if !eligibility.eligible() && !pull.mentioned {
                 continue;
             }
             let candidate = ActivationCandidate {
@@ -2311,8 +2312,10 @@ impl Monitor {
                     && (pull.state != Lifecycle::Open
                         || pull.draft
                         || (explicit_pull_id != Some(pull.id.as_str())
-                            && (!eligibility.eligible()
-                                || !(admission_candidate || eligibility.requested_reviewer))))
+                            && (!(eligibility.eligible() || pull.mentioned)
+                                || !(admission_candidate
+                                    || eligibility.requested_reviewer
+                                    || pull.mentioned))))
                 {
                     continue;
                 }
@@ -2630,6 +2633,17 @@ fn eligibility(
     }
 }
 
+pub(crate) fn scan_admits(ticket: &PollTicket, pull: &PullRequest) -> bool {
+    eligibility(
+        &ticket.watched_authors,
+        &ticket.policy,
+        &ticket.provider_account_id,
+        pull,
+    )
+    .eligible()
+        || pull.mentioned
+}
+
 fn activation_admission_candidate(
     activation: &mut MonitoringActivation,
     pull: &PullRequest,
@@ -2880,7 +2894,10 @@ impl JobOperation {
         let operation = self;
         let failure = retryable_failure(error);
         operation.failure = Some(failure.clone());
-        if failure == OperationFailure::Permanent {
+        if matches!(
+            failure,
+            OperationFailure::Permanent | OperationFailure::Superseded
+        ) {
             operation.state = OperationState::Failed;
             operation.next_attempt_at = None;
             return;

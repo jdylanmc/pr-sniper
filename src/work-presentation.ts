@@ -10,7 +10,7 @@ export const purposes: Record<WorkKind, string> = {
   normal: "Normal pass",
   primary_final: "Primary final review",
   reply: "Targeted reply",
-  mention: "Primary mention",
+  mention: "Primary conversation",
 };
 
 export interface WorkPresentation {
@@ -33,7 +33,8 @@ export interface WorkPresentation {
   };
 }
 
-function conversationState(run: FollowUpCandidate["run"]) {
+function conversationState(candidate: FollowUpCandidate) {
+  const run = candidate.run;
   // Analysis completion does not settle a remote mutation, even after cancel.
   if (run.uncertain || run.phase === "unresolved") return "outcome_unknown";
   if (run.phase === "stale_after_publication") return "stale_after_publication";
@@ -51,8 +52,13 @@ function conversationState(run: FollowUpCandidate["run"]) {
   if (run.analysis?.state === "completed") {
     if (run.result?.output.decision === "quiet") return "completed";
     if (run.result?.output.decision === "human_input_required")
-      return "human_input_required";
-    if (run.result?.output.decision === "reply") return "waiting_publication";
+      return candidate.superseded && !candidate.human_gate
+        ? "answered_human_input"
+        : "human_input_required";
+    if (run.result?.output.decision === "reply")
+      return candidate.automatic_publication
+        ? "waiting_publication"
+        : "completed_local";
     return "outcome_unknown";
   }
   if (run.analysis?.state === "queued" && run.analysis.attempt_count > 0)
@@ -63,7 +69,9 @@ function conversationState(run: FollowUpCandidate["run"]) {
 const conversationLabels: Record<string, string> = {
   outcome_unknown: "Outcome unknown",
   human_input_required: "Human input required",
+  answered_human_input: "Human input answered",
   waiting_publication: "Awaiting publication",
+  completed_local: "Completed locally",
   publication_failed: "Publication failed",
   publication_retry: "Publication retry queued",
   publishing: "Publishing",
@@ -136,12 +144,27 @@ export function workPresentation(
         (f.run.target?.kind === "mention" ? "mention" : "reply") === kind,
     );
     if (!candidate) {
+      const pending =
+        kind === "reply" &&
+        snapshot.pending_threads?.find((intent) => intent.work_id === id);
+      if (pending)
+        return {
+          agent: "Primary unavailable",
+          subject: `Discussion ${pending.thread.id}`,
+          reference: `${pending.binding.repository_name} #${pending.binding.number}`,
+          ordinal,
+          count,
+          state: "blocked",
+          captured: false,
+          attempt: null,
+          trigger: pending.blocked ?? "Awaiting durable primary assessment",
+        };
       const mention =
         kind === "mention" && snapshot.mentions?.find((m) => m.work_id === id);
       if (!mention) return;
       return {
         agent: "Primary unavailable",
-        subject: `Mention ${mention.comment.id}`,
+        subject: `Comment ${mention.comment.id}`,
         reference: `${mention.binding.repository_name} #${mention.binding.number}`,
         ordinal,
         count,
@@ -157,7 +180,7 @@ export function workPresentation(
     captured = !!run.analysis?.attempt_count || !!run.result;
     selection = captured ? context?.selection : candidate.planned_selection;
     attempt = run.analysis?.attempt_count ?? 0;
-    state = conversationState(run);
+    state = conversationState(candidate);
     reason = candidate.blocked ?? run.error;
     if (job?.waiting === "superseded" && !run.publication && !run.uncertain)
       state = "superseded";
@@ -169,12 +192,17 @@ export function workPresentation(
           ? "Outcome unknown; no confirmed reply receipt. Reconcile the original intent."
           : run.publication
             ? `${run.publication.state.replaceAll("_", " ")}; no confirmed reply receipt`
-            : run.result && run.result.output.decision !== "reply"
-              ? "No automated reply"
-              : "Not started; no confirmed reply receipt",
+            : candidate.captured_local_response
+              ? "Completed local response; no Reply Comment grant was captured. Later permissions do not replay it."
+              : run.result?.output.decision === "reply" &&
+                  !candidate.automatic_publication
+                ? "Local response; Reply Comment permission is off. No provider write authorized."
+                : run.result && run.result.output.decision !== "reply"
+                  ? "No automated reply"
+                  : "Not started; no confirmed reply receipt",
       cancelled: run.cancelled,
     };
-    trigger = `External comment ${run.trigger_id}; ${kind === "mention" ? "acting-account mention" : "owned-thread reply"}`;
+    trigger = `Other-user comment ${run.trigger_id}; ${kind === "mention" ? "primary conversation assessment" : "primary thread assessment"}`;
     ordinal =
       run.reply_ordinal == null
         ? purposes[kind]
@@ -364,16 +392,24 @@ export function renderConfiguration(
     details.append(policyTitle);
     renderFacts(details, [
       ["May comment", authority ? on(authority.comment) : "Not recorded"],
+      [
+        "May reply",
+        authority
+          ? authority.reply === undefined
+            ? "Not recorded (historical)"
+            : on(authority.reply)
+          : "Not recorded",
+      ],
       ["May approve", authority ? on(authority.approve) : "Not recorded"],
       ["May merge", authority ? on(authority.merge) : "Not recorded"],
     ]);
     if (policy)
       renderFacts(details, [
         [
-          "Publication",
+          "Retired publication preference (historical only)",
           policy.automatic_comment_publication
-            ? "Automatic when permitted"
-            : "Confirmation required when permitted",
+            ? "Recorded automatic; assignment grants govern current writes"
+            : "Recorded off; assignment grants govern current writes",
         ],
         [
           "Watched authors",

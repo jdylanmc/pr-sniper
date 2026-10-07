@@ -61,7 +61,7 @@ async function seed(page, store, assignments = false) {
         schedule: settings.defaults.schedule,
         comment: true,
         approve: false,
-        actions: { approve: false, merge: false },
+        actions: { reply: false, approve: false, merge: false },
       }),
     );
     settings.repositories[1].watched_authors = [
@@ -461,7 +461,7 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       const original = await edit.elementHandle();
       await activate(page, edit, activation);
       const modal = dialog(page, "Edit assignment");
-      await modal.getByRole("checkbox", { name: /^Comment/ }).uncheck();
+      await modal.getByRole("checkbox", { name: /^Publish Comment/ }).uncheck();
       await modal
         .getByRole("button", { name: "Save assignment", exact: true })
         .click();
@@ -529,9 +529,9 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
         .getByRole("combobox", { name: "Agent", exact: true })
         .selectOption(targetAgentId);
       await expect(
-        create.getByRole("checkbox", { name: /^Comment/ }),
+        create.getByRole("checkbox", { name: /^Publish Comment/ }),
       ).not.toBeChecked();
-      await create.getByRole("checkbox", { name: /^Comment/ }).check();
+      await create.getByRole("checkbox", { name: /^Publish Comment/ }).check();
       await create
         .locator("form")
         .getByRole("button", { name: "Assign agent", exact: true })
@@ -547,7 +547,7 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       expect(saved.repositories[1].assignments[1]).toMatchObject({
         agent_id: targetAgentId,
         comment: true,
-        actions: { approve: false, merge: false },
+        actions: { reply: false, approve: false, merge: false },
       });
       expect(saved.repositories[0]).toEqual(initial.repositories[0]);
       expect(saved.capacity).toBe(initial.capacity);
@@ -646,7 +646,9 @@ for (const focusTarget of ["Running", "Settings"]) {
               .getByRole("button", { name: "Edit", exact: true })
               .click();
             modal = dialog(page, "Edit assignment");
-            await modal.getByRole("checkbox", { name: /^Comment/ }).uncheck();
+            await modal
+              .getByRole("checkbox", { name: /^Publish Comment/ })
+              .uncheck();
           } else {
             await modal
               .getByLabel("Reviewer requests", { exact: true })
