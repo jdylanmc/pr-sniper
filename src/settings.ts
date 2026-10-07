@@ -40,6 +40,7 @@ import {
   sameResource,
   repositoryScheduleStatus,
   scheduleStatusText,
+  scheduleStatusPending,
 } from "./resources";
 import "./settings.css";
 import { createDialogs } from "./dialogs";
@@ -1739,7 +1740,7 @@ export async function mountSettings(
               repository,
               saved.repositories?.find((r) => r.id === repository.id),
             )}" data-repository="${escape(repository.id)}" data-focus-key="repository:${escape(repository.id)}:settings">
-          <span class="settings-row-copy"><strong>${escape(repository.name)}</strong><small>${repository.provider === "github" ? "GitHub" : "Azure DevOps"} / ${escape(account?.login ?? "Account unavailable")}</small><small data-repository-monitoring-detail="${escape(repository.id)}">${escape(repositoryMonitoringDetail(committed))}</small><small data-saved-schedule>Reading saved schedule...</small></span>
+          <span class="settings-row-copy"><strong>${escape(repository.name)}</strong><small>${repository.provider === "github" ? "GitHub" : "Azure DevOps"} / ${escape(account?.login ?? "Account unavailable")}</small><small data-repository-monitoring-detail="${escape(repository.id)}">${escape(repositoryMonitoringDetail(committed))}</small><small data-saved-schedule>${escape(scheduleStatusPending)}</small></span>
           <span class="settings-row-value" data-monitoring-state="${state.toLowerCase()}">${state}${
             sameResource(
               repository,
@@ -2446,7 +2447,7 @@ export async function mountSettings(
         <label for="repository-timezone">Time zone<input id="repository-timezone" value="${escape(schedule.timezone)}" /></label></div>
         <p class="settings-hint" data-cadence-description>${escape(scheduleDescription(schedule))} / ${escape(schedule.timezone)}</p>
         <p class="settings-hint">Five fields: minute, hour, day, month, weekday. Uses this IANA time zone and its daylight-saving rules. Global changes affect inheriting repositories only. No per-Agent schedules. Cadence does not change pause, disablement, capacity or action permissions.</p>
-        <p class="settings-hint" data-effective-schedule aria-live="polite">Reading saved schedule...</p></section>
+        <p class="settings-hint" data-effective-schedule aria-live="polite">${escape(scheduleStatusPending)}</p></section>
         <details class="repository-group"><summary>Repository and connection</summary><dl class="repository-binding-details"><dt>Account ID</dt><dd>${escape(repository.provider_account_id ?? "Unbound")}</dd><dt>Repository ID</dt><dd>${escape(repository.provider_repository_id ?? "Not verified")}</dd></dl><div class="settings-actions"><button id="rename-repository">Edit repository</button><button data-unbind-repository ${repository.provider_account_id ? "" : "disabled"}>Unbind account</button><button id="remove-repository">Remove repository</button></div><div class="connection"></div></details>
         <p class="settings-hint">Save applies only this repository. Back retains its draft for this session; Cancel discards it. Earlier assignment saves stay applied.</p>
         <p class="settings-hint" role="status" data-explicit-pr-status ${pendingPull ? "" : "hidden"}>${pendingPull ? `PR #${pendingPull.number} will be queued after valid Save, even outside watch filters. Pause, repository disablement, account/Agent availability and capacity still apply.` : ""}</p>
@@ -2560,6 +2561,7 @@ export async function mountSettings(
     let scheduleRead = 0;
     const refreshSchedule = () => {
       const read = ++scheduleRead;
+      effective.textContent = scheduleStatusPending;
       void repositoryScheduleStatus(repository.id).then(
         (status) => {
           if (read === scheduleRead && effective.isConnected)
@@ -2567,7 +2569,7 @@ export async function mountSettings(
         },
         (cause) => {
           if (read === scheduleRead && effective.isConnected)
-            effective.textContent = reason(cause);
+            effective.textContent = `Saved schedule unavailable: ${reason(cause)}`;
         },
       );
     };

@@ -1,4 +1,6 @@
 import { test, expect } from "./fixtures.mjs";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { section, repositorySettings } from "./navigation.mjs";
 import {
   providerFixture,
@@ -546,6 +548,201 @@ test("saved-only monitoring toggles retain cadence and Preferences drafts and su
       "invalid global draft",
     );
     await expect(page.locator("#global-capacity")).toHaveValue("9");
+  } finally {
+    held.release();
+  }
+});
+
+test("a pending NEW status after saved Off invalidates an already-rendered healthy scan promise", async ({
+  page,
+  store,
+  ipc,
+}) => {
+  const settings = await seed(store);
+  settings.repositories[0].enabled = true;
+  await store("seed_settings", settings);
+  await seedHealth(store, settings.repositories[0], {
+    schedule_available: true,
+    next_run: 2000000000,
+    last_failure: null,
+    operation: null,
+  });
+  await providerFixture(page, store);
+  await repositoryPage(page, store);
+  const editor = await repositorySettings(page, "fixture/one");
+  const status = editor.locator("[data-effective-schedule]");
+  await expect(status).toContainText("2033");
+  await page.evaluate(() => window.__settingsIdle());
+  const held = ipc.holdNext("repository_schedule_status");
+  try {
+    await editor.getByRole("switch", { name: "Monitor fixture/one" }).click();
+    await expect(
+      editor.locator("[data-repository-monitoring-state]"),
+    ).toHaveText("Disabled");
+    await held.arrived;
+    const current = await store("repository_schedule_status", {
+      repositoryId: settings.repositories[0].id,
+    });
+    expect(current.next_run).toBeNull();
+    expect(current.enabled).toBe(false);
+    await expect(status).not.toContainText("2033");
+    await expect(status).toContainText("Unverified");
+    held.release();
+    await page.evaluate(() => window.__settingsIdle());
+    await expect(status).toContainText("Next scan: Not scheduled.");
+    await expect(status).toContainText("Repository is disabled");
+  } finally {
+    held.release();
+  }
+});
+
+for (const change of ["override", "global"]) {
+  test(`a held NEW native reply after ${change} Save replaces the old healthy date with pending status`, async ({
+    page,
+    store,
+    ipc,
+  }) => {
+    const settings = await seed(store);
+    settings.repositories = [settings.repositories[0]];
+    settings.repositories[0].enabled = true;
+    await store("seed_settings", settings);
+    await seedHealth(store, settings.repositories[0], {
+      schedule_available: true,
+      next_run: 2000000000,
+      last_failure: null,
+      operation: null,
+    });
+    const fixture = await providerFixture(page, store);
+    await repositoryPage(page, store);
+    let editor = await repositorySettings(page, "fixture/one");
+    await expect(editor.locator("[data-effective-schedule]")).toContainText(
+      "2033",
+    );
+    await page.evaluate(() => window.__settingsIdle());
+    await store("set_automation_paused", { paused: true });
+    const accounts = Promise.withResolvers();
+    fixture.handler = (command) =>
+      command === "github_auth_state"
+        ? accounts.promise.then(() => ({
+            accounts: fixture.accounts,
+            flow: { state: "idle" },
+          }))
+        : undefined;
+    let held;
+    try {
+      if (change === "override") {
+        await editor
+          .getByLabel("Schedule", { exact: true })
+          .selectOption("override");
+        await editor
+          .getByLabel("Cadence", { exact: true })
+          .selectOption("0 * * * *");
+        held = ipc.holdNext("repository_schedule_status");
+        await save(editor);
+      } else {
+        await editor
+          .getByRole("button", { name: "Close dialog", exact: true })
+          .click();
+        await section(page, "Preferences");
+        await page.locator("#cron-helper").selectOption("0 * * * *");
+        await page.locator("#save-settings").click();
+        await expect(page.locator("#save-status")).toHaveText(
+          "All changes saved",
+        );
+        held = ipc.holdNext("repository_schedule_status");
+        await section(page, "Repositories");
+      }
+      await held.arrived;
+      const row = page.getByRole("button", {
+        name: "fixture/one",
+        exact: true,
+      });
+      await expect(row.locator("[data-saved-schedule]")).not.toContainText(
+        "2033",
+      );
+      await expect(row.locator("[data-saved-schedule]")).toContainText(
+        "Unverified",
+      );
+      const current = await store("repository_schedule_status", {
+        repositoryId: settings.repositories[0].id,
+      });
+      expect(current.next_run).toBeNull();
+      expect(current.paused).toBe(true);
+      expect(current.schedule).toMatchObject({
+        kind: "cron",
+        expression: "0 * * * *",
+      });
+      held.release();
+      accounts.resolve();
+      await page.evaluate(() => window.__settingsIdle());
+      await expect(row.locator("[data-saved-schedule]")).toContainText(
+        "Global monitoring is paused",
+      );
+      await expect(row.locator("[data-saved-schedule]")).toContainText(
+        "Next scan: Not scheduled.",
+      );
+      editor = await repositorySettings(page, "fixture/one");
+      await expect(
+        editor.locator("[data-effective-schedule]"),
+      ).not.toContainText("2033");
+      await expect(editor.locator("[data-effective-schedule]")).toContainText(
+        "Global monitoring is paused",
+      );
+    } finally {
+      held?.release();
+      accounts.resolve();
+    }
+  });
+}
+
+test("a failed NEW native refresh retires the old scan promise and exposes its actual failure", async ({
+  page,
+  store,
+  ipc,
+  dataRoot,
+}) => {
+  const settings = await seed(store);
+  settings.repositories[0].enabled = true;
+  await store("seed_settings", settings);
+  await seedHealth(store, settings.repositories[0], {
+    schedule_available: true,
+    next_run: 2000000000,
+    last_failure: null,
+    operation: null,
+  });
+  await providerFixture(page, store);
+  await repositoryPage(page, store);
+  const editor = await repositorySettings(page, "fixture/one");
+  const status = editor.locator("[data-effective-schedule]");
+  await expect(status).toContainText("2033");
+  await page.evaluate(() => window.__settingsIdle());
+  await writeFile(
+    join(dataRoot, "state", "monitoring.json"),
+    "{invalid fixture state",
+  );
+  const held = ipc.holdNext("repository_schedule_status");
+  try {
+    await editor.getByRole("switch", { name: "Monitor fixture/one" }).click();
+    await expect(
+      editor.locator("[data-repository-monitoring-state]"),
+    ).toHaveText("Disabled");
+    await held.arrived;
+    await expect(status).toContainText("Unverified");
+    await expect(status).not.toContainText("2033");
+    const actualFailure = await store("repository_schedule_status", {
+      repositoryId: settings.repositories[0].id,
+    }).then(
+      () => {
+        throw new Error("Invalid native state must reject.");
+      },
+      (cause) => cause,
+    );
+    expect(typeof actualFailure).toBe("string");
+    held.release();
+    await page.evaluate(() => window.__settingsIdle());
+    await expect(status).toContainText("Saved schedule unavailable:");
+    await expect(status).toContainText(actualFailure);
+    await expect(status).not.toContainText("2033");
   } finally {
     held.release();
   }

@@ -579,6 +579,8 @@ IANA time zone and the actual native scheduled next scan after Save. Unavailable
 health, retry exhaustion, pause, disablement and unsynchronized saves show no
 scheduled scan and explain recovery. A separately labeled **Configured occurrence**
 is only a native cron preview, never a promise that a blocked repository will scan.
+Starting a saved-status refresh retires the previous scan promise until the
+current native reply arrives; pending or failed reads never retain an old date.
 Effective inherited and overridden cron must have a future occurrence before an
 enabled repository can be saved; disabled legacy configurations remain repairable.
 Valid overrides do not depend on an unusable saved global schedule. Inheritance uses the

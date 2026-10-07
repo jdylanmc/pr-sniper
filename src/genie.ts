@@ -9,6 +9,7 @@ import {
   type SetupReview,
   repositoryScheduleStatus,
   scheduleStatusText,
+  scheduleStatusPending,
 } from "./resources";
 import { mountSettings, type SetupTarget, type GuidedReturn } from "./settings";
 import "./genie.css";
@@ -69,6 +70,7 @@ export function mountGenie(
   let mode: SetupMode = "welcome";
   let state: SetupReview | undefined;
   let schedules: Record<string, string> = {};
+  let schedulesPending = false;
   let active = false;
   let request = 0;
   let applying: object | undefined;
@@ -90,6 +92,18 @@ export function mountGenie(
     !!id && accounts[id]?.connected === true;
   const scopeFor = (id: string) =>
     state?.scopes.find((scope) => scope.repository_id === id);
+  const savedScheduleText = (id: string) =>
+    schedules[id] ??
+    (schedulesPending
+      ? scheduleStatusPending
+      : "Saved schedule unavailable; refresh setup.");
+  const updateScheduleLabels = () => {
+    root
+      .querySelectorAll<HTMLElement>("[data-genie-schedule]")
+      .forEach((label) => {
+        label.textContent = savedScheduleText(label.dataset.genieSchedule!);
+      });
+  };
   function progress() {
     if (!state) return [false, false, false, false];
     const { settings, readiness } = state.resources;
@@ -244,7 +258,7 @@ export function mountGenie(
           <dt>Pull requests</dt><dd>${scope?.mode === "all_open_and_future" ? "All currently open and future matching PRs" : scope?.active ? "Legacy saved admission retained; Save repository to include all currently open and future matching PRs" : "Not configured"}</dd>
           <dt>Authors</dt><dd>${watched.length ? escape(watched.map((a) => `${a.login} (${a.id})`).join(", ")) : "All authors"}</dd>
           <dt>Review requests</dt><dd>${policy.reviewer_assignment ? "Acting-account requests can admit older or unwatched PRs" : "Off"}</dd>
-          <dt>Schedule</dt><dd>${escape(schedules[repository.id] ?? "Saved schedule unavailable; refresh setup.")}</dd>
+          <dt>Schedule</dt><dd data-genie-schedule="${escape(repository.id)}">${escape(savedScheduleText(repository.id))}</dd>
           <dt>Review execution</dt><dd>Automatic when eligible; pause, disablement, account access and capacity still apply</dd>
           <dt>Publication</dt><dd>Separate Publish Comment and primary Reply Comment permissions; unpermitted output stays local</dd></dl>
           ${(repository.assignments ?? [])
@@ -333,6 +347,9 @@ export function mountGenie(
     if (!active || applying) return;
     const current = ++request;
     if (models) checkedModelsFor = undefined;
+    schedules = {};
+    schedulesPending = true;
+    updateScheduleLabels();
     try {
       const next = await read();
       const statuses = await Promise.all(
@@ -354,6 +371,7 @@ export function mountGenie(
       const changed = next.confirmation !== state?.confirmation;
       state = next;
       schedules = Object.fromEntries(statuses);
+      schedulesPending = false;
       options.state?.(next);
       if (changed) checkedModelsFor = undefined;
       message = "";
@@ -367,9 +385,11 @@ export function mountGenie(
         checkedModelsFor = next.confirmation;
       }
       if (changed || models || lastError || !root.children.length) render();
+      else updateScheduleLabels();
       lastError = "";
     } catch (cause) {
       if (active && current === request) {
+        schedulesPending = false;
         checkedModelsFor = undefined;
         message = failure(cause);
         lastError = message;
@@ -409,6 +429,8 @@ export function mountGenie(
     invalidateWork();
     mode = next;
     active = true;
+    schedules = {};
+    schedulesPending = true;
     render();
     const position = positions.get(mode);
     if (position?.focus)

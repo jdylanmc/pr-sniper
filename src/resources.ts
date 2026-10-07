@@ -109,6 +109,8 @@ export interface SetupReview {
 }
 
 export const savedResources = () => invoke<SavedResources>("saved_resources");
+export const scheduleStatusPending =
+  "Refreshing saved schedule. Next scan: Unverified until native status is read.";
 export interface RepositoryScheduleStatus {
   inherited: boolean;
   schedule: Schedule;
