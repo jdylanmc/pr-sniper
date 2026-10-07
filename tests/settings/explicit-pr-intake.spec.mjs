@@ -531,6 +531,12 @@ for (const genie of [false, true]) {
     await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
       "paused",
     );
+    await expect(
+      editor.locator("[data-repository-monitoring-state]"),
+    ).toHaveText("Enabled");
+    await expect(
+      editor.locator("[data-repository-monitoring-detail]"),
+    ).toContainText("Global Monitoring paused");
     const work = await store("monitoring_snapshot");
     expect(work.jobs).toHaveLength(1);
     expect(work.jobs[0].number).toBe(302);

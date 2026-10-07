@@ -2571,6 +2571,7 @@ export async function mountSettings(
           await commitResource(repositoryEdit(repository, proposed), modal);
           pendingSetup.delete(repository.id);
           setupMonitoringOff.delete(repository.id);
+          refreshSavedMonitoring();
           if (requestedPull) {
             if (pendingPullRequests.get(repository.id) !== requestedPull)
               throw `Configuration saved, but the earlier PR #${requestedPull.number} request was replaced or canceled. Save the current request's configuration to queue it.`;
