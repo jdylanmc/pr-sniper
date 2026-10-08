@@ -294,7 +294,22 @@ pub(crate) fn launch_worker(
                 auth.account_session_allowed(&execution.job.account_id)?;
                 Ok(result)
             });
-            finish_final_worker(&store, &host.ai, &execution, outcome, now_seconds()?)
+            finish_final_worker(&store, &host.ai, &execution, outcome, now_seconds()?)?;
+            let diagnostic = store.load_actions().and_then(|ledger| {
+                let current = ledger
+                    .finals
+                    .iter()
+                    .find(|entry| entry.id == execution.key)
+                    .ok_or("Final review diagnostic operation disappeared.")?;
+                store.record_attempt_decision(
+                    &execution.operation.id,
+                    crate::review::diagnostics::retry_event(&current.execution.operation),
+                )
+            });
+            if let Err(error) = diagnostic {
+                crate::report(&app, error);
+            }
+            Ok::<_, String>(())
         })();
         if let Err(error) = saved {
             crate::report(&app, error);

@@ -3,7 +3,256 @@ use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod support;
+use pr_sniper_lib::storage::diagnostics::{
+    Attempt, CompletionStage, Connectivity, Coverage, Event, FailureKind, Outcome, Paths,
+    PublicationStage, Record, RetryDecision, StopReason, ToolName, VerificationField,
+};
 use support::Fixture;
+
+fn attempt_record(id: &str, event: Event) -> Record {
+    Record {
+        attempt: Attempt {
+            id: id.into(),
+            operation_id: "same-operation".into(),
+            work_id: "same-work".into(),
+            number: 153,
+            head: "a".repeat(40),
+            model: "fixture-model".into(),
+            started_at_ms: Some(1000),
+            session_id: Some(format!("session-{id}")),
+            runtime_version: Some("fixture-runtime".into()),
+        },
+        sequence: Some(1),
+        elapsed_ms: Some(50),
+        event,
+    }
+}
+
+fn failure_record(id: &str) -> Record {
+    attempt_record(
+        id,
+        Event::Finished {
+            stage: CompletionStage::Attempt,
+            failure: Some(FailureKind::IncompleteCoverage),
+            coverage: Some(Coverage {
+                changed: Paths::new(["one.rs".into(), "two.rs".into()]),
+                covered: Paths::new(["one.rs".into()]),
+                missing: Paths::new(["two.rs".into()]),
+                responsible_tool: ToolName::ReadChanges,
+            }),
+            stop_reason: StopReason::NotExposed,
+            session_events: 3,
+            summarized_events: 3,
+        },
+    )
+}
+
+#[test]
+fn failures_replacements_and_host_retry_decisions_survive_fresh_readback() {
+    let fixture = Fixture::new();
+    fixture
+        .store()
+        .record_attempt(failure_record("first"))
+        .unwrap();
+    fixture
+        .store()
+        .record_attempt_decision(
+            "same-operation",
+            Event::Retry {
+                decision: RetryDecision::Scheduled,
+                next_attempt_at: Some(2000),
+                attempt_count: 1,
+            },
+        )
+        .unwrap();
+    fixture
+        .store()
+        .record_attempt(attempt_record("replacement", Event::Started))
+        .unwrap();
+    let records = serde_json::to_value(fixture.store().diagnostics().unwrap()).unwrap();
+    assert_eq!(
+        records[0]["attempt"]["event"]["coverage"]["missing"]["paths"],
+        serde_json::json!(["two.rs"])
+    );
+    assert_eq!(records[1]["attempt"]["attempt"]["id"], "first");
+    assert_eq!(records[1]["attempt"]["event"]["next_attempt_at"], 2000);
+    assert_eq!(records[2]["attempt"]["attempt"]["id"], "replacement");
+    assert_eq!(
+        records[0]["attempt"]["attempt"]["operation_id"],
+        records[2]["attempt"]["attempt"]["operation_id"]
+    );
+    assert_ne!(
+        records[0]["attempt"]["attempt"]["session_id"],
+        records[2]["attempt"]["attempt"]["session_id"]
+    );
+}
+
+#[test]
+fn lifecycle_and_publication_seams_store_only_typed_decisions() {
+    let fixture = Fixture::new();
+    for event in [
+        Event::Watchdog {
+            failure: FailureKind::InactivityTimeout,
+            idle_ms: Some(900_000),
+            total_ms: 1_000_000,
+        },
+        Event::Watchdog {
+            failure: FailureKind::TotalDurationTimeout,
+            idle_ms: Some(100),
+            total_ms: 7_200_001,
+        },
+        Event::Cancelled,
+        Event::Connectivity {
+            state: Connectivity::Suspended,
+            next_check_at: Some(100),
+        },
+        Event::Connectivity {
+            state: Connectivity::Resumed,
+            next_check_at: None,
+        },
+        Event::Teardown {
+            abort: Outcome::Failed,
+            shutdown: Outcome::ForcedStopUnverified,
+        },
+        Event::Publication {
+            stage: PublicationStage::VerifyPending,
+            mismatch: Some(VerificationField::Body),
+            ownership: Outcome::Success,
+            failure: None,
+        },
+        Event::Publication {
+            stage: PublicationStage::Ownership,
+            mismatch: Some(VerificationField::Author),
+            ownership: Outcome::Failed,
+            failure: Some(FailureKind::Provider),
+        },
+    ] {
+        fixture
+            .store()
+            .record_attempt(attempt_record("seam", event))
+            .unwrap();
+    }
+    let records = serde_json::to_value(fixture.store().diagnostics().unwrap()).unwrap();
+    assert_eq!(
+        records[0]["attempt"]["event"]["failure"],
+        "inactivity_timeout"
+    );
+    assert_eq!(records[1]["attempt"]["event"]["total_ms"], 7_200_001_u64);
+    assert_eq!(records[3]["attempt"]["event"]["state"], "suspended");
+    assert_eq!(records[4]["attempt"]["event"]["state"], "resumed");
+    assert_eq!(
+        records[5]["attempt"]["event"]["shutdown"],
+        "forced_stop_unverified"
+    );
+    assert_eq!(records[6]["attempt"]["event"]["mismatch"], "body");
+    assert_eq!(records[6]["attempt"]["event"]["stage"], "verify_pending");
+    assert_eq!(records[7]["attempt"]["event"]["ownership"], "failed");
+}
+
+#[test]
+fn path_caps_and_secret_redaction_keep_counts_and_distinct_opaque_paths() {
+    let fixture = Fixture::new();
+    let mut paths = vec![
+        "ghp_secret-one.rs".to_string(),
+        "github_pat_secret-two.rs".into(),
+    ];
+    paths.extend((0..200).map(|i| format!("path-{i}.rs")));
+    let mut record = attempt_record(
+        "safe",
+        Event::Coverage {
+            coverage: Coverage {
+                changed: Paths::new(paths.clone()),
+                covered: Paths::new(Vec::new()),
+                missing: Paths::new(paths),
+                responsible_tool: ToolName::ReadChanges,
+            },
+        },
+    );
+    record.attempt.model = "Bearer synthetic-secret".into();
+    record.attempt.runtime_version = Some("-----BEGIN PRIVATE KEY-----".into());
+    fixture.store().record_attempt(record).unwrap();
+    let records = serde_json::to_value(fixture.store().diagnostics().unwrap()).unwrap();
+    let changed = &records[0]["attempt"]["event"]["coverage"]["changed"];
+    assert_eq!(changed["count"], 202);
+    assert_eq!(changed["paths"].as_array().unwrap().len(), 128);
+    assert_eq!(changed["omitted"], 74);
+    assert_ne!(changed["paths"][0], changed["paths"][1]);
+    let text = fs::read_to_string(fixture.path().join("state/attempts.jsonl")).unwrap();
+    for secret in [
+        "ghp_secret",
+        "github_pat_secret",
+        "synthetic-secret",
+        "PRIVATE KEY",
+    ] {
+        assert!(!text.contains(secret), "{secret}");
+    }
+    assert!(text.len() <= 128 * 1024);
+}
+
+#[test]
+fn attempt_rotation_is_capped_and_diagnostics_includes_retained_failure_context() {
+    let fixture = Fixture::new();
+    fixture
+        .store()
+        .record_attempt(failure_record("oldest"))
+        .unwrap();
+    let path = fixture.path().join("state/attempts.jsonl");
+    let line = fs::read_to_string(&path).unwrap();
+    const LIMIT: usize = 1024 * 1024;
+    for round in 1..=5 {
+        let current = fs::read_to_string(&path).unwrap();
+        let first = current.lines().next().unwrap().to_string() + "\n";
+        fs::write(&path, first.repeat(LIMIT / first.len())).unwrap();
+        fixture
+            .store()
+            .record_attempt(failure_record(&format!("attempt-{round}")))
+            .unwrap();
+    }
+    assert!(line.contains("incomplete_coverage"));
+    let files: Vec<_> = fs::read_dir(fixture.path().join("state"))
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .collect();
+    assert_eq!(files.len(), 4);
+    assert!(files
+        .iter()
+        .all(|file| file.metadata().unwrap().len() <= LIMIT as u64));
+    let records = fixture.store().diagnostics().unwrap();
+    let ids: Vec<_> = records
+        .iter()
+        .filter_map(|r| r.attempt.as_ref())
+        .map(|r| r.attempt.id.as_str())
+        .collect();
+    assert!(ids.contains(&"attempt-5"));
+    assert!(ids.contains(&"attempt-4"));
+    assert!(ids.contains(&"attempt-2"));
+    assert!(!ids.contains(&"oldest"));
+    assert!(records.iter().filter_map(|r| r.attempt.as_ref()).all(|r|
+        matches!(&r.event, Event::Finished { coverage: Some(coverage), .. } if coverage.missing.paths == ["two.rs"])
+    ));
+}
+
+#[test]
+fn corrupt_or_oversized_attempt_logs_fail_visibly_without_echoing_content() {
+    let fixture = Fixture::new();
+    fixture
+        .store()
+        .record_attempt(failure_record("one"))
+        .unwrap();
+    let path = fixture.path().join("state/attempts.jsonl");
+    let mut record: serde_json::Value =
+        serde_json::from_str(fs::read_to_string(&path).unwrap().trim()).unwrap();
+    record["attempt"]["event"]["body"] = "PRIVATE_COMMENT".into();
+    fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+    let error = fixture.store().diagnostics().unwrap_err();
+    assert!(!error.contains("PRIVATE_COMMENT"));
+    fs::write(&path, vec![b' '; 1024 * 1024 + 1]).unwrap();
+    assert!(fixture
+        .store()
+        .diagnostics()
+        .unwrap_err()
+        .contains("size limit"));
+}
 
 #[test]
 fn diagnostics_append_and_survive_a_fresh_reader() {

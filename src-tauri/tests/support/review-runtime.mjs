@@ -153,22 +153,35 @@ process.stdin.on("data", (chunk) => {
         break;
       case "session.send":
         respond(request.id, { messageId: randomUUID() });
-        if (scenario === "final-full-review") {
-          event("tool.execution_start", { toolName: "read_changes" });
+        if (["final-full-review", "read-source-only", "tool-invalid-path"].includes(scenario)) {
+          const toolName = scenario === "read-source-only" ? "read_source" : "read_changes";
+          event("tool.execution_start", { toolName });
           event("external_tool.requested", {
             sessionId,
             requestId: "final-read",
             toolCallId: "final-read",
-            toolName: "read_changes",
-            arguments: { paths: ["source.rs"] },
+            toolName,
+            arguments: scenario === "read-source-only"
+              ? { path: "source.rs", side: "head" }
+              : { paths: [scenario === "tool-invalid-path" ? "missing.rs" : "source.rs"] },
           });
           break;
         }
         if (scenario === "waiting") break;
         setTimeout(() => {
-          if (scenario === "failure-held-abort") {
-            event("session.error", { statusCode: 503, retryAfterSeconds: 7 });
+          if (["failure-held-abort", "runtime-error"].includes(scenario)) {
+            event("session.error", {
+              statusCode: 503, retryAfterSeconds: 7, errorType: "network",
+              message: "ghp_secret-runtime-token SOURCE PRIVATE PROMPT",
+            });
             return;
+          }
+          if (scenario === "runtime-truncation") {
+            event("session.truncation", {
+              messagesRemovedDuringTruncation: 3,
+              tokenLimit: 123, privateContent: "DO NOT RECORD",
+            });
+            event("tool.execution_complete", { success: false, toolCallId: "remote-tool", error: { message: "DO NOT RECORD" } });
           }
           event("assistant.usage", { inputTokens: 20, outputTokens: 10 });
           event("assistant.message", {
@@ -199,6 +212,12 @@ process.stdin.on("data", (chunk) => {
       case "session.tools.handlePendingToolCall":
         receipt({ method: "fixture.finalRead", result: request.params.result });
         respond(request.id, {});
+        if (["read-source-only", "tool-invalid-path"].includes(scenario)) {
+          event("assistant.usage", { inputTokens: 20, outputTokens: 10 });
+          event("assistant.message", { content: "{}" });
+          event("session.idle", {});
+          break;
+        }
         if (
           scenario !== "final-full-review" ||
           request.params.requestId !== "final-read" ||

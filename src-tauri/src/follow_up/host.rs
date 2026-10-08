@@ -1620,6 +1620,15 @@ fn analysis_checkpoint(
 }
 
 async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure> {
+    let diagnostics = crate::review::diagnostics::native(
+        &native.app,
+        &run.context.job,
+        run.analysis.as_ref().unwrap(),
+        &run.context.selection.agent.model,
+    );
+    diagnostics.emit(crate::storage::diagnostics::Event::Phase {
+        phase: crate::storage::diagnostics::Phase::PreparingContext,
+    });
     run.phase = Phase::Analyzing;
     native.save(run)?;
     let result = async {
@@ -1679,6 +1688,7 @@ async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure>
         let before_native = native.clone();
         let before_run = run.clone();
         let request = runtime::Request {
+            diagnostics: Some(diagnostics.clone()),
             task: ReplyTask {
                 conversation: run.input(),
                 trigger_id: run.trigger_id.clone(),
@@ -1709,6 +1719,9 @@ async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure>
         let mut result = integration
             .review(request, native.cancelled.clone(), deadline)
             .await?;
+        diagnostics.emit(crate::storage::diagnostics::Event::Phase {
+            phase: crate::storage::diagnostics::Phase::CheckingFinalEligibility,
+        });
         let mut final_native = native.clone();
         let mut final_run = run.clone();
         final_run.result = Some(result.clone());
@@ -1721,7 +1734,11 @@ async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure>
         Ok::<_, Failure>(result)
     }
     .await;
-    match result {
+    diagnostics.finish(
+        crate::storage::diagnostics::CompletionStage::Attempt,
+        result.as_ref().err(),
+    );
+    let saved = match result {
         Ok(result) => {
             run.phase = match result.output.decision {
                 ReplyDecision::Reply => Phase::WaitingPublication,
@@ -1743,7 +1760,13 @@ async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure>
                 .map_err(|_| Failure::permanent("Thread storage unavailable."))?;
             complete_analysis(&store, run, Err(error), false, native.now()?)
         }
+    };
+    if saved.is_ok() {
+        diagnostics.emit(crate::review::diagnostics::retry_event(
+            run.analysis.as_ref().unwrap(),
+        ));
     }
+    saved
 }
 
 pub(crate) fn complete_analysis(

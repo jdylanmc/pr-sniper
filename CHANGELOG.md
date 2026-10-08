@@ -101,6 +101,11 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   banner, without hiding direct or nested host storage failures if a later
   error-record save succeeds. Intentional policy refusals stay item-local;
   no existing remote drafts are reset or discarded. (#154)
+- Preserve bounded, rotated review-attempt diagnostics with correlated sessions,
+  tool outcomes, file coverage, runtime failures and cleanup evidence. Diagnostics
+  shows redacted metadata and explicit unavailable evidence; newer retry,
+  connectivity and publication producers remain separate integrations. (#153)
+
 - Resolve GitHub pull-request URLs to the exact PR and queue it immediately
   after valid repository Save, even outside watch filters. Reuse unchanged
   iteration work while preserving pause, disabled repositories, account/Agent

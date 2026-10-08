@@ -152,14 +152,16 @@ pub(crate) async fn with_directory<T>(
     Ok(result)
 }
 
-pub(crate) async fn shutdown(client: &Client) {
+pub(crate) async fn shutdown(client: &Client) -> crate::storage::diagnostics::Outcome {
     if !matches!(
         tokio::time::timeout(Duration::from_secs(5), client.stop()).await,
         Ok(Ok(()))
     ) {
         client.force_stop();
         eprintln!("[copilot] stage=runtime_cleanup outcome=forced_stop");
+        return crate::storage::diagnostics::Outcome::ForcedStopUnverified;
     }
+    crate::storage::diagnostics::Outcome::Success
 }
 
 pub(crate) fn runtime_program() -> Result<PathBuf, String> {

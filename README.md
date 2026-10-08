@@ -676,6 +676,49 @@ configuration; malformed or unreadable files are reported rather than reset.
 256 KiB plus one rotated file. **Settings > Preferences**
 opens
 an in-app reader, not an arbitrary filesystem or shell interface.
+
+Review attempts additionally write `state/attempts.jsonl`, rotated through
+`attempts.1.jsonl` to `attempts.3.jsonl` (1 MiB each, 4 MiB total). Both Diagnostics
+surfaces read the retained attempt generations. Each record repeats its attempt
+UUID, operation/work correlation, PR number (`number`), immutable head, model and
+available runtime/session identity. Runtime records have monotonic elapsed
+milliseconds and sequence numbers; host retry decisions have wall-clock timestamps
+and explicitly absent runtime sequence/elapsed values. Follow the operation ID
+across fresh attempt/session IDs, and the work ID across manual replacements.
+
+Tool evidence separates requested known paths, unknown-path counts, successfully
+returned paths, and distinct paths registered by `read_changes`; `read_source`
+and searches do not satisfy review coverage. Successful response byte counts
+measure the serialized JSON tool payload, not RPC framing. Failed/rejected
+responses have an unavailable byte count rather than a guessed size. The
+response-limit rejection flag identifies the app's limit, separately from
+runtime tool failures and conversation-truncation events. Per-tool runtime
+truncation is not exposed by the pinned SDK. Stop-hook reasons are allowlisted
+when supplied; otherwise final evidence says `not_exposed`.
+
+Each path collection retains at most 128 paths and its full count/omitted count.
+Metadata exceeding 256 serialized bytes, control characters and recognized
+credential patterns become distinct opaque SHA-256 labels. Session summaries
+retain the first 128 events plus errors, abort and idle; final counters disclose
+omissions. Records are capped at 128 KiB, oldest generations expire, and this is
+bounded diagnostic history, not an archive or a promise to retain every tool
+call of an arbitrarily long attempt. Raw arguments, search queries, prompts,
+source/comment bodies, transcripts, provider errors and credentials have no
+fields in the diagnostic schema. Logging failures surface separately and never
+turn a failed review into success or change a publication decision.
+
+The typed integration seam is `storage::diagnostics::{Attempt, Record, Event}`
+with `Store::record_attempt` and `Store::record_attempt_decision`. The latter
+correlates a host decision with the latest retained attempt for an operation and
+reports missing evidence explicitly. `Event::Publication` accepts only a stage,
+ownership outcome, mismatch field and failure category--never compared values.
+`Watchdog`, `Connectivity` and `Retry` likewise record observed producer decisions,
+not new policy. The diagnostic foundation wires existing review/session/tool,
+total-deadline, cancellation, cleanup and retry paths. The new inactivity watchdog,
+indefinite fresh-session retries and offline suspension/resumption remain #152/#149
+producer integrations. Publication-field producers remain coordinated with #154;
+this foundation does not change publication verification or authorize remote cleanup.
+Their typed seam tests are not evidence that those policies are implemented.
 Invalid settings are reported rather than silently reset or overwritten.
 
 ## Scheduled monitoring
