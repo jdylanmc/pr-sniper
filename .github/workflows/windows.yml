@@ -33,6 +33,8 @@ jobs:
           python-version: "3.13"
       - run: npm ci
         timeout-minutes: 5
+      - run: npm run test:skills
+        timeout-minutes: 2
       - run: npm run build
         timeout-minutes: 5
       - run: npm run test:release:windows

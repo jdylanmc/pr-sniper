@@ -7,30 +7,52 @@ user-invocable: true
 
 # Joe-mode
 
-Use [the shared team contract](../joe-mode-paseo/TEAM.md): six developer slots
+## Repository adaptation
+
+Copied with the CMUX adapter from
+[`jdylanmc/cmux-maestro` at `5dc3908`](https://github.com/jdylanmc/cmux-maestro/tree/5dc3908/.agents/skills).
+PR Sniper owns these adapted packages and the linked shared contracts; they
+are not installer-managed entries in `skills-lock.json`. Preserve the
+repository's instructions, private common-directory board, six-developer
+limit and independent merge gate. Installation is not activation. Retired
+adapter removal requires live-owner reconciliation, never automatic cleanup.
+
+Use [the shared team contract](TEAM.md): six developer slots
 by default, feature two, bug/hardening/refactor one; support roles are separate.
 Prefer TDD for features, with useful legacy exceptions. Delegate blocker
 investigation, retry one confirmed work blocker with fresh context/worktree,
 then return repeated blockers to the single backlog manager. Session Joe has
-no recurring heartbeat; the Paseo adapter alone owns that runtime extension.
+no recurring heartbeat. This repository ships the session-bound CMUX adapter,
+not an unattended runtime.
 
 Hand the human pull requests to review. Loop existing skills, not a second implementation process. The human-authored [intent](intent.md) defines the purpose.
+
+Apply [delivery pace](DELIVERY-PACE.md). Record `joeReviewVisibility: true` in
+Joe delivery packets; [DELIVERY owns PR states](../ship/DELIVERY.md#pr-states).
+Every review, self-check and duck follows
+[invoker doctrine selection](../doctrine/APPLY.md#joe-review-operations).
 
 Use [Doctrine](../doctrine/SKILL.md) under the [common application contract](../doctrine/APPLY.md). Scope explicit selections to the named delivery, not every unrelated backlog item. With none preselected, choose appropriate doctrines per worker from catalog metadata; each work packet carries IDs, required flags, reasons, source locations, and digests. Applying workers retrieve the texts. Require `worktrees` for each PR-producing lane and preserve role-specific requirements such as `solid` for code Roast.
 
 Joe-mode starts only when requested and stays active in this session until paused or stopped. Route subsequent turns within the anchor. A side question does not stop work; explicit redirection does. Bounded workers must not activate another Joe-mode controller. Follow the [invocation contract](../setup/INVOCATION.md): one controller per repository, not per issue, branch, worktree, or selected scope.
 
-The separate human-enabled [Paseo PM adapter](../joe-mode-paseo/SKILL.md)
-does not extend this session mode's lifetime. Before taking repository control,
-reconcile its saved activation, wakeup job and current pass on the **same owner
-board**. Join an existing logical controller or arrange observed release and
-acknowledged transfer; an idle gap between scheduled passes is not absence of
-ownership. Preserve its paused/stopped state, persistent Discovery lane and
-delivery/recovery custody. Unknown cross-session/host ownership blocks competing
-dispatch. The adapter may reuse the routing sections below only within its
-separate human grant and RUN contract, never by invoking another Joe controller.
+The separate human-enabled [CMUX cockpit](../joe-mode-cmux/SKILL.md) does not
+create another logical controller or extend this session mode's lifetime.
+Before taking repository control, reconcile ownership on the **same owner board**,
+including CMUX's exact managed run and any surviving legacy controller, jobs
+or deliveries. Removing an adapter does not stop its live resources or transfer
+its authority. Join an existing logical
+controller or arrange observed release and acknowledged transfer; an idle tab or gap between scheduled passes is not
+absence of ownership. Preserve paused/stopped state, persistent Discovery lanes
+and delivery/recovery custody. Unknown cross-session/host ownership blocks
+competing dispatch. An adapter may reuse the routing sections below only within
+its separate human grant and runtime contract, never by invoking another Joe
+controller.
 
-Kickoff authorizes ordinary delivery of selected in-scope work: repairs, commits, PR publication, review, and shepherding. Do not ask again at routine transitions. Preserve explicit narrower requests, human product decisions, scope changes, and every planning/recording approval gate. Never delegate human approval or merging.
+Kickoff authorizes ordinary delivery of selected in-scope work: repairs, commits, PR publication, review, and shepherding. Do not ask again at routine transitions. Preserve explicit narrower requests, human product decisions, scope changes, and every planning/recording approval gate. Never
+delegate human approval. Only an independently authorized PR coordinator may
+merge under the repository's [merge contract](MERGE.md); ordinary delivery
+workers and this controller receive no merge authority.
 Record each delivery's narrow monitoring/recovery authority in the
 [existing packet](../ship/DELIVERY.md#one-delivery-packet-one-owner), including
 this controller and root human conversation. Wake authority never permits
@@ -60,6 +82,14 @@ Use harness session storage or a uniquely named session/OS-temporary artifact, n
 Reconcile any prior board with live agents and provider state before reusing it. Resolve the common Git directory and normalized repository/provider identity so another worktree or clone is not mistaken for a different repository. Do not duplicate another active Joe-mode owner even for disjoint scopes in that repository: join the current controller or arrange explicit transfer. If visibility or ownership is uncertain, resolve it before dispatch rather than racing another session. A local board is coordination state, not a cross-session lock. An idea without a repository may begin discovery; check repository-wide ownership when its repository is resolved.
 
 Read [runtime guidance](RUNTIME.md) and execute [LIFECYCLE](../squadron/LIFECYCLE.md) before dispatch, transfer, recovery, or retirement. Keep its placement, delivery, custody, and runtime evidence on this board. Confirm the harness supports the requested agents and background work. Use a bounded capacity appropriate to available tools and resources; retain capacity for the human-facing discovery path and for completion/review work rather than filling every slot with new implementation.
+
+Apply [role worktree placement](WORKTREES.md): the orchestrator stays on
+`main`, every repository-backed Discovery agent uses `discovery/<feat>`, and
+any explicitly authorized PR/auto-merge coordinator uses `pr-sniper`. Fetch and
+fast-forward a clean owned main when remote main advances, including after
+each confirmed merge. Dirty, ahead, diverged, or unobserved main blocks that
+update; preserve work rather than forcing it. These Git roles do not create
+extra logical controllers or grant merge authority.
 
 ### Bootstrap missing setup under this owner
 
@@ -106,7 +136,33 @@ Shepherd for all accepted PR scopes and one optional backlog manager for deep
 inquiry. Disposable roasters and blocker investigators return compact evidence.
 Each route retains integration; do not launch competing workers beneath it.
 Do not delegate this controller. The optional PR coordinator requires the
-separately human-enabled Paseo merge contract; session Joe grants no merge power.
+repository's [merge contract](MERGE.md); session Joe grants
+no merge power.
+
+### Issue-centered swarms
+
+Default: one issue-centered swarm per delivery group; one visible home, one
+accountable owner. Add bounded specialists only when useful. Small fix:
+implementer plus independent review, not a full roster. Keep TEAM's budget,
+reservations, shared roles and gates; every writer counts.
+
+On the existing board, bind members, assignments, worktrees/branches, evidence
+and handoffs to the group's full coverage. Track stage (`coding`, `awaiting peer`,
+`awaiting PM`, `awaiting human`), candidate commit, next action/owner and blocking
+question. Runtime adapters own verified placement, naming and identity readback.
+
+Peers hand off directly: exact identities, immutable commits/evidence, named
+integrator. [LIFECYCLE](../squadron/LIFECYCLE.md) owns accepted custody;
+[CMUX RUNTIME](../joe-mode-cmux/RUNTIME.md#native-coordination) owns transport.
+Fire-and-forget sends prove neither acceptance nor completion. No ACK protocol.
+PM handles boundaries, decisions and publication coordination, not every exchange.
+The delivery owner retains integration; peer exchange grants no extra authority.
+
+Keep corrections with the same owner/PR and independent review. Reconcile
+surviving members, handoffs and questions before restart; retain history through
+completion or suspension. Follow existing isolation and LIFECYCLE rules: retire
+finished agents without concrete duties, not branches/worktrees. No extra
+controller, approval system or per-issue shared service.
 
 ## 3. Refresh the relevant backlog
 
@@ -147,7 +203,9 @@ redispatch.
 
 ## 4. Run concurrent paths through the existing flow
 
-Fill available capacity with independent work. Do not stop all delivery during discovery of the next slice or wait for the whole backlog to be specified before dispatching known work.
+Advance existing candidates before filling available capacity with independent
+work. Do not stop all delivery during discovery of the next slice or wait for the
+whole backlog to be specified before dispatching known work.
 
 | Situation | Route and return contract |
 | --- | --- |
@@ -196,7 +254,7 @@ On a completion, human answer, PR event, or meaningful backlog change:
 
 If findings contradict an active delivery, notify its owner and pause affected work at a safe boundary. Reconcile scope with the human; do not change requirements underneath a worker or restart the entire backlog. Preserve unrelated progress.
 
-Auto-transition is not blanket approval. Preserve alignment, ticket-breakdown, and explicitly retained recording/publication gates; do not reintroduce a separate permission prompt for routine delivery already authorized at kickoff. Coordinate meaningful approval requests with the proposed change. Never accept product risk, supply a human decision, merge, approve, or enable auto-merge on their behalf.
+Auto-transition is not blanket approval. Preserve alignment, ticket-breakdown, and explicitly retained recording/publication gates; do not reintroduce a separate permission prompt for routine delivery already authorized at kickoff. Coordinate meaningful approval requests with the proposed change. Never accept product risk, supply a human decision, cast approval votes or enable blanket auto-merge. Merging remains restricted to the independently authorized PR coordinator under MERGE, not PM or delivery workers.
 
 Use completion notifications or the runtime's documented wait mechanism. Refresh the scoped backlog after relevant events and at an appropriate bounded interval only while a real observer is running. Do not busy-poll, spawn idle agents, or imply a final response leaves an unscheduled loop executing.
 
@@ -225,14 +283,9 @@ read-only, never another controller.
 
 ## 6. Hand over PRs, not just progress
 
-For each delivery, surface the actual PR URL, covered issue/spec references, concise change summary, acceptance/check evidence, outstanding decisions, and confirmed Shepherd owner/status. Distinguish **draft/in progress**, **blocked**, and **ready for human review** using the shared delivery contract and current provider state. The final ready handoff is reviewed, GREEN, and rebased/current with latest main or the explicit target, with checks tied to the current head and a freshly observed base. "PR created", mergeable, or yesterday's green result does not mean ready. Human final sign-off remains outstanding.
-
-Require DELIVERY's actual promotion and provider non-draft readback plus
-receiver-observed, acknowledged Shepherd custody. Reconcile each selected PR:
-mixed ready/draft/blocked batches are progress, never **all delivered** while
-scoped work is unfinished. Do not promote blocked drafts to clear the board.
-
-Every PR handed to the human must have a Roast covering its current candidate, whether produced by this run or supplied by a coworker. Reuse a still-applicable review; otherwise route to Roast without taking over the PR's delivery owner or silently authorizing edits. Review a draft's available candidate with its incomplete scope explicit. Missing review capability requires reporting the gap and seeking direction, not a clean-review or review-ready claim.
+Use [DELIVERY's PR states and revision rules](../ship/DELIVERY.md#pr-states).
+Return URL, coverage, actual head/base, proof, gaps and accepted Shepherd custody.
+Mixed finished/blocked work is progress, not "all delivered."
 
 Return human feedback to the same owner and PR. A review-ready PR does not end Joe-mode or discovery. After merging/closure, reconcile backlog and dependencies before dispatching more work; do not manufacture follow-up work or close unrelated tracker items.
 

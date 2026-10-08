@@ -14,11 +14,11 @@ callers report what is missing and tell the human to invoke `/setup`, then wait.
 Either permitted entry authorizes exploration and proposals, not provider/label
 choices on the human's behalf or bypassing exact-file write confirmation.
 
-Human activation of [joe-mode-paseo](../joe-mode-paseo/SKILL.md) can carry
+Human activation of [joe-mode-cmux](../joe-mode-cmux/SKILL.md) can carry
 that direct human setup request here, preserving its repository/Setup owner,
-settled choices and exact-file approval. Its scheduled RUN is **not** a bootstrap
-caller: missing configuration goes back to the human setup owner. Installation
-of that adapter does not activate Setup or a schedule.
+settled choices and exact-file approval. Machine callbacks do not bootstrap
+Setup: missing configuration goes back to the human setup owner. Installation
+of that adapter does not activate Setup, Joe-mode or a schedule.
 
 Reconcile repository identity and any active Setup owner before starting, across
 worktrees/sessions. Join or resume that owner rather than creating a duplicate;

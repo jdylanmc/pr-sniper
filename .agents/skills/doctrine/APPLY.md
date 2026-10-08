@@ -9,6 +9,24 @@ Use [Doctrine](SKILL.md) through the actual harness skill interface, or read its
 3. With no operator preselection, inspect the catalog and choose a small, relevant set for the actual work or each sub-agent. Skill suggestions are selection hints, not commands to load the whole list. Preserve operator preselection; explain proposed optional additions rather than silently replacing it.
 4. Canonicalize names, deduplicate IDs, and record each one's relevance and operator-selected, required, or agent-selected status. A mandatory ID stays mandatory when duplicated by an optional choice.
 
+## Joe review operations
+
+Before Roast, self-verification, rubber-duck or equivalent judgment, the
+**invoker selects the doctrines**. Use catalog metadata; choose at least one
+relevant doctrine, usually 1-3. Preserve human selections and add role requirements.
+`worktrees` alone is not a substantive review lens. If none fits, record the
+coverage gap and seek an agreed standard; do not pad the list.
+
+Use the packet below: IDs, reasons, rules/risks to examine, paths and digests.
+Self-verification uses the same record without a new agent. The applying agent
+loads verified full texts; it may add relevant standards with reasons.
+
+Return **rule -> examined evidence -> finding or supported no-finding** for each
+selected doctrine, plus limits. Loading is not application. The invoker checks
+coverage before accepting the result; missing evidence is not a pass.
+Fix passes retain selections/findings and revisit affected rules, not a fresh
+whole review by ritual. No extra approval interview or permission expansion.
+
 ## Worker packet
 
 Append to the existing work packet; do not create another orchestration framework:

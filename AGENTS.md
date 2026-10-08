@@ -55,8 +55,14 @@ workers load the full selected texts before applying them.
 
 The human merges PRs by default. Exception: Dylan's explicitly designated
 independent PR coordinator may review and merge PRs in `jdylanmc/pr-sniper`
-as `jdylanmc` under the [merge gate](.agents/skills/joe-mode-paseo/MERGE.md)
+as `jdylanmc` under the [merge gate](.agents/skills/joe-mode/MERGE.md)
 until Dylan revokes the grant; changes to this exception remain human-merged.
+The 2026-10-08 human authorization carries that same gate to the CMUX
+coordinator; it does not grant merge power to PM, implementers or Shepherd.
+PR Sniper may be pointed at its own repository through separately configured
+app assignments, but that does not bypass the coordinator gate or authorize
+an agent to approve its own implementation. This policy-changing PR remains
+human-merged.
 Agents must not submit approval votes, enable automatic merging or bypass
 provider protections.
 
@@ -65,18 +71,22 @@ independent review, relevant verification and maintained PR custody. Preserve
 unrelated changes. Route missing readiness or product decisions to the single
 Discovery conversation rather than inventing requirements.
 
-The human-authorized Paseo team has a maximum of six developers, not a target.
+The human-authorized Joe team has a maximum of six developers, not a target.
 Feature lanes reserve two slots; fixes, hardening and refactors reserve one.
 Count every writing descendant within that cap. Support roles do not become
 extra implementers. Start Discovery when no actionable work is available.
 
-The approved runtime recipe is a five-minute heartbeat in the primary PM chat
-on the current host until stopped. Pause/stop prevents new assignments while
+The repository ships core Joe-mode and the session-bound
+[CMUX adapter](.agents/skills/joe-mode-cmux/SKILL.md). Paseo and Orca adapters
+are retired; reconcile any surviving legacy owners/jobs before activation.
+There is no CMUX heartbeat or unattended scheduler. Pause/stop prevents new assignments while
 existing workers finish their bounded tasks and preserve their results. PM
 accepts results and retires owned agents only after duties end or transfer;
 questions and unresolved decisions return to the primary human chat.
 
-Activation still requires the Joe-mode Paseo capability and ownership gates.
+Activation still requires the Joe-mode CMUX capability and ownership gates.
+Installing skills or granting merge permission does not activate Joe-mode,
+start workers, configure app assignments or change live runtime permissions.
 Keep runtime IDs, grants and receipts private, never in committed files.
 Resolve the one private board beneath the absolute Git common directory at
 `pr-sniper-team/board.json`; do not create a separate board per worktree.

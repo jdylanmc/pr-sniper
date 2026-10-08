@@ -4,7 +4,7 @@ Owners/workers load this supporting contract before dispatch, return/transfer,
 recovery, and retirement. Use caller authority and existing task/session records;
 no new skill, controller, permission system, or ledger.
 Load the owning contracts without replacing their gates:
-[WORKSPACE](../ship/WORKSPACE.md) for Git isolation/Paseo placement when placing agents;
+[WORKSPACE](../ship/WORKSPACE.md) for Git isolation/CMUX placement when placing agents;
 [DELIVERY](../ship/DELIVERY.md) for PR readiness when finishing;
 [OBSERVATION](../shepherd/OBSERVATION.md) before PR observation/wakeup changes;
 [RECOVERY](../shepherd/RECOVERY.md) for issue-backed Joe continuation.
@@ -18,7 +18,7 @@ unknowns/capability limits:
 - **Identity/role:** repository identity, agent ID, owning parent/return owner,
   assignment bounds, owned PR scopes, authorized actions.
 - **Placement:** Git common directory, worktree path, branch/start commit;
-  Paseo project/workspace IDs and returned mapping, when used.
+  CMUX workspace/surface/generation identities and returned mapping, when used.
 - **Delivery:** actual PR state/draft flag, observed source/target refs and
   commits, candidate-specific acceptance/review/check evidence, blockers.
 - **Custody:** current scope owner, offered return/transfer, receiver's observed
@@ -35,8 +35,8 @@ nor permissions.
 
 1. Before launch, reconcile owners/placement. Dispatch stays pending until
    returned agent identity and its first assigned-state observation are confirmed.
-   Under Joe, apply [TEAM](../joe-mode-paseo/TEAM.md) developer-slot accounting
-   and [permission propagation](../joe-mode-paseo/RUNTIME.md#permission-preserving-dispatch).
+   Under Joe, apply [TEAM](../joe-mode/TEAM.md) developer-slot accounting
+   and its [permission contract](../joe-mode/TEAM.md#permissions-follow-the-human).
    Copy current authorized mode/features before the first prompt and verify
    readback after bootstrap, including for replacements and reviewers.
 2. Workers return complete actual diff/artifacts, candidate IDs, validation/
@@ -94,21 +94,22 @@ Before retirement:
   removal. Uncertain evidence/ownership requires retention, specific reason, and
   next action—not success.
 
-For Paseo, inspect current schemas: `archive_agent` interrupts running agents,
-not just visibility. Never archive another owner's agents, all idle agents,
+For CMUX, follow the installed public lifecycle: close an owned interactive
+session normally before archive; do not kill it or delete its terminal.
+Never archive another owner's agents, all idle agents,
 or live monitors for tidiness. When self-archive interrupts reporting, the
 acknowledged parent performs/verifies it. Unavailable/denied archival requires
 retained ID, capability limit, responsible owner and next action; never guess
 APIs, widen permissions, or silently retain forever.
 
 Retirement is **not** project/workspace archival or worktree/branch/evidence
-deletion. Paseo workspace archival may delete owned worktrees; never substitute
+deletion. Workspace archival is not agent retirement; never substitute
 it. Preserve resources; separately authorized Git cleanup follows WORKSPACE's
 preservation checks.
 Joe team kickoff includes TEAM's bounded blocked-work cleanup: verify remote
 branches and all local evidence before removing exact owned worktrees. Failed
-preservation means keep the worktree. Role retirement also needs PM-recorded
-heartbeat deletion; an unknown timer remains a concrete unresolved duty.
+preservation means keep the worktree. Reconcile any surviving legacy wakeups;
+an unknown timer remains a concrete unresolved duty. CMUX itself adds no timer.
 
 For contract/caller changes, exercise [acceptance scenarios](LIFECYCLE-SCENARIOS.md).
 Package/link tests prove reachability, not runtime compliance.

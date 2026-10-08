@@ -35,32 +35,23 @@ Independent write deliveries need distinct Git worktrees, not branches/UI entrie
 Serialize integration/shared resources; read-only agents may share sources without new
 worktrees. Record placement/custody under [lifecycle contract](../squadron/LIFECYCLE.md).
 
-## Paseo placement, when used
+## CMUX placement, when used
 
-Use exactly **one Paseo project per Git repository and one Paseo workspace per
-Git worktree**. Same-worktree agents share registration; independent writers
-use distinct worktrees/workspaces under that project. New agents alone require
-no project/workspace/worktree.
+Keep roles in the existing repository CMUX workspace, not one UI workspace
+per worktree. Independent writers still need distinct Git worktrees.
+Follow [Joe role placement](../joe-mode/WORKTREES.md): PM on main,
+Discovery in its dedicated feature worktree, and an authorized merge
+coordinator in its own `pr-sniper` worktree.
 
-Resolve repository identity/common directory, actual worktree paths, existing
-registrations; reuse compatible ones. Distinguish UI project/workspace, Git
-repository/common directory, branch, mutable state. Before creation, resolve
-ambiguous/duplicate mappings with owner; never force consistency by deleting registrations.
+Resolve exact workspace/surface ownership before native launch. Supply each
+role's verified absolute worktree through `maestro_spawn` as `cwd`, then
+verify returned identity and actual Git placement. A pane, title or `git -C`
+command is not working-directory evidence. Missing/ambiguous binding blocks
+writes, never permits main fallback or permission widening.
 
-Inspect schemas. Needed worktree/workspace creation always specifies existing
-repository `projectId`; establish one only if absent and authorized.
-Native creation must honor approved layout/ownership. Otherwise create Git
-worktree above, register explicit path:
-`create_workspace({isolation: 'local', path, projectId, title})`.
-Result may report `isolation: 'worktree'`; before use verify actual path,
-project/workspace IDs, Git worktree/branch.
-
-Place agents with verified `workspaceId` in `create_agent`. No invented cwd argument
-or assumed controller-path inheritance: each inspects actual cwd/Git paths/branch/
-starting state. Mismatch/missing mapping capability blocks writes, never permits
-main, project-per-worker, or permission widening. Deliberate inheritance of
-human-selected Allow All is not a placement workaround; follow the actual
-[permission contract](../joe-mode-paseo/RUNTIME.md#permission-preserving-dispatch).
+Use the [CMUX runtime contract](../joe-mode-cmux/RUNTIME.md) for account,
+permission, launch and optional layout gates. No new window, workspace,
+hidden SDK worker or terminal-input fallback to repair placement.
 
 ## Preserve resources at retirement
 
@@ -72,7 +63,7 @@ or delete branches/worktrees merely to clear finished agents.
 
 For Joe's explicitly authorized blocked-work cleanup, verified recoverable
 remote branches replace the integration prerequisite, not the preservation
-checks. Follow [TEAM](../joe-mode-paseo/TEAM.md): stop writers, inspect tracked,
+checks. Follow [TEAM](../joe-mode/TEAM.md): stop writers, inspect tracked,
 untracked and ignored files, preserve safe work/evidence, verify exact remote
 commits, then remove only the owned worktree. Push failure or unpreserved data
 means keep the local copy. Never delete the only copy or a live PR repair workspace.

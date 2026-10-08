@@ -59,8 +59,8 @@ the conversation. Include:
 
 Independent writers need distinct isolated Git worktrees, not disjoint files
 sharing one checkout and Git index. Use the existing delivery's
-[workspace procedure](../ship/WORKSPACE.md), including Paseo's one repository
-project and one workspace per worktree. Read-only workers share compatible
+[workspace procedure](../ship/WORKSPACE.md), including CMUX's existing repository
+workspace with distinct writer worktrees. Read-only workers share compatible
 sources/registration; dispatch alone needs no new isolation.
 Coordinate other shared resources too: ports, databases, fixtures, and services.
 
@@ -75,6 +75,11 @@ Use the harness's actual concurrent/background dispatch tools and current
 schemas. Issue independent launches together where supported. Multiple calls
 are not proof of parallel execution; confirm returned IDs and runtime states.
 Use configured model preferences and defaults, never invented model names.
+
+An inherited runtime-adapter contract takes precedence over generic dispatch
+examples. Keep every role and nested specialist on that runtime. Missing
+adapter launch or communication capability blocks the assignment; it does not
+authorize an invisible helper, another provider, or a different controller.
 
 Keep bounded capacity for integration, independent review, human questions,
 and existing monitors. Do not launch a second monitor for an already-owned PR
