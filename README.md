@@ -1096,6 +1096,10 @@ Publication failures remain on the affected PR with their cause and next action,
 not in the global Settings banner. Host persistence/read/coordination failures
 retain their infrastructure provenance and still raise a host warning, even
 when a later save successfully records the original failure on the PR.
+Capacity and feedback checks distinguish failed state reads from intentional
+pause, human-closed concerns and stale-feedback refusals. The latter remain
+item-local; nested storage failures still warn even when the publication stops
+without throwing an error. No failure message text is used to infer its origin.
 
 Transient failures use the shared limit of three retries within 15 minutes,
 preserving the operation and deadline across restart. Explicit rejection,

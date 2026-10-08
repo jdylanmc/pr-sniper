@@ -42,10 +42,15 @@ pub(crate) fn known_key(store: &Store, key: &str) -> Result<bool, String> {
         .any(|r| r.follow_up_keys.contains(key)))
 }
 
-pub(crate) fn contexts(store: &Store, job: &QueueJob) -> Result<Vec<Context>, String> {
-    let ledger = store.load_feedback()?;
+pub(crate) fn contexts_checked(
+    store: &Store,
+    job: &QueueJob,
+) -> Result<Vec<Context>, crate::publication::GateError> {
+    use crate::publication::GateError;
+    let ledger = store.load_feedback().map_err(GateError::Storage)?;
     let mut contexts = Vec::new();
-    for origin in load(store)?
+    for origin in load(store)
+        .map_err(GateError::Storage)?
         .receipts
         .into_iter()
         .flat_map(|r| r.owned)
@@ -57,9 +62,15 @@ pub(crate) fn contexts(store: &Store, job: &QueueJob) -> Result<Vec<Context>, St
                 .records
                 .iter()
                 .find(|r| r.context.id == id)
-                .ok_or("Waiting for verified retained-root observations after reopening.")?;
+                .ok_or_else(|| {
+                    GateError::Policy(
+                        "Waiting for verified retained-root observations after reopening.".into(),
+                    )
+                })?;
             if record.observed_head != job.head_sha || record.context.unavailable.is_some() {
-                return Err("Retained owned feedback is unavailable at this revision.".into());
+                return Err(GateError::Policy(
+                    "Retained owned feedback is unavailable at this revision.".into(),
+                ));
             }
             contexts.push(record.context.clone());
         }

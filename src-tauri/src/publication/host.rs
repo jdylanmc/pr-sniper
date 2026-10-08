@@ -250,6 +250,33 @@ struct FailureRouting {
 }
 
 impl FailureRouting {
+    fn capacity_gate(&self, store: &Store) -> Result<(), Failure> {
+        crate::capacity::publication_gate_checked(store).map_err(|error| self.gate_error(error))
+    }
+
+    fn feedback_gate(
+        &self,
+        store: &Store,
+        review: &crate::review::ReviewRun,
+    ) -> Result<(), Failure> {
+        crate::feedback::publication_gate_checked(store, review)
+            .map_err(|error| self.gate_error(error))
+    }
+
+    fn gate_error(&self, error: GateError) -> Failure {
+        match error {
+            GateError::Storage(message) => self.infrastructure_error(message),
+            GateError::Policy(message) => Failure::permanent(message),
+        }
+    }
+
+    fn connection_error(&self, error: crate::github::ConnectionError) -> Failure {
+        if error == crate::github::ConnectionError::Configuration {
+            self.infrastructure_failed.store(true, Ordering::SeqCst);
+        }
+        error.into()
+    }
+
     fn persist(&self, store: &Store, runs: &[Publication]) -> Result<(), Failure> {
         store
             .save_publications(runs)
@@ -348,7 +375,8 @@ impl Native {
     fn session(&self, run: &Publication) -> Result<GithubClient<HttpTransport>, Failure> {
         self.connection_gate(run)?;
         let host = self.app.state::<Host>();
-        let (identity, client) = crate::github_session(&host, &run.review.job.account_id)?;
+        let (identity, client) = crate::github_session(&host, &run.review.job.account_id)
+            .map_err(|error| self.failures.connection_error(error))?;
         if identity.id != run.review.job.account_id {
             return Err(Failure::permanent("The acting GitHub account changed."));
         }
@@ -396,7 +424,7 @@ impl Native {
             self.failures
                 .infrastructure_error("Publication storage unavailable.")
         })?;
-        crate::capacity::publication_gate(&store).map_err(Failure::permanent)?;
+        self.failures.capacity_gate(&store)?;
         let current = store
             .load_publications()
             .map_err(|error| self.failures.infrastructure_error(error))?
@@ -420,7 +448,7 @@ impl Native {
             .ok_or_else(|| Failure::permanent("Review detection is no longer available."))?;
         let automatic =
             automatic_policy(&settings, &run.review, job).map_err(Failure::permanent)?;
-        crate::feedback::publication_gate(&store, &run.review).map_err(Failure::permanent)?;
+        self.failures.feedback_gate(&store, &run.review)?;
         if automatic != run.automatic {
             return Err(Failure::permanent(
                 "The publication gate changed; confirm again before retrying.",
@@ -591,10 +619,12 @@ impl Environment for Native {
                     .infrastructure_error("Publication storage unavailable."),
                 uncertain: false,
             })?;
-            crate::capacity::publication_gate(&store).map_err(|error| WriteFailure {
-                failure: Failure::permanent(error),
-                uncertain: false,
-            })?;
+            self.failures
+                .capacity_gate(&store)
+                .map_err(|failure| WriteFailure {
+                    failure,
+                    uncertain: false,
+                })?;
         }
         client.mutate_publication(run, mutation)
     }
@@ -615,8 +645,8 @@ impl Environment for Native {
                 self.failures
                     .infrastructure_error("Monitoring state unavailable.")
             })?
-            .request_revision_check(&store, &run.review.job, self.now()?)
-            .map_err(|error| self.failures.infrastructure_error(error));
+            .request_revision_check_checked(&store, &run.review.job, self.now()?)
+            .map_err(|error| self.failures.gate_error(error));
         result
     }
 }

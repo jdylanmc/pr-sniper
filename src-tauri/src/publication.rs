@@ -10,6 +10,19 @@ use crate::{
 pub use plan::{Batch, InlineComment};
 use serde::{Deserialize, Serialize};
 
+pub(crate) enum GateError {
+    Storage(String),
+    Policy(String),
+}
+
+impl GateError {
+    pub(crate) fn message(self) -> String {
+        match self {
+            Self::Storage(message) | Self::Policy(message) => message,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {

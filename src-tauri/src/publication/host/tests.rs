@@ -55,6 +55,203 @@ fn fixture() -> (tempfile::TempDir, Store, ReviewRun) {
 }
 
 #[test]
+fn normal_publication_gate_refusals_remain_item_local() {
+    for policy in [
+        "pause",
+        "human_closed_conflict",
+        "human_closed_duplicate",
+        "stale_feedback",
+    ] {
+        let (_root, store, review) = fixture();
+        let mut run = Publication::new(review, true, false, 100).unwrap();
+        let failures = FailureRouting::default();
+        let context = crate::feedback::Context {
+            id: "root".into(),
+            publication_id: "prior-publication".into(),
+            owner_agent_id: run.review.selection.agent.id.clone(),
+            owner_assignment_id: run.review.assignment_id.clone(),
+            original_head: run.review.job.head_sha.clone(),
+            root_id: "100".into(),
+            path: "source.rs".into(),
+            title: "Defect".into(),
+            body: "Evidence".into(),
+            thread: None,
+            closed: true,
+            unavailable: None,
+        };
+        match policy {
+            "pause" => store
+                .save_automation(&crate::capacity::Automation { paused: true })
+                .unwrap(),
+            "human_closed_conflict" => {
+                run.review.result.as_mut().unwrap().output.feedback_conflict = true
+            }
+            "human_closed_duplicate" => {
+                run.review.result.as_mut().unwrap().output.findings.push(serde_json::from_value(json!({
+                    "path":"source.rs","side":"head","line":1,"severity":"high","title":"Defect","explanation":"Evidence","confidence":90
+                })).unwrap());
+                let mut ledger = store.load_feedback().unwrap();
+                ledger.records.push(crate::feedback::Record {
+                    context,
+                    job: run.review.job.clone(),
+                    observed_head: run.review.job.head_sha.clone(),
+                });
+                store.save_feedback(&ledger).unwrap();
+            }
+            "stale_feedback" => run.review.feedback_context = Some(vec![context]),
+            _ => unreachable!(),
+        }
+        let error = if policy == "pause" {
+            failures.capacity_gate(&store)
+        } else {
+            failures.feedback_gate(&store, &run.review)
+        }
+        .unwrap_err();
+        assert!(
+            !failures.infrastructure_failed.load(Ordering::SeqCst),
+            "{policy}"
+        );
+        run.error = Some(error.message.clone());
+        save_publication(&store, &mut run, &failures).unwrap();
+        assert_eq!(failures.host_warning(&store, &run), None, "{policy}");
+        assert_eq!(
+            store.load_publications().unwrap()[0].error,
+            Some(error.message)
+        );
+    }
+}
+
+#[test]
+fn explicit_connection_configuration_failure_marks_host_not_provider_refusal() {
+    for (error, infrastructure) in [
+        (crate::github::ConnectionError::Configuration, true),
+        (crate::github::ConnectionError::SignedOut, false),
+        (crate::github::ConnectionError::MissingScope, false),
+    ] {
+        let failures = FailureRouting::default();
+        let _failure = failures.connection_error(error);
+        assert_eq!(
+            failures.infrastructure_failed.load(Ordering::SeqCst),
+            infrastructure
+        );
+    }
+}
+
+#[test]
+fn nested_gate_storage_failures_keep_host_warning_after_successful_item_save() {
+    struct NestedFailure<'a> {
+        store: &'a Store,
+        path: std::path::PathBuf,
+        failures: FailureRouting,
+        feedback: bool,
+        final_gate: bool,
+        cause: Option<String>,
+    }
+    impl NestedFailure<'_> {
+        fn fail_gate(&mut self, run: &Publication) -> Result<(), Failure> {
+            let previous = self.path.with_extension("saved");
+            let exists = self.path.exists();
+            if exists {
+                std::fs::rename(&self.path, &previous).unwrap();
+            }
+            std::fs::create_dir(&self.path).unwrap();
+            let result = if self.feedback {
+                self.failures.feedback_gate(self.store, &run.review)
+            } else {
+                self.failures.capacity_gate(self.store)
+            };
+            std::fs::remove_dir(&self.path).unwrap();
+            if exists {
+                std::fs::rename(previous, &self.path).unwrap();
+            }
+            self.cause = Some(result.as_ref().unwrap_err().message.clone());
+            result
+        }
+    }
+    impl Environment for NestedFailure<'_> {
+        fn now(&self) -> Result<i64, Failure> {
+            Ok(101)
+        }
+        fn save(&mut self, run: &mut Publication) -> Result<(), Failure> {
+            save_publication(self.store, run, &self.failures)
+        }
+        fn inspect(&mut self, run: &Publication) -> Result<Gate, Failure> {
+            let stop = if self.final_gate {
+                None
+            } else {
+                self.fail_gate(run).err().map(|error| error.message)
+            };
+            Ok(Gate {
+                stop,
+                stale: false,
+                requeue: false,
+            })
+        }
+        fn prepare(&mut self, _: &Publication) -> Result<Batch, Failure> {
+            unreachable!()
+        }
+        fn reconcile(&mut self, _: &Publication) -> Result<Option<Receipt>, Failure> {
+            Ok(None)
+        }
+        fn mutate(&mut self, run: &Publication, _: Mutation) -> Result<Receipt, WriteFailure> {
+            let failure = self.fail_gate(run).unwrap_err();
+            Err(WriteFailure {
+                failure,
+                uncertain: false,
+            })
+        }
+        fn requeue(&mut self, _: &Publication) -> Result<(), Failure> {
+            panic!("No requeue")
+        }
+    }
+    for (filename, feedback, final_gate) in [
+        ("automation.json", false, false),
+        ("feedback.json", true, false),
+        ("publications.json", true, false),
+        ("retention.json", true, false),
+        ("automation.json", false, true),
+    ] {
+        let (root, store, review) = fixture();
+        let mut run = Publication::new(review, true, false, 100).unwrap();
+        run.review.feedback_context = Some(vec![]);
+        run.batch = Some(
+            Batch::prepare(
+                &run,
+                &ReviewContext {
+                    pull: pull(&run.review),
+                    base_revision: "b".repeat(40),
+                    files: vec![],
+                    head: BTreeMap::new(),
+                    base: BTreeMap::new(),
+                },
+            )
+            .unwrap(),
+        );
+        let mut environment = NestedFailure {
+            store: &store,
+            path: root.path().join("state").join(filename),
+            failures: FailureRouting::default(),
+            feedback,
+            final_gate,
+            cause: None,
+        };
+        let outcome = execute(&mut environment, &mut run);
+        assert_eq!(outcome.is_ok(), !final_gate, "{filename}");
+        assert_eq!(
+            store.load_publications().unwrap()[0].error,
+            environment.cause
+        );
+        assert_eq!(
+            environment.failures.host_warning(&store, &run),
+            Some(INFRASTRUCTURE_WARNING),
+            "{filename}"
+        );
+        assert!(run.receipts.is_empty());
+        assert!(!run.uncertain);
+    }
+}
+
+#[test]
 fn recovered_storage_write_failure_still_requires_host_warning() {
     struct StorageFailure<'a> {
         store: &'a Store,

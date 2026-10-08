@@ -530,8 +530,20 @@ fn contexts_excluding(
     own_operation: Option<&str>,
     include_current_peers: bool,
 ) -> Result<Vec<Context>, Failure> {
-    let ledger = store.load_feedback().map_err(Failure::permanent)?;
-    let publications = store.load_publications().map_err(Failure::permanent)?;
+    contexts_excluding_checked(store, job, agent, own_operation, include_current_peers)
+        .map_err(|error| Failure::permanent(error.message()))
+}
+
+fn contexts_excluding_checked(
+    store: &Store,
+    job: &QueueJob,
+    agent: &str,
+    own_operation: Option<&str>,
+    include_current_peers: bool,
+) -> Result<Vec<Context>, crate::publication::GateError> {
+    use crate::publication::GateError;
+    let ledger = store.load_feedback().map_err(GateError::Storage)?;
+    let publications = store.load_publications().map_err(GateError::Storage)?;
     let mut contexts = Vec::new();
     for origin in publications.iter().filter(|p| same_pr(&p.review.job, job)) {
         if own_operation == Some(origin.review.operation.id.as_str()) {
@@ -557,26 +569,27 @@ fn contexts_excluding(
                 continue;
             }
             let record = record.ok_or_else(|| {
-                Failure::permanent("Waiting for verified prior-feedback observations.")
+                GateError::Policy("Waiting for verified prior-feedback observations.".into())
             })?;
             if record.observed_head != job.head_sha || record.context.unavailable.is_some() {
-                return Err(Failure::permanent(
-                    "Prior feedback is unavailable or not observed at this revision.",
+                return Err(GateError::Policy(
+                    "Prior feedback is unavailable or not observed at this revision.".into(),
                 ));
             }
             contexts.push(record.context.clone());
         }
     }
-    contexts.extend(crate::retention::retained_contexts(store, job).map_err(Failure::permanent)?);
+    contexts.extend(crate::retention::retained_contexts_checked(store, job)?);
     contexts.sort_by(|a, b| a.id.cmp(&b.id));
     contexts.dedup_by(|a, b| a.id == b.id);
     if serde_json::to_vec(&contexts)
-        .map_err(|_| Failure::permanent("Cannot encode feedback context."))?
+        .map_err(|_| GateError::Policy("Cannot encode feedback context.".into()))?
         .len()
         > 1024 * 1024
     {
-        return Err(Failure::permanent(
-            "Verified feedback context exceeds the bounded analysis size; nothing was truncated.",
+        return Err(GateError::Policy(
+            "Verified feedback context exceeds the bounded analysis size; nothing was truncated."
+                .into(),
         ));
     }
     Ok(contexts)
@@ -719,26 +732,33 @@ pub fn suppress_closed_overlap(
 }
 
 pub fn publication_gate(store: &Store, review: &crate::review::ReviewRun) -> Result<(), String> {
+    publication_gate_checked(store, review).map_err(crate::publication::GateError::message)
+}
+
+pub(crate) fn publication_gate_checked(
+    store: &Store,
+    review: &crate::review::ReviewRun,
+) -> Result<(), crate::publication::GateError> {
+    use crate::publication::GateError;
     if review
         .result
         .as_ref()
         .is_some_and(|r| r.output.feedback_conflict)
     {
-        return Err("Possible reintroduction of human-closed feedback requires human judgment; no automatic or manual machine batch is created.".into());
+        return Err(GateError::Policy("Possible reintroduction of human-closed feedback requires human judgment; no automatic or manual machine batch is created.".into()));
     }
-    let ledger = store.load_feedback()?;
-    let publications = store.load_publications()?;
+    let ledger = store.load_feedback().map_err(GateError::Storage)?;
+    let publications = store.load_publications().map_err(GateError::Storage)?;
     if let Some(captured) = &review.feedback_context {
-        let current = contexts_excluding(
+        let current = contexts_excluding_checked(
             store,
             &review.job,
             &review.selection.agent.id,
             Some(&review.operation.id),
             false,
-        )
-        .map_err(|e| e.message)?;
+        )?;
         if &current != captured {
-            return Err("Prior feedback changed after this review; reconcile its original publication but do not send new stale feedback.".into());
+            return Err(GateError::Policy("Prior feedback changed after this review; reconcile its original publication but do not send new stale feedback.".into()));
         }
     }
     let duplicate = review.result.as_ref().is_some_and(|result| {
@@ -755,10 +775,10 @@ pub fn publication_gate(store: &Store, review: &crate::review::ReviewRun) -> Res
         })
     });
     if duplicate {
-        return Err(
+        return Err(GateError::Policy(
             "A human-closed concern must not be republished, even from an earlier saved result."
                 .into(),
-        );
+        ));
     }
     Ok(())
 }

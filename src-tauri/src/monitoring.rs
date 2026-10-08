@@ -1252,6 +1252,17 @@ impl Monitor {
         job: &QueueJob,
         now: i64,
     ) -> Result<(), String> {
+        self.request_revision_check_checked(store, job, now)
+            .map_err(crate::publication::GateError::message)
+    }
+
+    pub(crate) fn request_revision_check_checked(
+        &mut self,
+        store: &Store,
+        job: &QueueJob,
+        now: i64,
+    ) -> Result<(), crate::publication::GateError> {
+        use crate::publication::GateError;
         let previous = self.state.clone();
         let health = self
             .state
@@ -1264,14 +1275,18 @@ impl Monitor {
                     && health.provider_account_id.as_deref() == Some(&job.account_id)
                     && health.provider_repository_id.as_deref() == Some(&job.repository_id)
             })
-            .ok_or("The eligible revision could not be queued; check monitoring health.")?;
+            .ok_or_else(|| {
+                GateError::Policy(
+                    "The eligible revision could not be queued; check monitoring health.".into(),
+                )
+            })?;
         if health.operation.as_ref().is_some_and(|operation| {
             matches!(
                 operation.state,
                 OperationState::Failed | OperationState::ManualRetry
             )
         }) {
-            return Err("Monitoring needs correction or manual retry before the new revision can be queued.".into());
+            return Err(GateError::Policy("Monitoring needs correction or manual retry before the new revision can be queued.".into()));
         }
         // A publication recheck must not bypass a poll's existing retry budget or Retry-After.
         if health.operation.as_ref().is_none_or(|operation| {
@@ -1286,7 +1301,7 @@ impl Monitor {
         }
         if let Err(error) = store.save_monitoring_state(&self.state) {
             self.state = previous;
-            return Err(error);
+            return Err(GateError::Storage(error));
         }
         Ok(())
     }
