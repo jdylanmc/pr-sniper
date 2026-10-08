@@ -46,8 +46,8 @@ for (const failUtility of [false, true]) {
         "Synthetic utility read failure",
       );
     else
-      await expect(page.locator('[data-panel-view="utility"]')).toContainText(
-        "No host events recorded",
+      await expect(page.locator('[data-panel-view="utility"] pre')).toHaveText(
+        /\n\nNo diagnostic events recorded\.$/,
       );
     await tab(page, "Queue").click();
     await page.evaluate(() => window.__settingsIdle());
