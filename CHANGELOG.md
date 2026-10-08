@@ -95,6 +95,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- Recover tray-panel placement after display detachment using connected displays
+  and their current work area and scale. Keep the retained destination and drafts;
+  expose failed opens through a native Retry menu action and owned diagnostics.
+  Native undock/reopen verification remains pending. (#147)
 - Resolve GitHub pull-request URLs to the exact PR and queue it immediately
   after valid repository Save, even outside watch filters. Reuse unchanged
   iteration work while preserving pause, disabled repositories, account/Agent

@@ -17,9 +17,7 @@ impl std::fmt::Display for SurfaceError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UiThread => formatter.write_str("Panel clipping requires the native UI thread."),
-            Self::Handle(error) => {
-                write!(formatter, "Cannot access the native panel surface: {error}")
-            }
+            Self::Handle(_) => formatter.write_str("Cannot access the native panel surface."),
             Self::MissingHandle => formatter.write_str("The native panel surface is unavailable."),
             Self::MissingLayer => {
                 formatter.write_str("The native panel clipping layer is unavailable.")
@@ -32,7 +30,14 @@ impl std::fmt::Display for SurfaceError {
 }
 
 #[cfg(target_os = "macos")]
-impl std::error::Error for SurfaceError {}
+impl std::error::Error for SurfaceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Handle(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 #[cfg(target_os = "macos")]
 pub(crate) fn refresh(window: &tauri::Window) -> Result<(), SurfaceError> {

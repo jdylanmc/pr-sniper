@@ -18,6 +18,25 @@ No delegate replacement, retained native pointer, global observer, timer or
 custom shadow window is introduced; Tauri owns teardown and tray placement.
 Failed handle/layer/scale or native-state checks return visible panel errors.
 
+Each opening enumerates connected displays and resolves the tray (or available
+pointer) anchor against their current physical bounds. A retained-window monitor
+is used only if still connected, otherwise the connected primary display is used.
+If that hint is also unavailable, use the first usable connected display; never
+reuse a detached monitor's work area or scale. The complete panel is clamped to
+the selected display's current work area with native physical sizing.
+Fallback is reported in the panel and as the closed-schema
+`window_placement_recovered` diagnostic event. Failure to obtain usable connected
+geometry remains an opening error, not an off-screen success.
+
+Opening failures record `window_open_failed` without raw platform errors or
+screen coordinates, and change the native tray-menu recovery action to
+`Panel could not open - Retry`. This action remains reachable without the panel
+and reopens the retained destination without resetting drafts or exact-item
+identity. A successful open restores `Retry opening panel`; cancellation by newer
+navigation, dismissal or Quit is not an opening-failure diagnostic. Native
+screen-reader access and an actual post-undock reopen still require maintainer
+verification; deterministic geometry and persistence tests do not prove them.
+
 Transparent WKWebView composition requires Tauri's pinned `macos-private-api`
 feature and matching `macOSPrivateApi` configuration. Wry 0.55.1 disables the
 WebKit `drawsBackground` private KVC property and sets the under-page background;
