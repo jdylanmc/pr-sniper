@@ -18,12 +18,24 @@ No delegate replacement, retained native pointer, global observer, timer or
 custom shadow window is introduced; Tauri owns teardown and tray placement.
 Failed handle/layer/scale or native-state checks return visible panel errors.
 
-Each opening enumerates connected displays and resolves the tray (or available
-pointer) anchor against their current physical bounds. A retained-window monitor
-is used only if still connected, otherwise the connected primary display is used.
-If that hint is also unavailable, use the first usable connected display; never
-reuse a detached monitor's work area or scale. The complete panel is clamped to
-the selected display's current work area with native physical sizing.
+Each opening enumerates connected displays. Windows resolves the tray (or
+available pointer) against current physical bounds and applies physical sizing.
+macOS uses AppKit global screen points for NSScreen frames/visible work areas,
+the actual status-button screen rectangle and screen, and NSEvent pointer
+position. Flip coordinates once against the first (primary) screen's top edge;
+do not compare Tao's independently scaled monitor origins or tray/pointer pixels.
+The actual connected tray screen wins; a retained-window screen is used only if
+still connected, otherwise the connected primary display is used. If that hint
+is also unavailable, use the first usable connected display.
+
+The complete panel is clamped to the selected display's current work area.
+On macOS the intended maximum is 408 by 744 points regardless of old/target
+backing scale. Apply the final point frame synchronously through NSWindow on the
+UI thread, and read back its position and size before show/focus or an open
+receipt. Do not pass target-scaled pixels through Tao's setters: they convert
+using the retained window's old scale and queue native changes asynchronously.
+Rejected frame readback is an opening error. Tray/focus-loss hit testing uses
+the same native point domain; Windows retains its existing physical path.
 Fallback is reported in the panel and as the closed-schema
 `window_placement_recovered` diagnostic event. Failure to obtain usable connected
 geometry remains an opening error, not an off-screen success.

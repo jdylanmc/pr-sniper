@@ -96,7 +96,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 ### Fixed
 
 - Recover tray-panel placement after display detachment using connected displays
-  and their current work area and scale. Keep the retained destination and drafts;
+  and their current work area. Use coherent native macOS screen points and
+  synchronous frame readback across mixed-scale displays; preserve Windows
+  physical sizing. Keep the retained destination and drafts;
   expose failed opens through a native Retry menu action and owned diagnostics.
   Native undock/reopen verification remains pending. (#147)
 - Resolve GitHub pull-request URLs to the exact PR and queue it immediately

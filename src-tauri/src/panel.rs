@@ -4,13 +4,17 @@ use std::{
     sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
-use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+#[cfg(not(target_os = "macos"))]
+use tauri::{PhysicalPosition, PhysicalSize};
 
 pub const LABEL: &str = "panel";
 pub const EVENT: &str = "pr-sniper:panel";
 pub(crate) const RECOVERY_LABEL: &str = "Retry opening panel";
 const OPEN_FAILED_LABEL: &str = "Panel could not open - Retry";
 
+#[cfg(any(target_os = "macos", test))]
+mod macos;
 mod surface;
 pub(crate) use surface::refresh as refresh_surface;
 
@@ -242,7 +246,8 @@ impl Rect {
     }
 }
 
-/// Inputs and output are physical coordinates. Desired dimensions are logical.
+/// Windows uses physical coordinates and its target scale. AppKit uses global
+/// screen points with scale 1; desired dimensions are always logical.
 pub fn placement(work: Rect, tray: Rect, scale: f64) -> Result<Rect, String> {
     if !work.valid()
         || work.width < 4.0
@@ -275,6 +280,7 @@ pub fn placement(work: Rect, tray: Rect, scale: f64) -> Result<Rect, String> {
     })
 }
 
+#[cfg(not(target_os = "macos"))]
 fn physical(rect: tauri::Rect) -> Result<Rect, String> {
     match (rect.position, rect.size) {
         (tauri::Position::Physical(position), tauri::Size::Physical(size)) => Ok(Rect {
@@ -294,6 +300,7 @@ struct Display {
     scale: f64,
 }
 
+#[cfg(not(target_os = "macos"))]
 fn monitor_bounds(monitor: &tauri::Monitor) -> Rect {
     Rect {
         x: monitor.position().x as f64,
@@ -351,6 +358,15 @@ fn connected_placement(
     ))
 }
 
+#[cfg(target_os = "macos")]
+fn position(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+) -> Result<Option<String>, String> {
+    macos::position(app, window)
+}
+
+#[cfg(not(target_os = "macos"))]
 fn position(
     app: &tauri::AppHandle,
     window: &tauri::WebviewWindow,
@@ -657,6 +673,11 @@ pub(crate) fn lost_focus(app: &tauri::AppHandle) {
         if !session.visible {
             return Ok(None);
         }
+        #[cfg(target_os = "macos")]
+        if macos::pointer_over_tray(&app) {
+            session.blur_from_tray = Some(Instant::now());
+        }
+        #[cfg(not(target_os = "macos"))]
         if let Some(window) = app.get_webview_window(LABEL) {
             if let (Ok(cursor), Some(tray)) =
                 (window.cursor_position(), app.tray_by_id("pr-sniper"))
