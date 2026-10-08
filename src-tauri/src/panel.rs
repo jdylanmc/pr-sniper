@@ -1,13 +1,22 @@
 use crate::{capacity::Kind, queue, storage::Store, Host};
 use serde::{Deserialize, Serialize};
 use std::{
-    sync::Mutex,
+    sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
-use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+#[cfg(not(target_os = "macos"))]
+use tauri::{PhysicalPosition, PhysicalSize};
 
 pub const LABEL: &str = "panel";
 pub const EVENT: &str = "pr-sniper:panel";
+pub(crate) const RECOVERY_LABEL: &str = "Retry opening panel";
+const OPEN_FAILED_LABEL: &str = "Panel could not open - Retry";
+
+#[cfg(any(target_os = "macos", test))]
+mod macos;
+mod surface;
+pub(crate) use surface::refresh as refresh_surface;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -152,6 +161,7 @@ impl Session {
 pub(crate) struct Panel {
     session: Mutex<Session>,
     opening: tokio::sync::Mutex<()>,
+    pub(crate) recovery: OnceLock<tauri::menu::MenuItem<tauri::Wry>>,
 }
 
 pub fn missing(store: &Store, route: &Route) -> Result<Option<String>, String> {
@@ -236,7 +246,8 @@ impl Rect {
     }
 }
 
-/// Inputs and output are physical coordinates. Desired dimensions are logical.
+/// Windows uses physical coordinates and its target scale. AppKit uses global
+/// screen points with scale 1; desired dimensions are always logical.
 pub fn placement(work: Rect, tray: Rect, scale: f64) -> Result<Rect, String> {
     if !work.valid()
         || work.width < 4.0
@@ -269,6 +280,7 @@ pub fn placement(work: Rect, tray: Rect, scale: f64) -> Result<Rect, String> {
     })
 }
 
+#[cfg(not(target_os = "macos"))]
 fn physical(rect: tauri::Rect) -> Result<Rect, String> {
     match (rect.position, rect.size) {
         (tauri::Position::Physical(position), tauri::Size::Physical(size)) => Ok(Rect {
@@ -281,56 +293,123 @@ fn physical(rect: tauri::Rect) -> Result<Rect, String> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct Display {
+    bounds: Rect,
+    work: Rect,
+    scale: f64,
+}
+
+#[cfg(not(target_os = "macos"))]
+fn monitor_bounds(monitor: &tauri::Monitor) -> Rect {
+    Rect {
+        x: monitor.position().x as f64,
+        y: monitor.position().y as f64,
+        width: monitor.size().width as f64,
+        height: monitor.size().height as f64,
+    }
+}
+
+fn connected_placement(
+    displays: &[Display],
+    anchor: Option<Rect>,
+    current: Option<Rect>,
+    primary: Option<Rect>,
+) -> Result<(Rect, bool), String> {
+    let usable = |display: &&Display| {
+        display.bounds.valid()
+            && display.work.valid()
+            && display.work.width >= 4.0
+            && display.work.height >= 4.0
+            && display.scale.is_finite()
+            && display.scale > 0.0
+    };
+    let anchor = anchor.filter(|rect| rect.valid());
+    let anchored = anchor.and_then(|anchor| {
+        displays.iter().filter(usable).find(|display| {
+            display.bounds.contains(
+                anchor.x + anchor.width / 2.0,
+                anchor.y + anchor.height / 2.0,
+            )
+        })
+    });
+    let connected = |bounds| {
+        displays
+            .iter()
+            .filter(usable)
+            .find(|display| Some(display.bounds) == bounds)
+    };
+    // Retained-window and primary lookup results are hints, never proof that
+    // the former display is still attached. Size/work area/scale come from this scan.
+    let display = anchored
+        .or_else(|| connected(current))
+        .or_else(|| connected(primary))
+        .or_else(|| displays.iter().find(usable))
+        .ok_or("No connected display is available for the panel. Try again after reconnecting a display.")?;
+    let anchor = anchor.unwrap_or(Rect {
+        x: display.work.x + display.work.width - 1.0,
+        y: display.work.y,
+        width: 1.0,
+        height: 1.0,
+    });
+    Ok((
+        placement(display.work, anchor, display.scale)?,
+        anchored.is_none(),
+    ))
+}
+
+#[cfg(target_os = "macos")]
 fn position(
     app: &tauri::AppHandle,
     window: &tauri::WebviewWindow,
 ) -> Result<Option<String>, String> {
-    let tray = app
-        .tray_by_id("pr-sniper")
-        .ok_or("Tray is unavailable.")?
-        .rect()
-        .map_err(|_| "Tray rectangle unavailable.")?;
-    let (anchor, warning) = if let Some(rect) = tray {
-        (physical(rect)?, None)
-    } else {
-        let cursor = window
-            .cursor_position()
-            .map_err(|_| "Pointer monitor unavailable.")?;
-        (
-            Rect {
-                x: cursor.x,
-                y: cursor.y,
-                width: 1.0,
-                height: 1.0,
+    macos::position(app, window)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn position(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+) -> Result<Option<String>, String> {
+    let displays: Vec<_> = window
+        .available_monitors()
+        .map_err(|_| "Connected displays could not be read. Try opening the panel again.")?
+        .iter()
+        .map(|monitor| Display {
+            bounds: monitor_bounds(monitor),
+            work: Rect {
+                x: monitor.work_area().position.x as f64,
+                y: monitor.work_area().position.y as f64,
+                width: monitor.work_area().size.width as f64,
+                height: monitor.work_area().size.height as f64,
             },
-            Some(
-                "Tray rectangle unavailable; the panel is clamped to the pointer's monitor.".into(),
-            ),
-        )
-    };
-    let monitor = window
-        .monitor_from_point(
-            anchor.x + anchor.width / 2.0,
-            anchor.y + anchor.height / 2.0,
-        )
-        .map_err(|_| "Tray monitor unavailable.")?;
-    let monitor = match monitor {
-        Some(monitor) => Some(monitor),
-        None => window
-            .current_monitor()
-            .map_err(|_| "Current monitor unavailable.")?,
-    }
-    .ok_or("No monitor is available for the panel.")?;
-    let work = monitor.work_area();
-    let frame = placement(
-        Rect {
-            x: work.position.x as f64,
-            y: work.position.y as f64,
-            width: work.size.width as f64,
-            height: work.size.height as f64,
-        },
+            scale: monitor.scale_factor(),
+        })
+        .collect();
+    // Unavailable/stale hints are recoverable; the warning below makes every
+    // fallback visible. Failure to enumerate connected displays is not recoverable.
+    let tray = app.tray_by_id("pr-sniper").and_then(|tray| {
+        tray.rect()
+            .ok()
+            .flatten()
+            .and_then(|rect| physical(rect).ok())
+            .filter(|rect| rect.valid())
+    });
+    let anchor = tray.or_else(|| {
+        window.cursor_position().ok().map(|cursor| Rect {
+            x: cursor.x,
+            y: cursor.y,
+            width: 1.0,
+            height: 1.0,
+        })
+    });
+    let current = window.current_monitor().ok().flatten();
+    let primary = window.primary_monitor().ok().flatten();
+    let (frame, recovered) = connected_placement(
+        &displays,
         anchor,
-        monitor.scale_factor(),
+        current.as_ref().map(monitor_bounds),
+        primary.as_ref().map(monitor_bounds),
     )?;
     window
         .set_size(PhysicalSize::new(
@@ -344,7 +423,9 @@ fn position(
             frame.y.round() as i32,
         ))
         .map_err(|_| "Cannot position the panel.")?;
-    Ok(warning)
+    Ok((tray.is_none() || recovered).then(|| {
+        "Tray or display geometry changed or is unavailable; the panel was clamped to a connected display.".into()
+    }))
 }
 
 pub(crate) fn snapshot(app: &tauri::AppHandle) -> Result<Snapshot, String> {
@@ -367,9 +448,58 @@ fn emit(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 pub(crate) async fn show(app: &tauri::AppHandle, route: Option<Route>) -> Result<Snapshot, String> {
+    match open(app, route).await {
+        Ok(snapshot) => {
+            recovery_label(app, RECOVERY_LABEL);
+            Ok(snapshot)
+        }
+        Err(OpenError::Superseded(message)) => Err(message),
+        Err(OpenError::Failed(message)) => {
+            crate::record(app, crate::storage::DiagnosticEvent::WindowOpenFailed);
+            recovery_label(app, OPEN_FAILED_LABEL);
+            Err(message)
+        }
+    }
+}
+
+fn recovery_label(app: &tauri::AppHandle, label: &str) {
+    let host = app.state::<Host>();
+    let result = host
+        .panel
+        .recovery
+        .get()
+        .ok_or("Panel recovery menu is unavailable.")
+        .and_then(|item| {
+            item.set_text(label)
+                .map_err(|_| "Panel recovery menu could not be updated.")
+        });
+    if let Err(error) = result {
+        crate::report(app, error.into());
+    }
+}
+
+#[derive(Debug)]
+enum OpenError {
+    Superseded(String),
+    Failed(String),
+}
+
+impl From<String> for OpenError {
+    fn from(message: String) -> Self {
+        Self::Failed(message)
+    }
+}
+
+impl From<&str> for OpenError {
+    fn from(message: &str) -> Self {
+        Self::Failed(message.into())
+    }
+}
+
+async fn open(app: &tauri::AppHandle, route: Option<Route>) -> Result<Snapshot, OpenError> {
     let host = app.state::<Host>();
     if host.quitting.load(std::sync::atomic::Ordering::SeqCst) {
-        return Err("PR Sniper is quitting.".into());
+        return Err(OpenError::Superseded("PR Sniper is quitting.".into()));
     }
     let epoch = {
         let store = host
@@ -393,7 +523,9 @@ pub(crate) async fn show(app: &tauri::AppHandle, route: Option<Route>) -> Result
         .revision
         != epoch
     {
-        return Err("Panel opening was replaced by a newer navigation or dismissal.".into());
+        return Err(OpenError::Superseded(
+            "Panel opening was replaced by a newer navigation or dismissal.".into(),
+        ));
     }
     // WebView2 creation must not run in a synchronous command/event callback.
     let window = if let Some(window) = app.get_webview_window(LABEL) {
@@ -403,6 +535,9 @@ pub(crate) async fn show(app: &tauri::AppHandle, route: Option<Route>) -> Result
             .title("PR Sniper")
             .inner_size(408.0, 744.0)
             .decorations(false)
+            .transparent(true)
+            .background_color(tauri::utils::config::Color(0, 0, 0, 0))
+            .shadow(true)
             .resizable(false)
             .skip_taskbar(true)
             .always_on_top(true)
@@ -413,7 +548,7 @@ pub(crate) async fn show(app: &tauri::AppHandle, route: Option<Route>) -> Result
     let (send, receive) = tokio::sync::oneshot::channel();
     let present_app = app.clone();
     app.run_on_main_thread(move || {
-        let outcome = (|| {
+        let outcome = (|| -> Result<Snapshot, OpenError> {
             let host = present_app.state::<Host>();
             {
                 let session = host
@@ -424,10 +559,13 @@ pub(crate) async fn show(app: &tauri::AppHandle, route: Option<Route>) -> Result
                 if session.revision != epoch
                     || host.quitting.load(std::sync::atomic::Ordering::SeqCst)
                 {
-                    return Err("Panel opening was replaced by a newer dismissal or Quit.".into());
+                    return Err(OpenError::Superseded(
+                        "Panel opening was replaced by a newer dismissal or Quit.".into(),
+                    ));
                 }
             }
             let warning = position(&present_app, &window)?;
+            refresh_surface(&window.as_ref().window()).map_err(|error| error.to_string())?;
             window
                 .show()
                 .map_err(|_| "Cannot show the application panel.")?;
@@ -450,6 +588,12 @@ pub(crate) async fn show(app: &tauri::AppHandle, route: Option<Route>) -> Result
             present_app
                 .emit_to(LABEL, EVENT, &state)
                 .map_err(|_| "Panel route delivery failed.")?;
+            if state.placement_warning.is_some() {
+                crate::record(
+                    &present_app,
+                    crate::storage::DiagnosticEvent::WindowPlacementRecovered,
+                );
+            }
             crate::record(&present_app, crate::storage::DiagnosticEvent::WindowOpened);
             Ok(state)
         })();
@@ -529,6 +673,11 @@ pub(crate) fn lost_focus(app: &tauri::AppHandle) {
         if !session.visible {
             return Ok(None);
         }
+        #[cfg(target_os = "macos")]
+        if macos::pointer_over_tray(&app) {
+            session.blur_from_tray = Some(Instant::now());
+        }
+        #[cfg(not(target_os = "macos"))]
         if let Some(window) = app.get_webview_window(LABEL) {
             if let (Ok(cursor), Some(tray)) =
                 (window.cursor_position(), app.tray_by_id("pr-sniper"))

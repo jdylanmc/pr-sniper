@@ -2,6 +2,207 @@ use super::*;
 use crate::storage::Store;
 use serde_json::json;
 
+fn laptop_display(scale: f64) -> Display {
+    Display {
+        bounds: Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1080.0,
+        },
+        work: Rect {
+            x: 0.0,
+            y: 30.0,
+            width: 1920.0,
+            height: 1010.0,
+        },
+        scale,
+    }
+}
+
+fn detached_display() -> Rect {
+    Rect {
+        x: 2400.0,
+        y: -900.0,
+        width: 3840.0,
+        height: 2160.0,
+    }
+}
+
+#[test]
+fn undocking_recovers_stale_tray_and_detached_window_to_connected_primary() {
+    let primary = laptop_display(1.25);
+    let tray = Rect {
+        x: 6000.0,
+        y: -900.0,
+        width: 48.0,
+        height: 48.0,
+    };
+    let (frame, recovered) = connected_placement(
+        &[primary],
+        Some(tray),
+        Some(detached_display()),
+        Some(primary.bounds),
+    )
+    .unwrap();
+    assert!(recovered);
+    assert_eq!(
+        frame,
+        Rect {
+            x: 1400.0,
+            y: 40.0,
+            width: 510.0,
+            height: 930.0,
+        }
+    );
+}
+
+#[test]
+fn missing_tray_pointer_and_current_monitor_still_open_on_primary() {
+    let primary = laptop_display(1.0);
+    let secondary = Display {
+        bounds: detached_display(),
+        work: detached_display(),
+        scale: 2.0,
+    };
+    let (frame, recovered) =
+        connected_placement(&[secondary, primary], None, None, Some(primary.bounds)).unwrap();
+    assert!(recovered);
+    assert_eq!(
+        frame,
+        Rect {
+            x: 1504.0,
+            y: 39.0,
+            width: 408.0,
+            height: 744.0,
+        }
+    );
+}
+
+#[test]
+fn stale_primary_lookup_uses_a_connected_display_not_the_detached_frame() {
+    let display = laptop_display(1.0);
+    let (frame, recovered) = connected_placement(
+        &[display],
+        None,
+        Some(detached_display()),
+        Some(detached_display()),
+    )
+    .unwrap();
+    assert!(recovered);
+    assert!(frame.x >= 0.0 && frame.x + frame.width <= 1920.0);
+    assert!(frame.y >= 30.0 && frame.y + frame.height <= 1040.0);
+}
+
+#[test]
+fn connected_tray_monitor_wins_over_retained_window_and_primary() {
+    let primary = laptop_display(1.0);
+    let secondary = Display {
+        bounds: Rect {
+            x: -2560.0,
+            y: -200.0,
+            width: 2560.0,
+            height: 1440.0,
+        },
+        work: Rect {
+            x: -2560.0,
+            y: -150.0,
+            width: 2560.0,
+            height: 1390.0,
+        },
+        scale: 1.5,
+    };
+    let (frame, recovered) = connected_placement(
+        &[primary, secondary],
+        Some(Rect {
+            x: -100.0,
+            y: -200.0,
+            width: 30.0,
+            height: 40.0,
+        }),
+        Some(primary.bounds),
+        Some(primary.bounds),
+    )
+    .unwrap();
+    assert!(!recovered);
+    assert_eq!(
+        frame,
+        Rect {
+            x: -624.0,
+            y: -138.0,
+            width: 612.0,
+            height: 1116.0,
+        }
+    );
+}
+
+#[test]
+fn connected_current_monitor_uses_fresh_work_area_and_scale_on_every_reopen() {
+    for scale in [1.0, 1.25, 1.5, 2.0, 3.0] {
+        let current = laptop_display(scale);
+        let other = Display {
+            bounds: detached_display(),
+            work: detached_display(),
+            scale: 1.0,
+        };
+        let (frame, recovered) = connected_placement(
+            &[other, current],
+            Some(Rect {
+                x: -9000.0,
+                y: -9000.0,
+                width: 40.0,
+                height: 40.0,
+            }),
+            Some(current.bounds),
+            Some(other.bounds),
+        )
+        .unwrap();
+        assert!(recovered);
+        assert_eq!(frame.width, 408.0 * scale);
+        assert!(frame.height <= 744.0 * scale);
+        assert!(frame.x >= 0.0 && frame.x + frame.width <= 1920.0);
+        assert!(frame.y >= 30.0 && frame.y + frame.height <= 1040.0);
+    }
+}
+
+#[test]
+fn no_usable_connected_geometry_is_an_explicit_opening_failure() {
+    assert!(connected_placement(&[], None, None, None)
+        .unwrap_err()
+        .contains("No connected display"));
+    for scale in [0.0, f64::NAN, f64::INFINITY] {
+        assert!(connected_placement(&[laptop_display(scale)], None, None, None).is_err());
+    }
+}
+
+#[test]
+fn panel_failure_and_recovery_evidence_is_durable_and_closed_schema() {
+    use crate::storage::DiagnosticEvent;
+
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    store.record(DiagnosticEvent::WindowOpenFailed).unwrap();
+    store
+        .record(DiagnosticEvent::WindowPlacementRecovered)
+        .unwrap();
+    let saved = std::fs::read_to_string(root.path().join("state/diagnostics.jsonl")).unwrap();
+    let events: Vec<serde_json::Value> = saved
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0]["event"], "window_open_failed");
+    assert_eq!(events[1]["event"], "window_placement_recovered");
+    for event in &events {
+        assert_eq!(event.as_object().unwrap().len(), 2);
+        assert!(event["timestamp_secs"].is_u64());
+    }
+    assert_eq!(
+        Store::new(root.path().into()).diagnostics().unwrap().len(),
+        2
+    );
+}
+
 #[test]
 fn physical_placement_clamps_all_tray_edges_and_mixed_dpi_negative_monitors() {
     for scale in [1.0, 1.25, 1.5, 2.0, 3.0] {

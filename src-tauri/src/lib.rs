@@ -4210,6 +4210,18 @@ pub fn run() {
                 MenuItem::with_id(app, "diagnostics", "Diagnostics", true, None::<&str>)?;
             let close_panel =
                 MenuItem::with_id(app, "close-panel", "Close Panel", true, None::<&str>)?;
+            let recovery = MenuItem::with_id(
+                app,
+                "retry-panel",
+                panel::RECOVERY_LABEL,
+                true,
+                None::<&str>,
+            )?;
+            app.state::<Host>()
+                .panel
+                .recovery
+                .set(recovery.clone())
+                .map_err(|_| "Panel recovery menu was already initialized.")?;
             let separator = PredefinedMenuItem::separator(app)?;
             let quit = MenuItem::with_id(app, "quit", "Quit PR Sniper", true, Some("CmdOrCtrl+Q"))?;
             let menu = Menu::with_items(
@@ -4220,6 +4232,7 @@ pub fn run() {
                     &check,
                     &settings,
                     &diagnostics,
+                    &recovery,
                     &close_panel,
                     &separator,
                     &quit,
@@ -4250,6 +4263,15 @@ pub fn run() {
                     }
                 })
                 .on_menu_event(|app, event| {
+                    if event.id.as_ref() == "retry-panel" {
+                        let app = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(error) = panel::show(&app, None).await {
+                                report(&app, error);
+                            }
+                        });
+                        return;
+                    }
                     if event.id.as_ref() == "close-panel" {
                         if let Some(window) = app.get_webview_window(panel::LABEL) {
                             if window.close().is_err() {
@@ -4349,6 +4371,15 @@ pub fn run() {
                 }
             } else if let tauri::WindowEvent::Focused(false) = event {
                 panel::lost_focus(window.app_handle());
+            } else if matches!(
+                event,
+                tauri::WindowEvent::Resized(_)
+                    | tauri::WindowEvent::ScaleFactorChanged { .. }
+                    | tauri::WindowEvent::ThemeChanged(_)
+            ) {
+                if let Err(error) = panel::refresh_surface(window) {
+                    report(window.app_handle(), error.to_string());
+                }
             }
         })
         .build(tauri::generate_context!())
