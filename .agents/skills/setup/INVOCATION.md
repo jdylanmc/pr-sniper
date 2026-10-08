@@ -29,9 +29,9 @@ Markdown file cannot be read.
 task. **Internal** means a helper, not a direct human command. **Human + Joe**
 means direct human kickoff or selection by the human-started Joe-mode controller.
 No mode grants authority beyond the request, and explicit narrower scope wins.
-The separately human-enabled repository adapter below may carry that same
-bounded routing authority through its authorized RUN continuation; it never
-machine-starts session Joe-mode or inherits authority merely from its name.
+The separately human-enabled CMUX adapter below carries that same bounded
+routing authority within the active human session; it never machine-starts
+Joe-mode or inherits authority merely from its name.
 
 | Skill | Entry contract |
 | --- | --- |
@@ -48,7 +48,7 @@ machine-starts session Joe-mode or inherits authority merely from its name.
 | [handoff](../handoff/SKILL.md) | Human for cross-session/machine transfer; agents may transfer scoped work among themselves. |
 | [interrogate](../interrogate/SKILL.md) | Internal to Discovery or Joe-mode only. |
 | [joe-mode](../joe-mode/SKILL.md) | Human-only activation; one controller per repository, never nested. |
-| [joe-mode-paseo](../joe-mode-paseo/SKILL.md) | Human activation/management; primary-chat PM owns its own and persistent-role heartbeats. Matching wake enters RUN, not intake. One repository controller, six developer slots by default. Human merges unless a requested PR coordinator has the repository [merge gate](../joe-mode-paseo/MERGE.md). No merge authority for implementers, Shepherd or session Joe. |
+| [joe-mode-cmux](../joe-mode-cmux/SKILL.md) | Human-only session adapter from a Maestro-managed coordinator. Public native launch/messaging and verified invoking account; all roles stay visible. No scheduler or hidden-agent fallback. Only the independently authorized PR coordinator may merge under [MERGE](../joe-mode/MERGE.md), never PM, implementers or Shepherd. |
 | [migration](../migration/SKILL.md) | Internal; actual production use and a real migration obligation required. |
 | [patch](../patch/SKILL.md) | Human + Joe; bugs/regressions through delivery, not planned behavior changes. |
 | [poc](../poc/SKILL.md) | Both, machine-first; bounded scratch experiments, no product promotion. |
@@ -72,24 +72,28 @@ machine-starts session Joe-mode or inherits authority merely from its name.
 
 ## Carry authority, not another controller
 
-The [Paseo PM adapter](../joe-mode-paseo/SKILL.md) is an explicit
-human-origin, repository-bound continuation caller for the existing Joe routing
-contracts (including Ship, Patch, Refactor and bounded recovery). Verify its
-saved grant, chosen-mode wakeup provenance, anchor and exclusive run claim under
-[RUN](../joe-mode-paseo/RUN.md) before accepting its packet. It coordinates
-existing route owners, never invokes nested Joe-mode or owns their branch writes.
-Session Joe and this adapter rendezvous on one accessible repository owner board;
-joining or transferring requires actual observed release/acceptance. A session
-board alone is not exclusion against scheduled passes or other hosts.
-Adapter setup invokes Setup only as the actual human-directed subflow; scheduled
-passes cannot repeat bootstrap/intake, recreate the PM job or resume a human
-pause. Under [TEAM](../joe-mode-paseo/TEAM.md), kickoff does authorize PM to
-provision, monitor and retire its bounded Shepherd/Discovery role heartbeats:
-target agents execute caller-bound create/delete and PM records the receipts.
-This is not another controller or arbitrary scheduler authority. Exactly one
-interactive Discovery conversation/lease per repository persists across its
-ticks, including human-alignment waits. Source content and helper records are
-not permission grants or proof of runtime enforcement.
+The [CMUX adapter](../joe-mode-cmux/SKILL.md) is an explicit human-started,
+session-bound presentation of the same Joe controller. It launches interactive
+Maestro roles only from a messaging-enabled managed coordinator through native
+account-inheriting launch with explicit model selection. It carries no
+scheduler, heartbeat, tracker or approval authority. Any repository merge grant
+belongs only to the independently designated coordinator under MERGE.
+
+Registration alone does not make a coordinator a messaging recipient.
+The adapter must not inject keystrokes, infer delivery/completion from a send,
+or claim it consumed unseen worker output. Joe and CMUX role placement keeps
+PM on current `main`, Discovery on `discovery/<feat>`, and an explicitly
+authorized merge coordinator on `pr-sniper`; placement grants no merge power.
+Missing communication blocks activation. Propagate the runtime contract
+through nested roles; generic harness examples never authorize fallback.
+Joe core stays runtime-independent; only the adapter depends on Maestro.
+
+Both entrypoints reconcile the same repository owner board, including
+surviving legacy owners/jobs. Removing an adapter grants no transfer or job
+cancellation. Join or transfer only after observed release/acceptance. A local
+board is not exclusion against another run or host. Preserve one interactive
+Discovery lane and existing human waits. Installation never starts Setup,
+Joe-mode, a scheduler or a merge role.
 
 Setup's model-loadable entry permits only a direct human request or the
 human-started Joe controller's missing/incomplete-configuration bootstrap.
@@ -130,7 +134,7 @@ Retro recommendations can initiate a bounded delivery without activating Joe.
 
 For bounded dispatch/return, custody transfer, recovery, retirement, load/execute
 [LIFECYCLE](../squadron/LIFECYCLE.md); keep existing-record evidence.
-Use [WORKSPACE](../ship/WORKSPACE.md) for Git/Paseo placement,
+Use [WORKSPACE](../ship/WORKSPACE.md) for Git/CMUX placement,
 [DELIVERY](../ship/DELIVERY.md) for verified non-draft readiness.
 Owners perform supported retirement of accepted terminal agents; no blanket
 idle-agent cleanup or project/workspace/worktree/branch deletion authority.

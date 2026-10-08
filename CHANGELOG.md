@@ -14,6 +14,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- Adapt repository Joe-mode orchestration to the visible CMUX Maestro cockpit.
+  Retire Paseo adapter files, retain shared team and independent merge gates,
+  and keep activation human-only with no unattended CMUX scheduler.
+
 - Replace Automation overrides with repository-assignment capabilities:
   independent Publish Comment and primary Reply Comment, plus Approve or
   Approve & Merge after confirmed approval. Route eligible admitted-PR

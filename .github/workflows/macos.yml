@@ -21,6 +21,7 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - run: npm ci
+      - run: npm run test:skills
       - run: npm run format:check
       - run: npm run lint
       - run: npm test

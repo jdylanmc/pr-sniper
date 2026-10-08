@@ -14,6 +14,7 @@
     "format:check": "prettier --check src tests/settings tests/release/*.mjs index.html package.json tsconfig.json vite.config.ts src-tauri/tauri.conf.json src-tauri/tauri.windows.conf.json .github/workflows/*.yml README.md docs/releases.md docs/windows-development.md docs/windows-packaging.md docs/adr/0001-macos-foundation.md docs/adr/0004-windows-persistence-foundations.md docs/adr/0006-windows-tray-startup.md CHANGELOG.md && cargo fmt --manifest-path src-tauri/Cargo.toml --all --check",
     "lint": "tsc --noEmit && cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings",
     "test": "cargo test --manifest-path src-tauri/Cargo.toml --locked",
+    "test:skills": "node --test .agents/skills/joe-mode-cmux/tests/skill-file.test.mjs .agents/skills/joe-mode-cmux/tests/pr-sniper.test.mjs",
     "test:release": "python3 -B -m unittest discover -s tests/release -p 'test_*.py' && node --test tests/release/workflow.test.mjs",
     "test:release:windows": "python -B -m unittest discover -s tests/release -p test_release.py && node --test tests/release/workflow.test.mjs",
     "test:settings": "npm run build && cargo build --manifest-path src-tauri/Cargo.toml --locked --example settings_bridge && playwright test --config tests/settings/playwright.config.mjs",

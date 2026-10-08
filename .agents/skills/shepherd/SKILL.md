@@ -10,9 +10,9 @@ user-invocable: true
 Own one published pull request (PR) beyond a green snapshot. Follow the common [invocation policy](../setup/INVOCATION.md) for human invocation or machine handoff. Humans may invoke `/shepherd` on conflicted PRs; the resolver stays internal. Observe, rebase whenever the target advances, and return functional work to the existing Ship, Patch, or Refactor route owner. Never merge, approve, enable auto-merge, accept product risk, or delete the delivery branch. See the human-authored [intent](intent.md).
 
 One PR scope per ordinary invocation. Under Joe's
-[TEAM](../joe-mode-paseo/TEAM.md), one shared Shepherd accepts all project PR
-scopes, with separate owners, observations and due times. PM owns its heartbeat
-lifecycle; the bound Shepherd executes create/delete and returns receipts.
+[TEAM](../joe-mode/TEAM.md), one shared Shepherd accepts all project PR
+scopes, with separate owners, observations and due times. The active adapter
+owns its runtime and observation limits; CMUX adds no heartbeat or scheduler.
 Runtime sharing preserves explicit assignments,
 sole owners and per-PR cadence. Load/execute [LIFECYCLE](../squadron/LIFECYCLE.md)
 for accepted custody/recovery/retirement; idle proves no end of maintenance.
@@ -113,11 +113,11 @@ retirement, preserving monitoring scope/worktree.
 
 ## Observation rhythm
 
-In the shared Joe team, PM's explicit role cadence (five minutes by default)
-overrides the standalone adaptive schedule below. Keep per-PR due/coverage
-records and notify PM of urgency or gaps. Do not create a timer per PR or
-change the PM timer. Retire the shared agent only when all scopes end and PM
-has recorded successful deletion of its exact role heartbeat.
+In the CMUX Joe team, observation is session-bound and driven by supported
+events/active turns, not a five-minute PM heartbeat. Keep per-PR due/coverage
+records and notify PM of urgency or gaps. Do not create timers or promise
+between-turn observation. Retire the shared role only after all duties end or
+transfer and any surviving legacy wakeups have been reconciled.
 
 Execute [OBSERVATION](OBSERVATION.md), never an age table: observe immediately;
 default 1 minute, then 5 and 15 only after each stage's 30 consecutive successful,

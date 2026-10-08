@@ -382,6 +382,32 @@ executable; even a valid registration may be disabled by macOS Login Items.
 Startup only inspects registration: it does not enable, disable or reapply the
 saved preference.
 
+## Repository orchestration skills
+
+Use the checked-in [Joe-mode](.agents/skills/joe-mode/SKILL.md) and
+[Joe-mode CMUX](.agents/skills/joe-mode-cmux/SKILL.md) packages for repository
+delivery orchestration. They are adapted from
+[`jdylanmc/cmux-maestro` at `5dc3908`](https://github.com/jdylanmc/cmux-maestro/tree/5dc3908/.agents/skills),
+not the PR Sniper application's configured review Agents.
+
+Core Joe-mode, the CMUX adapter, and the adapted Doctrine, Setup, Ship,
+Shepherd and Squadron contracts are repository-owned; they intentionally have
+no installer-managed `skills-lock.json` entries. Do not restore upstream copies
+over these adaptations or reinstall the retired Paseo/Orca adapters. Reconcile
+surviving legacy controllers/jobs before switching runtime; removing files does
+not stop them or authorize state deletion.
+
+Activation is human-only and requires a Maestro-managed coordinator with
+verified native identity, launch and messaging capabilities. Keep one private
+owner board, six developer slots, isolated writer worktrees and the
+[independent merge gate](.agents/skills/joe-mode/MERGE.md). CMUX is
+session-bound, with no heartbeat or unattended scheduler. Installing these
+skills does not start workers, enable app automation or authorize self-approval.
+
+Run `npm run test:skills` for package/link and repository-policy contracts;
+these checks do not prove an operational live CMUX cockpit. macOS and Windows
+CI run them without launching agents.
+
 ## Check and bundle
 
 ```sh

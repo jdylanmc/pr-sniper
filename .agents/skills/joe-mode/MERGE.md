@@ -15,20 +15,21 @@ below, clarify with the human. Do not invent required jobs, assume an empty
 check list passes, or impose this library's commands on another repository.
 Reuse an adequate gate without repeating the interview. Recording/changing repository policy still requires applicable write approval.
 
-Save `merge: "orchestrator"` and `mergeGate` in the existing private activation
-config. Its nonempty references are `source` (the repository policy and revision),
+Record `merge: "orchestrator"` and `mergeGate` in the existing private owner
+board under the human's recorded grant. Its nonempty references are `source` (the repository policy and revision),
 `authority` (the human's scope/lifetime grant), `roast`, `ci`, `lint`,
 `rubberDuck` and `verification`. References may point into the same policy.
 The minimum is independent Roast, successful CI and linting, then rubber-duck
 reasoning and final verification by the final orchestrator. The repository defines actual commands, required jobs, acceptance criteria and merge method, and may require more. Linting within CI counts when its successful execution is visible. Missing lint/CI configuration needs clarification, not a skipped check.
 
-The helper validates reference presence, not policy truth or PR eligibility.
-Initialization stays paused and never merges. Existing human-mode
-boards keep their authority; do not reset or directly edit a live board to change
-mode. Use [STATE's `configure-merge`](STATE.md) only in human-directed management,
-after pause/stop, released/fenced lease and reconciliation of owners and pending
-merge effects. It preserves workers, history and other config and does not resume
-the board. A tick cannot change its policy or widen its grant.
+Board references are not proof of policy truth or PR eligibility.
+Installation stays inactive and never merges. Existing human-mode boards keep
+their authority; do not reset a live board to change mode. Change merge mode
+only in human-directed management after pause/stop, exclusive ownership and
+reconciliation of owners and pending merge effects. Preserve workers, history
+and other configuration; a policy update does not resume the controller.
+A callback cannot widen its grant. Keep the one existing repository board;
+no new approval ledger or scheduler is introduced by this CMUX adaptation.
 
 ## Finish one candidate
 
@@ -36,7 +37,7 @@ Query all open in-scope PRs, select those meeting the gate, then rank by impact 
 against its issue, not just a green check list. Review outside PM's context.
 No extra heartbeat: PM dispatch/results wake this role.
 
-Use the existing delivery/Shepherd packet and `record` operations, not another
+Use the existing delivery/Shepherd packet and owner-board records, not another
 approval ledger. Coordinate with the current delivery owner and Shepherd: no concurrent source rewrite or second merger.
 
 1. Confirm this PR is in the granted repository/backlog scope and the grant and
@@ -52,8 +53,8 @@ approval ledger. Coordinate with the current delivery owner and Shepherd: no con
    a worker's "ready" or a green icon is not this step. Unresolved semantics or
    accepted-risk decisions return to the human, not an agent vote.
 4. Ask PM to record a bounded pending merge operation for this exact candidate.
-   PM serializes board writes; the coordinator returns receipts, never takes PM's lease or directly writes the board. Hold that short operation's lease until outcome reconciliation, never during deep review.
-   Recheck the claimed pass's mode/token, human authority, live source/target
+   PM serializes board writes; the coordinator returns receipts, never takes PM's controller ownership or directly races board writes. Hold exclusive custody of that short operation until outcome reconciliation, never during deep review.
+   Recheck the controller's mode/ownership, human authority, live source/target
    refs and provider eligibility immediately before the merge. Follow
    [current-base readiness](../ship/DELIVERY.md#current-base-readiness-and-real-custody).
    If refs or policy changed, return to maintenance and refresh affected Roast,

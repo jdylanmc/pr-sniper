@@ -42,8 +42,8 @@ Use artifact pointers for the spec, tickets, code, and prior findings instead of
 Use the [worker contract](WORKER.md) for dispatch and return: complete bounded task, authorized worktree and harness mapping, actual start/result commits, acceptance evidence, and explicit blockers. Reuse a known worker retained for pending fixes when supported; retire accepted terminal workers under LIFECYCLE. Use configured runtime model preferences; do not revive a separate executor, mandatory model tiers, special ledger tooling, or an alternate finishing route.
 
 Standalone Ship does **not** invoke TDD by default; the operator opts in.
-Under Joe-mode or Joe-mode Paseo, prefer paired TDD for features, especially
-greenfield, under [TEAM](../joe-mode-paseo/TEAM.md). That feature lane uses two
+Under Joe-mode or its CMUX adapter, prefer paired TDD for features, especially
+greenfield, under [TEAM](../joe-mode/TEAM.md). That feature lane uses two
 developer slots; a legacy/non-TDD exception does not make tests or the second
 developer useless. Record the exception and useful acceptance work. Do not force
 a test-framework retrofit. The caller's slot budget limits the frontier below.

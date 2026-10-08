@@ -292,6 +292,7 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
     job.steps.filter((step) => step.run).map((step) => step.run),
     [
       "npm ci",
+      "npm run test:skills",
       "npm run build",
       "npm run test:release:windows",
       "npm run test:packaging:windows",

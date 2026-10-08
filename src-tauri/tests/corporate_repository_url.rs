@@ -315,8 +315,7 @@ fn reset_only_rate_limits_and_policy_scope_combinations_retain_all_safe_evidence
                 Ok(response(403, json!({"message":POLICY_MESSAGE}), &headers)),
             );
             assert_eq!(
-                GithubClient::new(&provider)
-                    .connect("example-org/example-repo", Some(ACCOUNT)),
+                GithubClient::new(&provider).connect("example-org/example-repo", Some(ACCOUNT)),
                 Err(expected)
             );
         }
@@ -335,8 +334,7 @@ fn reset_only_rate_limits_and_policy_scope_combinations_retain_all_safe_evidence
                 )),
             );
             assert_eq!(
-                GithubClient::new(&provider)
-                    .connect("example-org/example-repo", Some(ACCOUNT)),
+                GithubClient::new(&provider).connect("example-org/example-repo", Some(ACCOUNT)),
                 Err(ConnectionError::MissingReadPermission)
             );
         }
@@ -399,8 +397,7 @@ fn evidenced_oauth_app_restrictions_preserve_policy_and_scope_without_raw_body()
                 .borrow_mut()
                 .insert(path, Ok(response(403, json!({"message":message}), &[])));
             assert_eq!(
-                GithubClient::new(&provider)
-                    .connect("example-org/example-repo", Some(ACCOUNT)),
+                GithubClient::new(&provider).connect("example-org/example-repo", Some(ACCOUNT)),
                 Err(ConnectionError::MissingReadPermission)
             );
         }
