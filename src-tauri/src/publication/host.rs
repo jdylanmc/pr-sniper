@@ -6,7 +6,10 @@ use crate::{
     },
     now_seconds, Host,
 };
-use std::sync::{atomic::Ordering, Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use tauri::Manager;
 
 #[derive(Default)]
@@ -206,16 +209,25 @@ impl Coordinator {
             let mut environment = Native {
                 app: app.clone(),
                 generation,
+                failures: Arc::new(FailureRouting::default()),
             };
-            if let Err(error) = execute(&mut environment, &mut run) {
-                let persisted = app
+            let outcome = execute(&mut environment, &mut run);
+            if outcome.is_err()
+                || environment
+                    .failures
+                    .infrastructure_failed
+                    .load(Ordering::SeqCst)
+            {
+                let warning = app
                     .state::<Host>()
                     .store
                     .lock()
                     .ok()
-                    .is_some_and(|store| failure_is_item_local(&store, &run, &error));
-                if !persisted {
-                    crate::report(&app, "Publication status could not be saved or read. Open the PR's review evidence and check local storage before retrying.".into());
+                    .map_or(Some(INFRASTRUCTURE_WARNING), |store| {
+                        environment.failures.host_warning(&store, &run)
+                    });
+                if let Some(warning) = warning {
+                    crate::report(&app, warning.into());
                 }
             }
             if let Err(error) = app.state::<Host>().mutations.release(&mutation_owner) {
@@ -230,13 +242,56 @@ impl Coordinator {
     }
 }
 
-fn failure_is_item_local(store: &Store, run: &Publication, error: &Failure) -> bool {
-    // Only suppress the global banner when the exact failure is durable and
-    // available in this PR's evidence; storage/coordination failures stay global.
-    run.error.as_deref() == Some(error.message.as_str())
-        && store
-            .load_publications()
-            .is_ok_and(|runs| runs.iter().any(|saved| saved == run))
+const INFRASTRUCTURE_WARNING: &str = "Publication host storage or coordination failed. Open the PR's review evidence and check local storage before retrying.";
+
+#[derive(Default)]
+struct FailureRouting {
+    infrastructure_failed: AtomicBool,
+}
+
+impl FailureRouting {
+    fn persist(&self, store: &Store, runs: &[Publication]) -> Result<(), Failure> {
+        store
+            .save_publications(runs)
+            .map_err(|error| self.infrastructure_error(error))
+    }
+    fn infrastructure_error(&self, message: impl Into<String>) -> Failure {
+        self.infrastructure_failed.store(true, Ordering::SeqCst);
+        Failure::permanent(message)
+    }
+
+    fn host_warning(&self, store: &Store, run: &Publication) -> Option<&'static str> {
+        if self.infrastructure_failed.load(Ordering::SeqCst)
+            || run.error.is_none()
+            || !store
+                .load_publications()
+                .is_ok_and(|runs| runs.iter().any(|saved| saved == run))
+        {
+            Some(INFRASTRUCTURE_WARNING)
+        } else {
+            None
+        }
+    }
+}
+
+fn save_publication(
+    store: &Store,
+    run: &mut Publication,
+    failures: &FailureRouting,
+) -> Result<(), Failure> {
+    let mut runs = store
+        .load_publications()
+        .map_err(|error| failures.infrastructure_error(error))?;
+    if runs
+        .iter()
+        .find(|p| p.id == run.id)
+        .is_some_and(|p| p.cancelled)
+    {
+        run.cancelled = true;
+        run.confirmed = false;
+    }
+    replace(&mut runs, run);
+    failures.persist(store, &runs)
 }
 
 fn replace(runs: &mut Vec<Publication>, run: &Publication) {
@@ -257,6 +312,7 @@ fn conflicting_publication(
 struct Native {
     app: tauri::AppHandle,
     generation: u64,
+    failures: Arc<FailureRouting>,
 }
 
 impl Native {
@@ -269,11 +325,14 @@ impl Native {
         let guard = Native {
             app: self.app.clone(),
             generation: self.generation,
+            failures: self.failures.clone(),
         };
         let run = run.clone();
         Ok(client.guarded(Arc::new(move || {
-            if now_seconds().map_err(|_| crate::github::ConnectionError::Configuration)?
-                >= run.operation.retry_deadline
+            if now_seconds().map_err(|error| {
+                guard.failures.infrastructure_error(error);
+                crate::github::ConnectionError::Configuration
+            })? >= run.operation.retry_deadline
             {
                 return Err(crate::github::ConnectionError::Timeout);
             }
@@ -307,7 +366,10 @@ impl Native {
         if host
             .github_generations
             .lock()
-            .map_err(|_| Failure::permanent("GitHub coordination unavailable."))?
+            .map_err(|_| {
+                self.failures
+                    .infrastructure_error("GitHub coordination unavailable.")
+            })?
             .get(&run.review.job.account_id)
             .copied()
             .unwrap_or(0)
@@ -319,7 +381,10 @@ impl Native {
         }
         host.github_auth
             .lock()
-            .map_err(|_| Failure::permanent("GitHub account state unavailable."))?
+            .map_err(|_| {
+                self.failures
+                    .infrastructure_error("GitHub account state unavailable.")
+            })?
             .account_session_allowed(&run.review.job.account_id)?;
         Ok(())
     }
@@ -327,14 +392,14 @@ impl Native {
     fn local_gate(&self, run: &Publication) -> Result<(), Failure> {
         self.connection_gate(run)?;
         let host = self.app.state::<Host>();
-        let store = host
-            .store
-            .lock()
-            .map_err(|_| Failure::permanent("Publication storage unavailable."))?;
+        let store = host.store.lock().map_err(|_| {
+            self.failures
+                .infrastructure_error("Publication storage unavailable.")
+        })?;
         crate::capacity::publication_gate(&store).map_err(Failure::permanent)?;
         let current = store
             .load_publications()
-            .map_err(Failure::permanent)?
+            .map_err(|error| self.failures.infrastructure_error(error))?
             .into_iter()
             .find(|p| p.id == run.id)
             .ok_or_else(|| Failure::permanent("Publication disappeared."))?;
@@ -343,8 +408,12 @@ impl Native {
                 "Publication confirmation was withdrawn.",
             ));
         }
-        let settings = store.load_settings().map_err(Failure::permanent)?;
-        let jobs = store.load_queue().map_err(Failure::permanent)?;
+        let settings = store
+            .load_settings()
+            .map_err(|error| self.failures.infrastructure_error(error))?;
+        let jobs = store
+            .load_queue()
+            .map_err(|error| self.failures.infrastructure_error(error))?;
         let job = jobs
             .iter()
             .find(|job| run.review.matches_job(job))
@@ -360,7 +429,10 @@ impl Native {
         if !host
             .monitor
             .lock()
-            .map_err(|_| Failure::permanent("Monitoring state unavailable."))?
+            .map_err(|_| {
+                self.failures
+                    .infrastructure_error("Monitoring state unavailable.")
+            })?
             .activation_status(&settings, &job.configuration_id)
             .active
         {
@@ -376,32 +448,25 @@ impl Environment for Native {
             .state::<Host>()
             .store
             .lock()
-            .map_err(|_| Failure::permanent("Publication storage unavailable."))?
+            .map_err(|_| {
+                self.failures
+                    .infrastructure_error("Publication storage unavailable.")
+            })?
             .load_automation()
             .map(|s| s.paused)
-            .map_err(Failure::permanent)
+            .map_err(|error| self.failures.infrastructure_error(error))
     }
     fn now(&self) -> Result<i64, Failure> {
-        now_seconds().map_err(Failure::permanent)
+        now_seconds().map_err(|error| self.failures.infrastructure_error(error))
     }
 
     fn save(&mut self, run: &mut Publication) -> Result<(), Failure> {
         let host = self.app.state::<Host>();
-        let store = host
-            .store
-            .lock()
-            .map_err(|_| Failure::permanent("Publication storage unavailable."))?;
-        let mut runs = store.load_publications().map_err(Failure::permanent)?;
-        if runs
-            .iter()
-            .find(|p| p.id == run.id)
-            .is_some_and(|p| p.cancelled)
-        {
-            run.cancelled = true;
-            run.confirmed = false;
-        }
-        replace(&mut runs, run);
-        store.save_publications(&runs).map_err(Failure::permanent)
+        let store = host.store.lock().map_err(|_| {
+            self.failures
+                .infrastructure_error("Publication storage unavailable.")
+        })?;
+        save_publication(&store, run, &self.failures)
     }
 
     fn inspect(&mut self, run: &Publication) -> Result<Gate, Failure> {
@@ -418,21 +483,28 @@ impl Environment for Native {
         self.connection_gate(run)?;
         let local = self.local_gate(run);
         let host = self.app.state::<Host>();
-        let store = host
-            .store
-            .lock()
-            .map_err(|_| Failure::permanent("Publication storage unavailable."))?;
-        let settings = store.load_settings().map_err(Failure::permanent)?;
+        let store = host.store.lock().map_err(|_| {
+            self.failures
+                .infrastructure_error("Publication storage unavailable.")
+        })?;
+        let settings = store
+            .load_settings()
+            .map_err(|error| self.failures.infrastructure_error(error))?;
         let active = host
             .monitor
             .lock()
-            .map_err(|_| Failure::permanent("Monitoring state unavailable."))?
+            .map_err(|_| {
+                self.failures
+                    .infrastructure_error("Monitoring state unavailable.")
+            })?
             .activation_status(&settings, &run.review.job.configuration_id)
             .active;
-        let jobs = store.load_queue().map_err(Failure::permanent)?;
+        let jobs = store
+            .load_queue()
+            .map_err(|error| self.failures.infrastructure_error(error))?;
         let current = store
             .load_publications()
-            .map_err(Failure::permanent)?
+            .map_err(|error| self.failures.infrastructure_error(error))?
             .into_iter()
             .find(|p| p.id == run.id)
             .ok_or_else(|| Failure::permanent("Publication disappeared."))?;
@@ -514,7 +586,9 @@ impl Environment for Native {
         {
             let host = self.app.state::<Host>();
             let store = host.store.lock().map_err(|_| WriteFailure {
-                failure: Failure::permanent("Publication storage unavailable."),
+                failure: self
+                    .failures
+                    .infrastructure_error("Publication storage unavailable."),
                 uncertain: false,
             })?;
             crate::capacity::publication_gate(&store).map_err(|error| WriteFailure {
@@ -530,16 +604,19 @@ impl Environment for Native {
             return Ok(());
         }
         let host = self.app.state::<Host>();
-        let store = host
-            .store
-            .lock()
-            .map_err(|_| Failure::permanent("Publication storage unavailable."))?;
+        let store = host.store.lock().map_err(|_| {
+            self.failures
+                .infrastructure_error("Publication storage unavailable.")
+        })?;
         let result = host
             .monitor
             .lock()
-            .map_err(|_| Failure::permanent("Monitoring state unavailable."))?
+            .map_err(|_| {
+                self.failures
+                    .infrastructure_error("Monitoring state unavailable.")
+            })?
             .request_revision_check(&store, &run.review.job, self.now()?)
-            .map_err(Failure::permanent);
+            .map_err(|error| self.failures.infrastructure_error(error));
         result
     }
 }
