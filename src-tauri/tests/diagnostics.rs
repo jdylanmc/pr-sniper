@@ -60,6 +60,7 @@ fn failures_replacements_and_host_retry_decisions_survive_fresh_readback() {
             "same-operation",
             Event::Retry {
                 decision: RetryDecision::Scheduled,
+                failure: Some(FailureKind::Provider),
                 next_attempt_at: Some(2000),
                 attempt_count: 1,
             },
@@ -76,6 +77,7 @@ fn failures_replacements_and_host_retry_decisions_survive_fresh_readback() {
     );
     assert_eq!(records[1]["attempt"]["attempt"]["id"], "first");
     assert_eq!(records[1]["attempt"]["event"]["next_attempt_at"], 2000);
+    assert_eq!(records[1]["attempt"]["event"]["failure"], "provider");
     assert_eq!(records[2]["attempt"]["attempt"]["id"], "replacement");
     assert_eq!(
         records[0]["attempt"]["attempt"]["operation_id"],

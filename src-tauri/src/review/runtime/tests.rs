@@ -300,6 +300,14 @@ fn closed_sdk_event_stream_records_loss_without_inventing_a_drop_count() {
     );
 }
 
+#[test]
+fn timeout_failure_alone_does_not_claim_a_watchdog_decision() {
+    assert_eq!(
+        crate::review::diagnostics::failure_kind(&Failure::timeout()),
+        FailureKind::Timeout
+    );
+}
+
 #[tokio::test]
 async fn runtime_truncation_is_not_app_response_limit_rejection() {
     let root = tempfile::tempdir().unwrap();

@@ -762,6 +762,7 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
         loop {
             if std::time::Instant::now() >= operation.deadline {
                 if let Some(trace) = &diagnostics {
+                    trace.fail(FailureKind::TotalDurationTimeout);
                     trace.emit(DiagnosticEvent::Watchdog {
                         failure: FailureKind::TotalDurationTimeout,
                         idle_ms: None,

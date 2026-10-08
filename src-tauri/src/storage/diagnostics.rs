@@ -94,6 +94,7 @@ pub enum FailureKind {
     InvalidOutput,
     RuntimeExecution,
     EventStreamLost,
+    Timeout,
     TotalDurationTimeout,
     InactivityTimeout,
     Cancelled,
@@ -288,6 +289,7 @@ pub enum Event {
     },
     Retry {
         decision: RetryDecision,
+        failure: Option<FailureKind>,
         next_attempt_at: Option<i64>,
         attempt_count: u64,
     },

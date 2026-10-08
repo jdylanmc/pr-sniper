@@ -221,8 +221,12 @@ pub(crate) fn failure_kind(error: &Failure) -> FailureKind {
     if error.cancelled {
         return FailureKind::Cancelled;
     }
-    match error.kind {
-        OperationFailure::Timeout => FailureKind::TotalDurationTimeout,
+    operation_failure(&error.kind)
+}
+
+fn operation_failure(failure: &OperationFailure) -> FailureKind {
+    match failure {
+        OperationFailure::Timeout => FailureKind::Timeout,
         OperationFailure::Network => FailureKind::Network,
         OperationFailure::RateLimited => FailureKind::RateLimited,
         OperationFailure::Provider => FailureKind::Provider,
@@ -284,6 +288,7 @@ pub(crate) fn retry_event(operation: &JobOperation) -> Event {
     };
     Event::Retry {
         decision,
+        failure: operation.failure.as_ref().map(operation_failure),
         next_attempt_at: operation.next_attempt_at,
         attempt_count: operation.attempt_count as u64,
     }
