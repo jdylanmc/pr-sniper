@@ -79,6 +79,7 @@ fn fixture() -> (tempfile::TempDir, Store, FollowUp) {
         commit_id: "a".repeat(40),
         body: "Summary".into(),
         comments: vec![InlineComment {
+            diff_position: None,
             path: "source.rs".into(),
             line: 1,
             side: "RIGHT".into(),

@@ -114,6 +114,8 @@ struct Server {
     comments: BTreeMap<u64, Vec<Value>>,
     writes: Vec<(String, String, Value)>,
     fault: Option<(Mutation, Fault)>,
+    comparison_files: Option<Value>,
+    comparisons: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -137,7 +139,22 @@ fn response(value: Value) -> Response {
 
 impl Transport for Wire {
     fn get(&self, path: &str) -> Result<Response, ConnectionError> {
-        let server = self.0.lock().unwrap();
+        let mut server = self.0.lock().unwrap();
+        if path.contains("/compare/") {
+            server.comparisons += 1;
+            assert_eq!(
+                path,
+                format!(
+                    "/repos/example/repo/compare/{}...{}?per_page=1&page=1",
+                    "b".repeat(40),
+                    "a".repeat(40)
+                )
+            );
+            return Ok(response(
+                json!({"files":server.comparison_files.clone().unwrap_or_else(||
+                json!([{"filename":"source.rs","patch":"@@ -1 +1 @@\n-old\n+new"}]))}),
+            ));
+        }
         let (resource, query) = path.split_once('?').unwrap();
         let page = query
             .strip_prefix("per_page=100&page=")
@@ -212,12 +229,21 @@ impl MutationTransport for Wire {
         let value = match mutation {
             Mutation::Create => {
                 assert!(body.get("event").is_none(), "Create must remain pending");
+                assert!(
+                    body["comments"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .all(|c| c.get("diff_position").is_none()),
+                    "Local mapping evidence is not a GitHub request parameter"
+                );
                 let id = server.reviews.len() as u64 + 1;
                 let value = json!({"id":id,"user":{"id":22},"body":body["body"],"commit_id":body["commit_id"],
                     "state":"PENDING","pull_request_url":"https://api.github.com/repos/example/repo/pulls/1"});
                 let comments = body["comments"].as_array().unwrap().iter().enumerate().map(|(i,c)| json!({
                     "id":id * 100 + i as u64,"user":{"id":22},"pull_request_review_id":id,
-                    "path":c["path"],"body":c["body"],"side":c["side"],"line":c["line"],"original_line":c["line"],
+                    "path":c["path"],"body":c["body"],"side":null,"line":null,"original_line":null,
+                    "start_line":null,"position":2,
                     "original_commit_id":body["commit_id"]
                 })).collect();
                 server.comments.insert(id, comments);
@@ -231,7 +257,13 @@ impl MutationTransport for Wire {
                 assert_eq!(review["state"], "PENDING");
                 review["state"] = json!("COMMENTED");
                 review["submitted_at"] = json!("2026-09-27T00:00:00Z");
-                review.clone()
+                let value = review.clone();
+                for comment in server.comments.get_mut(&id).unwrap() {
+                    comment["side"] = json!("RIGHT");
+                    comment["line"] = json!(1);
+                    comment["original_line"] = json!(1);
+                }
+                value
             }
             Mutation::Discard => {
                 let id = path.rsplit('/').next().unwrap().parse::<u64>().unwrap();
@@ -512,6 +544,11 @@ fn stages_one_revision_bound_batch_and_submits_comment_with_confirmed_receipts()
     fixture.run(&mut run).unwrap();
     assert_eq!(fixture.visible(), 1);
     assert_eq!(fixture.writes(), 2);
+    assert_eq!(
+        run.batch.as_ref().unwrap().comments[0].diff_position,
+        Some(2)
+    );
+    assert_eq!(fixture.wire.0.lock().unwrap().comparisons, 0);
     assert_eq!(run.phase, Phase::Published);
     assert_eq!(run.operation.state, OperationState::Completed);
     assert_eq!(run.receipts.last().unwrap().comment_ids, vec!["100"]);
@@ -524,6 +561,208 @@ fn stages_one_revision_bound_batch_and_submits_comment_with_confirmed_receipts()
     assert!(run.retry(false, 200).is_err());
     assert!(fixture.run(&mut run).is_err());
     assert_eq!(fixture.writes(), 2);
+}
+
+#[test]
+fn frozen_positions_cover_left_context_and_later_hunks_with_independent_remote_coordinates() {
+    let patch = "@@ -1,2 +1,2 @@\n same\n-old\n+new\n@@ -9 +9 @@\n-a\n+b";
+    for (side, line, position) in [
+        ("base", 1, 1),
+        ("head", 1, 1),
+        ("base", 2, 2),
+        ("head", 2, 3),
+        ("base", 9, 5),
+        ("head", 9, 6),
+    ] {
+        let fixture = Fixture::new();
+        let mut run = publication();
+        let finding = &mut run.review.result.as_mut().unwrap().output.findings[0];
+        finding.side = side.into();
+        finding.line = line;
+        let mut context = context(pull());
+        context.files[0].patch = Some(patch.into());
+        run.batch = Some(Batch::prepare(&run, &context).unwrap());
+        assert_eq!(
+            run.batch.as_ref().unwrap().comments[0].diff_position,
+            Some(position)
+        );
+        let client = GithubClient::new(fixture.wire.clone());
+        client
+            .mutate_publication(&run, Mutation::Create)
+            .unwrap_or_else(|error| panic!("{:?}", error.failure));
+        fixture.wire.0.lock().unwrap().comments.get_mut(&1).unwrap()[0]["position"] =
+            json!(position);
+        assert_eq!(
+            client.reconcile_publication(&run).unwrap().unwrap().state,
+            RemoteState::Pending
+        );
+        assert_eq!(fixture.wire.0.lock().unwrap().comparisons, 0);
+    }
+}
+
+#[test]
+fn legacy_batches_map_frozen_revisions_without_replacing_the_batch_or_resetting_state() {
+    let mut fixture = Fixture::new();
+    fixture.pause_after_mutation = Some(Mutation::Create);
+    let mut run = publication();
+    fixture.run(&mut run).unwrap();
+    let mut legacy = serde_json::to_value(&run).unwrap();
+    legacy["batch"]["comments"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("diff_position");
+    run = serde_json::from_value(legacy).unwrap();
+    fixture
+        .store
+        .save_publications(std::slice::from_ref(&run))
+        .unwrap();
+    fixture
+        .store
+        .save_automation(&pr_sniper_lib::capacity::Automation { paused: false })
+        .unwrap();
+    run = fixture.resume();
+    run.retry(false, fixture.now).unwrap();
+    fixture.run(&mut run).unwrap();
+    assert_eq!(run.phase, Phase::Published);
+    assert_eq!(fixture.writes(), 2);
+    assert!(fixture.wire.0.lock().unwrap().comparisons > 0);
+    assert_eq!(run.batch.as_ref().unwrap().comments[0].diff_position, None);
+}
+
+#[test]
+fn unavailable_legacy_position_evidence_fails_closed_without_submission() {
+    for files in [
+        json!([]),
+        json!([{"filename":"source.rs"}]),
+        json!([{"filename":"source.rs","patch":"@@ -1,2 +1,2 @@\n-old\n+new"}]),
+    ] {
+        let mut fixture = Fixture::new();
+        fixture.pause_after_mutation = Some(Mutation::Create);
+        let mut run = publication();
+        fixture.run(&mut run).unwrap();
+        run.batch.as_mut().unwrap().comments[0].diff_position = None;
+        fixture.wire.0.lock().unwrap().comparison_files = Some(files);
+        let error = GithubClient::new(fixture.wire.clone())
+            .reconcile_publication(&run)
+            .unwrap_err();
+        assert!(error.message.contains("verify_pending"));
+        assert!(error.message.contains("diff"));
+        assert_eq!(fixture.writes(), 1);
+        assert_eq!(fixture.visible(), 0);
+    }
+}
+
+#[test]
+fn submitted_comments_keep_line_and_side_verification_without_a_position() {
+    let mut fixture = Fixture::new();
+    let mut run = publication();
+    fixture.run(&mut run).unwrap();
+    let client = GithubClient::new(fixture.wire.clone());
+    {
+        let mut server = fixture.wire.0.lock().unwrap();
+        server.comments.get_mut(&1).unwrap()[0]["position"] = Value::Null;
+    }
+    assert_eq!(
+        client.reconcile_publication(&run).unwrap().unwrap().state,
+        RemoteState::Commented
+    );
+    for (field, value) in [
+        ("side", json!("LEFT")),
+        ("original_line", json!(2)),
+        ("line", Value::Null),
+    ] {
+        let saved = fixture.wire.0.lock().unwrap().comments[&1][0].clone();
+        {
+            let mut server = fixture.wire.0.lock().unwrap();
+            let comment = &mut server.comments.get_mut(&1).unwrap()[0];
+            comment[field] = value;
+            if field == "line" {
+                comment["original_line"] = Value::Null;
+            }
+        }
+        let error = client.reconcile_publication(&run).unwrap_err();
+        assert!(error.message.contains("verify_submitted"));
+        fixture.wire.0.lock().unwrap().comments.get_mut(&1).unwrap()[0] = saved;
+    }
+    fixture.wire.0.lock().unwrap().comments.get_mut(&1).unwrap()[0]["original_line"] = Value::Null;
+    assert!(
+        client.reconcile_publication(&run).is_ok(),
+        "submitted line fallback"
+    );
+    assert_eq!(fixture.writes(), 2);
+}
+
+#[test]
+fn pending_comment_tampering_is_rejected_before_submission() {
+    for field in [
+        "body",
+        "path",
+        "original_commit_id",
+        "author",
+        "review_id",
+        "extra_count",
+        "missing_count",
+        "position",
+        "missing_position",
+        "side",
+        "line",
+        "original_line",
+        "start_line",
+        "duplicate_id",
+    ] {
+        let mut fixture = Fixture::new();
+        fixture.pause_after_mutation = Some(Mutation::Create);
+        let mut run = publication();
+        if field == "duplicate_id" {
+            let mut other = run.review.result.as_ref().unwrap().output.findings[0].clone();
+            other.title = "Another defect".into();
+            run.review
+                .result
+                .as_mut()
+                .unwrap()
+                .output
+                .findings
+                .push(other);
+        }
+        fixture.run(&mut run).unwrap();
+        {
+            let mut server = fixture.wire.0.lock().unwrap();
+            let comments = server.comments.get_mut(&1).unwrap();
+            assert!(comments[0]["line"].is_null());
+            assert!(comments[0]["side"].is_null());
+            assert_eq!(comments[0]["position"], 2);
+            match field {
+                "body" | "path" | "original_commit_id" => comments[0][field] = json!("tampered"),
+                "author" => comments[0]["user"]["id"] = json!(99),
+                "review_id" => comments[0]["pull_request_review_id"] = json!(99),
+                "extra_count" => comments.push(comments[0].clone()),
+                "missing_count" => comments.clear(),
+                "position" => comments[0]["position"] = json!(1),
+                "missing_position" => comments[0]["position"] = Value::Null,
+                "side" => comments[0]["side"] = json!("LEFT"),
+                "line" | "original_line" | "start_line" => comments[0][field] = json!(2),
+                "duplicate_id" => comments[1]["id"] = comments[0]["id"].clone(),
+                _ => unreachable!(),
+            }
+        }
+        fixture
+            .store
+            .save_automation(&pr_sniper_lib::capacity::Automation { paused: false })
+            .unwrap();
+        run = fixture.resume();
+        run.retry(false, fixture.now).unwrap();
+        let error = fixture.run(&mut run).unwrap_err();
+        assert!(
+            error.message.contains("verify_pending"),
+            "{field}: {error:?}"
+        );
+        assert_eq!(fixture.visible(), 0, "{field}");
+        assert_eq!(fixture.writes(), 1, "{field}");
+        assert_eq!(
+            fixture.store.load_publications().unwrap()[0].error,
+            Some(error.message)
+        );
+    }
 }
 
 #[test]

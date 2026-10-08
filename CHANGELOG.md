@@ -95,6 +95,12 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- Verify pending GitHub review comments using their diff positions and frozen
+  revisions when line/side are absent, while retaining identity and content
+  checks. Keep publication failures on the affected PR instead of the Settings
+  banner, without hiding direct or nested host storage failures if a later
+  error-record save succeeds. Intentional policy refusals stay item-local;
+  no existing remote drafts are reset or discarded. (#154)
 - Resolve GitHub pull-request URLs to the exact PR and queue it immediately
   after valid repository Save, even outside watch filters. Reuse unchanged
   iteration work while preserving pause, disabled repositories, account/Agent

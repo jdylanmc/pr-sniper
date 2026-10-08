@@ -183,6 +183,7 @@ fn fixture(count: usize) -> (tempfile::TempDir, Store, Publication, Thread) {
         body: "Summary".into(),
         unmappable: vec![],
         comments: vec![InlineComment {
+            diff_position: None,
             path: "source.rs".into(),
             line: 1,
             side: "RIGHT".into(),

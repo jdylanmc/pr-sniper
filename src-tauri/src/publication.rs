@@ -1,5 +1,6 @@
 pub(crate) mod host;
 mod plan;
+pub(crate) use plan::diff_positions;
 
 use crate::{
     monitoring::{JobOperation, OperationFailure, OperationState, QueueJob},
@@ -8,6 +9,19 @@ use crate::{
 };
 pub use plan::{Batch, InlineComment};
 use serde::{Deserialize, Serialize};
+
+pub(crate) enum GateError {
+    Storage(String),
+    Policy(String),
+}
+
+impl GateError {
+    pub(crate) fn message(self) -> String {
+        match self {
+            Self::Storage(message) | Self::Policy(message) => message,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
