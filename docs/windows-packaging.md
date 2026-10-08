@@ -3,10 +3,11 @@
 The unsigned installer and private Chocolatey package were delivered in
 [#87](https://github.com/jdylanmc/pr-sniper/pull/87), completing the local package
 scope of [#63](https://github.com/jdylanmc/pr-sniper/issues/63). This is **not a
-trusted public Windows release**. Signed Windows releases
+public Windows release**. Future signed Windows releases
 ([#62](https://github.com/jdylanmc/pr-sniper/issues/62)) and public Chocolatey
 publication ([#64](https://github.com/jdylanmc/pr-sniper/issues/64)) remain open.
-The owner resumed public-distribution preparation on 2026-10-08; no signed
+The owner resumed public-distribution preparation on 2026-10-08 and explicitly
+approved unsigned initial public releases, deferring paid signing. No public
 Windows release or publicly approved Chocolatey package is established.
 
 ## Delivery status
@@ -22,10 +23,13 @@ macOS CI and signed macOS release workflows are independent and unchanged.
 **Preparation resumed 2026-10-08:** Target Windows 10/11 x64, including clean PCs.
 The owner approved the MIT application-source license in [`LICENSE`](../LICENSE).
 Third-party components retain their own licenses and distribution terms.
-Signing-service selection, verified publisher identity, Chocolatey account/key
-setup, clean-PC WebView2 provisioning and signed public lifecycle acceptance
-remain outstanding. The current installer still requires pre-installed WebView2;
-the new target is not a claim that clean-PC provisioning is implemented.
+The owner reports a Chocolatey maintainer account is created; its package
+ownership and protected publication key are not yet verified/provisioned.
+Public package generation now declares the `webview2-runtime` dependency;
+private-test packages remain dependency-free. The native installer still
+requires an installed runtime. Declaring a dependency is not proof of actual
+clean-PC installation: fresh native/public lifecycle acceptance remains open.
+Paid signing is deferred, not a blocker for the approved unsigned-first route.
 
 The completed delivery is anchored to merged commit
 `513c1a3f5746450dfc3022a988634577901ed97e`:
@@ -214,8 +218,10 @@ product-name Run-value deletion. It is not an application updater.
   installation. `/D=` to another location is rejected.
 - Requires **Microsoft Edge WebView2 Evergreen Runtime**, already installed for
   the machine or invoking user. Missing runtime fails before application files
-  are copied. No bootstrapper, unrelated dependency, trust root or Windows
-  security setting is installed/modified. Obtain WebView2 from
+  are copied. The native installer itself does not install a bootstrapper,
+  unrelated dependency or trust root, or change Windows security settings.
+  The public Chocolatey package resolves its declared WebView2 runtime dependency
+  before launching this installer. For direct-installer use, obtain WebView2 from
   [Microsoft](https://developer.microsoft.com/microsoft-edge/webview2/).
 - Install: `pr-sniper-VERSION-x64-setup.exe /S`. Uninstall:
   `"%LOCALAPPDATA%\PR Sniper\uninstall.exe" /S`. Switches are case-sensitive.
@@ -374,7 +380,42 @@ For a public package, use the license URL at the exact release commit,
 the approved license is present there. This does not by itself establish
 redistribution permission for every bundled third-party component.
 
-`-Mode Public` requires that approved `-LicenseUrl`, `-ExpectedThumbprint`,
+### Public trust modes
+
+The owner approved **unsigned-first** Windows public distribution on 2026-10-08.
+Select `-Mode PublicUnsigned` explicitly. This is not `LocalTest`, and does not
+require the private-test consent environment variable. Generation still requires
+the exact immutable release URL, checksum, version, source commit, exact-tag
+green Windows/macOS release preflight and commit-pinned MIT license URL.
+The generator independently downloads the public installer without credentials
+and verifies the same bytes; a local CI candidate alone cannot generate a
+public package. The package/client disclose the absence of Authenticode identity.
+Do not disable SmartScreen or other Windows protections to install it.
+
+Unsigned mode rejects any signature, including invalid, untrusted or
+unexpected signed output, and refuses signer metadata. Signed publication
+cannot silently become unsigned when signing or verification fails.
+The client rechecks the downloaded hash even if Chocolatey's checksum feature
+was disabled, checks product/version and then verifies the selected trust mode.
+Neither mode provides automatic approval by Chocolatey moderators.
+
+Both public modes declare
+`webview2-runtime` with minimum package version `154.0.4258.62`, leaving later
+Evergreen versions eligible. The approved version's source was inspected on
+2026-10-08: it downloads Microsoft's architecture-specific offline installer,
+pins SHA-256 and invokes `/silent /install`. This is a separately maintained,
+machine-level runtime dependency, not an app-owned file or private test fixture.
+Chocolatey resolves it before app installation; PR Sniper's uninstaller never
+removes the shared runtime. The package maintainer notes delayed registration; the public wrapper waits
+up to 60 seconds for a valid machine or invoking-user registration before
+launching PR Sniper's installer. Timeout or denied registry access fails visibly
+without starting the application installer. Actual clean-PC acceptance and
+future dependency versions must be verified; inspection is not installation
+evidence. Installing the shared runtime may require elevation even though the
+PR Sniper installer itself is current-user and does not request elevation.
+
+`-Mode Public` retains the future **signed-only** route. It requires
+the commit-pinned `-LicenseUrl`, `-ExpectedThumbprint`,
 `-ExpectedSubject` and this exact versioned URL:
 `https://github.com/jdylanmc/pr-sniper/releases/download/vVERSION/pr-sniper-VERSION-x64-setup.exe`.
 It rejects unsigned/untrusted/untimestamped or wrong-publisher bytes before
@@ -397,26 +438,28 @@ an arbitrary registry command or recursively delete a directory.
 Checked against the [official moderation requirements/guidelines](https://docs.chocolatey.org/en-us/community-repository/moderation/)
 and [validator guidance](https://docs.chocolatey.org/en-us/community-repository/moderation/package-validator/)
 on 2026-09-30; delivery status and native evidence were reconciled on 2026-10-01.
-**Met** below means the stated local evidence at the recorded delivery, not
-community approval or acceptance of later commits. **Deferred** needs owner
-decisions or public-distribution validation; **N/A** is limited to the stated
-variant. The service/moderator may enforce newer rules.
+The preparation rows were updated for the owner-approved unsigned-first route
+on 2026-10-08. **Met** means the stated local evidence at the recorded delivery,
+not community approval or acceptance of later commits. **Prepared** means source
+and pure-test coverage exist, not native/public acceptance. **Deferred** still
+needs public-distribution validation; **N/A** is limited to the stated variant.
+The service/moderator may enforce newer rules.
 
-| Check                                          | Official expectation / scope                                                                                                                                 | Status   | Evidence or remaining action                                                                                                                                                                                                                                                                              |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Basic metadata                                 | Required project URL, appropriate author/title/description and non-abusive tags                                                                              | Met      | Generator names Dylan McCurry and the actual project, describes the per-user app/prerequisites, and avoids misleading tags.                                                                                                                                                                               |
-| New package identity                           | Naming conventions apply to new submissions                                                                                                                  | Deferred | `pr-sniper` remains the proposed public ID; the empty feed lookup is not ownership or reservation. Maintainer/account confirmation remains external.                                                                                                                                                      |
-| License, attribution and acceptance            | Include an available license URL; use accurate copyright and applicable trial/license-required disclosures                                                   | Deferred | Owner must approve actual terms, attribution and public metadata. The generator's current `requireLicenseAcceptance=false` is not approval of future terms. Do not invent a license/copyright or add trial/license tags without facts.                                                                    |
-| Download contract                              | Project-origin download and package/installer version agreement; pinned checksum is this package's integrity contract                                        | Met      | Exact versioned project URL, SHA-256, version and public signature gates are implemented. This does not establish published signed bytes.                                                                                                                                                                 |
-| WebView2 / dependencies                        | Verifier checks that the package installs correctly with appropriate runtime dependencies; the cited guidance does not mandate a particular WebView2 package | Deferred | Local design intentionally declares and checks **pre-installed WebView2 Evergreen**, rather than installing a Chocolatey dependency/bootstrapper. Confirm clean-verifier compatibility before public submission; any dependency/provisioning change needs a reviewed owner choice, not a guessed package. |
-| Lifecycle / script behavior                    | Silent install and correct package install/uninstall; use appropriate Chocolatey helpers                                                                     | Met      | Private-feed pack/install/upgrade/uninstall, rollback/retry, preservation and clean reinstall passed in native validation. Interactive tray proof was verified separately on the authorized VM; see [delivery status](#delivery-status).                                                                  |
-| Public embedded-binary redistribution evidence | Required when distributing embedded binaries                                                                                                                 | N/A      | Public variant downloads the installer; it does not embed it. The embedded unsigned local-test package must never be submitted. Application distribution rights remain an owner prerequisite.                                                                                                             |
-| Additional architecture URLs                   | Include supported x86/x64 downloads when available                                                                                                           | N/A      | Only x64 is built for this delivery; no x86/ARM URL or architecture-dependent installer is invented.                                                                                                                                                                                                      |
-| Icon and release notes                         | `iconUrl` and useful release notes are recommendations, not blanket required fields; a supplied icon must meet hosting/format rules                          | Deferred | Select an owner-controlled compliant icon URL and real release notes when public metadata is approved; do not add arbitrary placeholders or raw GitHub icon links.                                                                                                                                        |
-| Public verification / moderation               | Validator/verifier checks and moderator approval are distinct from pack success                                                                              | Deferred | Trusted signing is additionally required by PR Sniper's release policy. Publisher identity/key, immutable public artifacts, submission and public-feed install/upgrade are not established.                                                                                                               |
+| Check                                          | Official expectation / scope                                                                                                                                 | Status   | Evidence or remaining action                                                                                                                                                                                                             |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Basic metadata                                 | Required project URL, appropriate author/title/description and non-abusive tags                                                                              | Met      | Generator names Dylan McCurry and the actual project, describes the per-user app/prerequisites, and avoids misleading tags.                                                                                                              |
+| New package identity                           | Naming conventions apply to new submissions                                                                                                                  | Deferred | Owner reports a maintainer account is created. `pr-sniper` ownership, protected API key and public acceptance remain unverified; an account is not a package-name reservation.                                                           |
+| License, attribution and acceptance            | Include an available license URL; use accurate copyright and applicable trial/license-required disclosures                                                   | Prepared | Owner-approved MIT source license and commit-pinned URL are declared. Copilot entitlement is disclosed. Bundled third-party licenses/notices still need complete artifact-level verification.                                            |
+| Download contract                              | Project-origin download and package/installer version agreement; pinned checksum is this package's integrity contract                                        | Prepared | Explicit unsigned-public and signed-public modes retain immutable URLs, exact-release gates, independently downloaded bytes and client-side checksum enforcement. No public release bytes are established.                               |
+| WebView2 / dependencies                        | Verifier checks that the package installs correctly with appropriate runtime dependencies; the cited guidance does not mandate a particular WebView2 package | Prepared | Public packages declare the inspected `webview2-runtime` dependency and bounded registration wait; private packages do not provision it. Fresh clean-PC installation remains unverified.                                                 |
+| Lifecycle / script behavior                    | Silent install and correct package install/uninstall; use appropriate Chocolatey helpers                                                                     | Met      | Private-feed pack/install/upgrade/uninstall, rollback/retry, preservation and clean reinstall passed in native validation. Interactive tray proof was verified separately on the authorized VM; see [delivery status](#delivery-status). |
+| Public embedded-binary redistribution evidence | Required when distributing embedded binaries                                                                                                                 | N/A      | Public variant downloads the installer; it does not embed it. The embedded unsigned local-test package must never be submitted. Application distribution rights remain an owner prerequisite.                                            |
+| Additional architecture URLs                   | Include supported x86/x64 downloads when available                                                                                                           | N/A      | Only x64 is built for this delivery; no x86/ARM URL or architecture-dependent installer is invented.                                                                                                                                     |
+| Icon and release notes                         | `iconUrl` and useful release notes are recommendations, not blanket required fields; a supplied icon must meet hosting/format rules                          | Deferred | Select an owner-controlled compliant icon URL and real release notes when public metadata is approved; do not add arbitrary placeholders or raw GitHub icon links.                                                                       |
+| Public verification / moderation               | Validator/verifier checks and moderator approval are distinct from pack success                                                                              | Deferred | Owner-approved unsigned-first delivery is explicit, not a signature failure fallback. Immutable public assets, protected publication key, submission and public-feed lifecycle acceptance remain outstanding.                            |
 
 Public partial-asset/submission recovery remains in
-[trusted signing and publication](#trusted-signing-and-publication-deferred):
+[public release and publication](#public-release-and-publication):
 reconcile actual remote state, retain immutable bytes/tags and existing macOS
 assets, and distinguish pending/rejected submissions from public approval.
 The local-completion scope of #63 is closed; this checklist does not authorize
@@ -514,15 +557,16 @@ validation on a shared machine with an existing app. Pack-only tests do not
 prove installed behavior. Source/helper tests never execute their synthetic PE
 fixture or touch native application registrations/credentials.
 
-## Trusted signing and publication: deferred
+## Public release and publication
 
 Public Windows distribution preparation resumed on 2026-10-08, separately from
-the completed private-package acceptance. No signing provider/account has been
-selected or provisioned by this delivery.
-Retain the requirement for
-**publicly trusted Windows Authenticode signing and a trusted timestamp**.
-There is no self-signed/ad-hoc fallback, borrowed unrelated certificate, trust-root
-installation or credential upload in this delivery.
+the completed private-package acceptance. The owner explicitly approved
+unsigned initial public releases and deferred paid signing. This supersedes
+the earlier signed-only requirement for that route; it does not waive the
+future `Public` signed-mode requirements. No signing provider/account has been
+selected or provisioned, and no public release or submission has occurred.
+There is no self-signed/ad-hoc substitution, borrowed unrelated certificate,
+trust-root installation or credential upload in this delivery.
 
 ### Publisher setup
 
@@ -551,7 +595,15 @@ current ownership before the first submission. The publication workflow is
 not implemented yet, so no secret name or push command is prescribed here.
 Submission, moderation and public approval remain separate states.
 
-The human/external operator must:
+For either public mode, the remaining release work must first establish actual
+Windows app/lifecycle acceptance, bundled third-party license/notices, a protected
+exact-green-main immutable Windows publication route that preserves macOS
+assets, and protected Chocolatey submission/reconciliation. The initial release
+version/tag remains an owner decision. Existing release bytes/tags must not be
+replaced. Checksum verification is not publisher identity.
+
+The remaining release checklist follows. Steps 1-3 apply only to future signed
+releases; steps 4-6 apply to either public trust mode:
 
 1. Select and own a publicly trusted code-signing identity/service for PR Sniper;
    complete its identity validation and securely scoped CI access. Establish the
@@ -590,8 +642,9 @@ The human/external operator must:
    public-feed installation plus a subsequent approved release upgrade.
 
 The completed private-package scope of #63 does not complete #62 or #64.
-Neither unsigned candidate acceptance nor the CI pause authorizes a signed
-Windows release or public Chocolatey submission.
+Unsigned candidate acceptance and the CI pause are not public-release evidence.
+The unsigned-first authorization does not waive version selection, exact-commit
+CI, release-byte verification, bundled-component terms or moderation.
 
 ## Primary contracts checked
 

@@ -9,6 +9,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 - Declare the owner-approved MIT license for PR Sniper's application source and
   package metadata. Third-party licenses and service terms remain separate.
+- Add an explicit unsigned-public Chocolatey generation mode with pinned
+  release bytes, exact-source license metadata and visible trust limitations.
+  Preserve signed-only validation without an unsigned fallback, and declare
+  WebView2 provisioning for public packages while keeping private tests isolated.
 
 - Configure Agents with advertised reasoning-effort and context-tier choices,
   explicit Provider defaults and visible unsupported selections. Preserve

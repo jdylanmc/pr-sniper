@@ -20,6 +20,20 @@ including secure accounts, lifecycle, notifications, install/upgrade/uninstall
 and exact-commit CI evidence. Signing credentials, publisher ownership and
 first-release authorization must be established, not inferred from this scope.
 
+The human-approved 2026-10-08 distribution amendment targets Windows 10/11 x64
+and clean-PC Chocolatey installation. Initial public Windows releases may be
+explicitly unsigned, with immutable versioned assets, SHA-256 verification and
+clear absence-of-publisher-identity disclosure; paid signing is deferred.
+This supersedes the earlier signed-only requirement for that initial route.
+It does not permit a failed signed release to fall back to unsigned, or waive
+exact-commit green Windows/macOS CI, installer lifecycle/data preservation,
+bundled-component distribution terms, protected publishing credentials or
+Chocolatey moderation/public-feed acceptance. Runtime provisioning must be
+explicit, and must not remove a shared runtime during app uninstall. Source
+licensing is MIT; third-party components retain their separate terms.
+Version/tag selection and verified public availability remain separate from
+implementation and package generation. No review functionality is added.
+
 PR Sniper is a macOS-first menu-bar utility that watches configured GitHub repositories for selected teammates' pull requests or pull requests requesting the signed-in user as a reviewer, runs a configured local review agent against each eligible revision, publishes clearly machine-authored review comments, and puts machine-cleared pull requests in front of the human for final review.
 
 The human-approved 2026-09-25 Copilot Settings amendment selects app-owned

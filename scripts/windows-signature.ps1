@@ -5,6 +5,15 @@ if ($PSVersionTable.PSVersion.Major -eq 5) {
     Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1" -ErrorAction Stop
 }
 
+function Assert-UnsignedWindowsArtifact {
+    param([Parameter(Mandatory)][string] $Path)
+    $signature = Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction Stop
+    if ($signature.Status -ne 'NotSigned' -or $signature.SignerCertificate -or
+        $signature.TimeStamperCertificate) {
+        throw 'The explicit unsigned distribution mode requires an unsigned artifact; signed, invalid or untrusted signatures are not an unsigned fallback.'
+    }
+}
+
 function Assert-TrustedWindowsSignature {
     param(
         [Parameter(Mandatory)][string] $Path,

@@ -37,6 +37,17 @@ their starting filter. This amendment changes detection admission only.
 
 ## Problem and Users
 
+The 2026-10-08 human-approved Windows distribution amendment in the nano
+authority permits unsigned initial public releases for Windows 10/11 x64,
+deferring paid signing. This is an explicit release mode, not a verification
+failure fallback. It retains immutable assets, checksums, exact-commit green
+Windows/macOS CI, preserved app data/credentials, third-party terms and
+Chocolatey moderation. Clean-PC Chocolatey installation includes explicit
+WebView2 provisioning; shared runtime removal is not app-uninstall ownership.
+The owner-approved MIT application-source license does not relicense bundled
+components. See [Windows packaging](../../windows-packaging.md) for preparation
+status; a source change or generated package is not public-distribution proof.
+
 The primary user is a human reviewer whose pull-request workload spans repositories and teammates. Teammate authors receive machine-authored feedback through GitHub. PR Sniper detects eligible work, invokes the configured local agent, publishes validated comments, follows its own unresolved conversations, and prepares the final human handoff.
 
 ## Outcomes and Success
