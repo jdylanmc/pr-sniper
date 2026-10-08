@@ -1,5 +1,6 @@
 pub(crate) mod host;
 mod plan;
+pub(crate) use plan::diff_positions;
 
 use crate::{
     monitoring::{JobOperation, OperationFailure, OperationState, QueueJob},

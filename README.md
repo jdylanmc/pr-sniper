@@ -1085,6 +1085,17 @@ missing receipt after an uncertain create never authorizes another create;
 it remains visibly unresolved even after manual retry. Another pending review
 owned by the signed-in account is never silently submitted or deleted.
 
+Pending GitHub comments can have null line/side fields. New batches retain the
+verified diff position alongside each finding; reconciliation checks that
+position, path, body, original commit, author, review identity and comment count.
+Submitted comments still require matching line/side. Older batches without saved
+positions use a read-only comparison of their frozen revisions; missing or
+truncated patches (including files outside GitHub's comparison limit) stop
+verification rather than guessing or replacing a draft. No state reset is needed.
+Publication failures remain on the affected PR with their cause and next action,
+not in the global Settings banner. Failure to persist or read that item status
+still raises a host storage warning.
+
 Transient failures use the shared limit of three retries within 15 minutes,
 preserving the operation and deadline across restart. Explicit rejection,
 configuration and permission errors require correction. **Reconcile / retry

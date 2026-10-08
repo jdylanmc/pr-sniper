@@ -55,6 +55,28 @@ fn fixture() -> (tempfile::TempDir, Store, ReviewRun) {
 }
 
 #[test]
+fn persisted_publication_failure_is_item_local_not_a_settings_banner() {
+    let (_root, store, review) = fixture();
+    let mut run = Publication::new(review, true, false, 100).unwrap();
+    let error = Failure::permanent("Publication verify_pending: remote comment body differs. Inspect the PR on GitHub before retrying.");
+    run.error = Some(error.message.clone());
+    run.operation.state = OperationState::Failed;
+    assert!(!failure_is_item_local(&store, &run, &error));
+    store.save_publications(std::slice::from_ref(&run)).unwrap();
+    assert!(failure_is_item_local(&store, &run, &error));
+    let candidate = candidates(&store).unwrap().remove(0);
+    assert_eq!(candidate.publication.as_ref().unwrap().error, run.error);
+    assert_eq!(candidate.publication.unwrap().review.job.number, 1);
+    assert!(!failure_is_item_local(
+        &store,
+        &run,
+        &Failure::permanent("Storage unavailable.")
+    ));
+    run.operation.attempt_count += 1;
+    assert!(!failure_is_item_local(&store, &run, &error));
+}
+
+#[test]
 fn newer_local_attempt_blocks_automatic_publication_of_the_older_result() {
     let (_root, store, review) = fixture();
     assert!(candidates(&store).unwrap()[0].automatic);

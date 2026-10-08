@@ -208,7 +208,15 @@ impl Coordinator {
                 generation,
             };
             if let Err(error) = execute(&mut environment, &mut run) {
-                crate::report(&app, error.message);
+                let persisted = app
+                    .state::<Host>()
+                    .store
+                    .lock()
+                    .ok()
+                    .is_some_and(|store| failure_is_item_local(&store, &run, &error));
+                if !persisted {
+                    crate::report(&app, "Publication status could not be saved or read. Open the PR's review evidence and check local storage before retrying.".into());
+                }
             }
             if let Err(error) = app.state::<Host>().mutations.release(&mutation_owner) {
                 crate::report(&app, error);
@@ -220,6 +228,15 @@ impl Coordinator {
         });
         Ok(())
     }
+}
+
+fn failure_is_item_local(store: &Store, run: &Publication, error: &Failure) -> bool {
+    // Only suppress the global banner when the exact failure is durable and
+    // available in this PR's evidence; storage/coordination failures stay global.
+    run.error.as_deref() == Some(error.message.as_str())
+        && store
+            .load_publications()
+            .is_ok_and(|runs| runs.iter().any(|saved| saved == run))
 }
 
 fn replace(runs: &mut Vec<Publication>, run: &Publication) {

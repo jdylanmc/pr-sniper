@@ -3,11 +3,13 @@ use super::{
     ConnectionError,
 };
 use crate::{
-    publication::{Mutation, Publication, Receipt, RemoteState, WriteFailure},
+    publication::{
+        diff_positions, InlineComment, Mutation, Publication, Receipt, RemoteState, WriteFailure,
+    },
     review::Failure,
 };
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub enum Request {
     Post(Value),
@@ -64,40 +66,170 @@ impl<T: Transport> GithubClient<T> {
             receipt.review_id
         ))?;
         if comments.len() != batch.comments.len() {
-            return Err(Failure::permanent("The remote review contains different comments. No automatic submission or replacement is allowed."));
+            return Err(comment_mismatch(&receipt.state, "count"));
         }
+        let positions = if receipt.state == RemoteState::Pending
+            && batch.comments.iter().any(|c| c.diff_position.is_none())
+        {
+            self.pending_positions(run)?
+        } else {
+            BTreeMap::new()
+        };
         let mut unmatched = batch.comments.clone();
         let mut comment_ids = BTreeSet::new();
         for comment in comments {
             let id = decimal_id(&comment["id"])?;
-            if !comment_ids.insert(id.clone())
-                || decimal_id(&comment["user"]["id"])? != run.review.job.account_id
-                || decimal_id(&comment["pull_request_review_id"])? != receipt.review_id
-                || comment["original_commit_id"].as_str() != Some(&batch.commit_id)
-            {
-                return Err(Failure::permanent(
-                    "The remote comment identity does not match the frozen batch.",
-                ));
+            for (matches, field) in [
+                (comment_ids.insert(id.clone()), "id"),
+                (
+                    decimal_id(&comment["user"]["id"])? == run.review.job.account_id,
+                    "author",
+                ),
+                (
+                    decimal_id(&comment["pull_request_review_id"])? == receipt.review_id,
+                    "review_id",
+                ),
+                (
+                    comment["original_commit_id"].as_str() == Some(&batch.commit_id),
+                    "original_commit_id",
+                ),
+            ] {
+                if !matches {
+                    return Err(comment_mismatch(&receipt.state, field));
+                }
             }
-            let line = comment["original_line"]
-                .as_u64()
-                .or_else(|| comment["line"].as_u64());
+            // Finding markers make bodies unique even at the same diff location.
             let index = unmatched
                 .iter()
-                .position(|expected| {
-                    comment["path"].as_str() == Some(&expected.path)
-                        && comment["body"].as_str() == Some(&expected.body)
-                        && comment["side"].as_str() == Some(&expected.side)
-                        && line == Some(expected.line)
-                })
-                .ok_or_else(|| {
-                    Failure::permanent("The remote inline comment differs from the frozen batch.")
-                })?;
+                .position(|expected| comment["body"].as_str() == Some(&expected.body))
+                .ok_or_else(|| comment_mismatch(&receipt.state, "body"))?;
+            let expected = &unmatched[index];
+            if comment["path"].as_str() != Some(&expected.path) {
+                return Err(comment_mismatch(&receipt.state, "path"));
+            }
+            verify_location(&comment, expected, &receipt.state, &positions)?;
             unmatched.remove(index);
         }
         receipt.comment_ids = comment_ids.into_iter().collect();
         Ok(Some(receipt))
     }
+
+    fn pending_positions(
+        &self,
+        run: &Publication,
+    ) -> Result<BTreeMap<(String, String, u64), u64>, Failure> {
+        let batch = run
+            .batch
+            .as_ref()
+            .ok_or_else(|| comment_mismatch(&RemoteState::Pending, "batch"))?;
+        let base = run
+            .review
+            .result
+            .as_ref()
+            .and_then(|r| r.reviewed_base_sha.as_deref())
+            .ok_or_else(|| comment_mismatch(&RemoteState::Pending, "reviewed_base_sha"))?;
+        if [base, batch.commit_id.as_str()]
+            .iter()
+            .any(|sha| sha.len() != 40 || !sha.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            return Err(comment_mismatch(&RemoteState::Pending, "revision"));
+        }
+        // Compare the frozen revisions, not the mutable PR head. This also supports
+        // already-persisted batches without a reset. Missing/truncated comparison
+        // patches fail closed; newly frozen batches retain their own positions.
+        let name = crate::storage::canonical_repository(&run.review.job.repository_name)
+            .map_err(Failure::permanent)?;
+        let (comparison, _) = self.read(&format!(
+            "/repos/{name}/compare/{base}...{}?per_page=1&page=1",
+            batch.commit_id
+        ))?;
+        let files = comparison["files"]
+            .as_array()
+            .ok_or_else(|| comment_mismatch(&RemoteState::Pending, "diff"))?;
+        let mut positions = BTreeMap::new();
+        let mut paths = BTreeSet::new();
+        for file in files {
+            let path = file["filename"]
+                .as_str()
+                .ok_or_else(|| comment_mismatch(&RemoteState::Pending, "diff_path"))?;
+            if !paths.insert(path) {
+                return Err(comment_mismatch(&RemoteState::Pending, "diff_path"));
+            }
+            if !batch.comments.iter().any(|c| c.path == path) {
+                continue;
+            }
+            let lines = file["patch"]
+                .as_str()
+                .and_then(diff_positions)
+                .ok_or_else(|| comment_mismatch(&RemoteState::Pending, "diff"))?;
+            for ((side, line), position) in lines {
+                positions.insert(
+                    (
+                        path.to_string(),
+                        if side == "base" { "LEFT" } else { "RIGHT" }.into(),
+                        line,
+                    ),
+                    position,
+                );
+            }
+        }
+        Ok(positions)
+    }
+}
+
+fn comment_mismatch(state: &RemoteState, field: &'static str) -> Failure {
+    let stage = if *state == RemoteState::Pending {
+        "verify_pending"
+    } else {
+        "verify_submitted"
+    };
+    Failure::permanent(format!(
+        "Publication {stage}: remote comment {field} does not match the frozen batch. Open this PR on GitHub and inspect the review before retrying; no automatic submission or replacement is allowed."
+    ))
+}
+
+fn verify_location(
+    comment: &Value,
+    expected: &InlineComment,
+    state: &RemoteState,
+    positions: &BTreeMap<(String, String, u64), u64>,
+) -> Result<(), Failure> {
+    if *state == RemoteState::Pending {
+        let position = expected
+            .diff_position
+            .or_else(|| {
+                positions
+                    .get(&(expected.path.clone(), expected.side.clone(), expected.line))
+                    .copied()
+            })
+            .filter(|position| *position > 0)
+            .ok_or_else(|| comment_mismatch(state, "diff_position"))?;
+        if comment["position"].as_u64() != Some(position) {
+            return Err(comment_mismatch(state, "position"));
+        }
+        for field in ["original_line", "line"] {
+            if !comment[field].is_null() && comment[field].as_u64() != Some(expected.line) {
+                return Err(comment_mismatch(state, field));
+            }
+        }
+        if !comment["side"].is_null() && comment["side"].as_str() != Some(&expected.side) {
+            return Err(comment_mismatch(state, "side"));
+        }
+    } else {
+        let line = comment["original_line"]
+            .as_u64()
+            .or_else(|| comment["line"].as_u64());
+        if line != Some(expected.line) {
+            return Err(comment_mismatch(state, "line"));
+        }
+        if comment["side"].as_str() != Some(&expected.side) {
+            return Err(comment_mismatch(state, "side"));
+        }
+    }
+    if !comment["start_line"].is_null() || !comment["original_start_line"].is_null() {
+        return Err(comment_mismatch(state, "start_line"));
+    }
+    Ok(())
 }
 
 impl<T: MutationTransport> GithubClient<T> {
@@ -113,10 +245,20 @@ impl<T: MutationTransport> GithubClient<T> {
                 .as_ref()
                 .ok_or_else(|| Failure::permanent("Publication has no frozen batch."))?;
             if mutation == Mutation::Create {
+                let comments: Vec<_> = batch
+                    .comments
+                    .iter()
+                    .map(|comment| {
+                        json!({
+                            "path": comment.path, "body": comment.body,
+                            "line": comment.line, "side": comment.side
+                        })
+                    })
+                    .collect();
                 return Ok((
                     path,
                     Request::Post(json!({
-                        "commit_id":batch.commit_id, "body":batch.body, "comments":batch.comments
+                        "commit_id":batch.commit_id, "body":batch.body, "comments":comments
                     })),
                 ));
             }
