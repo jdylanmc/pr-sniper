@@ -1306,3 +1306,9 @@ The canonical crosshair is original vector geometry, not a private-use font.
 transparent template PNG that macOS adapts to its appearance.
 Regenerate checked-in PNG/ICNS assets on macOS with
 `swift scripts/generate-icons.swift`.
+
+## License
+
+PR Sniper's application source is available under the [MIT License](LICENSE).
+Third-party components and bundled tooling retain their own licenses and terms;
+the application's license does not relicense them or grant a Copilot subscription.

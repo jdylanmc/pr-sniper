@@ -5,8 +5,9 @@ The unsigned installer and private Chocolatey package were delivered in
 scope of [#63](https://github.com/jdylanmc/pr-sniper/issues/63). This is **not a
 trusted public Windows release**. Signed Windows releases
 ([#62](https://github.com/jdylanmc/pr-sniper/issues/62)) and public Chocolatey
-publication ([#64](https://github.com/jdylanmc/pr-sniper/issues/64)) remain open
-and explicitly deferred by the owner.
+publication ([#64](https://github.com/jdylanmc/pr-sniper/issues/64)) remain open.
+The owner resumed public-distribution preparation on 2026-10-08; no signed
+Windows release or publicly approved Chocolatey package is established.
 
 ## Delivery status
 
@@ -17,6 +18,14 @@ Its hardened configuration retains both `windows` and
 `windows-installer-acceptance` jobs. The operational enable/disable switch lives
 in GitHub; verify its current state rather than inferring it from the YAML.
 macOS CI and signed macOS release workflows are independent and unchanged.
+
+**Preparation resumed 2026-10-08:** Target Windows 10/11 x64, including clean PCs.
+The owner approved the MIT application-source license in [`LICENSE`](../LICENSE).
+Third-party components retain their own licenses and distribution terms.
+Signing-service selection, verified publisher identity, Chocolatey account/key
+setup, clean-PC WebView2 provisioning and signed public lifecycle acceptance
+remain outstanding. The current installer still requires pre-installed WebView2;
+the new target is not a claim that clean-PC provisioning is implemented.
 
 The completed delivery is anchored to merged commit
 `513c1a3f5746450dfc3022a988634577901ed97e`:
@@ -357,11 +366,13 @@ actual operation rather than treating this authorization as acceptance evidence.
 The public ID remains **`pr-sniper`**. An official-feed lookup on 2026-09-30
 returned no versions; that is not a reservation, ownership grant or promise of
 name availability. Authorship is Dylan McCurry; the project is
-`https://github.com/jdylanmc/pr-sniper`. No repository-wide license was declared
-at implementation time (GitHub reported `license: null`). Licenses inside agent
-tooling are **not** the application's license. The test package intentionally
-does not invent an OSS license. A human must approve actual distribution terms
-and their HTTPS license URL before public generation/moderation.
+`https://github.com/jdylanmc/pr-sniper`. The owner approved the MIT
+application-source license on 2026-10-08; see [`LICENSE`](../LICENSE). Licenses
+inside agent tooling and bundled third-party components remain separate.
+For a public package, use the license URL at the exact release commit,
+`https://github.com/jdylanmc/pr-sniper/blob/COMMIT/LICENSE`, after verifying that
+the approved license is present there. This does not by itself establish
+redistribution permission for every bundled third-party component.
 
 `-Mode Public` requires that approved `-LicenseUrl`, `-ExpectedThumbprint`,
 `-ExpectedSubject` and this exact versioned URL:
@@ -505,12 +516,40 @@ fixture or touch native application registrations/credentials.
 
 ## Trusted signing and publication: deferred
 
-Public Windows distribution is deferred, not an unfinished local acceptance
-step. No provider/account was selected or provisioned by the Windows delivery.
+Public Windows distribution preparation resumed on 2026-10-08, separately from
+the completed private-package acceptance. No signing provider/account has been
+selected or provisioned by this delivery.
 Retain the requirement for
 **publicly trusted Windows Authenticode signing and a trusted timestamp**.
 There is no self-signed/ad-hoc fallback, borrowed unrelated certificate, trust-root
 installation or credential upload in this delivery.
+
+### Publisher setup
+
+The signing provider and Chocolatey maintainer are separate identities.
+[Azure Artifact Signing](https://learn.microsoft.com/en-us/azure/artifact-signing/quickstart)
+supports individual public-trust applicants in the United States and Canada.
+Its [FAQ](https://learn.microsoft.com/en-us/azure/artifact-signing/faq) requires
+a paid Azure subscription and excludes free, trial and sponsored subscriptions;
+do not assume an Azure credit benefit is eligible or covers charges.
+Complete identity validation directly with the provider, never in an issue,
+chat transcript or source file. Confirm actual pricing before provisioning.
+
+[SignPath Foundation](https://signpath.org/terms) offers free signing for
+qualifying open-source projects, subject to its component-license, verifiable
+build and approval requirements. Its certificate identifies SignPath Foundation
+as publisher. Eligibility is not established merely by adding an MIT license:
+PR Sniper embeds a Copilot runtime, whose terms and eligibility must be checked
+before choosing this route.
+
+For Chocolatey, register a personal maintainer account at
+<https://community.chocolatey.org/account/Register>, confirm the email address,
+and use its account API-key page when configuring publication. Store the key
+directly in protected GitHub release secrets; do not paste it into chat or
+commit it. An account does not reserve the `pr-sniper` package name. Verify
+current ownership before the first submission. The publication workflow is
+not implemented yet, so no secret name or push command is prescribed here.
+Submission, moderation and public approval remain separate states.
 
 The human/external operator must:
 

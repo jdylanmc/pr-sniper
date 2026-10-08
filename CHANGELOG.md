@@ -7,6 +7,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Added
 
+- Declare the owner-approved MIT license for PR Sniper's application source and
+  package metadata. Third-party licenses and service terms remain separate.
+
 - Configure Agents with advertised reasoning-effort and context-tier choices,
   explicit Provider defaults and visible unsupported selections. Preserve
   deliberate choices and immutable job evidence, and verify actual session
