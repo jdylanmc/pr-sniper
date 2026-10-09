@@ -14,6 +14,125 @@ fn binding() -> MentionBinding {
 }
 
 #[test]
+fn queued_and_running_conversations_survive_watch_only_saves_without_recapture() {
+    for explicit in [false, true] {
+        for inherited in [false, true] {
+            for discovery_edit in [false, true] {
+                for running in [false, true] {
+                    let (root, store, origin, thread) = fixture(1);
+                    let mut settings = store.load_settings().unwrap();
+                    if inherited {
+                        settings.defaults.watched_authors =
+                            serde_json::from_value(json!([{"id":"12","login":"inherited"}]))
+                                .unwrap();
+                    } else {
+                        settings.repositories[0].watched_authors.clear();
+                    }
+                    if explicit {
+                        settings.repositories[0].overrides.watch =
+                            Some(crate::policy::WatchChoices {
+                                all_pull_requests: !inherited,
+                                by_user: true,
+                                mentions: true,
+                            });
+                    }
+                    store.save_settings(&settings).unwrap();
+                    observe(
+                        &store,
+                        &origin,
+                        &thread,
+                        'a',
+                        vec![mention("701", "How does the return value work?")],
+                        NOW + 10,
+                    );
+                    let capacity = Capacity::default();
+                    let mut run = if running {
+                        let Dispatch::Reply(run, _) = capacity
+                            .dispatch(&store, NOW + 20)
+                            .unwrap()
+                            .dispatched
+                            .remove(0)
+                        else {
+                            panic!("Primary conversation analysis expected");
+                        };
+                        *run
+                    } else {
+                        store.load_follow_ups().unwrap().remove(0)
+                    };
+                    local_gate(&store, &run).unwrap();
+                    let captured = run.clone();
+                    let reviews = std::fs::read(root.path().join("state/reviews.json")).unwrap();
+                    let conversations =
+                        std::fs::read(root.path().join("state/follow-ups.json")).unwrap();
+                    let settings = store.load_settings().unwrap();
+                    let mut repository = settings.repositories[0].clone();
+                    repository.watched_authors = if inherited {
+                        serde_json::from_value(json!([
+                            {"id":"11","login":"author"},{"id":"12","login":"inherited"}
+                        ]))
+                        .unwrap()
+                    } else {
+                        vec![]
+                    };
+                    repository.overrides.watched_authors = Some(vec![]);
+                    repository.overrides.reviewer_assignment = Some(!discovery_edit);
+                    repository.overrides.watch = Some(crate::policy::WatchChoices {
+                        all_pull_requests: !inherited && !discovery_edit,
+                        by_user: !discovery_edit,
+                        mentions: !discovery_edit,
+                    });
+                    store
+                        .save_resource(crate::storage::ResourceEdit::Repository {
+                            id: REPO.into(),
+                            expected: Some(Box::new(settings.repositories[0].clone())),
+                            value: Some(Box::new(repository)),
+                        })
+                        .unwrap();
+                    local_gate(&store, &run).unwrap();
+                    crate::follow_up::validate_analysis_commit(&store, &run, true).unwrap();
+                    assert!(
+                        crate::follow_up::validate_analysis_commit(&store, &run, false).is_err()
+                    );
+                    assert_eq!(store.load_follow_ups().unwrap()[0], captured);
+                    assert_eq!(
+                        std::fs::read(root.path().join("state/follow-ups.json")).unwrap(),
+                        conversations
+                    );
+                    assert_eq!(
+                        std::fs::read(root.path().join("state/reviews.json")).unwrap(),
+                        reviews
+                    );
+                    if !running {
+                        let Dispatch::Reply(dispatched, _) = capacity
+                            .dispatch(&store, NOW + 20)
+                            .unwrap()
+                            .dispatched
+                            .remove(0)
+                        else {
+                            panic!("Queued analysis must remain dispatchable");
+                        };
+                        assert_eq!(dispatched.id, captured.id);
+                        assert_eq!(dispatched.context, captured.context);
+                        run = *dispatched;
+                    }
+                    let result = output_for(&run, ReplyDecision::Quiet, vec![]);
+                    complete_analysis(&store, &mut run, Ok(result), true, NOW + 21).unwrap();
+                    let restored = Store::new(root.path().into())
+                        .load_follow_ups()
+                        .unwrap()
+                        .remove(0);
+                    assert_eq!(restored.context, captured.context);
+                    assert_eq!(restored.id, captured.id);
+                    assert_eq!(restored.phase, Phase::Quiet);
+                    assert!(restored.result.is_some());
+                    assert!(store.load_actions().unwrap().effects.is_empty());
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn publish_and_reply_matrix_uses_real_store_dispatch_and_validated_task_output() {
     for publish in [false, true] {
         for reply in [false, true] {

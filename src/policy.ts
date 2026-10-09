@@ -47,11 +47,23 @@ export function effectiveWatch(
 export function watchSummary(
   policy: Policy,
   authors: WatchedIdentity[],
+  authorsComplete = true,
 ): string {
   const watch = effectiveWatch(policy, authors);
+  const incompleteAuthors =
+    !authorsComplete &&
+    (!policy.watch || (!watch.all_pull_requests && watch.by_user));
   const choices = [
-    watch.all_pull_requests ? "All authors" : "",
-    watch.by_user && !watch.all_pull_requests
+    incompleteAuthors
+      ? `Repository users not recorded. ${
+          authors.length
+            ? `Known policy users: ${authors.map((author) => `@${author.login}`).join(", ")}`
+            : "Author watch scope unavailable"
+        }`
+      : watch.all_pull_requests
+        ? "All authors"
+        : "",
+    !incompleteAuthors && watch.by_user && !watch.all_pull_requests
       ? authors.length
         ? authors.map((author) => `@${author.login}`).join(", ")
         : "By user: no users selected"

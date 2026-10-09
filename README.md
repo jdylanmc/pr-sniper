@@ -617,7 +617,11 @@ Watch choices only control discovery, never primary assignment or publication
 permissions. A new eligible mention of the repository's GitHub account can
 bring in an otherwise unwatched PR, but grants no Reply Comment capability.
 Already tracked PRs remain tracked when watch choices change; their eligible
-general conversations do not require another mention. Pause, disabled state,
+general conversations do not require another mention. Watch-only edits and
+equivalent legacy-choice saves do not invalidate active review or conversation
+analysis. Captured evidence remains unchanged; older captures without repository
+users report incomplete author-watch evidence rather than infer all authors.
+Pause, disabled state,
 account access, draft, execution, relevance and current primary/action gates
 remain independent.
 

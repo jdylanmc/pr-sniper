@@ -40,10 +40,14 @@ impl Selection {
     /// Compare execution inputs and effective authority, not sibling assignment archives.
     /// Callers must still revalidate the job, account and permission gates.
     pub fn same_execution(&self, other: &Self) -> bool {
-        // Ignore retired start preferences without rewriting captured evidence.
+        // Discovery changes fence admission, not already tracked execution.
+        // Compare without rewriting the captured policy or repository evidence.
         let mut policy = self.policy.clone();
         policy.automatic_agent_start = other.policy.automatic_agent_start;
         policy.automatic_comment_publication = other.policy.automatic_comment_publication;
+        policy.watch = other.policy.watch.clone();
+        policy.watched_authors = other.policy.watched_authors.clone();
+        policy.reviewer_assignment = other.policy.reviewer_assignment;
         self.agent == other.agent
             && policy == other.policy
             && self.doctrine == other.doctrine
@@ -56,6 +60,9 @@ impl Selection {
                     overrides.automatic_agent_start = b.overrides.automatic_agent_start;
                     overrides.automatic_comment_publication =
                         b.overrides.automatic_comment_publication;
+                    overrides.watch = b.overrides.watch.clone();
+                    overrides.watched_authors = b.overrides.watched_authors.clone();
+                    overrides.reviewer_assignment = b.overrides.reviewer_assignment;
                     // Role/capability evidence is archival, not a read-only
                     // execution grant. Provider stages revalidate current authority.
                     left.doctrines == right.doctrines
@@ -68,7 +75,6 @@ impl Selection {
                         && a.provider_repository_id == b.provider_repository_id
                         && overrides == b.overrides
                         && a.review_preset == b.review_preset
-                        && a.watched_authors == b.watched_authors
                 }
                 (None, None) => true,
                 _ => false,

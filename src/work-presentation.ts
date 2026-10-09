@@ -427,6 +427,7 @@ export function renderConfiguration(
               policy,
               selection.configuration?.repository.watched_authors,
             ),
+            selection.configuration !== undefined,
           ),
         ],
       ]);

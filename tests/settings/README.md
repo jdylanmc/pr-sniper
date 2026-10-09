@@ -520,6 +520,12 @@ captured policy, stale read fencing and sticky tracking; primary conversation
 tests preserve reply-permission and general-conversation boundaries with watches
 off. `github_people` and `repository_read_tests` exercise the production search
 parser and generation-fenced selected-account read path.
+`review.spec.mjs` includes actual pre-watch capture shapes with missing repository
+configuration, distinguishing unknown repository users from an empty filter.
+Native `iterations` and primary conversation tests save legacy/explicit watch
+choices through the real Store and exercise the production execution/result
+validators without rewriting existing evidence; stale discovery fencing and
+execution/account/revision/action guards remain separate.
 
 `shared-editors.spec.mjs` covers compact shared libraries, saved Agent counts
 above AI capacity, explicit account/model selection, full editor text and
