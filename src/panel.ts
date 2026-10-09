@@ -6,11 +6,12 @@ import {
   type Diagnostic,
   diagnosticLog,
   diagnosticNotice,
+  doctrineDiagnostics,
 } from "./diagnostics";
 import {
   type SetupReview,
   type DoctrineCatalog,
-  doctrineCatalogLabel,
+  type Settings,
 } from "./resources";
 import { renderMonitoring, type MonitoringSnapshot } from "./monitoring";
 import type { AutomationSnapshot } from "./automation";
@@ -635,6 +636,7 @@ export async function mountPanel(app: HTMLElement) {
         isolated: boolean;
         error: string | null;
         doctrine_catalog?: DoctrineCatalog | null;
+        settings: Pick<Settings, "doctrine_reset"> | null;
       }>("snapshot");
       if (request !== utilityRevision) return;
       showVersion(state.version);
@@ -657,8 +659,10 @@ export async function mountPanel(app: HTMLElement) {
         notice.textContent = diagnosticNotice;
         views.utility.append(notice);
         pre.textContent =
-          `${doctrineCatalogLabel(state.doctrine_catalog)}\n${JSON.stringify(state.doctrine_catalog ?? null, null, 2)}\n\n` +
-          diagnosticLog(entries);
+          doctrineDiagnostics(
+            state.doctrine_catalog,
+            state.settings?.doctrine_reset,
+          ) + diagnosticLog(entries);
         views.utility.append(pre);
         renderIntelligenceDiagnostics(views.utility, jobs);
       } else {

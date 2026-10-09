@@ -717,14 +717,6 @@ export async function mountSettings(
       notice.textContent = saved.capability_notice;
       content.prepend(notice);
     }
-    if (saved.doctrine_reset) {
-      const notice = document.createElement("p");
-      notice.className = "settings-hint";
-      notice.dataset.doctrineReset = "true";
-      notice.setAttribute("role", "status");
-      notice.textContent = `Pre-alpha doctrine library reset: replaced ${saved.doctrine_reset.previous_count} doctrines with the 10 shipped defaults; removed ${saved.doctrine_reset.removed_references} obsolete Agent references. Later library edits are preserved.`;
-      content.prepend(notice);
-    }
     changed();
     content.scrollTop = scroll;
     restoreFocus();
