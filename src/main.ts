@@ -7,6 +7,11 @@ import { mountSettingsWithGenie } from "./genie";
 import { mountPanel } from "./panel";
 import { isWindows, trayAdjective, trayLocation } from "./platform";
 import { type DoctrineCatalog, doctrineCatalogLabel } from "./resources";
+import {
+  type Diagnostic,
+  diagnosticLog,
+  diagnosticNotice,
+} from "./diagnostics";
 
 interface Snapshot {
   settings: {
@@ -17,11 +22,6 @@ interface Snapshot {
   error: string | null;
   version: string;
   doctrine_catalog?: DoctrineCatalog | null;
-}
-
-interface Diagnostic {
-  timestamp_secs: number;
-  event: string;
 }
 
 const app = document.querySelector<HTMLElement>("#app")!;
@@ -59,7 +59,7 @@ async function load() {
     const messages = [state.error].filter(Boolean);
     if (messages.length) showError(messages.join("\n"));
     if (view === "diagnostics") {
-      content.innerHTML = `<p>Local host events only. Tokens, commands, paths and provider data are never recorded. Most recent log, up to 256 KiB.</p><button id="refresh">Refresh</button><pre id="log"></pre>`;
+      content.innerHTML = `<p>${diagnosticNotice}</p><button id="refresh">Refresh</button><pre id="log"></pre>`;
       content
         .querySelector("#refresh")!
         .addEventListener("click", () => void load());
@@ -70,14 +70,7 @@ async function load() {
       if (revision !== loadRevision) return;
       content.querySelector("#log")!.textContent =
         `${doctrineCatalogLabel(state.doctrine_catalog)}\n${JSON.stringify(state.doctrine_catalog ?? null, null, 2)}\n\n` +
-        (entries.length
-          ? entries
-              .map(
-                (entry) =>
-                  `${new Date(entry.timestamp_secs * 1000).toISOString()}  ${entry.event}`,
-              )
-              .join("\n")
-          : "No host events recorded.");
+        diagnosticLog(entries);
       renderIntelligenceDiagnostics(content, jobs);
     } else if (view === "queue") {
       renderMonitoring(content, showError);

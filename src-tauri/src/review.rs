@@ -1,3 +1,4 @@
+pub(crate) mod diagnostics;
 pub(crate) mod host;
 pub(crate) mod runtime;
 

@@ -88,6 +88,7 @@ fn context(changed: bool) -> ReviewContext {
 }
 fn request(changed: bool) -> Request<Synthetic> {
     Request {
+        diagnostics: None,
         task: FullReview::default(),
         context: context(changed),
         client: Arc::new(GithubClient::new(Synthetic)),
@@ -147,11 +148,247 @@ fn stopped(root: &Path) {
     crate::copilot::runtime::assert_process_stopped(pid as u32);
 }
 
+#[tokio::test]
+async fn incomplete_attempt_is_reconstructable_from_diagnostics() {
+    let root = tempfile::tempdir().unwrap();
+    let store = crate::storage::Store::new(root.path().join("profile"));
+    let mut request = request(true);
+    request.diagnostics = Some(diagnostic_trace(root.path().join("profile")));
+    let error = execute(
+        options(root.path(), "success"),
+        &Identity {
+            id: "33".into(),
+            login: "review-account".into(),
+        },
+        &operation(8),
+        request,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.message.contains("did not read every changed file"));
+    stopped(root.path());
+    let records = serde_json::to_string(&store.diagnostics().unwrap()).unwrap();
+    assert!(records.contains("incomplete_coverage"), "{records}");
+    assert!(records.contains("source.rs"), "{records}");
+}
+
+fn diagnostic_trace(path: std::path::PathBuf) -> Arc<crate::review::diagnostics::Trace> {
+    crate::review::diagnostics::Trace::new(
+        crate::storage::diagnostics::Attempt {
+            id: uuid::Uuid::new_v4().to_string(),
+            operation_id: "operation".into(),
+            work_id: "work".into(),
+            number: 1,
+            head: "a".repeat(40),
+            model: "review-model".into(),
+            started_at_ms: Some(1),
+            session_id: None,
+            runtime_version: None,
+        },
+        Arc::new(move |record| crate::storage::Store::new(path.clone()).record_attempt(record)),
+    )
+}
 fn explicit_intelligence() -> crate::storage::AgentIntelligence {
     crate::storage::AgentIntelligence {
         reasoning_effort: Some("high".into()),
         context_tier: Some("long_context".into()),
     }
+}
+
+fn diagnostic_records(root: &Path) -> Vec<Value> {
+    crate::storage::Store::new(root.join("profile"))
+        .diagnostics()
+        .unwrap()
+        .into_iter()
+        .filter_map(|entry| entry.attempt)
+        .map(|record| serde_json::to_value(record).unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn diagnostic_fake_sessions_distinguish_failure_causes_without_content() {
+    for (scenario, changed, expected) in [
+        ("success", true, "incomplete_coverage"),
+        ("malformed", false, "invalid_output"),
+        ("runtime-error", false, "runtime_execution"),
+        ("read-source-only", true, "incomplete_coverage"),
+        ("tool-invalid-path", true, "incomplete_coverage"),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let mut request = request(changed);
+        request.diagnostics = Some(diagnostic_trace(root.path().join("profile")));
+        let result = execute(
+            options(root.path(), scenario),
+            &Identity {
+                id: "33".into(),
+                login: "review-account".into(),
+            },
+            &operation(8),
+            request,
+        )
+        .await;
+        assert!(result.is_err(), "{scenario}");
+        stopped(root.path());
+        let records = diagnostic_records(root.path());
+        let finished = records
+            .iter()
+            .find(|r| r["event"]["kind"] == "finished")
+            .unwrap();
+        assert_eq!(finished["event"]["failure"], expected, "{scenario}");
+        assert_eq!(finished["attempt"]["runtime_version"], "synthetic");
+        assert!(finished["attempt"]["session_id"].is_string());
+        assert!(finished["elapsed_ms"].as_u64().is_some());
+        assert!(records
+            .iter()
+            .any(|r| r["event"]["kind"] == "teardown" && r["event"]["shutdown"] == "success"));
+        if scenario == "read-source-only" {
+            let tool = records
+                .iter()
+                .find(|r| r["event"]["kind"] == "tool_finished")
+                .unwrap();
+            assert_eq!(tool["event"]["returned"]["paths"], json!(["source.rs"]));
+            assert_eq!(tool["event"]["covered"]["count"], 0);
+            assert!(tool["event"]["response_bytes"].as_u64().unwrap() > 0);
+        }
+        if scenario == "tool-invalid-path" {
+            let tool = records
+                .iter()
+                .find(|r| r["event"]["kind"] == "tool_finished")
+                .unwrap();
+            assert_eq!(tool["event"]["failure"], "tool_error");
+            assert_eq!(tool["event"]["returned"]["count"], 0);
+        }
+        if scenario == "runtime-error" {
+            assert!(records
+                .iter()
+                .any(|r| r["event"]["runtime_error"] == "network"
+                    && r["event"]["status_code"] == 503));
+        }
+        let text = serde_json::to_string(&records).unwrap();
+        for forbidden in [
+            "ghp_secret-runtime-token",
+            "SOURCE PRIVATE PROMPT",
+            "private source",
+            "pub fn answer",
+            "Look for defects.",
+            "not JSON",
+        ] {
+            assert!(!text.contains(forbidden), "{scenario}: {forbidden}");
+        }
+    }
+}
+
+#[test]
+fn closed_sdk_event_stream_records_loss_without_inventing_a_drop_count() {
+    let root = tempfile::tempdir().unwrap();
+    let trace = diagnostic_trace(root.path().join("profile"));
+    let error = event_stream_failure(
+        github_copilot_sdk::subscription::RecvErrorKind::Closed.into(),
+        Some(&trace),
+    );
+    trace.finish(
+        crate::storage::diagnostics::CompletionStage::Runtime,
+        Some(&error),
+    );
+    let records = diagnostic_records(root.path());
+    assert!(records
+        .iter()
+        .any(|r| r["event"]["kind"] == "event_stream_lost" && r["event"]["lost_events"].is_null()));
+    assert_eq!(
+        records.last().unwrap()["event"]["failure"],
+        "event_stream_lost"
+    );
+}
+
+#[test]
+fn timeout_failure_alone_does_not_claim_a_watchdog_decision() {
+    assert_eq!(
+        crate::review::diagnostics::failure_kind(&Failure::timeout()),
+        FailureKind::Timeout
+    );
+}
+
+#[tokio::test]
+async fn runtime_truncation_is_not_app_response_limit_rejection() {
+    let root = tempfile::tempdir().unwrap();
+    let mut request = request(false);
+    request.diagnostics = Some(diagnostic_trace(root.path().join("profile")));
+    execute(
+        options(root.path(), "runtime-truncation"),
+        &Identity {
+            id: "33".into(),
+            login: "review-account".into(),
+        },
+        &operation(8),
+        request,
+    )
+    .await
+    .unwrap();
+    stopped(root.path());
+    let records = diagnostic_records(root.path());
+    assert!(
+        records
+            .iter()
+            .any(|r| r["event"]["kind"] == "runtime_truncation"
+                && r["event"]["messages_removed"] == 3)
+    );
+    assert!(records.iter().any(|r| r["event"]["tool_success"] == false));
+    assert!(!serde_json::to_string(&records)
+        .unwrap()
+        .contains("DO NOT RECORD"));
+    assert!(!records
+        .iter()
+        .any(|r| r["event"]["rejected_by_limit"] == true));
+}
+
+#[test]
+fn rejected_large_batch_returns_no_coverage_and_logs_no_source() {
+    struct Large;
+    impl Transport for Large {
+        fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+            let text = "PRIVATE_SOURCE_SENTINEL".repeat(30_000);
+            Ok(Response {
+                status: 200,
+                headers: BTreeMap::new(),
+                body: serde_json::to_vec(&json!({
+                    "sha": path.rsplit('/').next().unwrap(), "size": text.len(),
+                    "encoding": "base64", "content": STANDARD.encode(text),
+                }))
+                .unwrap(),
+            })
+        }
+    }
+    let root = tempfile::tempdir().unwrap();
+    let tools = ReadTools {
+        diagnostics: Some(diagnostic_trace(root.path().join("profile"))),
+        calls: AtomicU64::new(0),
+        context: context(true),
+        client: Arc::new(GithubClient::new(Large)),
+        name: "example/repo".into(),
+        read: Mutex::new(BTreeSet::new()),
+        gate: Arc::new(|| Ok(())),
+        source_failure: Mutex::new(None),
+    };
+    assert!(tools
+        .execute(
+            "read_changes",
+            json!({"paths":["source.rs"],"prompt":"PRIVATE_PROMPT"})
+        )
+        .is_err());
+    assert!(tools.read.lock().unwrap().is_empty());
+    let records = diagnostic_records(root.path());
+    let tool = records
+        .iter()
+        .find(|r| r["event"]["kind"] == "tool_finished")
+        .unwrap();
+    assert_eq!(tool["event"]["failure"], "response_limit");
+    assert_eq!(tool["event"]["rejected_by_limit"], true);
+    assert_eq!(tool["event"]["response_limit_bytes"], 1_048_576);
+    assert_eq!(tool["event"]["returned"]["count"], 0);
+    assert_eq!(tool["event"]["covered"]["count"], 0);
+    let text = serde_json::to_string(&records).unwrap();
+    assert!(!text.contains("PRIVATE_SOURCE_SENTINEL"));
+    assert!(!text.contains("PRIVATE_PROMPT"));
 }
 
 #[tokio::test]
@@ -263,6 +500,8 @@ async fn bundled_runtime_intelligence_offline() {
             ] {
                 let request = request(false);
                 let tools = Arc::new(ReadTools {
+                    diagnostics: None,
+                    calls: AtomicU64::new(0),
                     context: request.context,
                     client: request.client,
                     name: request.repository_name,
@@ -312,6 +551,8 @@ async fn bundled_runtime_intelligence_offline() {
 fn tools_read_immutable_content_and_reject_arbitrary_paths_or_execution() {
     let request = request(true);
     let tools = Arc::new(ReadTools {
+        diagnostics: None,
+        calls: AtomicU64::new(0),
         context: request.context,
         client: request.client,
         name: request.repository_name,
@@ -453,6 +694,7 @@ async fn follow_up_decisions_use_the_same_restricted_session_and_usage_contract(
             let mut base = request(false);
             base.selection.agent.intelligence = Some(explicit_intelligence());
             let request = Request {
+                diagnostics: base.diagnostics,
                 context: base.context,
                 client: base.client,
                 repository_name: base.repository_name,
@@ -571,6 +813,7 @@ async fn cancellation_timeout_and_last_moment_gate_change_never_complete() {
     for scenario in ["cancel", "timeout", "gate"] {
         let root = tempfile::tempdir().unwrap();
         let mut request = request(false);
+        request.diagnostics = Some(diagnostic_trace(root.path().join("profile")));
         if scenario == "gate" {
             request.before_send = Arc::new(|| Err(Failure::permanent("Start gate changed.")));
         }
@@ -611,10 +854,23 @@ async fn cancellation_timeout_and_last_moment_gate_change_never_complete() {
         let error = result.unwrap_err();
         if scenario == "cancel" {
             assert!(error.message.contains("cancelled"), "{error:?}");
+            let records = diagnostic_records(root.path());
+            assert!(records.iter().any(|r| r["event"]["failure"] == "cancelled"));
+            assert!(records.iter().any(|r| r["event"]["kind"] == "cancelled"));
         }
         if scenario == "timeout" {
             assert_eq!(error.kind, crate::monitoring::OperationFailure::Timeout);
             assert!(Instant::now() >= operation.deadline);
+            let records = diagnostic_records(root.path());
+            assert!(records
+                .iter()
+                .any(|r| r["event"]["failure"] == "total_duration_timeout"));
+            let watchdog = records
+                .iter()
+                .find(|r| r["event"]["kind"] == "watchdog")
+                .unwrap();
+            assert!(watchdog["event"]["total_ms"].as_u64().unwrap() >= 7000);
+            assert!(watchdog["event"]["idle_ms"].is_null());
         }
         if scenario == "gate" {
             assert_eq!(error.message, "Start gate changed.");
@@ -686,6 +942,7 @@ async fn failure_during_abort(reply: bool, signal: &str, scenario: &str) {
                 &operation,
                 Request {
                     context: base.context,
+                    diagnostics: base.diagnostics,
                     client: base.client,
                     repository_name: base.repository_name,
                     selection: run.context.selection.clone(),

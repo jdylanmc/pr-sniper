@@ -56,6 +56,11 @@ impl Integration {
         deadline: Instant,
     ) -> Result<crate::review::ReviewResult<K::Output>, crate::review::Failure> {
         use crate::review::Failure;
+        if let Some(trace) = &request.diagnostics {
+            trace.emit(crate::storage::diagnostics::Event::Phase {
+                phase: crate::storage::diagnostics::Phase::RestoringAccount,
+            });
+        }
         let id = request
             .selection
             .agent
@@ -77,6 +82,11 @@ impl Integration {
             .map_err(Failure::operation)?;
         let final_operation = operation.clone();
         let result = tauri::async_runtime::spawn_blocking(move || {
+            if let Some(trace) = &request.diagnostics {
+                trace.emit(crate::storage::diagnostics::Event::Phase {
+                    phase: crate::storage::diagnostics::Phase::StartingRuntime,
+                });
+            }
             crate::review::runtime::run(&identity, &pair, &operation, request)
         })
         .await

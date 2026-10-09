@@ -3,6 +3,11 @@ import { listen } from "@tauri-apps/api/event";
 import { mountSettings } from "./settings";
 import { mountGenie } from "./genie";
 import {
+  type Diagnostic,
+  diagnosticLog,
+  diagnosticNotice,
+} from "./diagnostics";
+import {
   type SetupReview,
   type DoctrineCatalog,
   doctrineCatalogLabel,
@@ -643,21 +648,17 @@ export async function mountPanel(app: HTMLElement) {
       views.utility.append(refresh);
       if (type === "diagnostics") {
         const [entries, jobs] = await Promise.all([
-          invoke<{ timestamp_secs: number; event: string }[]>("diagnostics"),
+          invoke<Diagnostic[]>("diagnostics"),
           invoke<MonitoringSnapshot>("monitoring_snapshot"),
         ]);
         if (request !== utilityRevision) return;
         const pre = document.createElement("pre");
+        const notice = document.createElement("p");
+        notice.textContent = diagnosticNotice;
+        views.utility.append(notice);
         pre.textContent =
           `${doctrineCatalogLabel(state.doctrine_catalog)}\n${JSON.stringify(state.doctrine_catalog ?? null, null, 2)}\n\n` +
-          (entries.length
-            ? entries
-                .map(
-                  (e) =>
-                    `${new Date(e.timestamp_secs * 1000).toISOString()}  ${e.event}`,
-                )
-                .join("\n")
-            : "No host events recorded.");
+          diagnosticLog(entries);
         views.utility.append(pre);
         renderIntelligenceDiagnostics(views.utility, jobs);
       } else {
