@@ -43,6 +43,15 @@ Use the terse Conventional Commits policy in `docs/agents/commit-style.md`,
 subject to explicit operator instructions and required trailers. The policy
 does not authorize staging, committing or rewriting history.
 
+### Pull requests
+
+Every agent that creates or updates a PR in this repository invokes
+`/pull-request` (`.agents/skills/pull-request/`) to write the body: terse
+What/Why/How, Evidence, and Blast Radius. Use the repository PR template headings
+if one exists. Ship, Patch, Refactor, Shepherd and `create-pull-request`
+publication use that body; do not hand-write a different format. The skill
+grants no approval, ready, or merge authority.
+
 ### Doctrine
 
 The complete local package is `.agents/skills/doctrine/`. Use `/doctrine`

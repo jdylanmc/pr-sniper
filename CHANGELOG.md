@@ -7,6 +7,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Added
 
+- Install the `pull-request` and `create-pull-request` skills project-locally and
+  require agents to use `/pull-request` for PR bodies (what/why/how, evidence,
+  blast radius).
 - Configure Agents with advertised reasoning-effort and context-tier choices,
   explicit Provider defaults and visible unsupported selections. Preserve
   deliberate choices and immutable job evidence, and verify actual session
