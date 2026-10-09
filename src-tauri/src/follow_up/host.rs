@@ -1323,34 +1323,15 @@ impl Environment for Native {
                 .analysis
                 .as_ref()
                 .is_some_and(|op| op.state == OperationState::Completed);
-        let generations = accepting_analysis
-            .then(|| host.github_generations.lock())
-            .transpose()
-            .map_err(|_| Failure::permanent("GitHub coordination unavailable."))?;
-        let auth = accepting_analysis
-            .then(|| host.github_auth.lock())
-            .transpose()
-            .map_err(|_| Failure::permanent("GitHub account unavailable."))?;
+        if accepting_analysis {
+            return self
+                .analysis_completion(run)
+                .and_then(|completion| completion.result);
+        }
         let store = host
             .store
             .lock()
             .map_err(|_| Failure::permanent("Thread storage unavailable."))?;
-        if accepting_analysis {
-            let allowed = !host.quitting.load(Ordering::SeqCst)
-                && !self.cancelled.load(Ordering::SeqCst)
-                && generations.as_ref().is_some_and(|g| {
-                    g.get(&run.context.job.account_id).copied().unwrap_or(0) == self.generation
-                })
-                && auth.as_ref().is_some_and(|a| {
-                    a.account_session_allowed(&run.context.job.account_id)
-                        .is_ok()
-                });
-            let result = run
-                .result
-                .take()
-                .ok_or_else(|| Failure::permanent("Analysis result unavailable."))?;
-            return complete_analysis(&store, run, Ok(result), allowed, self.now()?);
-        }
         save_progress(&store, run, self.now()?)
     }
     fn observe(&mut self, run: &FollowUp) -> Result<Observation, Failure> {
@@ -1750,7 +1731,7 @@ async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure>
             operation.state = OperationState::Completed;
             operation.next_attempt_at = None;
             operation.failure = None;
-            native.save(run)
+            native.analysis_completion(run)
         }
         Err(error) => {
             let host = native.app.state::<Host>();
@@ -1758,17 +1739,62 @@ async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure>
                 .store
                 .lock()
                 .map_err(|_| Failure::permanent("Thread storage unavailable."))?;
-            complete_analysis(&store, run, Err(error), false, native.now()?)
+            analysis_completion(&store, run, Err(error), false, native.now()?)
         }
     };
-    if saved.is_ok() {
-        diagnostics.emit(crate::review::diagnostics::retry_event(
-            run.analysis.as_ref().unwrap(),
-        ));
-    }
-    saved
+    record_analysis_completion(saved, &diagnostics)
 }
 
+struct AnalysisCompletion {
+    result: Result<(), Failure>,
+    operation: crate::monitoring::JobOperation,
+}
+
+impl Native {
+    fn analysis_completion(&self, run: &mut FollowUp) -> Result<AnalysisCompletion, Failure> {
+        let host = self.app.state::<Host>();
+        let generations = host
+            .github_generations
+            .lock()
+            .map_err(|_| Failure::permanent("GitHub coordination unavailable."))?;
+        let auth = host
+            .github_auth
+            .lock()
+            .map_err(|_| Failure::permanent("GitHub account unavailable."))?;
+        let store = host
+            .store
+            .lock()
+            .map_err(|_| Failure::permanent("Thread storage unavailable."))?;
+        let allowed = !host.quitting.load(Ordering::SeqCst)
+            && !self.cancelled.load(Ordering::SeqCst)
+            && generations
+                .get(&run.context.job.account_id)
+                .copied()
+                .unwrap_or(0)
+                == self.generation
+            && auth
+                .account_session_allowed(&run.context.job.account_id)
+                .is_ok();
+        let result = run
+            .result
+            .take()
+            .ok_or_else(|| Failure::permanent("Analysis result unavailable."))?;
+        analysis_completion(&store, run, Ok(result), allowed, self.now()?)
+    }
+}
+
+fn record_analysis_completion(
+    completion: Result<AnalysisCompletion, Failure>,
+    diagnostics: &crate::review::diagnostics::Trace,
+) -> Result<(), Failure> {
+    let completion = completion?;
+    diagnostics.emit(crate::review::diagnostics::retry_event(
+        &completion.operation,
+    ));
+    completion.result
+}
+
+#[cfg(test)]
 pub(crate) fn complete_analysis(
     store: &Store,
     run: &mut FollowUp,
@@ -1776,6 +1802,33 @@ pub(crate) fn complete_analysis(
     account_allowed: bool,
     now: i64,
 ) -> Result<(), Failure> {
+    analysis_completion(store, run, outcome, account_allowed, now)
+        .and_then(|completion| completion.result)
+}
+
+fn save_analysis_outcome(
+    store: &Store,
+    run: &FollowUp,
+    result: Result<(), Failure>,
+) -> Result<AnalysisCompletion, Failure> {
+    let operation = run
+        .analysis
+        .as_ref()
+        .ok_or_else(|| Failure::permanent("Analysis operation missing."))?;
+    save_to_store(store, run).map_err(Failure::permanent)?;
+    Ok(AnalysisCompletion {
+        result,
+        operation: operation.clone(),
+    })
+}
+
+fn analysis_completion(
+    store: &Store,
+    run: &mut FollowUp,
+    outcome: Result<crate::review::ReviewResult<ReplyOutput>, Failure>,
+    account_allowed: bool,
+    now: i64,
+) -> Result<AnalysisCompletion, Failure> {
     let current = store
         .load_follow_ups()
         .map_err(Failure::permanent)?
@@ -1821,7 +1874,7 @@ pub(crate) fn complete_analysis(
         run.result = None;
         run.error = None;
         run.phase = Phase::WaitingStart;
-        return save_to_store(store, run).map_err(Failure::permanent);
+        return save_analysis_outcome(store, run, Ok(()));
     }
     let outcome = outcome.and_then(|result| {
         let mut checked = run.clone();
@@ -1848,7 +1901,7 @@ pub(crate) fn complete_analysis(
             op.ai_attempt = None;
             op.interruption = None;
             run.error = None;
-            save_to_store(store, run).map_err(Failure::permanent)
+            save_analysis_outcome(store, run, Ok(()))
         }
         Err(error) => {
             run.cancelled |= current.cancelled;
@@ -1859,8 +1912,7 @@ pub(crate) fn complete_analysis(
                 .as_mut()
                 .ok_or_else(|| Failure::permanent("Analysis operation missing."))?
                 .fail(&error.monitoring(), now);
-            save_to_store(store, run).map_err(Failure::permanent)?;
-            Err(error)
+            save_analysis_outcome(store, run, Err(error))
         }
     }
 }

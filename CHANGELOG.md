@@ -102,7 +102,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   error-record save succeeds. Intentional policy refusals stay item-local;
   no existing remote drafts are reset or discarded. (#154)
 - Preserve bounded, rotated review-attempt diagnostics with correlated sessions,
-  tool outcomes, file coverage, runtime failures and cleanup evidence. Diagnostics
+  tool outcomes, file coverage, runtime failures and cleanup evidence. Retain
+  committed failed-analysis decisions and correlate cancellation/retry history
+  with the same operation rather than a replacement. Diagnostics
   shows redacted metadata and explicit unavailable evidence; newer retry,
   connectivity and publication producers remain separate integrations. (#153)
 

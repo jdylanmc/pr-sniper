@@ -685,6 +685,10 @@ available runtime/session identity. Runtime records have monotonic elapsed
 milliseconds and sequence numbers; host retry decisions have wall-clock timestamps
 and explicitly absent runtime sequence/elapsed values. Follow the operation ID
 across fresh attempt/session IDs, and the work ID across manual replacements.
+Conversation retry decisions record acknowledged durable outcomes, including
+failed analyses, independently of the error returned to the caller. After final
+teardown, decisions use only the same operation's current or retained historical
+state; a replacement's counters are never attributed to the old attempt.
 
 Tool evidence separates requested known paths, unknown-path counts, successfully
 returned paths, and distinct paths registered by `read_changes`; `read_source`

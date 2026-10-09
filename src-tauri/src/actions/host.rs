@@ -295,17 +295,7 @@ pub(crate) fn launch_worker(
                 Ok(result)
             });
             finish_final_worker(&store, &host.ai, &execution, outcome, now_seconds()?)?;
-            let diagnostic = store.load_actions().and_then(|ledger| {
-                let current = ledger
-                    .finals
-                    .iter()
-                    .find(|entry| entry.id == execution.key)
-                    .ok_or("Final review diagnostic operation disappeared.")?;
-                store.record_attempt_decision(
-                    &execution.operation.id,
-                    crate::review::diagnostics::retry_event(&current.execution.operation),
-                )
-            });
+            let diagnostic = record_final_worker_decision(&store, &execution);
             if let Err(error) = diagnostic {
                 crate::report(&app, error);
             }
@@ -325,6 +315,26 @@ pub(crate) fn launch_worker(
             crate::report(&app, error);
         }
     });
+}
+
+pub(super) fn record_final_worker_decision(
+    store: &Store,
+    execution: &ReviewRun,
+) -> Result<(), String> {
+    let ledger = store.load_actions()?;
+    let current = ledger
+        .finals
+        .iter()
+        .find(|entry| entry.id == execution.key)
+        .ok_or("Final review diagnostic operation disappeared.")?;
+    let committed = std::iter::once(&current.execution)
+        .chain(&current.attempts)
+        .find(|run| run.operation.id == execution.operation.id)
+        .ok_or("Final review diagnostic operation is no longer retained.")?;
+    store.record_attempt_decision(
+        &execution.operation.id,
+        crate::review::diagnostics::retry_event(&committed.operation),
+    )
 }
 
 pub(super) fn finish_final_worker(
