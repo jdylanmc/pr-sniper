@@ -520,6 +520,18 @@ Run with `--browser=chromium` or `--browser=webkit`; the existing
 browser and test-owned Store evidence, not native focus, installed-app or live
 authentication acceptance.
 
+`assignment-agent-editor.spec.mjs` exercises assignment-to-shared-Agent editing
+and creation, exact selection, empty libraries, immediate edits, independent
+Agent and assignment discard warnings, and retained repository/Preferences
+drafts. Real Store reads verify resource-scoped saves, unchanged capability and
+primary grants, restart, conflicting writes, disk-write failures and explicit
+stale references after deletion. Held save replies and stale account responses
+cover dismissal locks and focus; compact keyboard, high-contrast and
+reduced-motion checks use the production renderer. The corresponding
+`genie.spec.mjs` regression verifies the same shared path from guided setup.
+Provider account/model responses are synthetic; no live sign-in, inference,
+provider action or native application is exercised.
+
 `doctrine-seeding.spec.mjs` covers the ten app defaults in `src-tauri/doctrines`,
 not the skill catalog: exact titles and bodies with only frontmatter/H1 removed,
 durable first load, Agent choices before visiting Doctrines, and saving

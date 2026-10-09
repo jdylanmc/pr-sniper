@@ -678,6 +678,61 @@ test("late shared-save replies cannot return from a newer destination", async ({
   }
 });
 
+test("Genie assignment edits use shared Agents and retain repository and capability drafts", async ({
+  page,
+  store,
+}) => {
+  await synthetic(page, store, true);
+  const initial = await seed(store);
+  await page.goto("/");
+  await page.locator('[data-genie-edit="repositories"]').click();
+  await page
+    .locator("[data-repository]")
+    .filter({ hasText: "fixture/genie" })
+    .click();
+  const repository = modal(page, "Settings for fixture/genie");
+  await repository.locator("[data-reviewer-trigger]").selectOption("off");
+  await repository
+    .locator(".assignment-row")
+    .getByRole("button", { name: "Edit", exact: true })
+    .click();
+  const assignment = modal(page, "Edit assignment");
+  await assignment.getByRole("checkbox", { name: /^Reply Comment/ }).check();
+  await assignment
+    .getByRole("button", { name: "Edit Agent", exact: true })
+    .click();
+  const agent = modal(page, "Edit agent");
+  await agent.getByLabel("Name", { exact: true }).fill("Shared through Genie");
+  await agent.getByRole("button", { name: "Save agent", exact: true }).click();
+  await expect(agent).toHaveCount(0);
+  await expect(assignment.locator("[name=agent] option:checked")).toHaveText(
+    "Shared through Genie",
+  );
+  await expect(
+    assignment.getByRole("checkbox", { name: /^Reply Comment/ }),
+  ).toBeChecked();
+  expect((await store("snapshot")).settings.repositories).toEqual(
+    initial.repositories,
+  );
+  await assignment
+    .getByRole("button", { name: "Save assignment", exact: true })
+    .click();
+  await expect(assignment).toHaveCount(0);
+  await expect(repository.locator("[data-reviewer-trigger]")).toHaveValue(
+    "off",
+  );
+  await close(repository);
+  await back(page);
+  await expect(page.locator('[data-genie-edit="repositories"]')).toBeFocused();
+  const saved = (await store("snapshot")).settings;
+  expect(saved.agents[0].name).toBe("Shared through Genie");
+  expect(saved.repositories[0].assignments[0].actions).toEqual({
+    reply: true,
+    approve: false,
+    merge: false,
+  });
+});
+
 test("repository saves keep mounted account confirmation ownership", async ({
   page,
   store,

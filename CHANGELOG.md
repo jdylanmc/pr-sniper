@@ -95,6 +95,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- Edit the selected shared Agent or create one directly from repository
+  assignments in Settings and Genie. Retain repository and assignment drafts,
+  select newly saved Agents without granting capabilities, and confirm before
+  discarding unsaved Agent or assignment fields. (#129)
 - Verify pending GitHub review comments using their diff positions and frozen
   revisions when line/side are absent, while retaining identity and content
   checks. Keep publication failures on the affected PR instead of the Settings

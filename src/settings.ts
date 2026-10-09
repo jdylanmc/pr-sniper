@@ -946,9 +946,52 @@ export async function mountSettings(
     back.innerHTML = icon("back");
   }
 
+  function warnBeforeDiscard(modal: HTMLDialogElement, resource: string) {
+    const fields = () =>
+      JSON.stringify(
+        [
+          ...modal.querySelectorAll<
+            HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
+          >("[name]"),
+        ]
+          .filter(
+            (field) =>
+              !(field instanceof HTMLInputElement) ||
+              !["checkbox", "radio"].includes(field.type) ||
+              field.checked,
+          )
+          .map((field) => [field.name, field.value]),
+      );
+    const initial = fields();
+    const guard = (event: Event) => {
+      if (fields() === initial) return;
+      event.preventDefault();
+      const focused = document.activeElement;
+      const confirm = dialog(
+        `Discard ${resource} changes?`,
+        `<p>Unsaved ${resource} fields will be discarded. Earlier saves and other drafts stay applied or retained.</p><div class="resource-actions"><button type="button" data-keep>Keep editing</button><button type="button" data-discard>Discard changes</button></div>`,
+        focused instanceof HTMLElement ? focused : modal,
+      );
+      compactEditor(confirm, `Back to ${resource}; keep editing`);
+      confirm.querySelector<HTMLButtonElement>("[data-keep]")!.onclick = () =>
+        confirm.close();
+      confirm.querySelector<HTMLButtonElement>("[data-discard]")!.onclick =
+        () => {
+          confirm.close();
+          release();
+          modal.close();
+        };
+    };
+    const release = () =>
+      modal.removeEventListener("pr-sniper:dialog-closing", guard);
+    modal.addEventListener("pr-sniper:dialog-closing", guard);
+    return release;
+  }
+
   function resourceEditor(
     modal: HTMLDialogElement,
     deletion?: { edit: ResourceEdit; blocked: string },
+    onDeleted?: () => void,
   ) {
     compactEditor(modal, "Back to library; discard unsaved fields");
     modal.querySelector<HTMLButtonElement>("[data-cancel-resource]")!.onclick =
@@ -982,8 +1025,11 @@ export async function mountSettings(
     )!.onclick = async () => {
       try {
         await commitResource(deletion.edit, modal);
-        modal.close();
-        render();
+        if (onDeleted) onDeleted();
+        else {
+          modal.close();
+          render();
+        }
       } catch (cause) {
         alert.textContent = reason(cause);
         alert.hidden = false;
@@ -1225,13 +1271,21 @@ export async function mountSettings(
     refreshAccounts();
   }
 
-  function editAgent(opener: HTMLElement, existing?: Agent) {
+  function editAgent(
+    opener: HTMLElement,
+    existing?: Agent,
+    onSaved?: (agent?: Agent) => void,
+  ) {
     const assigned = existing ? agentRepositories(existing) : [];
+    const expected = clone(
+      saved.agents?.find((a) => a.id === existing?.id) ?? null,
+    );
     const modal = dialog(
       existing ? "Edit agent" : "New agent",
       `<form><label>Name<input name="name" required maxlength="80" value="${escape(existing?.name ?? "")}" placeholder="e.g. The Nitpicker" /></label>
         <div class="resource-intelligence"><h3>Intelligence</h3><p class="settings-hint">GitHub Copilot. The AI account is separate from the GitHub account used for repository actions.</p>
         <label>AI account<select name="ai-account" aria-label="AI account"><option value="">Choose a Copilot account</option>${copilotAccounts.map((a) => `<option value="${escape(a.account_id)}" ${a.account_id === existing?.ai_account?.account_id ? "selected" : ""} ${a.state === "connected" ? "" : "disabled"}>${escape(a.login)} (${escape(a.account_id)})${a.state === "connected" ? "" : " - reconnect required"}</option>`).join("")}${existing?.ai_account && !copilotAccounts.some((a) => a.account_id === existing.ai_account?.account_id) ? `<option selected disabled value="${escape(existing.ai_account.account_id)}">Copilot ${escape(existing.ai_account.account_id)} - reconnect required</option>` : ""}</select></label>
+        ${onSaved ? '<p class="settings-hint" data-editor-accounts role="status">Reading Copilot accounts...</p><button type="button" data-retry-accounts>Retry Copilot accounts</button>' : ""}
         <label>Model<select name="model" aria-label="Model" disabled><option value="${escape(existing?.model ?? "")}">${escape(existing?.model ?? "Choose an account first")}</option></select></label>
         <label>Reasoning effort<select name="reasoning-effort" aria-label="Reasoning effort" disabled></select></label>
         <label>Context window<select name="context-tier" aria-label="Context window" disabled></select></label>
@@ -1252,6 +1306,13 @@ export async function mountSettings(
         <p class="resource-impact">${assigned.length ? `Shared by ${assigned.length} repositories: ${escape(assigned.map((repository) => repository.name).join(", "))}. Remove or replace those assignments and save the repositories before deleting.` : "Not assigned to any repository."} Publish Comment, Reply Comment, Approve &amp; Merge and primary designation belong to repository assignments, never this shared Agent. Completed evidence keeps its captured configuration.</p>${resourceActions("agent", !!existing)}</form>`,
       opener,
     );
+    let releaseDiscardGuard: (() => void) | undefined;
+    const finish = (agent?: Agent) => {
+      releaseDiscardGuard?.();
+      modal.close();
+      if (onSaved) onSaved(agent);
+      else render();
+    };
     resourceEditor(
       modal,
       existing
@@ -1259,7 +1320,7 @@ export async function mountSettings(
             edit: {
               kind: "agent",
               id: existing.id,
-              expected: saved.agents?.find((a) => a.id === existing.id) ?? null,
+              expected,
               value: null,
             },
             blocked: assigned.length
@@ -1267,7 +1328,13 @@ export async function mountSettings(
               : "",
           }
         : undefined,
+      () => finish(),
     );
+    if (onSaved)
+      compactEditor(
+        modal,
+        "Back to assignment; confirm discarding unsaved Agent fields",
+      );
     const filter = modal.querySelector<HTMLInputElement>(
       "[data-doctrine-filter]",
     )!;
@@ -1518,7 +1585,7 @@ export async function mountSettings(
     let selectedWasConnected = copilotAccounts.some(
       (a) => a.account_id === accountSelect.value && a.state === "connected",
     );
-    updateAgentAccounts = () => {
+    const updateAccounts = () => {
       if (!modal.isConnected) return;
       const selected = accountSelect.value;
       accountSelect.innerHTML =
@@ -1549,7 +1616,54 @@ export async function mountSettings(
       }
       selectedWasConnected = connected;
     };
+    updateAgentAccounts = updateAccounts;
+    if (onSaved) {
+      const previousRefresh = refreshAgentAccounts;
+      const status = modal.querySelector<HTMLElement>(
+        "[data-editor-accounts]",
+      )!;
+      let accountRequest = 0;
+      const refreshAccounts = () => {
+        if (!modal.isConnected) return;
+        const request = ++accountRequest;
+        status.textContent = "Reading Copilot accounts...";
+        void invoke<CopilotAuth>("copilot_auth_state").then(
+          (view) => {
+            if (!modal.isConnected || request !== accountRequest) return;
+            copilotAccounts = view.accounts;
+            updateAccounts();
+            status.textContent = copilotAccounts.some(
+              (account) => account.state === "connected",
+            )
+              ? "Choose an AI account and a model explicitly. Repository permissions are unchanged."
+              : `No verified Copilot connection. Connect or reconnect in ${accountSection}; cancel returns to your assignment draft.`;
+          },
+          () => {
+            if (!modal.isConnected || request !== accountRequest) return;
+            copilotAccounts = [];
+            updateAccounts();
+            status.textContent =
+              "Copilot account state is unavailable. Retry Copilot accounts; your drafts are retained.";
+          },
+        );
+      };
+      refreshAgentAccounts = refreshAccounts;
+      modal.querySelector<HTMLButtonElement>("[data-retry-accounts]")!.onclick =
+        refreshAccounts;
+      modal.addEventListener(
+        "pr-sniper:dialog-closed",
+        () => {
+          if (refreshAgentAccounts === refreshAccounts)
+            refreshAgentAccounts = previousRefresh;
+          if (updateAgentAccounts === updateAccounts)
+            updateAgentAccounts = undefined;
+        },
+        { once: true },
+      );
+      refreshAccounts();
+    }
     void loadModels();
+    if (onSaved) releaseDiscardGuard = warnBeforeDiscard(modal, "Agent");
     modal.querySelector("form")!.onsubmit = async (event) => {
       event.preventDefault();
       const alert = modal.querySelector<HTMLElement>("[role=alert]")!;
@@ -1639,13 +1753,12 @@ export async function mountSettings(
           {
             kind: "agent",
             id: values.id,
-            expected: saved.agents?.find((a) => a.id === values.id) ?? null,
+            expected,
             value: values,
           },
           modal,
         );
-        modal.close();
-        render();
+        finish(values);
       } catch (cause) {
         alert.textContent = typeof cause === "string" ? cause : reason(cause);
         alert.hidden = false;
@@ -2416,9 +2529,9 @@ export async function mountSettings(
         <p class="settings-hint">Save authorizes all currently open and future matching pull requests. Eligible reviews start automatically; global monitoring off, pause and repository disablement still apply. Adding this row alone does not start monitoring.</p>
         <label for="repository-reviewer-trigger">Reviewer requests</label><select id="repository-reviewer-trigger" data-reviewer-trigger><option value="inherit">Use default (${saved.defaults.reviewer_assignment ? "on" : "off"})</option><option value="on">Include PRs explicitly requesting the acting account</option><option value="off">Do not admit through reviewer requests</option></select>
         <p class="settings-hint">Reviewer requests independently admit older or unwatched PRs. Once admitted, work stays tracked until verified closure or merge. Disablement and execution permissions still apply.</p></section>
-        <section class="repository-group"><div class="section-actions"><h2>Agents on this repository</h2><button class="primary" data-assign-agent ${agents().length ? "" : "disabled"}>Assign agent</button></div>
+        <section class="repository-group"><div class="section-actions"><h2>Agents on this repository</h2><button class="primary" data-assign-agent>Assign agent</button></div>
         <div class="assignment-list"></div>
-        ${agents().length ? "" : '<p class="settings-hint">Create an agent first, on the Agents tab.</p>'}
+        ${agents().length ? "" : '<p class="settings-hint">Create a shared Agent from Assign agent, then choose its repository permissions.</p>'}
         <p class="settings-hint">Each assignment receives its own normal pass. Permissions belong here, not to the reusable Agent. Only the primary assesses eligible conversations on admitted open PRs. Primary selection grants no permissions; without a primary, reviews and permitted initial comments continue but replies, approval and merge are unavailable.</p>
         </section><section class="repository-group"><div class="section-actions"><h2>People you watch</h2><button data-add-people>Add people</button></div>
         <div class="watchlist"></div>
@@ -2873,6 +2986,8 @@ export async function mountSettings(
       `<form><label>Agent<select name="agent" aria-label="Agent" required>${option("", "Choose an Agent", existing?.agent_id ?? "")}${agents()
         .map((a) => option(a.id, a.name, existing?.agent_id ?? ""))
         .join("")}</select></label>
+        <div class="resource-actions"><button type="button" data-edit-agent>Edit Agent</button><button type="button" data-create-agent>Create new Agent</button></div>
+        <p class="settings-hint" data-agent-selection role="status"></p>
         <label class="repository-check"><input type="checkbox" name="primary" ${isPrimary ? "checked" : ""} ${sole ? "disabled" : ""} /><span>Primary<small>${sole ? "The sole assignment is primary automatically." : "At most one explicit primary per repository. Uncheck to leave none."}</small></span></label>
         <fieldset class="permission-row"><legend>Permissions</legend><label><input type="checkbox" name="comment" ${existing?.comment ? "checked" : ""} /><span>Publish Comment<small>Automatically publish revalidated initial findings. Off keeps initial findings local; it does not disable Reply Comment.</small></span></label>
         <div data-primary-permissions ${isPrimary ? "" : "hidden"}><label><input type="checkbox" name="reply" ${isPrimary && existing?.actions?.reply ? "checked" : ""} /><span>Reply Comment<small>Publish meaningful responses to eligible other-user comments on admitted open PRs. Off keeps responses local; analysis still runs.</small></span></label>
@@ -2882,7 +2997,62 @@ export async function mountSettings(
       opener,
     );
     resourceEditor(modal);
+    compactEditor(
+      modal,
+      "Back to repository; confirm discarding unsaved assignment fields",
+    );
     modal.classList.add("repository-editor", "assignment-editor");
+    const agentSelect = modal.querySelector<HTMLSelectElement>("[name=agent]")!;
+    const editSelected =
+      modal.querySelector<HTMLButtonElement>("[data-edit-agent]")!;
+    const selectionStatus = modal.querySelector<HTMLElement>(
+      "[data-agent-selection]",
+    )!;
+    const refreshSelection = (selected = agentSelect.value) => {
+      const agent = agents().find((agent) => agent.id === selected);
+      agentSelect.innerHTML =
+        option("", "Choose an Agent", selected) +
+        agents()
+          .map((agent) => option(agent.id, agent.name, selected))
+          .join("") +
+        (selected && !agent
+          ? `<option selected disabled value="${escape(selected)}">Unavailable Agent - choose a replacement</option>`
+          : "");
+      editSelected.disabled = !agent;
+      selectionStatus.textContent =
+        selected && !agent
+          ? "The selected Agent is unavailable. Choose an existing Agent or create a replacement; role and permission choices are retained."
+          : !agents().length
+            ? "No Agents yet. Create a shared Agent to continue."
+            : agent
+              ? `${agent.model}. Shared Agent saves apply immediately; this assignment stays unsaved until Save.`
+              : "Choose an Agent to edit, or create a new shared Agent.";
+    };
+    refreshSelection(existing?.agent_id ?? "");
+    agentSelect.onchange = () => refreshSelection();
+    const agentSaved = (agent?: Agent) => {
+      if (!modal.isConnected) return;
+      refreshSelection(agent?.id ?? agentSelect.value);
+      onSaved();
+      if (document.activeElement === editSelected && editSelected.disabled)
+        agentSelect.focus({ preventScroll: true });
+    };
+    editSelected.onclick = () => {
+      const selected = agents().find((agent) => agent.id === agentSelect.value);
+      if (!selected) {
+        refreshSelection();
+        return;
+      }
+      editAgent(editSelected, selected, agentSaved);
+    };
+    modal.querySelector<HTMLButtonElement>("[data-create-agent]")!.onclick = (
+      event,
+    ) =>
+      editAgent(
+        event.currentTarget as HTMLButtonElement,
+        undefined,
+        agentSaved,
+      );
     const primary = modal.querySelector<HTMLInputElement>("[name=primary]")!;
     primary.onchange = () => {
       modal.querySelector<HTMLElement>("[data-primary-permissions]")!.hidden =
@@ -2898,6 +3068,7 @@ export async function mountSettings(
           ? "Choosing primary grants no capability. Watch settings grant no permissions."
           : "Secondary Agents can only Publish Comment. Reply, approval and merge are primary-only.";
     };
+    const releaseDiscardGuard = warnBeforeDiscard(modal, "assignment");
     modal.querySelector("form")!.onsubmit = async (event) => {
       event.preventDefault();
       const alert = modal.querySelector<HTMLElement>("[role=alert]")!;
@@ -2905,6 +3076,8 @@ export async function mountSettings(
         const agentId =
           modal.querySelector<HTMLSelectElement>("[name=agent]")!.value;
         if (!agentId) throw "Choose an agent.";
+        if (!agents().some((agent) => agent.id === agentId))
+          throw "The selected Agent is unavailable. Choose an existing Agent or create a replacement.";
         const action = modal.querySelector<HTMLInputElement>(
           "[name=action]:checked",
         )!.value;
@@ -2938,6 +3111,7 @@ export async function mountSettings(
         }
         await commitResource(repositoryEdit(repository, next), modal);
         Object.assign(repository, next);
+        releaseDiscardGuard();
         modal.close();
         onSaved();
       } catch (cause) {
