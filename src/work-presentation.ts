@@ -5,6 +5,7 @@ import type { ReviewSelection } from "./resources";
 import type { AutomationSnapshot } from "./automation";
 import type { FollowUpCandidate } from "./follow-up";
 import { actualIntelligence } from "./copilot";
+import { effectiveWatchedAuthors, watchSummary } from "./policy";
 
 export const purposes: Record<WorkKind, string> = {
   normal: "Normal pass",
@@ -418,6 +419,16 @@ export function renderConfiguration(
             .join(", ") || "None",
         ],
         ["Reviewer assignment", on(policy.reviewer_assignment)],
+        [
+          "Watch choices",
+          watchSummary(
+            policy,
+            effectiveWatchedAuthors(
+              policy,
+              selection.configuration?.repository.watched_authors,
+            ),
+          ),
+        ],
       ]);
     else {
       const missing = document.createElement("p");

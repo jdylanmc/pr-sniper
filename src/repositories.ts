@@ -1,4 +1,15 @@
 import type { Assignment, PolicyOverrides, WatchedIdentity } from "./policy";
+import {
+  effectivePolicy,
+  effectiveWatchedAuthors,
+  type Policy,
+} from "./policy";
+
+export function repositoryWatch(defaults: Policy, repository: Repository) {
+  const policy = effectivePolicy(defaults, repository.overrides ?? {});
+  const people = effectiveWatchedAuthors(policy, repository.watched_authors);
+  return { policy, people };
+}
 
 export interface Repository {
   id: string;

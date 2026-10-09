@@ -1,6 +1,10 @@
 import { expect, test } from "./fixtures.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
-import { section } from "./navigation.mjs";
+import {
+  section,
+  seedBoundRepositories,
+  installRepositoryFixture,
+} from "./navigation.mjs";
 
 test.use({ viewport: { width: 400, height: 680 } });
 const tab = (page, name) =>
@@ -597,7 +601,7 @@ for (const embedded of [true, false]) {
       page,
       store,
     }) => {
-      await store("save_repository", { repository: "example/focus" });
+      await seedBoundRepositories(store, ["example/focus"]);
       await page.addInitScript(() => {
         delete HTMLElement.prototype.inert;
         Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
@@ -608,6 +612,7 @@ for (const embedded of [true, false]) {
         });
       });
       await page.goto(embedded ? "/" : "/?view=settings");
+      await installRepositoryFixture(page);
       if (embedded) {
         await tab(page, "Settings").click();
       }
@@ -621,10 +626,7 @@ for (const embedded of [true, false]) {
           await page.keyboard.press("Enter");
         }
       };
-      const opener = page.getByRole("button", {
-        name: "example/focus",
-        exact: true,
-      });
+      const opener = page.locator("[data-repository]");
       await page
         .getByRole("button", { name: "Add repository by URL", exact: true })
         .focus();
@@ -634,15 +636,17 @@ for (const embedded of [true, false]) {
         exact: true,
       });
       const people = repository.getByRole("button", {
-        name: "Add people",
+        name: "Edit Users",
         exact: true,
       });
       await repository
-        .getByLabel("Reviewer requests", { exact: true })
-        .selectOption("off");
+        .getByLabel("Pull requests where my review is requested", {
+          exact: true,
+        })
+        .uncheck();
       await activate(people);
       const picker = page.getByRole("dialog", {
-        name: "Add people",
+        name: "Edit Users",
         exact: true,
       });
       await picker
@@ -660,8 +664,10 @@ for (const embedded of [true, false]) {
         .click();
       await expect(people).toBeFocused();
       await expect(
-        repository.getByLabel("Reviewer requests", { exact: true }),
-      ).toHaveValue("off");
+        repository.getByLabel("Pull requests where my review is requested", {
+          exact: true,
+        }),
+      ).not.toBeChecked();
       await repository
         .getByText("Repository and connection", { exact: true })
         .click();

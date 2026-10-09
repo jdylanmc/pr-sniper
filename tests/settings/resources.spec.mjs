@@ -121,6 +121,7 @@ test("Agent saves immediately while unrelated preference and repository drafts s
   await seedAgent(store);
   await store("save_repository", { repository: "fixture/one" });
   const setup = (await store("snapshot")).settings;
+  setup.defaults.reviewer_assignment = false;
   setup.repositories[0].enabled = false;
   await store("seed_settings", setup);
   await page.goto("/?view=settings");
@@ -128,8 +129,8 @@ test("Agent saves immediately while unrelated preference and repository drafts s
   await page.locator("#global-capacity").fill("9");
   const repository = await repositorySettings(page, "fixture/one");
   await repository
-    .getByLabel("Reviewer requests", { exact: true })
-    .selectOption("on");
+    .getByLabel("Pull requests where my review is requested", { exact: true })
+    .check();
   await closeDialog(page);
   const modal = await editAgent(page);
   await modal
@@ -145,8 +146,10 @@ test("Agent saves immediately while unrelated preference and repository drafts s
   await expect(page.locator("#global-capacity")).toHaveValue("9");
   const pending = await repositorySettings(page, "fixture/one");
   await expect(
-    pending.getByLabel("Reviewer requests", { exact: true }),
-  ).toHaveValue("on");
+    pending.getByLabel("Pull requests where my review is requested", {
+      exact: true,
+    }),
+  ).toBeChecked();
   await pending
     .getByRole("button", { name: "Save repository", exact: true })
     .click();

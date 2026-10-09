@@ -72,7 +72,7 @@ test("failed new configuration Save cannot enable a later nested assignment Save
   const modal = await addByUrl(page);
   const monitoring = modal.getByRole("switch", { name: "Monitor fixture/one" });
   await expect(monitoring).toBeChecked();
-  await modal.locator("[data-reviewer-trigger]").selectOption("off");
+  await modal.locator("[data-reviewer-trigger]").uncheck();
   const file = join(dataRoot, "config/settings.json");
   const before = await readFile(file);
   const intake = JSON.parse(before);
@@ -87,7 +87,7 @@ test("failed new configuration Save cannot enable a later nested assignment Save
   await expect(modal.locator("[data-repository-monitoring-state]")).toHaveText(
     "Disabled",
   );
-  await expect(modal.locator("[data-reviewer-trigger]")).toHaveValue("off");
+  await expect(modal.locator("[data-reviewer-trigger]")).not.toBeChecked();
   await modal
     .getByRole("button", { name: "Assign agent", exact: true })
     .click();
@@ -664,12 +664,12 @@ test("quick editor switch commits only saved configuration and retains repositor
   await page.locator("#global-capacity").fill("9");
   await section(page, "Repositories");
   const modal = await openEditor(page);
-  await modal.locator("[data-reviewer-trigger]").selectOption("off");
+  await modal.locator("[data-reviewer-trigger]").uncheck();
   await modal.getByRole("switch", { name: "Monitor fixture/one" }).click();
   await expect(modal.locator("[data-repository-monitoring-state]")).toHaveText(
     "Enabled",
   );
-  await expect(modal.locator("[data-reviewer-trigger]")).toHaveValue("off");
+  await expect(modal.locator("[data-reviewer-trigger]")).not.toBeChecked();
   let saved = (await store("snapshot")).settings;
   expect(saved.repositories[0].overrides?.reviewer_assignment).toBeUndefined();
   expect(saved.defaults).toEqual(original.defaults);
@@ -728,7 +728,7 @@ test("compare-save conflicts retain the repository draft and never overwrite new
   await providerFixture(page, store);
   await repositoryPage(page, store);
   const modal = await openEditor(page);
-  await modal.locator("[data-reviewer-trigger]").selectOption("off");
+  await modal.locator("[data-reviewer-trigger]").uncheck();
   const newer = structuredClone(original.repositories[0]);
   newer.watched_authors = [{ id: "11", login: "newer-author" }];
   await store("save_resource", {
@@ -743,7 +743,7 @@ test("compare-save conflicts retain the repository draft and never overwrite new
   await expect(modal.locator("[data-resource-error]")).toContainText(
     "Resource changed",
   );
-  await expect(modal.locator("[data-reviewer-trigger]")).toHaveValue("off");
+  await expect(modal.locator("[data-reviewer-trigger]")).not.toBeChecked();
   await expect(
     modal.getByRole("switch", { name: "Monitor fixture/one" }),
   ).not.toBeChecked();

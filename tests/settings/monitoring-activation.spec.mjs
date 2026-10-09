@@ -45,8 +45,11 @@ for (const failure of ["write", "conflict"]) {
     await repositoryPage(page, store);
     const editor = await repositorySettings(page, "fixture/one");
     await editor
-      .getByLabel("Reviewer requests", { exact: true })
-      .selectOption("on");
+      .getByLabel("Pull requests where my review is requested", { exact: true })
+      .uncheck();
+    await editor
+      .getByLabel("Pull requests where my review is requested", { exact: true })
+      .check();
     if (failure === "write")
       await mkdir(join(dataRoot, "config/settings.json.tmp"));
     else {
@@ -60,8 +63,10 @@ for (const failure of ["write", "conflict"]) {
       editor.getByRole("switch", { name: "Monitor fixture/one" }),
     ).not.toBeChecked();
     await expect(
-      editor.getByLabel("Reviewer requests", { exact: true }),
-    ).toHaveValue("on");
+      editor.getByLabel("Pull requests where my review is requested", {
+        exact: true,
+      }),
+    ).toBeChecked();
     expect(
       (await store("snapshot")).settings.repository_authorizations,
     ).toBeUndefined();
@@ -108,7 +113,16 @@ test("an explicit disabled Save and unrelated Preferences never enable a paused 
     .getByRole("button", { name: "Save preferences", exact: true })
     .click();
   const saved = (await store("snapshot")).settings;
-  expect(saved.repositories).toEqual(initial.repositories);
+  expect(saved.repositories).toEqual(
+    initial.repositories.map((repository) => ({
+      ...repository,
+      overrides: {
+        reviewer_assignment: true,
+        watched_authors: [],
+        watch: { all_pull_requests: true, by_user: true, mentions: true },
+      },
+    })),
+  );
   expect(Object.values(saved.repository_authorizations ?? {})).toEqual([null]);
   editor = await repositorySettings(page, "fixture/one");
   await expect(

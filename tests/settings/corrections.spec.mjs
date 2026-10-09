@@ -9,6 +9,7 @@ import {
   setAgentPrompt,
   editAgent,
   chooseRepositoryAccount,
+  seedBoundRepositories,
 } from "./navigation.mjs";
 
 for (const api of ["showModal", "close"]) {
@@ -464,22 +465,20 @@ for (const viewport of [
       });
       delete HTMLElement.prototype.inert;
     });
-    await store("save_repository", { repository: "octo/project" });
+    await seedBoundRepositories(store, ["octo/project"]);
     await page.goto("/?view=settings");
     await installRepositoryFixture(page);
     await section(page, "Repositories");
-    await page
-      .getByRole("button", { name: "octo/project", exact: true })
-      .click();
+    await page.locator("[data-repository]").click();
     let modal = page.getByRole("dialog", {
       name: "Settings for octo/project",
       exact: true,
     });
     await modal
-      .getByRole("button", { name: "Add people", exact: true })
+      .getByRole("button", { name: "Edit Users", exact: true })
       .click();
     const picker = page.getByRole("dialog", {
-      name: "Add people",
+      name: "Edit Users",
       exact: true,
     });
     await expect(
@@ -489,7 +488,7 @@ for (const viewport of [
     await page.keyboard.press("Escape");
     await expect(modal).toBeVisible();
     await expect(
-      modal.getByRole("button", { name: "Add people", exact: true }),
+      modal.getByRole("button", { name: "Edit Users", exact: true }),
     ).toBeFocused();
     await modal.getByText("Repository and connection", { exact: true }).click();
     await expect(

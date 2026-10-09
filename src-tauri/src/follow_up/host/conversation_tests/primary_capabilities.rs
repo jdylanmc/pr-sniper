@@ -19,6 +19,12 @@ fn publish_and_reply_matrix_uses_real_store_dispatch_and_validated_task_output()
         for reply in [false, true] {
             let (_root, store, origin, thread) = fixture(1);
             let mut settings = store.load_settings().unwrap();
+            settings.repositories[0].overrides.watch = Some(crate::policy::WatchChoices {
+                all_pull_requests: false,
+                by_user: false,
+                mentions: false,
+            });
+            settings.repositories[0].overrides.reviewer_assignment = Some(false);
             settings.repositories[0].assignments[0].comment = publish;
             settings.repositories[0].assignments[0].actions = Some(ActionPermissions {
                 reply,
@@ -368,14 +374,18 @@ fn mention_admission_overrides_discovery_only_and_general_reply_grants_do_not_ad
     candidate.number = 2;
     let comment = mention("701", "@actor can you inspect this?");
     for mentioned in [false, true] {
+        settings.repositories[0].overrides.watch = Some(crate::policy::WatchChoices {
+            all_pull_requests: false,
+            by_user: true,
+            mentions: mentioned,
+        });
         settings.repositories[0].assignments[0]
             .actions
             .as_mut()
             .unwrap()
             .reply = !mentioned;
         store.save_settings(&settings).unwrap();
-        candidate.mentioned =
-            mentioned && comment.eligible_other_user("22") && comment.mentions("actor", "22");
+        candidate.mentioned = comment.eligible_other_user("22") && comment.mentions("actor", "22");
         let ticket = monitor
             .prepare_checks(&store, NOW + 10, true)
             .unwrap()

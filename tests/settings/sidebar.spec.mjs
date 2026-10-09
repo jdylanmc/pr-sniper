@@ -143,7 +143,7 @@ test("repository People resolves stable identity, isolates neighbors and reports
     calls.push(args);
     return disconnected
       ? { error: "signed_out" }
-      : { ok: { id: "42", login: "octocat" } };
+      : { ok: [{ id: "42", login: "octocat" }] };
   });
   await page.addInitScript(() => {
     const invoke = window.__TAURI_INTERNALS__.invoke;
@@ -160,7 +160,7 @@ test("repository People resolves stable identity, isolates neighbors and reports
           ],
           flow: { state: "idle" },
         };
-      if (command !== "resolve_provider_person") return invoke(command, args);
+      if (command !== "search_provider_people") return invoke(command, args);
       const result = await window.__personLookup(args);
       if (result.error) throw result.error;
       return result.ok;
@@ -168,19 +168,20 @@ test("repository People resolves stable identity, isolates neighbors and reports
   });
   await page.goto("/?view=settings");
   let parent = await repositorySettings(page, "fixture/one");
-  await expect(
-    parent.getByText(
-      "Optional. A nonempty effective watched-author filter qualifies those authors. An empty effective author filter means all authors. Pull requests requesting the signed-in account also qualify when the reviewer-request trigger is enabled. Exact GitHub login, no wildcards.",
-      { exact: true },
-    ),
-  ).toBeVisible();
-  await parent.getByRole("button", { name: "Add people", exact: true }).click();
-  let picker = page.getByRole("dialog", { name: "Add people", exact: true });
+  await expect(parent.locator("[data-watch-summary]")).toContainText(
+    "All authors",
+  );
+  await parent.getByRole("button", { name: "Edit Users", exact: true }).click();
+  let picker = page.getByRole("dialog", { name: "Edit Users", exact: true });
   await picker.getByLabel("GitHub login", { exact: true }).fill("@octocat");
-  await picker.getByRole("button", { name: "Add person", exact: true }).click();
+  await picker.getByRole("button", { name: "Search", exact: true }).click();
+  await picker.getByRole("checkbox", { name: "@octocat", exact: true }).check();
+  await picker
+    .getByRole("button", { name: "Use selected users", exact: true })
+    .click();
   await expect(parent.getByText("@octocat", { exact: true })).toBeVisible();
   expect(calls).toEqual([
-    { provider: "github", accountId: "101", login: "octocat" },
+    { provider: "github", accountId: "101", query: "octocat" },
   ]);
   await closeDialog(page);
   await saveChanges(page);
@@ -192,10 +193,10 @@ test("repository People resolves stable identity, isolates neighbors and reports
   );
   disconnected = true;
   parent = await repositorySettings(page, "fixture/one");
-  await parent.getByRole("button", { name: "Add people", exact: true }).click();
-  picker = page.getByRole("dialog", { name: "Add people", exact: true });
+  await parent.getByRole("button", { name: "Edit Users", exact: true }).click();
+  picker = page.getByRole("dialog", { name: "Edit Users", exact: true });
   await picker.getByLabel("GitHub login", { exact: true }).fill("someone");
-  await picker.getByRole("button", { name: "Add person", exact: true }).click();
+  await picker.getByRole("button", { name: "Search", exact: true }).click();
   await expect(picker.getByRole("alert")).toContainText(
     "Connect the PR Sniper GitHub OAuth App",
   );
@@ -208,7 +209,7 @@ test("repository People resolves stable identity, isolates neighbors and reports
     .click();
   await expect(
     parent.getByText(
-      "No people added for this repository. Inherited watched authors still apply; if the effective author filter is empty, all authors qualify under the saved configuration. Reviewer requests qualify when that trigger is enabled.",
+      "No users selected. The by-user choice alone watches no pull requests.",
     ),
   ).toBeVisible();
   await closeDialog(page);

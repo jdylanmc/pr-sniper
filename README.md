@@ -597,10 +597,30 @@ disabled with a visible notice, never auto-promoted; actual jobs/receipts are
 unchanged. Opted-in provider
 actions require aggregate clearance and the primary final-review path below.
 Its compact editor exposes the stable account/repository IDs, enablement,
-saved author filters, independent reviewer-request override, verified
-watched people and the **saved global schedule** (not an unsaved Preferences
+direct watch choices and the **saved global schedule** (not an unsaved Preferences
 draft). No repository or Agent polling builder is exposed. Each new assignment
 receives missing normal review work at the next global scan; saving is not a scan.
+
+**Pull requests to watch** offers combinable **All Pull Requests**,
+**Pull requests by user**, **Pull requests where my review is requested** and
+**Reply to @Mentions** checkboxes. All selects the other choices too; unchecking
+one leaves an explicit subset. An empty selection discovers no new PRs.
+**Edit Users** searches GitHub logins using only the repository's selected
+connected provider account, shows up to 30 results to refine, and preserves
+selected stable identities across searches. Loading, no matches and provider
+failures are distinct. Apply updates the repository draft; Save persists its
+effective choices and users, including empty selections. Existing configurations
+retain their effective legacy behavior until explicitly edited/saved; loading
+does not migrate defaults or clear user data.
+
+Watch choices only control discovery, never primary assignment or publication
+permissions. A new eligible mention of the repository's GitHub account can
+bring in an otherwise unwatched PR, but grants no Reply Comment capability.
+Already tracked PRs remain tracked when watch choices change; their eligible
+general conversations do not require another mention. Pause, disabled state,
+account access, draft, execution, relevance and current primary/action gates
+remain independent.
+
 **Repository and connection** retains verification, metadata reads, edit,
 guarded account unbinding and removal. Unbinding preserves assignments,
 permissions and completed evidence, but provider operations need a new explicit

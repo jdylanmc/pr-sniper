@@ -781,12 +781,16 @@ for (const [name, inherited, local, override, expected] of [
     await saveConfiguration(page);
     const authors = page
       .locator(".genie-repository dt")
-      .filter({ hasText: /^Authors$/ })
+      .filter({ hasText: /^Watch choices$/ })
       .locator("+ dd");
     await expect(authors).toHaveText(
-      expected.length
-        ? expected.map((id) => `author-${id} (${id})`).join(", ")
-        : "All authors",
+      [
+        expected.length
+          ? expected.map((id) => `@author-${id}`).join(", ")
+          : "All authors",
+        "Review requested from your GitHub account",
+        "@Mentions of your GitHub account",
+      ].join("; "),
     );
   });
 }

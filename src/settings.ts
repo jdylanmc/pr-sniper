@@ -26,8 +26,9 @@ import {
   type Repository,
   primaryAssignmentId,
   repositoryProviderContext,
+  repositoryWatch,
 } from "./repositories";
-import { doctrineTitles } from "./policy";
+import { doctrineTitles, effectiveWatch, watchSummary } from "./policy";
 import {
   type Settings,
   type DoctrineCatalog,
@@ -2414,15 +2415,17 @@ export async function mountSettings(
         <section class="repository-group"><label class="repository-check"><input type="checkbox" role="switch" aria-label="Monitor ${escape(repository.name)}" data-repository-enabled ${repository.enabled || (pendingSetup.has(repository.id) && !setupMonitoringOff.has(repository.id)) ? "checked" : ""} /><span>Monitor this repository</span></label><p data-repository-monitoring-state role="status"></p><p class="settings-hint" data-repository-monitoring-detail></p></section>
         <section class="repository-group"><h2>Pull requests to watch</h2>
         <p class="settings-hint">Save authorizes all currently open and future matching pull requests. Eligible reviews start automatically; global monitoring off, pause and repository disablement still apply. Adding this row alone does not start monitoring.</p>
-        <label for="repository-reviewer-trigger">Reviewer requests</label><select id="repository-reviewer-trigger" data-reviewer-trigger><option value="inherit">Use default (${saved.defaults.reviewer_assignment ? "on" : "off"})</option><option value="on">Include PRs explicitly requesting the acting account</option><option value="off">Do not admit through reviewer requests</option></select>
-        <p class="settings-hint">Reviewer requests independently admit older or unwatched PRs. Once admitted, work stays tracked until verified closure or merge. Disablement and execution permissions still apply.</p></section>
+        <label class="repository-check"><input type="checkbox" data-watch-all /><span>All Pull Requests</span></label>
+        <div class="section-actions"><label class="repository-check"><input type="checkbox" data-watch-users /><span>Pull requests by user</span></label><button data-add-people>Edit Users</button></div>
+        <div class="watchlist"></div>
+        <label class="repository-check"><input type="checkbox" data-reviewer-trigger /><span>Pull requests where my review is requested</span></label>
+        <label class="repository-check"><input type="checkbox" data-watch-mentions /><span>Reply to @Mentions</span></label>
+        <p class="settings-hint" data-watch-summary role="status"></p>
+        <p class="settings-hint">These choices only find pull requests. @Mentions can bring in otherwise unwatched PRs; they grant no Reply Comment or other permission. The primary can assess general conversations on tracked PRs without another mention. Tracked work remains until verified closure or merge; pause, disablement and execution gates still apply.</p></section>
         <section class="repository-group"><div class="section-actions"><h2>Agents on this repository</h2><button class="primary" data-assign-agent ${agents().length ? "" : "disabled"}>Assign agent</button></div>
         <div class="assignment-list"></div>
         ${agents().length ? "" : '<p class="settings-hint">Create an agent first, on the Agents tab.</p>'}
         <p class="settings-hint">Each assignment receives its own normal pass. Permissions belong here, not to the reusable Agent. Only the primary assesses eligible conversations on admitted open PRs. Primary selection grants no permissions; without a primary, reviews and permitted initial comments continue but replies, approval and merge are unavailable.</p>
-        </section><section class="repository-group"><div class="section-actions"><h2>People you watch</h2><button data-add-people>Add people</button></div>
-        <div class="watchlist"></div>
-        <p class="settings-hint">Optional. A nonempty effective watched-author filter qualifies those authors. An empty effective author filter means all authors. Pull requests requesting the signed-in account also qualify when the reviewer-request trigger is enabled. Exact GitHub login, no wildcards.</p>
         </section><section class="repository-group" data-global-schedule><h2>Saved global schedule</h2><p>${schedule.kind === "cron" ? `<code>${escape(schedule.expression)}</code>` : `Every ${schedule.minutes} minutes (saved legacy schedule)`} / ${escape(schedule.timezone)}</p><p class="settings-hint">${schedule.kind === "cron" ? "One schedule scans enabled repositories. Change it in Preferences;" : "Polling is blocked until you choose a global five-field cron schedule in Preferences. The saved legacy interval is retained;"} repository and Agent assignments have no separate polling controls.</p></section>
         <details class="repository-group"><summary>Repository and connection</summary><dl class="repository-binding-details"><dt>Account ID</dt><dd>${escape(repository.provider_account_id ?? "Unbound")}</dd><dt>Repository ID</dt><dd>${escape(repository.provider_repository_id ?? "Not verified")}</dd></dl><div class="settings-actions"><button id="rename-repository">Edit repository</button><button data-unbind-repository ${repository.provider_account_id ? "" : "disabled"}>Unbind account</button><button id="remove-repository">Remove repository</button></div><div class="connection"></div></details>
         <p class="settings-hint">Save applies only this repository. Back retains its draft for this session; Cancel discards it. Earlier assignment saves stay applied.</p>
@@ -2546,30 +2549,70 @@ export async function mountSettings(
         updateMonitoring();
       }
     };
-    const reviewerTrigger = modal.querySelector<HTMLSelectElement>(
+    const reviewerTrigger = modal.querySelector<HTMLInputElement>(
       "[data-reviewer-trigger]",
     )!;
-    reviewerTrigger.value =
-      repository.overrides?.reviewer_assignment === undefined
-        ? "inherit"
-        : repository.overrides.reviewer_assignment
-          ? "on"
-          : "off";
-    reviewerTrigger.onchange = () => {
+    const allWatch = modal.querySelector<HTMLInputElement>("[data-watch-all]")!;
+    const userWatch =
+      modal.querySelector<HTMLInputElement>("[data-watch-users]")!;
+    const mentionWatch = modal.querySelector<HTMLInputElement>(
+      "[data-watch-mentions]",
+    )!;
+    const initialWatch = repositoryWatch(saved.defaults, repository);
+    const selections = effectiveWatch(initialWatch.policy, initialWatch.people);
+    allWatch.checked =
+      selections.all_pull_requests &&
+      selections.by_user &&
+      selections.mentions &&
+      initialWatch.policy.reviewer_assignment;
+    allWatch.indeterminate = selections.all_pull_requests && !allWatch.checked;
+    userWatch.checked = selections.by_user;
+    mentionWatch.checked = selections.mentions;
+    reviewerTrigger.checked = initialWatch.policy.reviewer_assignment;
+    const captureWatch = () => {
       repository.overrides ??= {};
-      if (reviewerTrigger.value === "inherit")
-        delete repository.overrides.reviewer_assignment;
-      else
-        repository.overrides.reviewer_assignment =
-          reviewerTrigger.value === "on";
+      repository.overrides.watch = {
+        all_pull_requests: allWatch.checked || allWatch.indeterminate,
+        by_user: userWatch.checked,
+        mentions: mentionWatch.checked,
+      };
+      repository.overrides.reviewer_assignment = reviewerTrigger.checked;
       changed();
     };
+    allWatch.onchange = () => {
+      allWatch.indeterminate = false;
+      userWatch.checked =
+        reviewerTrigger.checked =
+        mentionWatch.checked =
+          allWatch.checked;
+      captureWatch();
+      renderWatchlist();
+    };
+    for (const input of [userWatch, reviewerTrigger, mentionWatch])
+      input.onchange = () => {
+        allWatch.checked = false;
+        allWatch.indeterminate = false;
+        captureWatch();
+        renderWatchlist();
+      };
     modal.querySelector<HTMLButtonElement>("[data-save-repository]")!.onclick =
       async () => {
         const requestedPull = pendingPullRequests.get(repository.id);
         const saveRoute = routeGeneration;
         try {
           const proposed = clone(repository);
+          const { people } = repositoryWatch(saved.defaults, repository);
+          proposed.watched_authors = people;
+          proposed.overrides = {
+            ...proposed.overrides,
+            watched_authors: [],
+            reviewer_assignment: reviewerTrigger.checked,
+            watch: {
+              all_pull_requests: allWatch.checked || allWatch.indeterminate,
+              by_user: userWatch.checked,
+              mentions: mentionWatch.checked,
+            },
+          };
           proposed.enabled = monitoring.checked;
           await commitResource(repositoryEdit(repository, proposed), modal);
           pendingSetup.delete(repository.id);
@@ -2703,6 +2746,7 @@ export async function mountSettings(
         event.currentTarget as HTMLButtonElement,
         repository,
         () => {
+          captureWatch();
           renderWatchlist();
           refreshSavedMonitoring();
         },
@@ -2831,10 +2875,12 @@ export async function mountSettings(
         modal.querySelector<HTMLElement>("[data-add-people]")!,
         opener,
       );
-      const people = repository.watched_authors ?? [];
+      const { policy, people } = repositoryWatch(saved.defaults, repository);
+      modal.querySelector<HTMLElement>("[data-watch-summary]")!.textContent =
+        watchSummary(policy, people);
       if (!people.length) {
         list.innerHTML =
-          '<p class="settings-empty">No people added for this repository. Inherited watched authors still apply; if the effective author filter is empty, all authors qualify under the saved configuration. Reviewer requests qualify when that trigger is enabled.</p>';
+          '<p class="settings-empty">No users selected. The by-user choice alone watches no pull requests.</p>';
         restoreFocus();
         return;
       }
@@ -2849,6 +2895,9 @@ export async function mountSettings(
           event,
         ) => {
           repository.watched_authors = people.filter((p) => p !== person);
+          repository.overrides ??= {};
+          repository.overrides.watched_authors = [];
+          captureWatch();
           changed();
           renderWatchlist(event.currentTarget as HTMLButtonElement);
         };
@@ -2952,70 +3001,170 @@ export async function mountSettings(
     repository: ConfiguredRepository,
     onSaved: () => void,
   ) {
-    const availableAccounts = githubAccounts.filter(
+    const account = githubAccounts.find(
       (account) =>
         account.state === "connected" &&
-        (!repository.provider_account_id ||
-          account.account_id === repository.provider_account_id),
+        account.account_id === repository.provider_account_id &&
+        repository.provider === "github",
     );
-    const people = repository.watched_authors ?? [];
+    const people = repositoryWatch(saved.defaults, repository).people;
+    const selected = new Map(people.map((person) => [person.id, person]));
+    let results: WatchedIdentity[] = [];
+    let generation = 0;
+    const pickerRoute = routeGeneration;
     const picker = dialog(
-      "Add people",
-      `<form class="person-lookup"><label>Acting GitHub account<select name="account" required>${option("", "Choose a GitHub account", repository.provider_account_id ?? "")}${availableAccounts.map((account) => option(account.account_id, `${account.login} (${account.account_id})`, repository.provider_account_id ?? "")).join("")}</select></label><label>GitHub login<input name="login" placeholder="octocat" autocomplete="off" required /></label><p class="settings-hint">${availableAccounts.length ? "Looks up the exact login through the selected GitHub account and stores its stable identity. No wildcards." : `No connected GitHub account is available. Connect one in ${accountSection}.`}</p><p role="alert" hidden></p><div class="resource-actions"><button type="submit" class="primary" ${availableAccounts.length ? "" : "disabled"}>Add person</button><button type="button" data-cancel-resource>Cancel</button></div></form>`,
+      "Edit Users",
+      `<p class="settings-hint">GitHub account: ${escape(account?.login ?? "Saved account unavailable")}. ${account ? "Search GitHub logins. Up to 30 results; refine your search for more. Selections use stable GitHub identities." : `Reconnect this repository's account in ${accountSection}; another account cannot be substituted.`}</p>
+       <form class="person-lookup"><label>GitHub login<input type="search" name="login" placeholder="Search GitHub users" autocomplete="off" required ${account ? "" : "disabled"} /></label><button type="submit" ${account ? "" : "disabled"}>Search</button></form>
+       <p role="status" data-user-status></p><p role="alert" hidden></p>
+       <fieldset data-user-results><legend>Search results</legend><div></div></fieldset>
+       <fieldset data-selected-users><legend>Selected users</legend><div></div></fieldset>
+       <div class="resource-actions"><button type="button" class="primary" data-use-users>Use selected users</button><button type="button" data-cancel-resource>Cancel</button></div>`,
       opener,
     );
     resourceEditor(picker);
     picker.classList.add("repository-editor");
-    picker.querySelector<HTMLInputElement>("[name=login]")!.focus();
+    const input = picker.querySelector<HTMLInputElement>("[name=login]")!;
+    const button = picker.querySelector<HTMLButtonElement>("form button")!;
+    const alert = picker.querySelector<HTMLElement>("[role=alert]")!;
+    const status = picker.querySelector<HTMLElement>("[data-user-status]")!;
+    const current = (read: number) =>
+      picker.open &&
+      picker.isConnected &&
+      read === generation &&
+      pickerRoute === routeGeneration &&
+      !app.closest("[hidden]");
+    const connected = () =>
+      account &&
+      githubAccounts.some(
+        (current) =>
+          current.account_id === account.account_id &&
+          current.state === "connected" &&
+          current.connection_generation === account.connection_generation,
+      );
+    const renderPeople = () => {
+      const resultList = picker.querySelector<HTMLElement>(
+        "[data-user-results] div",
+      )!;
+      const selectedList = picker.querySelector<HTMLElement>(
+        "[data-selected-users] div",
+      )!;
+      const render = (
+        list: HTMLElement,
+        values: WatchedIdentity[],
+        empty: string,
+      ) => {
+        list.replaceChildren();
+        if (!values.length) {
+          list.textContent = empty;
+          return;
+        }
+        for (const person of values) {
+          const label = document.createElement("label");
+          label.className = "repository-check";
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.checked = selected.has(person.id);
+          checkbox.onchange = () => {
+            if (checkbox.checked) selected.set(person.id, person);
+            else selected.delete(person.id);
+            // Keep the focused checkbox in place until the next search.
+            for (const other of picker.querySelectorAll<HTMLInputElement>(
+              "[data-person-id]",
+            ))
+              other.checked = selected.has(other.dataset.personId!);
+            status.textContent = `${selected.size} users selected. Apply to the repository draft with Use selected users.`;
+          };
+          checkbox.dataset.personId = person.id;
+          const caption = document.createElement("span");
+          caption.textContent = `@${person.login}`;
+          label.append(checkbox, caption);
+          list.append(label);
+        }
+      };
+      render(resultList, results, "No search results.");
+      render(selectedList, [...selected.values()], "No users selected.");
+    };
+    renderPeople();
+    status.textContent = `${selected.size} users selected.`;
+    input.focus();
+    input.oninput = () => {
+      generation++;
+      results = [];
+      button.disabled = !account;
+      alert.hidden = true;
+      status.textContent = "Search GitHub logins.";
+      renderPeople();
+    };
     picker.querySelector("form")!.onsubmit = async (event) => {
       event.preventDefault();
-      const input = picker.querySelector<HTMLInputElement>("[name=login]")!;
-      const button = picker.querySelector<HTMLButtonElement>("form button")!;
-      const alert = picker.querySelector<HTMLElement>("[role=alert]")!;
+      const read = ++generation;
       button.disabled = true;
       alert.hidden = true;
+      results = [];
+      renderPeople();
+      status.textContent = "Loading GitHub user...";
       const lookupRevision = revision;
       try {
-        const identity = await invoke<WatchedIdentity>(
-          "resolve_provider_person",
+        if (!connected())
+          throw "Reconnect this repository's GitHub account, then reopen Edit Users.";
+        const identities = await invoke<WatchedIdentity[]>(
+          "search_provider_people",
           {
             provider: "github",
-            accountId:
-              picker.querySelector<HTMLSelectElement>("[name=account]")!.value,
-            login: input.value.trim().replace(/^@/, ""),
+            accountId: account!.account_id,
+            query: input.value.trim().replace(/^@/, ""),
           },
         );
-        if (!picker.open || lookupRevision !== revision)
-          throw "Settings changed during lookup. Add this person again.";
-        if (people.some((p) => p.id === identity.id))
-          throw "This person is already in this watchlist.";
-        repository.watched_authors = [...people, identity];
-        changed();
-        picker.close();
-        onSaved();
+        if (!current(read)) return;
+        if (lookupRevision !== revision || !connected())
+          throw "Settings or the GitHub connection changed during lookup. Search again.";
+        results = identities;
+        renderPeople();
+        status.textContent = results.length
+          ? `${results.length} users found. Select users to include them.`
+          : "No matching GitHub users. Try another login.";
       } catch (cause) {
+        if (!current(read)) return;
         alert.textContent = reason(cause);
         alert.hidden = false;
+        status.textContent =
+          "User lookup failed. Your selections are unchanged; retry Search.";
         if (
-          typeof cause === "string" &&
-          [
-            "signed_out",
-            "wrong_identity",
-            "network",
-            "rate_limited",
-            "timeout",
-            "provider_failure",
-            "invalid_response",
-            "configuration",
-          ].includes(cause)
+          repositorySessionFailure(cause) ||
+          cause === "signed_out" ||
+          cause === "wrong_identity"
         )
           window.dispatchEvent(
             new Event("pr-sniper:refresh-provider-accounts"),
           );
       } finally {
-        button.disabled = false;
+        if (picker.isConnected && picker.open && read === generation) {
+          button.disabled = !account;
+          if (!current(read))
+            status.textContent =
+              "Search interrupted by navigation. Search again.";
+        }
       }
     };
+    picker.querySelector<HTMLButtonElement>("[data-use-users]")!.onclick =
+      () => {
+        if (!connected()) {
+          alert.textContent =
+            "Reconnect this repository's GitHub account, then reopen Edit Users.";
+          alert.hidden = false;
+          return;
+        }
+        repository.watched_authors = [...selected.values()];
+        repository.overrides ??= {};
+        repository.overrides.watched_authors = [];
+        changed();
+        picker.close();
+        onSaved();
+      };
+    picker.addEventListener("pr-sniper:dialog-closed", () => generation++, {
+      once: true,
+    });
   }
 
   // ------------------------------------------------------------- Preferences

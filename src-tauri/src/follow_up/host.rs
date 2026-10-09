@@ -160,7 +160,8 @@ pub(crate) fn scan(
         let cursor = cursors
             .iter()
             .find(|cursor| cursor.binding.key("") == binding.key(""));
-        pull.mentioned = cursor.is_some_and(|cursor| cursor.comments_initialized)
+        pull.mentioned = ticket.policy.watches_mentions()
+            && cursor.is_some_and(|cursor| cursor.comments_initialized)
             && comments.iter().any(|comment| {
                 comment.eligible_other_user(&identity.id)
                     && comment.mentions(&identity.login, &identity.id)

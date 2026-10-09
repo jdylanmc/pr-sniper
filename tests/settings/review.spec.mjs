@@ -151,7 +151,12 @@ for (const mode of ["planned", "captured", "legacy", "queued", "failed-zero"]) {
         signature: "machine",
         doctrines: ["Captured doctrine"],
       },
-      policy: settings.defaults,
+      policy: {
+        ...settings.defaults,
+        watched_authors: [{ id: "1", login: "captured-user" }],
+        reviewer_assignment: false,
+        watch: { all_pull_requests: false, by_user: true, mentions: false },
+      },
       doctrine: "Captured doctrine body.",
       preset: null,
       configuration: {
@@ -163,6 +168,10 @@ for (const mode of ["planned", "captured", "legacy", "queued", "failed-zero"]) {
           provider_account_id: "22",
           provider_repository_id: "100",
           assignments: [],
+          watched_authors: [
+            { id: "1", login: "stale-label" },
+            { id: "2", login: "repository-user" },
+          ],
         },
         authority: {
           primary: true,
@@ -177,6 +186,7 @@ for (const mode of ["planned", "captured", "legacy", "queued", "failed-zero"]) {
     };
     const planned = structuredClone(selection);
     planned.agent.prompt = "Today's planned prompt.";
+    planned.policy.watch.by_user = false;
     planned.configuration.doctrines[0].body = "Today's doctrine body.";
     const review = {
       ...candidate(),
@@ -210,6 +220,14 @@ for (const mode of ["planned", "captured", "legacy", "queued", "failed-zero"]) {
         .getByText("Captured execution configuration", { exact: true })
         .click();
       await expect(panel).toContainText(selection.agent.prompt);
+      await expect(
+        panel.getByText(
+          mode === "legacy"
+            ? "@captured-user"
+            : "@captured-user, @repository-user",
+          { exact: true },
+        ),
+      ).toBeVisible();
       expect(await page.evaluate(() => window.executed)).toBeUndefined();
       await expect(panel.locator("script")).toHaveCount(0);
     }
@@ -222,6 +240,11 @@ for (const mode of ["planned", "captured", "legacy", "queued", "failed-zero"]) {
         .click();
       await expect(panel).toContainText("Today's planned prompt.");
       await expect(panel).toContainText("Today's doctrine body.");
+      await expect(
+        panel.getByText("No new pull requests from watch choices.", {
+          exact: true,
+        }),
+      ).toBeVisible();
       if (mode === "failed-zero") {
         await expect(
           panel.getByText("Captured execution configuration", { exact: true }),

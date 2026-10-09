@@ -112,6 +112,41 @@ impl<T: Transport> GithubClient<T> {
         verify_identity(&user, None)
     }
 
+    pub fn search_people(&self, query: &str) -> Result<Vec<Identity>, ConnectionError> {
+        let query = query.trim().trim_start_matches('@');
+        if query.is_empty()
+            || query.len() > 39
+            || !query
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Err(ConnectionError::InvalidResponse);
+        }
+        let query = serde_urlencoded::to_string([
+            ("q", format!("{query} in:login type:user")),
+            ("per_page", "30".into()),
+        ])
+        .map_err(|_| ConnectionError::Configuration)?;
+        let (response, _) = self.read(&format!("/search/users?{query}"))?;
+        if response["incomplete_results"].as_bool() != Some(false) {
+            return Err(ConnectionError::IncompleteRead);
+        }
+        let items = response["items"]
+            .as_array()
+            .ok_or(ConnectionError::InvalidResponse)?;
+        let mut ids = std::collections::HashSet::new();
+        items
+            .iter()
+            .map(|item| {
+                let identity = verify_identity(item, None)?;
+                if !ids.insert(identity.id.clone()) {
+                    return Err(ConnectionError::InvalidResponse);
+                }
+                Ok(identity)
+            })
+            .collect()
+    }
+
     pub fn current_identity(&self) -> Result<Identity, ConnectionError> {
         let (user, _) = self.read("/user")?;
         verify_identity(&user, None)
