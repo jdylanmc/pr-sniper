@@ -87,8 +87,10 @@ test("stale 23-entry saved catalog is reset before the shared Agent selector ope
     JSON.stringify(settings),
   );
   await page.goto("/?view=settings");
-  await expect(page.locator("[data-doctrine-reset]")).toContainText(
-    "replaced 23 doctrines with the 10 shipped defaults",
+  await expect(page.locator("#save-status")).toHaveText("All changes saved");
+  await expect(page.locator("[data-doctrine-reset]")).toHaveCount(0);
+  await expect(page.locator("#content")).not.toContainText(
+    "Pre-alpha doctrine library reset",
   );
   await section(page, "Agents");
   await page.getByRole("button", { name: "New agent", exact: true }).click();
@@ -133,7 +135,16 @@ test("stale 23-entry saved catalog is reset before the shared Agent selector ope
     "code",
     "testing",
   ]);
+  const reconciled = await diskSettings(dataRoot);
+  expect(reconciled.doctrine_reset).toEqual({
+    previous_count: 23,
+    removed_references: 1,
+  });
+  expect(reconciled.doctrines).toEqual(canonical);
+  const audit =
+    "Doctrine reconciliation: replaced 23 doctrines with the 10 shipped defaults; removed 1 obsolete Agent references.";
   await page.goto("/?view=diagnostics");
+  await expect(page.locator("#log")).toContainText(audit);
   await expect(page.locator("#log")).toContainText(catalog.source);
   await expect(page.locator("#log")).toContainText(catalog.effective_revision);
   await page.goto("/");
@@ -141,7 +152,93 @@ test("stale 23-entry saved catalog is reset before the shared Agent selector ope
   await expect(page.locator('[data-panel-view="utility"] pre')).toContainText(
     catalog.effective_revision,
   );
-  expect((await diskSettings(dataRoot)).doctrines).toEqual(canonical);
+  await expect(page.locator('[data-panel-view="utility"] pre')).toContainText(
+    audit,
+  );
+  await page.goto("/?view=settings");
+  await section(page, "Doctrines");
+  await newDoctrine(page, "later-edit", "Preserve this later addition.");
+  const laterSettings = await diskSettings(dataRoot);
+  expect(laterSettings.doctrines).toEqual([
+    ...canonical,
+    { title: "later-edit", body: "Preserve this later addition." },
+  ]);
+  expect(laterSettings.doctrine_reset).toEqual(reconciled.doctrine_reset);
+  await page.reload();
+  await expect(page.locator("#save-status")).toHaveText("All changes saved");
+  await expect(page.locator("[data-doctrine-reset]")).toHaveCount(0);
+  expect(await diskSettings(dataRoot)).toEqual(laterSettings);
+  await page.goto("/?view=diagnostics");
+  await expect(page.locator("#log")).toContainText(audit);
+  await expect(page.locator("#log")).toContainText("11 doctrines");
+});
+
+for (const width of [408, 320]) {
+  test(`reconciled Settings overview has no notice space at ${width}px`, async ({
+    page,
+    store,
+    dataRoot,
+  }, testInfo) => {
+    const settings = (await store("snapshot")).settings;
+    delete settings.doctrine_catalog_version;
+    settings.doctrines = [{ title: "obsolete", body: "Old principles." }];
+    await writeFile(
+      join(dataRoot, "config/settings.json"),
+      JSON.stringify(settings),
+    );
+    await page.setViewportSize({ width, height: 744 });
+    await page.goto("/");
+    await page
+      .getByRole("navigation", { name: "Application destinations" })
+      .getByRole("button", { name: "Settings", exact: true })
+      .click();
+    const overview = page.locator(".settings-overview");
+    await expect(overview).toBeVisible();
+    await expect(page.locator("[data-doctrine-reset]")).toHaveCount(0);
+    const layout = await page.locator("#content").evaluate((content) => {
+      const visible = [...content.children].filter(
+        (child) => child.getBoundingClientRect().height > 0,
+      );
+      const overview = content.querySelector(".settings-overview");
+      return {
+        firstIsOverview: visible[0] === overview,
+        gap:
+          overview.getBoundingClientRect().top -
+          content.getBoundingClientRect().top,
+        padding: parseFloat(getComputedStyle(content).paddingTop),
+        top: overview.getBoundingClientRect().top,
+        headerBottom: document
+          .querySelector(".panel-header")
+          .getBoundingClientRect().bottom,
+      };
+    });
+    expect(layout.firstIsOverview).toBe(true);
+    expect(Math.abs(layout.gap - layout.padding)).toBeLessThanOrEqual(1);
+    expect(layout.top).toBeGreaterThanOrEqual(layout.headerBottom);
+    await page.screenshot({ path: testInfo.outputPath("settings.png") });
+    const saved = await diskSettings(dataRoot);
+    expect(saved.doctrine_reset.previous_count).toBe(1);
+    await page.reload();
+    await expect(overview).toBeVisible();
+    expect(await diskSettings(dataRoot)).toEqual(saved);
+  });
+}
+
+test("removing reset prose preserves the separate capability notice", async ({
+  page,
+  store,
+}) => {
+  const settings = (await store("snapshot")).settings;
+  settings.doctrine_reset = { previous_count: 23, removed_references: 1 };
+  settings.capability_notice =
+    "Repository permissions reconciled: obsolete secondary grants disabled.";
+  await store("seed_settings", settings);
+  await page.goto("/?view=settings");
+  await expect(
+    page.getByRole("status").filter({ hasText: settings.capability_notice }),
+  ).toBeVisible();
+  await expect(page.locator("[data-doctrine-reset]")).toHaveCount(0);
+  expect((await store("snapshot")).settings).toEqual(settings);
 });
 
 async function library(page) {
