@@ -38,7 +38,7 @@ for (const action of ["add", "disable"]) {
         .click();
       await expect(
         repository.locator("[data-repository-monitoring-state]"),
-      ).toHaveText("Disabled");
+      ).toHaveText("Monitoring: Disabled");
       await closeDialog(page);
     }
     const modal = await editAgent(page);

@@ -73,7 +73,7 @@ for (const failure of ["write", "conflict"]) {
       await editor.getByRole("switch", { name: "Monitor fixture/one" }).click();
       await expect(
         editor.locator("[data-repository-monitoring-state]"),
-      ).toHaveText("Enabled");
+      ).toHaveText("Monitoring: Enabled");
       await editor
         .getByRole("button", { name: "Save repository", exact: true })
         .click();
@@ -127,7 +127,7 @@ test("Save locks dismissal until the native commit returns and does not issue a 
   const editor = await repositorySettings(page, "fixture/one");
   await editor.getByRole("switch", { name: "Monitor fixture/one" }).click();
   await expect(editor.locator("[data-repository-monitoring-state]")).toHaveText(
-    "Enabled",
+    "Monitoring: Enabled",
   );
   const held = ipc.holdNext("save_resource");
   try {
@@ -170,7 +170,7 @@ for (const embedded of [true, false]) {
     await editor.getByRole("switch", { name: "Monitor fixture/one" }).click();
     await expect(
       editor.locator("[data-repository-monitoring-state]"),
-    ).toHaveText("Enabled");
+    ).toHaveText("Monitoring: Enabled");
     await editor
       .getByRole("button", { name: "Save repository", exact: true })
       .click();

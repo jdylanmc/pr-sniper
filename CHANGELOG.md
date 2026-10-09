@@ -14,6 +14,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- Simplify Settings and Genie repository monitoring to one Enabled/Disabled
+  toggle label and remove routine Save/authorization explanations. Preserve
+  saved configuration, draft choices and actionable monitoring errors. (#145)
 - Adapt repository Joe-mode orchestration to the visible CMUX Maestro cockpit.
   Retire Paseo adapter files, retain shared team and independent merge gates,
   and keep activation human-only with no unattended CMUX scheduler.

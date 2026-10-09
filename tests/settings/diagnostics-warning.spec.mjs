@@ -65,7 +65,7 @@ for (const action of ["add", "enable", "remove", "agent", "assignment"]) {
         .click();
       await expect(
         editor.locator("[data-repository-monitoring-state]"),
-      ).toHaveText("Enabled");
+      ).toHaveText("Monitoring: Enabled");
       await closeDialog(page);
     } else if (action === "remove") {
       const modal = await repositorySettings(page, repository.name);
