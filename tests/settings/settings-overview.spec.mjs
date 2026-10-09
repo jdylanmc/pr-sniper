@@ -294,7 +294,7 @@ test("overview retains preference and repository drafts without claiming them in
     .selectOption("off");
   await page.getByRole("switch", { name: "Monitor example/repo" }).click();
   await expect(page.locator("[data-repository-monitoring-state]")).toHaveText(
-    "Disabled",
+    "Monitoring: Disabled",
   );
   await page
     .getByRole("dialog")

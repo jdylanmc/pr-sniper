@@ -54,7 +54,7 @@ test("adding, reopening, configuring, pausing and removing preserves identities 
     await editor.getByRole("switch", { name: "Monitor fixture/one" }).click();
     await expect(
       editor.locator("[data-repository-monitoring-state]"),
-    ).toHaveText(enabled ? "Enabled" : "Disabled");
+    ).toHaveText(enabled ? "Monitoring: Enabled" : "Monitoring: Disabled");
     const before = (await store("snapshot")).settings;
     expect(before.repositories[0].enabled).toBe(enabled);
     await editor

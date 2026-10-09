@@ -95,6 +95,13 @@ Failed new configuration Save is followed by a nested assignment Save with
 independent native settings-byte and authorization assertions: only a later
 valid configuration Save may enable the new row. Nested saves refresh actual
 saved monitoring state/details without consuming the pending setup choice.
+The editor's single `Monitoring: Enabled` / `Monitoring: Disabled` label follows
+its accessible switch, including the existing unsaved new-repository choice;
+it is not evidence that a pending setup has been committed. Native-byte and
+authorization assertions separately protect that distinction after rejected
+Save, nested assignment Save and reopen. Settings and Genie, embedded and
+standalone, check removal of routine Save/authorization/activation copy while
+retaining real errors, pause/capacity notices and existing controls.
 At 320px and 408px, panel and standalone controls also receive actual 100%/200%
 computed text sizes. Tests check row, copy, state, switch and switch-text
 containment inside the clipping list, visible keyboard focus and Space

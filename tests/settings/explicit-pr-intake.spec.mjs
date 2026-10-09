@@ -600,7 +600,7 @@ for (const genie of [false, true]) {
     );
     await expect(
       editor.locator("[data-repository-monitoring-state]"),
-    ).toHaveText("Enabled");
+    ).toHaveText("Monitoring: Enabled");
     await expect(
       editor.locator("[data-repository-monitoring-detail]"),
     ).toContainText("Global Monitoring paused");

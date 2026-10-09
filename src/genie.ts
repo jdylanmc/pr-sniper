@@ -39,7 +39,7 @@ const guidance = [
   "Pick the provider that will power your reviewers, then connect an account. Repository access comes separately.",
   "Connect the identity that can access your repositories. Connecting it does not connect or select an AI account.",
   "Choose an AI account and a returned model. Add zero, one or many shared doctrines.",
-  "Choose the acting account, assign an Agent and set independent permissions. Save authorizes all currently open and future matching pull requests.",
+  "Choose the acting account, assign an Agent and set independent permissions.",
 ];
 const failure = (cause: unknown) =>
   typeof cause === "string"
@@ -148,7 +148,7 @@ export function mountGenie(
           : `
       <section class="genie-card"><div class="genie-card-heading"><span class="genie-symbol">${spark}</span><span>${mode === "welcome" ? "A fresh start" : "Onboarding Genie"}<small>${mode === "welcome" ? "" : count === 4 ? "Ready for your final check" : `Step ${next + 1} of 4`}</small></span></div>
       <h2>${mode === "welcome" ? "A second set of eyes.<br />Let's set yours up." : count === 4 ? "Your setup is ready." : titles[next]}</h2>
-      <p>${mode === "welcome" ? "Connect your accounts, create a reviewer, and choose what to watch." : count === 4 ? "Review your saved identities, permissions, filters and global schedule. Repository Save already authorized monitoring." : guidance[next]}</p>
+      <p>${mode === "welcome" ? "Connect your accounts, create a reviewer, and choose what to watch." : count === 4 ? "Review your saved identities, permissions, filters and global schedule." : guidance[next]}</p>
       <button type="button" class="genie-action" data-genie-next data-genie-focus="next" ${!state ? "disabled" : ""}>${mode === "welcome" ? (count ? "Continue with Genie" : "Set up with Genie") : count === 4 ? "Review setup" : titles[next]}</button>
       ${mode === "welcome" ? '<button type="button" class="genie-text" data-genie-manual data-genie-focus="manual">I’ll set it up myself</button>' : ""}
       </section>
@@ -174,7 +174,7 @@ export function mountGenie(
             }</small></span><span aria-hidden="true">›</span></button></li>`,
         )
         .join("")}</ol>
-      <p class="genie-note">Each repository save authorizes its configuration immediately. Closing keeps saved resources and mounted drafts. Back and Cancel explain unsaved fields in each editor. ${settings?.doctrines?.length ?? 0} shared doctrines available.</p>
+      <p class="genie-note">${settings?.doctrines?.length ?? 0} shared doctrines available.</p>
       <button type="button" class="genie-text" data-genie-edit="doctrines" data-genie-focus="doctrines">Manage shared doctrines</button>
       <button type="button" class="genie-text" data-genie-edit="preferences" data-genie-focus="preferences">Edit global schedule and capacity</button>`
       }
@@ -217,7 +217,7 @@ export function mountGenie(
     const schedule = settings.defaults.schedule;
     const allReady =
       progress().every(Boolean) && checkedModelsFor === state.confirmation;
-    return `<section class="genie-card"><span class="genie-review-label">${spark} Genie’s final check</span><h2>Your app. Your call.</h2><p>Monitoring does not grant extra review or publication permissions. Saved changes already apply to authorized work.</p></section>
+    return `<section class="genie-card"><span class="genie-review-label">${spark} Genie’s final check</span><h2>Your app. Your call.</h2></section>
       ${!allReady ? '<p class="genie-note" role="status">Complete all four essentials and check the current model catalogs before finishing setup.</p>' : ""}
       ${(settings.repositories ?? [])
         .map((repository) => {
@@ -262,7 +262,7 @@ export function mountGenie(
       <h3>Room to work</h3><p>At most <strong>${settings.capacity} AI tasks</strong> on this computer. Full passes, primary final reviews and targeted replies share capacity.</p>
       <p>Global automation: <strong>${state.paused ? "Paused; finishing setup will not resume it" : "Running when saved configuration and execution gates allow"}</strong>.</p>
       <button type="button" class="genie-text" data-genie-edit="preferences" data-genie-focus="preferences">Edit schedule and capacity</button></section>
-      <section class="genie-card"><p class="genie-note">Catalog availability is not a subscription, seat or inference test. No review runs in this check. Repository Save already authorized monitoring; there is no further repository confirmation.</p>
+      <section class="genie-card"><p class="genie-note">Catalog availability is not a subscription, seat or inference test. No review runs in this check.</p>
       <button type="button" class="genie-action" data-genie-activate data-genie-focus="activate" ${!allReady || applying ? "disabled" : ""}>${applying ? "Checking current setup..." : "Finish setup"}</button></section>`;
   }
   async function read() {

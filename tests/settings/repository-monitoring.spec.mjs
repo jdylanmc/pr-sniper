@@ -55,6 +55,112 @@ const openEditor = async (page) => {
   return editor(page);
 };
 
+for (const embedded of [true, false]) {
+  for (const guided of [true, false]) {
+    test(`concise monitoring copy preserves saved controls (${embedded ? "panel" : "standalone"}, ${guided ? "Genie" : "Settings"})`, async ({
+      page,
+      store,
+    }, info) => {
+      const initial = await seed(store);
+      await providerFixture(page, store);
+      await page.setViewportSize({ width: 320, height: 300 });
+      await repositoryPage(page, store, embedded);
+      if (guided) {
+        await page
+          .getByRole("button", { name: "Set up with Genie", exact: true })
+          .click();
+        await expect(
+          page.getByText(/Save authorizes all currently open/),
+        ).not.toBeVisible();
+        await page.locator('[data-genie-edit="repositories"]').click();
+      }
+      const modal = await openEditor(page);
+      const monitoring = modal.getByRole("switch", {
+        name: "Monitor fixture/one",
+        exact: true,
+      });
+      const label = modal.locator("[data-repository-monitoring-state]");
+      await expect(label).toHaveCount(1);
+      await expect(label).toHaveText("Monitoring: Disabled");
+      await expect(monitoring).not.toBeChecked();
+      await expect(modal.getByText("Monitor this repository")).toHaveCount(0);
+      await expect(
+        modal.getByText(
+          /Starts after you save|Stays disabled when you save|Save authorizes|Save applies only this repository|This control saves monitoring|Adding this row alone/,
+        ),
+      ).toHaveCount(0);
+      await expect(page.locator("[data-genie-save-note]:visible")).toHaveCount(
+        0,
+      );
+      await monitoring.focus();
+      await page.keyboard.press("Space");
+      await expect(label).toHaveText("Monitoring: Enabled");
+      await expect(monitoring).toBeChecked();
+      const enabled = (await store("snapshot")).settings;
+      expect(enabled.repositories[0]).toEqual({
+        ...initial.repositories[0],
+        enabled: true,
+      });
+      expect(enabled.repository_authorizations[repoId]).toMatchObject({
+        account_id: "22",
+        repository_id: "100",
+      });
+      expect(enabled.repositories[1]).toEqual(initial.repositories[1]);
+      await label.scrollIntoViewIfNeeded();
+      await expect(label).toBeInViewport();
+      const bounds = await label.boundingBox();
+      expect(bounds.x).toBeGreaterThanOrEqual(0);
+      expect(bounds.x + bounds.width).toBeLessThanOrEqual(320);
+      await page.screenshot({
+        path: info.outputPath("monitoring-enabled.png"),
+      });
+      await modal
+        .getByRole("button", { name: "Save repository", exact: true })
+        .click();
+      await expect(modal).toHaveCount(0);
+      await openEditor(page);
+      await expect(label).toHaveText("Monitoring: Enabled");
+      await expect(monitoring).toBeChecked();
+      await monitoring.click();
+      await expect(label).toHaveText("Monitoring: Disabled");
+      const disabled = (await store("snapshot")).settings;
+      expect(disabled.repositories).toEqual(initial.repositories);
+      expect(disabled.repository_authorizations[repoId]).toBeNull();
+    });
+  }
+}
+
+test("concise monitoring copy retains unavailable-state guidance", async ({
+  page,
+  store,
+}) => {
+  const initial = await seed(store);
+  initial.repositories[0].enabled = true;
+  await store("seed_settings", initial);
+  await providerFixture(page, store);
+  await page.addInitScript(() => {
+    const invoke = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = (command, args) =>
+      command === "automation_snapshot"
+        ? Promise.reject("Synthetic automation unavailable.")
+        : invoke(command, args);
+  });
+  await repositoryPage(page, store);
+  const modal = await openEditor(page);
+  await expect(modal.locator("[data-repository-monitoring-state]")).toHaveText(
+    "Monitoring: Enabled",
+  );
+  await expect(
+    modal.getByRole("switch", { name: "Monitor fixture/one" }),
+  ).toBeChecked();
+  await expect(modal.locator("[data-repository-monitoring-detail]")).toHaveText(
+    "Global Monitoring state unavailable; check Status and reopen Repositories to retry",
+  );
+  expect((await store("snapshot")).settings.repositories).toEqual(
+    initial.repositories,
+  );
+});
+
 test("failed new configuration Save cannot enable a later nested assignment Save", async ({
   page,
   store,
@@ -85,7 +191,7 @@ test("failed new configuration Save cannot enable a later nested assignment Save
   );
   expect(await readFile(file)).toEqual(before);
   await expect(modal.locator("[data-repository-monitoring-state]")).toHaveText(
-    "Disabled",
+    "Monitoring: Enabled",
   );
   await expect(modal.locator("[data-reviewer-trigger]")).toHaveValue("off");
   await modal
@@ -117,12 +223,12 @@ test("failed new configuration Save cannot enable a later nested assignment Save
   expect(bytes.defaults).toEqual(initial.defaults);
   expect(bytes.capacity).toBe(initial.capacity);
   await expect(modal.locator("[data-repository-monitoring-state]")).toHaveText(
-    "Disabled",
+    "Monitoring: Enabled",
   );
   await expect(monitoring).toBeChecked();
   await expect(
     modal.locator("[data-repository-monitoring-detail]"),
-  ).toContainText("Starts after you save valid configuration");
+  ).toBeHidden();
   await modal
     .getByRole("button", { name: "Close dialog", exact: true })
     .click();
@@ -133,7 +239,7 @@ test("failed new configuration Save cannot enable a later nested assignment Save
   ).toHaveAttribute("aria-checked", "false");
   await row.click();
   await expect(modal.locator("[data-repository-monitoring-state]")).toHaveText(
-    "Disabled",
+    "Monitoring: Enabled",
   );
   await expect(monitoring).toBeChecked();
   await modal
@@ -152,7 +258,7 @@ test("failed new configuration Save cannot enable a later nested assignment Save
   await expect(row.locator("[data-monitoring-state]")).toHaveText("Enabled");
   await row.click();
   await expect(modal.locator("[data-repository-monitoring-state]")).toHaveText(
-    "Enabled",
+    "Monitoring: Enabled",
   );
   await expect(monitoring).toBeChecked();
   await modal
@@ -173,7 +279,7 @@ test("nested assignment Save refreshes the editor and listing from actual saved 
   await repositoryPage(page, store);
   const modal = await openEditor(page);
   await expect(modal.locator("[data-repository-monitoring-state]")).toHaveText(
-    "Enabled",
+    "Monitoring: Enabled",
   );
   await expect(
     modal.locator("[data-repository-monitoring-detail]"),
@@ -197,7 +303,7 @@ test("nested assignment Save refreshes the editor and listing from actual saved 
     repository_id: "100",
   });
   await expect(modal.locator("[data-repository-monitoring-state]")).toHaveText(
-    "Enabled",
+    "Monitoring: Enabled",
   );
   await expect(
     modal.getByRole("switch", { name: "Monitor fixture/one" }),
@@ -405,7 +511,9 @@ for (const width of [280, 320]) {
       await open.click();
       await expect(
         editor(page).locator("[data-repository-monitoring-state]"),
-      ).toHaveText(failedAccount ? "Disabled" : "Enabled");
+      ).toHaveText(
+        failedAccount ? "Monitoring: Disabled" : "Monitoring: Enabled",
+      );
       await editor(page)
         .getByRole("button", { name: "Close dialog", exact: true })
         .click();
@@ -571,7 +679,7 @@ for (const embedded of [true, false]) {
         await expect(editor(page)).toBeVisible();
         await expect(
           editor(page).locator("[data-repository-monitoring-state]"),
-        ).toHaveText("Enabled");
+        ).toHaveText("Monitoring: Enabled");
       });
     }
   }
@@ -607,12 +715,12 @@ for (const embedded of [true, false]) {
     const modal = await openEditor(page);
     await expect(
       modal.locator("[data-repository-monitoring-state]"),
-    ).toHaveText("Enabled");
+    ).toHaveText("Monitoring: Enabled");
     await expect(modal.getByText(/on Save/)).toHaveCount(0);
     await modal.getByRole("switch", { name: "Monitor fixture/one" }).click();
     await expect(
       modal.locator("[data-repository-monitoring-state]"),
-    ).toHaveText("Disabled");
+    ).toHaveText("Monitoring: Disabled");
     saved = (await store("snapshot")).settings;
     expect(saved.repositories[0].enabled).toBe(false);
     expect(saved.repository_authorizations[repoId]).toBeNull();
@@ -667,7 +775,7 @@ test("quick editor switch commits only saved configuration and retains repositor
   await modal.locator("[data-reviewer-trigger]").selectOption("off");
   await modal.getByRole("switch", { name: "Monitor fixture/one" }).click();
   await expect(modal.locator("[data-repository-monitoring-state]")).toHaveText(
-    "Enabled",
+    "Monitoring: Enabled",
   );
   await expect(modal.locator("[data-reviewer-trigger]")).toHaveValue("off");
   let saved = (await store("snapshot")).settings;
@@ -676,7 +784,7 @@ test("quick editor switch commits only saved configuration and retains repositor
   expect(saved.capacity).toBe(original.capacity);
   await modal.getByRole("switch", { name: "Monitor fixture/one" }).click();
   await expect(modal.locator("[data-repository-monitoring-state]")).toHaveText(
-    "Disabled",
+    "Monitoring: Disabled",
   );
   await modal
     .getByRole("button", { name: "Save repository", exact: true })
@@ -715,7 +823,7 @@ test("invalid quick enable reports failure without optimistic enabled state or l
     modal.getByRole("switch", { name: "Monitor fixture/one" }),
   ).not.toBeChecked();
   await expect(modal.locator("[data-repository-monitoring-state]")).toHaveText(
-    "Disabled",
+    "Monitoring: Disabled",
   );
   expect((await store("snapshot")).settings).toEqual(original);
 });

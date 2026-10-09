@@ -555,7 +555,10 @@ export async function mountSettings(
     value: clone(value),
   });
 
-  function repositoryMonitoringDetail(repository: Repository): string {
+  function repositoryMonitoringDetail(
+    repository: Repository,
+    includeRoutine = true,
+  ): string {
     if (
       repositoryAccountsState !== "ready" ||
       !githubAccounts.some(
@@ -564,17 +567,20 @@ export async function mountSettings(
           a.state === "connected",
       )
     )
-      return repository.enabled
+      return repository.enabled || !includeRoutine
         ? "Reconnect account"
         : "No new scans or reviews / Reconnect account";
-    if (!repository.enabled) return "No new scans or reviews";
+    if (!repository.enabled)
+      return includeRoutine ? "No new scans or reviews" : "";
     if (!repository.assignments?.length) return "Needs setup";
     if (!repositoryAutomation)
       return "Global Monitoring state unavailable; check Status and reopen Repositories to retry";
     if (repositoryAutomation.paused) return "Global Monitoring paused";
     if (repositoryAutomation.active >= repositoryAutomation.capacity)
       return "Waiting for AI capacity";
-    return "Global Monitoring, access and execution checks still apply";
+    return includeRoutine
+      ? "Global Monitoring, access and execution checks still apply"
+      : "";
   }
 
   async function refreshRepositoryAutomation(update: () => void) {
@@ -710,6 +716,7 @@ export async function mountSettings(
     if (section === "preferences" || section === "capacity")
       renderPreferences();
     content.prepend(genieNote);
+    genieNote.hidden = !guidance || section === "repositories";
     if (saved.capability_notice) {
       const notice = document.createElement("p");
       notice.className = "settings-hint";
@@ -2403,9 +2410,8 @@ export async function mountSettings(
     const modal = dialog(
       `Settings for ${repository.name}`,
       `<section class="repository-identity"><h3>${escape(repository.name)}</h3><p class="settings-hint">${escape(repository.provider === "github" ? `GitHub acting account: ${githubAccounts.find((account) => account.account_id === repository.provider_account_id)?.login ?? (repository.provider_account_id ? "Saved account unavailable" : "No account selected")}.` : "Azure DevOps account binding is not available in this build.")}</p></section>
-        <section class="repository-group"><label class="repository-check"><input type="checkbox" role="switch" aria-label="Monitor ${escape(repository.name)}" data-repository-enabled ${repository.enabled || (pendingSetup.has(repository.id) && !setupMonitoringOff.has(repository.id)) ? "checked" : ""} /><span>Monitor this repository</span></label><p data-repository-monitoring-state role="status"></p><p class="settings-hint" data-repository-monitoring-detail></p></section>
+        <section class="repository-group"><label class="repository-check"><input type="checkbox" role="switch" aria-label="Monitor ${escape(repository.name)}" data-repository-enabled ${repository.enabled || (pendingSetup.has(repository.id) && !setupMonitoringOff.has(repository.id)) ? "checked" : ""} /><span data-repository-monitoring-state role="status"></span></label><p class="settings-hint" data-repository-monitoring-detail></p></section>
         <section class="repository-group"><h2>Pull requests to watch</h2>
-        <p class="settings-hint">Save authorizes all currently open and future matching pull requests. Eligible reviews start automatically; global monitoring off, pause and repository disablement still apply. Adding this row alone does not start monitoring.</p>
         <label for="repository-reviewer-trigger">Reviewer requests</label><select id="repository-reviewer-trigger" data-reviewer-trigger><option value="inherit">Use default (${saved.defaults.reviewer_assignment ? "on" : "off"})</option><option value="on">Include PRs explicitly requesting the acting account</option><option value="off">Do not admit through reviewer requests</option></select>
         <p class="settings-hint">Reviewer requests independently admit older or unwatched PRs. Once admitted, work stays tracked until verified closure or merge. Disablement and execution permissions still apply.</p></section>
         <section class="repository-group"><div class="section-actions"><h2>Agents on this repository</h2><button class="primary" data-assign-agent ${agents().length ? "" : "disabled"}>Assign agent</button></div>
@@ -2417,7 +2423,6 @@ export async function mountSettings(
         <p class="settings-hint">Optional. A nonempty effective watched-author filter qualifies those authors. An empty effective author filter means all authors. Pull requests requesting the signed-in account also qualify when the reviewer-request trigger is enabled. Exact GitHub login, no wildcards.</p>
         </section><section class="repository-group" data-global-schedule><h2>Saved global schedule</h2><p>${schedule.kind === "cron" ? `<code>${escape(schedule.expression)}</code>` : `Every ${schedule.minutes} minutes (saved legacy schedule)`} / ${escape(schedule.timezone)}</p><p class="settings-hint">${schedule.kind === "cron" ? "One schedule scans enabled repositories. Change it in Preferences;" : "Polling is blocked until you choose a global five-field cron schedule in Preferences. The saved legacy interval is retained;"} repository and Agent assignments have no separate polling controls.</p></section>
         <details class="repository-group"><summary>Repository and connection</summary><dl class="repository-binding-details"><dt>Account ID</dt><dd>${escape(repository.provider_account_id ?? "Unbound")}</dd><dt>Repository ID</dt><dd>${escape(repository.provider_repository_id ?? "Not verified")}</dd></dl><div class="settings-actions"><button id="rename-repository">Edit repository</button><button data-unbind-repository ${repository.provider_account_id ? "" : "disabled"}>Unbind account</button><button id="remove-repository">Remove repository</button></div><div class="connection"></div></details>
-        <p class="settings-hint">Save applies only this repository. Back retains its draft for this session; Cancel discards it. Earlier assignment saves stay applied.</p>
         <p class="settings-hint" role="status" data-explicit-pr-status ${pendingPull ? "" : "hidden"}>${pendingPull ? `PR #${pendingPull.number} will be queued after valid Save, even outside watch filters. Pause, repository disablement, account/Agent availability and capacity still apply.` : ""}</p>
         <p role="alert" data-earlier-intake-error hidden></p>
         <p role="alert" data-resource-error ${pendingPull?.failure ? "" : "hidden"}>${escape(pendingPull?.failure ?? "")}</p><div class="resource-actions"><button class="primary" data-save-repository>Save repository</button><button data-cancel-repository aria-label="Cancel repository changes">Cancel</button></div>`,
@@ -2495,15 +2500,16 @@ export async function mountSettings(
       }
       if (!pendingSetup.has(repository.id))
         monitoring.checked = committed.enabled;
-      monitoringState.textContent = committed.enabled ? "Enabled" : "Disabled";
-      monitoringState.dataset.monitoringState = committed.enabled
+      monitoringState.textContent = monitoring.checked
+        ? "Monitoring: Enabled"
+        : "Monitoring: Disabled";
+      monitoringState.dataset.monitoringState = monitoring.checked
         ? "enabled"
         : "disabled";
       monitoringDetail.textContent = pendingSetup.has(repository.id)
-        ? monitoring.checked
-          ? "Starts after you save valid configuration. Turn this off to keep the repository disabled."
-          : "Stays disabled when you save configuration."
-        : `${repositoryMonitoringDetail(committed)}. This control saves monitoring immediately using saved configuration; other fields stay in your draft. Global Monitoring is separate.`;
+        ? ""
+        : repositoryMonitoringDetail(committed, false);
+      monitoringDetail.hidden = !monitoringDetail.textContent;
     };
     const refreshSavedMonitoring = () => {
       updateMonitoring();
@@ -3381,7 +3387,7 @@ export async function mountSettings(
       guidance = origin;
       returnGenie.hidden = false;
       openGenie.hidden = true;
-      app.querySelector<HTMLElement>("[data-genie-save-note]")!.hidden = false;
+      genieNote.hidden = target === "repositories";
       const next: Section =
         target === "ai" || target === "repository-account"
           ? target === "ai"

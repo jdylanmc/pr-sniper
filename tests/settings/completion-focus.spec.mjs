@@ -590,7 +590,7 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       await parent.getByRole("switch", { name: /^Monitor / }).click();
       await expect(
         parent.locator("[data-repository-monitoring-state]"),
-      ).toHaveText("Disabled");
+      ).toHaveText("Monitoring: Disabled");
       await parent
         .getByRole("button", { name: "Save repository", exact: true })
         .click();
