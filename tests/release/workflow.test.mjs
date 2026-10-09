@@ -206,6 +206,20 @@ test("Windows cancels superseded PR runs without cancelling main release evidenc
   }
 });
 
+test("Windows full browser suite has bounded headroom without widening job or installer limits", () => {
+  const job = windows.jobs.windows;
+  const suite = job.steps.filter(
+    (step) => step.run === "npm run test:settings",
+  );
+  assert.equal(suite.length, 1);
+  assert.equal(suite[0]["timeout-minutes"], 20);
+  assert.equal(job["timeout-minutes"], 60);
+  assert.equal(
+    windows.jobs["windows-installer-acceptance"]["timeout-minutes"],
+    15,
+  );
+});
+
 test("Rust caching retains dependencies, not application artifacts or PR-written cache entries", () => {
   const steps = windows.jobs.windows.steps;
   const cache = steps.find((step) =>

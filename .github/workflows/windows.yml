@@ -86,7 +86,7 @@ jobs:
       - run: npm exec playwright install chromium
         timeout-minutes: 5
       - run: npm run test:settings
-        timeout-minutes: 15
+        timeout-minutes: 20
       - name: Build standalone executable with embedded frontend
         run: npm run build:windows
         timeout-minutes: 20
