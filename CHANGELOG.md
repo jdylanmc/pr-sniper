@@ -95,6 +95,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- Remove the persistent doctrine-reset message from Settings without leaving
+  an empty notice area. Keep reconciliation counts in Diagnostics, preserving
+  one-time reconciliation, later edits and current error notices. (#146)
 - Verify pending GitHub review comments using their diff positions and frozen
   revisions when line/side are absent, while retaining identity and content
   checks. Keep publication failures on the affected PR instead of the Settings

@@ -6,17 +6,16 @@ import { renderIntelligenceDiagnostics } from "./work-presentation";
 import { mountSettingsWithGenie } from "./genie";
 import { mountPanel } from "./panel";
 import { isWindows, trayAdjective, trayLocation } from "./platform";
-import { type DoctrineCatalog, doctrineCatalogLabel } from "./resources";
+import type { DoctrineCatalog, Settings } from "./resources";
 import {
   type Diagnostic,
   diagnosticLog,
   diagnosticNotice,
+  doctrineDiagnostics,
 } from "./diagnostics";
 
 interface Snapshot {
-  settings: {
-    launch_at_login: boolean;
-  } | null;
+  settings: Pick<Settings, "launch_at_login" | "doctrine_reset"> | null;
   login_registration: "absent" | "registered" | "invalid" | null;
   isolated: boolean;
   error: string | null;
@@ -69,8 +68,10 @@ async function load() {
       ]);
       if (revision !== loadRevision) return;
       content.querySelector("#log")!.textContent =
-        `${doctrineCatalogLabel(state.doctrine_catalog)}\n${JSON.stringify(state.doctrine_catalog ?? null, null, 2)}\n\n` +
-        diagnosticLog(entries);
+        doctrineDiagnostics(
+          state.doctrine_catalog,
+          state.settings?.doctrine_reset,
+        ) + diagnosticLog(entries);
       renderIntelligenceDiagnostics(content, jobs);
     } else if (view === "queue") {
       renderMonitoring(content, showError);
