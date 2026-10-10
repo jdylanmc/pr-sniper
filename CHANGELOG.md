@@ -98,6 +98,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- Edit the selected shared Agent or create one directly from repository
+  assignments in Settings and Genie. Retain repository and assignment drafts,
+  select newly saved Agents without granting capabilities, and confirm before
+  discarding unsaved Agent or assignment fields. (#129)
 - Run `npm run test:packaging:windows` on a default Windows client, where the
   `Restricted` PowerShell policy refused the script. The npm script now bypasses
   policy for its own process only; Windows development and packaging docs show

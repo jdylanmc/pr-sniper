@@ -125,6 +125,12 @@ export function createDialogs(
     while (top() !== entry) {
       if (!close(top())) return false;
     }
+    if (
+      !entry.modal.dispatchEvent(
+        new Event("pr-sniper:dialog-closing", { cancelable: true }),
+      )
+    )
+      return false;
     const ownedFocus =
       entry.modal.contains(document.activeElement) ||
       document.activeElement === document.body;

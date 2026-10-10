@@ -611,8 +611,16 @@ do not block unbinding. Manual binding never selects the first account automatic
 Back from repository settings retains that repository draft for the current
 session; **Cancel** discards only its unsaved repository changes.
 Assignment saves apply immediately to the owning repository, including its
-pending fields. Back/Cancel from an assignment or binding form discards that
-form's unsaved fields without undoing earlier saves. Owner, account and route
+pending fields. From an assignment, **Edit Agent** opens the exact selected
+shared Agent and **Create new Agent** works even with an empty Agent library.
+Saving or canceling the shared editor returns to the same assignment draft,
+preserving repository fields, primary designation and capabilities. A saved new
+Agent is selected without granting permissions; edits appear immediately.
+Back/Cancel asks before discarding unsaved assignment or nested Agent fields.
+Earlier shared Agent saves remain applied even if the assignment is canceled.
+Unavailable Agent references stay explicit until a replacement is selected.
+Back/Cancel from a binding form discards that form's unsaved fields without
+undoing earlier saves. Owner, account and route
 changes fence asynchronous intake results. Failed repository reads or saves
 retain explicit errors and retry paths, without an unbound success fallback.
 

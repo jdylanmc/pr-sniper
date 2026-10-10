@@ -100,7 +100,24 @@ test("new assignments use the global policy while cancelled drafts never opt int
   await expect(modal.getByLabel("Time zone", { exact: true })).toHaveCount(0);
   await modal.getByRole("checkbox", { name: /^Publish Comment/ }).uncheck();
   await closeDialog(page);
-  await closeDialog(page);
+  const discard = page.getByRole("dialog", {
+    name: "Discard assignment changes?",
+    exact: true,
+  });
+  await expect(discard).toBeVisible();
+  await discard
+    .getByRole("button", { name: "Discard changes", exact: true })
+    .click();
+  await expect(modal).toHaveCount(0);
+  const repository = page.getByRole("dialog", {
+    name: "Settings for fixture/local-time",
+    exact: true,
+  });
+  await expect(repository).toBeVisible();
+  await repository
+    .getByRole("button", { name: "Close dialog", exact: true })
+    .click();
+  await expect(repository).toHaveCount(0);
   expect((await store("snapshot")).settings).toEqual(initial);
   modal = await assignment(page, "fixture/local-time");
   await expect(
