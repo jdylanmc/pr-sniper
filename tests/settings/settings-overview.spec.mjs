@@ -290,8 +290,8 @@ test("overview retains preference and repository drafts without claiming them in
     .filter({ hasText: "example/repo" })
     .click();
   await page
-    .getByLabel("Reviewer requests", { exact: true })
-    .selectOption("off");
+    .getByLabel("Pull requests where my review is requested", { exact: true })
+    .uncheck();
   await page.getByRole("switch", { name: "Monitor example/repo" }).click();
   await expect(page.locator("[data-repository-monitoring-state]")).toHaveText(
     "Disabled",

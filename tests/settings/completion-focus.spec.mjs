@@ -31,6 +31,7 @@ async function seed(page, store, assignments = false) {
   await store("save_repository", { repository: "fixture/neighbor" });
   await store("save_repository", { repository: "fixture/target" });
   const settings = (await store("snapshot")).settings;
+  settings.defaults.reviewer_assignment = false;
   settings.agents = [
     { ...fixtureAgent, ai_account: { provider: "copilot", account_id: "101" } },
     {
@@ -181,8 +182,10 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       await activate(page, neighbor, activation);
       const neighborEditor = dialog(page, "Settings for fixture/neighbor");
       await neighborEditor
-        .getByLabel("Reviewer requests", { exact: true })
-        .selectOption("on");
+        .getByLabel("Pull requests where my review is requested", {
+          exact: true,
+        })
+        .check();
       await neighborEditor
         .getByRole("button", { name: "Close dialog", exact: true })
         .click();
@@ -194,8 +197,10 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
         await activate(page, opener, activation);
         const modal = dialog(page, "Settings for fixture/target");
         await modal
-          .getByLabel("Reviewer requests", { exact: true })
-          .selectOption("on");
+          .getByLabel("Pull requests where my review is requested", {
+            exact: true,
+          })
+          .check();
         await modal.getByRole("button", { name: action, exact: true }).click();
         await expect(modal).toHaveCount(0);
         await afterRedraw(page, original, opener);
@@ -295,8 +300,10 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       await section(page, "Integrations");
       await repoOpener(page).click();
       await dialog(page, "Settings for fixture/target")
-        .getByLabel("Reviewer requests", { exact: true })
-        .selectOption("on");
+        .getByLabel("Pull requests where my review is requested", {
+          exact: true,
+        })
+        .check();
       await dialog(page, "Settings for fixture/target")
         .getByRole("button", { name: "Close dialog", exact: true })
         .click();
@@ -429,12 +436,12 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       await repoOpener(page).click();
       await expect(
         dialog(page, "Settings for fixture/target").getByLabel(
-          "Reviewer requests",
+          "Pull requests where my review is requested",
           {
             exact: true,
           },
         ),
-      ).toHaveValue("on");
+      ).toBeChecked();
       await dialog(page, "Settings for fixture/target")
         .getByRole("button", { name: "Close dialog", exact: true })
         .click();
@@ -491,7 +498,7 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       await afterRedraw(
         page,
         removedPerson,
-        parent.getByRole("button", { name: "Add people", exact: true }),
+        parent.getByRole("button", { name: "Edit Users", exact: true }),
       );
       expect(
         (await store("snapshot")).settings.repositories[1].assignments,
@@ -572,7 +579,7 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
         );
         await settled(page);
         await expect(
-          parent.getByRole("button", { name: "Add people", exact: true }),
+          parent.getByRole("button", { name: "Edit Users", exact: true }),
         ).toBeFocused();
         await expect(parent.locator(".watchlist-row")).toHaveCount(
           remaining - 1,
@@ -651,8 +658,10 @@ for (const focusTarget of ["Running", "Settings"]) {
               .uncheck();
           } else {
             await modal
-              .getByLabel("Reviewer requests", { exact: true })
-              .selectOption("on");
+              .getByLabel("Pull requests where my review is requested", {
+                exact: true,
+              })
+              .check();
           }
         }
         const hold = ipc.holdNext("save_resource");

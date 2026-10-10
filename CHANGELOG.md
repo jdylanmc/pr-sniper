@@ -17,6 +17,14 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- Replace opaque repository watch filters with combinable All Pull Requests,
+  by-user, reviewer-request and @Mentions choices, including explicit empty
+  selections and an account-scoped searchable user picker. Persist effective
+  choices without granting reply, publication, approval or merge permissions.
+  Keep active analysis valid across watch-only saves and show incomplete
+  historical author-watch evidence honestly.
+  (#121)
+
 - Adapt repository Joe-mode orchestration to the visible CMUX Maestro cockpit.
   Retire Paseo adapter files, retain shared team and independent merge gates,
   and keep activation human-only with no unattended CMUX scheduler.

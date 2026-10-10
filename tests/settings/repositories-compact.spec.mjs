@@ -100,7 +100,7 @@ async function provider(
         [
           "resolve_provider_repository",
           "list_provider_repositories",
-          "resolve_provider_person",
+          "search_provider_people",
           "verify_provider_connection",
           "preview_monitoring_activation",
           "apply_monitoring_activation",
@@ -169,8 +169,8 @@ test("repository saves leave unsaved Preferences and the saved global schedule i
   await editor.locator("[data-global-schedule]").scrollIntoViewIfNeeded();
   await capture(page, testInfo, "saved-global-schedule");
   await editor
-    .getByLabel("Reviewer requests", { exact: true })
-    .selectOption("off");
+    .getByLabel("Pull requests where my review is requested", { exact: true })
+    .uncheck();
   await expect(
     editor.getByRole("button", { name: "Configure scope", exact: true }),
   ).toHaveCount(0);
@@ -418,8 +418,8 @@ for (const failure of ["write", "conflict"]) {
     await start(page, store);
     const editor = await repositorySettings(page, "fixture/compact");
     await editor
-      .getByLabel("Reviewer requests", { exact: true })
-      .selectOption("off");
+      .getByLabel("Pull requests where my review is requested", { exact: true })
+      .uncheck();
     const temporary = join(dataRoot, "config/settings.json.tmp");
     if (failure === "write") await mkdir(temporary);
     else {
@@ -435,12 +435,16 @@ for (const failure of ["write", "conflict"]) {
     const rejection = await editor
       .locator("[data-resource-error]")
       .textContent();
-    await editor.getByLabel("Reviewer requests", { exact: true }).focus();
+    await editor
+      .getByLabel("Pull requests where my review is requested", { exact: true })
+      .focus();
     await page.evaluate(() => window.__settingsIdle());
     await expect(editor.locator("[data-resource-error]")).toHaveText(rejection);
     await expect(
-      editor.getByLabel("Reviewer requests", { exact: true }),
-    ).toHaveValue("off");
+      editor.getByLabel("Pull requests where my review is requested", {
+        exact: true,
+      }),
+    ).not.toBeChecked();
     expect(await readFile(join(dataRoot, "config/settings.json"))).toEqual(
       before,
     );
@@ -588,25 +592,31 @@ test("verified watched people, draft cancellation and keyboard controls remain u
 }, testInfo) => {
   const initial = await seed(store);
   const calls = await provider(page, (command) => {
-    if (command === "resolve_provider_person")
-      return { id: "77", login: "verified-person" };
+    if (command === "search_provider_people")
+      return [{ id: "77", login: "verified-person" }];
     throw "Unexpected provider command";
   });
   await start(page, store);
   let parent = await repositorySettings(page, "fixture/compact");
-  await parent.getByRole("button", { name: "Add people" }).click();
-  const picker = modal(page, "Add people");
-  await expect(picker.getByLabel("Acting GitHub account")).toHaveValue("22");
+  await parent.getByRole("button", { name: "Edit Users" }).click();
+  const picker = modal(page, "Edit Users");
+  await expect(picker).toContainText("GitHub account:");
   await picker.getByLabel("GitHub login").fill("@verified-person");
-  await picker.getByRole("button", { name: "Add person", exact: true }).click();
+  await picker.getByRole("button", { name: "Search", exact: true }).click();
+  await picker
+    .getByRole("checkbox", { name: "@verified-person", exact: true })
+    .check();
+  await picker
+    .getByRole("button", { name: "Use selected users", exact: true })
+    .click();
   await expect(picker).toHaveCount(0);
   await expect(parent.locator(".watchlist")).toContainText("GitHub ID 77");
   await parent.locator(".watchlist").scrollIntoViewIfNeeded();
   await capture(page, testInfo, "watched-people");
   expect(calls).toEqual([
     {
-      command: "resolve_provider_person",
-      args: { provider: "github", accountId: "22", login: "verified-person" },
+      command: "search_provider_people",
+      args: { provider: "github", accountId: "22", query: "verified-person" },
     },
   ]);
   expect((await store("snapshot")).settings).toEqual(initial);
@@ -676,8 +686,8 @@ for (const resolution of ["Save", "Cancel"]) {
       .getByRole("button", { name: "Remove", exact: true })
       .click();
     await editor
-      .getByLabel("Reviewer requests", { exact: true })
-      .selectOption("off");
+      .getByLabel("Pull requests where my review is requested", { exact: true })
+      .uncheck();
     await expect(
       editor.getByRole("switch", { name: "Monitor fixture/compact" }),
     ).not.toBeChecked();
@@ -697,8 +707,10 @@ for (const resolution of ["Save", "Cancel"]) {
     await expect(unbind).toBeFocused();
     await expect(editor.locator(".assignment-row")).toHaveCount(0);
     await expect(
-      editor.getByLabel("Reviewer requests", { exact: true }),
-    ).toHaveValue("off");
+      editor.getByLabel("Pull requests where my review is requested", {
+        exact: true,
+      }),
+    ).not.toBeChecked();
     await expect(
       editor.getByRole("switch", { name: "Monitor fixture/compact" }),
     ).not.toBeChecked();
@@ -711,8 +723,10 @@ for (const resolution of ["Save", "Cancel"]) {
     editor = await repositorySettings(page, "fixture/compact");
     await expect(editor.locator(".assignment-row")).toHaveCount(0);
     await expect(
-      editor.getByLabel("Reviewer requests", { exact: true }),
-    ).toHaveValue("off");
+      editor.getByLabel("Pull requests where my review is requested", {
+        exact: true,
+      }),
+    ).not.toBeChecked();
     await expect(
       editor.getByRole("switch", { name: "Monitor fixture/compact" }),
     ).not.toBeChecked();
@@ -729,6 +743,8 @@ for (const resolution of ["Save", "Cancel"]) {
       expect(explicitlySaved.repositories[0].assignments ?? []).toEqual([]);
       expect(explicitlySaved.repositories[0].overrides).toEqual({
         reviewer_assignment: false,
+        watched_authors: [],
+        watch: { all_pull_requests: false, by_user: true, mentions: true },
       });
       expect(explicitlySaved.repositories[0].enabled).toBe(false);
     }

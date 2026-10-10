@@ -4,7 +4,7 @@ import {
   intelligenceError,
   type CopilotModel,
 } from "./copilot";
-import { doctrineTitles, effectivePolicy } from "./policy";
+import { doctrineTitles, effectivePolicy, watchSummary } from "./policy";
 import { type SetupReview } from "./resources";
 import { mountSettings, type SetupTarget, type GuidedReturn } from "./settings";
 import "./genie.css";
@@ -237,8 +237,7 @@ export function mountGenie(
           <dt>Repository ID</dt><dd>${escape(repository.provider_repository_id ?? "Not bound")}</dd>
           <dt>Monitoring</dt><dd>${!repository.enabled ? "Disabled; unchanged" : scope?.active ? "Authorized by saved configuration" : "Save repository configuration to authorize"}</dd>
           <dt>Pull requests</dt><dd>${scope?.mode === "all_open_and_future" ? "All currently open and future matching PRs" : scope?.active ? "Legacy saved admission retained; Save repository to include all currently open and future matching PRs" : "Not configured"}</dd>
-          <dt>Authors</dt><dd>${watched.length ? escape(watched.map((a) => `${a.login} (${a.id})`).join(", ")) : "All authors"}</dd>
-          <dt>Review requests</dt><dd>${policy.reviewer_assignment ? "Acting-account requests can admit older or unwatched PRs" : "Off"}</dd>
+          <dt>Watch choices</dt><dd>${escape(watchSummary(policy, watched))}</dd>
           <dt>Review execution</dt><dd>Automatic when eligible; pause, disablement, account access and capacity still apply</dd>
           <dt>Publication</dt><dd>Separate Publish Comment and primary Reply Comment permissions; unpermitted output stays local</dd></dl>
           ${(repository.assignments ?? [])

@@ -45,3 +45,56 @@ fn person_lookup_never_accepts_a_missing_stable_identity() {
         Err(ConnectionError::InvalidResponse)
     );
 }
+
+#[test]
+fn user_search_encodes_login_queries_and_validates_real_empty_and_partial_results() {
+    let transport = People {
+        calls: RefCell::new(vec![]),
+        response: r#"{"incomplete_results":false,"items":[{"id":42,"login":"Octocat"}]}"#,
+    };
+    let people = GithubClient::new(&transport)
+        .search_people(" @octo ")
+        .unwrap();
+    assert_eq!(people[0].id, "42");
+    assert_eq!(
+        *transport.calls.borrow(),
+        vec!["/search/users?q=octo+in%3Alogin+type%3Auser&per_page=30"]
+    );
+    for invalid in [
+        "",
+        "../user",
+        "name?query",
+        "name/path",
+        "org:private",
+        "a b",
+    ] {
+        assert!(GithubClient::new(&transport)
+            .search_people(invalid)
+            .is_err());
+    }
+    assert_eq!(transport.calls.borrow().len(), 1);
+    for (body, expected) in [
+        (r#"{"incomplete_results":false,"items":[]}"#, Ok(vec![])),
+        (
+            r#"{"incomplete_results":true,"items":[]}"#,
+            Err(ConnectionError::IncompleteRead),
+        ),
+        (
+            r#"{"incomplete_results":false,"items":[{"login":"no-id"}]}"#,
+            Err(ConnectionError::InvalidResponse),
+        ),
+        (
+            r#"{"incomplete_results":false,"items":[{"id":42,"login":"a"},{"id":42,"login":"b"}]}"#,
+            Err(ConnectionError::InvalidResponse),
+        ),
+    ] {
+        let transport = People {
+            calls: RefCell::new(vec![]),
+            response: body,
+        };
+        assert_eq!(
+            GithubClient::new(&transport).search_people("octo"),
+            expected
+        );
+    }
+}

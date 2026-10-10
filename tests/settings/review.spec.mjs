@@ -151,7 +151,12 @@ for (const mode of ["planned", "captured", "legacy", "queued", "failed-zero"]) {
         signature: "machine",
         doctrines: ["Captured doctrine"],
       },
-      policy: settings.defaults,
+      policy: {
+        ...settings.defaults,
+        watched_authors: [{ id: "1", login: "captured-user" }],
+        reviewer_assignment: false,
+        watch: { all_pull_requests: false, by_user: true, mentions: false },
+      },
       doctrine: "Captured doctrine body.",
       preset: null,
       configuration: {
@@ -163,6 +168,10 @@ for (const mode of ["planned", "captured", "legacy", "queued", "failed-zero"]) {
           provider_account_id: "22",
           provider_repository_id: "100",
           assignments: [],
+          watched_authors: [
+            { id: "1", login: "stale-label" },
+            { id: "2", login: "repository-user" },
+          ],
         },
         authority: {
           primary: true,
@@ -177,6 +186,7 @@ for (const mode of ["planned", "captured", "legacy", "queued", "failed-zero"]) {
     };
     const planned = structuredClone(selection);
     planned.agent.prompt = "Today's planned prompt.";
+    planned.policy.watch.by_user = false;
     planned.configuration.doctrines[0].body = "Today's doctrine body.";
     const review = {
       ...candidate(),
@@ -210,6 +220,14 @@ for (const mode of ["planned", "captured", "legacy", "queued", "failed-zero"]) {
         .getByText("Captured execution configuration", { exact: true })
         .click();
       await expect(panel).toContainText(selection.agent.prompt);
+      await expect(
+        panel.getByText(
+          mode === "legacy"
+            ? "Repository users not recorded. Known policy users: @captured-user"
+            : "@captured-user, @repository-user",
+          { exact: true },
+        ),
+      ).toBeVisible();
       expect(await page.evaluate(() => window.executed)).toBeUndefined();
       await expect(panel.locator("script")).toHaveCount(0);
     }
@@ -222,6 +240,11 @@ for (const mode of ["planned", "captured", "legacy", "queued", "failed-zero"]) {
         .click();
       await expect(panel).toContainText("Today's planned prompt.");
       await expect(panel).toContainText("Today's doctrine body.");
+      await expect(
+        panel.getByText("No new pull requests from watch choices.", {
+          exact: true,
+        }),
+      ).toBeVisible();
       if (mode === "failed-zero") {
         await expect(
           panel.getByText("Captured execution configuration", { exact: true }),
@@ -242,6 +265,73 @@ for (const mode of ["planned", "captured", "legacy", "queued", "failed-zero"]) {
       await expect(panel).toContainText(
         "Saved assignment permissions are not a current provider grant.",
       );
+  });
+}
+
+for (const knownUsers of [[], [{ id: "1", login: "historical-policy-user" }]]) {
+  test(`pre-watch legacy capture reports unavailable repository users (${knownUsers.length} known policy users)`, async ({
+    page,
+    store,
+  }) => {
+    const settings = (await store("snapshot")).settings;
+    const selection = {
+      agent: {
+        id: "agent",
+        name: "Legacy Agent",
+        model: "captured-model",
+        ai_account: { provider: "copilot", account_id: "33" },
+        prompt: "Captured legacy prompt.",
+        signature: "machine",
+        doctrines: [],
+      },
+      policy: { ...settings.defaults, watched_authors: knownUsers },
+      doctrine: null,
+      preset: null,
+    };
+    delete selection.policy.watch;
+    const review = {
+      ...candidate(),
+      run: { ...run("completed"), selection, job: candidate().job },
+    };
+    const capturedBytes = JSON.stringify(review);
+    await page.addInitScript((review) => {
+      const original = window.__TAURI_INTERNALS__.invoke;
+      window.__legacyCapture = review;
+      window.__TAURI_INTERNALS__.invoke = (command, args) =>
+        command === "monitoring_snapshot"
+          ? Promise.resolve({
+              health: [],
+              jobs: [],
+              reviews: [window.__legacyCapture],
+            })
+          : original(command, args);
+    }, review);
+    for (const currentUsers of [[], [{ id: "99", login: "today-only-user" }]]) {
+      settings.defaults.watched_authors = currentUsers;
+      await store("seed_settings", settings);
+      await page.goto("/?view=queue");
+      const panel = page.locator("#agent-reviews");
+      await panel
+        .getByText("Captured execution configuration", { exact: true })
+        .click();
+      const watch = panel
+        .locator("dt")
+        .filter({ hasText: /^Watch choices$/ })
+        .locator("+ dd");
+      await expect(watch).toContainText("Repository users not recorded");
+      await expect(watch).not.toContainText("All authors");
+      await expect(watch).not.toContainText("today-only-user");
+      if (knownUsers.length) {
+        await expect(watch).toContainText(
+          "Known policy users: @historical-policy-user",
+        );
+      } else {
+        await expect(watch).toContainText("Author watch scope unavailable");
+      }
+      expect(
+        await page.evaluate(() => JSON.stringify(window.__legacyCapture)),
+      ).toBe(capturedBytes);
+    }
   });
 }
 

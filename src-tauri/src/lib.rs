@@ -1849,6 +1849,30 @@ fn validate_repository_save_account(
 }
 
 #[tauri::command]
+async fn search_provider_people(
+    app: tauri::AppHandle,
+    provider: storage::ProviderId,
+    account_id: String,
+    query: String,
+) -> Result<Vec<github::Identity>, RepositoryReadError> {
+    if provider != storage::ProviderId::Github {
+        return Err(ConnectionError::Configuration.into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<Host>();
+        repository_read(
+            &host.github_generations,
+            &host.github_auth,
+            &account_id,
+            || acquire_github_session(&host, &account_id),
+            |_, client, _| client.search_people(&query),
+        )
+    })
+    .await
+    .map_err(|_| RepositoryReadError::from(ConnectionError::ProviderFailure))?
+}
+
+#[tauri::command]
 async fn resolve_provider_person(
     app: tauri::AppHandle,
     provider: storage::ProviderId,
@@ -2234,6 +2258,7 @@ mod repository_read_tests {
         Owners,
         Repositories,
         Resolve,
+        People,
     }
 
     struct HeldProvider {
@@ -2247,6 +2272,7 @@ mod repository_read_tests {
             let completion = match self.operation {
                 Operation::Owners | Operation::Repositories => path.starts_with("/user/repos?"),
                 Operation::Resolve => path == "/repos/owner/repo/pulls?state=open&per_page=1",
+                Operation::People => path.starts_with("/search/users?"),
             };
             if completion {
                 if let Some((entered, release)) = &self.barrier {
@@ -2264,6 +2290,9 @@ mod repository_read_tests {
                     "archived":false,"disabled":false,"permissions":{"pull":true}
                 }),
                 "/repos/owner/repo/pulls?state=open&per_page=1" => json!([]),
+                _ if path.starts_with("/search/users?") => json!({
+                    "incomplete_results":false,"items":[{"id":42,"login":"octocat"}]
+                }),
                 _ if path.starts_with("/user/repos?") => json!([{
                     "id":100,"full_name":"owner/repo","private":true,
                     "owner":{"login":"owner","type":"Organization"}
@@ -2327,6 +2356,7 @@ mod repository_read_tests {
                 account_generation: generation,
                 pull_request: None,
             }),
+            Operation::People => serde_json::to_value(client.search_people("octo")?),
         }
         .unwrap();
         Ok(result)
@@ -2428,6 +2458,10 @@ mod repository_read_tests {
     #[test]
     fn owners_completion_cannot_expire_a_replacement_connection() {
         assert_reconnected_completion(Operation::Owners);
+    }
+    #[test]
+    fn people_completion_cannot_expire_a_replacement_connection() {
+        assert_reconnected_completion(Operation::People);
     }
     #[test]
     fn repositories_completion_cannot_expire_a_replacement_connection() {
@@ -3392,6 +3426,7 @@ mod repository_read_tests {
             Operation::Owners,
             Operation::Repositories,
             Operation::Resolve,
+            Operation::People,
         ] {
             let generations = Mutex::new(BTreeMap::new());
             let mut initial = GithubAuth::new();
@@ -4050,6 +4085,7 @@ pub fn run() {
             actions::host::retry_action_observation,
             canonical_repository_name,
             resolve_provider_person,
+            search_provider_people,
             list_provider_repositories,
             list_provider_repository_owners,
             resolve_provider_repository,

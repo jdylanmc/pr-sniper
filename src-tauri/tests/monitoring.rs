@@ -286,6 +286,191 @@ fn save_authorized_repository(store: &Store) -> Settings {
 }
 
 #[test]
+fn direct_watch_choices_persist_and_control_admission_without_granting_actions() {
+    for case in 0..32 {
+        let bits = case % 16;
+        let has_users = case >= 16;
+        let (_root, store) = unactivated_store();
+        let mut settings = store.load_settings().unwrap();
+        let repository = &mut settings.repositories[0];
+        repository.watched_authors = vec![WatchedIdentity {
+            id: "11".into(),
+            login: "watched".into(),
+        }];
+        if !has_users {
+            repository.watched_authors.clear();
+        }
+        repository.overrides = serde_json::from_value(json!({
+            "watch": {
+                "all_pull_requests": bits & 1 != 0,
+                "by_user": bits & 2 != 0,
+                "mentions": bits & 8 != 0
+            },
+            "reviewer_assignment": bits & 4 != 0
+        }))
+        .unwrap();
+        store.save_settings(&settings).unwrap();
+        let saved = save_authorized_repository(&store);
+        let restored = Store::new(_root.path().to_path_buf());
+        assert_eq!(restored.load_settings().unwrap(), saved);
+        let mut monitor = Monitor::restore(&restored).unwrap();
+        let mut mentioned = pull(
+            "4",
+            4,
+            "99",
+            "stranger",
+            &[],
+            HEAD_A,
+            "2020-01-01T00:00:00Z",
+        );
+        mentioned.mentioned = true;
+        let mut draft = mentioned.clone();
+        draft.id = "5".into();
+        draft.number = 5;
+        draft.draft = true;
+        check(
+            &mut monitor,
+            &restored,
+            1_800_000_000,
+            vec![
+                pull(
+                    "1",
+                    1,
+                    "11",
+                    "renamed-user",
+                    &[],
+                    HEAD_A,
+                    "2020-01-01T00:00:00Z",
+                ),
+                pull(
+                    "2",
+                    2,
+                    "99",
+                    "stranger",
+                    &[("22", "renamed-actor")],
+                    HEAD_A,
+                    "2020-01-01T00:00:00Z",
+                ),
+                pull(
+                    "3",
+                    3,
+                    "99",
+                    "stranger",
+                    &[("33", "current-actor")],
+                    HEAD_A,
+                    "2020-01-01T00:00:00Z",
+                ),
+                mentioned,
+                draft,
+            ],
+            "current-actor",
+        )
+        .unwrap();
+        let queue = restored.load_queue_state().unwrap();
+        let expected: Vec<_> = [
+            ("1", bits & 1 != 0 || has_users && bits & 2 != 0),
+            ("2", bits & 5 != 0),
+            ("3", bits & 1 != 0),
+            ("4", bits & 9 != 0),
+        ]
+        .into_iter()
+        .filter(|(_, admitted)| *admitted)
+        .map(|(id, _)| id.to_string())
+        .collect();
+        assert_eq!(
+            queue
+                .tracked
+                .iter()
+                .map(|p| p.pull_request_id.clone())
+                .collect::<Vec<_>>(),
+            expected,
+            "watch bits {bits}, selected users {has_users}"
+        );
+        let repository = &saved.repositories[0];
+        let authority = repository.assignment_authority(&repository.assignments[0]);
+        assert!(!authority.comment && !authority.reply && !authority.approve && !authority.merge);
+        for job in &queue.jobs {
+            let selection = pr_sniper_lib::review::Selection::resolve(
+                &saved,
+                job,
+                &repository.assignments[0].id,
+            )
+            .unwrap();
+            assert_eq!(
+                serde_json::to_value(&selection.policy).unwrap()["watch"],
+                serde_json::to_value(&repository.overrides).unwrap()["watch"]
+            );
+        }
+        assert!(restored.load_actions().unwrap().effects.is_empty());
+        assert!(restored.load_publications().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn watch_edits_fence_inflight_admission_but_keep_existing_tracked_work() {
+    let (_root, store) = unactivated_store();
+    let saved = save_authorized_repository(&store);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let existing = pull(
+        "1",
+        1,
+        "99",
+        "stranger",
+        &[],
+        HEAD_A,
+        "2020-01-01T00:00:00Z",
+    );
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_000,
+        vec![existing.clone()],
+        "actor",
+    )
+    .unwrap();
+    let old_ticket = monitor
+        .prepare_checks(&store, 1_800_000_100, true)
+        .unwrap()
+        .remove(0);
+    let mut changed = saved.clone();
+    changed.repositories[0].overrides = serde_json::from_value(json!({
+        "watch":{"all_pull_requests":false,"by_user":false,"mentions":false},
+        "reviewer_assignment":false
+    }))
+    .unwrap();
+    store.save_settings(&changed).unwrap();
+    let mut newcomer = existing.clone();
+    newcomer.id = "2".into();
+    newcomer.number = 2;
+    newcomer.mentioned = true;
+    let rejected = monitor
+        .finish(
+            &store,
+            old_ticket,
+            Ok(poll_result(vec![newcomer.clone()], "actor")),
+            1_800_000_101,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(rejected, MonitoringError::Recoverable { code, .. } if code == "configuration_changed")
+    );
+    assert_eq!(store.load_queue_state().unwrap().tracked.len(), 1);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    check(
+        &mut monitor,
+        &store,
+        1_800_000_200,
+        vec![existing, newcomer],
+        "actor",
+    )
+    .unwrap();
+    let queue = store.load_queue_state().unwrap();
+    assert_eq!(queue.tracked.len(), 1);
+    assert_eq!(queue.jobs.len(), 1);
+    assert!(pr_sniper_lib::monitoring::review_policy(&changed, &queue.jobs[0], None).is_ok());
+}
+
+#[test]
 fn repository_save_admits_all_old_and_future_matches_without_snapshot_or_duplicate_iterations() {
     let (_root, store) = unactivated_store();
     let mut settings = store.load_settings().unwrap();

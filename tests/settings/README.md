@@ -510,6 +510,23 @@ strictly equal. Its controlled-completion variant holds the real second
 `queue_destination` reply across the assertion's browser turn before releasing
 it. No application link behavior, timeout, retry or global IPC helper is changed.
 
+`watch-choices.spec.mjs` covers direct combined/subset/empty selections through
+real Store saves and reloads, effective inherited users, account-pinned user
+search, keyboard selection, retained selections across loading/empty/error
+results, and small-viewport focus. Provider responses are synthetic, not a live
+account or native-GUI acceptance claim. Native `monitoring` tests cover all 32
+watch/user-presence combinations, stable reviewer identity, draft exclusion,
+captured policy, stale read fencing and sticky tracking; primary conversation
+tests preserve reply-permission and general-conversation boundaries with watches
+off. `github_people` and `repository_read_tests` exercise the production search
+parser and generation-fenced selected-account read path.
+`review.spec.mjs` includes actual pre-watch capture shapes with missing repository
+configuration, distinguishing unknown repository users from an empty filter.
+Native `iterations` and primary conversation tests save legacy/explicit watch
+choices through the real Store and exercise the production execution/result
+validators without rewriting existing evidence; stale discovery fencing and
+execution/account/revision/action guards remain separate.
+
 `shared-editors.spec.mjs` covers compact shared libraries, saved Agent counts
 above AI capacity, explicit account/model selection, full editor text and
 signatures, keyboard-scrolled and filter-retained doctrine selections, resource

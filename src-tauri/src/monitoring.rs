@@ -633,7 +633,7 @@ impl Monitor {
         }
         let policy = repository.overrides.effective(&settings.defaults);
         let watched_authors = effective_watched_authors(repository, &policy);
-        let trigger_policy = trigger_policy(&watched_authors, policy.reviewer_assignment)?;
+        let trigger_policy = trigger_policy(&watched_authors, &policy)?;
         Ok(ActivationContext {
             repository_id: repository.id.clone(),
             name: repository.name.clone(),
@@ -737,7 +737,7 @@ impl Monitor {
                 &current.account_id,
                 &pull,
             );
-            if !eligibility.eligible() && !pull.mentioned {
+            if !eligibility.eligible() && !(current.policy.watches_mentions() && pull.mentioned) {
                 continue;
             }
             let candidate = ActivationCandidate {
@@ -2327,10 +2327,11 @@ impl Monitor {
                     && (pull.state != Lifecycle::Open
                         || pull.draft
                         || (explicit_pull_id != Some(pull.id.as_str())
-                            && (!(eligibility.eligible() || pull.mentioned)
+                            && (!(eligibility.eligible()
+                                || ticket.policy.watches_mentions() && pull.mentioned)
                                 || !(admission_candidate
                                     || eligibility.requested_reviewer
-                                    || pull.mentioned))))
+                                    || ticket.policy.watches_mentions() && pull.mentioned))))
                 {
                     continue;
                 }
@@ -2630,12 +2631,14 @@ fn eligibility(
     account_id: &str,
     pull: &PullRequest,
 ) -> Eligibility {
-    let watched_author = pull.author.as_ref().is_some_and(|author| {
-        watched_authors
-            .iter()
-            .any(|watched| watched.id == author.id)
-    });
-    let all_authors = watched_authors.is_empty() && pull.author.is_some();
+    let watch = policy.watch_choices(watched_authors);
+    let watched_author = watch.by_user
+        && pull.author.as_ref().is_some_and(|author| {
+            watched_authors
+                .iter()
+                .any(|watched| watched.id == author.id)
+        });
+    let all_authors = watch.all_pull_requests && pull.author.is_some();
     let requested_reviewer = policy.reviewer_assignment
         && pull
             .requested_reviewers
@@ -2656,7 +2659,7 @@ pub(crate) fn scan_admits(ticket: &PollTicket, pull: &PullRequest) -> bool {
         pull,
     )
     .eligible()
-        || pull.mentioned
+        || ticket.policy.watches_mentions() && pull.mentioned
 }
 
 fn activation_admission_candidate(
@@ -2740,7 +2743,7 @@ fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {
         let mut policy = repository.overrides.effective(&settings.defaults);
         policy.schedule = settings.defaults.schedule.clone();
         let watched_authors = effective_watched_authors(repository, &policy);
-        let policy_key = trigger_policy(&watched_authors, policy.reviewer_assignment).ok();
+        let policy_key = trigger_policy(&watched_authors, &policy).ok();
         let binding = repository.account_binding();
         let provider_supported = binding.as_ref().is_some_and(|binding| {
             binding.account.provider == ProviderId::Github
@@ -3130,15 +3133,18 @@ fn configuration_changed() -> MonitoringError {
 
 fn trigger_policy(
     watched_authors: &[WatchedIdentity],
-    reviewer_assignment: bool,
+    policy: &Policy,
 ) -> Result<String, ConnectionError> {
     let mut authors: Vec<_> = watched_authors
         .iter()
         .map(|author| author.id.as_str())
         .collect();
     authors.sort_unstable();
-    serde_json::to_string(&(authors, reviewer_assignment))
-        .map_err(|_| ConnectionError::Configuration)
+    let key = match &policy.watch {
+        Some(watch) => serde_json::to_string(&(authors, policy.reviewer_assignment, watch)),
+        None => serde_json::to_string(&(authors, policy.reviewer_assignment)),
+    };
+    key.map_err(|_| ConnectionError::Configuration)
 }
 
 pub fn review_policy(

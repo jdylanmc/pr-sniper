@@ -436,11 +436,30 @@ fn completed(settings: &Settings, job: &QueueJob) -> ReviewRun {
 }
 
 fn running_primary_review() -> (Fixture, Store, ReviewRun) {
+    running_primary_review_with_watch(None)
+}
+
+fn running_primary_review_with_watch(watch: Option<(bool, bool)>) -> (Fixture, Store, ReviewRun) {
     let (fixture, store, mut monitor) = configured(2);
     let mut settings = store.load_settings().unwrap();
     settings.repositories[0].primary_assignment_id =
         Some(settings.repositories[0].assignments[0].id.clone());
     settings.defaults.automatic_agent_start = true;
+    if let Some((explicit, inherited)) = watch {
+        if inherited {
+            settings.defaults.watched_authors =
+                serde_json::from_value(json!([{"id":"12","login":"inherited"}])).unwrap();
+        } else {
+            settings.repositories[0].watched_authors.clear();
+        }
+        if explicit {
+            settings.repositories[0].overrides.watch = Some(pr_sniper_lib::policy::WatchChoices {
+                all_pull_requests: !inherited,
+                by_user: true,
+                mentions: true,
+            });
+        }
+    }
     settings.doctrines = serde_json::from_value(json!([
         {"title":"Correctness","body":"Trace state transitions."},
         {"title":"Boundaries","body":"Keep authority explicit."}
@@ -475,6 +494,74 @@ fn running_primary_review() -> (Fixture, Store, ReviewRun) {
     store.save_reviews(std::slice::from_ref(&run)).unwrap();
     review::validate_execution_selection(&store, &run).unwrap();
     (fixture, store, run)
+}
+
+#[test]
+fn normal_review_survives_watch_materialization_and_discovery_edits_with_exact_evidence() {
+    for explicit in [false, true] {
+        for inherited in [false, true] {
+            for discovery_edit in [false, true] {
+                let (fixture, store, run) =
+                    running_primary_review_with_watch(Some((explicit, inherited)));
+                let review_bytes =
+                    std::fs::read(fixture.path().join("state/reviews.json")).unwrap();
+                let jobs = store.load_queue().unwrap();
+                let mut monitor = Monitor::restore(&store).unwrap();
+                let ticket = monitor
+                    .prepare_checks(&store, NOW + 100, true)
+                    .unwrap()
+                    .remove(0);
+                let settings = store.load_settings().unwrap();
+                let mut repository = settings.repositories[0].clone();
+                repository.watched_authors = if inherited {
+                    serde_json::from_value(json!([
+                        {"id":"11","login":"author"},{"id":"12","login":"inherited"}
+                    ]))
+                    .unwrap()
+                } else {
+                    vec![]
+                };
+                repository.overrides.watched_authors = Some(vec![]);
+                repository.overrides.reviewer_assignment = Some(!discovery_edit);
+                repository.overrides.watch = Some(pr_sniper_lib::policy::WatchChoices {
+                    all_pull_requests: !inherited && !discovery_edit,
+                    by_user: !discovery_edit,
+                    mentions: !discovery_edit,
+                });
+                store
+                    .save_resource(ResourceEdit::Repository {
+                        id: REPO.into(),
+                        expected: Some(Box::new(settings.repositories[0].clone())),
+                        value: Some(Box::new(repository)),
+                    })
+                    .unwrap();
+                review::validate_execution_selection(&store, &run).unwrap_or_else(|error| {
+                    panic!(
+                        "explicit={explicit}, inherited={inherited}, discovery={discovery_edit}: {}",
+                        error.message
+                    )
+                });
+                assert_eq!(store.load_reviews().unwrap()[0], run);
+                assert_eq!(store.load_queue().unwrap(), jobs);
+                assert_eq!(
+                    std::fs::read(fixture.path().join("state/reviews.json")).unwrap(),
+                    review_bytes
+                );
+                if !explicit || discovery_edit {
+                    assert!(matches!(
+                        monitor.finish(&store, ticket, Ok(result(vec![pull('a')])), NOW + 101),
+                        Err(monitoring::MonitoringError::Recoverable { code, .. })
+                            if code == "configuration_changed"
+                    ));
+                    assert_eq!(store.load_queue().unwrap(), jobs);
+                    assert_eq!(store.load_reviews().unwrap()[0], run);
+                }
+                let restored = fixture.store();
+                review::validate_execution_selection(&restored, &run).unwrap();
+                assert_eq!(restored.load_reviews().unwrap()[0], run);
+            }
+        }
+    }
 }
 
 #[test]
@@ -589,6 +676,7 @@ fn normal_review_execution_invalidates_own_inputs_authority_and_repository_gates
         "watched authors",
         "reviewer trigger",
         "assignment removed",
+        "job revision",
     ] {
         let (_fixture, store, run) = running_primary_review();
         let mut settings = store.load_settings().unwrap();
@@ -640,16 +728,30 @@ fn normal_review_execution_invalidates_own_inputs_authority_and_repository_gates
                 settings.repositories[0].assignments.remove(0);
                 settings.repositories[0].primary_assignment_id = None;
             }
+            "job revision" => {
+                let mut jobs = store.load_queue().unwrap();
+                let job = jobs.iter_mut().find(|job| run.matches_job(job)).unwrap();
+                job.head_sha = "b".repeat(40);
+                store.save_queue(&jobs).unwrap();
+            }
             _ => unreachable!(),
         }
         store.save_settings(&settings).unwrap();
-        let action_metadata_only = matches!(
+        // Discovery and archived provider grants are not the read-only execution lens.
+        // Discovery tickets and provider stages still validate their own current gates.
+        let non_execution_metadata = matches!(
             change,
-            "publication gate" | "comment" | "approve" | "merge" | "primary"
+            "publication gate"
+                | "comment"
+                | "approve"
+                | "merge"
+                | "primary"
+                | "watched authors"
+                | "reviewer trigger"
         );
         assert_eq!(
             review::validate_execution_selection(&store, &run).is_err(),
-            !action_metadata_only,
+            !non_execution_metadata,
             "{change}: read-only execution and current provider authority are separate"
         );
         assert_eq!(store.load_reviews().unwrap()[0], run);

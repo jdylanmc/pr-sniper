@@ -325,8 +325,15 @@ for (const [representation, references, selected] of [
       await page.locator("#global-capacity").fill("9");
       const repository = await repositorySettings(page, "fixture/rename");
       await repository
-        .getByLabel("Reviewer requests", { exact: true })
-        .selectOption("on");
+        .getByLabel("Pull requests where my review is requested", {
+          exact: true,
+        })
+        .uncheck();
+      await repository
+        .getByLabel("Pull requests where my review is requested", {
+          exact: true,
+        })
+        .check();
       await closeDialog(page);
 
       const code = initial.doctrines.find(({ title }) => title === "code");
@@ -427,8 +434,10 @@ for (const [representation, references, selected] of [
       await expect(page.locator("#global-capacity")).toHaveValue("9");
       const pending = await repositorySettings(page, "fixture/rename");
       await expect(
-        pending.getByLabel("Reviewer requests", { exact: true }),
-      ).toHaveValue("on");
+        pending.getByLabel("Pull requests where my review is requested", {
+          exact: true,
+        }),
+      ).toBeChecked();
     });
   }
 }

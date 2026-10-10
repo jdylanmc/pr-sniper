@@ -22,6 +22,14 @@ pub struct WatchedIdentity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WatchChoices {
+    pub all_pull_requests: bool,
+    pub by_user: bool,
+    pub mentions: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Adapter {
     Copilot,
@@ -60,6 +68,9 @@ pub struct Policy {
     pub schedule: Schedule,
     pub watched_authors: Vec<WatchedIdentity>,
     pub reviewer_assignment: bool,
+    /// Absent preserves legacy admission and captured evidence without migration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch: Option<WatchChoices>,
     pub adapter: Adapter,
     pub selector: Selector,
     pub prompt: String,
@@ -77,6 +88,7 @@ impl Default for Policy {
             },
             watched_authors: Vec::new(),
             reviewer_assignment: true,
+            watch: None,
             adapter: Adapter::Copilot,
             selector: Selector::Default,
             prompt: "Review this pull request for actionable defects.".into(),
@@ -145,6 +157,18 @@ pub fn validate_configuration_text(value: &str) -> Result<(), String> {
 }
 
 impl Policy {
+    pub fn watch_choices(&self, authors: &[WatchedIdentity]) -> WatchChoices {
+        self.watch.clone().unwrap_or(WatchChoices {
+            all_pull_requests: authors.is_empty(),
+            by_user: true,
+            mentions: true,
+        })
+    }
+
+    pub fn watches_mentions(&self) -> bool {
+        self.watch.as_ref().is_none_or(|watch| watch.mentions)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         self.schedule.validate()?;
         let mut identities = HashSet::new();
@@ -196,6 +220,8 @@ pub struct PolicyOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reviewer_assignment: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch: Option<WatchChoices>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapter: Option<Adapter>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selector: Option<Selector>,
@@ -226,6 +252,7 @@ impl PolicyOverrides {
             reviewer_assignment: self
                 .reviewer_assignment
                 .unwrap_or(defaults.reviewer_assignment),
+            watch: self.watch.clone().or_else(|| defaults.watch.clone()),
             adapter: self
                 .adapter
                 .clone()
