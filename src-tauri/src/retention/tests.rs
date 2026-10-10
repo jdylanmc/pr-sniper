@@ -141,6 +141,7 @@ fn evidence(store: &Store) -> (ReviewRun, Publication, FollowUp) {
         commit_id: review.job.head_sha.clone(),
         body: "BULKY-SUMMARY".into(),
         comments: vec![InlineComment {
+            diff_position: None,
             path: "source.rs".into(),
             line: 1,
             side: "RIGHT".into(),

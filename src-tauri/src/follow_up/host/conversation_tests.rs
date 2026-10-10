@@ -26,6 +26,7 @@ use std::collections::BTreeMap;
 const REPO: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const NOW: i64 = 1_800_000_000;
 
+mod diagnostics;
 mod fixwave;
 mod primary_capabilities;
 mod retention_identity;
@@ -183,6 +184,7 @@ fn fixture(count: usize) -> (tempfile::TempDir, Store, Publication, Thread) {
         body: "Summary".into(),
         unmappable: vec![],
         comments: vec![InlineComment {
+            diff_position: None,
             path: "source.rs".into(),
             line: 1,
             side: "RIGHT".into(),

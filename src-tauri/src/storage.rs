@@ -8,12 +8,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_DIAGNOSTICS_BYTES: u64 = 256 * 1024;
 
+#[path = "storage/diagnostics.rs"]
+pub mod diagnostics;
 #[path = "storage/private_fs.rs"]
 pub(crate) mod private_fs;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticEvent {
+    Attempt,
     SessionStarted,
     WindowOpened,
     WindowCloseRequested,
@@ -36,6 +39,15 @@ pub enum DiagnosticEvent {
 pub struct Diagnostic {
     pub timestamp_secs: u64,
     pub event: DiagnosticEvent,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<diagnostics::Record>,
+}
+
+fn diagnostic_time() -> Result<u64, String> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|time| time.as_secs())
+        .map_err(|_| "System clock precedes the Unix epoch.".into())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1476,15 +1488,16 @@ impl Store {
     }
 
     pub fn record(&self, event: DiagnosticEvent) -> Result<(), String> {
+        if event == DiagnosticEvent::Attempt {
+            return Err("Attempt diagnostics require a typed attempt record.".into());
+        }
         let directory = self
             .directory("state")
             .map_err(|_| "Cannot create diagnostics directory.".to_string())?;
         let diagnostic = Diagnostic {
-            timestamp_secs: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|_| "System clock precedes the Unix epoch.".to_string())?
-                .as_secs(),
+            timestamp_secs: diagnostic_time()?,
             event,
+            attempt: None,
         };
         let mut bytes = serde_json::to_vec(&diagnostic)
             .map_err(|_| "Cannot encode diagnostics.".to_string())?;
@@ -1507,17 +1520,25 @@ impl Store {
     pub fn diagnostics(&self) -> Result<Vec<Diagnostic>, String> {
         let contents = match self.read_state("diagnostics.jsonl") {
             Ok(contents) => String::from_utf8(contents).map_err(|_| "Cannot read diagnostics.")?,
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) if error.kind() == ErrorKind::NotFound => String::new(),
             Err(_) => return Err("Cannot read diagnostics.".into()),
         };
         if contents.len() as u64 > MAX_DIAGNOSTICS_BYTES {
             return Err("Diagnostics exceed the supported size.".into());
         }
-        contents
+        let mut records = contents
             .lines()
             .map(|line| {
-                serde_json::from_str(line).map_err(|_| "Diagnostics contain invalid data.".into())
+                let record: Diagnostic = serde_json::from_str(line)
+                    .map_err(|_| "Diagnostics contain invalid data.".to_string())?;
+                if record.attempt.is_some() || record.event == DiagnosticEvent::Attempt {
+                    return Err("Host diagnostics contain invalid attempt data.".into());
+                }
+                Ok(record)
             })
-            .collect()
+            .collect::<Result<Vec<Diagnostic>, String>>()?;
+        records.extend(self.attempt_diagnostics()?);
+        records.sort_by_key(|record| record.timestamp_secs);
+        Ok(records)
     }
 }

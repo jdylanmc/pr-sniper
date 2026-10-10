@@ -27,6 +27,7 @@ use std::{
 
 const REPO: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const NOW: i64 = 1_800_000_000;
+mod diagnostics;
 mod fixwave;
 
 #[test]

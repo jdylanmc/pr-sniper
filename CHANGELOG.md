@@ -7,12 +7,19 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Added
 
+- Install the `pull-request` and `create-pull-request` skills project-locally and
+  require agents to use `/pull-request` for PR bodies (what/why/how, evidence,
+  blast radius).
 - Configure Agents with advertised reasoning-effort and context-tier choices,
   explicit Provider defaults and visible unsupported selections. Preserve
   deliberate choices and immutable job evidence, and verify actual session
   configuration before inference. (#128)
 
 ### Changed
+
+- Adapt repository Joe-mode orchestration to the visible CMUX Maestro cockpit.
+  Retire Paseo adapter files, retain shared team and independent merge gates,
+  and keep activation human-only with no unattended CMUX scheduler.
 
 - Replace Automation overrides with repository-assignment capabilities:
   independent Publish Comment and primary Reply Comment, plus Approve or
@@ -94,6 +101,26 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   readable; merely browsing or adding a repository does not start monitoring.
 
 ### Fixed
+
+- Run `npm run test:packaging:windows` on a default Windows client, where the
+  `Restricted` PowerShell policy refused the script. The npm script now bypasses
+  policy for its own process only; Windows development and packaging docs show
+  the same for other repository scripts.
+- Remove the persistent doctrine-reset message from Settings without leaving
+  an empty notice area. Keep reconciliation counts in Diagnostics, preserving
+  one-time reconciliation, later edits and current error notices. (#146)
+- Verify pending GitHub review comments using their diff positions and frozen
+  revisions when line/side are absent, while retaining identity and content
+  checks. Keep publication failures on the affected PR instead of the Settings
+  banner, without hiding direct or nested host storage failures if a later
+  error-record save succeeds. Intentional policy refusals stay item-local;
+  no existing remote drafts are reset or discarded. (#154)
+- Preserve bounded, rotated review-attempt diagnostics with correlated sessions,
+  tool outcomes, file coverage, runtime failures and cleanup evidence. Retain
+  committed failed-analysis decisions and correlate cancellation/retry history
+  with the same operation rather than a replacement. Diagnostics
+  shows redacted metadata and explicit unavailable evidence; newer retry,
+  connectivity and publication producers remain separate integrations. (#153)
 
 - Resolve GitHub pull-request URLs to the exact PR and queue it immediately
   after valid repository Save, even outside watch filters. Reuse unchanged

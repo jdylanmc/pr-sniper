@@ -593,11 +593,16 @@ pub fn interrupted(
 }
 
 pub fn publication_gate(store: &Store) -> Result<(), String> {
-    if store.load_automation()?.paused {
-        Err(
+    publication_gate_checked(store).map_err(crate::publication::GateError::message)
+}
+
+pub(crate) fn publication_gate_checked(store: &Store) -> Result<(), crate::publication::GateError> {
+    use crate::publication::GateError;
+    if store.load_automation().map_err(GateError::Storage)?.paused {
+        Err(GateError::Policy(
             "Automation paused; reconcile any already-started provider mutation after resume."
                 .into(),
-        )
+        ))
     } else {
         Ok(())
     }

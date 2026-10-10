@@ -17,6 +17,10 @@ registry keys outside the Windows Run key.
 - Microsoft Edge **WebView2 Evergreen Runtime** for native app launch.
 - Windows PowerShell 5.1 (inbox): native ACL tests use its .NET filesystem
   access-control reader as an independent oracle, not a storage substitute.
+  A default Windows client policy (`Restricted`) refuses `.ps1` files. The npm
+  scripts bypass it for their own process only. Run other repository scripts
+  with `powershell -NoProfile -ExecutionPolicy Bypass -File <script>`; no
+  machine or user policy changes.
 
 Use official installers; see [Tauri Windows prerequisites](https://v2.tauri.app/start/prerequisites/#windows).
 These commands do not install or alter global tools/settings. Run them from
@@ -122,14 +126,14 @@ The browser Store bridge likewise resolves `CARGO_TARGET_DIR` and the Windows
 `.exe` suffix. Keep each worktree's build target separate. The existing
 `npm run bundle` command still creates the macOS `.app`; it is not a Windows
 build command. Windows icon regeneration, when artwork changes:
-`powershell -NoProfile -File scripts\windows-icon.ps1`.
+`powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows-icon.ps1`.
 
 ## Windows CI artifacts
 
 The existing [Windows workflow](../.github/workflows/windows.yml) runs on pull
 requests and main pushes with read-only repository permission and no signing,
 publication or provider credentials. The combined frontend/Store build and full
-browser suite has a 15-minute step budget within the existing 60-minute job
+browser suite has a 20-minute step budget within the existing 60-minute job
 limit. Individual tests, application deadlines and required checks are unchanged;
 macOS release credentials and publication gates remain separate. Failures stop
 the job; stdout/stderr remains in the Actions logs.

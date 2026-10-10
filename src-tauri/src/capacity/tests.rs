@@ -93,6 +93,7 @@ pub(crate) fn add_reply(store: &Store, order: u64) -> FollowUp {
         body: "Summary".into(),
         unmappable: vec![],
         comments: vec![crate::publication::InlineComment {
+            diff_position: None,
             path: "source.rs".into(),
             line: 1,
             side: "RIGHT".into(),

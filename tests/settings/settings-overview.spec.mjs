@@ -517,9 +517,11 @@ for (const metadata of ["native", "missing", "rejected"]) {
     await expect(page.locator("[data-panel-heading]")).toHaveText(
       "Diagnostics",
     );
-    await expect(page.locator('[data-panel-view="utility"]')).toContainText(
-      "No host events recorded",
+    await expect(page.locator('[data-panel-view="utility"] pre')).toHaveText(
+      /\n\nNo diagnostic events recorded\.$/,
     );
+    await expect(version).toHaveText(`v${nativeVersion}`);
+    await expect(version).toBeVisible();
   });
 }
 

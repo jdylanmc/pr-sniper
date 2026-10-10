@@ -31,15 +31,15 @@
       "sourceType": "local",
       "computedHash": "d2a1a7a4321e511e8b185e8cc52172f275385d8be1dfdbd1ea6f4418d859df78"
     },
+    "create-pull-request": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "f12aa37ebd07a01883176eb38a0b824b056f89d20f09ade83b012459731f57f0"
+    },
     "discovery": {
       "source": "../agent-skills",
       "sourceType": "local",
       "computedHash": "6d2ff4c04908f87cc8f45fb614637989d78082bd38d49d343db32d2cccdcf2fd"
-    },
-    "doctrine": {
-      "source": "../agent-skills",
-      "sourceType": "local",
-      "computedHash": "254a511cafc0f35b2a18bd28a3d5c5f37e1e60f4fde459c40d813f5d23e32c11"
     },
     "domain-modeling": {
       "source": "../agent-skills",
@@ -66,16 +66,6 @@
       "sourceType": "local",
       "computedHash": "9f3fbf1589f44f977c7c39521c469ecaa74c409150096128b511c849f7f3b28a"
     },
-    "joe-mode": {
-      "source": "../agent-skills",
-      "sourceType": "local",
-      "computedHash": "21af741aef915f99dbdb509e09969e37cdb29e8d95d20ea3e0944e9c64f9137b"
-    },
-    "joe-mode-paseo": {
-      "source": "../agent-skills",
-      "sourceType": "local",
-      "computedHash": "7af6e8cd6d9aae577cc590a31fc0b19ca40556c34eaebfb707df141e6cc93a44"
-    },
     "migration": {
       "source": "../agent-skills",
       "sourceType": "local",
@@ -90,6 +80,11 @@
       "source": "../agent-skills",
       "sourceType": "local",
       "computedHash": "f3a6856f86fdb0e1572bc373bf3c5a9961e1711fa0b6c349b6e24e4c50018722"
+    },
+    "pull-request": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "12c1ba93b175e9af9c80fa02ee6aa891525910c01167c109f65cec116d55730c"
     },
     "refactor": {
       "source": "../agent-skills",
@@ -116,30 +111,10 @@
       "sourceType": "local",
       "computedHash": "8a6c419ea281056174df87654688e7483d75c7fcbc76acdf2e0c6344fe6ae35d"
     },
-    "setup": {
-      "source": "../agent-skills",
-      "sourceType": "local",
-      "computedHash": "d247eeee7b8500cd1b4348f30b260f5b2ded414e9ea9e4176ae57224c436ccf2"
-    },
-    "shepherd": {
-      "source": "../agent-skills",
-      "sourceType": "local",
-      "computedHash": "1a27d23713bed53167dda284d899b4db78f18aa2f5e24e14b8a649ed4ffa0132"
-    },
-    "ship": {
-      "source": "../agent-skills",
-      "sourceType": "local",
-      "computedHash": "ab79aa338e76da3931e7bbd84a54b70bb1b097759e5a60aafa28066cb03f5eb2"
-    },
     "specify": {
       "source": "../agent-skills",
       "sourceType": "local",
       "computedHash": "4a3e149bcd27faca74e08dc5d7b66f4992d11cb9e82ca3e88f6464aab0b74ca5"
-    },
-    "squadron": {
-      "source": "../agent-skills",
-      "sourceType": "local",
-      "computedHash": "d8bbe20441a6b6ffbd5d7d1280db61ddc1161fd702226dd041bce41ba2118f6e"
     },
     "status-report": {
       "source": "../agent-skills",

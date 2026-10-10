@@ -4,6 +4,7 @@ Supporting contract for the peer Ship, Patch, and Refactor routes, not another
 routable skill or permission to invoke Ship. The selected route owns its work
 through independent review, publication, and actual Shepherd custody. Follow
 [invocation policy](../setup/INVOCATION.md); narrower human requests remain narrower.
+This file owns [PR states](#pr-states) for every route.
 Never approve, merge, enable automatic merge, or close delivery tracker items.
 The sole recovery-issue exception is separately authorized, verified episode
 closure under [RECOVERY](../shepherd/RECOVERY.md).
@@ -36,7 +37,7 @@ Keep the existing task/session record, not another controller:
 
 Require `worktrees` and [workspace isolation](WORKSPACE.md) before PR changes.
 Reuse compatible isolation and serialize integration. Each independent writer
-gets its own Git worktree; Paseo registrations follow WORKSPACE, not one project
+gets its own Git worktree; CMUX placement follows WORKSPACE, not one workspace
 per writer. Missing ownership, access, or required capability is an
 explicit blocker, never permission to use another writer's branch.
 
@@ -86,18 +87,39 @@ Use the [commit-message policy](../setup/COMMIT-STYLE.md) for authored messages.
 
 Before creation, inspect existing PRs for this delivery/branch. Reuse the matching
 PR; clarify ambiguity. After an uncertain creation result, query before retrying.
-Push the owned branch and create an internal draft once a meaningful candidate
-exists; never manufacture an empty commit. Include requirements/ticket references,
+Push a meaningful candidate using the [PR state rules](#pr-states); no empty
+commit. Include requirements/ticket references,
 scope, summary, criterion evidence, checks, and outstanding work. Use closing
 references only for fully satisfied work. Confirm publication and its actual URL.
 Missing access is a blocker. If no change is needed, report the already-satisfied
 result rather than manufacture a PR.
 
-An internal draft is progress, not a final handoff or readiness claim. The route
-retains custody while implementing; no competing Shepherd repair loop. On Azure
-DevOps, use `isDraft: true` and full source/target refs, then `isDraft: false` only
-after the gate below, never status `completed` or auto-completion. Link planning
-items through supported relations.
+The route retains custody while implementing; no competing Shepherd repair loop.
+On Azure DevOps, use full source/target refs and supported planning relations;
+never status `completed` or auto-completion.
+
+## PR states
+
+One state contract. Joe sets `joeReviewVisibility: true` in its delivery packet.
+Absent/false keeps standalone promotion at final signoff. The flag changes only
+provider draft timing, never proof, custody or merge authority.
+
+| State | Evidence / action |
+| --- | --- |
+| Draft | Requested implementation incomplete. Keep remaining work explicit. |
+| Ready for review | Implementation complete. Record current head/base, independently reviewed head (or none), checks and gaps. With the Joe flag, owner promotes now; otherwise provider stays draft until the final gate. |
+| Ready for final signoff | Every [current-base gate](#current-base-readiness-and-real-custody) below met. Accepted Shepherd confirms non-draft; human approval/merge remain separate. |
+
+Promotion: GitHub `gh pr ready`; Azure DevOps `isDraft: false`. Read back actual
+provider state. Send success, a local flag or non-draft alone proves no other gate.
+Missing implementation found later: return to draft and explain; do not silently
+narrow scope to stay non-draft.
+
+Update the PR body on each published head change: new head/base, reviewed head,
+still-applicable evidence and invalidated/pending proof. If human review started,
+notify once per new published head; never carry approval to changed work by
+assumption. Proactively request human review only after independent review,
+unless the human asks to review earlier. Provider visibility is not a review request.
 
 ## Current-base readiness and real custody
 
@@ -115,26 +137,24 @@ Idle may mean scheduled waiter. Without monitoring runtime, record **handoff blo
 monitoring stopped**, last observed state, resumption action; never promise
 unattended monitoring after runtime/session loss.
 
-Accepted Shepherd must actually promote through the provider and verify non-draft
-readback before announcing **ready for human signoff**:
-- GitHub: `gh pr ready` for resolved PR/repository, then read `isDraft`.
-  Azure DevOps: update `isDraft: false`, then read back. Request success/local
-  flags prove no promotion.
+Accepted Shepherd verifies every gate before announcing **ready for final signoff**:
 - Require accepted custody, met acceptance, current independent review, passing
   required candidate checks, no unresolved blockers, source containing latest
   observed target.
-- Immediately before promotion, reread provider/live source/target refs.
+- Immediately before final-signoff promotion or announcement, reread
+  provider/live source/target refs.
   Changed refs invalidate claims and restart affected maintenance/proof even if
   mergeability stays green. Record head/base/time; further base movement can
   invalidate readiness again.
-- After promotion, re-observe draft status, source/target, covering checks before
+- After any needed promotion, re-observe draft status, source/target, covering checks before
   announcing. Promotion failure/evidence change: record actual state/blocker;
   no readiness claim or policy bypass to clear drafts.
 
 Reconcile each selected delivery in a batch. Mixed ready/draft/blocked results
 are progress, never **all delivered** while scoped work remains unfinished.
 Keep unfinished PRs' blockers and custody explicit; never mark blocked PRs ready
-to satisfy a completion report.
+for final signoff to satisfy a completion report. A Joe PR ready for review can
+still be blocked for merge.
 
 Readiness is not actual human approval or a guarantee of immediate mergeability
 under every policy. Report pending human approval separately; a blocking review,

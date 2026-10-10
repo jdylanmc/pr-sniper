@@ -9,6 +9,7 @@ license does not replace those terms.
 | Source | Copyright | License |
 | --- | --- | --- |
 | [mattpocock/skills](https://github.com/mattpocock/skills) | 2026 Matt Pocock | [MIT](./licenses/mattpocock-skills.LICENSE) |
+| [humanlayer/skills](https://github.com/humanlayer/skills) | 2026 HumanLayer | [MIT](./licenses/humanlayer-skills.LICENSE) |
 | [juliusbrussee/caveman](https://github.com/juliusbrussee/caveman) | 2026 Julius Brussee | [MIT for skills](./licenses/caveman.LICENSE) |
 | [anthropics/skills](https://github.com/anthropics/skills), historical `skill-creator` import (removed) | 2026 Anthropic, PBC. | [Apache-2.0](./licenses/anthropic-skills.LICENSE) |
 | [obra/superpowers](https://github.com/obra/superpowers) | 2025 Jesse Vincent | [MIT](./licenses/superpowers.LICENSE) |
@@ -32,6 +33,13 @@ Modifications to Apache-licensed files must carry prominent change notices.
   original import source path/hash. The Matt Pocock MIT notice applies.
 - `automate-this` renames Matt Pocock's `loop-me`, retaining its workflow-design
   behavior and original import source/hash. The Matt Pocock MIT notice applies.
+- `create-pull-request` adapts Matt Pocock's `pr` body guidance into the
+  generic agent-invocable publication fallback used only when no
+  repository-specific skill or active delivery workflow owns the PR. Matt's
+  source credits Dex Horthy and HumanLayer's `show-me` skill for its concise
+  visual-summary approach. The Matt Pocock and HumanLayer MIT notices apply.
+  This human-directed adoption postdates the frozen installer provenance lock
+  and therefore has no original installer record there.
 - `squadron` renames Jesse Vincent's `dispatching-parallel-agents`, retaining
   its independent-task and worker-packet foundations and original import
   source/hash. Its workflow now covers bounded delivery and Shepherd

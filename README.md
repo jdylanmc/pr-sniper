@@ -383,6 +383,32 @@ executable; even a valid registration may be disabled by macOS Login Items.
 Startup only inspects registration: it does not enable, disable or reapply the
 saved preference.
 
+## Repository orchestration skills
+
+Use the checked-in [Joe-mode](.agents/skills/joe-mode/SKILL.md) and
+[Joe-mode CMUX](.agents/skills/joe-mode-cmux/SKILL.md) packages for repository
+delivery orchestration. They are adapted from
+[`jdylanmc/cmux-maestro` at `5dc3908`](https://github.com/jdylanmc/cmux-maestro/tree/5dc3908/.agents/skills),
+not the PR Sniper application's configured review Agents.
+
+Core Joe-mode, the CMUX adapter, and the adapted Doctrine, Setup, Ship,
+Shepherd and Squadron contracts are repository-owned; they intentionally have
+no installer-managed `skills-lock.json` entries. Do not restore upstream copies
+over these adaptations or reinstall the retired Paseo/Orca adapters. Reconcile
+surviving legacy controllers/jobs before switching runtime; removing files does
+not stop them or authorize state deletion.
+
+Activation is human-only and requires a Maestro-managed coordinator with
+verified native identity, launch and messaging capabilities. Keep one private
+owner board, six developer slots, isolated writer worktrees and the
+[independent merge gate](.agents/skills/joe-mode/MERGE.md). CMUX is
+session-bound, with no heartbeat or unattended scheduler. Installing these
+skills does not start workers, enable app automation or authorize self-approval.
+
+Run `npm run test:skills` for package/link and repository-policy contracts;
+these checks do not prove an operational live CMUX cockpit. macOS and Windows
+CI run them without launching agents.
+
 ## Check and bundle
 
 ```sh
@@ -672,6 +698,53 @@ configuration; malformed or unreadable files are reported rather than reset.
 256 KiB plus one rotated file. **Settings > Preferences**
 opens
 an in-app reader, not an arbitrary filesystem or shell interface.
+
+Review attempts additionally write `state/attempts.jsonl`, rotated through
+`attempts.1.jsonl` to `attempts.3.jsonl` (1 MiB each, 4 MiB total). Both Diagnostics
+surfaces read the retained attempt generations. Each record repeats its attempt
+UUID, operation/work correlation, PR number (`number`), immutable head, model and
+available runtime/session identity. Runtime records have monotonic elapsed
+milliseconds and sequence numbers; host retry decisions have wall-clock timestamps
+and explicitly absent runtime sequence/elapsed values. Follow the operation ID
+across fresh attempt/session IDs, and the work ID across manual replacements.
+Conversation retry decisions record acknowledged durable outcomes, including
+failed analyses, independently of the error returned to the caller. After final
+teardown, decisions use only the same operation's current or retained historical
+state; a replacement's counters are never attributed to the old attempt.
+
+Tool evidence separates requested known paths, unknown-path counts, successfully
+returned paths, and distinct paths registered by `read_changes`; `read_source`
+and searches do not satisfy review coverage. Successful response byte counts
+measure the serialized JSON tool payload, not RPC framing. Failed/rejected
+responses have an unavailable byte count rather than a guessed size. The
+response-limit rejection flag identifies the app's limit, separately from
+runtime tool failures and conversation-truncation events. Per-tool runtime
+truncation is not exposed by the pinned SDK. Stop-hook reasons are allowlisted
+when supplied; otherwise final evidence says `not_exposed`.
+
+Each path collection retains at most 128 paths and its full count/omitted count.
+Metadata exceeding 256 serialized bytes, control characters and recognized
+credential patterns become distinct opaque SHA-256 labels. Session summaries
+retain the first 128 events plus errors, abort and idle; final counters disclose
+omissions. Records are capped at 128 KiB, oldest generations expire, and this is
+bounded diagnostic history, not an archive or a promise to retain every tool
+call of an arbitrarily long attempt. Raw arguments, search queries, prompts,
+source/comment bodies, transcripts, provider errors and credentials have no
+fields in the diagnostic schema. Logging failures surface separately and never
+turn a failed review into success or change a publication decision.
+
+The typed integration seam is `storage::diagnostics::{Attempt, Record, Event}`
+with `Store::record_attempt` and `Store::record_attempt_decision`. The latter
+correlates a host decision with the latest retained attempt for an operation and
+reports missing evidence explicitly. `Event::Publication` accepts only a stage,
+ownership outcome, mismatch field and failure category--never compared values.
+`Watchdog`, `Connectivity` and `Retry` likewise record observed producer decisions,
+not new policy. The diagnostic foundation wires existing review/session/tool,
+total-deadline, cancellation, cleanup and retry paths. The new inactivity watchdog,
+indefinite fresh-session retries and offline suspension/resumption remain #152/#149
+producer integrations. Publication-field producers remain coordinated with #154;
+this foundation does not change publication verification or authorize remote cleanup.
+Their typed seam tests are not evidence that those policies are implemented.
 Invalid settings are reported rather than silently reset or overwritten.
 
 ## Scheduled monitoring
@@ -1082,6 +1155,22 @@ including acting identity and exact content, before any repeat mutation. A
 missing receipt after an uncertain create never authorizes another create;
 it remains visibly unresolved even after manual retry. Another pending review
 owned by the signed-in account is never silently submitted or deleted.
+
+Pending GitHub comments can have null line/side fields. New batches retain the
+verified diff position alongside each finding; reconciliation checks that
+position, path, body, original commit, author, review identity and comment count.
+Submitted comments still require matching line/side. Older batches without saved
+positions use a read-only comparison of their frozen revisions; missing or
+truncated patches (including files outside GitHub's comparison limit) stop
+verification rather than guessing or replacing a draft. No state reset is needed.
+Publication failures remain on the affected PR with their cause and next action,
+not in the global Settings banner. Host persistence/read/coordination failures
+retain their infrastructure provenance and still raise a host warning, even
+when a later save successfully records the original failure on the PR.
+Capacity and feedback checks distinguish failed state reads from intentional
+pause, human-closed concerns and stale-feedback refusals. The latter remain
+item-local; nested storage failures still warn even when the publication stops
+without throwing an error. No failure message text is used to infer its origin.
 
 Transient failures use the shared limit of three retries within 15 minutes,
 preserving the operation and deadline across restart. Explicit rejection,

@@ -271,8 +271,8 @@ test("native notification identity, legacy entry commands and missing routes nev
   await expect(heading(page)).toHaveText("Settings");
   await invoke(page, "open_diagnostics");
   await expect(heading(page)).toHaveText("Diagnostics");
-  await expect(page.locator('[data-panel-view="utility"]')).toContainText(
-    "No host events recorded",
+  await expect(page.locator('[data-panel-view="utility"] pre')).toHaveText(
+    /\n\nNo diagnostic events recorded\.$/,
   );
   await store("set_notifications_enabled", { enabled: true });
   const id = await store("test_notification", { itemId: item.id });

@@ -3,9 +3,15 @@ import { listen } from "@tauri-apps/api/event";
 import { mountSettings } from "./settings";
 import { mountGenie } from "./genie";
 import {
+  type Diagnostic,
+  diagnosticLog,
+  diagnosticNotice,
+  doctrineDiagnostics,
+} from "./diagnostics";
+import {
   type SetupReview,
   type DoctrineCatalog,
-  doctrineCatalogLabel,
+  type Settings,
 } from "./resources";
 import { renderMonitoring, type MonitoringSnapshot } from "./monitoring";
 import type { AutomationSnapshot } from "./automation";
@@ -630,6 +636,7 @@ export async function mountPanel(app: HTMLElement) {
         isolated: boolean;
         error: string | null;
         doctrine_catalog?: DoctrineCatalog | null;
+        settings: Pick<Settings, "doctrine_reset"> | null;
       }>("snapshot");
       if (request !== utilityRevision) return;
       showVersion(state.version);
@@ -643,21 +650,19 @@ export async function mountPanel(app: HTMLElement) {
       views.utility.append(refresh);
       if (type === "diagnostics") {
         const [entries, jobs] = await Promise.all([
-          invoke<{ timestamp_secs: number; event: string }[]>("diagnostics"),
+          invoke<Diagnostic[]>("diagnostics"),
           invoke<MonitoringSnapshot>("monitoring_snapshot"),
         ]);
         if (request !== utilityRevision) return;
         const pre = document.createElement("pre");
+        const notice = document.createElement("p");
+        notice.textContent = diagnosticNotice;
+        views.utility.append(notice);
         pre.textContent =
-          `${doctrineCatalogLabel(state.doctrine_catalog)}\n${JSON.stringify(state.doctrine_catalog ?? null, null, 2)}\n\n` +
-          (entries.length
-            ? entries
-                .map(
-                  (e) =>
-                    `${new Date(e.timestamp_secs * 1000).toISOString()}  ${e.event}`,
-                )
-                .join("\n")
-            : "No host events recorded.");
+          doctrineDiagnostics(
+            state.doctrine_catalog,
+            state.settings?.doctrine_reset,
+          ) + diagnosticLog(entries);
         views.utility.append(pre);
         renderIntelligenceDiagnostics(views.utility, jobs);
       } else {

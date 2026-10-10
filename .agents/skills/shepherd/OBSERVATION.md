@@ -7,6 +7,13 @@ Use the existing per-delivery custody/session record throughout.
 
 ## Establish a real observer
 
+An inherited adapter contract takes precedence over the scheduler examples
+below. Joe-mode CMUX is session-bound: observe immediately and on supported
+events/active turns, preserve custody and report gaps; do not create a cron,
+heartbeat, recurring wake or hidden observer. Desired due times are not proof
+that a wake will occur. No work between turns is promised. Generic scheduler
+guidance applies only to separately authorized runtimes, not this cockpit.
+
 At authorized kickoff, record bounded job: PR scopes, owner, permitted
 observation/maintenance, lifetime, stop conditions, scheduler grant and human
 cadence override. Tools grant no service setup, installation, or unrelated jobs.
@@ -100,13 +107,9 @@ prompt, scope, lifetime/expiry, permissions, provider and other settings.
 Afterward verify stored cron, unchanged binding, next wakeup.
 Desired cadence becomes effective only after readback.
 
-- **Paseo schedules:** confirm current schema; verified update fields: `id`,
-  `cron`, `timezone` when needed. Send only needed fields, never stale whole
-  objects overwriting concurrent settings.
-- **Paseo heartbeats:** MCP supports create/delete, not update. With actual CLI,
-  update period in place: `paseo heartbeat update <id> --cron "*/5 * * * *"`.
-  Requires runtime-supplied agent-scoped `PASEO_AGENT_ID`; never fake it or borrow
-  identity. Verify ownership/resulting binding.
+- **Supported scheduler:** inspect the actual schema and send only authorized
+  period changes; never overwrite concurrent settings with stale whole objects
+  or borrow another agent's identity. CMUX supplies no such scheduler.
 - **Heartbeat MCP fallback:** reconcile exact owned heartbeat; preserve prompt/
   binding/bounds before delete/recreate. Verify deletion before replacement—no
   competing monitors. Record non-atomic gap; verify replacement, persist new ID.

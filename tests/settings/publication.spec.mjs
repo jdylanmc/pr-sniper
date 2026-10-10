@@ -1,10 +1,55 @@
 import { expect, test } from "./fixtures.mjs";
+import { queueFixture } from "./queue-fixture.mjs";
 import {
   section,
   saveChanges,
   repositorySettings,
   closeDialog,
 } from "./navigation.mjs";
+
+test("publication failure stays on its PR with cause and action, not Settings", async ({
+  page,
+  store,
+}) => {
+  const fixture = await queueFixture(store);
+  const publication = fixture.state.publications.find(
+    (p) => p.review.job.number === 3,
+  );
+  publication.phase = "pending";
+  publication.error =
+    "Publication verify_pending: remote comment body does not match the frozen batch. Open this PR on GitHub and inspect the review before retrying; no automatic submission or replacement is allowed.";
+  await store("seed_queue_state", fixture.state);
+  await page.goto("/");
+  const navigation = page.getByRole("navigation", {
+    name: "Application destinations",
+  });
+  await navigation
+    .getByRole("button", { name: "Settings", exact: true })
+    .click();
+  await expect(page.locator("[data-panel-error]")).toBeHidden();
+  await expect(
+    page.getByText(publication.error, { exact: true }),
+  ).not.toBeVisible();
+  await navigation.getByRole("button", { name: "Queue", exact: true }).click();
+  await page
+    .locator("#handoff-queue")
+    .getByRole("article", {
+      name: "example/repo #3",
+      exact: true,
+    })
+    .getByRole("button", { name: "Evidence and actions" })
+    .click();
+  const evidence = page.locator("#agent-reviews");
+  await expect(evidence).toContainText("example/repo #3");
+  await expect(evidence).toContainText(publication.error);
+  await expect(
+    evidence.getByRole("button", { name: "Reconcile / retry publication" }),
+  ).toBeVisible();
+  await navigation
+    .getByRole("button", { name: "Settings", exact: true })
+    .click();
+  await expect(page.locator("[data-panel-error]")).toBeHidden();
+});
 
 test("retired publication defaults and repository overrides are not permission controls", async ({
   page,

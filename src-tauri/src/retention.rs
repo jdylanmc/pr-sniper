@@ -4,8 +4,9 @@ mod reopening;
 
 pub use cleanup::{maintain, recover};
 pub use paging::{detail, page, DetailResult, Page, PageRequest};
+pub(crate) use reopening::contexts_checked as retained_contexts_checked;
+pub(crate) use reopening::known_key;
 pub(crate) use reopening::{admit_observations, scan_origins, Observed};
-pub(crate) use reopening::{contexts as retained_contexts, known_key};
 
 use crate::{
     capacity::WorkId,

@@ -236,7 +236,21 @@ pub(crate) fn launch_worker(app: &tauri::AppHandle, run: ReviewRun, cancelled: A
                 super::validate_execution_selection(&store, &run)?;
                 Ok(result)
             });
-            complete(&store, &run.operation.id, outcome, now_seconds()?)
+            complete(&store, &run.operation.id, outcome, now_seconds()?)?;
+            let diagnostic = store.load_reviews().and_then(|reviews| {
+                let current = reviews
+                    .iter()
+                    .find(|review| review.operation.id == run.operation.id)
+                    .ok_or("Review diagnostic operation disappeared.")?;
+                store.record_attempt_decision(
+                    &current.operation.id,
+                    super::diagnostics::retry_event(&current.operation),
+                )
+            });
+            if let Err(error) = diagnostic {
+                crate::report(&app, error);
+            }
+            Ok::<_, String>(())
         })();
         if let Err(error) = saved {
             crate::report(&app, error);
@@ -366,6 +380,25 @@ pub(crate) async fn execute(
     run: ReviewRun,
     cancelled: Arc<AtomicBool>,
 ) -> Result<(super::ReviewResult, u64), Failure> {
+    let diagnostics =
+        super::diagnostics::native(&app, &run.job, &run.operation, &run.selection.agent.model);
+    diagnostics.emit(crate::storage::diagnostics::Event::Phase {
+        phase: crate::storage::diagnostics::Phase::PreparingContext,
+    });
+    let result = execute_attempt(app, run, cancelled, diagnostics.clone()).await;
+    diagnostics.finish(
+        crate::storage::diagnostics::CompletionStage::Attempt,
+        result.as_ref().err(),
+    );
+    result
+}
+
+async fn execute_attempt(
+    app: tauri::AppHandle,
+    run: ReviewRun,
+    cancelled: Arc<AtomicBool>,
+    diagnostics: Arc<super::diagnostics::Trace>,
+) -> Result<(super::ReviewResult, u64), Failure> {
     let remaining = run
         .operation
         .retry_deadline
@@ -492,6 +525,7 @@ pub(crate) async fn execute(
     let expected_base = context.pull.base_sha.clone();
     let send_base = expected_base.clone();
     let request = runtime::Request {
+        diagnostics: Some(diagnostics.clone()),
         task: runtime::FullReview {
             feedback: run.feedback_context.clone().unwrap_or_default(),
             owner_agent_id: run.selection.agent.id.clone(),
@@ -526,6 +560,9 @@ pub(crate) async fn execute(
     };
     let integration = app.state::<Host>().copilot.clone();
     let mut result = integration.review(request, cancelled, deadline).await?;
+    diagnostics.emit(crate::storage::diagnostics::Event::Phase {
+        phase: crate::storage::diagnostics::Phase::CheckingFinalEligibility,
+    });
     let final_app = app.clone();
     let pull = tauri::async_runtime::spawn_blocking(move || remote_gate(&final_app, &run))
         .await
