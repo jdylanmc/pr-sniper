@@ -1295,8 +1295,9 @@ impl Monitor {
                 OperationState::Queued | OperationState::Interrupted
             )
         }) {
+            health.next_run = health.next_run.min(now.max(1));
             if let Some(scan) = &mut self.state.global_scan {
-                scan.next_run = scan.next_run.min(now.max(1));
+                scan.next_run = scan.next_run.min(health.next_run);
             }
         }
         if let Err(error) = store.save_monitoring_state(&self.state) {
@@ -1438,31 +1439,12 @@ impl Monitor {
         accounts: &BTreeMap<String, AccountAvailability>,
         now: i64,
     ) {
-        let schedule = configured.first().map(|c| &c.schedule);
-        let any_enabled = configured.iter().any(|configuration| configuration.enabled);
-        let valid_global_cron = schedule.is_some_and(|schedule| {
-            matches!(schedule, Schedule::Cron { .. }) && next_run(schedule, now).is_ok()
+        self.state.global_scan.get_or_insert_with(|| GlobalScan {
+            schedule_key: "repository_schedules".into(),
+            next_run: 0,
+            pending: Vec::new(),
+            requested: false,
         });
-        if let Some(schedule) = schedule {
-            let key = schedule_key(schedule);
-            let next = if any_enabled && matches!(schedule, Schedule::Cron { .. }) {
-                next_run(schedule, now).unwrap_or(0)
-            } else {
-                0
-            };
-            let scan = self.state.global_scan.get_or_insert_with(|| GlobalScan {
-                schedule_key: key.clone(),
-                next_run: next,
-                pending: Vec::new(),
-                requested: false,
-            });
-            if scan.schedule_key != key {
-                scan.schedule_key = key;
-                scan.next_run = next;
-            } else if any_enabled && scan.next_run == 0 {
-                scan.next_run = next;
-            }
-        }
         // Collapse legacy assignment health without losing its retry budget.
         for configuration in configured {
             if self.state.health.contains_key(&configuration.health_key) {
@@ -1611,7 +1593,8 @@ impl Monitor {
             let key = schedule_key(&configuration.schedule);
             let schedule_changed = health.schedule_key != key;
             health.schedule_key = key;
-            if valid_global_cron
+            if configuration.schedule.validate().is_ok()
+                && matches!(configuration.schedule, Schedule::Cron { .. })
                 && matches!(
                     health.last_failure.as_deref(),
                     Some("invalid_global_cron") | Some("invalid_schedule")
@@ -1649,6 +1632,12 @@ impl Monitor {
             }
             if !matches!(configuration.schedule, Schedule::Cron { .. }) {
                 unavailable_health(health, "invalid_global_cron");
+                continue;
+            }
+            if configuration.schedule.validate().is_err()
+                || next_run(&configuration.schedule, now).is_err()
+            {
+                unavailable_health(health, "invalid_schedule");
                 continue;
             }
             let Some(account_id) = configuration.provider_account_id.as_ref() else {
@@ -1734,12 +1723,13 @@ impl Monitor {
             }
 
             if schedule_changed || health.next_run == 0 {
-                health.next_run = self
-                    .state
-                    .global_scan
-                    .as_ref()
-                    .map(|s| s.next_run)
-                    .unwrap_or(0);
+                health.next_run = next_run(&configuration.schedule, now).unwrap_or(0);
+                // Retiming unstarted discovery does not cancel a read, manual check or retry.
+                if schedule_changed && !health.in_flight && !health.manual_pending {
+                    if let Some(scan) = &mut self.state.global_scan {
+                        scan.pending.retain(|id| id != &configuration.health_key);
+                    }
+                }
             }
             health.schedule_available = health.next_run > 0;
             if !health.schedule_available {
@@ -1749,20 +1739,18 @@ impl Monitor {
                 health.last_failure = None;
             }
         }
-        let has_schedulable_repository = self
+        let next = self
             .state
             .health
             .values()
-            .any(|health| health.enabled && health.schedule_available);
+            .filter(|health| health.enabled && health.schedule_available)
+            .map(|health| health.next_run)
+            .min()
+            .unwrap_or(0);
         if let Some(scan) = &mut self.state.global_scan {
-            if has_schedulable_repository {
-                if scan.next_run == 0 {
-                    scan.next_run = schedule
-                        .and_then(|schedule| next_run(schedule, now).ok())
-                        .unwrap_or(0);
-                }
-            } else {
-                scan.next_run = 0;
+            scan.schedule_key = "repository_schedules".into();
+            scan.next_run = next;
+            if next == 0 {
                 scan.requested = false;
             }
             scan.pending.retain(|id| {
@@ -1876,19 +1864,18 @@ impl Monitor {
             {
                 scan.requested = true;
             }
-            if scan.pending.is_empty()
-                && scan.next_run > 0
-                && (check_now || scan.requested || now >= scan.next_run)
-            {
-                scan.requested = false;
-                scan.next_run = configured
-                    .first()
-                    .and_then(|c| next_run(&c.schedule, now).ok())
-                    .unwrap_or(0);
+            if scan.next_run > 0 {
+                let requested = (check_now || scan.requested) && scan.pending.is_empty();
+                if requested {
+                    scan.requested = false;
+                }
                 for configuration in configured {
                     if let Some(health) = self.state.health.get_mut(&configuration.health_key) {
                         if health.enabled
                             && health.schedule_available
+                            && !health.in_flight
+                            && !scan.pending.contains(&configuration.health_key)
+                            && (requested || now >= health.next_run)
                             && health.operation.as_ref().is_none_or(|o| {
                                 !matches!(
                                     o.state,
@@ -1898,17 +1885,27 @@ impl Monitor {
                         {
                             scan.pending.push(configuration.health_key.clone());
                             health.scan_assignments = configuration.assignments.clone();
-                            health.manual_pending = check_now;
-                        }
-                        if health
-                            .operation
-                            .as_ref()
-                            .is_none_or(|o| o.state == OperationState::Completed)
-                        {
-                            health.next_run = scan.next_run;
+                            health.manual_pending = requested;
+                            if health
+                                .operation
+                                .as_ref()
+                                .is_none_or(|o| o.state == OperationState::Completed)
+                                && now >= health.next_run
+                            {
+                                health.next_run =
+                                    next_run(&configuration.schedule, now).unwrap_or(0);
+                            }
                         }
                     }
                 }
+                scan.next_run = self
+                    .state
+                    .health
+                    .values()
+                    .filter(|health| health.enabled && health.schedule_available)
+                    .map(|health| health.next_run)
+                    .min()
+                    .unwrap_or(0);
             }
         }
 
@@ -1973,12 +1970,9 @@ impl Monitor {
             health.in_flight = true;
             health.manual_pending = false;
             start_poll_operation(health, configuration, now, false);
-            health.next_run = self
-                .state
-                .global_scan
-                .as_ref()
-                .map(|s| s.next_run)
-                .unwrap_or(0);
+            if health.next_run <= now {
+                health.next_run = next_run(&configuration.schedule, now).unwrap_or(0);
+            }
             checking_repositories.insert(repository_id.clone());
             self.leases
                 .insert(repository_id.clone(), configuration.health_key.clone());
@@ -2122,6 +2116,11 @@ impl Monitor {
                             operation.state = OperationState::Completed;
                             operation.next_attempt_at = None;
                             operation.failure = None;
+                        }
+                        if health.next_run <= now {
+                            health.next_run = current
+                                .and_then(|c| next_run(&c.schedule, now).ok())
+                                .unwrap_or(0);
                         }
                     }
                     Err(error) => {
@@ -2737,8 +2736,7 @@ fn activation_matches_configuration(
 fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {
     let mut configured = Vec::new();
     for repository in &settings.repositories {
-        let mut policy = repository.overrides.effective(&settings.defaults);
-        policy.schedule = settings.defaults.schedule.clone();
+        let policy = repository.overrides.effective(&settings.defaults);
         let watched_authors = effective_watched_authors(repository, &policy);
         let policy_key = trigger_policy(&watched_authors, policy.reviewer_assignment).ok();
         let binding = repository.account_binding();
@@ -2760,7 +2758,7 @@ fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {
             provider_account_id,
             provider_repository_id,
             provider_supported,
-            schedule: settings.defaults.schedule.clone(),
+            schedule: policy.schedule.clone(),
             assignment_id: None,
             agent_id: None,
             agent_name: None,
@@ -2781,13 +2779,16 @@ fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {
 }
 
 fn configuration_matches_ticket(configuration: &ConfiguredSchedule, ticket: &PollTicket) -> bool {
+    let mut policy = configuration.policy.clone();
+    // Cadence is reconciliation metadata, not a poll's admission or execution input.
+    policy.schedule = ticket.policy.schedule.clone();
     configuration.enabled
         && configuration.provider_supported
         && configuration.repository_id == ticket.repository_id
         && configuration.name == ticket.name
         && configuration.provider_account_id.as_deref() == Some(&ticket.provider_account_id)
         && configuration.provider_repository_id.as_deref() == Some(&ticket.provider_repository_id)
-        && configuration.policy == ticket.policy
+        && policy == ticket.policy
         && configuration.trigger_policy.as_deref() == Some(&ticket.trigger_policy)
 }
 
@@ -3224,11 +3225,15 @@ fn schedule_key(schedule: &Schedule) -> String {
 }
 
 pub fn next_run(schedule: &Schedule, now: i64) -> Result<i64, ConnectionError> {
+    schedule
+        .validate()
+        .map_err(|_| ConnectionError::Configuration)?;
     match schedule {
         Schedule::Interval { minutes, timezone } => {
             if timezone.parse::<chrono_tz::Tz>().is_err() || *minutes == 0 {
                 return Err(ConnectionError::Configuration);
             }
+
             now.checked_add(i64::from(*minutes) * 60)
                 .ok_or(ConnectionError::Configuration)
         }
@@ -3292,4 +3297,116 @@ mod read_diagnostic_tests {
             }
         ));
     }
+}
+
+#[derive(Debug, Serialize)]
+pub struct RepositoryScheduleStatus {
+    pub inherited: bool,
+    pub schedule: Schedule,
+    pub configured_next_run: Option<i64>,
+    pub next_run: Option<i64>,
+    pub issue: Option<String>,
+    pub enabled: bool,
+    pub paused: bool,
+}
+
+pub fn configured_occurrence(schedule: &Schedule, now: i64) -> Result<i64, String> {
+    if !matches!(schedule, Schedule::Cron { .. }) {
+        return Err("Choose a five-field cron schedule for this repository, or repair the saved global schedule in Preferences.".into());
+    }
+    schedule.validate()?;
+    next_run(schedule, now).map_err(|_| {
+        "This cron has no next occurrence. Choose a supported recurring five-field expression or repair the saved global schedule in Preferences.".into()
+    })
+}
+
+fn schedule_recovery(health: &ScheduleHealth) -> String {
+    match health.last_failure.as_deref() {
+        Some(WAITING_ACCOUNT_DISCONNECTED) => "Reconnect the acting GitHub account in Accounts, then check Status.".into(),
+        Some("account_binding_required") => "Bind the acting GitHub account and save this repository.".into(),
+        Some(CONFIGURATION_SAVE_REQUIRED | "scope_confirmation_required") => "Save this repository's valid configuration to authorize monitoring.".into(),
+        Some("provider_unavailable") => "This repository's provider binding is unavailable. Repair its GitHub binding in Settings.".into(),
+        Some("invalid_schedule" | "invalid_global_cron" | "configuration" | "configuration_changed") => "Repair the effective repository schedule or configuration, save it and check Status.".into(),
+        Some("settings_unavailable") => "Saved configuration could not be read. Repair local storage access and check Status.".into(),
+        _ if health.operation.as_ref().is_some_and(|operation| matches!(operation.state, OperationState::ManualRetry | OperationState::Failed)) => {
+            "Monitoring is suspended after failed attempts. Open Status and Retry the monitoring operation after correcting its failure.".into()
+        }
+        _ => "Monitoring is unavailable. Open Status to inspect the failure and recover the monitoring operation.".into(),
+    }
+}
+
+pub fn repository_schedule_status(
+    store: &Store,
+    repository_id: &str,
+    now: i64,
+) -> Result<RepositoryScheduleStatus, String> {
+    let settings = store.load_settings()?;
+    let repository = settings
+        .repositories
+        .iter()
+        .find(|r| r.id == repository_id)
+        .ok_or("Save this repository before reading its effective schedule.")?;
+    let schedule = repository
+        .overrides
+        .schedule
+        .as_ref()
+        .unwrap_or(&settings.defaults.schedule)
+        .clone();
+    let (configured_next_run, mut issue) = match configured_occurrence(&schedule, now) {
+        Ok(next) => (Some(next), None),
+        Err(issue) => (None, Some(issue)),
+    };
+    let paused = store.load_automation()?.paused;
+    let state = store.load_monitoring_state()?;
+    let health = state.health.get(repository_id).filter(|health| {
+        health.schedule_key == schedule_key(&schedule)
+            && health.name == repository.name
+            && health.provider_account_id == repository.provider_account_id
+            && health.provider_repository_id == repository.provider_repository_id
+            && health.enabled == repository.enabled
+    });
+    let mut next_run = None;
+    if issue.is_none() {
+        if !repository.enabled {
+            issue = Some(
+                "Repository is disabled; enable and save it before monitoring can scan.".into(),
+            );
+        } else if paused {
+            let mut message =
+                "Global monitoring is paused; resume it before any repository can scan."
+                    .to_string();
+            if let Some(health) =
+                health.filter(|health| !health.schedule_available || health.next_run <= 0)
+            {
+                message.push(' ');
+                message.push_str(&schedule_recovery(health));
+            }
+            issue = Some(message);
+        } else if let Some(health) = health {
+            if health.schedule_available
+                && health.next_run > 0
+                && !health.operation.as_ref().is_some_and(|operation| {
+                    matches!(
+                        operation.state,
+                        OperationState::ManualRetry | OperationState::Failed
+                    )
+                })
+            {
+                next_run = Some(health.next_run);
+            } else {
+                issue = Some(schedule_recovery(health));
+            }
+        } else {
+            issue = Some("Saved schedule is not synchronized with native monitoring yet. Check Status and retry configuration synchronization; a configured occurrence is not a scheduled scan.".into());
+        }
+    }
+    Ok(RepositoryScheduleStatus {
+        inherited: repository.overrides.schedule.is_none(),
+        schedule,
+        configured_next_run,
+        next_run,
+        issue,
+        enabled: repository.enabled,
+        paused,
+    })
 }

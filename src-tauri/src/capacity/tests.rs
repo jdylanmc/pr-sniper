@@ -214,6 +214,50 @@ fn production_dispatch_enforces_four_of_seven_and_positive_limits_independent_of
 }
 
 #[test]
+fn repository_cadence_edits_preserve_running_snapshots_completed_dedup_and_immediate_capacity_drain(
+) {
+    let (_root, store) = fixture(3, 1, false);
+    let coordinator = Coordinator::default();
+    let mut workers = dispatch(&coordinator, &store, 100);
+    assert_eq!(workers.len(), 1);
+    let running = store.load_reviews().unwrap()[0].clone();
+    let mut settings = store.load_settings().unwrap();
+    settings.defaults.schedule = crate::policy::Schedule::Cron {
+        expression: "0 9 * * MON-FRI".into(),
+        timezone: "America/New_York".into(),
+    };
+    settings.repositories[0].overrides.schedule = Some(crate::policy::Schedule::Cron {
+        expression: "0 0 1 * *".into(),
+        timezone: "Asia/Tokyo".into(),
+    });
+    store.save_settings(&settings).unwrap();
+    assert!(dispatch(&coordinator, &store, 101).is_empty());
+    assert_eq!(store.load_reviews().unwrap()[0], running);
+    let token = match &workers[0] {
+        Dispatch::Review(_, token) => token,
+        _ => unreachable!(),
+    };
+    assert!(
+        !token.load(Ordering::SeqCst),
+        "Cadence must not cancel running analysis."
+    );
+    workers = finish(&coordinator, &store, workers.remove(0), None, 102);
+    assert_eq!(
+        workers.len(),
+        1,
+        "Queued work drains without another cron poll."
+    );
+    let completed = store.load_reviews().unwrap()[0].clone();
+    assert_eq!(completed.selection, running.selection);
+    workers = finish(&coordinator, &store, workers.remove(0), None, 103);
+    assert_eq!(workers.len(), 1);
+    assert!(finish(&coordinator, &store, workers.remove(0), None, 104).is_empty());
+    assert!(dispatch(&coordinator, &store, 10_000).is_empty());
+    assert_eq!(store.load_reviews().unwrap().len(), 3);
+    assert_eq!(store.load_reviews().unwrap()[0], completed);
+}
+
+#[test]
 fn false_legacy_defaults_and_overrides_start_automatically_without_granting_provider_actions() {
     let (root, store) = fixture(2, 1, false);
     let mut settings = store.load_settings().unwrap();

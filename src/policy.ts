@@ -1,6 +1,17 @@
 export type Schedule =
   | { kind: "interval"; minutes: number; timezone: string }
   | { kind: "cron"; expression: string; timezone: string };
+export const schedulePresets = [
+  ["*/15 * * * *", "Every 15 minutes"],
+  ["0 * * * *", "Every hour"],
+  ["0 9 * * MON-FRI", "Weekdays at 09:00"],
+] as const;
+export function scheduleDescription(schedule: Schedule): string {
+  return schedule.kind === "cron"
+    ? (schedulePresets.find(([cron]) => cron === schedule.expression)?.[1] ??
+        `Custom cron: ${schedule.expression}`)
+    : `Legacy interval: ${schedule.minutes} minutes; choose a five-field cron`;
+}
 export type Selector =
   { kind: "default" } | { kind: "model" | "agent"; value: string };
 export interface Policy {

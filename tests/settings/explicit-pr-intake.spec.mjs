@@ -628,6 +628,112 @@ for (const genie of [false, true]) {
   });
 }
 
+for (const existing of [false, true]) {
+  test(`explicit PR admission remains immediate with custom repository cadence and invalid global draft (${existing ? "existing" : "new"})`, async ({
+    page,
+    store,
+  }) => {
+    const { fixture } = await setup(page, store);
+    if (existing) {
+      const ordinary = await enter(page, "https://github.com/orbit/one");
+      await assign(page, ordinary);
+      await ordinary
+        .getByRole("button", { name: "Save repository", exact: true })
+        .click();
+      await expect(ordinary).toHaveCount(0);
+    }
+    await section(page, "Preferences");
+    await page.locator("#global-cron").fill("invalid unsaved global");
+    await page.locator("#global-capacity").fill("9");
+    await section(page, "Repositories");
+    let editor = await enter(page);
+    await editor
+      .getByLabel("Schedule", { exact: true })
+      .selectOption("override");
+    await editor
+      .getByLabel("Cron expression", { exact: true })
+      .fill("0 9 1 * *");
+    await editor
+      .getByLabel("Time zone", { exact: true })
+      .fill("America/New_York");
+    if (!existing) await assign(page, editor);
+    expect(
+      fixture.calls.filter(
+        (call) => call.command === "admit_explicit_pull_request",
+      ),
+    ).toHaveLength(0);
+    await editor
+      .getByRole("button", { name: "Save repository", exact: true })
+      .click();
+    await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
+      "admitted",
+    );
+    await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
+      "paused",
+    );
+    await expect(editor.locator("[data-effective-schedule]")).toContainText(
+      "Global monitoring is paused",
+    );
+    expect(
+      fixture.calls.filter(
+        (call) => call.command === "admit_explicit_pull_request",
+      ),
+    ).toHaveLength(1);
+    expect(
+      fixture.calls.filter((call) =>
+        /check_now|poll_pull_requests/.test(call.command),
+      ),
+    ).toHaveLength(0);
+    const saved = (await store("snapshot")).settings;
+    expect(saved.repositories[0].overrides.schedule).toEqual({
+      kind: "cron",
+      expression: "0 9 1 * *",
+      timezone: "America/New_York",
+    });
+    expect(saved.defaults.schedule.expression).not.toBe(
+      "invalid unsaved global",
+    );
+    expect(saved.capacity).toBe(4);
+    const first = await store("monitoring_snapshot");
+    expect(first.jobs).toHaveLength(1);
+    expect(first.jobs[0]).toMatchObject({ number: 302, watched_author: false });
+    expect(first.health[0].last_attempt).toBeNull();
+    expect(first.health[0].last_success).toBeNull();
+    const due = first.health[0].next_run;
+    expect(due).toBeGreaterThan(0);
+    const status = await store("repository_schedule_status", {
+      repositoryId: saved.repositories[0].id,
+    });
+    expect(status.next_run).toBeNull();
+    expect(status.configured_next_run).toBeGreaterThan(0);
+    expect(status.paused).toBe(true);
+    editor = await replaceUrl(page, editor, 302);
+    await editor
+      .getByRole("button", { name: "Save repository", exact: true })
+      .click();
+    await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
+      "Existing work",
+    );
+    const repeated = await store("monitoring_snapshot");
+    expect(repeated.jobs).toEqual(first.jobs);
+    expect(repeated.health[0].next_run).toBe(due);
+    expect(repeated.health[0].last_success).toBeNull();
+    expect(
+      fixture.calls.filter(
+        (call) => call.command === "admit_explicit_pull_request",
+      ),
+    ).toHaveLength(2);
+    await editor
+      .getByRole("button", { name: "Close dialog", exact: true })
+      .click();
+    await section(page, "Preferences");
+    await expect(page.locator("#global-cron")).toHaveValue(
+      "invalid unsaved global",
+    );
+    await expect(page.locator("#global-capacity")).toHaveValue("9");
+  });
+}
+
 test("exact PR provider failure is visible and fresh retry resolves through saved actor", async ({
   page,
   store,

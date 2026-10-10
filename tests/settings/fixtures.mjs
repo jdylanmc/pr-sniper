@@ -81,11 +81,11 @@ export const test = base.extend({
   ipc: async ({ store }, use) => {
     const next = new Map();
     const gates = new Set();
-    const holdNext = (command) => {
+    const holdNext = (command, afterRequests = 0) => {
       if (next.has(command)) throw new Error(`Already holding ${command}`);
       const arrived = Promise.withResolvers();
       const gate = Promise.withResolvers();
-      const hold = { arrived, gate };
+      const hold = { arrived, gate, afterRequests };
       next.set(command, hold);
       gates.add(gate);
       return { arrived: arrived.promise, release: () => gate.resolve() };
@@ -93,6 +93,10 @@ export const test = base.extend({
     const invoke = async (command, args) => {
       const hold = next.get(command);
       if (!hold) return store(command, args);
+      if (hold.afterRequests > 0) {
+        hold.afterRequests--;
+        return store(command, args);
+      }
       next.delete(command);
       // Run the real Store first, then hold only the external IPC reply.
       const result = await store(command, args).then(

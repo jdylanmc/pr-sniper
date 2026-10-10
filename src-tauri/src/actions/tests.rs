@@ -90,6 +90,55 @@ fn legacy_final_wait_runs_automatically_without_replacing_immutable_basis_or_gra
     assert!(!captured.basis.permissions.merge);
 }
 
+#[test]
+fn cadence_only_saves_do_not_replace_or_cancel_primary_final_snapshots_or_expand_permissions() {
+    let (_root, store, item) = fixture(1, true, false);
+    synchronize(&store, &item, Ok(observed()), NOW + 1).unwrap();
+    let captured = store.load_actions().unwrap().finals[0].clone();
+    let settings = store.load_settings().unwrap();
+    let mut repository = settings.repositories[0].clone();
+    repository.overrides.schedule = Some(crate::policy::Schedule::Cron {
+        expression: "0 9 * * MON-FRI".into(),
+        timezone: "America/New_York".into(),
+    });
+    store
+        .save_resource(crate::storage::ResourceEdit::Repository {
+            id: REPO.into(),
+            expected: Some(Box::new(settings.repositories[0].clone())),
+            value: Some(Box::new(repository)),
+        })
+        .unwrap();
+    validate_local(&store, &captured).unwrap();
+    synchronize(&store, &item, Ok(observed()), NOW + 2).unwrap();
+    assert_eq!(store.load_actions().unwrap().finals, vec![captured.clone()]);
+    let coordinator = Capacity::default();
+    let batch = coordinator.dispatch(&store, NOW + 2).unwrap();
+    assert!(batch.errors.is_empty(), "{:?}", batch.errors);
+    assert_eq!(batch.dispatched.len(), 1);
+    let Dispatch::Review(run, token) = &batch.dispatched[0] else {
+        panic!("Final review expected")
+    };
+    assert_eq!(run.selection, captured.execution.selection);
+    let mut preferences = store.load_settings().unwrap();
+    preferences.defaults.schedule = crate::policy::Schedule::Cron {
+        expression: "*/5 * * * *".into(),
+        timezone: "Asia/Tokyo".into(),
+    };
+    store.save_settings(&preferences).unwrap();
+    assert!(coordinator
+        .dispatch(&store, NOW + 3)
+        .unwrap()
+        .dispatched
+        .is_empty());
+    assert!(!token.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(
+        store.load_actions().unwrap().finals[0].basis,
+        captured.basis
+    );
+    assert!(store.load_actions().unwrap().effects.is_empty());
+    assert!(!captured.basis.permissions.merge);
+}
+
 fn output() -> ReviewResult {
     serde_json::from_value(json!({"reviewed_base_sha":"b".repeat(40),"output":{"synopsis":"Review completed.",
         "files":[{"path":"source.rs","order":1,"explanation":"Complete source review."}],"findings":[],"decision":"machine_sign_off"},

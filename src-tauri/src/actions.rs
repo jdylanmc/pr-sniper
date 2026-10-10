@@ -31,12 +31,13 @@ pub struct Basis {
 
 impl Basis {
     fn same_execution(&self, other: &Self) -> bool {
-        // Preserve the full action basis; retired automation preferences are inert.
+        // Preserve the full action basis except retired automation preferences and poll cadence.
         let mut current = self.clone();
         current.selection.policy.automatic_agent_start =
             other.selection.policy.automatic_agent_start;
         current.selection.policy.automatic_comment_publication =
             other.selection.policy.automatic_comment_publication;
+        current.selection.policy.schedule = other.selection.policy.schedule.clone();
         if let (Some(left), Some(right)) = (
             current.selection.configuration.as_mut(),
             other.selection.configuration.as_ref(),
@@ -45,11 +46,13 @@ impl Basis {
                 right.repository.overrides.automatic_agent_start;
             left.repository.overrides.automatic_comment_publication =
                 right.repository.overrides.automatic_comment_publication;
+            left.repository.overrides.schedule = right.repository.overrides.schedule.clone();
         }
         current.repository.overrides.automatic_agent_start =
             other.repository.overrides.automatic_agent_start;
         current.repository.overrides.automatic_comment_publication =
             other.repository.overrides.automatic_comment_publication;
+        current.repository.overrides.schedule = other.repository.overrides.schedule.clone();
         if monitoring::actionable(&current.job) && monitoring::actionable(&other.job) {
             current.job.waiting = other.job.waiting.clone();
         }

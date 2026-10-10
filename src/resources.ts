@@ -1,5 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Agent, Doctrine, Policy, WatchedIdentity } from "./policy";
+import type {
+  Agent,
+  Doctrine,
+  Policy,
+  Schedule,
+  WatchedIdentity,
+} from "./policy";
+import { scheduleDescription } from "./policy";
 import type { Repository } from "./repositories";
 
 export interface Settings {
@@ -102,6 +109,39 @@ export interface SetupReview {
 }
 
 export const savedResources = () => invoke<SavedResources>("saved_resources");
+export const scheduleStatusPending =
+  "Refreshing saved schedule. Next scan: Unverified until native status is read.";
+export interface RepositoryScheduleStatus {
+  inherited: boolean;
+  schedule: Schedule;
+  configured_next_run: number | null;
+  next_run: number | null;
+  issue: string | null;
+  enabled: boolean;
+  paused: boolean;
+}
+export const repositoryScheduleStatus = (repositoryId: string) =>
+  invoke<RepositoryScheduleStatus>("repository_schedule_status", {
+    repositoryId,
+  });
+export function scheduleStatusText(status: RepositoryScheduleStatus): string {
+  const { schedule } = status;
+  const time = (instant: number) =>
+    new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZone: schedule.timezone,
+    }).format(new Date(instant * 1000));
+  const next =
+    status.next_run === null
+      ? `Not scheduled. ${status.issue ?? "Check native monitoring in Status."}`
+      : time(status.next_run);
+  const preview =
+    status.next_run === null && status.configured_next_run !== null
+      ? ` Configured occurrence: ${time(status.configured_next_run)} (cadence preview only).`
+      : "";
+  return `${status.inherited ? "Use global schedule" : "Repository override"}: ${scheduleDescription(schedule)} / ${schedule.timezone}. Next scan: ${next}${status.next_run === null ? "" : "."}${preview}`;
+}
 export function sameResource(left: unknown, right: unknown): boolean {
   const ordered = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(ordered);

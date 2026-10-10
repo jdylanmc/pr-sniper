@@ -61,6 +61,290 @@ fn agent_edit(expected: &Settings, name: &str) -> ResourceEdit {
 }
 
 #[test]
+fn repository_schedule_rejects_invalid_cron_timezone_and_unsupported_occurrences_atomically() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    store.save_settings(&settings()).unwrap();
+    for (expression, timezone, message) in [
+        ("not a cron", "UTC", "five-field"),
+        ("0 */5 * * * *", "UTC", "five-field"),
+        ("*/5 * * * *", "Not/A_Zone", "IANA"),
+        ("0 0 31 2 *", "UTC", "no next occurrence"),
+    ] {
+        let before = store.load_settings().unwrap();
+        let bytes = std::fs::read(fixture.path().join("config/settings.json")).unwrap();
+        let mut changed = before.repositories[0].clone();
+        changed.overrides.schedule = Some(pr_sniper_lib::policy::Schedule::Cron {
+            expression: expression.into(),
+            timezone: timezone.into(),
+        });
+        let error = store
+            .save_resource(ResourceEdit::Repository {
+                id: REPO.into(),
+                expected: Some(Box::new(before.repositories[0].clone())),
+                value: Some(Box::new(changed)),
+            })
+            .unwrap_err();
+        assert!(error.contains(message), "{error}");
+        assert_eq!(
+            std::fs::read(fixture.path().join("config/settings.json")).unwrap(),
+            bytes
+        );
+        assert_eq!(store.load_settings().unwrap(), before);
+    }
+}
+
+#[test]
+fn inherited_impossible_cron_blocks_readiness_and_enabled_saves_without_blocking_valid_overrides() {
+    use pr_sniper_lib::{policy::Schedule, storage::Store};
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let mut legacy = settings();
+    legacy.defaults.schedule = Schedule::Cron {
+        expression: "0 0 31 2 *".into(),
+        timezone: "UTC".into(),
+    };
+    let mut neighbor = legacy.repositories[0].clone();
+    neighbor.id = "bbbbbbbb-bbbb-4bbb-8bbb-000000000002".into();
+    neighbor.name = "example/neighbor".into();
+    neighbor.provider_repository_id = Some("200".into());
+    neighbor.enabled = false;
+    legacy.repositories.push(neighbor);
+    store.save_settings(&legacy).unwrap();
+    let reopened = Store::new(fixture.path().to_path_buf());
+    let before = reopened.load_settings().unwrap();
+    let readiness = before.readiness();
+    assert!(!readiness.configuration_ready);
+    assert!(readiness.repositories[0].issues[0].contains("no next occurrence"));
+    let bytes = std::fs::read(fixture.path().join("config/settings.json")).unwrap();
+    let edit = ResourceEdit::Repository {
+        id: REPO.into(),
+        expected: Some(Box::new(before.repositories[0].clone())),
+        value: Some(Box::new(before.repositories[0].clone())),
+    };
+    assert!(reopened
+        .save_resource(edit)
+        .unwrap_err()
+        .contains("no next occurrence"));
+    assert_eq!(
+        std::fs::read(fixture.path().join("config/settings.json")).unwrap(),
+        bytes
+    );
+    assert_eq!(reopened.load_settings().unwrap(), before);
+    let mut repository = before.repositories[0].clone();
+    repository.overrides.schedule = Some(Schedule::Cron {
+        expression: "*/5 * * * *".into(),
+        timezone: "Asia/Tokyo".into(),
+    });
+    let valid = reopened
+        .save_resource(ResourceEdit::Repository {
+            id: REPO.into(),
+            expected: Some(Box::new(before.repositories[0].clone())),
+            value: Some(Box::new(repository)),
+        })
+        .unwrap();
+    assert!(valid.readiness().configuration_ready);
+    assert!(valid.readiness().repositories[0].issues.is_empty());
+    assert_eq!(valid.repositories[1], before.repositories[1]);
+    let valid_bytes = std::fs::read(fixture.path().join("config/settings.json")).unwrap();
+    let mut inherited = valid.repositories[0].clone();
+    inherited.overrides.schedule = None;
+    assert!(reopened
+        .save_resource(ResourceEdit::Repository {
+            id: REPO.into(),
+            expected: Some(Box::new(valid.repositories[0].clone())),
+            value: Some(Box::new(inherited.clone())),
+        })
+        .unwrap_err()
+        .contains("no next occurrence"));
+    assert_eq!(
+        std::fs::read(fixture.path().join("config/settings.json")).unwrap(),
+        valid_bytes
+    );
+    assert_eq!(reopened.load_settings().unwrap(), valid);
+    inherited.enabled = false;
+    let disabled = reopened
+        .save_resource(ResourceEdit::Repository {
+            id: REPO.into(),
+            expected: Some(Box::new(valid.repositories[0].clone())),
+            value: Some(Box::new(inherited)),
+        })
+        .unwrap();
+    assert!(disabled.readiness().repositories[0].issues[0].contains("no next occurrence"));
+    assert_eq!(disabled.repositories[1], before.repositories[1]);
+    let mut enabled = disabled.repositories[0].clone();
+    enabled.enabled = true;
+    assert!(reopened
+        .save_resource(ResourceEdit::Repository {
+            id: REPO.into(),
+            expected: Some(Box::new(disabled.repositories[0].clone())),
+            value: Some(Box::new(enabled)),
+        })
+        .unwrap_err()
+        .contains("no next occurrence"));
+    assert_eq!(reopened.load_settings().unwrap(), disabled);
+}
+
+#[test]
+fn inherited_future_validation_covers_public_policy_and_preference_enable_paths_without_a_global_gate(
+) {
+    use pr_sniper_lib::policy::Schedule;
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let mut legacy = settings();
+    legacy.defaults.schedule = Schedule::Cron {
+        expression: "0 0 31 2 *".into(),
+        timezone: "UTC".into(),
+    };
+    legacy.repositories[0].enabled = false;
+    store.save_settings(&legacy).unwrap();
+    let before = store.load_settings().unwrap();
+    let mut enabled = before.clone();
+    enabled.repositories[0].enabled = true;
+    assert!(store
+        .save_preferences(enabled, &before)
+        .unwrap_err()
+        .contains("no next occurrence"));
+    assert_eq!(store.load_settings().unwrap(), before);
+    let mut unrelated = before.clone();
+    unrelated.capacity = 2;
+    let unrelated = store.save_preferences(unrelated, &before).unwrap();
+    assert_eq!(unrelated.defaults.schedule, before.defaults.schedule);
+    let mut override_repository = unrelated.repositories[0].clone();
+    override_repository.enabled = true;
+    override_repository.overrides.schedule = Some(Schedule::Cron {
+        expression: "*/5 * * * *".into(),
+        timezone: "UTC".into(),
+    });
+    let valid = store
+        .save_resource(ResourceEdit::Repository {
+            id: REPO.into(),
+            expected: Some(Box::new(unrelated.repositories[0].clone())),
+            value: Some(Box::new(override_repository)),
+        })
+        .unwrap();
+    let mut inherit = valid.repositories[0].overrides.clone();
+    inherit.schedule = None;
+    assert!(store
+        .save_repository_policy(REPO, inherit)
+        .unwrap_err()
+        .contains("no next occurrence"));
+    assert_eq!(store.load_settings().unwrap(), valid);
+    let mut defaults = valid.defaults.clone();
+    defaults.schedule = Schedule::Cron {
+        expression: "0 0 31 4 *".into(),
+        timezone: "UTC".into(),
+    };
+    assert!(store
+        .save_defaults(defaults)
+        .unwrap_err()
+        .contains("no next occurrence"));
+    assert_eq!(store.load_settings().unwrap(), valid);
+}
+
+#[test]
+fn disabled_legacy_interval_assignment_edits_preserve_policy_but_enabled_save_requires_actual_cron()
+{
+    use pr_sniper_lib::{
+        monitoring::{repository_schedule_status, Monitor},
+        policy::{Schedule, Selector},
+    };
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let mut legacy = settings();
+    legacy.defaults.schedule = Schedule::Cron {
+        expression: "0 9 * * MON-FRI".into(),
+        timezone: "America/New_York".into(),
+    };
+    legacy.repositories[0].enabled = false;
+    legacy.repositories[0].overrides.schedule = Some(Schedule::Interval {
+        minutes: 7,
+        timezone: "UTC".into(),
+    });
+    legacy.repositories[0].overrides.selector = Some(Selector::Agent {
+        value: "legacy-reviewer".into(),
+    });
+    legacy.repositories[0].overrides.prompt =
+        Some("Keep the legacy repository instructions.".into());
+    legacy.repositories[0]
+        .overrides
+        .automatic_comment_publication = Some(true);
+    store.save_settings(&legacy).unwrap();
+    let before = store.load_settings().unwrap();
+    let mut repository = before.repositories[0].clone();
+    let mut assignment = repository.assignments[0].clone();
+    assignment.id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd".into();
+    assignment.schedule = before.defaults.schedule.clone();
+    repository.assignments.push(assignment.clone());
+    let saved = store
+        .save_resource(ResourceEdit::Repository {
+            id: REPO.into(),
+            expected: Some(Box::new(before.repositories[0].clone())),
+            value: Some(Box::new(repository)),
+        })
+        .unwrap();
+    assert!(!saved.repositories[0].enabled);
+    assert_eq!(saved.defaults, before.defaults);
+    assert_eq!(
+        saved.repositories[0].overrides,
+        before.repositories[0].overrides
+    );
+    assert_eq!(
+        saved.repositories[0].assignments[0],
+        before.repositories[0].assignments[0]
+    );
+    assert_eq!(saved.repositories[0].assignments[1], assignment);
+    assert_eq!(saved.repository_authorizations.get(REPO), Some(&None));
+    let mut monitor = Monitor::restore(&store).unwrap();
+    assert!(monitor
+        .prepare_checks(&store, 1_800_000_000, false)
+        .unwrap()
+        .is_empty());
+    let mut enabled = saved.repositories[0].clone();
+    enabled.enabled = true;
+    assert!(store
+        .save_resource(ResourceEdit::Repository {
+            id: REPO.into(),
+            expected: Some(Box::new(saved.repositories[0].clone())),
+            value: Some(Box::new(enabled.clone())),
+        })
+        .unwrap_err()
+        .contains("five-field cron"));
+    assert_eq!(store.load_settings().unwrap(), saved);
+    enabled.overrides.schedule = Some(before.defaults.schedule.clone());
+    let valid = store
+        .save_resource(ResourceEdit::Repository {
+            id: REPO.into(),
+            expected: Some(Box::new(saved.repositories[0].clone())),
+            value: Some(Box::new(enabled)),
+        })
+        .unwrap();
+    assert!(valid.repositories[0].enabled);
+    assert_eq!(
+        valid.repositories[0].assignments,
+        saved.repositories[0].assignments
+    );
+    monitor
+        .synchronize_configuration(
+            &store,
+            &std::collections::BTreeMap::from([(
+                "22".into(),
+                pr_sniper_lib::monitoring::AccountAvailability {
+                    login: "fixture".into(),
+                    connected: true,
+                },
+            )]),
+            1_800_000_000,
+        )
+        .unwrap();
+    let status = repository_schedule_status(&store, REPO, 1_800_000_000).unwrap();
+    assert_eq!(status.schedule, before.defaults.schedule);
+    assert!(!status.inherited);
+    assert_eq!(status.next_run, Some(monitor.snapshot()[0].next_run));
+    assert!(status.issue.is_none());
+}
+
+#[test]
 fn intelligence_resource_save_restart_and_job_snapshots_survive_later_agent_edits() {
     use pr_sniper_lib::storage::{AgentIntelligence, Store};
     let fixture = Fixture::new();

@@ -4,8 +4,13 @@ import {
   intelligenceError,
   type CopilotModel,
 } from "./copilot";
-import { doctrineTitles, effectivePolicy } from "./policy";
-import { type SetupReview } from "./resources";
+import { doctrineTitles, effectivePolicy, scheduleDescription } from "./policy";
+import {
+  type SetupReview,
+  repositoryScheduleStatus,
+  scheduleStatusText,
+  scheduleStatusPending,
+} from "./resources";
 import { mountSettings, type SetupTarget, type GuidedReturn } from "./settings";
 import "./genie.css";
 
@@ -64,6 +69,8 @@ export function mountGenie(
   root.classList.add("genie-page");
   let mode: SetupMode = "welcome";
   let state: SetupReview | undefined;
+  let schedules: Record<string, string> = {};
+  let schedulesPending = false;
   let active = false;
   let request = 0;
   let applying: object | undefined;
@@ -85,6 +92,18 @@ export function mountGenie(
     !!id && accounts[id]?.connected === true;
   const scopeFor = (id: string) =>
     state?.scopes.find((scope) => scope.repository_id === id);
+  const savedScheduleText = (id: string) =>
+    schedules[id] ??
+    (schedulesPending
+      ? scheduleStatusPending
+      : "Saved schedule unavailable; refresh setup.");
+  const updateScheduleLabels = () => {
+    root
+      .querySelectorAll<HTMLElement>("[data-genie-schedule]")
+      .forEach((label) => {
+        label.textContent = savedScheduleText(label.dataset.genieSchedule!);
+      });
+  };
   function progress() {
     if (!state) return [false, false, false, false];
     const { settings, readiness } = state.resources;
@@ -148,7 +167,7 @@ export function mountGenie(
           : `
       <section class="genie-card"><div class="genie-card-heading"><span class="genie-symbol">${spark}</span><span>${mode === "welcome" ? "A fresh start" : "Onboarding Genie"}<small>${mode === "welcome" ? "" : count === 4 ? "Ready for your final check" : `Step ${next + 1} of 4`}</small></span></div>
       <h2>${mode === "welcome" ? "A second set of eyes.<br />Let's set yours up." : count === 4 ? "Your setup is ready." : titles[next]}</h2>
-      <p>${mode === "welcome" ? "Connect your accounts, create a reviewer, and choose what to watch." : count === 4 ? "Review your saved identities, permissions, filters and global schedule. Repository Save already authorized monitoring." : guidance[next]}</p>
+      <p>${mode === "welcome" ? "Connect your accounts, create a reviewer, and choose what to watch." : count === 4 ? "Review your saved identities, permissions, filters and repository schedules. Repository Save already authorized monitoring." : guidance[next]}</p>
       <button type="button" class="genie-action" data-genie-next data-genie-focus="next" ${!state ? "disabled" : ""}>${mode === "welcome" ? (count ? "Continue with Genie" : "Set up with Genie") : count === 4 ? "Review setup" : titles[next]}</button>
       ${mode === "welcome" ? '<button type="button" class="genie-text" data-genie-manual data-genie-focus="manual">I’ll set it up myself</button>' : ""}
       </section>
@@ -239,6 +258,7 @@ export function mountGenie(
           <dt>Pull requests</dt><dd>${scope?.mode === "all_open_and_future" ? "All currently open and future matching PRs" : scope?.active ? "Legacy saved admission retained; Save repository to include all currently open and future matching PRs" : "Not configured"}</dd>
           <dt>Authors</dt><dd>${watched.length ? escape(watched.map((a) => `${a.login} (${a.id})`).join(", ")) : "All authors"}</dd>
           <dt>Review requests</dt><dd>${policy.reviewer_assignment ? "Acting-account requests can admit older or unwatched PRs" : "Off"}</dd>
+          <dt>Schedule</dt><dd data-genie-schedule="${escape(repository.id)}">${escape(savedScheduleText(repository.id))}</dd>
           <dt>Review execution</dt><dd>Automatic when eligible; pause, disablement, account access and capacity still apply</dd>
           <dt>Publication</dt><dd>Separate Publish Comment and primary Reply Comment permissions; unpermitted output stays local</dd></dl>
           ${(repository.assignments ?? [])
@@ -258,7 +278,7 @@ export function mountGenie(
           <button class="genie-text" type="button" data-genie-edit="repositories" data-genie-focus="repository-${escape(repository.id)}">Edit repositories</button></section>`;
         })
         .join("")}
-      <section class="genie-card"><h3>One global schedule</h3><p>${schedule.kind === "cron" ? `<code>${escape(schedule.expression)}</code>` : `Legacy interval: ${schedule.minutes} minutes; choose a global cron`} / ${escape(schedule.timezone)}</p>
+      <section class="genie-card"><h3>Global default schedule</h3><p>${escape(scheduleDescription(schedule))} / ${escape(schedule.timezone)}. Repositories inherit this saved cadence unless explicitly overridden.</p>
       <h3>Room to work</h3><p>At most <strong>${settings.capacity} AI tasks</strong> on this computer. Full passes, primary final reviews and targeted replies share capacity.</p>
       <p>Global automation: <strong>${state.paused ? "Paused; finishing setup will not resume it" : "Running when saved configuration and execution gates allow"}</strong>.</p>
       <button type="button" class="genie-text" data-genie-edit="preferences" data-genie-focus="preferences">Edit schedule and capacity</button></section>
@@ -327,11 +347,31 @@ export function mountGenie(
     if (!active || applying) return;
     const current = ++request;
     if (models) checkedModelsFor = undefined;
+    schedules = {};
+    schedulesPending = true;
+    updateScheduleLabels();
     try {
       const next = await read();
+      const statuses = await Promise.all(
+        (next.resources.settings.repositories ?? []).map(async (repository) => {
+          try {
+            return [
+              repository.id,
+              scheduleStatusText(await repositoryScheduleStatus(repository.id)),
+            ] as const;
+          } catch (cause) {
+            return [
+              repository.id,
+              `Saved schedule unavailable: ${failure(cause)}`,
+            ] as const;
+          }
+        }),
+      );
       if (!active || current !== request) return;
       const changed = next.confirmation !== state?.confirmation;
       state = next;
+      schedules = Object.fromEntries(statuses);
+      schedulesPending = false;
       options.state?.(next);
       if (changed) checkedModelsFor = undefined;
       message = "";
@@ -345,9 +385,11 @@ export function mountGenie(
         checkedModelsFor = next.confirmation;
       }
       if (changed || models || lastError || !root.children.length) render();
+      else updateScheduleLabels();
       lastError = "";
     } catch (cause) {
       if (active && current === request) {
+        schedulesPending = false;
         checkedModelsFor = undefined;
         message = failure(cause);
         lastError = message;
@@ -387,6 +429,8 @@ export function mountGenie(
     invalidateWork();
     mode = next;
     active = true;
+    schedules = {};
+    schedulesPending = true;
     render();
     const position = positions.get(mode);
     if (position?.focus)

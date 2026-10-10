@@ -27,6 +27,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   conversations to the primary without replaying history or changing original
   feedback ownership, and preserve actual job snapshots and uncertain-write
   recovery. (#122)
+- Let repositories inherit the saved global cron and time zone or use an explicit
+  cadence override, with effective next-scan status. Preserve pause, disabled
+  repositories, shared AI capacity, immutable review evidence and action
+  permissions when changing schedules. (#123)
 - Automatically queue and run eligible admitted reviews without manual-start
   preferences or a per-PR Start click. Preserve pause, disabled repositories,
   account/assignment availability, shared capacity, retries and independent
@@ -64,7 +68,7 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 - Present shared-style repository editors for
   real account binding, watched identities and assignments.
   Expose the independent reviewer-request override, guarded account unbinding
-  and the saved global schedule without adding scoped polling controls.
+  and the effective inherited or repository-specific schedule.
   Preserve explicit assignment capabilities, primary roles, resource
   save guards and session drafts; ambiguous binding requires explicit account choice.
 - Match the approved compact Agent and doctrine libraries with shared-resource

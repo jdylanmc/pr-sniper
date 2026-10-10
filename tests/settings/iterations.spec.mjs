@@ -133,7 +133,7 @@ test("one global repository read exposes seven ordered independent jobs and immu
     "attempt 3",
   );
   await expect(page.locator("#schedule-health")).toContainText(
-    "Global scan: cron:*/15 * * * *:UTC",
+    "Repository scans: cron:*/15 * * * *:UTC",
   );
   await expect(page.locator("#schedule-health")).toContainText(
     "repository read; fans out to the scan's assignments",

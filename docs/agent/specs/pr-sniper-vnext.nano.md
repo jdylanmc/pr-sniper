@@ -51,6 +51,28 @@ after peer passes/concerns clear, signed current revision/discussion/configurati
 evidence, draft restrictions, green CI and provider merge policies remain.
 This product amendment grants development agents no approval/merge authority.
 
+### Inherited repository cadence amendment (#123)
+
+The [human-approved October 5 visual-bugs specification](https://github.com/jdylanmc/pr-sniper/issues/51#issuecomment-6008945622)
+supersedes D01, AC-002 and the historical per-repository polling exclusion only.
+New and existing repositories inherit the saved global five-field cron and IANA
+time zone until an explicit repository override is saved. Global edits affect
+inheriting repositories only; clearing an override returns to the actual saved
+global schedule. Overrides persist across restart. Shared Settings/Genie shows
+human-readable cadence, an advanced cron helper, effective time zone and native
+next-scan time. Invalid or unsupported expressions and time zones are actionable
+errors that retain drafts. An unconfigured inherited global schedule blocks that
+repository, not valid independent overrides.
+
+Repository disablement and global pause remain separate gates. Cadence controls
+discovery/reconciliation only: queued AI work drains shared capacity without a
+poll, and cadence-only edits do not grant provider actions, broaden activation
+consent, rerun unchanged completed reviews, rewrite snapshots or cancel analysis.
+Legacy assignment schedules remain readable history, not per-Agent timers.
+No new clock, scheduling framework or per-Agent polling controls are authorized.
+The historical clauses below retain unrelated intent; this amendment does not
+implement #119, #121, #122 or #124.
+
 ### Always-on eligible review amendment (#120)
 
 The human-approved [October 5 visual-bugs specification](https://github.com/jdylanmc/pr-sniper/issues/51#issuecomment-6008945622)
@@ -68,8 +90,8 @@ authority, including for interrupted work. No app-data reset is required or
 performed. Actual job configuration and provider safety receipts are retained.
 Automatic read-only review grants no Comment, Approve or Merge permission and
 does not weaken revision, provider-policy or uncertain-write recovery checks.
-This scoped amendment does not implement the later capability, watch or
-repository-schedule amendments (#121-#123), or explicit PR intake (#119).
+This always-on amendment does not implement the capability/watch amendments
+(#121/#122), the separate cadence amendment above, or explicit PR intake (#119).
 
 ### Later human amendment: repository Save is authorization (2026-10-05)
 

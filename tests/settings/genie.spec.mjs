@@ -791,6 +791,177 @@ for (const [name, inherited, local, override, expected] of [
   });
 }
 
+test("repository override is summarized by shared Genie with native configured preview and no global draft", async ({
+  page,
+  store,
+}) => {
+  await synthetic(page, store, true);
+  const saved = await seed(store);
+  saved.repositories[0].overrides = {
+    schedule: {
+      kind: "cron",
+      expression: "0 9 * * MON-FRI",
+      timezone: "America/New_York",
+    },
+  };
+  await store("seed_settings", saved);
+  await page.goto("/");
+  await page.locator("[data-genie-next]").click();
+  await saveConfiguration(page);
+  const schedule = page
+    .locator(".genie-repository dt")
+    .filter({ hasText: /^Schedule$/ })
+    .locator("+ dd");
+  await expect(schedule).toContainText(
+    "Repository override: Weekdays at 09:00 / America/New_York. Next scan:",
+  );
+  const status = await store("repository_schedule_status", { repositoryId });
+  expect(status.next_run).toBeNull();
+  expect(status.configured_next_run).toBeGreaterThan(0);
+  expect(status.issue).toContain("not synchronized");
+  expect(status.schedule).toEqual(saved.repositories[0].overrides.schedule);
+  await expect(page.locator(".genie-page")).toContainText(
+    "Global default schedule",
+  );
+});
+
+test("Genie preserves actionable unavailable native health instead of advertising a future scan", async ({
+  page,
+  store,
+}) => {
+  await synthetic(page, store, true);
+  const saved = await seed(store);
+  const repository = saved.repositories[0];
+  await store("seed_queue_state", {
+    jobs: [],
+    reviews: [],
+    publications: [],
+    follow_ups: [],
+    monitoring: {
+      health: {
+        [repository.id]: {
+          repository_id: repository.id,
+          name: repository.name,
+          provider_account_id: "22",
+          provider_repository_id: "100",
+          schedule_key: "cron:*/15 * * * *:UTC",
+          enabled: true,
+          last_attempt: 100,
+          last_success: null,
+          next_run: 0,
+          schedule_available: false,
+          last_failure: "account_disconnected",
+          in_flight: false,
+        },
+      },
+    },
+  });
+  await page.goto("/");
+  await page.locator("[data-genie-next]").click();
+  await saveConfiguration(page);
+  const schedule = page
+    .locator(".genie-repository dt")
+    .filter({ hasText: /^Schedule$/ })
+    .locator("+ dd");
+  await expect(schedule).toContainText("Next scan: Not scheduled.");
+  await expect(schedule).toContainText("Reconnect the acting GitHub account");
+  await expect(schedule).toContainText("Configured occurrence:");
+  const status = await store("repository_schedule_status", { repositoryId });
+  expect(status.next_run).toBeNull();
+  expect(status.configured_next_run).toBeGreaterThan(0);
+});
+
+test("Genie edit-route refresh clears an old healthy date while the NEW native reply after global Save is held", async ({
+  page,
+  store,
+  ipc,
+}) => {
+  await synthetic(page, store, true);
+  const saved = await seed(store);
+  const health = {
+    repository_id: repositoryId,
+    name: saved.repositories[0].name,
+    provider_account_id: "22",
+    provider_repository_id: "100",
+    schedule_key: "cron:*/15 * * * *:UTC",
+    enabled: true,
+    last_attempt: 100,
+    last_success: 100,
+    next_run: 2000000000,
+    schedule_available: true,
+    last_failure: null,
+    in_flight: false,
+  };
+  const seedStatus = (value) =>
+    store("seed_queue_state", {
+      jobs: [],
+      reviews: [],
+      publications: [],
+      follow_ups: [],
+      monitoring: { health: { [repositoryId]: value } },
+    });
+  await seedStatus(health);
+  await page.goto("/");
+  await page.locator("[data-genie-next]").click();
+  await saveConfiguration(page);
+  const schedule = page
+    .locator(".genie-repository dt")
+    .filter({ hasText: /^Schedule$/ })
+    .locator("+ dd");
+  await expect(schedule).toContainText("2033");
+  await page.evaluate(() => window.__settingsIdle());
+  await page.locator('[data-genie-edit="preferences"]').last().click();
+  await page.locator("#cron-helper").selectOption("0 * * * *");
+  await page.locator("#save-settings").click();
+  await expect(page.locator("#save-status")).toHaveText("All changes saved");
+  await seedStatus({
+    ...health,
+    schedule_key: "cron:0 * * * *:UTC",
+    next_run: 0,
+    schedule_available: false,
+    last_failure: "network",
+    operation: {
+      id: "eeeeeeee-eeee-4eee-8eee-000000000001",
+      provider: "github",
+      account_id: "22",
+      configuration_id: repositoryId,
+      repository_id: "100",
+      pull_request_id: null,
+      head_sha: null,
+      trigger_policy: "[[],true]",
+      operation_type: "repository_poll",
+      state: "manual_retry",
+      attempt_count: 4,
+      initial_attempt_at: 100,
+      retry_deadline: 1000,
+      next_attempt_at: null,
+      failure: "network",
+      attempted_mutation: null,
+      pending_review_id: null,
+      owned_thread_id: null,
+      triggering_external_comment_id: null,
+      confirmed_receipt: null,
+    },
+  });
+  const held = ipc.holdNext("repository_schedule_status");
+  try {
+    await back(page);
+    await held.arrived;
+    await expect(schedule).toContainText("Unverified");
+    await expect(schedule).not.toContainText("2033");
+    const native = await store("repository_schedule_status", { repositoryId });
+    expect(native.next_run).toBeNull();
+    expect(native.issue).toContain("Open Status and Retry");
+    held.release();
+    await page.evaluate(() => window.__settingsIdle());
+    await expect(schedule).toContainText("Next scan: Not scheduled.");
+    await expect(schedule).toContainText("Open Status and Retry");
+    await expect(schedule).not.toContainText("2033");
+  } finally {
+    held.release();
+  }
+});
+
 test("GEN3 reconnect of completed account A while B catalog waits requires new evidence", async ({
   page,
   store,

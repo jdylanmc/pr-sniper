@@ -38,6 +38,8 @@ test("reusable Agents keep independent repository assignments and preserve legac
     prompt: "Keep the legacy repository instructions.",
     automatic_comment_publication: true,
   };
+  // Preserve the archival interval through the intentional disabled-repair path.
+  initial.repositories[0].enabled = false;
   initial.presets = [
     {
       id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -92,6 +94,23 @@ test("reusable Agents keep independent repository assignments and preserve legac
   ).toHaveLength(2);
   await saveChanges(page);
   let saved = (await store("snapshot")).settings;
+  expect(saved.repositories.map(({ enabled }) => enabled)).toEqual(
+    initial.repositories.map(({ enabled }) => enabled),
+  );
+  const [disabledRepository, enabledNeighbor] = initial.repositories;
+  expect(Object.keys(saved.repository_authorizations).sort()).toEqual(
+    [disabledRepository.id, enabledNeighbor.id].sort(),
+  );
+  expect(saved.repository_authorizations[disabledRepository.id]).toBeNull();
+  expect(saved.repository_authorizations[enabledNeighbor.id]).toEqual({
+    account_id: enabledNeighbor.provider_account_id,
+    name: enabledNeighbor.name,
+    repository_id: enabledNeighbor.provider_repository_id,
+    version: expect.stringMatching(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    ),
+  });
+  const authorizations = saved.repository_authorizations;
   expect(
     saved.repositories[0].assignments.map(({ schedule }) => schedule),
   ).toEqual([initial.defaults.schedule, initial.defaults.schedule]);
@@ -103,6 +122,10 @@ test("reusable Agents keep independent repository assignments and preserve legac
   await saveChanges(page);
   await page.reload();
   saved = (await store("snapshot")).settings;
+  expect(saved.repositories.map(({ enabled }) => enabled)).toEqual(
+    initial.repositories.map(({ enabled }) => enabled),
+  );
+  expect(saved.repository_authorizations).toEqual(authorizations);
   expect(saved.agents[0].prompt).toBe("Updated shared Agent instructions.");
   expect(saved.agents[1]).toEqual(initial.agents[1]);
   expect(saved.repositories.map(({ assignments }) => assignments)).toEqual(
@@ -142,5 +165,8 @@ test("reusable Agents keep independent repository assignments and preserve legac
         ({ assignments }) => assignments,
       ),
     ).toEqual(assignments);
+    expect(
+      (await store("snapshot")).settings.repository_authorizations,
+    ).toEqual(authorizations);
   }
 });

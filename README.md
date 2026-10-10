@@ -75,7 +75,8 @@ Approve and Merge off. Existing saved permissions are unchanged. Repository
 **Save** authorizes all currently open and future matching pull requests.
 There is no separate repository scope preview or confirmation, including in
 Genie. The setup summary shows both identities, effective
-assignments/primary/independent permissions, filters, the single cron/time zone,
+assignments/primary/independent permissions, filters, effective repository
+cadences/time zones/next scans,
 AI capacity and global pause. It checks assigned models' current catalogs,
 not subscriptions or inference. Watched authors use monitoring's effective
 inherited/override-plus-local union, deduplicated by stable ID. Both repository
@@ -290,7 +291,7 @@ destinations explain cleaned detail without selecting another PR or reopened
 iteration. Published discussion remains on GitHub; unpublished terminal detail
 has no restore guarantee. There is no purge control or terminal-history screen.
 
-Preferences separates **Saved preferences** (the one global cron, time zone,
+Preferences separates **Saved preferences** (the inherited global cron, time zone,
 machine capacity and comment-publication defaults) from
 **Immediate controls** (pause, notification opt-in and startup).
 Save preferences and Reset changes do not apply or undo native controls.
@@ -598,9 +599,23 @@ unchanged. Opted-in provider
 actions require aggregate clearance and the primary final-review path below.
 Its compact editor exposes the stable account/repository IDs, enablement,
 saved author filters, independent reviewer-request override, verified
-watched people and the **saved global schedule** (not an unsaved Preferences
-draft). No repository or Agent polling builder is exposed. Each new assignment
-receives missing normal review work at the next global scan; saving is not a scan.
+watched people and **Monitoring schedule**: **Use global schedule** or an explicit
+**Repository override**, with human-readable cadence, advanced five-field cron,
+IANA time zone and the actual native scheduled next scan after Save. Unavailable
+health, retry exhaustion, pause, disablement and unsynchronized saves show no
+scheduled scan and explain recovery. A separately labeled **Configured occurrence**
+is only a native cron preview, never a promise that a blocked repository will scan.
+Starting a saved-status refresh retires the previous scan promise until the
+current native reply arrives; pending or failed reads never retain an old date.
+Effective inherited and overridden cron must have a future occurrence before an
+enabled repository can be saved; disabled legacy configurations remain repairable.
+Valid overrides do not depend on an unusable saved global schedule. Inheritance uses the
+saved global settings, never an unsaved Preferences draft. Global edits affect
+inheriting repositories only; removing an override returns to the actual global
+cron/time zone. Invalid/unsupported expressions and time zones retain the draft
+with an actionable error. Overrides persist across restart. No per-Agent timers
+are exposed. Each new assignment receives missing normal review work at the next
+repository scan; saving is not a scan.
 **Repository and connection** retains verification, metadata reads, edit,
 guarded account unbinding and removal. Unbinding preserves assignments,
 permissions and completed evidence, but provider operations need a new explicit
@@ -618,11 +633,18 @@ retain explicit errors and retry paths, without an unbound success fallback.
 
 **Preferences** exposes one global five-field cron expression, default
 `*/15 * * * *` in `UTC`, an expression helper, explicit IANA time-zone semantics,
-and saved AI capacity (default four). Legacy interval choices and scoped
-schedules remain readable, without scoped polling editors. An incompatible
-legacy global interval remains visible as a setup issue until explicitly
-replaced, never silently converted. The global scheduler consumes this saved
-cron; the shared AI dispatcher consumes the positive capacity independently.
+and saved AI capacity (default four). Repositories inherit this saved default
+unless explicitly overridden. Legacy assignment schedules remain readable
+history, not timers. An incompatible legacy global interval remains visible as
+an issue for inheriting repositories until explicitly replaced, never silently
+converted; a valid repository override remains usable. Repository cadence
+controls discovery/reconciliation, not AI capacity draining or provider-action
+permission. Cadence-only changes preserve running analyses, actual snapshots,
+activation consent and unchanged completed reviews.
+
+This is the bounded [approved #123 cadence amendment](https://github.com/jdylanmc/pr-sniper/issues/51#issuecomment-6008945622)
+to the earlier global-only vNext schedule; unrelated capability/watch/account
+requirements remain separate deliveries.
 
 **Doctrines** manages plain-text review principles. A fresh configuration
 persists ten bundled doctrines on first load, before any Settings tab is
@@ -825,8 +847,10 @@ OS delivery/click-through verification and its evidence limits.
 
 ### Polling and detection
 
-While the menu-bar process is active, one global five-field cron schedule scans
-enabled, configured repositories in the saved IANA time zone. Each scan
+While the menu-bar process is active, each enabled, configured repository scans
+when its effective five-field cron is due in its saved IANA time zone. New and
+existing repositories inherit the global schedule unless explicitly overridden.
+Each scan
 captures its repository assignments. One read per account/repository binding
 fans out to individual Agent jobs; assignment timers are not used. Cron times
 skipped by a spring daylight-saving jump run at the first valid local time;
@@ -836,7 +860,7 @@ global scan; repeated requests during a read coalesce. Bindings addressing the
 same remote repository drain serially. Check Now never bypasses Retry-After or
 an existing retry budget.
 
-When no enabled repository is schedulable, the next global scan is suspended
+When no enabled repository is schedulable, the aggregate next scan is suspended
 instead of repeatedly running empty ticks. The schedule resumes at its next
 occurrence when a repository becomes eligible again.
 
@@ -852,7 +876,7 @@ publish comments.
 Repository Save commits authorization with configuration in one atomic settings
 replacement. No provider backlog snapshot is read during Save, and no additional
 scope confirmation is required. All currently open and future matching PRs are
-eligible at the next global scan, subject to execution gates.
+eligible at the next repository scan, subject to execution gates.
 The separate polling cache can recover this authorization after a failed write
 or restart; synchronization failures remain visible. An unrelated preference
 save or config load never authorizes or enables an unconfigured/disabled row.

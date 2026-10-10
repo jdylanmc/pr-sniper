@@ -44,6 +44,7 @@ impl Selection {
         let mut policy = self.policy.clone();
         policy.automatic_agent_start = other.policy.automatic_agent_start;
         policy.automatic_comment_publication = other.policy.automatic_comment_publication;
+        policy.schedule = other.policy.schedule.clone();
         self.agent == other.agent
             && policy == other.policy
             && self.doctrine == other.doctrine
@@ -56,6 +57,7 @@ impl Selection {
                     overrides.automatic_agent_start = b.overrides.automatic_agent_start;
                     overrides.automatic_comment_publication =
                         b.overrides.automatic_comment_publication;
+                    overrides.schedule = b.overrides.schedule.clone();
                     // Role/capability evidence is archival, not a read-only
                     // execution grant. Provider stages revalidate current authority.
                     left.doctrines == right.doctrines

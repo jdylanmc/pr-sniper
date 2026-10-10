@@ -1706,6 +1706,15 @@ fn saved_resources(host: State<'_, Host>) -> Result<storage::SavedResources, Str
 }
 
 #[tauri::command]
+fn repository_schedule_status(
+    host: State<'_, Host>,
+    repository_id: String,
+) -> Result<monitoring::RepositoryScheduleStatus, String> {
+    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+    monitoring::repository_schedule_status(&store, &repository_id, now_seconds()?)
+}
+
+#[tauri::command]
 fn validate_resource(
     host: State<'_, Host>,
     edit: storage::ResourceEdit,
@@ -4040,6 +4049,7 @@ pub fn run() {
             save_preferences,
             saved_resources,
             validate_resource,
+            repository_schedule_status,
             save_resource,
             capacity::set_automation_paused,
             capacity::automation_snapshot,
@@ -4806,6 +4816,49 @@ mod github_auth_tests {
         assert!(warning.contains("monitoring scope"));
         assert!(warning.contains("diagnostics"));
         assert_eq!(store.lock().unwrap().load_settings().unwrap(), settings);
+    }
+
+    #[test]
+    fn committed_repository_cadence_reload_updates_health_without_touching_fixture_credentials_or_scope(
+    ) {
+        let (_root, store, monitor, auth) = monitoring_fixture();
+        let before = store.load_settings().unwrap();
+        let activation = store.load_monitoring_state().unwrap().activations;
+        let mut repository = before.repositories[0].clone();
+        repository.overrides.schedule = Some(crate::policy::Schedule::Cron {
+            expression: "0 9 * * MON-FRI".into(),
+            timezone: "America/New_York".into(),
+        });
+        let edit = crate::storage::ResourceEdit::Repository {
+            id: repository.id.clone(),
+            expected: Some(Box::new(before.repositories[0].clone())),
+            value: Some(Box::new(repository)),
+        };
+        super::validate_repository_save_account(&auth, &BTreeMap::new(), &edit, None).unwrap();
+        let saved_settings = store.save_resource(edit).unwrap();
+        let store = Mutex::new(store);
+        let monitor = Mutex::new(monitor);
+        let saved = finish_committed_settings(
+            &Mutex::new(BTreeMap::new()),
+            &Mutex::new(auth),
+            &store,
+            &monitor,
+            saved_settings.clone(),
+        );
+        assert!(saved.warning.is_none(), "{:?}", saved.warning);
+        assert_eq!(saved.settings, saved_settings);
+        let health = monitor.lock().unwrap().snapshot().remove(0);
+        assert_eq!(health.schedule_key, "cron:0 9 * * MON-FRI:America/New_York");
+        assert!(health.next_run > 0);
+        assert_eq!(
+            store
+                .lock()
+                .unwrap()
+                .load_monitoring_state()
+                .unwrap()
+                .activations,
+            activation
+        );
     }
 
     #[test]
