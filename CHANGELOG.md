@@ -7,6 +7,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Added
 
+- Install the `pull-request` and `create-pull-request` skills project-locally and
+  require agents to use `/pull-request` for PR bodies (what/why/how, evidence,
+  blast radius).
 - Configure Agents with advertised reasoning-effort and context-tier choices,
   explicit Provider defaults and visible unsupported selections. Preserve
   deliberate choices and immutable job evidence, and verify actual session
@@ -103,6 +106,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- Run `npm run test:packaging:windows` on a default Windows client, where the
+  `Restricted` PowerShell policy refused the script. The npm script now bypasses
+  policy for its own process only; Windows development and packaging docs show
+  the same for other repository scripts.
 - Remove the persistent doctrine-reset message from Settings without leaving
   an empty notice area. Keep reconciliation counts in Diagnostics, preserving
   one-time reconciliation, later edits and current error notices. (#146)

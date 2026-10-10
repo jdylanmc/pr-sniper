@@ -21,7 +21,7 @@
     "bundle": "tauri build --bundles app",
     "build:windows": "tauri build --no-bundle -- --locked",
     "bundle:windows": "tauri bundle --ci --no-sign --bundles nsis",
-    "test:packaging:windows": "powershell -NoProfile -File tests/release/windows-packaging.ps1"
+    "test:packaging:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File tests/release/windows-packaging.ps1"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1"

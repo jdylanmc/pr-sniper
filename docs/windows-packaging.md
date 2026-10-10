@@ -255,8 +255,8 @@ npm run test:release:windows
 npm run test:packaging:windows
 npm run build:windows
 npm run bundle:windows
-.\scripts\windows-artifact.ps1
-.\scripts\windows-installer-artifact.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-artifact.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-installer-artifact.ps1
 ```
 
 The pinned Tauri bundler patches bundle-type bytes **while building the installer,
@@ -310,7 +310,7 @@ To produce and **pack, but not install**, a local test candidate:
 ```powershell
 $directory = 'src-tauri\target\windows-installer-artifact'
 $metadata = Get-Content "$directory\installer.json" -Raw | ConvertFrom-Json
-.\scripts\windows-chocolatey.ps1 -Mode LocalTest `
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-chocolatey.ps1 -Mode LocalTest `
   -Installer "$directory\$($metadata.filename)" -Version $metadata.version `
   -Sha256 $metadata.sha256 -Commit $metadata.commit `
   -Destination src-tauri\target\chocolatey-localtest
