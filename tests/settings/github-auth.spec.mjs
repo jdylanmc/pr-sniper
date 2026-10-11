@@ -21,6 +21,8 @@ test("browser OAuth confirms two accounts without exposing credentials", async (
   let pendingIdentity = null;
   let connectingReads = 0;
   const starts = [];
+  const confirmed = [];
+  let failHubotConfirm = true;
   await page.exposeFunction("__githubAuth", (command, args) => {
     if (command === "start_github_browser_auth") {
       starts.push(args ?? {});
@@ -58,6 +60,11 @@ test("browser OAuth confirms two accounts without exposing credentials", async (
         };
     }
     if (command === "confirm_github_account") {
+      if (pendingIdentity.login === "hubot" && failHubotConfirm) {
+        failHubotConfirm = false;
+        throw new Error("GitHub credentials could not be saved securely.");
+      }
+      confirmed.push(pendingIdentity.login);
       state = idle([
         ...state.accounts,
         connected(pendingIdentity.account_id, pendingIdentity.login),
@@ -116,20 +123,23 @@ test("browser OAuth confirms two accounts without exposing credentials", async (
   await expect
     .poll(() => page.evaluate(() => window.__copiedGithubCode))
     .toBe("ABCD-EFGH");
-  await expect(card.getByRole("status")).toContainText(
-    "Confirm jdylanmc (6954990)",
-  );
-  await expect(card).toContainText("not saved until you confirm");
-  await card.getByRole("button", { name: "Confirm" }).click();
+  // Browser sign-in already proved the identity, so the app confirms it once.
   await expect(card).toContainText("jdylanmc (6954990)");
+  await expect(card.getByRole("status")).toContainText(
+    "1 GitHub account configured",
+  );
+  expect(confirmed).toEqual(["jdylanmc"]);
 
   await card.getByRole("button", { name: "Add GitHub account" }).click();
-  await expect(card.getByRole("status")).toContainText("Confirm hubot (84)");
+  await expect(card.getByRole("status")).toContainText(
+    "could not be saved securely",
+  );
   await card.getByRole("button", { name: "Use a different account" }).click();
   await expect.poll(() => starts.at(-1)?.selectAccount).toBe(true);
   await expect(card.getByRole("status")).toContainText("Confirm hubot (84)");
   await card.getByRole("button", { name: "Confirm" }).click();
   await expect(card).toContainText("hubot (84)");
+  expect(confirmed).toEqual(["jdylanmc", "hubot"]);
   await expect(card.getByRole("status")).toContainText(
     "2 GitHub accounts configured",
   );
@@ -172,14 +182,14 @@ test("secure-store confirmation failure stays visible and retryable", async ({
   await page.goto("/?view=settings");
 
   const card = page.locator(".github-auth-card");
-  await card.getByRole("button", { name: "Confirm" }).click();
   await expect(card.getByRole("status")).toContainText(
     "could not be saved securely",
   );
+  expect(confirmations).toBe(1);
   await expect(card).toContainText("jdylanmc (6954990)");
-  await expect(card).not.toContainText("Connected through");
+  await expect(card).not.toContainText("Connected");
   await card.getByRole("button", { name: "Confirm" }).click();
-  await expect(card).toContainText("Connected through");
+  await expect(card).toContainText("Connected");
   expect(confirmations).toBe(2);
 });
 
@@ -328,7 +338,7 @@ test("overlapping repository access requires an explicit acting account choice",
     await modal.getByRole("button", { name: "Add & configure" }).click();
     await page
       .getByRole("dialog", {
-        name: "Settings for jdylanmc/pr-sniper",
+        name: "jdylanmc/pr-sniper",
         exact: true,
       })
       .getByRole("button", { name: "Cancel repository changes" })
@@ -448,7 +458,7 @@ test("manual account binding resolves an unaffiliated public repository for two 
     await modal.getByRole("button", { name: "Add & configure" }).click();
     await page
       .getByRole("dialog", {
-        name: "Settings for third-party/public-repository",
+        name: "third-party/public-repository",
         exact: true,
       })
       .getByRole("button", { name: "Cancel repository changes" })
@@ -489,10 +499,10 @@ test("manual account binding resolves an unaffiliated public repository for two 
     });
     await row.click();
     const modal = page.getByRole("dialog", {
-      name: "Settings for third-party/public-repository",
+      name: "third-party/public-repository",
       exact: true,
     });
-    await modal.getByText("Repository and connection").click();
+    await modal.locator("details.repository-group > summary").click();
     await modal
       .getByRole("button", { name: "Verify GitHub connection", exact: true })
       .click();

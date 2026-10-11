@@ -79,7 +79,6 @@ async function open(page, store, genie = false) {
       .click();
     await expect(page.locator(".settings-overview")).toBeVisible();
     await page
-      .locator(".settings-window")
       .getByRole("button", { name: "Set up with Genie", exact: true })
       .click();
     await page
@@ -106,7 +105,7 @@ const submit = (dialog) =>
   dialog.getByRole("button", { name: "Add & configure", exact: true }).click();
 const editor = (page) =>
   page.getByRole("dialog", {
-    name: "Settings for example-org/example-repo",
+    name: "example-org/example-repo",
     exact: true,
   });
 

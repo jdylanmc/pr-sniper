@@ -79,7 +79,6 @@ async function setup(page, store, genie = false) {
       .getByRole("button", { name: "Settings", exact: true })
       .click();
     await page
-      .locator(".settings-window")
       .getByRole("button", { name: "Set up with Genie", exact: true })
       .click();
     await page.locator('[data-genie-edit="repositories"]').click();
@@ -100,9 +99,24 @@ async function enter(page, url = "https://github.com/orbit/one/pull/302") {
     .getByRole("button", { name: "Add & configure", exact: true })
     .click();
   return page.getByRole("dialog", {
-    name: "Settings for orbit/one",
+    name: "orbit/one",
     exact: true,
   });
+}
+
+async function goBack(page, editor) {
+  const back = page.locator("[data-panel-back]");
+  if (await back.isVisible()) await back.click();
+  else
+    await editor
+      .getByRole("button", { name: "Close dialog", exact: true })
+      .click();
+  await expect(editor).toHaveCount(0);
+  // Guided editing can land on the Genie checklist instead of the list.
+  const list = page.locator("[data-repository]").first();
+  const genie = page.locator('[data-genie-edit="repositories"]');
+  await list.or(genie).first().waitFor({ state: "visible" });
+  if (await genie.isVisible()) await genie.click();
 }
 
 async function assign(page, editor) {
@@ -119,13 +133,11 @@ async function assign(page, editor) {
   await assignment
     .getByRole("button", { name: "Assign agent", exact: true })
     .click();
+  await expect(assignment).toHaveCount(0);
 }
 
 async function replaceUrl(page, editor, number) {
-  await editor
-    .locator("summary")
-    .filter({ hasText: "Repository and connection" })
-    .click();
+  await editor.locator("summary").filter({ hasText: "Repository" }).click();
   await editor
     .getByRole("button", { name: "Edit repository", exact: true })
     .click();
@@ -140,7 +152,7 @@ async function replaceUrl(page, editor, number) {
     .getByRole("button", { name: "Add & configure", exact: true })
     .click();
   const replacement = page.getByRole("dialog", {
-    name: "Settings for orbit/one",
+    name: "orbit/one",
     exact: true,
   });
   await expect(replacement.locator("[data-explicit-pr-status]")).toContainText(
@@ -183,7 +195,7 @@ test("held explicit PR Save preserves assignment capabilities across replacement
   await assign(page, editor);
   await editor
     .locator(".assignment-row")
-    .getByRole("button", { name: "Edit", exact: true })
+    .getByRole("button", { name: "Edit assignment", exact: true })
     .click();
   const assignment = page.getByRole("dialog", {
     name: "Edit assignment",
@@ -264,7 +276,7 @@ for (const genie of [false, true]) {
       expect((await store("monitoring_snapshot")).jobs).toEqual([]);
       await page.locator("[data-repository]").first().click();
       editor = page.getByRole("dialog", {
-        name: "Settings for orbit/one",
+        name: "orbit/one",
         exact: true,
       });
       await editor.locator("[data-repository-enabled]").check();
@@ -289,12 +301,10 @@ for (const genie of [false, true]) {
     const { fixture } = await setup(page, store, genie);
     let editor = await enter(page);
     await assign(page, editor);
-    await editor
-      .getByRole("button", { name: "Close dialog", exact: true })
-      .click();
+    await goBack(page, editor);
     await page.locator("[data-repository]").first().click();
     editor = page.getByRole("dialog", {
-      name: "Settings for orbit/one",
+      name: "orbit/one",
       exact: true,
     });
     await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
@@ -420,12 +430,10 @@ for (const genie of [false, true]) {
       .click();
     await held.arrived;
     try {
-      await editor
-        .getByRole("button", { name: "Close dialog", exact: true })
-        .click();
+      await goBack(page, editor);
       await page.locator("[data-repository]").first().click();
       editor = page.getByRole("dialog", {
-        name: "Settings for orbit/one",
+        name: "orbit/one",
         exact: true,
       });
       held.release();
@@ -464,9 +472,7 @@ for (const genie of [false, true]) {
       .click();
     await held.arrived;
     try {
-      await editor
-        .getByRole("button", { name: "Close dialog", exact: true })
-        .click();
+      await goBack(page, editor);
       held.release();
       await expect(page.locator("#error")).toContainText(
         "PR #302 intake for orbit/one",
@@ -480,7 +486,7 @@ for (const genie of [false, true]) {
       expect((await store("monitoring_snapshot")).jobs).toEqual([]);
       await page.locator("[data-repository]").first().click();
       editor = page.getByRole("dialog", {
-        name: "Settings for orbit/one",
+        name: "orbit/one",
         exact: true,
       });
       await expect(editor.locator("[data-explicit-pr-status]")).toContainText(

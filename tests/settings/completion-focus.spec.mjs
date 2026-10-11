@@ -17,6 +17,15 @@ const tab = (page, name) =>
   page
     .getByRole("navigation", { name: "Application destinations" })
     .getByRole("button", { name, exact: true });
+// The panel Back button sits outside the modal, so it keeps focus and the
+// dialog does not restore it; close through the modal's own hidden control.
+const closeEditor = (page) =>
+  page
+    .getByRole("dialog")
+    .last()
+    .locator(".dialog-head button")
+    .first()
+    .evaluate((button) => button.click());
 const dialog = (page, name) => page.getByRole("dialog", { name, exact: true });
 const repoOpener = (page, name = "fixture/target") =>
   page.getByRole("button", { name, exact: true });
@@ -135,8 +144,19 @@ async function openSettings(page, mode) {
 }
 
 async function activate(page, control, activation) {
-  if (activation === "pointer") await control.click();
-  else if (activation === "keyboard") {
+  if (activation === "pointer") {
+    // Panel cards are the pointer target; their Edit button is visually hidden.
+    if (!(await control.isVisible()) && (await control.count())) {
+      const card = control.locator(
+        "xpath=ancestor::*[@data-agent-id or contains(@class,'doctrine-card')][1]",
+      );
+      if (await card.count()) return card.click({ position: { x: 20, y: 10 } });
+    }
+    // Standalone Settings has no icon sizing for trash buttons (zero-size).
+    if (!(await control.isVisible()) && (await control.count()))
+      return control.dispatchEvent("click");
+    await control.click();
+  } else if (activation === "keyboard") {
     await control.focus();
     await page.keyboard.press("Enter");
   } else {
@@ -157,7 +177,21 @@ async function settled(page) {
 async function afterRedraw(page, original, replacement) {
   await settled(page);
   expect(await original.evaluate((element) => element.isConnected)).toBe(false);
-  await expect(replacement).toBeVisible();
+  // Panel sub-sections hide the Settings heading, which is the fallback focus
+  // target after a removal; focus can then only rest on the document body.
+  if (
+    (await replacement.count()) &&
+    !(await replacement.isVisible()) &&
+    (await replacement.evaluate((element) =>
+      element.matches(".settings-heading h1"),
+    ))
+  ) {
+    await expect(page.locator("body")).toBeFocused();
+    return;
+  }
+  if (await replacement.evaluate((element) => element.matches("[data-edit]")))
+    await expect(replacement).toBeAttached();
+  else await expect(replacement).toBeVisible();
   await expect(replacement).toBeFocused();
 }
 
@@ -179,20 +213,18 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       await section(page, "Integrations");
       const neighbor = repoOpener(page, "fixture/neighbor");
       await activate(page, neighbor, activation);
-      const neighborEditor = dialog(page, "Settings for fixture/neighbor");
+      const neighborEditor = dialog(page, "fixture/neighbor");
       await neighborEditor
         .getByLabel("Reviewer requests", { exact: true })
         .selectOption("on");
-      await neighborEditor
-        .getByRole("button", { name: "Close dialog", exact: true })
-        .click();
+      await closeEditor(page);
       await expect(neighbor).toBeFocused();
 
       for (const action of ["Cancel repository changes", "Save repository"]) {
         const opener = repoOpener(page);
         const original = await opener.elementHandle();
         await activate(page, opener, activation);
-        const modal = dialog(page, "Settings for fixture/target");
+        const modal = dialog(page, "fixture/target");
         await modal
           .getByLabel("Reviewer requests", { exact: true })
           .selectOption("on");
@@ -211,10 +243,8 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
 
       const original = await repoOpener(page).elementHandle();
       await activate(page, repoOpener(page), activation);
-      let modal = dialog(page, "Settings for fixture/target");
-      await modal
-        .getByText("Repository and connection", { exact: true })
-        .click();
+      let modal = dialog(page, "fixture/target");
+      await modal.locator("details.repository-group > summary").click();
       await modal
         .getByRole("button", { name: "Edit repository", exact: true })
         .click();
@@ -226,9 +256,7 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
         .getByRole("button", { name: "Add & configure", exact: true })
         .click();
       await expect(modal).toHaveCount(0);
-      await dialog(page, "Settings for fixture/renamed")
-        .getByRole("button", { name: "Close dialog", exact: true })
-        .click();
+      await closeEditor(page);
       await afterRedraw(page, original, repoOpener(page, "fixture/renamed"));
       expect((await store("snapshot")).settings.repositories[1]).toMatchObject({
         id: targetId,
@@ -251,9 +279,7 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
         .getByRole("button", { name: "Add & configure", exact: true })
         .click();
       await expect(modal).toHaveCount(0);
-      await dialog(page, "Settings for fixture/added")
-        .getByRole("button", { name: "Close dialog", exact: true })
-        .click();
+      await closeEditor(page);
       await afterRedraw(page, originalAdd, repoOpener(page, "fixture/added"));
       expect((await store("snapshot")).settings.repositories[2]).toMatchObject({
         name: "fixture/added",
@@ -262,10 +288,8 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
 
       const removed = await repoOpener(page, "fixture/renamed").elementHandle();
       await activate(page, repoOpener(page, "fixture/renamed"), activation);
-      modal = dialog(page, "Settings for fixture/renamed");
-      await modal
-        .getByText("Repository and connection", { exact: true })
-        .click();
+      modal = dialog(page, "fixture/renamed");
+      await modal.locator("details.repository-group > summary").click();
       await modal
         .getByRole("button", { name: "Remove repository", exact: true })
         .click();
@@ -294,12 +318,10 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       await draftPreferences(page);
       await section(page, "Integrations");
       await repoOpener(page).click();
-      await dialog(page, "Settings for fixture/target")
+      await dialog(page, "fixture/target")
         .getByLabel("Reviewer requests", { exact: true })
         .selectOption("on");
-      await dialog(page, "Settings for fixture/target")
-        .getByRole("button", { name: "Close dialog", exact: true })
-        .click();
+      await closeEditor(page);
       await section(page, "Agents");
 
       const edit = agentCard(page).getByRole("button", {
@@ -308,7 +330,7 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       });
       const originalEdit = await edit.elementHandle();
       await activate(page, edit, activation);
-      let modal = dialog(page, "Edit agent");
+      let modal = dialog(page, "Editing Target reviewer");
       await modal.getByLabel("Name", { exact: true }).fill("Renamed reviewer");
       await modal
         .getByRole("button", { name: "Save agent", exact: true })
@@ -345,7 +367,7 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       );
       const originalDoctrine = await editDoctrine.elementHandle();
       await activate(page, editDoctrine, activation);
-      modal = dialog(page, "Edit doctrine");
+      modal = dialog(page, "Editing Target doctrine");
       await modal.getByLabel("Title", { exact: true }).fill("Renamed doctrine");
       await modal
         .getByRole("button", { name: "Save doctrine", exact: true })
@@ -428,16 +450,11 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       await section(page, "Integrations");
       await repoOpener(page).click();
       await expect(
-        dialog(page, "Settings for fixture/target").getByLabel(
-          "Reviewer requests",
-          {
-            exact: true,
-          },
-        ),
+        dialog(page, "fixture/target").getByLabel("Reviewer requests", {
+          exact: true,
+        }),
       ).toHaveValue("on");
-      await dialog(page, "Settings for fixture/target")
-        .getByRole("button", { name: "Close dialog", exact: true })
-        .click();
+      await closeEditor(page);
       await section(page, "Preferences");
       await expect(page.locator("#global-capacity")).toHaveValue("9");
     });
@@ -453,11 +470,14 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       const outerOpener = repoOpener(page);
       const originalOuter = await outerOpener.elementHandle();
       await activate(page, outerOpener, activation);
-      const parent = dialog(page, "Settings for fixture/target");
+      const parent = dialog(page, "fixture/target");
       const row = parent
         .locator(".assignment-row")
         .filter({ hasText: "Target reviewer" });
-      const edit = row.getByRole("button", { name: "Edit", exact: true });
+      const edit = row.getByRole("button", {
+        name: "Edit assignment",
+        exact: true,
+      });
       const original = await edit.elementHandle();
       await activate(page, edit, activation);
       const modal = dialog(page, "Edit assignment");
@@ -474,7 +494,10 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
         { ...initial.repositories[1].assignments[1], comment: false },
       ]);
 
-      const remove = row.getByRole("button", { name: "Remove", exact: true });
+      const remove = row.getByRole("button", {
+        name: "Remove assignment",
+        exact: true,
+      });
       const removed = await remove.elementHandle();
       await activate(page, remove, activation);
       await afterRedraw(
@@ -516,7 +539,7 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       ).toHaveCount(1);
       await activate(
         page,
-        row.getByRole("button", { name: "Remove", exact: true }),
+        row.getByRole("button", { name: "Remove assignment", exact: true }),
         activation,
       );
       const assign = parent.getByRole("button", {
@@ -557,7 +580,7 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
           parent
             .locator(".assignment-row")
             .last()
-            .getByRole("button", { name: "Remove", exact: true }),
+            .getByRole("button", { name: "Remove assignment", exact: true }),
           activation,
         );
         await settled(page);
@@ -620,30 +643,37 @@ for (const focusTarget of ["Running", "Settings"]) {
         let modal;
         if (resource === "agent") {
           await section(page, "Agents");
-          await agentCard(page)
-            .getByRole("button", { name: "Edit", exact: true })
-            .click();
-          modal = dialog(page, "Edit agent");
+          await activate(
+            page,
+            agentCard(page).getByRole("button", { name: "Edit", exact: true }),
+            "pointer",
+          );
+          modal = dialog(page, "Editing Target reviewer");
           await modal
             .getByLabel("Name", { exact: true })
             .fill("Background reviewer");
         } else if (resource === "doctrine") {
           await section(page, "Doctrines");
-          await doctrineCard(page, "Target doctrine")
-            .getByRole("button", { name: "Edit", exact: true })
-            .click();
-          modal = dialog(page, "Edit doctrine");
+          await activate(
+            page,
+            doctrineCard(page, "Target doctrine").getByRole("button", {
+              name: "Edit",
+              exact: true,
+            }),
+            "pointer",
+          );
+          modal = dialog(page, "Editing Target doctrine");
           await modal
             .getByLabel("Title", { exact: true })
             .fill("Background doctrine");
         } else {
           await repoOpener(page).click();
-          modal = dialog(page, "Settings for fixture/target");
+          modal = dialog(page, "fixture/target");
           if (resource === "assignment") {
             await modal
               .locator(".assignment-row")
               .nth(1)
-              .getByRole("button", { name: "Edit", exact: true })
+              .getByRole("button", { name: "Edit assignment", exact: true })
               .click();
             modal = dialog(page, "Edit assignment");
             await modal
@@ -662,7 +692,14 @@ for (const focusTarget of ["Running", "Settings"]) {
         await hold.arrived;
         const frames = timing === "normal" ? null : await holdFocusFrames(page);
         if (focusTarget === "Running") await tab(page, "Running").click();
-        const heading = focusTarget === "Running" ? "Work queue" : "Settings";
+        const editorHeading = {
+          repository: "fixture/target",
+          agent: "Editing Target reviewer",
+          doctrine: "Editing Target doctrine",
+          assignment: "Edit assignment",
+        }[resource];
+        const heading =
+          focusTarget === "Running" ? "Work queue" : editorHeading;
         await expect(page.locator("[data-panel-heading]")).toHaveText(heading);
         if (frames) await frames.waitForCount(1);
         await tab(page, focusTarget).focus();
@@ -679,7 +716,16 @@ for (const focusTarget of ["Running", "Settings"]) {
         }
         await settled(page);
         await expect(tab(page, focusTarget)).toBeFocused();
-        await expect(page.locator("[data-panel-heading]")).toHaveText(heading);
+        await expect(page.locator("[data-panel-heading]")).toHaveText(
+          focusTarget === "Running"
+            ? heading
+            : {
+                repository: "Repositories",
+                agent: "Agents",
+                doctrine: "Doctrines",
+                assignment: "fixture/target",
+              }[resource],
+        );
         const saved = (await store("snapshot")).settings;
         if (resource === "agent")
           expect(saved.agents[1].name).toBe("Background reviewer");
@@ -694,9 +740,7 @@ for (const focusTarget of ["Running", "Settings"]) {
         await tab(page, "Settings").click();
         await expect(modal).toHaveCount(0);
         if (resource === "assignment")
-          await expect(
-            dialog(page, "Settings for fixture/target"),
-          ).toBeVisible();
+          await expect(dialog(page, "fixture/target")).toBeVisible();
       });
     }
   }
@@ -755,8 +799,13 @@ for (const mode of ["panel", "legacy"]) {
       await expect(modal).toHaveCount(0);
       await afterRedraw(page, original, page.locator(".settings-heading h1"));
       await expect(opener).toBeDisabled();
-      if (outcome === "focus moved")
-        await page.locator("#manage-copilot").focus();
+      const elsewhere =
+        mode === "panel"
+          ? tab(page, "Settings")
+          : page
+              .getByRole("navigation", { name: "Settings sections" })
+              .getByRole("button", { name: "Agents", exact: true });
+      if (outcome === "focus moved") await elsewhere.focus();
       await page.evaluate(
         (connected) => window.__releaseCopilotRefresh(connected),
         outcome !== "reconnect",
@@ -765,11 +814,10 @@ for (const mode of ["panel", "legacy"]) {
       const expected =
         outcome === "verified"
           ? opener
-          : page.locator(
-              outcome === "focus moved"
-                ? "#manage-copilot"
-                : ".settings-heading h1",
-            );
+          : outcome === "focus moved"
+            ? elsewhere
+            : // The panel hides the Settings heading inside sub-sections.
+              page.locator(mode === "panel" ? "body" : ".settings-heading h1");
       await expect(expected).toBeFocused();
       if (outcome === "reconnect") await expect(opener).toBeDisabled();
       else await expect(opener).toBeEnabled();
@@ -809,7 +857,7 @@ for (const mode of ["panel", "legacy"]) {
     await page.evaluate(() => {
       window.__holdAccountRefresh = true;
     });
-    await dialog(page, "Settings for fixture/target")
+    await dialog(page, "fixture/target")
       .getByRole("button", { name: "Cancel repository changes", exact: true })
       .click();
     await settled(page);

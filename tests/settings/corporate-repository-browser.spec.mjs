@@ -106,7 +106,6 @@ async function browseFromSettings(page, account, genie, entryLookup) {
   if (genie) {
     entryLookup?.();
     await page
-      .locator(".settings-window")
       .getByRole("button", { name: "Set up with Genie", exact: true })
       .click();
     const guide = page.locator('[data-panel-view="genie"]');
@@ -424,7 +423,7 @@ test("managed personal repository selection resolves through provider and persis
   await browser.getByLabel("Repository owner").selectOption(corporate.login);
   await browser.locator("[data-pick]").click();
   const editor = page.getByRole("dialog", {
-    name: "Settings for fixture_corp/repository-101",
+    name: "fixture_corp/repository-101",
     exact: true,
   });
   await expect(editor).toBeVisible();
@@ -723,7 +722,7 @@ for (const [failure, message, invalidates] of [
     await browser.locator("[data-pick]").click();
     await expect(
       page.getByRole("dialog", {
-        name: "Settings for fixture_corp/repository-101",
+        name: "fixture_corp/repository-101",
         exact: true,
       }),
     ).toBeVisible();

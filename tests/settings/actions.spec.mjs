@@ -415,8 +415,8 @@ async function optOutInSettings(page) {
   const parent = await repositorySettings(page, "example/repo");
   await parent
     .locator(".assignment-row")
-    .getByRole("button", { name: "Edit", exact: true })
-    .click();
+    .locator("[data-edit]")
+    .click({ force: true });
   const modal = page.getByRole("dialog", {
     name: "Edit assignment",
     exact: true,

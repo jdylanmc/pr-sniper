@@ -69,9 +69,7 @@ for (const action of ["add", "enable", "remove", "agent", "assignment"]) {
       await closeDialog(page);
     } else if (action === "remove") {
       const modal = await repositorySettings(page, repository.name);
-      await modal
-        .getByText("Repository and connection", { exact: true })
-        .click();
+      await modal.getByText("Repository", { exact: true }).click();
       await modal
         .getByRole("button", { name: "Remove repository", exact: true })
         .click();

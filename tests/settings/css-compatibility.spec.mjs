@@ -111,7 +111,7 @@ for (const viewport of [
     await opener.click();
     expect(unsupportedDeclarations).toBe(8);
     const modal = page.getByRole("dialog", {
-      name: "Settings for octo/legacy-viewport",
+      name: "octo/legacy-viewport",
       exact: true,
     });
     const close = modal.getByRole("button", {
@@ -179,9 +179,9 @@ for (const viewport of [
     await modal
       .locator(".assignment-row")
       .first()
-      .getByRole("button", { name: "Remove", exact: true })
-      .click();
-    await modal.getByText("Repository and connection", { exact: true }).click();
+      .getByRole("button", { name: "Remove assignment", exact: true })
+      .evaluate((button) => button.click());
+    await modal.locator("summary", { hasText: "Repository" }).click();
     const last = modal.getByRole("button", {
       name: "Cancel repository changes",
       exact: true,

@@ -132,9 +132,7 @@ test("Agent saves immediately while unrelated preference and repository drafts s
     .selectOption("on");
   await closeDialog(page);
   const modal = await editAgent(page);
-  await modal
-    .getByRole("textbox", { name: "Prompt", exact: true })
-    .fill("Saved resource prompt.");
+  await modal.locator("textarea[name=prompt]").fill("Saved resource prompt.");
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
   await expect(modal).toHaveCount(0);
   const saved = (await store("saved_resources")).settings;
@@ -174,9 +172,7 @@ for (const failure of ["write", "conflict"]) {
     await seedAgent(store);
     await page.goto("/?view=settings");
     const modal = await editAgent(page);
-    await modal
-      .getByRole("textbox", { name: "Prompt", exact: true })
-      .fill("Keep my failed draft.");
+    await modal.locator("textarea[name=prompt]").fill("Keep my failed draft.");
     if (failure === "write")
       await mkdir(join(dataRoot, "config/settings.json.tmp"));
     else {
@@ -189,9 +185,9 @@ for (const failure of ["write", "conflict"]) {
       .getByRole("button", { name: "Save agent", exact: true })
       .click();
     await expect(modal.getByRole("alert")).toBeVisible();
-    await expect(
-      modal.getByRole("textbox", { name: "Prompt", exact: true }),
-    ).toHaveValue("Keep my failed draft.");
+    await expect(modal.locator("textarea[name=prompt]")).toHaveValue(
+      "Keep my failed draft.",
+    );
     await expect(
       modal.getByRole("button", { name: "Save agent", exact: true }),
     ).toBeEnabled();
@@ -214,10 +210,11 @@ test("legacy single doctrines become ordered selections, rename preserves refere
   await store("seed_settings", settings);
   await page.goto("/?view=settings");
   let modal = await editAgent(page);
+  await modal.locator("[data-open-doctrines]").click();
   await expect(
-    modal.getByRole("checkbox", { name: "Second", exact: true }),
+    modal.locator("input[name=doctrine][value=Second]"),
   ).toBeChecked();
-  await modal.getByRole("checkbox", { name: "First", exact: true }).check();
+  await modal.locator("input[name=doctrine][value=First]").check();
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
   await expect(modal).toHaveCount(0);
   expect((await store("snapshot")).settings.agents[0].doctrines).toEqual([
@@ -230,7 +227,7 @@ test("legacy single doctrines become ordered selections, rename preserves refere
     .first()
     .getByRole("button", { name: "Edit", exact: true })
     .click();
-  modal = page.getByRole("dialog", { name: "Edit doctrine", exact: true });
+  modal = page.getByRole("dialog", { name: "Editing First", exact: true });
   await modal.getByLabel("Title", { exact: true }).fill("Renamed");
   await modal
     .getByRole("button", { name: "Save doctrine", exact: true })
@@ -248,6 +245,7 @@ test("legacy single doctrines become ordered selections, rename preserves refere
   await expect(page.locator("#error")).toContainText("used by an Agent");
   expect((await store("snapshot")).settings.doctrines).toHaveLength(2);
   modal = await editAgent(page);
+  await modal.locator("[data-open-doctrines]").click();
   for (const checkbox of await modal.locator("[name=doctrine]").all())
     await checkbox.uncheck();
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
@@ -276,7 +274,7 @@ test("primary and independent opt-ins are reachable without scoped polling or le
   let parent = await repositorySettings(page, "fixture/primary");
   await parent
     .locator(".assignment-row")
-    .getByRole("button", { name: "Edit", exact: true })
+    .getByRole("button", { name: "Edit assignment", exact: true })
     .click();
   let modal = page.getByRole("dialog", {
     name: "Edit assignment",
@@ -328,7 +326,7 @@ test("primary and independent opt-ins are reachable without scoped polling or le
   await parent
     .locator(".assignment-row")
     .nth(1)
-    .getByRole("button", { name: "Edit", exact: true })
+    .getByRole("button", { name: "Edit assignment", exact: true })
     .click();
   modal = page.getByRole("dialog", { name: "Edit assignment", exact: true });
   await modal.getByRole("checkbox", { name: /^Primary/ }).check();

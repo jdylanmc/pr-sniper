@@ -1,5 +1,5 @@
 import { expect, test } from "./fixtures.mjs";
-import { queueFixture } from "./queue-fixture.mjs";
+import { queueFixture, showQueueGroup } from "./queue-fixture.mjs";
 import {
   section,
   saveChanges,
@@ -31,6 +31,8 @@ test("publication failure stays on its PR with cause and action, not Settings", 
     page.getByText(publication.error, { exact: true }),
   ).not.toBeVisible();
   await navigation.getByRole("button", { name: "Queue", exact: true }).click();
+  await expect(page.locator("[data-queue-attention]")).not.toHaveText("?");
+  await showQueueGroup(page, "attention");
   await page
     .locator("#handoff-queue")
     .getByRole("article", {

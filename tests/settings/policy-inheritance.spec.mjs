@@ -127,8 +127,8 @@ test("reusable Agents keep independent repository assignments and preserve legac
     await modal
       .locator(".assignment-row")
       .first()
-      .getByRole("button", { name: "Remove", exact: true })
-      .click();
+      .getByRole("button", { name: "Remove assignment", exact: true })
+      .evaluate((button) => button.click());
     await closeDialog(page);
     await section(page, "Preferences");
     await page.locator("#reset-settings").click();

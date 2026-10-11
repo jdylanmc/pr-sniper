@@ -19,7 +19,7 @@ export async function section(page, name) {
         : destination.toLowerCase().replaceAll(" ", "-");
     if ((await embedded.getAttribute("data-settings-section")) === key) return;
     const back = page.getByRole("button", {
-      name: /^Back to (Settings|Accounts|AI Tooling|Git Repository)$/,
+      name: /^Back( to (Settings|Accounts|AI Tooling|Git Repository))?$/,
     });
     while (await back.isVisible()) await back.click();
     for (const step of path) {
@@ -43,6 +43,8 @@ export async function section(page, name) {
 }
 
 export async function closeDialog(page) {
+  const back = page.locator("[data-panel-back]");
+  if (await back.isVisible()) return back.click();
   await page
     .getByRole("dialog")
     .getByRole("button", { name: "Close dialog", exact: true })
@@ -56,7 +58,7 @@ export async function repositorySettings(page, name) {
     .filter({ has: page.locator("strong", { hasText: name }) })
     .click();
   return page.getByRole("dialog", {
-    name: `Settings for ${name}`,
+    name,
     exact: true,
   });
 }
@@ -222,16 +224,14 @@ export async function editAgent(page, name = fixtureAgent.name) {
     .filter({
       has: page.getByRole("heading", { name, exact: true }),
     })
-    .getByRole("button", { name: "Edit", exact: true })
-    .click();
-  return page.getByRole("dialog", { name: "Edit agent", exact: true });
+    .locator("[data-edit]")
+    .click({ force: true });
+  return page.getByRole("dialog", { name: `Editing ${name}`, exact: true });
 }
 
 export async function setAgentPrompt(page, prompt, name = fixtureAgent.name) {
   const modal = await editAgent(page, name);
-  await modal
-    .getByRole("textbox", { name: "Prompt", exact: true })
-    .fill(prompt);
+  await modal.locator("textarea[name=prompt]").fill(prompt);
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
   await expect(modal).toHaveCount(0);
 }
@@ -263,8 +263,8 @@ export async function assignment(page, repository, index) {
     await parent
       .locator(".assignment-row")
       .nth(index)
-      .getByRole("button", { name: "Edit", exact: true })
-      .click();
+      .locator("[data-edit]")
+      .click({ force: true });
   const editor = page.getByRole("dialog", {
     name: index === undefined ? "Assign agent" : "Edit assignment",
     exact: true,
@@ -289,4 +289,13 @@ export async function saveAssignment(page, modal) {
   await expect(modal.getByRole("alert")).toBeHidden();
   await expect(modal).toHaveCount(0);
   await closeDialog(page);
+}
+
+export async function backFromEditor(page, dialog) {
+  const back = page.locator("[data-panel-back]");
+  if (await back.isVisible()) await back.click();
+  else
+    await dialog
+      .getByRole("button", { name: "Close dialog", exact: true })
+      .click();
 }

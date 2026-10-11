@@ -461,7 +461,7 @@ test("completion removes its row, capacity refills immediately and new blocked w
       "normal:visual-new-work",
     ]);
   await expect(page.locator(".work-spin")).toHaveCount(4);
-  await expect(rows.last()).toContainText(added.error);
+  await expect(rows.last()).toHaveAttribute("data-work-state", "blocked");
   await expect(rows.last().locator(".work-state")).toHaveText("Failed");
   await expect(page.locator("[data-summary-detail]")).toHaveText(
     "2 waiting / 1 blocked",
@@ -771,7 +771,10 @@ test("seven failed Agents produce one human PR card; superseded and completed jo
   const completed = page.locator(
     '[data-panel-view="reviewed"] [data-job-id="normal:visual-work-1"]',
   );
-  await expect(completed).toContainText("Automated review complete");
+  await expect(completed).toHaveAttribute(
+    "data-work-state",
+    "Automated review complete",
+  );
   await completed.getByRole("button", { name: "Open job" }).click();
   await expect(page.locator("#agent-reviews article")).toHaveCount(1);
   await expect(page.locator("#agent-reviews")).toContainText("Scout");

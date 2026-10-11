@@ -108,10 +108,10 @@ for (const surface of ["panel", "standalone"]) {
             exact: true,
           }),
         })
-        .getByRole("button", { name: "Edit", exact: true })
-        .click();
+        .getByRole("heading", { name: "Retained reviewer", exact: true })
+        .click({ force: true });
       const editor = page.getByRole("dialog", {
-        name: "Edit agent",
+        name: "Editing Retained reviewer",
         exact: true,
       });
       await expect(editor).toContainText(
@@ -119,9 +119,7 @@ for (const surface of ["panel", "standalone"]) {
       );
       await editor.getByRole("button", { name: "Cancel", exact: true }).click();
       if (surface === "panel") {
-        await page
-          .getByRole("button", { name: "Back to Settings", exact: true })
-          .click();
+        await page.locator("[data-panel-back]").click();
         await expect(
           page.locator('[data-settings-count="accounts"]'),
         ).toHaveText("1 connected / 1 need attention");
@@ -204,7 +202,7 @@ test("Copilot UI keeps unverified transient accounts blocked while verified acco
       name: "Reconnect Copilot unverified-ai",
     }),
   ).toBeEnabled();
-  await expect(verified).toContainText("Signed in as verified-ai");
+  await expect(verified).toContainText("Connected");
   await expect(verified.locator(".copilot-check")).toHaveCount(1);
 
   await section(page, "Agents");
@@ -250,10 +248,9 @@ for (const pendingAction of [
             started.resolve();
             return pending.promise;
           }
+          // A successful disconnect now removes the account from state.
           state = idle(
-            pendingAction === "disconnect_copilot_account"
-              ? [account("101", first.login, "reconnect_required")]
-              : [first],
+            pendingAction === "disconnect_copilot_account" ? [] : [first],
           );
         }
         if (command === "cancel_copilot_auth") {
@@ -330,8 +327,8 @@ for (const pendingAction of [
       await expect(card).not.toContainText("TEST-CODE");
       await expect(card).toContainText(
         pendingAction === "disconnect_copilot_account"
-          ? "Disconnected. Reconnect"
-          : "Signed in as fixture-ai-one",
+          ? "No Copilot accounts connected"
+          : "fixture-ai-one (101)✓Connected",
       );
     });
   }
@@ -380,15 +377,7 @@ for (const action of ["disconnect", "confirm", "verify"]) {
               : first,
           ]);
     const stale = structuredClone(state);
-    const updated =
-      action !== "disconnect"
-        ? idle([first])
-        : idle([
-            {
-              ...account("101", first.login, "reconnect_required"),
-              reason: "disconnected",
-            },
-          ]);
+    const updated = action !== "disconnect" ? idle([first]) : idle([]);
     await bridge(page, (command) => {
       if (command === `${action}_copilot_account`) {
         mutationStarted.resolve();
@@ -428,7 +417,9 @@ for (const action of ["disconnect", "confirm", "verify"]) {
         : action === "verify"
           ? "Verify Copilot sign-in for fixture-ai-one"
           : "Disconnect Copilot fixture-ai-one";
-    await card.getByRole("button", { name, exact: true }).click();
+    // Confirmation is clicked automatically once the returned account renders.
+    if (action !== "confirm")
+      await card.getByRole("button", { name, exact: true }).click();
     await mutationStarted.promise;
     holdRead = true;
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
@@ -454,12 +445,8 @@ for (const action of ["disconnect", "confirm", "verify"]) {
     ).toHaveCount(0);
     holdAgentRead = true;
     await section(page, "Agents");
-    await expect(
-      page.locator(".agent-card [data-account-state]"),
-    ).toContainText(
-      action !== "disconnect"
-        ? "Sign-in verified"
-        : "Reconnect required; Agent blocked",
+    await expect(page.locator(".agent-card [data-account-state]")).toHaveText(
+      action !== "disconnect" ? "" : "Reconnect required",
     );
     agentRead.resolve(updated);
     await page.evaluate(() => window.__copilotIdle());
@@ -470,6 +457,7 @@ test("Copilot connect, cancel, confirm, reconnect and disconnect stay separate f
 }) => {
   let state = idle();
   let next = first;
+  let failConfirm = true;
   await bridge(page, (command, args) => {
     if (command === "start_copilot_auth")
       state = {
@@ -489,6 +477,10 @@ test("Copilot connect, cancel, confirm, reconnect and disconnect stay separate f
       };
     if (command === "cancel_copilot_auth") state = idle(state.accounts);
     if (command === "confirm_copilot_account") {
+      if (failConfirm) {
+        failConfirm = false;
+        throw "Synthetic confirmation failure.";
+      }
       state = idle([
         ...state.accounts.filter((a) => a.account_id !== next.account_id),
         next,
@@ -496,12 +488,9 @@ test("Copilot connect, cancel, confirm, reconnect and disconnect stay separate f
       next = second;
     }
     if (command === "disconnect_copilot_account") {
+      // Disconnecting removes the account instead of leaving a reconnect row.
       state = idle(
-        state.accounts.map((a) =>
-          a.account_id === args.accountId
-            ? account(a.account_id, a.login, "reconnect_required")
-            : a,
-        ),
+        state.accounts.filter((a) => a.account_id !== args.accountId),
       );
       next = first;
     }
@@ -509,23 +498,25 @@ test("Copilot connect, cancel, confirm, reconnect and disconnect stay separate f
   });
   await page.goto("/?view=settings");
   const card = page.locator(".copilot-auth-card");
+  const accountRow = (login) =>
+    card.getByRole("article", { name: `Copilot account ${login}` });
   await expect(card).toContainText("No Copilot accounts connected");
   await card
     .getByRole("button", { name: "Connect Copilot account", exact: true })
     .click();
   await expect(card).toContainText("TEST-CODE");
-  await expect(card).toContainText("Confirm fixture-ai-one (101)");
+  // The first automatic confirmation fails, leaving manual Confirm and Cancel.
+  await expect(card).toContainText("Connecting fixture-ai-one");
+  await expect(card.getByRole("alert")).toHaveText(
+    "Synthetic confirmation failure.",
+  );
   await card.getByRole("button", { name: "Cancel Copilot sign-in" }).click();
-  await expect(card).not.toContainText("Signed in as");
+  await expect(card.locator(".copilot-signed-in")).toHaveCount(0);
   for (const login of [first.login, second.login]) {
     await card
       .getByRole("button", { name: "Connect Copilot account", exact: true })
       .click();
-    await expect(card).toContainText(`Confirm ${login}`);
-    await card
-      .getByRole("button", { name: "Confirm Copilot account", exact: true })
-      .click();
-    await expect(card).toContainText(`Signed in as ${login}`);
+    await expect(accountRow(login)).toContainText("Connected");
   }
   await expect(page.locator(".github-auth-card")).toContainText(
     "fixture-repo (303)",
@@ -536,23 +527,17 @@ test("Copilot connect, cancel, confirm, reconnect and disconnect stay separate f
       exact: true,
     })
     .click();
-  await expect(card).toContainText("Disconnected. Reconnect");
-  await expect(card).toContainText("Signed in as fixture-ai-two");
+  await expect(accountRow(first.login)).toHaveCount(0);
+  await expect(accountRow(second.login)).toContainText("Connected");
   await expect(page.locator(".github-auth-card")).toContainText(
-    "Connected through",
+    "fixture-repo (303)",
   );
   await card
-    .getByRole("button", {
-      name: "Reconnect Copilot fixture-ai-one",
-      exact: true,
-    })
+    .getByRole("button", { name: "Connect Copilot account", exact: true })
     .click();
-  await expect(card).toContainText("Confirm fixture-ai-one");
-  await card
-    .getByRole("button", { name: "Confirm Copilot account", exact: true })
-    .click();
+  await expect(accountRow(first.login)).toContainText("Connected");
   await page.reload();
-  await expect(card).toContainText("Signed in as fixture-ai-one");
+  await expect(accountRow(first.login)).toContainText("Connected");
   await expect(card).toContainText("not a subscription, seat or model test");
   await expect(page.locator("body")).not.toContainText("access_token");
 });
@@ -593,8 +578,7 @@ test("legacy Agent becomes explicitly account/model bound and survives a real st
   await bridge(page, (command, args) => {
     if (command === "list_copilot_models")
       return [model(`model-${args.accountId}`, "Claude through Copilot")];
-    if (command === "disconnect_copilot_account")
-      state = idle([account("101", first.login, "reconnect_required"), second]);
+    if (command === "disconnect_copilot_account") state = idle([second]);
     return state;
   });
   await page.goto("/?view=settings");
@@ -602,9 +586,12 @@ test("legacy Agent becomes explicitly account/model bound and survives a real st
   await expect(page.locator(".agent-card")).toContainText("Unconfigured");
   await page
     .locator(".agent-card")
-    .getByRole("button", { name: "Edit", exact: true })
-    .click();
-  const dialog = page.getByRole("dialog", { name: "Edit agent", exact: true });
+    .getByRole("heading", { name: "Legacy reviewer", exact: true })
+    .click({ force: true });
+  const dialog = page.getByRole("dialog", {
+    name: "Editing Legacy reviewer",
+    exact: true,
+  });
   await expect(dialog.getByLabel("AI account", { exact: true })).toHaveValue(
     "",
   );
@@ -634,9 +621,7 @@ test("legacy Agent becomes explicitly account/model bound and survives a real st
     .click();
   await page.reload();
   await section(page, "Agents");
-  await expect(page.locator(".agent-card")).toContainText(
-    "Reconnect required; Agent blocked",
-  );
+  await expect(page.locator(".agent-card")).toContainText("Reconnect required");
   expect((await store("snapshot")).settings.agents).toEqual(persisted.agents);
   expect((await store("snapshot")).settings.repositories).toEqual(
     settings.repositories,
@@ -666,16 +651,18 @@ test("model failures, empty catalogs and policy denial stay honest and retryable
   const dialog = page.getByRole("dialog", { name: "New agent", exact: true });
   await dialog.getByLabel("Name", { exact: true }).fill("Explicit reviewer");
   await dialog.getByLabel("AI account", { exact: true }).selectOption("101");
-  await expect(dialog.getByRole("status")).toContainText(
+  await expect(dialog.locator("[data-model-status]")).toContainText(
     "model listing failed",
   );
   await dialog.getByRole("button", { name: "Save agent", exact: true }).click();
   await expect(dialog.getByRole("alert")).toContainText(
     "Choose a verified AI account",
   );
-  await dialog.getByRole("button", { name: "Retry model list" }).click();
-  await expect(dialog.getByRole("status")).toContainText("returned no models");
-  await dialog.getByRole("button", { name: "Retry model list" }).click();
+  await dialog.getByRole("button", { name: "Refresh model list" }).click();
+  await expect(dialog.locator("[data-model-status]")).toContainText(
+    "returned no models",
+  );
+  await dialog.getByRole("button", { name: "Refresh model list" }).click();
   await expect(dialog.getByLabel("Model", { exact: true })).toBeEnabled();
   await expect(dialog.locator('option[value="blocked"]')).toHaveJSProperty(
     "disabled",
@@ -686,8 +673,9 @@ test("model failures, empty catalogs and policy denial stay honest and retryable
   await dialog.getByRole("button", { name: "Save agent", exact: true }).click();
   await section(page, "Accounts");
   await expect(page.locator(".copilot-auth-card")).toContainText(
-    "Signed in as fixture-ai-one",
+    "fixture-ai-one (101)",
   );
+  await expect(page.locator(".copilot-signed-in")).toHaveCount(1);
   await expect(
     page.locator(".integration-card").filter({ hasText: "Direct Claude" }),
   ).toContainText("Coming soon");
@@ -797,9 +785,14 @@ test("unavailable saved models and legacy unconfigured Agents survive unrelated 
   const pinned = page.locator(".agent-card").filter({
     has: page.getByRole("heading", { name: "Pinned", exact: true }),
   });
-  await pinned.getByRole("button", { name: "Edit", exact: true }).click();
-  let dialog = page.getByRole("dialog", { name: "Edit agent", exact: true });
-  await expect(dialog.getByRole("status")).toContainText(
+  await pinned
+    .getByRole("heading", { name: "Pinned", exact: true })
+    .click({ force: true });
+  let dialog = page.getByRole("dialog", {
+    name: "Editing Pinned",
+    exact: true,
+  });
+  await expect(dialog.locator("[data-model-status]")).toContainText(
     "saved model is unavailable",
   );
   await expect(dialog.getByLabel("Model", { exact: true })).toHaveValue(
@@ -810,9 +803,11 @@ test("unavailable saved models and legacy unconfigured Agents survive unrelated 
   const legacy = page.locator(".agent-card").filter({
     has: page.getByRole("heading", { name: "Legacy", exact: true }),
   });
-  await legacy.getByRole("button", { name: "Edit", exact: true }).click();
-  dialog = page.getByRole("dialog", { name: "Edit agent", exact: true });
-  await dialog.getByLabel("Signature", { exact: true }).fill("New signature");
+  await legacy
+    .getByRole("heading", { name: "Legacy", exact: true })
+    .click({ force: true });
+  dialog = page.getByRole("dialog", { name: "Editing Legacy", exact: true });
+  await dialog.locator("input[name=signature]").fill("New signature");
   await dialog.getByRole("button", { name: "Save agent", exact: true }).click();
   await saveChanges(page);
   const actual = (await store("snapshot")).settings.agents;
@@ -914,14 +909,15 @@ test("late restored accounts update an open legacy Agent editor without selectin
   await section(page, "Agents");
   await page
     .locator(".agent-card")
-    .getByRole("button", { name: "Edit", exact: true })
-    .click();
-  const dialog = page.getByRole("dialog", { name: "Edit agent", exact: true });
+    .getByRole("heading", { name: "Legacy", exact: true })
+    .click({ force: true });
+  const dialog = page.getByRole("dialog", {
+    name: "Editing Legacy",
+    exact: true,
+  });
   await dialog.getByLabel("Name", { exact: true }).fill("Typed name");
-  await dialog
-    .getByRole("textbox", { name: "Prompt", exact: true })
-    .fill("Typed prompt");
-  await dialog.getByLabel("Signature", { exact: true }).fill("Typed signature");
+  await dialog.locator("textarea[name=prompt]").fill("Typed prompt");
+  await dialog.locator("input[name=signature]").fill("Typed signature");
   restored = true;
   restoration.resolve(idle(accounts));
   await expect(
@@ -957,10 +953,10 @@ test("late restored accounts update an open legacy Agent editor without selectin
   await expect(dialog.getByLabel("Name", { exact: true })).toHaveValue(
     "Typed name",
   );
-  await expect(
-    dialog.getByRole("textbox", { name: "Prompt", exact: true }),
-  ).toHaveValue("Typed prompt");
-  await expect(dialog.getByLabel("Signature", { exact: true })).toHaveValue(
+  await expect(dialog.locator("textarea[name=prompt]")).toHaveValue(
+    "Typed prompt",
+  );
+  await expect(dialog.locator("input[name=signature]")).toHaveValue(
     "Typed signature",
   );
 });

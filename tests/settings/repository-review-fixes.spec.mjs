@@ -48,9 +48,10 @@ for (const embedded of [true, false]) {
           "Integrations",
         );
       }
-      await page
-        .getByRole("button", { name: "Manage Copilot accounts", exact: true })
-        .click();
+      await expect(
+        page.getByRole("button", { name: "Manage Copilot accounts" }),
+      ).toHaveCount(0);
+      await section(page, embedded ? "GitHub Copilot" : "Accounts");
       await expect(page.locator(".copilot-auth-card")).toBeVisible();
       await expect(page.locator(".repository-library")).toHaveCount(0);
       await expect(
@@ -98,9 +99,7 @@ for (const accountId of ["22", "44"]) {
       .click();
     const before = (await store("snapshot")).settings;
     const original = await repositorySettings(page, "fixture/one");
-    await original
-      .getByText("Repository and connection", { exact: true })
-      .click();
+    await original.locator("details.repository-group > summary").click();
     await original
       .getByRole("button", { name: "Edit repository", exact: true })
       .click();
@@ -179,7 +178,7 @@ for (const kind of [
     if (kind === "remove-last")
       await editor
         .locator(".assignment-row")
-        .getByRole("button", { name: "Remove", exact: true })
+        .getByRole("button", { name: "Remove assignment", exact: true })
         .click();
     if (kind === "reopened")
       await editor.getByRole("switch", { name: "Monitor fixture/one" }).click();

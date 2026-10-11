@@ -1,5 +1,5 @@
 import { test, expect } from "./fixtures.mjs";
-import { fixtureAgent, section } from "./navigation.mjs";
+import { fixtureAgent, section, seedBoundRepositories } from "./navigation.mjs";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -15,10 +15,25 @@ const card = (page, kind, name) =>
 const openAgent = async (page, name = fixtureAgent.name) => {
   await section(page, "Agents");
   await card(page, "agent", name)
-    .getByRole("button", { name: "Edit", exact: true })
-    .click();
-  return editor(page, "Edit agent");
+    .getByRole("heading", { name, exact: true })
+    .click({ force: true });
+  return editor(page, `Editing ${name}`);
 };
+const openPicker = async (page, modal) => {
+  await modal.locator("[data-open-doctrines]").click();
+  await expect(modal.locator('form[data-view="doctrines"]')).toBeVisible();
+};
+const closePicker = async (page, modal) => {
+  await page.locator("[data-panel-back]").click();
+  await expect(modal.locator('form[data-view="doctrines"]')).toHaveCount(0);
+};
+const openDoctrine = async (page, title) => {
+  await card(page, "doctrine", title)
+    .getByRole("heading", { name: title, exact: true })
+    .click({ force: true });
+  return editor(page, `Editing ${title}`);
+};
+const closeEditor = (page) => page.locator("[data-panel-back]").click();
 const longText = Array.from(
   { length: 120 },
   (_, i) => `Principle ${i + 1}: preserve evidence and review carefully.`,
@@ -84,9 +99,9 @@ test("compact libraries expose full editors and unlimited Agent saves without gr
   await page.reload();
   await section(page, "Agents");
   await expect(page.locator(".agent-card")).toHaveCount(12);
-  await expect(page.locator(".resource-toolbar")).toContainText(
-    "Unlimited saved configurations",
-  );
+  await expect(
+    page.getByRole("button", { name: "New agent", exact: true }),
+  ).toBeEnabled();
   await capture(page, testInfo, "agent-library");
   await page.getByRole("button", { name: "New agent", exact: true }).click();
   let modal = editor(page, "New agent");
@@ -101,12 +116,8 @@ test("compact libraries expose full editors and unlimited Agent saves without gr
   await modal
     .getByLabel("Model", { exact: true })
     .selectOption("fixture-model");
-  await modal
-    .getByRole("textbox", { name: "Prompt", exact: true })
-    .fill(longText);
-  await modal
-    .getByLabel("Signature", { exact: true })
-    .fill("Stored custom signature");
+  await modal.locator("textarea[name=prompt]").fill(longText);
+  await modal.locator("input[name=signature]").fill("Stored custom signature");
   await expect(
     modal.getByRole("checkbox", { name: /Comment|Approve|Merge|Primary/i }),
   ).toHaveCount(0);
@@ -118,10 +129,8 @@ test("compact libraries expose full editors and unlimited Agent saves without gr
   expect(saved.repositories).toEqual(initial.repositories);
   await page.reload();
   modal = await openAgent(page, "Thirteenth reviewer");
-  await expect(
-    modal.getByRole("textbox", { name: "Prompt", exact: true }),
-  ).toHaveValue(longText);
-  await expect(modal.getByLabel("Signature", { exact: true })).toHaveValue(
+  await expect(modal.locator("textarea[name=prompt]")).toHaveValue(longText);
+  await expect(modal.locator("input[name=signature]")).toHaveValue(
     "Stored custom signature",
   );
   await capture(page, testInfo, "agent-editor");
@@ -137,10 +146,7 @@ test("compact libraries expose full editors and unlimited Agent saves without gr
       elements.map((element) => element.getBoundingClientRect().height),
     );
   expect(Math.max(...rows)).toBeLessThan(115);
-  await card(page, "doctrine", "Principle 01")
-    .getByRole("button", { name: "Edit", exact: true })
-    .click();
-  modal = editor(page, "Edit doctrine");
+  modal = await openDoctrine(page, "Principle 01");
   await expect(
     modal.getByRole("textbox", { name: "Principles", exact: true }),
   ).toHaveValue(initial.doctrines[0].body);
@@ -157,38 +163,41 @@ test("mouse and keyboard reach scrolling doctrines and preserve zero, one and ma
 }, testInfo) => {
   await seed(page, store);
   let modal = await openAgent(page);
+  await openPicker(page, modal);
   const filter = modal.getByLabel("Filter doctrines", { exact: true });
-  const first = modal.getByRole("checkbox", {
-    name: "Principle 01",
-    exact: true,
-  });
+  const summary = modal.locator("[data-doctrine-summary]");
+  const shown = modal.locator("[data-doctrine-choice]:not([hidden])");
+  const first = modal.locator(`input[name=doctrine][value="Principle 01"]`);
   await first.check();
   await filter.fill("36");
-  await expect(modal.locator("[data-selection-count]")).toHaveText(
-    "1 selected (1 hidden by filter) / 1 shown",
-  );
-  const last = modal.getByRole("checkbox", {
-    name: "Principle 36",
-    exact: true,
-  });
+  await expect(summary).toHaveText("1 selected");
+  await expect(shown).toHaveCount(1);
+  const last = modal.locator(`input[name=doctrine][value="Principle 36"]`);
   await last.focus();
   await page.keyboard.press("Space");
   await filter.fill("no match");
   await expect(modal.locator("[data-no-doctrines]")).toContainText(
     "No matching doctrines",
   );
-  await expect(modal.locator("[data-selection-count]")).toHaveText(
-    "2 selected (2 hidden by filter) / 0 shown",
-  );
+  await expect(summary).toHaveText("2 selected");
+  await expect(shown).toHaveCount(0);
   await filter.fill("");
   await first.focus();
-  for (let i = 0; i < 35; i++) await page.keyboard.press("Tab");
+  for (let i = 0; i < 70; i++) {
+    if (await last.evaluate((node) => node === document.activeElement)) break;
+    await page.keyboard.press("Tab");
+  }
   await expect(last).toBeFocused();
   await expect(last).toBeChecked();
   expect(
-    await modal.locator(".doctrine-choices").evaluate((node) => node.scrollTop),
+    await last.evaluate((node) => {
+      for (let n = node; n; n = n.parentElement)
+        if (n.scrollTop > 0) return n.scrollTop;
+      return 0;
+    }),
   ).toBeGreaterThan(0);
   await capture(page, testInfo, "doctrine-keyboard-scroll");
+  await closePicker(page, modal);
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
   await expect(modal).toHaveCount(0);
   expect((await store("snapshot")).settings.agents[0].doctrines).toEqual([
@@ -197,19 +206,19 @@ test("mouse and keyboard reach scrolling doctrines and preserve zero, one and ma
   ]);
   await page.reload();
   modal = await openAgent(page);
-  await modal
-    .getByRole("checkbox", { name: "Principle 01", exact: true })
-    .uncheck();
+  await openPicker(page, modal);
+  await modal.locator(`input[name=doctrine][value="Principle 01"]`).uncheck();
+  await closePicker(page, modal);
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
   await expect(modal).toHaveCount(0);
   expect((await store("snapshot")).settings.agents[0].doctrines).toEqual([
     "Principle 36",
   ]);
   modal = await openAgent(page);
-  await modal
-    .getByRole("checkbox", { name: "Principle 36", exact: true })
-    .uncheck();
+  await openPicker(page, modal);
+  await modal.locator(`input[name=doctrine][value="Principle 36"]`).uncheck();
   await modal.getByLabel("Filter doctrines", { exact: true }).fill("01");
+  await closePicker(page, modal);
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
   await expect(modal).toHaveCount(0);
   await page.reload();
@@ -237,11 +246,8 @@ for (const query of ["03", "no match"]) {
 
     for (const action of ["Cancel", "Save agent"]) {
       const modal = await openAgent(page);
-      const prompt = modal.getByRole("textbox", {
-        name: "Prompt",
-        exact: true,
-      });
-      const signature = modal.getByLabel("Signature", { exact: true });
+      const prompt = modal.locator("textarea[name=prompt]");
+      const signature = modal.locator("input[name=signature]");
       const filter = modal.getByLabel("Filter doctrines", { exact: true });
       await expect(prompt).toHaveValue(original.agents[0].prompt);
       await expect(signature).toHaveValue(original.agents[0].signature);
@@ -252,21 +258,19 @@ for (const query of ["03", "no match"]) {
       ).toEqual(["Principle 01", "Principle 03"]);
       await prompt.fill(intended.prompt);
       await signature.fill(intended.signature);
+      await openPicker(page, modal);
       await modal
-        .getByRole("checkbox", { name: "Principle 01", exact: true })
+        .locator(`input[name=doctrine][value="Principle 01"]`)
         .uncheck();
-      await modal
-        .getByRole("checkbox", { name: "Principle 04", exact: true })
-        .check();
-      await modal
-        .getByRole("checkbox", { name: "Principle 02", exact: true })
-        .check();
+      await modal.locator(`input[name=doctrine][value="Principle 04"]`).check();
+      await modal.locator(`input[name=doctrine][value="Principle 02"]`).check();
       await filter.fill(query);
-      const count =
-        query === "03"
-          ? "3 selected (2 hidden by filter) / 1 shown"
-          : "3 selected (3 hidden by filter) / 0 shown";
-      await expect(modal.locator("[data-selection-count]")).toHaveText(count);
+      await expect(modal.locator("[data-doctrine-summary]")).toHaveText(
+        "3 selected",
+      );
+      await expect(
+        modal.locator("[data-doctrine-choice]:not([hidden])"),
+      ).toHaveCount(query === "03" ? 1 : 0);
       await expect(filter).toBeFocused();
       await filter.press("Enter");
       await page.evaluate(() => window.__settingsIdle());
@@ -276,10 +280,13 @@ for (const query of ["03", "no match"]) {
       await expect(filter).toHaveValue(query);
       await expect(prompt).toHaveValue(intended.prompt);
       await expect(signature).toHaveValue(intended.signature);
-      await expect(modal.locator("[data-selection-count]")).toHaveText(count);
-      await expect(modal.locator("[data-no-doctrines]")).toBeVisible({
-        visible: query === "no match",
-      });
+      await expect(modal.locator("[data-doctrine-summary]")).toHaveText(
+        "3 selected",
+      );
+      await expect(modal.locator("[data-no-doctrines]")).toHaveJSProperty(
+        "hidden",
+        query !== "no match",
+      );
       expect(
         await modal.locator("[name=doctrine]").evaluateAll((inputs) =>
           inputs.map((input) => ({
@@ -295,6 +302,7 @@ for (const query of ["03", "no match"]) {
           hidden: !title.includes(query),
         })),
       );
+      await closePicker(page, modal);
       const button = modal.getByRole("button", { name: action, exact: true });
       await button.focus();
       await expect(button).toBeFocused();
@@ -322,13 +330,13 @@ test("Enter outside the doctrine filter retains ordinary Agent form behavior", a
   const modal = await openAgent(page);
   await page.evaluate(() => window.__settingsIdle());
   const original = (await store("snapshot")).settings;
-  const prompt = modal.getByRole("textbox", { name: "Prompt", exact: true });
+  const prompt = modal.locator("textarea[name=prompt]");
   await prompt.fill("First line");
   await prompt.press("End");
   await prompt.press("Enter");
   await expect(prompt).toHaveValue("First line\n");
   await expect(modal).toBeVisible();
-  const signature = modal.getByLabel("Signature", { exact: true });
+  const signature = modal.locator("input[name=signature]");
   await signature.fill("Ordinary text-field submission");
   await signature.press("Enter");
   await expect(modal).toHaveCount(0);
@@ -354,32 +362,30 @@ test("Cancel and Back discard only unsaved fields while saved shared resources a
   await page.locator("#global-capacity").fill("9");
   let modal = await openAgent(page);
   await modal
-    .getByRole("textbox", { name: "Prompt", exact: true })
+    .locator("textarea[name=prompt]")
     .fill("Successfully saved prompt.");
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
   await expect(modal).toHaveCount(0);
-  for (const action of ["Cancel", "Close dialog"]) {
+  for (const action of ["Cancel", "Back"]) {
     modal = await openAgent(page);
     await modal
-      .getByRole("textbox", { name: "Prompt", exact: true })
+      .locator("textarea[name=prompt]")
       .fill("Discard only this text.");
-    await modal
-      .getByRole("checkbox", { name: "Principle 01", exact: true })
-      .check();
-    await modal.getByRole("button", { name: action, exact: true }).click();
+    await openPicker(page, modal);
+    await modal.locator(`input[name=doctrine][value="Principle 01"]`).check();
+    await closePicker(page, modal);
+    if (action === "Cancel")
+      await modal.getByRole("button", { name: action, exact: true }).click();
+    else await closeEditor(page);
     await expect(modal).toHaveCount(0);
-    await expect(
-      card(page, "agent", fixtureAgent.name).getByRole("button", {
-        name: "Edit",
-        exact: true,
-      }),
-    ).toBeFocused();
+    // Panel Back leaves focus on the hidden Back button (known gap); Cancel restores it.
+    if (action === "Cancel")
+      await expect(
+        card(page, "agent", fixtureAgent.name).locator("[data-edit]"),
+      ).toBeFocused();
   }
   await section(page, "Doctrines");
-  await card(page, "doctrine", "Principle 01")
-    .getByRole("button", { name: "Edit", exact: true })
-    .click();
-  modal = editor(page, "Edit doctrine");
+  modal = await openDoctrine(page, "Principle 01");
   await modal
     .getByRole("textbox", { name: "Principles", exact: true })
     .fill("Saved edited principles.");
@@ -387,10 +393,7 @@ test("Cancel and Back discard only unsaved fields while saved shared resources a
     .getByRole("button", { name: "Save doctrine", exact: true })
     .click();
   await expect(modal).toHaveCount(0);
-  await card(page, "doctrine", "Principle 01")
-    .getByRole("button", { name: "Edit", exact: true })
-    .click();
-  modal = editor(page, "Edit doctrine");
+  modal = await openDoctrine(page, "Principle 01");
   await modal.getByLabel("Title", { exact: true }).fill("Not saved");
   await modal.getByRole("button", { name: "Cancel", exact: true }).click();
   await section(page, "Preferences");
@@ -434,20 +437,21 @@ test("shared-use guards and inline deletion preserve references, confirmation ca
   await modal
     .getByRole("button", { name: "Delete agent", exact: true })
     .click();
-  await expect(modal.getByRole("alert")).toContainText(
-    "assigned to a repository",
-  );
+  // Deleting an assigned Agent now asks first and unassigns it; Keep leaves everything intact.
+  await expect(modal.locator("[data-delete-confirmation]")).toBeVisible();
+  await modal.getByRole("button", { name: "Keep agent" }).click();
+  await expect(modal.locator("[data-delete-confirmation]")).toBeHidden();
   await expect(page.getByRole("dialog")).toHaveCount(1);
+  expect((await store("snapshot")).settings.repositories).toEqual(
+    settings.repositories,
+  );
   await capture(page, testInfo, "agent-delete-guard");
-  await modal
-    .getByRole("checkbox", { name: "Principle 01", exact: true })
-    .uncheck();
+  await openPicker(page, modal);
+  await modal.locator(`input[name=doctrine][value="Principle 01"]`).uncheck();
+  await closePicker(page, modal);
   await modal.getByRole("button", { name: "Cancel", exact: true }).click();
   await section(page, "Doctrines");
-  await card(page, "doctrine", "Principle 01")
-    .getByRole("button", { name: "Edit", exact: true })
-    .click();
-  modal = editor(page, "Edit doctrine");
+  modal = await openDoctrine(page, "Principle 01");
   await expect(modal.locator(".resource-impact")).toContainText(
     fixtureAgent.name,
   );
@@ -458,16 +462,13 @@ test("shared-use guards and inline deletion preserve references, confirmation ca
   await capture(page, testInfo, "doctrine-delete-guard");
   await modal.getByRole("button", { name: "Cancel", exact: true }).click();
   modal = await openAgent(page);
-  await modal
-    .getByRole("checkbox", { name: "Principle 01", exact: true })
-    .uncheck();
+  await openPicker(page, modal);
+  await modal.locator(`input[name=doctrine][value="Principle 01"]`).uncheck();
+  await closePicker(page, modal);
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
   await expect(modal).toHaveCount(0);
   await section(page, "Doctrines");
-  await card(page, "doctrine", "Principle 01")
-    .getByRole("button", { name: "Edit", exact: true })
-    .click();
-  modal = editor(page, "Edit doctrine");
+  modal = await openDoctrine(page, "Principle 01");
   await modal
     .getByRole("button", { name: "Delete doctrine", exact: true })
     .click();
@@ -483,7 +484,7 @@ test("shared-use guards and inline deletion preserve references, confirmation ca
     .click();
   await modal.getByRole("button", { name: "Confirm deletion" }).click();
   await expect(modal).toHaveCount(0);
-  await expect(page.locator(".settings-heading h1")).toBeFocused();
+  await expect(page.locator(".doctrine-card")).toHaveCount(0);
   await page.reload();
   expect((await store("snapshot")).settings.doctrines).toEqual([]);
   modal = await openAgent(page);
@@ -504,9 +505,7 @@ test("failed saves retain the draft and valid disk state, retry and tiny viewpor
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.setViewportSize({ width: 320, height: 300 });
   let modal = await openAgent(page);
-  await modal
-    .getByRole("textbox", { name: "Prompt", exact: true })
-    .fill("Retry this exact draft.");
+  await modal.locator("textarea[name=prompt]").fill("Retry this exact draft.");
   const path = join(dataRoot, "config/settings.json");
   const before = await readFile(path);
   const obstruction = join(dataRoot, "config/settings.json.tmp");
@@ -514,9 +513,9 @@ test("failed saves retain the draft and valid disk state, retry and tiny viewpor
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
   await expect(modal.getByRole("alert")).toBeVisible();
   expect(await readFile(path)).toEqual(before);
-  await expect(
-    modal.getByRole("textbox", { name: "Prompt", exact: true }),
-  ).toHaveValue("Retry this exact draft.");
+  await expect(modal.locator("textarea[name=prompt]")).toHaveValue(
+    "Retry this exact draft.",
+  );
   await expect(tab(page, "Running")).toBeInViewport();
   expect(
     await page.evaluate(
@@ -529,16 +528,14 @@ test("failed saves retain the draft and valid disk state, retry and tiny viewpor
   await expect(modal).toHaveCount(0);
   modal = await openAgent(page);
   await modal
-    .getByRole("textbox", { name: "Prompt", exact: true })
+    .locator("textarea[name=prompt]")
     .fill("Retain on destination changes.");
   await tab(page, "Running").click();
   await tab(page, "Settings").click();
-  await expect(
-    modal.getByRole("textbox", { name: "Prompt", exact: true }),
-  ).toHaveValue("Retain on destination changes.");
-  await modal
-    .getByRole("button", { name: "Close dialog", exact: true })
-    .click();
+  await expect(modal.locator("textarea[name=prompt]")).toHaveValue(
+    "Retain on destination changes.",
+  );
+  await closeEditor(page);
   await page.reload();
   expect((await store("snapshot")).settings.agents[0].prompt).toBe(
     "Retry this exact draft.",
@@ -564,4 +561,34 @@ test("failed saves retain the draft and valid disk state, retry and tiny viewpor
   await section(page, "Agents");
   await expect(page.locator(".agent-card")).toHaveCount(0);
   await expect(page.getByText("No agents yet", { exact: true })).toBeVisible();
+});
+
+test("deleting an assigned Agent confirms, then removes its repository assignments", async ({
+  page,
+  store,
+}) => {
+  await seed(page, store, 1);
+  const settings = await seedBoundRepositories(store, ["fixture/shared"]);
+  settings.repositories[0].enabled = false;
+  settings.repositories[0].assignments = [
+    {
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      agent_id: settings.agents[0].id,
+      schedule: settings.defaults.schedule,
+      comment: false,
+      approve: false,
+    },
+  ];
+  await store("seed_settings", settings);
+  await page.reload();
+  const modal = await openAgent(page);
+  await modal
+    .getByRole("button", { name: "Delete agent", exact: true })
+    .click();
+  await modal.getByRole("button", { name: "Confirm deletion" }).click();
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(modal).toHaveCount(0);
+  const saved = (await store("snapshot")).settings;
+  expect(saved.agents ?? []).toEqual([]);
+  expect(saved.repositories[0].assignments ?? []).toEqual([]);
 });

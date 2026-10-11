@@ -17,9 +17,7 @@ test("a settings conflict keeps the draft until explicit discard and reload", as
   await seedAgent(store);
   await page.goto("/?view=settings");
   const modal = await editAgent(page);
-  await modal
-    .getByRole("textbox", { name: "Prompt", exact: true })
-    .fill("My unsaved local draft");
+  await modal.locator("textarea[name=prompt]").fill("My unsaved local draft");
 
   const external = (await store("snapshot")).settings;
   external.agents[0].prompt = "A concurrent external edit";
@@ -29,9 +27,9 @@ test("a settings conflict keeps the draft until explicit discard and reload", as
   await expect(modal.getByRole("alert")).toContainText(
     "Resource changed in another window",
   );
-  await expect(
-    modal.getByRole("textbox", { name: "Prompt", exact: true }),
-  ).toHaveValue("My unsaved local draft");
+  await expect(modal.locator("textarea[name=prompt]")).toHaveValue(
+    "My unsaved local draft",
+  );
   await closeDialog(page);
   await page
     .getByRole("button", {
