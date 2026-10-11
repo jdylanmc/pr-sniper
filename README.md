@@ -130,6 +130,11 @@ npm ci
 npm run tauri -- dev
 ```
 
+On macOS, `npm run dev:signed` signs each dev build with your Apple Development
+identity (override with `PR_SNIPER_DEV_SIGN_IDENTITY`). Keychain "Always Allow"
+then survives rebuilds; ad-hoc dev builds change identity every time and ask
+again. Set `PR_SNIPER_PANEL_DEBUG=1` to log panel placement geometry.
+
 If Homebrew's rustup is present but `cargo`/`rustc` are not on PATH, add the
 installed toolchain's `bin` directory to your current shell. Do not confuse
 missing shell shims with a missing Rust installation.
