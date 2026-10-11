@@ -78,9 +78,14 @@ async function setup(page, store, genie = false) {
       .getByRole("navigation", { name: "Application destinations" })
       .getByRole("button", { name: "Settings", exact: true })
       .click();
-    await page
-      .getByRole("button", { name: "Set up with Genie", exact: true })
-      .click();
+    // Wait for the Settings home before using its title-band Genie icon.
+    await expect(page.locator("[data-panel-heading]")).toHaveText("Settings");
+    await expect(
+      page.locator(".settings-window[data-settings-home]"),
+    ).toBeVisible();
+    const entry = page.locator("[data-context-genie]");
+    await expect(entry).toBeVisible();
+    await entry.click();
     await page.locator('[data-genie-edit="repositories"]').click();
   } else await section(page, "Repositories");
   return { fixture, state };
