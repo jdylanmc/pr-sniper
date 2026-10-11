@@ -52,6 +52,45 @@ if one exists. Ship, Patch, Refactor, Shepherd and `create-pull-request`
 publication use that body; do not hand-write a different format. The skill
 grants no approval, ready, or merge authority.
 
+### Local development
+
+- Rust needs `export PATH="$(dirname $(rustup which cargo)):$PATH"` in each shell.
+- Run the app with `npm run dev:signed` (stable macOS signing identity, so
+  keychain "Always Allow" survives rebuilds). Plain `tauri dev` is ad-hoc signed
+  and re-prompts on every rebuild. `tauri dev` also rebuilds and relaunches on
+  every Rust edit: stop it before agents edit Rust, restart it after. Web-only
+  edits hot-reload without a rebuild.
+- The app is tray-only. The panel opens from the menu-bar icon or by launching
+  the app again. `PR_SNIPER_PANEL_DEBUG=1` logs screen and placement geometry.
+- This repository belongs to `jdylanmc`; `gh` may default to another account.
+  Use `GH_TOKEN="$(gh auth token --user jdylanmc)"` for `gh` and a one-shot
+  credential helper for `git push`; never change the global active account.
+- Never use `pkill`; stop only your own processes by PID.
+
+### UI conventions
+
+Icon-first, minimal prose: no helper paragraphs, empty-state text or hints.
+Page title and back arrow live in the navy band; cards overlap it by 23px.
+Primary add actions are floating orange pills; destructive row actions are icon
+buttons; lists drill in (Doctrines, Reviewer requests) rather than use selects.
+Keep `prototypes/v2/` in step with UI changes. Text hidden with CSS stays in the
+DOM; do not assert visibility on it.
+
+### Testing
+
+- `npm run test:settings` (Playwright, ~800 tests) takes ~11 minutes serially.
+  Shard it for speed: separate `SETTINGS_TEST_PORT` and `--output` per shard.
+- CI also runs it on WebKit (`--browser=webkit --workers=2`); run it before
+  pushing UI changes that touch focus or layout.
+- When the UI changes on purpose, update the spec to the new intent. Never
+  delete, skip or loosen a test to pass it.
+
+### Releases
+
+Follow `docs/releases.md`. Merge the version PR, wait for the main-push **macOS
+foundation** run on that exact commit, then push the annotated tag. Never move a
+published tag.
+
 ### Wrap-up
 
 `/wrap-up` (`.agents/skills/wrap-up/`) is a human-invoked checkpoint: freeze
