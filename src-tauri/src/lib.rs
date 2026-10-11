@@ -10,6 +10,7 @@ pub mod notifications;
 pub mod panel;
 pub mod policy;
 mod process_path;
+pub mod prompt_tokens;
 pub mod publication;
 pub mod queue;
 pub mod retention;
@@ -112,7 +113,6 @@ enum GithubAccountState {
 enum GithubAuthFailure {
     VerificationPending,
     VerificationRequired,
-    Disconnected,
     DisconnectPending,
     DisconnectFailed,
     Expired,
@@ -350,9 +350,7 @@ impl GithubAuth {
         if matches!(
             state,
             GithubAccountState::ReconnectRequired {
-                reason: GithubAuthFailure::Disconnected
-                    | GithubAuthFailure::DisconnectPending
-                    | GithubAuthFailure::DisconnectFailed,
+                reason: GithubAuthFailure::DisconnectPending | GithubAuthFailure::DisconnectFailed,
                 ..
             }
         ) || (reason.retryable_without_reconnect()
@@ -692,10 +690,9 @@ impl GithubAuthFailure {
 
     fn connection_error(self) -> ConnectionError {
         match self {
-            Self::Expired
-            | Self::Disconnected
-            | Self::DisconnectPending
-            | Self::DisconnectFailed => ConnectionError::SignedOut,
+            Self::Expired | Self::DisconnectPending | Self::DisconnectFailed => {
+                ConnectionError::SignedOut
+            }
             Self::WrongIdentity => ConnectionError::WrongIdentity,
             Self::MissingScope => ConnectionError::MissingScope,
             Self::CredentialsUnavailable
@@ -2383,7 +2380,7 @@ mod repository_read_tests {
                         let mut auth = auth.lock().unwrap();
                         if disconnect_first {
                             *generations.get_mut("22").unwrap() += 1;
-                            auth.set_failure("22", GithubAuthFailure::Disconnected);
+                            auth.set_failure("22", GithubAuthFailure::DisconnectPending);
                         }
                         auth.pending = Some(PendingGithubAccount {
                             identity: identity("replacement"),
@@ -4101,6 +4098,28 @@ pub fn run() {
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            // Accessory apps have no visible menu bar, but macOS still needs an
+            // Edit menu for Cmd+C/V/X/A and the emoji picker to reach text fields.
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::menu::Submenu;
+                let edit = Submenu::with_items(
+                    app,
+                    "Edit",
+                    true,
+                    &[
+                        &PredefinedMenuItem::undo(app, None)?,
+                        &PredefinedMenuItem::redo(app, None)?,
+                        &PredefinedMenuItem::separator(app)?,
+                        &PredefinedMenuItem::cut(app, None)?,
+                        &PredefinedMenuItem::copy(app, None)?,
+                        &PredefinedMenuItem::paste(app, None)?,
+                        &PredefinedMenuItem::select_all(app, None)?,
+                    ],
+                )?;
+                let application = Submenu::with_items(app, "PR Sniper", true, &[])?;
+                app.set_menu(Menu::with_items(app, &[&application, &edit])?)?;
+            }
             let override_root =
                 std::env::var_os("PR_SNIPER_DATA_DIR").map(std::path::PathBuf::from);
             let isolated = override_root.is_some();
@@ -4704,7 +4723,7 @@ mod github_auth_tests {
         .unwrap();
         auth.lock()
             .unwrap()
-            .set_failure("22", GithubAuthFailure::Disconnected);
+            .set_failure("22", GithubAuthFailure::DisconnectPending);
         assert!(apply_staged_monitoring_activation(
             &generations,
             &auth,
@@ -4761,7 +4780,7 @@ mod github_auth_tests {
         .unwrap();
         auth.lock()
             .unwrap()
-            .set_failure("22", GithubAuthFailure::Disconnected);
+            .set_failure("22", GithubAuthFailure::DisconnectPending);
         assert!(apply_staged_monitoring_activation(
             &generations,
             &auth,

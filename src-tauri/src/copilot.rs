@@ -236,8 +236,7 @@ impl<B: Backend> Integration<B> {
                     if matches!(
                         auth.accounts.get(id),
                         Some(GithubAccountState::ReconnectRequired {
-                            reason: GithubAuthFailure::Disconnected
-                                | GithubAuthFailure::DisconnectPending
+                            reason: GithubAuthFailure::DisconnectPending
                                 | GithubAuthFailure::DisconnectFailed,
                             ..
                         })
@@ -364,10 +363,7 @@ impl<B: Backend> Integration<B> {
         match auth.accounts.get(id) {
             None => Err("Connect and confirm this Copilot account first.".into()),
             Some(GithubAccountState::ReconnectRequired {
-                reason:
-                    GithubAuthFailure::Disconnected
-                    | GithubAuthFailure::DisconnectPending
-                    | GithubAuthFailure::DisconnectFailed,
+                reason: GithubAuthFailure::DisconnectPending | GithubAuthFailure::DisconnectFailed,
                 ..
             }) => Err("Reconnect this Copilot account before verifying or loading models.".into()),
             Some(_) => Ok(()),
@@ -465,17 +461,16 @@ impl<B: Backend> Integration<B> {
         }
         .await;
         operation.finish_transaction(|| {
-            self.auth
+            let mut auth = self
+                .auth
                 .lock()
-                .map_err(|_| "Copilot state is unavailable.")?
-                .set_failure(
-                    id,
-                    if result.is_ok() {
-                        GithubAuthFailure::Disconnected
-                    } else {
-                        GithubAuthFailure::DisconnectFailed
-                    },
-                );
+                .map_err(|_| "Copilot state is unavailable.")?;
+            // A disconnected account is forgotten so it can be added again.
+            if result.is_ok() {
+                auth.accounts.remove(id);
+            } else {
+                auth.set_failure(id, GithubAuthFailure::DisconnectFailed);
+            }
             Ok(())
         })?;
         result?;

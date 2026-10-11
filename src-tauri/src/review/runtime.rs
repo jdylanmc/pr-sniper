@@ -478,7 +478,7 @@ fn prompt(selection: &Selection, context: &ReviewContext) -> String {
         "task":"Review this exact revision. Call read_changes for every listed file in manageable batches. Use source reads and path search for context. Do not omit binary, renamed or deleted files.",
         "head":context.pull.head_sha, "base":context.base_revision, "target":context.pull.base_sha,
         "title":context.pull.title,
-        "review_lens":{"agent_prompt":selection.agent.prompt,"repository_prompt":selection.policy.prompt,"preset":selection.preset,"doctrine":selection.doctrine},
+        "review_lens":{"agent_prompt":crate::prompt_tokens::expand(&selection.agent.prompt,&selection.agent.name,context),"repository_prompt":crate::prompt_tokens::expand(&selection.policy.prompt,&selection.agent.name,context),"preset":selection.preset,"doctrine":selection.doctrine},
         "changed_files":context.files.iter().map(|f|json!({"path":f.path,"status":f.status,"previous_path":f.previous_path})).collect::<Vec<_>>(),
         "result_schema":output_schema(),
         "coverage":"Exactly one file-guide entry for every changed file. Order is an optional 1-based permutation of all files. Findings require a positive source line, not an invented diff position."

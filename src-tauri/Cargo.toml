@@ -16,7 +16,7 @@ name = "pr_sniper_lib"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_urlencoded = "0.7"
-tauri = { version = "=2.11.6", features = ["tray-icon", "image-png"] }
+tauri = { version = "=2.11.6", features = ["tray-icon", "image-png", "macos-private-api"] }
 tauri-plugin-single-instance = "=2.4.4"
 uuid = { version = "=1.26.1", features = ["v4"] }
 chrono-tz = "=0.10.4"
