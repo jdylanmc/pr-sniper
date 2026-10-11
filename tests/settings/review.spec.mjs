@@ -81,7 +81,7 @@ test("Settings removes legacy start controls without changing disablement or pub
   await expect(modal.getByLabel("Review start", { exact: true })).toHaveCount(
     0,
   );
-  await expect(modal).toContainText("Eligible reviews start automatically");
+  await expect(modal.getByRole("switch", { name: /start/i })).toHaveCount(0);
   await closeDialog(page);
   await saveChanges(page);
   settings = (await store("snapshot")).settings;

@@ -9,6 +9,7 @@ import {
   addRepository,
   fixtureAgent,
   repositorySettings,
+  setAllPullRequests,
 } from "./navigation.mjs";
 
 const canonicalDirectory = new URL(
@@ -345,9 +346,7 @@ for (const [representation, references, selected] of [
       await section(page, "Preferences");
       await page.locator("#global-capacity").fill("9");
       const repository = await repositorySettings(page, "fixture/rename");
-      await repository
-        .getByLabel("Reviewer requests", { exact: true })
-        .selectOption("on");
+      await setAllPullRequests(repository, false);
       await closeDialog(page);
 
       const code = initial.doctrines.find(({ title }) => title === "code");
@@ -445,8 +444,8 @@ for (const [representation, references, selected] of [
       await expect(page.locator("#global-capacity")).toHaveValue("9");
       const pending = await repositorySettings(page, "fixture/rename");
       await expect(
-        pending.getByLabel("Reviewer requests", { exact: true }),
-      ).toHaveValue("on");
+        pending.getByRole("switch", { name: "All pull requests" }),
+      ).not.toBeChecked();
     });
   }
 }

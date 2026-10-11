@@ -9,6 +9,10 @@ import {
   setAgentPrompt,
   editAgent,
   chooseRepositoryAccount,
+  setAllPullRequests,
+  openFilters,
+  openRule,
+  backOne,
 } from "./navigation.mjs";
 
 for (const api of ["showModal", "close"]) {
@@ -472,9 +476,10 @@ for (const viewport of [
       name: "octo/project",
       exact: true,
     });
-    await modal
-      .getByRole("button", { name: "Add people", exact: true })
-      .click();
+    await setAllPullRequests(modal, false);
+    await openFilters(page, modal);
+    await openRule(page, "include_users");
+    await page.locator(".admission-add").click();
     const picker = page.getByRole("dialog", {
       name: "Add people",
       exact: true,
@@ -485,9 +490,9 @@ for (const viewport of [
     await expect(modal).toHaveCount(0);
     await page.keyboard.press("Escape");
     await expect(modal).toBeVisible();
-    await expect(
-      modal.getByRole("button", { name: "Add people", exact: true }),
-    ).toBeFocused();
+    await expect(page.locator(".admission-add")).toBeFocused();
+    await backOne(page);
+    await backOne(page);
     await modal.locator("details.repository-group > summary").click();
     await expect(
       modal.getByRole("button", { name: "Edit repository", exact: true }),

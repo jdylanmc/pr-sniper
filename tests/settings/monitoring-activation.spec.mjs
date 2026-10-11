@@ -4,7 +4,11 @@ import {
   repositoryPage,
   reviewer,
 } from "./repository-provider-fixture.mjs";
-import { repositorySettings, section } from "./navigation.mjs";
+import {
+  repositorySettings,
+  section,
+  setAllPullRequests,
+} from "./navigation.mjs";
 import { mkdir, rmdir } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -44,9 +48,7 @@ for (const failure of ["write", "conflict"]) {
     await providerFixture(page, store);
     await repositoryPage(page, store);
     const editor = await repositorySettings(page, "fixture/one");
-    await editor
-      .getByLabel("Reviewer requests", { exact: true })
-      .selectOption("on");
+    await setAllPullRequests(editor, false);
     if (failure === "write")
       await mkdir(join(dataRoot, "config/settings.json.tmp"));
     else {
@@ -60,8 +62,8 @@ for (const failure of ["write", "conflict"]) {
       editor.getByRole("switch", { name: "Monitor fixture/one" }),
     ).not.toBeChecked();
     await expect(
-      editor.getByLabel("Reviewer requests", { exact: true }),
-    ).toHaveValue("on");
+      editor.getByRole("switch", { name: "All pull requests" }),
+    ).not.toBeChecked();
     expect(
       (await store("snapshot")).settings.repository_authorizations,
     ).toBeUndefined();

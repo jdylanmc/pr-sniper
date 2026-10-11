@@ -6,6 +6,7 @@ import {
   repositorySettings,
   section,
   seedBoundRepositories,
+  setAllPullRequests,
 } from "./navigation.mjs";
 
 const secondId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -102,7 +103,7 @@ async function seed(page, store, { empty = false, standalone = false } = {}) {
 
 async function openAssignment(page, existing = true) {
   const repository = await repositorySettings(page, "fixture/assignment");
-  await repository.locator("[data-reviewer-trigger]").selectOption("off");
+  await setAllPullRequests(repository, false);
   if (existing)
     await button(
       repository.locator(".assignment-row").first(),
@@ -180,9 +181,9 @@ test("assignment opens the exact selected shared Agent without losing either dra
   await button(assignment, "Save assignment").click();
   await expect(assignment).toHaveCount(0);
   const repository = dialog(page, "fixture/assignment");
-  await expect(repository.locator("[data-reviewer-trigger]")).toHaveValue(
-    "off",
-  );
+  await expect(
+    repository.getByRole("switch", { name: "All pull requests" }),
+  ).not.toBeChecked();
   await expect(repository.locator(".assignment-row").first()).toContainText(
     "Replacement reviewer",
   );
@@ -271,7 +272,7 @@ for (const empty of [false, true]) {
       actions: { reply: false, approve: false, merge: false },
     });
     expect(committed.repositories[0].primary_assignment_id).toBeUndefined();
-    expect(committed.repositories[0].overrides.reviewer_assignment).toBe(false);
+    expect(committed.repositories[0].admission.mode).toBe("filtered");
     expect(committed.capacity).toBe(initial.capacity);
     await page.reload();
     expect((await store("snapshot")).settings).toEqual(committed);
@@ -333,9 +334,9 @@ for (const standalone of [false, true]) {
             "Edit assignment",
           ),
         ).toBeFocused();
-      await expect(repository.locator("[data-reviewer-trigger]")).toHaveValue(
-        "off",
-      );
+      await expect(
+        repository.getByRole("switch", { name: "All pull requests" }),
+      ).not.toBeChecked();
       expect((await store("snapshot")).settings).toEqual(initial);
       await (
         standalone ? button(repository, "Close dialog") : panelBack(page)

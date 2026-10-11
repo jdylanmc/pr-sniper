@@ -1,5 +1,5 @@
 import { test, expect } from "./fixtures.mjs";
-import { section } from "./navigation.mjs";
+import { section, setAllPullRequests } from "./navigation.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
 
 const tab = (page, name) =>
@@ -293,9 +293,11 @@ test("overview retains preference and repository drafts without claiming them in
     .locator("[data-repository]")
     .filter({ hasText: "example/repo" })
     .click();
-  await page
-    .getByLabel("Reviewer requests", { exact: true })
-    .selectOption("off");
+  const all = page.getByRole("switch", { name: "All pull requests" });
+  await setAllPullRequests(
+    page.locator(".repository-editor"),
+    !(await all.isChecked()),
+  );
   await page.getByRole("switch", { name: "Monitor example/repo" }).click();
   await expect(page.locator("[data-repository-monitoring-state]")).toHaveText(
     "Disabled",

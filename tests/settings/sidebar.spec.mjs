@@ -14,6 +14,9 @@ import {
   closeDialog,
   backFromEditor,
   seedBoundRepositories,
+  openFilters,
+  setAllPullRequests,
+  openRule,
 } from "./navigation.mjs";
 
 test.use({ timezoneId: "America/New_York" });
@@ -183,56 +186,55 @@ test("repository People resolves stable identity, isolates neighbors and reports
     };
   });
   await page.goto("/?view=settings");
+  const includeUsers = (settings) =>
+    settings.repositories[0].admission?.rules.find(
+      (rule) => rule.kind === "include_users",
+    );
   let parent = await repositorySettings(page, "fixture/one");
-  await expect(
-    parent.getByText(
-      "Optional. A nonempty effective watched-author filter qualifies those authors. An empty effective author filter means all authors. Pull requests requesting the signed-in account also qualify when the reviewer-request trigger is enabled. Exact GitHub login, no wildcards.",
-      { exact: true },
-    ),
-  ).toBeVisible();
-  await parent.getByRole("button", { name: "Add people", exact: true }).click();
+  await setAllPullRequests(parent, false);
+  await openFilters(page, parent);
+  await openRule(page, "include_users");
+  await page.locator(".admission-add").click();
   let picker = page.getByRole("dialog", { name: "Add people", exact: true });
   await picker.getByLabel("GitHub login", { exact: true }).fill("@octocat");
   await picker.getByRole("button", { name: "Add person", exact: true }).click();
-  await expect(parent.getByText("@octocat", { exact: true })).toBeVisible();
+  await expect(page.getByText("@octocat", { exact: true })).toBeVisible();
   expect(calls).toEqual([
     { provider: "github", accountId: "101", login: "octocat" },
   ]);
   await closeDialog(page);
   await saveChanges(page);
-  expect(
-    (await store("snapshot")).settings.repositories[0].watched_authors,
-  ).toEqual([{ id: "42", login: "octocat" }]);
-  expect((await store("snapshot")).settings.repositories[1]).toEqual(
-    initial.repositories[1],
-  );
+  const afterAdd = (await store("snapshot")).settings;
+  expect(includeUsers(afterAdd)).toMatchObject({
+    enabled: true,
+    users: [{ id: "42", login: "octocat" }],
+  });
+  expect(afterAdd.repositories[1]).toEqual(initial.repositories[1]);
   disconnected = true;
   parent = await repositorySettings(page, "fixture/one");
-  await parent.getByRole("button", { name: "Add people", exact: true }).click();
+  await setAllPullRequests(parent, false);
+  await openFilters(page, parent);
+  await openRule(page, "include_users");
+  await page.locator(".admission-add").click();
   picker = page.getByRole("dialog", { name: "Add people", exact: true });
   await picker.getByLabel("GitHub login", { exact: true }).fill("someone");
   await picker.getByRole("button", { name: "Add person", exact: true }).click();
   await expect(picker.getByRole("alert")).toContainText(
     "Connect the PR Sniper GitHub OAuth App",
   );
-  expect(
-    (await store("snapshot")).settings.repositories[0].watched_authors,
-  ).toHaveLength(1);
+  expect(includeUsers((await store("snapshot")).settings).users).toHaveLength(
+    1,
+  );
   await closeDialog(page);
-  // The legacy window renders the icon-only remove button with no box.
-  await parent
-    .getByRole("button", { name: "Remove octocat", exact: true })
-    .evaluate((element) => element.click());
-  await expect(
-    parent.getByText(
-      "No people added for this repository. Inherited watched authors still apply; if the effective author filter is empty, all authors qualify under the saved configuration. Reviewer requests qualify when that trigger is enabled.",
-    ),
-  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Remove @octocat", exact: true })
+    .click();
+  await expect(page.locator(".watchlist-row")).toHaveCount(0);
   await closeDialog(page);
   await saveChanges(page);
   await page.reload();
   const saved = (await store("snapshot")).settings;
-  expect(saved.repositories[0].watched_authors ?? []).toEqual([]);
+  expect(includeUsers(saved).users ?? []).toEqual([]);
   expect(saved.repositories[1]).toEqual(initial.repositories[1]);
   expect(saved.defaults).toEqual(initial.defaults);
 });

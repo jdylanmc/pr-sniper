@@ -10,6 +10,7 @@ import {
   assignment,
   saveAssignment,
   seedBoundRepositories,
+  setAllPullRequests,
 } from "./navigation.mjs";
 
 for (const [scenario, expression, timezone] of [
@@ -127,9 +128,7 @@ test("Agent saves immediately while unrelated preference and repository drafts s
   await section(page, "Preferences");
   await page.locator("#global-capacity").fill("9");
   const repository = await repositorySettings(page, "fixture/one");
-  await repository
-    .getByLabel("Reviewer requests", { exact: true })
-    .selectOption("on");
+  await setAllPullRequests(repository, false);
   await closeDialog(page);
   const modal = await editAgent(page);
   await modal.locator("textarea[name=prompt]").fill("Saved resource prompt.");
@@ -138,13 +137,13 @@ test("Agent saves immediately while unrelated preference and repository drafts s
   const saved = (await store("saved_resources")).settings;
   expect(saved.agents[0].prompt).toBe("Saved resource prompt.");
   expect(saved.capacity).toBe(4);
-  expect(saved.repositories[0].overrides?.reviewer_assignment).toBeUndefined();
+  expect(saved.repositories[0].admission?.mode ?? "all").toBe("all");
   await section(page, "Preferences");
   await expect(page.locator("#global-capacity")).toHaveValue("9");
   const pending = await repositorySettings(page, "fixture/one");
   await expect(
-    pending.getByLabel("Reviewer requests", { exact: true }),
-  ).toHaveValue("on");
+    pending.getByRole("switch", { name: "All pull requests" }),
+  ).not.toBeChecked();
   await pending
     .getByRole("button", { name: "Save repository", exact: true })
     .click();
@@ -159,7 +158,7 @@ test("Agent saves immediately while unrelated preference and repository drafts s
   expect((await store("snapshot")).settings).toMatchObject({
     capacity: 9,
     agents: [{ prompt: "Saved resource prompt." }],
-    repositories: [{ overrides: { reviewer_assignment: true } }],
+    repositories: [{ admission: { mode: "filtered" } }],
   });
 });
 

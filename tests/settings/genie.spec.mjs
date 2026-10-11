@@ -10,7 +10,7 @@ import {
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { section } from "./navigation.mjs";
+import { section, setAllPullRequests } from "./navigation.mjs";
 
 const tab = (page, name) =>
   page
@@ -713,7 +713,7 @@ test("Genie assignment edits use shared Agents and retain repository and capabil
     .filter({ hasText: "fixture/genie" })
     .click();
   const repository = modal(page, "fixture/genie");
-  await repository.locator("[data-reviewer-trigger]").selectOption("off");
+  await setAllPullRequests(repository, false);
   await repository
     .locator(".assignment-row")
     .getByRole("button", { name: "Edit assignment", exact: true })
@@ -740,9 +740,9 @@ test("Genie assignment edits use shared Agents and retain repository and capabil
     .getByRole("button", { name: "Save assignment", exact: true })
     .click();
   await expect(assignment).toHaveCount(0);
-  await expect(repository.locator("[data-reviewer-trigger]")).toHaveValue(
-    "off",
-  );
+  await expect(
+    repository.getByRole("switch", { name: "All pull requests" }),
+  ).not.toBeChecked();
   await close(repository);
   await back(page);
   await expect(page.locator('[data-genie-edit="repositories"]')).toBeFocused();

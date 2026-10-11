@@ -1,6 +1,12 @@
 import { expect, test } from "./fixtures.mjs";
 import { queueFixture, showQueueGroup } from "./queue-fixture.mjs";
-import { backFromEditor, section } from "./navigation.mjs";
+import {
+  backFromEditor,
+  backOne,
+  openRule,
+  section,
+  setAllPullRequests,
+} from "./navigation.mjs";
 
 test.use({ viewport: { width: 400, height: 680 } });
 const tab = (page, name) =>
@@ -635,13 +641,11 @@ for (const embedded of [true, false]) {
         name: "example/focus",
         exact: true,
       });
-      const people = repository.getByRole("button", {
-        name: "Add people",
-        exact: true,
-      });
-      await repository
-        .getByLabel("Reviewer requests", { exact: true })
-        .selectOption("off");
+      const filters = repository.locator("[data-open-filters]");
+      await setAllPullRequests(repository, false);
+      await activate(filters);
+      await openRule(page, "include_users");
+      const people = page.locator(".admission-add");
       await activate(people);
       const picker = page.getByRole("dialog", {
         name: "Add people",
@@ -659,9 +663,14 @@ for (const embedded of [true, false]) {
       }
       await backFromEditor(page, picker);
       await expect(people).toBeFocused();
+      if (embedded) {
+        await backOne(page);
+        await backOne(page);
+        await expect(filters).toBeFocused();
+      }
       await expect(
-        repository.getByLabel("Reviewer requests", { exact: true }),
-      ).toHaveValue("off");
+        repository.getByRole("switch", { name: "All pull requests" }),
+      ).not.toBeChecked();
       await repository.getByText("Repository", { exact: true }).click();
       await activate(
         repository.getByRole("button", {

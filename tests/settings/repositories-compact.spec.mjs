@@ -1,5 +1,12 @@
 import { test, expect } from "./fixtures.mjs";
-import { fixtureAgent, section, repositorySettings } from "./navigation.mjs";
+import {
+  fixtureAgent,
+  section,
+  repositorySettings,
+  openFilters,
+  openRule,
+  backOne,
+} from "./navigation.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -20,6 +27,14 @@ const accounts = [
     state: "connected",
   },
 ];
+const allPullRequests = (editor) =>
+  editor.getByRole("switch", { name: "All pull requests" });
+const flipAll = async (editor) => {
+  const toggle = allPullRequests(editor);
+  const next = !(await toggle.isChecked());
+  await toggle.setChecked(next);
+  return next;
+};
 const modal = (page, name) => page.getByRole("dialog", { name, exact: true });
 const tab = (page, name) =>
   page
@@ -172,9 +187,7 @@ test("repository saves leave unsaved Preferences and the saved global schedule i
     editor.locator("[name=cron],[name=minutes],[name=timezone],#global-cron"),
   ).toHaveCount(0);
   await capture(page, testInfo, "saved-global-schedule");
-  await editor
-    .getByLabel("Reviewer requests", { exact: true })
-    .selectOption("off");
+  await flipAll(editor);
   await expect(
     editor.getByRole("button", { name: "Configure scope", exact: true }),
   ).toHaveCount(0);
@@ -418,9 +431,7 @@ for (const failure of ["write", "conflict"]) {
     await provider(page);
     await start(page, store);
     const editor = await repositorySettings(page, "fixture/compact");
-    await editor
-      .getByLabel("Reviewer requests", { exact: true })
-      .selectOption("off");
+    const flipped = await flipAll(editor);
     const temporary = join(dataRoot, "config/settings.json.tmp");
     if (failure === "write") await mkdir(temporary);
     else {
@@ -436,12 +447,11 @@ for (const failure of ["write", "conflict"]) {
     const rejection = await editor
       .locator("[data-resource-error]")
       .textContent();
-    await editor.getByLabel("Reviewer requests", { exact: true }).focus();
+    await allPullRequests(editor).focus();
     await page.evaluate(() => window.__settingsIdle());
     await expect(editor.locator("[data-resource-error]")).toHaveText(rejection);
-    await expect(
-      editor.getByLabel("Reviewer requests", { exact: true }),
-    ).toHaveValue("off");
+    if (flipped) await expect(allPullRequests(editor)).toBeChecked();
+    else await expect(allPullRequests(editor)).not.toBeChecked();
     expect(await readFile(join(dataRoot, "config/settings.json"))).toEqual(
       before,
     );
@@ -451,9 +461,8 @@ for (const failure of ["write", "conflict"]) {
       await rm(temporary, { recursive: true });
       await save(editor);
       expect(
-        (await store("snapshot")).settings.repositories[0].overrides
-          .reviewer_assignment,
-      ).toBe(false);
+        (await store("snapshot")).settings.repositories[0].admission.mode,
+      ).toBe(flipped ? "all" : "filtered");
     } else {
       await editor
         .getByRole("button", { name: "Cancel repository changes" })
@@ -597,14 +606,21 @@ test("verified watched people, draft cancellation and keyboard controls remain u
   });
   await start(page, store);
   let parent = await repositorySettings(page, "fixture/compact");
-  await parent.getByRole("button", { name: "Add people" }).click();
+  await openFilters(page, parent);
+  await openRule(page, "include_users");
+  await page.locator(".admission-add").click();
   const picker = modal(page, "Add people");
   await expect(picker.getByLabel("Acting GitHub account")).toHaveValue("22");
   await picker.getByLabel("GitHub login").fill("@verified-person");
   await picker.getByRole("button", { name: "Add person", exact: true }).click();
   await expect(picker).toHaveCount(0);
-  await expect(parent.locator(".watchlist")).toContainText("GitHub ID 77");
-  await parent.locator(".watchlist").scrollIntoViewIfNeeded();
+  await expect(
+    page.locator(".watchlist-row").filter({ hasText: "@verified-person" }),
+  ).toContainText("@verified-person");
+  await page
+    .locator(".watchlist-row")
+    .filter({ hasText: "@verified-person" })
+    .scrollIntoViewIfNeeded();
   await capture(page, testInfo, "watched-people");
   expect(calls).toEqual([
     {
@@ -613,20 +629,29 @@ test("verified watched people, draft cancellation and keyboard controls remain u
     },
   ]);
   expect((await store("snapshot")).settings).toEqual(initial);
+  await backOne(page);
+  await backOne(page);
   await save(parent);
   const saved = (await store("snapshot")).settings;
-  expect(saved.repositories[0].watched_authors).toEqual([
+  const includeUsers = saved.repositories[0].admission.rules.find(
+    (rule) => rule.kind === "include_users",
+  );
+  expect(includeUsers.enabled).toBe(true);
+  expect(includeUsers.users).toEqual([
     { id: "11", login: "watched-person" },
     { id: "77", login: "verified-person" },
   ]);
   parent = await repositorySettings(page, "fixture/compact");
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.setViewportSize({ width: 320, height: 300 });
-  await parent.getByRole("button", { name: "Remove verified-person" }).focus();
-  await expect(
-    parent.getByRole("button", { name: "Remove verified-person" }),
-  ).toBeInViewport();
+  await openFilters(page, parent);
+  await openRule(page, "include_users");
+  const remove = page.getByRole("button", { name: "Remove @verified-person" });
+  await remove.focus();
+  await expect(remove).toBeInViewport();
   await page.keyboard.press("Enter");
+  await backOne(page);
+  await backOne(page);
   await parent
     .getByRole("button", { name: "Cancel repository changes" })
     .focus();
@@ -645,7 +670,11 @@ test("verified watched people, draft cancellation and keyboard controls remain u
   await page.reload();
   await page.evaluate(() => window.__settingsIdle());
   parent = await repositorySettings(page, "fixture/compact");
-  await expect(parent.locator(".watchlist")).toContainText("GitHub ID 77");
+  await openFilters(page, parent);
+  await openRule(page, "include_users");
+  await expect(
+    page.locator(".watchlist-row").filter({ hasText: "@verified-person" }),
+  ).toContainText("@verified-person");
 });
 
 for (const resolution of ["Save", "Cancel"]) {
@@ -678,9 +707,7 @@ for (const resolution of ["Save", "Cancel"]) {
       .locator(".assignment-row")
       .getByRole("button", { name: "Remove assignment" })
       .click();
-    await editor
-      .getByLabel("Reviewer requests", { exact: true })
-      .selectOption("off");
+    const flipped = await flipAll(editor);
     await expect(
       editor.getByRole("switch", { name: "Monitor fixture/compact" }),
     ).not.toBeChecked();
@@ -697,9 +724,7 @@ for (const resolution of ["Save", "Cancel"]) {
     );
     await expect(unbind).toBeFocused();
     await expect(editor.locator(".assignment-row")).toHaveCount(0);
-    await expect(
-      editor.getByLabel("Reviewer requests", { exact: true }),
-    ).toHaveValue("off");
+    expect(await allPullRequests(editor).isChecked()).toBe(flipped);
     await expect(
       editor.getByRole("switch", { name: "Monitor fixture/compact" }),
     ).not.toBeChecked();
@@ -711,9 +736,7 @@ for (const resolution of ["Save", "Cancel"]) {
     await close(editor);
     editor = await repositorySettings(page, "fixture/compact");
     await expect(editor.locator(".assignment-row")).toHaveCount(0);
-    await expect(
-      editor.getByLabel("Reviewer requests", { exact: true }),
-    ).toHaveValue("off");
+    expect(await allPullRequests(editor).isChecked()).toBe(flipped);
     await expect(
       editor.getByRole("switch", { name: "Monitor fixture/compact" }),
     ).not.toBeChecked();
@@ -728,9 +751,9 @@ for (const resolution of ["Save", "Cancel"]) {
       expect(await readFile(settingsPath)).toEqual(before);
     } else {
       expect(explicitlySaved.repositories[0].assignments ?? []).toEqual([]);
-      expect(explicitlySaved.repositories[0].overrides).toEqual({
-        reviewer_assignment: false,
-      });
+      expect(explicitlySaved.repositories[0].admission.mode).toBe(
+        flipped ? "all" : "filtered",
+      );
       expect(explicitlySaved.repositories[0].enabled).toBe(false);
     }
     expect(explicitlySaved.defaults).toEqual(initial.defaults);
