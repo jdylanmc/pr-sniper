@@ -1274,6 +1274,8 @@ const changelogSource = `# Changelog
 
 ## Unreleased
 
+## 0.2.0 - 2026-10-10
+
 ### Added
 
 - Expand {{token}} placeholders (pr_title, pr_number, pr_author, head_sha, base_sha, changed_files, changed_file_count, agent_name) in Agent prompts when a review runs. The Agent editor lists them and inserts on click.
