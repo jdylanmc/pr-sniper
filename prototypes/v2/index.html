@@ -114,6 +114,43 @@
             d="M12 5C9 3 5 3 3 4v15c3-1 6-1 9 1 3-2 6-2 9-1V4c-3-1-6-1-9 1ZM12 5v15"
           />
         </symbol>
+        <symbol id="inbox" viewBox="0 0 24 24">
+          <path d="M4 4h16l2 14H2L4 4Zm-1 9h5l2 3h4l2-3h5M7 8h10" />
+        </symbol>
+        <symbol id="plug-off" viewBox="0 0 24 24">
+          <path
+            d="M9 7V4M15 7V4M7 7h10v4a5 5 0 0 1-10 0V7ZM12 16v4M3 3l18 18"
+          />
+        </symbol>
+        <symbol id="pencil" viewBox="0 0 24 24">
+          <path d="M4 20h4L19 9l-4-4L4 16zM14 6l4 4" />
+        </symbol>
+        <symbol id="refresh" viewBox="0 0 24 24">
+          <path
+            d="M20 11a8 8 0 0 0-14-4M4 4v4h4M4 13a8 8 0 0 0 14 4m2 3v-4h-4"
+          />
+        </symbol>
+        <symbol id="info" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 11v5M12 8h.01" />
+        </symbol>
+        <symbol id="reset" viewBox="0 0 24 24">
+          <path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5" />
+        </symbol>
+        <symbol id="clock" viewBox="0 0 24 24">
+          <path d="M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18" />
+        </symbol>
+        <symbol id="blocked" viewBox="0 0 24 24">
+          <path d="M5.6 5.6l12.8 12.8M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18" />
+        </symbol>
+        <symbol id="failed" viewBox="0 0 24 24">
+          <path d="m9 9 6 6m0-6-6 6M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18" />
+        </symbol>
+        <symbol id="genie" viewBox="0 0 24 24">
+          <path
+            d="M10.2 6.4V4.2a1.8 1.8 0 0 1 3.6 0v2.2M9.6 7.4c1.4 1 3.4 1 4.8 0M12 8.2C9 7.4 3 8.4 3 11.4c0 2.6 4.5 3.4 7.4 1.6M12 8.2c3-.8 9 .2 9 3.2 0 2.6-4.5 3.4-7.4 1.6M10.4 13c1.2.5 2.8.5 3.2 0M7.6 14.2c.6 3.4 2.8 5.7 5.8 6.6 2.2.4 4-.3 5-1.6-1.5.5-2.9.1-3.7-1 1.2-1.5 1.7-3.1 1.6-5"
+          />
+        </symbol>
         <symbol id="people" viewBox="0 0 24 24">
           <circle cx="9" cy="7" r="3" />
           <path
@@ -283,16 +320,37 @@
                 <svg class="icon"><use href="#back" /></svg>
               </button>
               <h1 id="page-title" tabindex="-1">Your queue</h1>
+              <button
+                id="genie-button"
+                class="header-genie"
+                type="button"
+                data-page="genie"
+                aria-label="Set up with Genie"
+                title="Set up with Genie"
+                hidden
+              >
+                <svg class="icon"><use href="#genie" /></svg>
+              </button>
             </div>
             <img class="sniper-brand-art" src="./sniper-mark.png" alt="" />
           </header>
-          <div id="app-notice" class="app-notice" role="alert" hidden></div>
           <main
             id="view-stage"
             class="view-stage"
             aria-label="PR Sniper pages"
           ></main>
           <p id="toast" class="toast" role="status" hidden></p>
+          <div id="app-notice" class="app-notice" role="alert" hidden>
+            <span id="app-notice-text"></span>
+            <button
+              id="notice-dismiss"
+              class="notice-dismiss"
+              type="button"
+              aria-label="Dismiss message"
+            >
+              <svg class="icon"><use href="#close" /></svg>
+            </button>
+          </div>
 
           <nav class="bottom-nav" aria-label="PR Sniper">
             <button
@@ -319,6 +377,18 @@
               ><span>Settings</span>
             </button>
           </nav>
+          <footer class="app-footer">
+            <button type="button" data-page="status">Status</button>
+            <button type="button" data-page="diagnostics">Diagnostics</button>
+            <button
+              type="button"
+              id="version-link"
+              data-action="changelog"
+              aria-label="Show changelog"
+            >
+              v0.1.2
+            </button>
+          </footer>
           <p class="prototype-note" id="prototype-note">
             Prototype / sample data / saved in this browser
           </p>

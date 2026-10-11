@@ -22,14 +22,20 @@ AI accounts with browser sign-in and per-Agent account/model selection; see
 [approved specification](docs/agent/specs/pr-sniper-mvp.nano.md), not this
 implementation summary.
 
-Settings opens a grouped **Your review setup** overview with saved resource
-counts. **Accounts** opens integration categories; **Agents**, **Repositories**
+Settings opens a grouped overview with saved resource counts and a Genie icon
+beside the title. **Accounts** opens integration categories; **Agents**, **Repositories**
 and **Doctrines** open their existing resource editors. **Concurrent reviews** focuses AI capacity in the
 shared Preferences editor. **Preferences** retains the global schedule,
 automation, notification and startup controls. Back restores the overview's
 row and scroll position without saving or resetting other drafts. Resource
 editors retain their explicit Save/Cancel behavior; the overview has no global
-save bar. **Set up with Genie** remains available.
+save bar. **Set up with Genie** remains available from the title icon.
+
+The panel is icon-first with minimal prose: a navy title band with cards
+overlapping it, the page title and back arrow in the band when drilled in, and
+8px rounded window corners. **Queue** shows two toggle cards, **Ready for you**
+and **Needs attention**; the active one is orange and selects which grouped
+list is shown. Clicking the footer version opens the in-app **Changelog**.
 
 **Accounts** opens **AI Tooling** and **Git Repository**, each with a provider
 list styled like the Settings overview. Choose **GitHub Copilot** under
@@ -39,13 +45,13 @@ category/provider lists have no save bar. Genie opens the relevant provider
 directly. Pending sign-ins remain intact while navigating between levels.
 
 GitHub repository/publication identity stays separate from Copilot AI identity.
-Choose **Add GitHub account** or **Connect Copilot account** to
-start that native flow; sign-in is not started or a model selected automatically.
-The compact panels retain actual device-code waiting, returned-identity
-confirmation, failure/retry and disconnected states. Expand each provider's
-**access and consent** disclosure for scope and storage details. Only explicit
-confirmation saves the returned identity; cancellation does not connect or
-assign it. Connecting does not assign repositories, configure an Agent's model,
+Choose the orange **Add GitHub account** or **Connect Copilot account** button
+to start that native flow; sign-in is not started or a model selected
+automatically. The compact panels retain actual device-code waiting, failure and
+retry states. A returned identity is saved automatically once browser sign-in
+completes; cancellation does not connect or assign it. Each connected account
+shows **Connected** and an icon to disconnect, which forgets the account so it
+can be connected again. Connecting does not assign repositories, configure an Agent's model,
 or enable automation. Direct Claude, Codex and Grok remain disabled future
 integrations, distinct from models returned through Copilot. Azure DevOps and
 Bitbucket are also labelled **Coming soon**, with no setup actions. The legacy
@@ -601,8 +607,9 @@ saved author filters, independent reviewer-request override, verified
 watched people and the **saved global schedule** (not an unsaved Preferences
 draft). No repository or Agent polling builder is exposed. Each new assignment
 receives missing normal review work at the next global scan; saving is not a scan.
-**Repository and connection** retains verification, metadata reads, edit,
-guarded account unbinding and removal. Unbinding preserves assignments,
+**Repository** retains verification, metadata reads, edit,
+guarded account unbinding and removal. Repositories whose GitHub account is
+disconnected are listed in a separate group at the bottom of Repositories. Unbinding preserves assignments,
 permissions and completed evidence, but provider operations need a new explicit
 binding. First **Save** or **Cancel** this repository's pending changes;
 unbinding never saves or discards them implicitly. Unrelated Preferences drafts

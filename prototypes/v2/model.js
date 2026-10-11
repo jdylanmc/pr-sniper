@@ -1,6 +1,25 @@
 /* Browser-only fixtures and deterministic demo transitions. No provider integration. */
 (() => {
   const models = ["Balanced (demo)", "Reasoning (demo)", "Fast (demo)"];
+  const contextWindows = ["Standard", "Extended"];
+  const reasoningEfforts = ["Low", "Medium", "High"];
+  const promptTokens = [
+    ["pr_title", "Pull request title"],
+    ["pr_number", "Pull request number"],
+    ["pr_author", "Author login"],
+    ["head_sha", "Head commit"],
+    ["base_sha", "Base commit"],
+    ["changed_files", "Changed paths, one per line"],
+    ["changed_file_count", "Number of changed files"],
+    ["agent_name", "This agent's name"],
+  ];
+  const slug = (value, fallback) =>
+    String(value ?? "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || fallback;
+  const defaultSignature = (name, model) =>
+    `\u{1F52B} pr-sniper(${slug(name, "agent")}:${slug(model, "model")})`;
   const stages = [
     "Reading changed files",
     "Checking surrounding code",
@@ -166,6 +185,7 @@
         notifications: false,
         launchAtLogin: false,
       },
+      forgotten: [],
       accounts: [
         {
           id: "github-personal",
@@ -210,6 +230,9 @@
         name,
         accountId: "copilot-demo",
         model: models[index % models.length],
+        contextWindow: "Standard",
+        reasoning: "Medium",
+        signature: defaultSignature(name, models[index % models.length]),
         prompt:
           "Review the complete change using read-only evidence. Explain concrete defects and preserve human judgment.",
         doctrineIds: [index % 2 ? "clarity" : "correctness"],
@@ -482,6 +505,21 @@
         `Duplicate saved ${key} identities.`,
       );
     }
+    state.forgotten ??= [];
+    requireValue(
+      Array.isArray(state.forgotten) &&
+        state.forgotten.every(
+          (item) =>
+            text(item?.id) &&
+            text(item?.name) &&
+            ["github", "copilot"].includes(item.kind),
+        ),
+      "Invalid forgotten accounts.",
+    );
+    const known = (id, kind) =>
+      state.accounts.some(
+        (account) => account.id === id && account.kind === kind,
+      ) || state.forgotten.some((item) => item.id === id && item.kind === kind);
     state.accounts.forEach((item) =>
       requireValue(
         text(item.name) &&
@@ -508,12 +546,15 @@
         "Agent name, prompt, and demo model are required.",
       );
       requireValue(
-        state.accounts.some(
-          (account) =>
-            account.id === item.accountId && account.kind === "copilot",
-        ),
-        "Choose an AI account.",
+        (item.contextWindow === undefined ||
+          contextWindows.includes(item.contextWindow)) &&
+          (item.reasoning === undefined ||
+            reasoningEfforts.includes(item.reasoning)) &&
+          (item.signature === undefined ||
+            (text(item.signature) && item.signature.length <= 200)),
+        "Choose a valid context window, reasoning effort, and signature.",
       );
+      requireValue(known(item.accountId, "copilot"), "Choose an AI account.");
       requireValue(
         ["human", "approve"].includes(item.completion) &&
           typeof item.comment === "boolean",
@@ -533,11 +574,13 @@
         "Use a repository name like owner/repository.",
       );
       requireValue(
-        state.accounts.some(
-          (account) =>
-            account.id === item.accountId && account.kind === "github",
-        ),
+        item.accountId === "" || known(item.accountId, "github"),
         "Choose a repository account.",
+      );
+      requireValue(
+        item.reviewerRequests === undefined ||
+          ["inherit", "on", "off"].includes(item.reviewerRequests),
+        "Invalid reviewer-request setting.",
       );
       requireValue(
         typeof item.enabled === "boolean" && typeof item.scope === "boolean",
@@ -692,6 +735,7 @@
 
   function update(original, action, payload = {}) {
     const state = copy(original);
+    state.forgotten ??= [];
     const review = payload.reviewId
       ? find(state.reviews, payload.reviewId, "Review")
       : null;
@@ -738,8 +782,15 @@
         state.preferences = copy(payload.preferences);
         break;
       case "account": {
+        // Disconnecting forgets the account; dependents keep its id so that
+        // adding the same identity again reconnects them.
         const account = find(state.accounts, payload.id, "Account");
-        account.connected = !account.connected;
+        state.accounts = state.accounts.filter((item) => item !== account);
+        state.forgotten.push({
+          id: account.id,
+          name: account.name,
+          kind: account.kind,
+        });
         break;
       }
       case "add-account": {
@@ -758,16 +809,23 @@
               account.kind === payload.kind &&
               account.name.toLowerCase() === name,
           ),
-          "That identity is already listed for this provider. Use its existing connection or Reconnect.",
+          "That identity is already connected for this provider.",
         );
+        const forgotten = state.forgotten.find(
+          (item) =>
+            item.kind === payload.kind && item.name.toLowerCase() === name,
+        );
+        state.forgotten = state.forgotten.filter((item) => item !== forgotten);
         state.accounts.push({
-          id: uid("account"),
+          id: forgotten?.id ?? uid("account"),
           name,
           kind: payload.kind,
           connected: true,
         });
-        // Connecting an unassigned account must not dispatch or change review work.
-        return validate(state);
+        // A brand-new account has no dependents, so it never dispatches work;
+        // a returning one reconnects what depended on it.
+        if (!forgotten) return validate(state);
+        break;
       }
       case "detect": {
         requireValue(
@@ -976,22 +1034,24 @@
       }
       case "delete-agent":
         requireValue(
-          !state.repos.some((repo) => repo.agentIds.includes(payload.id)) &&
-            !state.reviews.some(
-              (item) =>
-                item.agentId === payload.id &&
-                [
-                  "queued",
-                  "running",
-                  "failed",
-                  "stale",
-                  "human",
-                  "question",
-                ].includes(item.state),
-            ),
-          "Unassign this agent and finish its outstanding work before deleting it.",
+          !state.reviews.some(
+            (item) =>
+              item.agentId === payload.id &&
+              [
+                "queued",
+                "running",
+                "failed",
+                "stale",
+                "human",
+                "question",
+              ].includes(item.state),
+          ),
+          "Finish this agent's outstanding work before deleting it.",
         );
         find(state.agents, payload.id, "Agent");
+        state.repos.forEach((repo) => {
+          repo.agentIds = repo.agentIds.filter((id) => id !== payload.id);
+        });
         state.agents = state.agents.filter((item) => item.id !== payload.id);
         break;
       case "add-repo": {
@@ -1104,6 +1164,10 @@
     update,
     copy,
     models,
+    contextWindows,
+    reasoningEfforts,
+    promptTokens,
+    defaultSignature,
     accountName,
     repositoryName,
     repositoryOwners,
