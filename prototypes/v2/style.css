@@ -3280,3 +3280,118 @@ input.switch:focus-visible {
 .agent-form .group-card {
   overflow: visible;
 }
+
+/* Repository editor: All / Filtered pull request admission */
+.repo-form[data-view="admission"] > :not(.admission-view) {
+  display: none;
+}
+.admission-view[hidden] {
+  display: none;
+}
+.admission-view {
+  position: relative;
+}
+.admission-group .kv-link:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.admission-group .kv-row + .kv-row {
+  border-top: 1px solid #edf1f4;
+}
+.admission-rule {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 46px;
+  padding: 0 10px 0 0;
+}
+.admission-rule + .admission-rule {
+  border-top: 1px solid #edf1f4;
+}
+.admission-open {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 46px;
+  padding: 0 4px 0 14px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+.admission-open:disabled {
+  cursor: default;
+}
+.admission-label {
+  flex: 1;
+  min-width: 0;
+}
+.admission-open .kv-value {
+  flex: none;
+}
+.admission-open .icon {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  color: #93a1ad;
+}
+.admission-move {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #6e8192;
+}
+.admission-move:hover:not(:disabled) {
+  background: #f3f5f7;
+}
+.admission-move:disabled {
+  opacity: 0.3;
+}
+.admission-move .icon {
+  width: 14px;
+  height: 14px;
+}
+.admission-view .floating-pill {
+  position: sticky;
+  bottom: 14px;
+  right: auto;
+  display: flex;
+  margin: 14px 0 0 auto;
+}
+.admission-view .floating-pill:disabled {
+  opacity: 0.45;
+}
+.admission-path-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.admission-path-form input {
+  flex: 1;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid #d7dee5;
+  border-radius: 8px;
+  background: #fbfcfd;
+  font: inherit;
+  font-size: 12px;
+}
+.admission-path-form [role="alert"] {
+  flex-basis: 100%;
+  margin: 0;
+}
+.admission-values code {
+  font-size: 12px;
+}

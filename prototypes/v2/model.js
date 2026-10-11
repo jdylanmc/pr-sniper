@@ -115,6 +115,125 @@
     return result;
   };
 
+  const ruleKinds = [
+    "assigned",
+    "mentioned",
+    "include_users",
+    "exclude_users",
+    "include_paths",
+    "exclude_paths",
+  ];
+  const userKind = (kind) => kind.endsWith("_users");
+  const pathKind = (kind) => kind.endsWith("_paths");
+  const defaultAdmission = (users = []) => ({
+    mode: users.length ? "filtered" : "all",
+    rules: ruleKinds.map((kind) => ({
+      kind,
+      enabled:
+        kind === "assigned" ||
+        kind === "mentioned" ||
+        (kind === "include_users" && users.length > 0),
+      ...(userKind(kind)
+        ? { users: kind === "include_users" ? [...users] : [] }
+        : {}),
+      ...(pathKind(kind) ? { paths: [] } : {}),
+    })),
+  });
+  // Deterministic upgrade of the pre-admission repository shape.
+  const migrate = (state) => {
+    if (!state || !Array.isArray(state.repos)) return state;
+    state.repos = state.repos.map((repo) => {
+      if (!repo || repo.admission !== undefined) return repo;
+      const { watched, reviewerRequests, ...rest } = repo;
+      const users = Array.isArray(watched) ? watched : [];
+      const admission = defaultAdmission(users);
+      admission.mode = users.length ? "filtered" : "all";
+      admission.rules.find((rule) => rule.kind === "include_users").enabled =
+        users.length > 0;
+      admission.rules.find((rule) => rule.kind === "assigned").enabled =
+        reviewerRequests !== "off";
+      admission.rules.find((rule) => rule.kind === "mentioned").enabled = false;
+      return { ...rest, admission };
+    });
+    return state;
+  };
+  const pathProblem = (value, existing = []) => {
+    if (typeof value !== "string" || !value.trim()) return "Enter a path.";
+    if (
+      value.length > 256 ||
+      value.startsWith("/") ||
+      value.split("/").includes("..")
+    )
+      return "Use a repository-relative pattern without .. or a leading /.";
+    if (existing.includes(value)) return "Already added.";
+    return "";
+  };
+  const globMatches = (pattern, path) => {
+    if (pattern.endsWith("/")) return path.startsWith(pattern);
+    let source = "";
+    for (let i = 0; i < pattern.length; i++) {
+      const char = pattern[i];
+      if (char === "*" && pattern[i + 1] === "*") {
+        if (pattern[i + 2] === "/") {
+          source += "(?:.*/)?";
+          i += 2;
+        } else {
+          source += ".*";
+          i += 1;
+        }
+      } else if (char === "*") source += "[^/]*";
+      else if (char === "?") source += "[^/]";
+      else source += char.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    }
+    return new RegExp(`^${source}$`).test(path);
+  };
+  // Enabled rules run in order; the first one that matches decides.
+  const admits = (repo, review) => {
+    const admission = repo.admission;
+    if (admission.mode === "all") return true;
+    const paths = (review.files ?? []).map((file) => file.path);
+    for (const rule of admission.rules) {
+      if (!rule.enabled) continue;
+      const users = rule.users ?? [];
+      const patterns = rule.paths ?? [];
+      switch (rule.kind) {
+        case "assigned":
+          if (review.reviewRequested === true) return true;
+          break;
+        case "mentioned":
+          if (review.mentioned === true) return true;
+          break;
+        case "include_users":
+          if (users.includes(review.author)) return true;
+          break;
+        case "exclude_users":
+          if (users.includes(review.author)) return false;
+          break;
+        case "include_paths":
+          if (paths.some((path) => patterns.some((p) => globMatches(p, path))))
+            return true;
+          break;
+        case "exclude_paths":
+          if (
+            paths.length &&
+            patterns.length &&
+            paths.every((path) => patterns.some((p) => globMatches(p, path)))
+          )
+            return false;
+          break;
+      }
+    }
+    return false;
+  };
+  const trustedAuthor = (repo, author) =>
+    repo.admission.mode === "filtered" &&
+    repo.admission.rules.some(
+      (rule) =>
+        rule.kind === "include_users" &&
+        rule.enabled &&
+        rule.users.includes(author),
+    );
+
   function packet(state, title, index, number, status = "queued") {
     const repo = state.repos[index % state.repos.length];
     const agentId =
@@ -137,6 +256,8 @@
       restart: false,
       manual: false,
       trusted: true,
+      reviewRequested: false,
+      mentioned: false,
       decision: "",
       published: false,
       humanNote: "",
@@ -247,7 +368,7 @@
           enabled: true,
           scope: true,
           agentIds: [`agent-${index}`, `agent-${index + 3}`],
-          watched: people.slice(0, 10),
+          admission: defaultAdmission(people.slice(0, 10)),
           schedule: "interval",
           minutes: index === 1 ? 15 : 5,
           cron: "*/15 * * * *",
@@ -390,8 +511,8 @@
     if (!repo) return "Repository removed";
     if (!repo.enabled) return "Repository monitoring disabled";
     if (!repo.scope) return "Monitoring scope needs confirmation";
-    if (repo.watched.length && !repo.watched.includes(review.author))
-      return "Author no longer matches the watch filter";
+    if (!admits(repo, review))
+      return "No longer matches the pull request filters";
     if (
       !state.accounts.find((account) => account.id === repo.accountId)
         ?.connected
@@ -458,6 +579,45 @@
       review.run = runSnapshot(state, review);
       active++;
     }
+  }
+
+  function validateAdmission(admission) {
+    const invalid = "Invalid pull request filters.";
+    requireValue(
+      admission &&
+        ["all", "filtered"].includes(admission.mode) &&
+        Array.isArray(admission.rules) &&
+        admission.rules.length === ruleKinds.length &&
+        ruleKinds.every((kind) =>
+          admission.rules.some((rule) => rule?.kind === kind),
+        ),
+      invalid,
+    );
+    admission.rules.forEach((rule) => {
+      const valueKey = userKind(rule.kind)
+        ? "users"
+        : pathKind(rule.kind)
+          ? "paths"
+          : "";
+      const expected = ["enabled", "kind", ...(valueKey ? [valueKey] : [])];
+      requireValue(
+        typeof rule.enabled === "boolean" &&
+          Object.keys(rule).sort().join() === expected.sort().join(),
+        invalid,
+      );
+      if (!valueKey) return;
+      const values = rule[valueKey];
+      requireValue(
+        Array.isArray(values) &&
+          new Set(values).size === values.length &&
+          values.every((value, index) =>
+            valueKey === "users"
+              ? text(value)
+              : !pathProblem(value, values.slice(0, index)),
+          ),
+        invalid,
+      );
+    });
   }
 
   function validate(state) {
@@ -578,9 +738,8 @@
         "Choose a repository account.",
       );
       requireValue(
-        item.reviewerRequests === undefined ||
-          ["inherit", "on", "off"].includes(item.reviewerRequests),
-        "Invalid reviewer-request setting.",
+        item.watched === undefined && item.reviewerRequests === undefined,
+        "Saved repository uses an outdated filter shape.",
       );
       requireValue(
         typeof item.enabled === "boolean" && typeof item.scope === "boolean",
@@ -593,10 +752,7 @@
           ),
         "An assigned agent is missing.",
       );
-      requireValue(
-        Array.isArray(item.watched) && item.watched.every(text),
-        "Invalid watched people.",
-      );
+      validateAdmission(item.admission);
       requireValue(
         ["inherit", "on", "off"].includes(item.start) &&
           ["inherit", "on", "off"].includes(item.comments),
@@ -673,6 +829,11 @@
           item.attempt >= 0,
         "Invalid saved review attempt.",
       );
+      for (const key of ["reviewRequested", "mentioned"])
+        requireValue(
+          item[key] === undefined || typeof item[key] === "boolean",
+          "Invalid saved review signal.",
+        );
       for (const key of ["trusted", "manual", "restart", "published"])
         requireValue(
           typeof item[key] === "boolean",
@@ -850,9 +1011,8 @@
               number,
             );
             item.agentId = agentId;
-            if (repo.watched.length && !repo.watched.includes(item.author))
-              continue;
-            item.trusted = repo.watched.includes(item.author);
+            if (!admits(repo, item)) continue;
+            item.trusted = trustedAuthor(repo, item.author);
             state.reviews.push(item);
             added++;
           }
@@ -900,11 +1060,10 @@
           next.findings = [];
           next.conversation = [];
           next.humanNote = "";
-          next.trusted = find(
-            state.repos,
-            review.repoId,
-            "Repository",
-          ).watched.includes(review.author);
+          next.trusted = trustedAuthor(
+            find(state.repos, review.repoId, "Repository"),
+            review.author,
+          );
           delete next.nextId;
           requeue(next);
           review.nextId = next.id;
@@ -1076,7 +1235,7 @@
           enabled: false,
           scope: false,
           agentIds: [],
-          watched: [],
+          admission: defaultAdmission(),
           schedule: "cron",
           minutes: 15,
           cron: "*/15 * * * *",
@@ -1158,6 +1317,12 @@
   globalThis.SniperDemo = Object.freeze({
     seed,
     fresh,
+    migrate,
+    admits,
+    globMatches,
+    pathProblem,
+    defaultAdmission,
+    ruleKinds,
     needsOnboarding,
     setupStatus,
     validate,

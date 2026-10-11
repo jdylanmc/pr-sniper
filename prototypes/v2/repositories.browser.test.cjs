@@ -172,7 +172,30 @@ async function check(engine, name) {
       await page.evaluate(() => document.activeElement.dataset.focusKey),
       "browse-github-personal",
     );
-    await click("#close-popover");
+    // Saved data from before admission filters migrates on load.
+    await page.evaluate((key) => {
+      const saved = JSON.parse(localStorage.getItem(key));
+      saved.repos = saved.repos.map(({ admission, ...repo }) => ({
+        ...repo,
+        watched: [],
+        reviewerRequests: "off",
+      }));
+      localStorage.setItem(key, JSON.stringify(saved));
+    }, key);
+    await page.reload();
+    await click("#tray-trigger");
+    await click('.bottom-nav [data-nav="settings"]');
+    await click('[data-page="repos"]');
+    await click('[data-page="repo"][data-id="repo-0"]');
+    assert.equal(
+      await page.locator('input[name="admissionAll"]').isChecked(),
+      true,
+    );
+    assert.equal(
+      await page.locator('[data-action="open-filters"]').isDisabled(),
+      true,
+    );
+    await page.goto(base);
     await click('[data-scenario="fresh"]');
     await click('.bottom-nav [data-nav="settings"]');
     await click('[data-page="repos"]');

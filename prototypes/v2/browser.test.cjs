@@ -306,9 +306,148 @@ async function check(engine, name) {
         .count(),
       1,
     );
+    // The old watch/reviewer-request controls are gone from the editor.
+    assert.equal(
+      await page.locator('select[name="reviewerRequests"]').count(),
+      0,
+    );
+    assert.equal(await page.locator('input[name="watched"]').count(), 0);
+    assert.equal(await page.getByText("People you watch").count(), 0);
+    const filtersRow = page.locator('[data-action="open-filters"]');
+    const allSwitch = page.locator('input[name="admissionAll"]');
+    assert.equal(await allSwitch.isChecked(), true);
+    assert.equal(await filtersRow.isDisabled(), true);
+    await allSwitch.uncheck();
+    assert.equal(await filtersRow.isEnabled(), true);
+    assert.match(await filtersRow.innerText(), /Filtered pull requests\s+2 on/);
+    await allSwitch.check();
+    assert.equal(await filtersRow.isDisabled(), true);
+    await allSwitch.uncheck();
+    await filtersRow.click();
+    await settle();
+    assert.equal(
+      await page.locator("#page-title").innerText(),
+      "Filtered pull requests",
+    );
+    assert.deepEqual(await page.locator(".admission-label").allInnerTexts(), [
+      "Assigned to me for review",
+      "Mentioning me in comments",
+      "Include users",
+      "Exclude users",
+      "Include paths",
+      "Exclude paths",
+    ]);
+    assert.equal(
+      await page
+        .locator('[data-rule="mentioned"] .admission-open')
+        .isDisabled(),
+      true,
+    );
+    assert.equal(
+      await page.locator('[data-rule="assigned"] [data-dir="-1"]').isDisabled(),
+      true,
+    );
+    assert.equal(
+      await page
+        .locator('[data-rule="exclude_paths"] [data-dir="1"]')
+        .isDisabled(),
+      true,
+    );
+    await page.locator('[data-rule="include_users"] [data-dir="-1"]').click();
+    assert.deepEqual(
+      await page
+        .locator("[data-rule]")
+        .evaluateAll((rows) => rows.map((row) => row.dataset.rule)),
+      [
+        "assigned",
+        "include_users",
+        "mentioned",
+        "exclude_users",
+        "include_paths",
+        "exclude_paths",
+      ],
+    );
+    await page.locator('[data-rule="include_users"] [data-dir="-1"]').click();
+    assert.equal(
+      await page.locator("[data-rule]").first().getAttribute("data-rule"),
+      "include_users",
+    );
+    await page.locator('[data-rule="include_users"] .admission-open').click();
+    await settle();
+    assert.equal(
+      await page.locator("#page-title").innerText(),
+      "Include users",
+    );
     await page.locator('[data-action="add-people"]').click();
     await page.locator('[data-picker="people"]').selectOption({ index: 1 });
-    assert.equal(await page.locator('input[name="watched"]').count(), 1);
+    assert.equal(
+      await page.locator(".admission-values .assign-row").count(),
+      1,
+    );
+    assert.match(
+      await page.locator(".person-handle").innerText(),
+      /^@[a-z-]+$/,
+    );
+    await back();
+    assert.equal(
+      (
+        await page.locator('[data-rule="include_users"] .kv-value').innerText()
+      ).trim(),
+      "1",
+    );
+    assert.equal(
+      await page.locator('[data-rule="include_users"] input').isChecked(),
+      true,
+    );
+    await page.locator('[data-rule="exclude_paths"] .admission-open').click();
+    await settle();
+    assert.equal(
+      await page.locator("#page-title").innerText(),
+      "Exclude paths",
+    );
+    const pathInput = page.getByLabel("Path pattern");
+    assert.equal(
+      await pathInput.getAttribute("placeholder"),
+      "docs/ or src/**/*.ts",
+    );
+    for (const [value, message] of [
+      ["", /Enter a path/],
+      ["/abs", /without \.\./],
+      ["a/../b", /without \.\./],
+      ["x".repeat(257), /without \.\./],
+    ]) {
+      await pathInput.fill(value);
+      await page.locator('[data-action="add-path"]').click();
+      assert.match(
+        await page.locator('.admission-path-form [role="alert"]').innerText(),
+        message,
+      );
+    }
+    await pathInput.fill("docs/");
+    await page.locator('[data-action="add-path"]').click();
+    assert.equal(
+      await page.locator(".admission-values code").innerText(),
+      "docs/",
+    );
+    await pathInput.fill("docs/");
+    await page.locator('[data-action="add-path"]').click();
+    assert.match(
+      await page.locator('.admission-path-form [role="alert"]').innerText(),
+      /Already added/,
+    );
+    await back();
+    assert.equal(
+      await page.locator('[data-rule="exclude_paths"] input').isChecked(),
+      true,
+    );
+    await page.locator('[data-rule="exclude_paths"] input').uncheck();
+    await page.locator('[data-rule="exclude_paths"] input').check();
+    await back();
+    assert.equal(
+      await page.locator("#page-title").innerText(),
+      "sample/new-project",
+    );
+    assert.match(await filtersRow.innerText(), /Filtered pull requests\s+4 on/);
     await page.locator(".schedule-details > summary").click();
     await page.locator('input[name="scope"]').check();
     await page.locator('select[name="schedule"]').selectOption("interval");
@@ -325,6 +464,22 @@ async function check(engine, name) {
     assert.equal(savedRepo.minutes, 15);
     assert.equal(savedRepo.cron, "0 9 * * 1-5");
     assert.equal(savedRepo.zone, "Europe/London");
+    assert.equal(savedRepo.admission.mode, "filtered");
+    assert.deepEqual(
+      savedRepo.admission.rules.map((rule) => rule.kind),
+      [
+        "include_users",
+        "assigned",
+        "mentioned",
+        "exclude_users",
+        "include_paths",
+        "exclude_paths",
+      ],
+    );
+    assert.equal(savedRepo.admission.rules[0].users.length, 1);
+    assert.deepEqual(savedRepo.admission.rules.at(-1).paths, ["docs/"]);
+    assert.equal(savedRepo.admission.rules.at(-1).enabled, true);
+    assert.equal("watched" in savedRepo, false);
     const editRepo = async () => {
       await page.locator(`[data-page="repo"][data-id="${newRepoId}"]`).click();
       await settle();
