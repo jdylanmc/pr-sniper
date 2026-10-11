@@ -4395,6 +4395,7 @@ pub fn run() {
     });
 }
 
+#[cfg(not(windows))]
 fn show_queue_panel(app: &tauri::AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
