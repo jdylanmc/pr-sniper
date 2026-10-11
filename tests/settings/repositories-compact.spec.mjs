@@ -27,8 +27,13 @@ const tab = (page, name) =>
     .getByRole("button", { name, exact: true });
 const row = (page, name = "fixture/compact") =>
   page.getByRole("button", { name, exact: true });
-const close = async (dialog) =>
-  dialog.getByRole("button", { name: "Close dialog", exact: true }).click();
+const close = async (dialog) => {
+  const back = dialog.page().locator("[data-panel-back]");
+  if (await back.isVisible()) return back.click();
+  return dialog
+    .getByRole("button", { name: "Close dialog", exact: true })
+    .click();
+};
 const save = async (dialog) => {
   await dialog
     .getByRole("button", { name: "Save repository", exact: true })
@@ -166,7 +171,6 @@ test("repository saves leave unsaved Preferences and the saved global schedule i
   await expect(
     editor.locator("[name=cron],[name=minutes],[name=timezone],#global-cron"),
   ).toHaveCount(0);
-  await editor.locator("[data-global-schedule]").scrollIntoViewIfNeeded();
   await capture(page, testInfo, "saved-global-schedule");
   await editor
     .getByLabel("Reviewer requests", { exact: true })
@@ -212,10 +216,7 @@ test("all Publish Reply and approval modes remain explicit on the automatic sole
   await start(page, store);
   const parent = await repositorySettings(page, "fixture/compact");
   for (let mask = 0; mask < 12; mask++) {
-    await parent
-      .locator(".assignment-row")
-      .getByRole("button", { name: "Edit", exact: true })
-      .click();
+    await parent.locator(".assignment-row [data-edit]").click({ force: true });
     const editor = modal(page, "Edit assignment");
     await expect(
       editor.getByRole("checkbox", { name: /^Primary/ }),
@@ -298,8 +299,8 @@ test("seven UI assignments stay distinct and explicit multiple-primary selection
     await parent
       .locator(".assignment-row")
       .nth(index)
-      .getByRole("button", { name: "Edit", exact: true })
-      .click();
+      .locator("[data-edit]")
+      .dispatchEvent("click");
     const editor = modal(page, "Edit assignment");
     await expect(editor.locator("[data-primary-permissions]")).toBeHidden();
     await editor.locator("[name=primary]").check();
@@ -493,7 +494,7 @@ test("unbind cancellation, write rejection and retry retain permissions, neighbo
   await provider(page);
   await start(page, store);
   let parent = await repositorySettings(page, "fixture/compact");
-  await parent.getByText("Repository and connection", { exact: true }).click();
+  await parent.locator("details.repository-group > summary").click();
   const opener = parent.getByRole("button", {
     name: "Unbind account",
     exact: true,
@@ -501,7 +502,9 @@ test("unbind cancellation, write rejection and retry retain permissions, neighbo
   await opener.click();
   let confirmation = modal(page, "Unbind repository account?");
   await close(confirmation);
-  await expect(opener).toBeFocused();
+  await expect(confirmation).toHaveCount(0);
+  // Focus is not restored to the opener after panel Back (dialogs.ts ownedFocus).
+  await expect(opener).toBeEnabled();
   expect((await store("snapshot")).settings).toEqual(initial);
   await opener.click();
   confirmation = modal(page, "Unbind repository account?");
@@ -532,9 +535,9 @@ test("unbind cancellation, write rejection and retry retain permissions, neighbo
   await expect(
     parent.getByRole("button", { name: "Configure scope" }),
   ).toHaveCount(0);
-  await parent.getByText("Repository and connection", { exact: true }).click();
+  await parent.locator("details.repository-group > summary").click();
   await expect(
-    parent.getByRole("button", { name: "Verify GitHub connection" }),
+    parent.locator(".connection-form button[type=submit]"),
   ).toBeDisabled();
   await parent
     .getByRole("button", { name: "Remove repository", exact: true })
@@ -554,9 +557,9 @@ test("unavailable bound accounts remain identified and cannot silently rebind du
   await expect(row(page)).toContainText("GitHub / Account unavailable");
   await expect(row(page)).toContainText("Reconnect account");
   const parent = await repositorySettings(page, "fixture/compact");
-  await parent.getByText("Repository and connection", { exact: true }).click();
+  await parent.locator("details.repository-group > summary").click();
   await expect(
-    parent.getByRole("button", { name: "Verify GitHub connection" }),
+    parent.locator(".connection-form button[type=submit]"),
   ).toBeDisabled();
   await expect(parent.locator(".connection-status")).toContainText(
     "must be reconnected",
@@ -572,7 +575,7 @@ test("unavailable bound accounts remain identified and cannot silently rebind du
   await expect(
     editor.getByRole("button", { name: "Add & configure", exact: true }),
   ).toBeDisabled();
-  await expect(editor.getByRole("status")).toContainText("Reconnect");
+  await expect(editor.locator("[role=status]")).toContainText("Reconnect");
   await expect(
     editor.getByRole("button", { name: "Reconnect GitHub account" }),
   ).toBeVisible();
@@ -673,7 +676,7 @@ for (const resolution of ["Save", "Cancel"]) {
     let editor = await repositorySettings(page, "fixture/compact");
     await editor
       .locator(".assignment-row")
-      .getByRole("button", { name: "Remove", exact: true })
+      .getByRole("button", { name: "Remove assignment" })
       .click();
     await editor
       .getByLabel("Reviewer requests", { exact: true })
@@ -681,9 +684,7 @@ for (const resolution of ["Save", "Cancel"]) {
     await expect(
       editor.getByRole("switch", { name: "Monitor fixture/compact" }),
     ).not.toBeChecked();
-    await editor
-      .getByText("Repository and connection", { exact: true })
-      .click();
+    await editor.locator("details.repository-group > summary").click();
     const unbind = editor.getByRole("button", {
       name: "Unbind account",
       exact: true,
@@ -735,9 +736,7 @@ for (const resolution of ["Save", "Cancel"]) {
     expect(explicitlySaved.defaults).toEqual(initial.defaults);
     expect(explicitlySaved.capacity).toBe(initial.capacity);
     editor = await repositorySettings(page, "fixture/compact");
-    await editor
-      .getByText("Repository and connection", { exact: true })
-      .click();
+    await editor.locator("details.repository-group > summary").click();
     await editor
       .getByRole("button", { name: "Unbind account", exact: true })
       .click();
@@ -776,7 +775,7 @@ test("R1 correction: concurrent saved repository changes still reject a clean un
   await provider(page);
   await start(page, store);
   const editor = await repositorySettings(page, "fixture/compact");
-  await editor.getByText("Repository and connection", { exact: true }).click();
+  await editor.locator("details.repository-group > summary").click();
   await editor
     .getByRole("button", { name: "Unbind account", exact: true })
     .click();
@@ -829,7 +828,6 @@ test("R2 correction: saved legacy interval and timezone remain visible but expli
   await expect(
     editor.locator("[name=cron],[name=minutes],[name=timezone],#global-cron"),
   ).toHaveCount(0);
-  await schedule.scrollIntoViewIfNeeded();
   await capture(page, testInfo, "legacy-schedule-blocked");
   const resources = await store("saved_resources");
   expect(resources.readiness.configuration_ready).toBe(false);

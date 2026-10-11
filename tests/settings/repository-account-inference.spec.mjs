@@ -34,7 +34,7 @@ test("sole Git Repository connection is inferred and its exact identity is saved
   ).toBeVisible();
   await dialog.getByRole("button", { name: "Add & configure" }).click();
   await expect(
-    page.getByRole("dialog", { name: "Settings for orbit/one" }),
+    page.getByRole("dialog", { name: "orbit/one", exact: true }),
   ).toBeVisible();
   expect(
     fixture.calls.filter((c) => c.command === "resolve_provider_repository"),
@@ -83,7 +83,7 @@ test("multiple compatible connections require an explicit keyboard choice", asyn
   await expect(dialog.getByRole("status")).toContainText("GitHub / other");
   await dialog.getByRole("button", { name: "Add & configure" }).click();
   await expect(
-    page.getByRole("dialog", { name: "Settings for orbit/one" }),
+    page.getByRole("dialog", { name: "orbit/one", exact: true }),
   ).toBeVisible();
   expect(
     (await store("snapshot")).settings.repositories[0].provider_account_id,
@@ -167,7 +167,7 @@ test("unsupported URL never borrows a GitHub identity and PR intake waits for co
   await expect(dialog.getByRole("status")).toContainText("GitHub / fixture");
   await dialog.getByRole("button", { name: "Add & configure" }).click();
   await expect(
-    page.getByRole("dialog", { name: "Settings for orbit/one" }),
+    page.getByRole("dialog", { name: "orbit/one", exact: true }),
   ).toBeVisible();
   expect(
     fixture.calls.filter((c) => c.command === "resolve_provider_repository"),
@@ -202,7 +202,7 @@ test("explicit Change uses the named repository account, not the AI connection",
   );
   await dialog.getByRole("button", { name: "Add & configure" }).click();
   await expect(
-    page.getByRole("dialog", { name: "Settings for orbit/one" }),
+    page.getByRole("dialog", { name: "orbit/one", exact: true }),
   ).toBeVisible();
   expect(
     fixture.calls.find((c) => c.command === "resolve_provider_repository").args
@@ -244,7 +244,7 @@ test("account read failure and recovery keep the URL, focus and original actor",
   await dialog.getByLabel("Acting GitHub account").selectOption("44");
   await dialog.getByRole("button", { name: "Add & configure" }).click();
   await expect(
-    page.getByRole("dialog", { name: "Settings for orbit/one" }),
+    page.getByRole("dialog", { name: "orbit/one", exact: true }),
   ).toBeVisible();
   expect(
     (await store("snapshot")).settings.repositories[0].provider_account_id,
@@ -344,7 +344,7 @@ for (const replacement of [
       await dialog.getByRole("button", { name: "Add & configure" }).click();
       const name = replacement === "URL" ? "orbit/two" : "orbit/one";
       await expect(
-        page.getByRole("dialog", { name: `Settings for ${name}` }),
+        page.getByRole("dialog", { name: name, exact: true }),
       ).toBeVisible();
       expect((await store("snapshot")).settings.repositories[0]).toMatchObject({
         name,
@@ -384,10 +384,10 @@ test("saved binding stays pinned when a neighbor is the only usable account", as
   await page.goto("/?view=settings");
   await section(page, "Repositories");
   await page.locator("[data-repository]").click();
-  let editor = page.getByRole("dialog", { name: "Settings for orbit/one" });
+  let editor = page.getByRole("dialog", { name: "orbit/one", exact: true });
   await expect(editor.locator(".repository-identity")).toContainText("fixture");
   await expect(editor.getByText("Account ID", { exact: true })).toBeHidden();
-  await editor.getByText("Repository and connection", { exact: true }).click();
+  await editor.locator("summary", { hasText: "Repository" }).click();
   await editor
     .getByRole("button", { name: "Edit repository", exact: true })
     .click();
@@ -431,7 +431,7 @@ test("temporary provider warning keeps the actor, surfaces retry and retains fai
   fixture.handler = undefined;
   await dialog.getByRole("button", { name: "Add & configure" }).click();
   await expect(
-    page.getByRole("dialog", { name: "Settings for orbit/one" }),
+    page.getByRole("dialog", { name: "orbit/one", exact: true }),
   ).toBeVisible();
   expect(
     (await store("snapshot")).settings.repositories[0].provider_account_id,
@@ -494,7 +494,7 @@ test("recovery reuses repository sign-in and requires its existing identity conf
   );
   await dialog.getByRole("button", { name: "Add & configure" }).click();
   await expect(
-    page.getByRole("dialog", { name: "Settings for orbit/one" }),
+    page.getByRole("dialog", { name: "orbit/one", exact: true }),
   ).toBeVisible();
   expect(
     fixture.calls.filter((c) => c.command === "confirm_github_account"),

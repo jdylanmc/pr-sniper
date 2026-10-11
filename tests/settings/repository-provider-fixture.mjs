@@ -147,7 +147,7 @@ export async function addByUrl(page, name = "fixture/one", accountId = "22") {
     .getByRole("button", { name: "Add & configure", exact: true })
     .click();
   return page.getByRole("dialog", {
-    name: `Settings for ${name.toLowerCase().replace("https://github.com/", "")}`,
+    name: name.toLowerCase().replace("https://github.com/", ""),
     exact: true,
   });
 }

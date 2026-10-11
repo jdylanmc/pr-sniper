@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
 type GithubAuthFailure =
-  | "disconnected"
   | "disconnect_pending"
   | "disconnect_failed"
   | "expired"
@@ -61,6 +60,7 @@ export function renderGithubAuth(
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let renderedView: string | undefined;
   let busy = false;
+  let autoConfirmed = "";
   let actionGeneration = 0;
   let stateRead = 0;
 
@@ -205,6 +205,7 @@ export function renderGithubAuth(
         : undefined;
     renderedView = snapshot;
     card.dataset.flowState = view.flow.state;
+    card.dataset.empty = String(view.accounts.length === 0);
     actions.replaceChildren();
     accountList.replaceChildren();
     publishAccountStates(view.accounts);
@@ -227,15 +228,23 @@ export function renderGithubAuth(
         account.state === "connected"
           ? account.warning
             ? `Connected through the PR Sniper GitHub OAuth App. Last verification needs retry: ${githubAccountFailureMessage(account.warning)}`
-            : "Connected through the PR Sniper GitHub OAuth App."
+            : "\u2713 Connected"
           : `Needs attention. ${githubAccountFailureMessage(account.reason)}`;
       description.append(heading, state);
       const accountActions = document.createElement("div");
       accountActions.className = "github-auth-actions";
       if (account.state === "connected") {
-        commandButton(accountActions, "Disconnect", "disconnect_github_auth", {
-          accountId: account.account_id,
-        }).setAttribute("aria-label", `Disconnect ${account.login}`);
+        const disconnect = commandButton(
+          accountActions,
+          "Disconnect",
+          "disconnect_github_auth",
+          { accountId: account.account_id },
+        );
+        disconnect.setAttribute("aria-label", `Disconnect ${account.login}`);
+        disconnect.title = "Disconnect";
+        disconnect.classList.add("account-disconnect");
+        disconnect.innerHTML =
+          '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 7V4M15 7V4M7 7h10v4a5 5 0 0 1-10 0V7ZM12 16v4M3 3l18 18"/></svg>';
         if (account.warning)
           commandButton(
             accountActions,
@@ -315,8 +324,24 @@ export function renderGithubAuth(
         view.flow.confirmation_error === "credentials_unavailable"
           ? `GitHub credentials could not be saved securely. Confirm ${view.flow.login} (${view.flow.account_id}) again or cancel without connecting it.`
           : `Confirm ${view.flow.login} (${view.flow.account_id}) for repository access and publication. Credentials are not saved until you confirm.`;
-      commandButton(actions, "Confirm", "confirm_github_account").className =
-        "primary";
+      const confirm = commandButton(
+        actions,
+        "Confirm",
+        "confirm_github_account",
+      );
+      confirm.className = "primary";
+      // Browser sign-in already proved the identity; confirm once automatically
+      // and fall back to the manual button if that attempt errors.
+      if (
+        !view.flow.confirmation_error &&
+        autoConfirmed !== view.flow.account_id
+      ) {
+        autoConfirmed = view.flow.account_id;
+        queueMicrotask(() => {
+          if (root.isConnected && confirm.isConnected && !confirm.disabled)
+            confirm.click();
+        });
+      }
       commandButton(
         actions,
         "Use a different account",
@@ -332,6 +357,7 @@ export function renderGithubAuth(
         "start_github_browser_auth",
       );
     } else {
+      autoConfirmed = "";
       commandButton(
         actions,
         "Add GitHub account",
@@ -391,7 +417,6 @@ export function renderGithubAuth(
 export function githubAccountFailureMessage(reason?: GithubAuthFailure) {
   return (
     {
-      disconnected: "Disconnected. Reconnect to use this account again.",
       disconnect_pending:
         "Disconnecting. Secure credential deletion is not yet confirmed.",
       disconnect_failed:

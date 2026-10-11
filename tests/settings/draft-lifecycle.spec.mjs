@@ -42,9 +42,7 @@ for (const action of ["add", "disable"]) {
       await closeDialog(page);
     }
     const modal = await editAgent(page);
-    await expect(
-      modal.getByRole("textbox", { name: "Prompt", exact: true }),
-    ).toHaveValue(prompt);
+    await expect(modal.locator("textarea[name=prompt]")).toHaveValue(prompt);
     await closeDialog(page);
     expect((await store("snapshot")).settings.agents[0]).toEqual({
       ...original.agents[0],
@@ -113,7 +111,7 @@ test("a clean-focus snapshot cannot overwrite Agent edits entered before its rep
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await hold.arrived;
     const modal = await editAgent(page);
-    const prompt = modal.getByRole("textbox", { name: "Prompt", exact: true });
+    const prompt = modal.locator("textarea[name=prompt]");
     await prompt.fill("Draft entered after focus snapshot began.");
     hold.release();
     await page.evaluate(() => window.__settingsIdle());
@@ -138,7 +136,7 @@ for (const target of ["agent", "assignment"]) {
         : await assignment(page, "octo/hello-world");
     if (target === "agent")
       await modal
-        .getByRole("textbox", { name: "Prompt", exact: true })
+        .locator("textarea[name=prompt]")
         .fill("Submitted before held reply.");
     const hold = ipc.holdNext("save_resource");
     try {

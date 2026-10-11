@@ -120,7 +120,6 @@ export const actualIntelligence = (value?: AgentIntelligence | null) =>
 
 export const copilotFailure = (reason?: string) =>
   ({
-    disconnected: "Disconnected. Reconnect to use this account again.",
     disconnect_pending:
       "Disconnecting. Secure credential deletion is not yet confirmed.",
     disconnect_failed:
@@ -164,6 +163,7 @@ export function renderCopilotAuth(
   let busy = false;
   let cancelling = false;
   let lastView = "";
+  let autoConfirmed = "";
   let actionGeneration = 0;
   let stateRead = 0;
   const alive = () => !disposed && root.isConnected;
@@ -253,6 +253,7 @@ export function renderCopilotAuth(
         : undefined;
     lastView = serialized;
     card.dataset.flowState = view.flow.state;
+    card.dataset.empty = String(view.accounts.length === 0);
     accountsChanged(view.accounts);
     accounts.replaceChildren();
     flow.replaceChildren();
@@ -272,7 +273,7 @@ export function renderCopilotAuth(
         account.state === "connected" ? "copilot-signed-in" : "";
       state.textContent =
         account.state === "connected"
-          ? `Signed in as ${account.login}. Sign-in verified only.`
+          ? "Connected"
           : copilotFailure(account.reason);
       if (account.state === "connected") {
         const check = document.createElement("span");
@@ -293,9 +294,20 @@ export function renderCopilotAuth(
       button(actions, "Reconnect", "start_copilot_auth", {
         expectedAccountId: account.account_id,
       }).setAttribute("aria-label", `Reconnect Copilot ${account.login}`);
-      button(actions, "Disconnect", "disconnect_copilot_account", {
-        accountId: account.account_id,
-      }).setAttribute("aria-label", `Disconnect Copilot ${account.login}`);
+      const disconnect = button(
+        actions,
+        "Disconnect",
+        "disconnect_copilot_account",
+        { accountId: account.account_id },
+      );
+      disconnect.setAttribute(
+        "aria-label",
+        `Disconnect Copilot ${account.login}`,
+      );
+      disconnect.title = "Disconnect";
+      disconnect.classList.add("account-disconnect");
+      disconnect.innerHTML =
+        '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 7V4M15 7V4M7 7h10v4a5 5 0 0 1-10 0V7ZM12 16v4M3 3l18 18"/></svg>';
       row.append(description, actions);
       accounts.append(row);
     }
@@ -335,17 +347,29 @@ export function renderCopilotAuth(
       }
       button(flow, "Cancel Copilot sign-in", "cancel_copilot_auth");
     } else if (current.state === "pending_account_confirmation") {
-      status.textContent = `Confirm ${current.login} (${current.account_id}) for AI. Credentials are not saved until you confirm.`;
+      status.textContent = `Connecting ${current.login}...`;
       if (current.confirmation_error)
         showError(copilotFailure(current.confirmation_error));
-      button(
+      const confirm = button(
         flow,
         "Confirm Copilot account",
         "confirm_copilot_account",
-      ).className = "primary";
+      );
+      confirm.className = "primary";
+      // The browser sign-in already proved the identity; confirm once on its
+      // own and fall back to the manual button if that attempt errors.
+      const attempt = `${current.account_id}`;
+      if (!current.confirmation_error && autoConfirmed !== attempt) {
+        autoConfirmed = attempt;
+        queueMicrotask(() => {
+          if (alive() && confirm.isConnected && !confirm.disabled)
+            confirm.click();
+        });
+      }
       // Keep the expected identity on reconnect; cancelling never changes its pin.
       button(flow, "Cancel Copilot sign-in", "cancel_copilot_auth");
     } else {
+      autoConfirmed = "";
       if (current.state === "failed") showError(copilotFailure(current.reason));
       button(flow, "Connect Copilot account", "start_copilot_auth").className =
         "primary";

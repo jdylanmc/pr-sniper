@@ -59,9 +59,7 @@ test("capacity accepts one and twenty, rejects zero and retains independent Agen
   await section(page, "Preferences");
   await page.locator("#global-capacity").fill("20");
   const agent = await editAgent(page);
-  await agent
-    .getByRole("textbox", { name: "Prompt", exact: true })
-    .fill("Independent prompt.");
+  await agent.locator("textarea[name=prompt]").fill("Independent prompt.");
   await agent.getByRole("button", { name: "Save agent", exact: true }).click();
   await expect(agent).toHaveCount(0);
   expect((await store("snapshot")).settings.capacity).toBe(4);

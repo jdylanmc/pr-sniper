@@ -403,6 +403,7 @@ pub(crate) async fn show(app: &tauri::AppHandle, route: Option<Route>) -> Result
             .title("PR Sniper")
             .inner_size(408.0, 744.0)
             .decorations(false)
+            .transparent(true)
             .resizable(false)
             .skip_taskbar(true)
             .always_on_top(true)

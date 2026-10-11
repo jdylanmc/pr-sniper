@@ -135,11 +135,9 @@ test("Save locks dismissal until the native commit returns and does not issue a 
       .getByRole("button", { name: "Save repository", exact: true })
       .click();
     await held.arrived;
+    await expect(editor.locator('[aria-label="Close dialog"]')).toBeDisabled();
     await expect(
-      editor.getByRole("button", { name: "Close dialog", exact: true }),
-    ).toBeDisabled();
-    await expect(
-      editor.getByRole("button", { name: "Cancel repository changes" }),
+      editor.locator('[aria-label="Cancel repository changes"]'),
     ).toBeDisabled();
     expect((await store("snapshot")).settings.repositories[0].enabled).toBe(
       true,
@@ -176,6 +174,7 @@ for (const embedded of [true, false]) {
       .click();
     await expect(editor).toHaveCount(0);
     const authorized = (await store("snapshot")).settings;
+    if (embedded) await page.locator("[data-panel-back]").click();
     await page
       .getByRole("button", { name: "Set up with Genie", exact: true })
       .click();

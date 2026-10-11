@@ -24,6 +24,7 @@ import {
   type WorkPresentation,
   renderIntelligenceDiagnostics,
 } from "./work-presentation";
+import changelogSource from "../CHANGELOG.md?raw";
 import "./panel.css";
 
 export type PanelTab = "queue" | "running" | "reviewed" | "settings";
@@ -58,6 +59,17 @@ interface Row {
   work?: WorkPresentation;
 }
 
+const stateIcons: Record<string, string> = {
+  Queued: "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
+  Blocked: "M5.6 5.6l12.8 12.8M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
+  Failed: "m9 9 6 6m0-6-6 6M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
+  Stopping: "M9 9v6m6-6v6M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
+  Superseded: "M7 7h10M7 12h10M7 17h6",
+};
+
+const genieIcon =
+  "M10.2 6.4V4.2a1.8 1.8 0 0 1 3.6 0v2.2M9.6 7.4c1.4 1 3.4 1 4.8 0M12 8.2C9 7.4 3 8.4 3 11.4c0 2.6 4.5 3.4 7.4 1.6M12 8.2c3-.8 9 .2 9 3.2 0 2.6-4.5 3.4-7.4 1.6M10.4 13c1.2.5 2.8.5 3.2 0M7.6 14.2c.6 3.4 2.8 5.7 5.8 6.6 2.2.4 4-.3 5-1.6-1.5.5-2.9.1-3.7-1 1.2-1.5 1.7-3.1 1.6-5";
+
 const destinations = {
   queue: {
     title: "Your queue",
@@ -79,13 +91,13 @@ const icon = (path: string) =>
 export async function mountPanel(app: HTMLElement) {
   app.className = "panel-shell";
   app.innerHTML = `<header class="panel-header"><img src="${crosshair}" alt="" /><strong>PR Sniper</strong><span data-setup-needed hidden>Setup needed</span><div data-header-automation></div><button type="button" data-panel-hide aria-label="Hide PR Sniper panel" title="Close hides only; background work continues">${icon("m7 7 10 10M7 17 17 7")}</button></header>
-    <div class="panel-context"><button type="button" data-panel-back aria-label="Back" hidden>${icon("m14 6-6 6 6 6M8 12h12")}</button><h1 tabindex="-1" data-panel-heading>Your queue</h1><img class="panel-art" src="${sniperArt}" alt="" /></div>
+    <div class="panel-context"><button type="button" data-panel-back aria-label="Back" hidden>${icon("m14 6-6 6 6 6M8 12h12")}</button><h1 tabindex="-1" data-panel-heading>Your queue</h1><button type="button" class="panel-genie" data-context-genie aria-label="Set up with Genie" title="Set up with Genie">${icon(genieIcon)}</button><img class="panel-art" src="${sniperArt}" alt="" /></div>
     <div class="panel-summary" data-panel-summary>
       <div data-work-summary><strong data-summary-main>Reading queue...</strong></div>
-      <dl class="queue-metrics" aria-label="Human handoffs" data-queue-metrics hidden>
-        <div class="queue-metric" data-queue-ready-card><dt>Ready for you${icon(destinations.queue.icon)}</dt><dd><strong data-queue-ready>?</strong><span>need your eyes</span></dd></div>
-        <div class="queue-metric" data-queue-attention-card><dt>Needs attention${icon("M12 8v5m0 3h.01M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18")}</dt><dd><strong data-queue-attention>?</strong><span>need your input</span></dd></div>
-      </dl>
+      <div class="queue-metrics" role="group" aria-label="Human handoffs" data-queue-metrics hidden>
+        <button type="button" class="queue-metric" data-queue-ready-card data-queue-filter="ready" aria-pressed="false"><span class="queue-metric-label">Ready for you${icon(destinations.queue.icon)}</span><span class="queue-metric-value"><strong data-queue-ready>?</strong><span>need your eyes</span></span></button>
+        <button type="button" class="queue-metric" data-queue-attention-card data-queue-filter="attention" aria-pressed="false"><span class="queue-metric-label">Needs attention${icon("M12 8v5m0 3h.01M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18")}</span><span class="queue-metric-value"><strong data-queue-attention>?</strong><span>need your input</span></span></button>
+      </div>
       <button type="button" class="queue-work-link" data-queue-work hidden aria-label="View Agent work in Running"><span class="queue-capacity" data-queue-capacity aria-hidden="true">?</span><span><strong>Agent work in Running</strong><span data-queue-work-status>Work state unavailable</span></span>${icon("m9 5 7 7-7 7")}</button>
       <div class="queue-list-heading"><h2 data-queue-heading hidden>Over to you</h2><span data-summary-detail></span></div>
     </div>
@@ -97,6 +109,7 @@ export async function mountPanel(app: HTMLElement) {
       <div data-panel-view="settings" hidden></div>
       <div data-panel-view="genie" hidden></div>
       <section data-panel-view="utility" hidden></section>
+      <section data-panel-view="changelog" class="changelog" hidden></section>
     </div>
     <nav class="panel-tabs" data-panel-navigation aria-label="Application destinations">${(
       ["queue", "running", "reviewed", "settings"] as const
@@ -106,7 +119,7 @@ export async function mountPanel(app: HTMLElement) {
           `<button type="button" data-panel-tab="${tab}" aria-label="${tab[0].toUpperCase() + tab.slice(1)}"><span class="nav-icon">${icon(destinations[tab].icon)}${tab === "running" ? '<span data-running-count aria-hidden="true">?</span>' : ""}</span><span>${tab[0].toUpperCase() + tab.slice(1)}</span></button>`,
       )
       .join("")}</nav>
-    <footer class="panel-footer"><button type="button" data-panel-status>Status</button><button type="button" data-panel-diagnostics>Diagnostics</button><span data-panel-version role="status" aria-label="Application version">Reading version...</span><span class="panel-hide-hint">Close hides only. Quit from the tray menu.</span></footer>`;
+    <footer class="panel-footer"><button type="button" data-panel-status>Status</button><button type="button" data-panel-diagnostics>Diagnostics</button><button type="button" data-panel-version aria-label="Show changelog">Reading version...</button></footer>`;
   const version = app.querySelector<HTMLElement>("[data-panel-version]")!;
   let versionKnown = false;
   const showVersion = (value: unknown, failure?: unknown) => {
@@ -129,6 +142,10 @@ export async function mountPanel(app: HTMLElement) {
   const context = app.querySelector<HTMLElement>(".panel-context")!;
   const summary = app.querySelector<HTMLElement>("[data-panel-summary]")!;
   const back = app.querySelector<HTMLButtonElement>("[data-panel-back]")!;
+  const contextGenie = app.querySelector<HTMLButtonElement>(
+    "[data-context-genie]",
+  )!;
+  contextGenie.onclick = () => void showSetup("settings", contextGenie);
   const views = {
     monitor: app.querySelector<HTMLElement>('[data-panel-view="monitor"]')!,
     running: app.querySelector<HTMLElement>('[data-panel-view="running"]')!,
@@ -136,7 +153,41 @@ export async function mountPanel(app: HTMLElement) {
     settings: app.querySelector<HTMLElement>('[data-panel-view="settings"]')!,
     genie: app.querySelector<HTMLElement>('[data-panel-view="genie"]')!,
     utility: app.querySelector<HTMLElement>('[data-panel-view="utility"]')!,
+    changelog: app.querySelector<HTMLElement>('[data-panel-view="changelog"]')!,
   };
+  let changelogOpen = false;
+  let lastState: PanelSnapshot | undefined;
+  function renderChangelog() {
+    const view = views.changelog;
+    view.replaceChildren();
+    let list: HTMLUListElement | undefined;
+    for (const raw of changelogSource.split("\n").slice(1)) {
+      const line = raw.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1");
+      const heading = /^(##|###) (.+)$/.exec(line);
+      if (heading) {
+        list = undefined;
+        const h = document.createElement(heading[1] === "##" ? "h2" : "h3");
+        h.textContent = heading[2];
+        view.append(h);
+      } else if (line.startsWith("- ")) {
+        list ??= view.appendChild(document.createElement("ul"));
+        list.append(
+          Object.assign(document.createElement("li"), {
+            textContent: line.slice(2),
+          }),
+        );
+      } else if (/^\s+\S/.test(line) && list?.lastElementChild) {
+        list.lastElementChild.textContent += ` ${line.trim()}`;
+      }
+    }
+    view.scrollTop = 0;
+  }
+  function setChangelog(open: boolean) {
+    changelogOpen = open;
+    if (open) renderChangelog();
+    if (lastState) void apply(lastState);
+  }
+  version.onclick = () => setChangelog(!changelogOpen);
   let route: PanelRoute = { tab: "queue" };
   let revision = -1;
   let returnTo: PanelRoute = { tab: "queue" };
@@ -287,10 +338,32 @@ export async function mountPanel(app: HTMLElement) {
     app.dataset.setupEmpty = String(empty);
     app.querySelector<HTMLElement>("[data-setup-needed]")!.hidden = !empty;
   };
+  let settingsSub: { title: string; back: boolean } | undefined;
+  let settingsEditor: { title: string; back: () => void } | undefined;
+  const subSection = () =>
+    route.tab === "settings" && !route.detail && !setupVisible()
+      ? (settingsEditor ??
+        (settingsSub?.back && settingsSub.title ? settingsSub : undefined))
+      : undefined;
+  const syncSub = () => {
+    const sub = subSection();
+    app.dataset.settingsSub = String(!!sub);
+    app.dataset.settingsEditor = String(!!settingsEditor && !!sub);
+    heading.textContent = sub ? sub.title : destinations[route.tab].title;
+    back.hidden =
+      !sub && !route.detail && (!setupVisible() || setupTitle === "Welcome");
+  };
+  views.settings.addEventListener("pr-sniper:settings-section", (event) => {
+    settingsSub = (event as CustomEvent).detail;
+    syncSub();
+  });
+  views.settings.addEventListener("pr-sniper:settings-editor", (event) => {
+    settingsEditor = (event as CustomEvent).detail ?? undefined;
+    syncSub();
+  });
   const ensureSettings = () =>
     (settingsController ??= mountSettings(views.settings, {
       embedded: true,
-      openGenie: (opener) => void showSetup("settings", opener),
     }).then((controller) => (settingsNavigation = controller)));
   const genie = mountGenie(views.genie, {
     title: (value) => {
@@ -354,6 +427,7 @@ export async function mountPanel(app: HTMLElement) {
     else await genie.open("genie");
   }
 
+  let queueFilter: "ready" | "attention" | undefined;
   function drawSummary() {
     const summary = app.querySelector<HTMLElement>("[data-panel-summary]")!;
     const queue = route.tab === "queue";
@@ -365,9 +439,10 @@ export async function mountPanel(app: HTMLElement) {
       ? "sr-only"
       : "";
     summary.hidden =
+      changelogOpen ||
       setupVisible() ||
       !!route.detail ||
-      ["settings", "reviewed"].includes(route.tab);
+      ["settings", "reviewed", "running"].includes(route.tab);
     const main = summary.querySelector<HTMLElement>("[data-summary-main]")!;
     const detail = summary.querySelector<HTMLElement>("[data-summary-detail]")!;
     if (route.tab === "running") {
@@ -389,6 +464,15 @@ export async function mountPanel(app: HTMLElement) {
       detail.textContent = known
         ? `${ready} ready / ${items.length - ready} need attention`
         : "Handoffs unavailable";
+      const view = queueFilter ?? (ready > 0 ? "ready" : "attention");
+      app.dataset.queueView = view;
+      for (const button of summary.querySelectorAll<HTMLElement>(
+        "[data-queue-filter]",
+      ))
+        button.setAttribute(
+          "aria-pressed",
+          String(button.dataset.queueFilter === view),
+        );
       summary.querySelector<HTMLElement>("[data-queue-ready]")!.textContent =
         known ? String(ready) : "?";
       summary.querySelector<HTMLElement>(
@@ -426,19 +510,13 @@ export async function mountPanel(app: HTMLElement) {
             .jobId
         : undefined;
     root.replaceChildren();
-    const hint = document.createElement("p");
-    hint.textContent =
-      tab === "running"
-        ? "Running at the top. New work joins the bottom."
-        : "Completed evidence available in the current native projection. This foundation does not add paged history or storage purge.";
-    root.append(hint);
-    hint.className = "work-caption";
     const list = document.createElement("ol");
-    if (tab === "running") {
-      list.className = "work-list";
-      list.setAttribute("aria-label", "Agent work queue");
-      root.append(list);
-    }
+    list.className = "work-list";
+    list.setAttribute(
+      "aria-label",
+      tab === "running" ? "Agent work queue" : "Reviewed work",
+    );
+    if (rows.length) root.append(list);
     if (!rows.length) {
       const empty = document.createElement("p");
       empty.textContent =
@@ -451,10 +529,6 @@ export async function mountPanel(app: HTMLElement) {
       const article = document.createElement("article");
       article.dataset.jobId = `${row.kind}:${row.id}`;
       article.dataset.workState = row.state;
-      const title = document.createElement("h2");
-      title.textContent = row.title;
-      const status = document.createElement("p");
-      status.textContent = `${row.kind.replaceAll("_", " ")}: ${row.state}. ${row.reason ?? ""}`;
       const button = document.createElement("button");
       button.type = "button";
       button.textContent =
@@ -470,56 +544,71 @@ export async function mountPanel(app: HTMLElement) {
           },
           button,
         );
-      if (tab === "running") {
+      {
         const displayState =
-          row.state === "active"
-            ? "Running"
-            : row.state === "stopping"
-              ? "Stopping"
-              : row.work?.state === "superseded"
-                ? "Superseded"
-                : ["failed", "manual_retry"].includes(row.work?.state ?? "")
-                  ? "Failed"
-                  : row.state === "blocked"
-                    ? "Blocked"
-                    : "Queued";
+          tab === "reviewed"
+            ? row.kind === "item"
+              ? row.state[0].toUpperCase() + row.state.slice(1)
+              : "Reviewed"
+            : row.state === "active"
+              ? "Running"
+              : row.state === "stopping"
+                ? "Stopping"
+                : row.work?.state === "superseded"
+                  ? "Superseded"
+                  : ["failed", "manual_retry"].includes(row.work?.state ?? "")
+                    ? "Failed"
+                    : row.state === "blocked"
+                      ? "Blocked"
+                      : "Queued";
         button.className = "work-row";
-        button.setAttribute("aria-label", "Open job");
+        button.dataset.display = displayState.toLowerCase();
+        button.setAttribute(
+          "aria-label",
+          row.kind === "item" ? "Open PR evidence" : "Open job",
+        );
         button.title = `${row.title}; ${displayState}`;
         button.replaceChildren();
         const marker = document.createElement("span");
-        marker.className = row.state === "active" ? "work-spin" : "work-marker";
+        marker.className =
+          row.state === "active" && tab === "running"
+            ? "work-spin"
+            : "work-marker";
         marker.setAttribute("aria-hidden", "true");
-        if (row.state !== "active")
-          marker.innerHTML = icon(destinations.queue.icon);
+        if (row.state !== "active" || tab === "reviewed")
+          marker.innerHTML = icon(
+            tab === "reviewed"
+              ? destinations.reviewed.icon
+              : (stateIcons[displayState] ?? destinations.running.icon),
+          );
         const copy = document.createElement("span");
         copy.className = "work-copy";
         const top = document.createElement("span");
         top.className = "work-heading";
         const agent = document.createElement("strong");
-        agent.textContent = row.work?.agent ?? "Job evidence unavailable";
+        agent.textContent =
+          row.work?.agent ??
+          (row.kind === "item" ? row.title : "Job evidence unavailable");
         const state = document.createElement("span");
         state.className = "work-state";
         state.textContent = displayState;
         top.append(agent, state);
         const subject = document.createElement("span");
         subject.className = "work-subject";
-        subject.textContent = row.work?.subject ?? row.title;
+        subject.textContent =
+          row.work?.subject ?? (row.kind === "item" ? "" : row.title);
         const reference = document.createElement("span");
         reference.className = "work-reference";
-        reference.textContent = row.work?.reference ?? "Repository unavailable";
+        reference.textContent =
+          row.work?.reference ??
+          (row.kind === "item" ? "" : "Repository unavailable");
         const purpose = document.createElement("span");
         purpose.textContent =
           row.work?.ordinal ??
           (row.kind === "item" ? "PR" : purposes[row.kind]);
         reference.append(purpose);
         copy.append(top, subject, reference);
-        if (row.reason) {
-          const reason = document.createElement("span");
-          reason.className = "work-blocker";
-          reason.textContent = row.reason;
-          copy.append(reason);
-        }
+        if (row.reason) button.title += `. ${row.reason}`;
         const chevron = document.createElement("span");
         chevron.className = "work-chevron";
         chevron.setAttribute("aria-hidden", "true");
@@ -528,9 +617,6 @@ export async function mountPanel(app: HTMLElement) {
         const entry = document.createElement("li");
         entry.append(article);
         list.append(entry);
-      } else {
-        article.append(title, status, button);
-        root.append(article);
       }
       if (
         activeId === article.dataset.jobId &&
@@ -592,6 +678,7 @@ export async function mountPanel(app: HTMLElement) {
           kind: "normal",
           title: metadata("normal", review.key)!.title,
           state: review.run.phase,
+          work: workPresentation(snapshot, "normal", review.key),
         });
       }
     for (const follow of snapshot.follow_ups ?? [])
@@ -605,6 +692,7 @@ export async function mountPanel(app: HTMLElement) {
             kind,
             title: meta.title,
             state: follow.run.phase,
+            work: workPresentation(snapshot, kind, follow.run.id),
           });
       }
     for (const item of snapshot.items ?? []) {
@@ -615,6 +703,7 @@ export async function mountPanel(app: HTMLElement) {
           kind: "primary_final",
           title: `${item.job.repository_name} #${item.job.number} / Primary final review`,
           state: final.execution.phase,
+          work: workPresentation(snapshot, "primary_final", final.id),
         });
       if (["closed", "merged"].includes(item.state)) {
         rows.push({
@@ -703,21 +792,34 @@ export async function mountPanel(app: HTMLElement) {
       returnTo = { tab: state.route.tab };
     route = state.route;
     revision = state.revision;
+    lastState = state;
+    if (changed) changelogOpen = false;
     app.dataset.nativeVisible = String(state.visible);
     if (state.placement_warning) showError(state.placement_warning);
+    const sub = subSection();
     back.hidden =
-      !route.detail && (!setupVisible() || setupTitle === "Welcome");
-    heading.textContent = setupVisible()
-      ? setupTitle
-      : route.detail
-        ? route.detail.type === "status"
-          ? "Status"
-          : route.detail.type === "diagnostics"
-            ? "Diagnostics"
-            : route.detail.type === "job"
-              ? "Job details"
-              : "Saved evidence"
-        : destinations[route.tab].title;
+      !changelogOpen &&
+      !route.detail &&
+      !sub &&
+      (!setupVisible() || setupTitle === "Welcome");
+    heading.textContent = changelogOpen
+      ? "Changelog"
+      : setupVisible()
+        ? setupTitle
+        : sub
+          ? sub.title
+          : route.detail
+            ? route.detail.type === "status"
+              ? "Status"
+              : route.detail.type === "diagnostics"
+                ? "Diagnostics"
+                : route.detail.type === "job"
+                  ? "Job details"
+                  : "Saved evidence"
+            : destinations[route.tab].title;
+    app.dataset.tab = route.tab;
+    app.dataset.settingsSub = String(!!sub);
+    app.dataset.settingsEditor = String(!!settingsEditor && !!sub);
     app.dataset.detail = String(!!route.detail);
     app.dataset.evidence = route.detail?.type ?? "";
     app.dataset.setup = String(setupVisible());
@@ -733,10 +835,18 @@ export async function mountPanel(app: HTMLElement) {
       content.removeAttribute("aria-label");
     }
     // Queue chrome shares the evidence scroll budget; navigation stays pinned.
-    if (scrollQueue && context.parentElement !== content)
-      content.prepend(context, summary, error);
-    else if (!scrollQueue && context.parentElement === content)
+    // The Queue list keeps its title pinned; detail views share the scroll budget.
+    // Only re-parent when needed: moving a node drops focus from the heading.
+    const inContent = (node: Element) => node.parentElement === content;
+    if (scrollQueue && route.detail) {
+      if (!inContent(context) || !inContent(summary))
+        content.prepend(context, summary, error);
+    } else if (scrollQueue) {
+      if (inContent(context)) content.before(context);
+      if (!inContent(summary)) content.prepend(summary, error);
+    } else if (inContent(context) || inContent(summary)) {
       content.before(context, summary, error);
+    }
     drawSummary();
     for (const button of app.querySelectorAll<HTMLButtonElement>(
       "[data-panel-tab]",
@@ -747,13 +857,15 @@ export async function mountPanel(app: HTMLElement) {
     }
     const utilityDetail =
       route.detail?.type === "status" || route.detail?.type === "diagnostics";
-    const visible = setupVisible()
-      ? "genie"
-      : utilityDetail
-        ? "utility"
-        : route.detail || route.tab === "queue"
-          ? "monitor"
-          : route.tab;
+    const visible = changelogOpen
+      ? "changelog"
+      : setupVisible()
+        ? "genie"
+        : utilityDetail
+          ? "utility"
+          : route.detail || route.tab === "queue"
+            ? "monitor"
+            : route.tab;
     for (const [name, view] of Object.entries(views))
       view.hidden = name !== visible;
     views.settings.dispatchEvent(
@@ -809,19 +921,31 @@ export async function mountPanel(app: HTMLElement) {
     return navigating;
   }
   back.onclick = () => {
-    if (setupVisible()) void genie.back();
+    if (changelogOpen) setChangelog(false);
+    else if (settingsEditor && subSection()) settingsEditor.back();
+    else if (subSection())
+      app.querySelector<HTMLElement>(".settings-home-back")!.click();
+    else if (setupVisible()) void genie.back();
     else void navigate(returnTo.detail ? { tab: route.tab } : returnTo);
   };
   for (const button of app.querySelectorAll<HTMLButtonElement>(
     "[data-panel-tab]",
   ))
     button.onclick = () => {
+      changelogOpen = false;
       if (setupVisible()) {
         remember();
         genie.leave();
         setupOwner = undefined;
       }
       void navigate({ tab: button.dataset.panelTab as PanelTab });
+    };
+  for (const button of app.querySelectorAll<HTMLButtonElement>(
+    "[data-queue-filter]",
+  ))
+    button.onclick = () => {
+      queueFilter = button.dataset.queueFilter as "ready" | "attention";
+      drawSummary();
     };
   app.querySelector<HTMLButtonElement>("[data-queue-work]")!.onclick = () =>
     void navigate({ tab: "running" });

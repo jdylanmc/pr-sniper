@@ -52,6 +52,13 @@ if one exists. Ship, Patch, Refactor, Shepherd and `create-pull-request`
 publication use that body; do not hand-write a different format. The skill
 grants no approval, ready, or merge authority.
 
+### Wrap-up
+
+`/wrap-up` (`.agents/skills/wrap-up/`) is a human-invoked checkpoint: freeze
+scope, make tests, lint, docs and the visual POC true, true-up with `main`, and
+land one green PR. The human's direct invocation authorizes marking that one PR
+ready once CI is green; it never authorizes approval or merging.
+
 ### Doctrine
 
 The complete local package is `.agents/skills/doctrine/`. Use `/doctrine`

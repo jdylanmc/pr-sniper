@@ -223,15 +223,29 @@ test("findings remain local unless both comment permission and publication gate 
   );
 });
 
-test("disconnect blocks dependent work; reconnect restores eligibility", () => {
+test("disconnect forgets the account and blocks dependents; adding it again restores eligibility", () => {
   let state = M.update(M.seed(), "account", { id: "copilot-demo" });
+  assert.equal(
+    state.accounts.some((account) => account.id === "copilot-demo"),
+    false,
+  );
+  M.validate(JSON.parse(JSON.stringify(state)));
   assert.equal(count(state, "running"), 0);
   assert.equal(count(state, "queued"), 22);
   assert.match(
     M.blockReason(state, first(state, "queued")),
     /AI account disconnected/,
   );
-  state = M.update(state, "account", { id: "copilot-demo" });
+  state = M.update(state, "add-account", {
+    kind: "copilot",
+    name: "alex-ai-demo",
+    confirmed: true,
+  });
+  assert.equal(
+    state.accounts.find((account) => account.name === "alex-ai-demo").id,
+    "copilot-demo",
+  );
+  assert.equal(state.forgotten.length, 0);
   assert.equal(count(state, "running"), 4);
 });
 
@@ -295,8 +309,34 @@ test("agent and doctrine edits save shared references; referenced resources cann
   assert.equal(state.agents.length, 6);
   assert.throws(
     () => M.update(state, "delete-agent", { id: "agent-0" }),
-    /Unassign/,
+    /outstanding work/,
   );
+  const idle = M.update(M.fresh(), "add-account", {
+    kind: "copilot",
+    name: "idle-ai",
+    confirmed: true,
+  });
+  const assignedAgent = M.update(idle, "save-agent", {
+    agent: {
+      ...plain(M.seed().agents[0]),
+      id: "idle-agent",
+      accountId: idle.accounts[0].id,
+    },
+  });
+  const github = M.update(assignedAgent, "add-account", {
+    kind: "github",
+    name: "idle-gh",
+    confirmed: true,
+  });
+  const withRepo = M.update(github, "add-repo", {
+    name: "owner/idle",
+    accountId: github.accounts[1].id,
+  });
+  const assigned = M.update(withRepo, "save-repo", {
+    repo: { ...plain(withRepo.repos[0]), agentIds: ["idle-agent"] },
+  });
+  const removed = M.update(assigned, "delete-agent", { id: "idle-agent" });
+  assert.deepEqual(plain(removed.repos[0].agentIds), []);
   assert.throws(
     () => M.update(state, "delete-doctrine", { id: "correctness" }),
     /Remove this doctrine/,
@@ -561,23 +601,28 @@ test("confirmed identities persist independently without changing assignments or
   );
 });
 
-test("duplicate identity confirmation cannot replace or reconnect an existing account", () => {
-  let state = M.update(M.seed(), "account", { id: "github-personal" });
+test("a connected identity cannot be duplicated, but a disconnected one can be added again at once", () => {
   assert.throws(
     () =>
-      M.update(state, "add-account", {
+      M.update(M.seed(), "add-account", {
         kind: "github",
         name: " ALEX-DEMO ",
         confirmed: true,
       }),
-    /already listed/,
+    /already connected/,
   );
-  assert.equal(
-    state.accounts.find((account) => account.id === "github-personal")
-      .connected,
-    false,
-  );
+  let state = M.update(M.seed(), "account", { id: "github-personal" });
+  assert.equal(state.accounts.length, 2);
+  state = M.update(state, "add-account", {
+    kind: "github",
+    name: " ALEX-DEMO ",
+    confirmed: true,
+  });
   assert.equal(state.accounts.length, 3);
+  assert.equal(
+    state.accounts.some((account) => account.id === "github-personal"),
+    true,
+  );
   const invalid = M.seed();
   invalid.accounts.push({
     ...plain(invalid.accounts[0]),
@@ -762,4 +807,46 @@ test("fresh progress persists, desktop resets produce clean fixtures, and prior 
   const invalid = M.fresh();
   invalid.monitoring = true;
   assert.throws(() => M.validate(invalid), /Finish onboarding/);
+});
+
+test("agents carry context window, reasoning effort and a default signature that follows name and model", () => {
+  assert.equal(
+    M.defaultSignature("Solid Snake", "GPT-5.6 Sol Fast"),
+    "\u{1F52B} pr-sniper(solid-snake:gpt-5-6-sol-fast)",
+  );
+  assert.equal(
+    M.defaultSignature("  ", ""),
+    "\u{1F52B} pr-sniper(agent:model)",
+  );
+  const agent = M.seed().agents[0];
+  assert.equal(agent.signature, M.defaultSignature(agent.name, agent.model));
+  assert.deepEqual(plain(M.promptTokens.map(([token]) => token)), [
+    "pr_title",
+    "pr_number",
+    "pr_author",
+    "head_sha",
+    "base_sha",
+    "changed_files",
+    "changed_file_count",
+    "agent_name",
+  ]);
+  const state = M.seed();
+  state.agents[0].reasoning = "Extreme";
+  assert.throws(() => M.validate(state), /reasoning effort/);
+  const legacy = M.seed();
+  for (const key of ["contextWindow", "reasoning", "signature"])
+    delete legacy.agents[0][key];
+  M.validate(legacy);
+});
+
+test("repositories may be unbound and keep a reviewer-request setting", () => {
+  let state = M.seed();
+  state = M.update(state, "save-repo", {
+    repo: { ...plain(state.repos[0]), accountId: "", reviewerRequests: "on" },
+  });
+  assert.equal(state.repos[0].accountId, "");
+  assert.match(M.blockReason(state, state.reviews[0]) || "x", /./);
+  const invalid = M.seed();
+  invalid.repos[0].reviewerRequests = "maybe";
+  assert.throws(() => M.validate(invalid), /reviewer-request/);
 });

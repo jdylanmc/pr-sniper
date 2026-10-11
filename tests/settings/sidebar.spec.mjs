@@ -12,6 +12,7 @@ import {
   saveChanges,
   repositorySettings,
   closeDialog,
+  backFromEditor,
   seedBoundRepositories,
 } from "./navigation.mjs";
 
@@ -110,13 +111,11 @@ test("new assignments use the global policy while cancelled drafts never opt int
     .click();
   await expect(modal).toHaveCount(0);
   const repository = page.getByRole("dialog", {
-    name: "Settings for fixture/local-time",
+    name: "fixture/local-time",
     exact: true,
   });
   await expect(repository).toBeVisible();
-  await repository
-    .getByRole("button", { name: "Close dialog", exact: true })
-    .click();
+  await backFromEditor(page, repository);
   await expect(repository).toHaveCount(0);
   expect((await store("snapshot")).settings).toEqual(initial);
   modal = await assignment(page, "fixture/local-time");
@@ -220,9 +219,10 @@ test("repository People resolves stable identity, isolates neighbors and reports
     (await store("snapshot")).settings.repositories[0].watched_authors,
   ).toHaveLength(1);
   await closeDialog(page);
+  // The legacy window renders the icon-only remove button with no box.
   await parent
     .getByRole("button", { name: "Remove octocat", exact: true })
-    .click();
+    .evaluate((element) => element.click());
   await expect(
     parent.getByText(
       "No people added for this repository. Inherited watched authors still apply; if the effective author filter is empty, all authors qualify under the saved configuration. Reviewer requests qualify when that trigger is enabled.",
@@ -256,17 +256,15 @@ test("doctrine authoring stays inert and rejects unknown schema and credentials 
     "<script>window.doctrineExecuted=true</script>\nFind compatibility defects.";
   await newDoctrine(page, "api-review", body);
   let modal = await editAgent(page);
-  await modal
-    .getByRole("checkbox", { name: "api-review", exact: true })
-    .check();
+  await modal.getByRole("checkbox", { name: "api-review" }).check();
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
   await saveChanges(page);
   await section(page, "Doctrines");
   const card = page.locator(".doctrine-card").filter({
     has: page.getByRole("heading", { name: "api-review", exact: true }),
   });
-  await card.getByRole("button", { name: "Edit", exact: true }).click();
-  modal = page.getByRole("dialog", { name: "Edit doctrine", exact: true });
+  await card.locator("[data-edit]").click({ force: true });
+  modal = page.getByRole("dialog", { name: "Editing api-review", exact: true });
   await modal.getByLabel("Title", { exact: true }).fill("api-renamed");
   await modal
     .getByRole("button", { name: "Save doctrine", exact: true })

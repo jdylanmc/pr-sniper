@@ -1,6 +1,6 @@
 import { expect, test } from "./fixtures.mjs";
-import { queueFixture } from "./queue-fixture.mjs";
-import { section } from "./navigation.mjs";
+import { queueFixture, showQueueGroup } from "./queue-fixture.mjs";
+import { backFromEditor, section } from "./navigation.mjs";
 
 test.use({ viewport: { width: 400, height: 680 } });
 const tab = (page, name) =>
@@ -55,7 +55,7 @@ test("legacy viewport and dialog fallback preserves compact editor keyboard acce
       await page.evaluate(
         () =>
           !!document.activeElement?.closest(
-            '[role="dialog"],.panel-header,.panel-tabs,.panel-footer',
+            '[role="dialog"],.panel-header,.panel-context,.panel-tabs,.panel-footer',
           ),
       ),
     ).toBe(true);
@@ -145,6 +145,8 @@ test("Back restores exact row, list scroll and focus and switching detail replac
 }) => {
   await queueFixture(store);
   await page.goto("/");
+  await page.setViewportSize({ width: 400, height: 250 });
+  await showQueueGroup(page, "attention");
   const button = queueRow(page, 3).getByRole("button", {
     name: "Evidence and actions",
   });
@@ -630,7 +632,7 @@ for (const embedded of [true, false]) {
         .focus();
       await activate(opener);
       const repository = page.getByRole("dialog", {
-        name: "Settings for example/focus",
+        name: "example/focus",
         exact: true,
       });
       const people = repository.getByRole("button", {
@@ -655,16 +657,12 @@ for (const embedded of [true, false]) {
           picker.getByLabel("GitHub login", { exact: true }),
         ).toHaveValue("retained-person");
       }
-      await picker
-        .getByRole("button", { name: "Close dialog", exact: true })
-        .click();
+      await backFromEditor(page, picker);
       await expect(people).toBeFocused();
       await expect(
         repository.getByLabel("Reviewer requests", { exact: true }),
       ).toHaveValue("off");
-      await repository
-        .getByText("Repository and connection", { exact: true })
-        .click();
+      await repository.getByText("Repository", { exact: true }).click();
       await activate(
         repository.getByRole("button", {
           name: "Edit repository",
@@ -678,9 +676,7 @@ for (const embedded of [true, false]) {
       await editor
         .getByLabel("Repository URL", { exact: true })
         .fill("example/unsaved");
-      await editor
-        .getByRole("button", { name: "Close dialog", exact: true })
-        .click();
+      await backFromEditor(page, editor);
       await expect(opener).toBeFocused();
       expect((await store("snapshot")).settings.repositories[0].name).toBe(
         "example/focus",

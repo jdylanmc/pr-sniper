@@ -6,6 +6,8 @@ const stage = document.querySelector("#view-stage");
 const announcement = document.querySelector("#lane-announcement");
 const monitoringToggle = document.querySelector("#monitoring-toggle");
 const notice = document.querySelector("#app-notice");
+const noticeText = document.querySelector("#app-notice-text");
+const genieButton = document.querySelector("#genie-button");
 const pageTitle = document.querySelector("#page-title");
 const backButton = document.querySelector("#back-button");
 const toast = document.querySelector("#toast");
@@ -13,10 +15,11 @@ let state = Demo.seed();
 let savedRaw = null;
 let storageBlocked = false;
 let tab = "queue";
-let lane = "human";
+let queueFilter;
 let historyFilter = "all";
 let dirty = false;
 let toastTimer;
+let noticeTimer;
 const stacks = Object.fromEntries(
   ["queue", "running", "reviewed", "settings"].map((key) => [
     key,
@@ -131,9 +134,13 @@ const connectionProviders = [
 ];
 
 function showError(message) {
-  notice.textContent = message;
+  noticeText.textContent = message;
   notice.hidden = false;
   announcement.textContent = message;
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => {
+    notice.hidden = true;
+  }, 8000);
 }
 
 function tell(message) {
@@ -232,17 +239,30 @@ function mayLeave() {
   return true;
 }
 
-function navigate(page, id) {
-  if (!mayLeave()) return;
+function navigate(page, id, keepEdits = false) {
+  if (!keepEdits && !mayLeave()) return;
+  if (keepEdits) {
+    // The draft travels with this route; the nested editor starts clean.
+    route().draftDirty = dirty;
+    dirty = false;
+  }
   remember();
   stacks[tab].push({ page, id });
   render(1, true);
 }
 
 function goBack() {
+  const picker = stage.lastElementChild?.querySelector(
+    '.agent-form[data-view="doctrines"]',
+  );
+  if (picker) {
+    setAgentView(picker, "");
+    return;
+  }
   if (stacks[tab].length === 1 || !mayLeave()) return;
   remember();
   stacks[tab].pop();
+  if (route().draftDirty) dirty = true;
   render(-1, true);
 }
 
@@ -263,7 +283,6 @@ function syncChrome() {
     ? "Complete the Genie setup review before monitoring."
     : "Pause or resume all automation";
   popover.dataset.monitoring = String(state.monitoring);
-  popover.dataset.lane = lane;
   tray.dataset.monitoring = String(state.monitoring);
   document.querySelector("#monitoring-label").textContent = setupNeeded
     ? "Setup needed"
@@ -282,6 +301,7 @@ function syncChrome() {
     else button.removeAttribute("aria-current");
   });
   backButton.hidden = stacks[tab].length < 2;
+  genieButton.hidden = !(tab === "settings" && stacks[tab].length === 1);
 }
 
 function loadScenario(scenario) {
@@ -291,7 +311,7 @@ function loadScenario(scenario) {
     save(scenario === "fresh" ? Demo.fresh() : Demo.seed(), true);
     dirty = false;
     tab = "queue";
-    lane = "human";
+    queueFilter = undefined;
     historyFilter = "all";
     Object.keys(stacks).forEach((key) => {
       stacks[key] = [
@@ -303,6 +323,7 @@ function loadScenario(scenario) {
     });
     clearTimeout(toastTimer);
     toast.hidden = true;
+    notice.hidden = true;
     render();
     openPopover();
     announcement.textContent = `${scenario === "fresh" ? "Fresh install" : "Configured"} demo reset. Previous prototype edits were replaced.`;
@@ -424,7 +445,7 @@ function openSetupStep(step) {
         ),
       )
     )
-      navigate("accounts");
+      navigate(step === "ai" ? "copilot" : "github");
     else navigate("add-account", step);
   } else if (step === "agent") {
     if (state.agents.length === 1) navigate("agent", state.agents[0].id);
@@ -458,19 +479,6 @@ function setupReviewPage() {
     <form data-form="setup-finish" class="editor-form"><label class="checkbox-field"><input name="confirmSetup" type="checkbox" required /><span>I've reviewed these accounts, assignments, and automation permissions.</span></label><button type="submit" class="genie-action" disabled>Start monitoring</button><p class="section-note">Enters the app with your setup, not the busy sample fixture. No PRs are invented until you simulate a check.</p></form></div>`;
 }
 
-function capacity() {
-  const count = running().length;
-  return `<div class="capacity-strip">
-    <div class="capacity-ring" role="img" aria-label="${count} of ${state.limit} review slots in use">
-      <svg viewBox="0 0 44 44" aria-hidden="true"><circle class="ring-track" cx="22" cy="22" r="18" /><circle class="ring-fill" cx="22" cy="22" r="18" style="stroke-dashoffset:${113.1 * (1 - count / state.limit)}" /></svg>
-      <span><b id="running-count">${count}</b><span>/${state.limit}</span></span>
-    </div>
-    <div><strong>${state.monitoring ? (count ? "All hands on deck" : "Ready when work arrives") : "Everything is paused"}</strong>
-    <span>${state.monitoring ? `${count} reviews running` : "Active work discarded and returned to queue"}</span></div>
-    <span class="working-dots" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-  </div>`;
-}
-
 function pill(review) {
   const blocked = ["queued", "failed"].includes(review.state)
     ? Demo.blockReason(state, review)
@@ -502,17 +510,40 @@ function reference(review) {
   return `<span class="pr-reference">${icon("pull-request")}<span>${esc(review.repoName)} #${review.number}</span></span>`;
 }
 
-function reviewCard(review, index, compact = false) {
+function workRow(review, kind) {
+  const blocked = ["queued", "failed"].includes(review.state)
+    ? Demo.blockReason(state, review)
+    : "";
+  const display =
+    kind === "reviewed"
+      ? statusNames[review.state]
+      : review.state === "running"
+        ? "Running"
+        : review.state === "failed"
+          ? "Failed"
+          : review.state === "stale"
+            ? "Stale"
+            : blocked
+              ? "Blocked"
+              : "Queued";
+  const symbol =
+    kind === "reviewed"
+      ? "reviewed"
+      : review.state === "failed"
+        ? "failed"
+        : blocked || review.state === "stale"
+          ? "blocked"
+          : "clock";
+  const marker =
+    review.state === "running" && kind !== "reviewed"
+      ? '<span class="work-spin" aria-hidden="true"></span>'
+      : `<span class="work-marker" aria-hidden="true">${icon(symbol)}</span>`;
   const agent = review.run?.name ?? agentFor(review)?.name ?? "Unassigned";
-  const reason = Demo.blockReason(state, review);
-  return `<button type="button" class="review-card review-open ${compact ? "agent-card" : ""}" data-action="review" data-review-id="${esc(review.id)}">
-    ${compact ? `<span class="agent-title-row"><span class="agent-position">${String(index + 1).padStart(2, "0")}</span><span><strong class="review-title">${esc(review.title)}</strong>${reference(review)}</span></span>` : `<span class="review-card-header">${pill(review)}<span class="review-age">${review.state === "running" ? `Attempt ${review.attempt}` : "Sample review"}</span></span><strong class="review-title">${esc(review.title)}</strong>${reference(review)}`}
-    ${review.state === "running" ? `<span class="stage-label">${icon("activity")}${Demo.stages[review.stage]}</span>` : ""}
-    ${review.restart ? '<span class="requeued-note">Interrupted / queued for a fresh start</span>' : ""}
-    ${compact && reason ? `<span class="requeued-note">${esc(reason)}</span>` : ""}
-    ${review.state === "question" ? `<span class="review-question">${esc(review.conversation.at(-1)?.body)}</span>` : ""}
-    <span class="review-card-footer"><span class="avatar" data-color="${index % 2 ? "orange" : "teal"}">${esc(initials(review.author))}</span><span class="person-name">${esc(review.author)}</span><span class="agent-credit"><strong>${esc(agent)}</strong> / ${compact ? "queued" : `${review.files.length} files`}</span>${icon("chevron")}</span>
-  </button>`;
+  return `<li><button type="button" class="work-row review-open" data-action="review" data-review-id="${esc(review.id)}" data-display="${display.toLowerCase().replaceAll(" ", "-")}" title="${esc(`${review.title}; ${display}${blocked ? `. ${blocked}` : ""}`)}">${marker}<span class="work-copy"><span class="work-heading"><strong>${esc(kind === "reviewed" ? review.title : agent)}</strong><span class="work-state">${esc(display)}</span></span>${kind === "reviewed" ? "" : `<span class="work-subject">${esc(review.title)}</span>`}<span class="work-reference">${esc(review.repoName)} #${review.number}</span></span><span class="work-chevron" aria-hidden="true">${icon("chevron")}</span></button></li>`;
+}
+
+function quietEmpty(symbol, label) {
+  return `<div class="queue-empty">${icon(symbol)}<span class="sr-only">${esc(label)}</span></div>`;
 }
 
 function empty(title, description, symbol = "queue") {
@@ -520,74 +551,50 @@ function empty(title, description, symbol = "queue") {
 }
 
 function queuePage() {
-  const waiting = queued();
   const attention = human();
   const ready = attention.filter(
     (review) => review.state === "human" && !review.findings.length,
-  ).length;
-  return `<div class="queue-tabs" role="tablist" aria-label="Review queues">
+  );
+  const waiting = attention.filter((review) => !ready.includes(review));
+  const view = queueFilter ?? (ready.length ? "ready" : "attention");
+  const items = view === "ready" ? ready : waiting;
+  return `<div class="queue-metrics" role="group" aria-label="Human handoffs">
     ${[
-      ["human", "For you", attention.length, "need your eyes", "queue"],
+      ["ready", "Ready for you", ready.length, "need your eyes", "queue"],
       [
-        "agent",
-        "For agents",
+        "attention",
+        "Needs attention",
         waiting.length,
-        "waiting to start",
-        "pull-request",
+        "need your input",
+        "question",
       ],
     ]
       .map(
-        ([
-          key,
-          label,
-          count,
-          caption,
-          symbol,
-        ]) => `<button id="${key}-tab" class="queue-tab" role="tab" type="button" aria-selected="${lane === key}" aria-controls="${key}-panel" tabindex="${lane === key ? 0 : -1}" data-lane="${key}">
-      <span class="tab-label">${label}${icon(symbol)}</span><span class="tab-metric"><strong id="${key}-count">${count}</strong><span>${caption}</span></span></button>`,
+        ([key, label, count, caption, symbol]) =>
+          `<button type="button" class="queue-metric" data-queue-filter="${key}" aria-pressed="${view === key}"><span class="queue-metric-label">${label}${icon(symbol)}</span><span class="queue-metric-value"><strong id="${key}-count">${count}</strong><span>${caption}</span></span></button>`,
       )
       .join("")}
-  </div>${capacity()}
-  <div class="queue-viewport"><div class="lane-track">
-    <section id="human-panel" class="queue-panel" data-scroll="human" role="tabpanel" aria-labelledby="human-tab" tabindex="0" ${lane !== "human" ? 'inert aria-hidden="true"' : ""}>
-      <div class="list-heading"><h2>Over to you</h2><span>${ready} ready, ${attention.length - ready} need attention</span></div>
-      <div class="review-list" id="human-list">${attention.map((review, index) => reviewCard(review, index)).join("") || empty("You're all caught up", "We'll put the next human handoff here.")}</div>
-      <p class="list-footnote">Machine-reviewed. The final call is yours.</p>
-    </section>
-    <section id="agent-panel" class="queue-panel" data-scroll="agent" role="tabpanel" aria-labelledby="agent-tab" tabindex="0" ${lane !== "agent" ? 'inert aria-hidden="true"' : ""}>
-      <div class="list-heading"><h2>Next up</h2><span id="packet-count">${waiting.length} review packets</span></div>
-      <p class="agent-intro" id="agent-intro">${state.monitoring ? "A free slot picks up the next eligible review." : "All checks and automation are off. Interrupted reviews start over when you resume."}</p>
-      <button class="quiet-action check-demo" data-action="detect" ${disabled(!state.monitoring)}>Simulate a repository check</button>
-      <div class="review-list agent-list" id="agent-list">${waiting.map((review, index) => reviewCard(review, index, true)).join("") || empty("No waiting work", "Simulate a repository check to add sample review packets.")}</div>
-      <p class="list-footnote">Sample ordering, not a production scheduling policy.</p>
-    </section>
-  </div></div>`;
+  </div>
+  <div class="page-scroll queue-scroll" data-scroll="queue" id="human-panel">${
+    items.length
+      ? `<div class="queue-group" data-queue-group="${view}" id="human-list">${items
+          .map(
+            (review) =>
+              `<button type="button" class="queue-row review-open" data-action="review" data-review-id="${esc(review.id)}"><span class="queue-row-copy">${pill(review)}<strong class="review-title">${esc(review.title)}</strong>${reference(review)}</span>${icon("chevron")}</button>`,
+          )
+          .join("")}</div>`
+      : quietEmpty("inbox", "Nothing here")
+  }</div>`;
 }
 
 function runningPage() {
-  return `<div class="page-scroll" data-scroll="running">
-    <div class="feature-summary"><span class="summary-icon">${icon("activity")}</span><div><strong>${running().length}<small> / ${state.limit}</small></strong><p>review slots in use</p></div><span class="summary-tail">${queued().length} waiting</span></div>
-    <p class="section-note">Each slot handles one PR revision. Open a review to step through its sample activity.</p>
-    <div class="review-list">${
-      running()
-        .map((review, index) => reviewCard(review, index))
-        .join("") ||
-      empty(
-        Demo.needsOnboarding(state)
-          ? "No reviews yet"
-          : state.monitoring
-            ? "Nothing running right now"
-            : "Taking a breather",
-        Demo.needsOnboarding(state)
-          ? "Finish setup with Genie to start watching your repositories."
-          : state.monitoring
-            ? "Check the backlog for blockers, or simulate a repository check."
-            : "Reviews are back in the queue. Resume monitoring for a fresh start.",
-        "activity",
-      )
-    }</div>
-    <button class="quiet-action wide" data-action="detect" ${disabled(!state.monitoring)}>Simulate a repository check</button>
-    <p class="list-footnote">No timers or fake percentages. Activity advances only when you choose a demo action.</p>
+  const rows = [...running(), ...queued()];
+  return `<div class="page-scroll" data-scroll="running">${
+    rows.length
+      ? `<ol class="work-list" aria-label="Agent work queue">${rows.map((review) => workRow(review, "running")).join("")}</ol>`
+      : quietEmpty("activity", "No agent work")
+  }
+    <button class="quiet-action wide check-demo" data-action="detect" ${disabled(!state.monitoring)}>Simulate a repository check</button>
   </div>`;
 }
 
@@ -604,7 +611,6 @@ function reviewedPage() {
           : review.state === "done"),
   );
   return `<div class="page-scroll" data-scroll="reviewed">
-    <div class="feature-summary"><span class="summary-icon">${icon("reviewed")}</span><div><strong>${reviewed().length}</strong><p>review outcomes</p></div><span class="summary-tail">Sample history</span></div>
     <div class="filter-row" aria-label="Filter review history">${[
       ["all", "All"],
       ["approved", "Approved"],
@@ -616,8 +622,11 @@ function reviewedPage() {
           `<button class="filter-chip" data-filter="${key}" aria-pressed="${historyFilter === key}">${label}</button>`,
       )
       .join("")}</div>
-    <div class="review-list">${items.map((review, index) => reviewCard(review, index)).join("") || empty("Nothing in this view", "Choose another filter or complete a sample review.", "reviewed")}</div>
-    <p class="list-footnote">An approval is not a merge. All provider outcomes here are simulated.</p>
+    ${
+      items.length
+        ? `<ol class="work-list" aria-label="Reviewed work">${items.map((review) => workRow(review, "reviewed")).join("")}</ol>`
+        : quietEmpty("reviewed", "Nothing in this view")
+    }
   </div>`;
 }
 
@@ -682,7 +691,6 @@ function settingsRow(title, subtitle, value, symbol, page) {
 
 function settingsPage() {
   return `<div class="page-scroll" data-scroll="settings">
-    <div class="settings-intro"><span class="summary-icon">${icon("settings")}</span><div><strong>Your review setup</strong><p>Shared agents. Your rules.</p></div></div>
     <div class="settings-list">
       ${settingsRow("Accounts", "GitHub and Copilot, kept separate", `${state.accounts.filter((account) => account.connected).length} connected`, "people", "accounts")}
       ${settingsRow("Agents", "Reusable review configurations", state.agents.length, "crosshair", "agents")}
@@ -696,77 +704,51 @@ function settingsPage() {
 
 function collectionPage(kind) {
   if (kind === "repos") return repositoriesPage();
-  const configuration = {
-    agents: [
-      "Agents",
-      "New agent",
-      "agent",
-      "Unlimited configurations. Concurrency is set separately.",
-    ],
-    repos: [
-      "Repositories",
-      "Add repository",
-      "repo",
-      "Each repository has its own acting GitHub account and review assignments.",
-    ],
-    doctrines: [
-      "Doctrines",
-      "New doctrine",
-      "doctrine",
-      "Reusable principles, shared across agents. Plain text, never commands.",
-    ],
+  const editor = kind === "agents" ? "agent" : "doctrine";
+  const label = kind === "agents" ? "New agent" : "New doctrine";
+  const warning = (item) => {
+    if (kind !== "agents") return "";
+    if (!item.accountId || !item.prompt?.trim()) return "Unconfigured";
+    return state.accounts.some(
+      (account) => account.id === item.accountId && account.connected,
+    )
+      ? ""
+      : "Reconnect required";
   };
-  const [, button, editor, hint] = configuration[kind];
-  return `<div class="page-scroll" data-scroll="${kind}"><div class="section-toolbar"><p>${hint}</p><button class="small-primary" data-page="${editor}">${icon("plus")}${button}</button></div><div class="configuration-list">
-    ${
-      state[kind]
-        .map((item) => {
-          const detail =
-            kind === "agents"
-              ? `${item.model} / ${item.completion === "approve" ? "May approve" : "Human handoff"}`
-              : kind === "repos"
-                ? `${item.enabled ? "Monitoring enabled" : "Disabled"} / ${item.agentIds.length} assigned`
-                : `${item.body.trim().split(/\s+/).length} words`;
-          return `<button class="configuration-card" data-page="${editor}" data-id="${esc(item.id)}"><span class="row-symbol">${icon(kind === "agents" ? "crosshair" : kind === "repos" ? "folder" : "book")}</span><span class="row-copy"><strong>${esc(item.name)}</strong><small>${esc(detail)}</small>${kind === "agents" ? `<span class="small-description">${esc(item.prompt)}</span>` : ""}</span>${icon("chevron")}</button>`;
-        })
-        .join("") ||
-      empty(`No ${kind} yet`, `Use "${button}" to create your first one.`)
-    }
-    </div></div>`;
-}
-
-function repositoryStatus(repo) {
-  const account = state.accounts.find((item) => item.id === repo.accountId);
-  if (!account?.connected) return "Reconnect account";
-  if (!repo.scope || !repo.agentIds.length) return "Needs setup";
-  return repo.enabled ? "Enabled" : "Paused";
+  const cards = state[kind].map((item) => {
+    const detail =
+      kind === "agents"
+        ? `${item.model} / ${state.repos.filter((repo) => repo.agentIds.includes(item.id)).length} repositories`
+        : `${item.body.trim().split(/\s+/).length} words`;
+    const problem = warning(item);
+    return `<div class="configuration-card"><button type="button" class="card-open" data-page="${editor}" data-id="${esc(item.id)}"><span class="row-symbol">${icon(kind === "agents" ? "crosshair" : "book")}</span><span class="row-copy"><strong>${esc(item.name)}</strong><small>${esc(detail)}</small>${problem ? `<span class="row-warning">${problem}</span>` : ""}</span></button><button type="button" class="row-trash" data-action="delete-${editor}" data-id="${esc(item.id)}" aria-label="Delete ${esc(item.name)}" title="Delete">${icon("trash")}</button></div>`;
+  });
+  return `<div class="page-scroll has-fab" data-scroll="${kind}">${cards.length ? `<div class="configuration-list">${cards.join("")}</div>` : quietEmpty(kind === "agents" ? "crosshair" : "book", `No ${kind} yet`)}</div>
+    <button type="button" class="floating-pill" data-page="${editor}">${icon("plus")}${label}</button>`;
 }
 
 function repositoriesPage() {
   const accounts = state.accounts.filter(
     (account) => account.kind === "github",
   );
-  return `<div class="page-scroll" data-scroll="repos">
-    <div class="repository-heading"><h2>Your repositories</h2><button class="small-primary" data-page="repo-url" data-focus-key="repo-url" aria-label="Add repository by URL" title="Add repository by URL">${icon("plus")}<span>URL</span></button></div>
-    <div class="settings-list repository-items">${
-      state.repos
-        .map((repo) => {
-          const account = state.accounts.find(
-            (item) => item.id === repo.accountId,
-          );
-          return `<button class="settings-row" data-page="repo" data-id="${esc(repo.id)}" data-focus-key="repo-${esc(repo.id)}"><span class="row-copy"><strong>${esc(repo.name)}</strong><small>GitHub · ${esc(account?.name ?? "Account unavailable")}</small></span><span class="row-value">${repositoryStatus(repo)}</span>${icon("chevron")}</button>`;
-        })
-        .join("") ||
-      empty(
-        "No repositories yet",
-        "Browse a connected account below, or add a repository by URL.",
-      )
-    }</div>
-    <h2 class="repository-section-title">Browse from an account</h2>
-    <div class="settings-list">${accounts.map((account) => `<div class="repository-account"><span class="provider-mark" data-brand="github">GH</span><span class="row-copy"><strong>${esc(account.name)}</strong><small>${account.connected ? "GitHub" : "Reconnect in Accounts"}</small></span><button class="repository-browse" data-page="repo-browser" data-id="${esc(account.id)}" data-focus-key="browse-${esc(account.id)}" aria-label="Browse repositories as ${esc(account.name)}" title="Browse repositories" ${disabled(!account.connected)}>${icon("search")}</button></div>`).join("") || `<button class="settings-row" data-page="accounts"><span class="row-copy"><strong>Connect a repository account</strong><small>Add GitHub in Accounts to browse repositories.</small></span>${icon("chevron")}</button>`}</div>
-    <p class="section-note">Choose repositories owned by your personal account or an organization. Sample results only.</p>
-    <p class="section-note">Azure DevOps organization browsing is coming soon.</p>
-  </div>`;
+  const connected = (repo) =>
+    state.accounts.some(
+      (account) => account.id === repo.accountId && account.connected,
+    );
+  const accountName = (repo) =>
+    state.accounts.find((item) => item.id === repo.accountId)?.name ??
+    state.forgotten.find((item) => item.id === repo.accountId)?.name ??
+    "unbound";
+  const row = (repo, live) =>
+    `<div class="repo-row"><button type="button" class="settings-row repo-open" data-page="repo" data-id="${esc(repo.id)}" data-focus-key="repo-${esc(repo.id)}"><span class="row-copy"><strong>${esc(repo.name)}</strong><small>GitHub / ${esc(accountName(repo))}</small></span>${icon("chevron")}</button><button type="button" class="mini-switch" role="switch" aria-checked="${repo.enabled}" aria-label="Monitor ${esc(repo.name)}" data-action="toggle-repo" data-id="${esc(repo.id)}" data-focus-key="toggle-${esc(repo.id)}" ${disabled(!live)}></button></div>`;
+  const live = state.repos.filter(connected);
+  const lost = state.repos.filter((repo) => !connected(repo));
+  return `<div class="page-scroll has-fab" data-scroll="repos">
+    ${live.length ? `<div class="settings-list repository-items">${live.map((repo) => row(repo, true)).join("")}</div>` : ""}
+    <div class="settings-list repository-accounts">${accounts.map((account) => `<div class="repository-account"><span class="provider-mark" data-brand="github">GH</span><span class="row-copy"><strong>${esc(account.name)}</strong></span><button class="repository-browse" data-page="repo-browser" data-id="${esc(account.id)}" data-focus-key="browse-${esc(account.id)}" aria-label="Browse repositories as ${esc(account.name)}" title="Browse repositories" ${disabled(!account.connected)}>${icon("search")}</button></div>`).join("") || `<button class="settings-row" data-page="github"><span class="row-copy"><strong>Connect a repository account</strong></span>${icon("chevron")}</button>`}</div>
+    ${lost.length ? `<div class="settings-list repository-items repository-disconnected">${lost.map((repo) => row(repo, false)).join("")}</div>` : ""}
+  </div>
+  <button type="button" class="floating-pill" data-page="repo-url" data-focus-key="repo-url" aria-label="Add repository by URL" title="Add repository by URL">${icon("plus")}URL</button>`;
 }
 
 function repositoryBrowserPage() {
@@ -779,11 +761,9 @@ function repositoryBrowserPage() {
   const owners = Demo.repositoryOwners(account);
   route().owner ??= owners[0].name;
   return `<div class="page-scroll" data-scroll="repo-browser">
-    <p class="section-note">GitHub as <strong>${esc(account.name)}</strong>. Synthetic repositories; no provider request.</p>
     ${field("Repository owner", `<select id="repository-owner">${owners.map((owner) => option(owner.name, `${owner.name} (${owner.kind.toLowerCase()})`, route().owner)).join("")}</select>`)}
     ${field("Find a repository", `<input type="search" id="repository-filter" value="${esc(route().query ?? "")}" placeholder="Search this owner..." autocomplete="off" />`)}
     <div class="settings-list" id="repository-results">${repositoryResults(account)}</div>
-    <p class="section-note">Selecting a repository adds it and opens configuration. Monitoring stays off until you configure it.</p>
   </div>`;
 }
 
@@ -816,9 +796,8 @@ function repositoryUrlPage() {
   if (!accounts.length)
     return `<div class="page-scroll" data-scroll="repo-url">${empty("Connect GitHub first", "A repository needs an acting account.")}<button class="primary-action wide" data-page="accounts">Open Accounts</button></div>`;
   return `<div class="page-scroll" data-scroll="repo-url"><form class="editor-form" data-form="repo-url">
-    ${field("Repository URL", '<input name="repository" placeholder="https://github.com/owner/repository" required autocomplete="off" spellcheck="false" />', "GitHub URL or owner/repository. No local checkout needed.")}
-    ${field("Acting GitHub account", `<select name="accountId" required>${option("", "Choose an account", "")}${accounts.map((account) => option(account.id, account.name, "")).join("")}</select>`, "Choose explicitly, even when accounts have overlapping access.")}
-    <p class="section-note">Demo only: format is checked, but existence and access are not. Azure DevOps URLs are not supported yet.</p>
+    ${field("Repository URL", '<input name="repository" placeholder="https://github.com/owner/repository" required autocomplete="off" spellcheck="false" />')}
+    ${field("Acting GitHub account", `<select name="accountId" required>${option("", "Choose an account", "")}${accounts.map((account) => option(account.id, account.name, "")).join("")}</select>`)}
     <div class="editor-actions"><button class="primary-action" type="submit">Add & configure</button><button class="secondary-action" type="button" data-action="back">Cancel</button></div>
   </form></div>`;
 }
@@ -856,8 +835,8 @@ const input = (name, value = "", required = true) =>
   `<input name="${name}" value="${esc(value)}" ${required ? "required" : ""} autocomplete="off" />`;
 const option = (value, label, current) =>
   `<option value="${esc(value)}" ${selected(value, current)}>${esc(label)}</option>`;
-function accountSelect(kind, current) {
-  return `<select name="accountId" required>${option("", "Choose an account", current)}${state.accounts
+function accountSelect(kind, current, name = "accountId", required = true) {
+  return `<select name="${name}" ${required ? "required" : ""}>${option("", required ? "Choose an account" : "Unbound", current)}${state.accounts
     .filter((account) => account.kind === kind)
     .map((account) =>
       option(
@@ -866,35 +845,89 @@ function accountSelect(kind, current) {
         current,
       ),
     )
+    .join("")}${state.forgotten
+    .filter((account) => account.kind === kind)
+    .map((account) =>
+      option(account.id, `${account.name} (disconnected)`, current),
+    )
     .join("")}</select>`;
 }
-function editorFooter(kind, id) {
-  return `<div class="editor-actions"><button class="primary-action" type="submit">Save ${kind}</button><button class="secondary-action" type="button" data-action="back">Cancel</button></div>${id ? `<button class="text-action danger" type="button" data-action="delete-${kind}" data-id="${esc(id)}">Delete ${kind}</button>` : ""}<p class="section-note">Sample text only. Save writes to this browser, not PR Sniper.</p>`;
+
+function editorFooter(kind, id, save = `Save ${kind}`) {
+  return `<div class="editor-actions"><button class="primary-action" type="submit">${save}</button><button class="secondary-action" type="button" data-action="back">Cancel</button></div>${id && kind !== "repo" ? `<button class="text-action danger" type="button" data-action="delete-${kind}" data-id="${esc(id)}">Delete ${kind}</button>` : ""}`;
 }
+
 function agentEditor(id) {
-  const agent = state.agents.find((item) => item.id === id) ?? {
+  const saved = state.agents.find((item) => item.id === id);
+  const base = saved ?? {
     name: "",
     accountId: "",
     model: "",
-    prompt: "",
+    prompt: "Review this pull request for correctness, risk, and readability.",
     doctrineIds: [],
     completion: "human",
     comment: false,
   };
-  return `<div class="page-scroll" data-scroll="agent-editor"><form data-form="agent" data-id="${esc(id ?? "")}" class="editor-form">
-    ${field("Agent name", input("name", agent.name))}
-    <div class="form-group"><h2>Intelligence</h2>${field("Copilot AI account", accountSelect("copilot", agent.accountId), "Separate from the GitHub account that publishes comments or approvals.")}
-    ${field("Model", `<select name="model" required>${option("", "Choose a demo model", agent.model)}${Demo.models.map((model) => option(model, model, agent.model)).join("")}</select>`, "Synthetic model choices; no subscription or model discovery is performed.")}</div>
-    ${field("Review prompt", `<textarea name="prompt" required rows="4">${esc(agent.prompt)}</textarea>`)}
-    <fieldset class="check-group"><legend>Doctrines</legend>${state.doctrines.map((doctrine) => `<label><input type="checkbox" name="doctrineIds" value="${esc(doctrine.id)}" ${checked(agent.doctrineIds.includes(doctrine.id))} /><span>${esc(doctrine.name)}</span></label>`).join("") || "<p>No doctrines yet. Add one in Settings.</p>"}</fieldset>
-    <div class="form-group"><h2>Permissions</h2>${field("When a review clears", `<select name="completion">${option("human", "Send to human queue", agent.completion)}${option("approve", "Approve on GitHub (simulated)", agent.completion)}</select>`, "Provider approval is distinct from machine sign-off. Neither option merges a PR.")}
-    <label class="checkbox-field"><input name="comment" type="checkbox" ${checked(agent.comment)} /><span>May publish review comments</span></label><p class="section-note">Repository publication gates still apply. Approval uses the repository's acting identity, not the AI account.</p></div>
-    ${id ? '<p class="inline-warning">Saving a changed agent restarts its active mock reviews with the new configuration.</p>' : ""}
-    ${editorFooter("agent", id)}</form></div>`;
+  const draft = route().draft;
+  const agent = {
+    contextWindow: "Standard",
+    reasoning: "Medium",
+    ...base,
+    ...draft?.values,
+  };
+  agent.signature ??= Demo.defaultSignature(agent.name, agent.model);
+  const lastSignature =
+    draft?.lastSignature ?? Demo.defaultSignature(agent.name, agent.model);
+  const tokens = Demo.promptTokens
+    .map(
+      ([token, hint]) =>
+        `<button type="button" data-action="insert-token" data-token="${token}"><code>{{${token}}}</code><span>${esc(hint)}</span></button>`,
+    )
+    .join("");
+  const row = (label, control) =>
+    `<label class="kv-row"><span>${label}</span>${control}</label>`;
+  const select = (name, values, current, required = false) =>
+    `<select name="${name}" ${required ? "required" : ""}>${values.map((value) => option(value, value, current)).join("")}</select>`;
+  return `<div class="page-scroll" data-scroll="agent-editor"><form data-form="agent" data-id="${esc(id ?? "")}" data-last-signature="${esc(lastSignature)}" class="editor-form agent-form">
+    <div class="agent-main">
+      <section class="group-card">
+        ${row("Name", `<input name="name" value="${esc(agent.name)}" required maxlength="80" autocomplete="off" placeholder="e.g. The Nitpicker" />`)}
+        ${row("AI account", accountSelect("copilot", agent.accountId))}
+      </section>
+      <section class="group-card">
+        ${row('<span class="model-label">Model<button type="button" class="icon-button" data-action="refresh-models" aria-label="Refresh model list" title="Refresh model list">' + icon("refresh") + "</button></span>", `<select name="model" required>${option("", "Choose a demo model", agent.model)}${Demo.models.map((model) => option(model, model, agent.model)).join("")}</select>`)}
+        ${row("Context window", select("contextWindow", Demo.contextWindows, agent.contextWindow))}
+        ${row("Reasoning effort", select("reasoning", Demo.reasoningEfforts, agent.reasoning))}
+      </section>
+      <section class="group-card">
+        <button type="button" class="kv-row kv-link" data-action="open-doctrines" aria-label="Choose doctrines"><span>Doctrines</span><span class="kv-value" data-doctrine-summary>${agent.doctrineIds.length} selected</span>${icon("chevron")}</button>
+        <div class="prompt-block"><div class="prompt-head"><span>Prompt</span><button type="button" class="icon-button info-tip" data-action="prompt-tip" aria-label="Prompt tips" aria-expanded="false" aria-controls="prompt-tips">${icon("info")}</button></div>
+          <div class="tip-body" id="prompt-tips" role="group" aria-label="Prompt tokens and tips" hidden><strong>Tokens</strong><span class="tip-note">Click to insert. Replaced when the review runs.</span><span class="token-list">${tokens}</span><strong>Tips</strong><ul><li>Open with a role and goal.</li><li>Say what to flag, what to ignore, and the severity bar.</li><li>Ask for file, line and a suggested fix.</li></ul></div>
+          <textarea name="prompt" aria-label="Prompt" required rows="4">${esc(agent.prompt)}</textarea></div>
+        ${row('<span class="model-label">Signature<button type="button" class="icon-button" data-action="reset-signature" aria-label="Reset signature to default" title="Reset to default">' + icon("reset") + "</button></span>", `<input name="signature" value="${esc(agent.signature)}" required maxlength="200" autocomplete="off" />`)}
+      </section>
+      <section class="group-card">
+        ${row("When a review clears", `<select name="completion">${option("human", "Human queue", agent.completion)}${option("approve", "Approve (demo)", agent.completion)}</select>`)}
+        ${row("May comment", `<input type="checkbox" class="switch" name="comment" ${checked(agent.comment)} />`)}
+      </section>
+      ${editorFooter("agent", id)}
+    </div>
+    <div class="agent-doctrines" hidden>
+      <input type="search" id="doctrine-filter" aria-label="Filter doctrines" placeholder="Filter doctrines" autocomplete="off" />
+      <div class="group-card doctrine-choices">${
+        state.doctrines
+          .map(
+            (doctrine) =>
+              `<div class="doctrine-choice" data-doctrine-choice data-title="${esc(doctrine.name.toLowerCase())}"><label><input type="checkbox" name="doctrineIds" value="${esc(doctrine.id)}" ${checked(agent.doctrineIds.includes(doctrine.id))} /><span>${esc(doctrine.name)}</span></label><button type="button" class="icon-button" data-action="edit-doctrine" data-id="${esc(doctrine.id)}" aria-label="Edit doctrine ${esc(doctrine.name)}" title="Edit doctrine">${icon("pencil")}</button></div>`,
+          )
+          .join("") || quietEmpty("book", "No doctrines yet")
+      }</div>
+    </div></form></div>`;
 }
 
 function repoEditor(id) {
-  const repo = state.repos.find((item) => item.id === id) ?? {
+  const saved = state.repos.find((item) => item.id === id);
+  const base = saved ?? {
     name: "",
     accountId: "",
     enabled: true,
@@ -908,20 +941,188 @@ function repoEditor(id) {
     start: "inherit",
     comments: "inherit",
   };
-  return `<div class="page-scroll" data-scroll="repo-editor"><form data-form="repo" data-id="${esc(id ?? "")}" class="editor-form">
-    ${field("Repository", input("name", repo.name), "Use a fictional owner/repository; no provider lookup occurs.")}
-    ${field("Acting GitHub account", accountSelect("github", repo.accountId))}
-    <label class="checkbox-field"><input type="checkbox" name="enabled" ${checked(repo.enabled)} /><span>Enable repository monitoring</span></label>
-    <label class="checkbox-field"><input type="checkbox" name="scope" ${checked(repo.scope)} /><span>Confirm new-PR-only scope (demo)</span></label><p class="section-note">This mock does not import existing PRs. Assign an Agent and confirm scope once; saved start and publication settings still apply.</p>
-    <fieldset class="check-group"><legend>Assigned agents</legend>${state.agents.map((agent) => `<label><input type="checkbox" name="agentIds" value="${esc(agent.id)}" ${checked(repo.agentIds.includes(agent.id))} /><span>${esc(agent.name)}<small>${agent.completion === "approve" ? "May approve" : "Human handoff"}</small></span></label>`).join("")}</fieldset>
-    <details class="check-group"><summary>People you watch <span class="count-badge">${repo.watched.length}</span></summary>${Demo.people.map((person) => `<label><input type="checkbox" name="watched" value="${esc(person)}" ${checked(repo.watched.includes(person))} /><span>${esc(person)}</span></label>`).join("")}<p class="section-note">Empty means all authors after activation.</p></details>
-    <div class="form-group"><h2>Detection schedule</h2>${field("Schedule type", `<select name="schedule">${option("interval", "Fixed interval", repo.schedule)}${option("cron", "Cron (advanced)", repo.schedule)}</select>`)}
-      <div data-schedule="interval">${field("Check every (minutes)", `<input name="minutes" type="number" min="1" step="1" value="${repo.minutes}" required />`)}</div>
-      <div data-schedule="cron">${field("Five-field cron", input("cron", repo.cron))}${field("Time zone", input("zone", repo.zone))}<p class="section-note">Shape and time-zone validation only. No real timer or cron execution.</p></div>
-    </div>
-    <div class="form-group"><h2>Automation overrides</h2>${["start", "comments"].map((key) => field(key === "start" ? "Start reviews automatically" : "Publish comments automatically", `<select name="${key}">${option("inherit", `Use global default (${state.preferences[key === "start" ? "automaticStart" : "automaticComments"] ? "on" : "off"})`, repo[key])}${option("on", "On for this repository", repo[key])}${option("off", "Off for this repository", repo[key])}</select>`)).join("")}</div>
-    ${id ? '<p class="inline-warning">Changed assignments do not silently reassign existing packets. Active reviews restart; unassigned packets stay visibly blocked.</p>' : ""}
-    ${editorFooter("repo", id)}</form></div>`;
+  const repo = {
+    reviewerRequests: "inherit",
+    ...base,
+    ...route().draft?.values,
+  };
+  const row = (label, control) =>
+    `<label class="kv-row"><span>${label}</span>${control}</label>`;
+  const plain = (action, label, extra = "") =>
+    `<button type="button" class="plain-row ${extra}" data-action="${action}" data-id="${esc(id ?? "")}" ${extra.includes("danger") && !id ? "hidden" : ""}>${label}</button>`;
+  return `<div class="page-scroll" data-scroll="repo-editor"><form data-form="repo" data-id="${esc(id ?? "")}" class="editor-form repo-form">
+    <section class="group-card">${row("Monitor", `<input type="checkbox" class="switch" name="enabled" aria-label="Monitor this repository" ${checked(repo.enabled)} />`)}</section>
+    <section class="group-card"><h2 class="card-title">Pull requests to watch</h2>${row("Reviewer requests", `<select name="reviewerRequests">${option("inherit", "Use default", repo.reviewerRequests)}${option("on", "Include requested PRs", repo.reviewerRequests)}${option("off", "Do not include", repo.reviewerRequests)}</select>`)}</section>
+    <section class="group-card"><div class="card-title"><h2>Agents on this repository</h2><button type="button" class="pill-small" data-action="assign-agent">${icon("plus")}Assign agent</button></div>
+      <select class="picker" data-picker="agents" aria-label="Assign agent" hidden></select><div data-list="agents"></div></section>
+    <section class="group-card"><div class="card-title"><h2>People you watch</h2><button type="button" class="pill-small" data-action="add-people">${icon("plus")}Add people</button></div>
+      <select class="picker" data-picker="people" aria-label="Add people" hidden></select><div data-list="people"></div></section>
+    <details class="group-card repo-disclosure"><summary>Repository</summary>
+      <div class="repo-fields" hidden>${row("Name", input("name", repo.name))}${row("Account", accountSelect("github", repo.accountId, "accountId", false))}</div>
+      ${plain("edit-repo-fields", "Edit repository")}
+      ${plain("unbind-account", "Unbind account")}
+      ${plain("delete-repo", "Remove repository", "danger")}
+      ${plain("verify-repo", "Verify GitHub connection")}
+      ${plain("read-prs", "Read PR metadata")}
+    </details>
+    <details class="group-card repo-disclosure schedule-details"><summary>Schedule and scope (prototype)</summary>
+      ${row("New-PR-only scope", `<input type="checkbox" class="switch" name="scope" ${checked(repo.scope)} />`)}
+      ${row("Schedule", `<select name="schedule">${option("interval", "Fixed interval", repo.schedule)}${option("cron", "Cron (advanced)", repo.schedule)}</select>`)}
+      <div data-schedule="interval">${row("Every (minutes)", `<input name="minutes" type="number" min="1" step="1" value="${repo.minutes}" required />`)}</div>
+      <div data-schedule="cron">${row("Cron", input("cron", repo.cron))}${row("Time zone", input("zone", repo.zone))}</div>
+      ${["start", "comments"].map((key) => row(key === "start" ? "Start reviews" : "Publish comments", `<select name="${key}">${option("inherit", `Default (${state.preferences[key === "start" ? "automaticStart" : "automaticComments"] ? "on" : "off"})`, repo[key])}${option("on", "On", repo[key])}${option("off", "Off", repo[key])}</select>`)).join("")}
+    </details>
+    ${editorFooter("repo", id, "Save repository")}</form></div>`;
+}
+
+function agentPermissions(agent) {
+  return `${agent.completion === "approve" ? "May approve" : "Human handoff"} / ${agent.comment ? "May comment" : "No comments"}`;
+}
+
+function renderRepoLists(form) {
+  const agents = form._agents.map((id) =>
+    state.agents.find((a) => a.id === id),
+  );
+  form.querySelector('[data-list="agents"]').innerHTML = agents
+    .filter(Boolean)
+    .map(
+      (agent) =>
+        `<div class="assign-row"><button type="button" class="assign-open" data-action="edit-assigned-agent" data-id="${esc(agent.id)}"><strong>${esc(agent.name)}</strong><small>${agentPermissions(agent)}</small></button><button type="button" class="row-trash" data-action="unassign-agent" data-id="${esc(agent.id)}" aria-label="Remove ${esc(agent.name)} from this repository" title="Remove">${icon("trash")}</button><input type="hidden" name="agentIds" value="${esc(agent.id)}" /></div>`,
+    )
+    .join("");
+  form.querySelector('[data-list="people"]').innerHTML = form._watched
+    .map(
+      (person) =>
+        `<div class="assign-row"><span class="person-handle" title="${esc(person)}">@${esc(person.toLowerCase().replaceAll(" ", "-"))}</span><button type="button" class="row-trash" data-action="remove-person" data-name="${esc(person)}" aria-label="Remove ${esc(person)}" title="Remove">${icon("trash")}</button><input type="hidden" name="watched" value="${esc(person)}" /></div>`,
+    )
+    .join("");
+  const fill = (name, label, entries) => {
+    const picker = form.querySelector(`[data-picker="${name}"]`);
+    picker.innerHTML =
+      `<option value="">${label}</option>` +
+      entries
+        .map(
+          ([value, text]) =>
+            `<option value="${esc(value)}">${esc(text)}</option>`,
+        )
+        .join("");
+    picker.hidden = true;
+  };
+  fill(
+    "agents",
+    "Choose an agent",
+    state.agents
+      .filter((agent) => !form._agents.includes(agent.id))
+      .map((agent) => [agent.id, agent.name]),
+  );
+  fill(
+    "people",
+    "Choose a person",
+    Demo.people
+      .filter((person) => !form._watched.includes(person))
+      .map((person) => [person, person]),
+  );
+  form.querySelector('[data-action="assign-agent"]').disabled =
+    form.querySelector('[data-picker="agents"]').options.length < 2;
+  form.querySelector('[data-action="add-people"]').disabled =
+    form.querySelector('[data-picker="people"]').options.length < 2;
+}
+
+function initRepoForm(form) {
+  const saved = state.repos.find((repo) => repo.id === form.dataset.id);
+  const values = route().draft?.values;
+  form._agents = [...(values?.agentIds ?? saved?.agentIds ?? [])];
+  form._watched = [...(values?.watched ?? saved?.watched ?? [])];
+  renderRepoLists(form);
+  syncSchedule(form);
+}
+
+function setAgentView(form, view) {
+  form.dataset.view = view;
+  form.querySelector(".agent-main").hidden = view === "doctrines";
+  form.querySelector(".agent-doctrines").hidden = view !== "doctrines";
+  const saved = state.agents.find((agent) => agent.id === form.dataset.id);
+  pageTitle.textContent =
+    view === "doctrines"
+      ? "Doctrines"
+      : saved
+        ? `Editing ${saved.name}`
+        : "New agent";
+  if (!form.isConnected) return;
+  (view === "doctrines"
+    ? form.querySelector("#doctrine-filter")
+    : form.querySelector('[data-action="open-doctrines"]')
+  ).focus({ preventScroll: true });
+}
+
+function growPrompt(root) {
+  const area = root.querySelector('textarea[name="prompt"]');
+  if (!area) return;
+  area.style.height = "auto";
+  area.style.height = `${area.scrollHeight}px`;
+}
+
+function syncSignature(form) {
+  const signature = form.elements.namedItem("signature");
+  const next = Demo.defaultSignature(
+    form.elements.namedItem("name").value,
+    form.elements.namedItem("model").value,
+  );
+  if (signature.value === form.dataset.lastSignature) signature.value = next;
+  form.dataset.lastSignature = next;
+}
+
+function loadModels(form) {
+  const button = form.querySelector('[data-action="refresh-models"]');
+  button.classList.add("is-loading");
+  button.setAttribute("aria-busy", "true");
+  setTimeout(() => {
+    button.classList.remove("is-loading");
+    button.removeAttribute("aria-busy");
+  }, 700);
+}
+
+function captureDraft() {
+  const form = stage.lastElementChild?.querySelector("form[data-form]");
+  if (!form || !["agent", "repo"].includes(form.dataset.form)) return;
+  const get = (name) => form.elements.namedItem(name);
+  const text = (name) => get(name)?.value ?? "";
+  const values =
+    form.dataset.form === "agent"
+      ? {
+          name: text("name"),
+          accountId: text("accountId"),
+          model: text("model"),
+          contextWindow: text("contextWindow"),
+          reasoning: text("reasoning"),
+          prompt: text("prompt"),
+          signature: text("signature"),
+          completion: text("completion"),
+          comment: get("comment").checked,
+          doctrineIds: [
+            ...form.querySelectorAll('[name="doctrineIds"]:checked'),
+          ].map((item) => item.value),
+        }
+      : {
+          name: text("name"),
+          accountId: text("accountId"),
+          enabled: get("enabled").checked,
+          scope: get("scope").checked,
+          agentIds: [...form._agents],
+          watched: [...form._watched],
+          schedule: text("schedule"),
+          minutes: Number(text("minutes")),
+          cron: text("cron"),
+          zone: text("zone"),
+          start: text("start"),
+          comments: text("comments"),
+          reviewerRequests: text("reviewerRequests"),
+        };
+  route().draft = {
+    values,
+    view: form.dataset.view ?? "",
+    lastSignature: form.dataset.lastSignature,
+  };
 }
 
 function syncSchedule(form) {
@@ -939,30 +1140,33 @@ function doctrineEditor(id) {
     name: "",
     body: "",
   };
-  return `<div class="page-scroll" data-scroll="doctrine-editor"><form data-form="doctrine" data-id="${esc(id ?? "")}" class="editor-form">${field("Doctrine name", input("name", item.name))}${field("Review principles", `<textarea name="body" rows="10" required>${esc(item.body)}</textarea>`, "Plain text, shared by every agent using this doctrine. No commands or secrets.")}${editorFooter("doctrine", id)}</form></div>`;
+  return `<div class="page-scroll" data-scroll="doctrine-editor"><form data-form="doctrine" data-id="${esc(id ?? "")}" class="editor-form">${field("Doctrine name", input("name", item.name))}${field("Review principles", `<textarea name="body" rows="10" required>${esc(item.body)}</textarea>`)}${editorFooter("doctrine", id)}</form></div>`;
 }
 
 function accountsPage() {
-  return `<div class="page-scroll" data-scroll="accounts"><div class="section-toolbar"><p>Keep repository and AI identities separate. Demo connections only.</p><button class="small-primary" data-page="add-account">${icon("plus")}Add account</button></div>
-    ${["github", "copilot"]
-      .filter((kind) => state.accounts.some((account) => account.kind === kind))
-      .map(
-        (kind) =>
-          `<section class="detail-section"><h2>${kind === "github" ? "GitHub / repository access" : "Copilot / AI access"}</h2>${state.accounts
-            .filter((account) => account.kind === kind)
-            .map(
-              (account) =>
-                `<div class="account-row"><span class="avatar">${esc(initials(account.name.replaceAll("-", " ")))}</span><div><strong>${esc(account.name)}</strong><small>${account.connected ? "Connected (demo)" : "Disconnected / dependent work blocked"}</small></div><button class="quiet-action" data-action="account" data-id="${account.id}">${account.connected ? "Disconnect" : "Reconnect"}</button></div>`,
-            )
-            .join("")}</section>`,
-      )
-      .join("")}
-    ${state.accounts.length ? "" : empty("No accounts yet", "Add your repository and AI identities to get started.", "people")}
-    <section class="detail-section upcoming-connections"><h2>Coming soon</h2><div class="upcoming-tags">${connectionProviders
-      .filter((provider) => !provider.available)
-      .map((provider) => `<span>${provider.name}</span>`)
-      .join("")}</div></section>
-    <p class="section-note">Mock sign-in requests no credentials. Sign-in never guarantees model access, and AI credentials never act on GitHub.</p></div>`;
+  const count = (kind) =>
+    state.accounts.filter((account) => account.kind === kind).length;
+  return `<div class="page-scroll" data-scroll="accounts"><div class="settings-list">
+    ${settingsRow("GitHub Copilot", "AI access", `${count("copilot")} connected`, "spark", "copilot")}
+    ${settingsRow("GitHub", "Repository access", `${count("github")} connected`, "pull-request", "github")}
+  </div></div>`;
+}
+
+function accountKindPage(kind) {
+  const accounts = state.accounts.filter((account) => account.kind === kind);
+  const label =
+    kind === "github" ? "Add GitHub account" : "Connect Copilot account";
+  return `<div class="page-scroll has-fab" data-scroll="${kind}">${
+    accounts.length
+      ? `<div class="settings-list account-list">${accounts
+          .map(
+            (account) =>
+              `<div class="account-row"><div><strong>${esc(account.name)}</strong><small>\u2713 Connected</small></div><button type="button" class="account-disconnect" data-action="account" data-id="${esc(account.id)}" aria-label="Disconnect ${esc(account.name)}" title="Disconnect">${icon("plug-off")}</button></div>`,
+          )
+          .join("")}</div>`
+      : quietEmpty("plug-off", "No accounts connected")
+  }</div>
+    <button type="button" class="floating-pill" data-page="account-signin" data-id="${kind}">${icon("plus")}${label}</button>`;
 }
 
 function addAccountPage() {
@@ -999,45 +1203,19 @@ function accountSignInPage(kind) {
       "Choose GitHub or Copilot. Other providers are coming soon.",
       "people",
     );
-  return `<div class="page-scroll" data-scroll="account-signin"><div class="connection-heading"><span class="provider-mark" data-brand="${provider.id}">${provider.mark}</span><div><h2>Connect ${provider.name}</h2><p>${provider.description}</p></div></div>
+  return `<div class="page-scroll" data-scroll="account-signin"><div class="connection-heading"><span class="provider-mark" data-brand="${provider.id}">${provider.mark}</span><div><h2>${provider.name}</h2></div></div>
     <form data-form="account-signin" data-id="${provider.id}" class="editor-form">
-      <p class="demo-signin-notice">${icon("compass")}Simulated browser sign-in</p>
-      <p class="section-note">Production would open sign-in in your browser. This demo stays here and never requests credentials.</p>
-      ${field("Fictional account handle", `<input name="accountName" value="${esc(route().draftName ?? "")}" placeholder="e.g. dev-demo" required maxlength="39" pattern="[a-zA-Z0-9]+(-[a-zA-Z0-9]+)*" autocomplete="off" spellcheck="false" />`, "Letters, numbers, and single hyphens only. Do not enter a real password or token.")}
-      ${provider.id === "github" ? '<p class="connection-scope">Repository identity only. A real GitHub connection requests broad repository access; this mock requests none. Repositories and permissions are configured separately.</p>' : '<p class="connection-scope">AI identity only. Connecting Copilot does not connect a repository, verify a subscription, or grant permission to publish.</p>'}
+      ${field("Fictional account handle", `<input name="accountName" value="${esc(route().draftName ?? "")}" placeholder="e.g. dev-demo" required maxlength="39" pattern="[a-zA-Z0-9]+(-[a-zA-Z0-9]+)*" autocomplete="off" spellcheck="false" />`)}
       <button class="primary-action wide" type="submit">Simulate browser sign-in</button>
       <button class="quiet-action wide" type="button" data-action="cancel-account">Cancel</button>
       <details class="scenario-details"><summary>Prototype scenarios</summary><button class="text-action" type="button" data-action="account-signin-failed">Simulate sign-in failure</button></details>
     </form></div>`;
 }
 
-function accountConfirmPage(kind) {
-  const provider = connectionProviders.find(
-    (item) => item.id === kind && item.available,
-  );
-  const name = route().pendingName;
-  if (!provider || !name)
-    return empty(
-      "No pending identity",
-      "Go back and simulate sign-in before connecting an account.",
-      "people",
-    );
-  return `<div class="page-scroll" data-scroll="account-confirm"><section class="confirmation-card"><span class="state-pill">${icon("check")}Mock identity returned</span><span class="confirmation-avatar">${esc(initials(name.replaceAll("-", " ")))}</span><h2>@${esc(name)}</h2><p>${provider.name}</p><small>${provider.description}</small></section>
-    <form data-form="account-confirm" class="editor-form">
-      <h2 class="form-title">Is this the account you want?</h2>
-      <p class="section-note">Nothing is saved until you confirm. This adds a local demo connection, not a real provider account.</p>
-      <label class="checkbox-field"><input type="checkbox" name="confirmIdentity" required /><span>Use <strong>@${esc(name)}</strong> as this ${kind === "github" ? "GitHub repository" : "Copilot AI"} identity.</span></label>
-      <button class="primary-action wide" type="submit" disabled>Confirm and connect</button>
-      <button class="secondary-action wide" type="button" data-action="back">Use a different identity</button>
-      <button class="text-action wide" type="button" data-action="cancel-account">Cancel connection</button>
-      <p class="section-note">No repositories or agents will be assigned automatically. No reviews, comments, or approvals will run.</p>
-    </form></div>`;
-}
-
 function returnToAccounts() {
   dirty = false;
   const index = stacks[tab].findLastIndex((item) =>
-    ["accounts", "genie", "welcome"].includes(item.page),
+    ["accounts", "copilot", "github", "genie", "welcome"].includes(item.page),
   );
   stacks[tab] =
     index >= 0
@@ -1076,11 +1254,62 @@ function preferencesPage() {
   )
     .map(
       ([key, [label, description]]) =>
-        `<label class="preference-row"><span><strong>${label}</strong><small>${description}</small></span><input type="checkbox" name="${key}" ${checked(state.preferences[key])} /></label>`,
+        `<label class="preference-row" title="${esc(description)}"><span><strong>${label}</strong></span><input type="checkbox" class="switch" name="${key}" ${checked(state.preferences[key])} /></label>`,
     )
     .join(
       "",
     )}</div><button class="primary-action wide" type="submit">Save preferences</button></form></div>`;
+}
+
+function statusPage() {
+  const waiting = human().length;
+  return `<div class="page-scroll" data-scroll="status"><section class="detail-section"><dl class="context-list"><dt>Monitoring</dt><dd>${state.monitoring ? "On" : "Paused"}</dd><dt>Running</dt><dd>${running().length} of ${state.limit}</dd><dt>Waiting</dt><dd>${queued().length}</dd><dt>Needs you</dt><dd>${waiting}</dd></dl></section></div>`;
+}
+
+function diagnosticsPage() {
+  return `<div class="page-scroll" data-scroll="diagnostics"><section class="detail-section"><dl class="context-list"><dt>Storage</dt><dd>${storageBlocked ? "Unavailable / reset required" : "Browser localStorage"}</dd><dt>Schema</dt><dd>v${state.version}</dd><dt>Review packets</dt><dd>${state.reviews.length}</dd><dt>Network operations</dt><dd>None</dd></dl></section></div>`;
+}
+
+const changelogSource = `# Changelog
+
+## Unreleased
+
+### Added
+
+- Expand {{token}} placeholders (pr_title, pr_number, pr_author, head_sha, base_sha, changed_files, changed_file_count, agent_name) in Agent prompts when a review runs. The Agent editor lists them and inserts on click.
+- Default Agent signature 🔫 pr-sniper(<agent>:<model>) with a reset icon.
+- In-app Changelog from the footer version.
+
+### Changed
+
+- Redesign the panel to be icon-first with minimal prose and consistent navy-band overlap: pinned Queue title with toggle cards and grouped lists, drill-in titles with the back arrow in the band, 8px rounded window corners, floating primary buttons, slim switches, a three-card Agent editor with a Doctrines drill-in, compact repository editor, and error toasts.
+- Copilot and GitHub accounts connect without a manual confirm step and disconnect with an icon. A disconnected account is forgotten, so it can be reconnected without a duplicate-account error.
+
+## 0.1.2 - 2026-10-01
+
+### Added
+
+- Sample entries stand in for the rendered CHANGELOG.md in this prototype.
+`;
+
+function changelogPage() {
+  let html = "";
+  let open = false;
+  for (const raw of changelogSource.split("\n").slice(1)) {
+    const heading = /^(##|###) (.+)$/.exec(raw);
+    if (heading) {
+      if (open) html += "</ul>";
+      open = false;
+      const tag = heading[1] === "##" ? "h2" : "h3";
+      html += `<${tag}>${esc(heading[2])}</${tag}>`;
+    } else if (raw.startsWith("- ")) {
+      if (!open) html += "<ul>";
+      open = true;
+      html += `<li>${esc(raw.slice(2))}</li>`;
+    }
+  }
+  if (open) html += "</ul>";
+  return `<div class="page-scroll" data-scroll="changelog"><section class="changelog">${html}</section></div>`;
 }
 
 function advancedPage() {
@@ -1099,6 +1328,11 @@ function render(direction = 0, focus = false) {
     agent: "Agent",
     repos: "Repositories",
     repo: "Repository",
+    copilot: "GitHub Copilot",
+    github: "GitHub",
+    status: "Status",
+    diagnostics: "Diagnostics",
+    changelog: "Changelog",
     "repo-browser": "Browse",
     "repo-url": "Add by URL",
     doctrines: "Doctrines",
@@ -1106,7 +1340,6 @@ function render(direction = 0, focus = false) {
     accounts: "Accounts",
     "add-account": "Add account",
     "account-signin": "Sign in",
-    "account-confirm": "Confirm",
     capacity: "Capacity",
     preferences: "Preferences",
     advanced: "Advanced",
@@ -1115,6 +1348,20 @@ function render(direction = 0, focus = false) {
     "setup-review": "Review setup",
   };
   pageTitle.textContent = titles[current.page] ?? "PR Sniper";
+  const record = (list) => list.find((item) => item.id === current.id);
+  if (current.page === "agent")
+    pageTitle.textContent = record(state.agents)
+      ? `Editing ${record(state.agents).name}`
+      : "New agent";
+  else if (current.page === "doctrine")
+    pageTitle.textContent = record(state.doctrines)
+      ? `Editing ${record(state.doctrines).name}`
+      : "New doctrine";
+  else if (current.page === "repo")
+    pageTitle.textContent = record(state.repos)?.name ?? "New repository";
+  popover.dataset.editor = String(
+    ["agent", "repo", "doctrine"].includes(current.page),
+  );
   let html;
   switch (current.page) {
     case "welcome":
@@ -1167,8 +1414,18 @@ function render(direction = 0, focus = false) {
     case "account-signin":
       html = accountSignInPage(current.id);
       break;
-    case "account-confirm":
-      html = accountConfirmPage(current.id);
+    case "copilot":
+    case "github":
+      html = accountKindPage(current.page);
+      break;
+    case "status":
+      html = statusPage();
+      break;
+    case "diagnostics":
+      html = diagnosticsPage();
+      break;
+    case "changelog":
+      html = changelogPage();
       break;
     case "capacity":
       html = capacityPage();
@@ -1201,12 +1458,20 @@ function render(direction = 0, focus = false) {
   next.dataset.page = current.page;
   next.innerHTML = html;
   if (current.page === "repo")
-    syncSchedule(next.querySelector('[data-form="repo"]'));
+    initRepoForm(next.querySelector('[data-form="repo"]'));
+  if (current.page === "agent") {
+    const form = next.querySelector('[data-form="agent"]');
+    if (current.draft?.view === "doctrines") setAgentView(form, "doctrines");
+    form.dataset.view ||= "";
+  }
   if (previous) {
     previous.inert = true;
     previous.setAttribute("aria-hidden", "true");
   }
   stage.replaceChildren(...(previous ? [previous] : []), next);
+  growPrompt(next);
+  if (current.page === "agent" && current.draft?.view === "doctrines")
+    pageTitle.textContent = "Doctrines";
   syncChrome();
   for (const [key, scrollTop] of current.scrolls ?? []) {
     const element = [...next.querySelectorAll("[data-scroll]")].find(
@@ -1249,26 +1514,6 @@ function render(direction = 0, focus = false) {
   }
 }
 
-function selectLane(nextLane, focus = false) {
-  lane = nextLane;
-  popover.dataset.lane = lane;
-  stage.querySelectorAll('[role="tab"]').forEach((button) => {
-    const active = button.dataset.lane === lane;
-    button.setAttribute("aria-selected", String(active));
-    button.tabIndex = active ? 0 : -1;
-    if (active && focus) button.focus({ preventScroll: true });
-  });
-  stage.querySelectorAll('[role="tabpanel"]').forEach((panel) => {
-    const active = panel.id === `${lane}-panel`;
-    panel.inert = !active;
-    panel.setAttribute("aria-hidden", String(!active));
-  });
-  announcement.textContent =
-    lane === "human"
-      ? `${human().length} items need human attention.`
-      : `${queued().length} review packets waiting. ${running().length} of ${state.limit} slots in use.`;
-}
-
 function readForm(form) {
   const data = new FormData(form);
   const value = (name) => String(data.get(name) ?? "").trim();
@@ -1285,6 +1530,9 @@ function readForm(form) {
             name: value("name"),
             accountId: value("accountId"),
             model: value("model"),
+            contextWindow: value("contextWindow"),
+            reasoning: value("reasoning"),
+            signature: value("signature"),
             prompt: value("prompt"),
             doctrineIds: all("doctrineIds"),
             completion: value("completion"),
@@ -1319,6 +1567,7 @@ function readForm(form) {
             zone: schedule === "cron" ? value("zone") : saved.zone,
             start: value("start"),
             comments: value("comments"),
+            reviewerRequests: value("reviewerRequests"),
           },
         },
       ];
@@ -1382,27 +1631,11 @@ stage.addEventListener("submit", (event) => {
         throw new Error("That provider is coming soon.");
       const name = Demo.accountName(new FormData(form).get("accountName"));
       route().draftName = name;
-      remember();
-      stacks[tab].push({
-        page: "account-confirm",
-        id: kind,
-        pendingName: name,
-      });
-      if (!storageBlocked) notice.hidden = true;
-      render(1, true);
-      return;
-    }
-    if (form.dataset.form === "account-confirm") {
-      const current = route();
       if (
         perform(
           "add-account",
-          {
-            kind: current.id,
-            name: current.pendingName,
-            confirmed: new FormData(form).has("confirmIdentity"),
-          },
-          `Connected @${current.pendingName} in the demo. Choose assignments separately.`,
+          { kind, name, confirmed: true },
+          `Connected @${name} in the demo.`,
           false,
         )
       )
@@ -1435,7 +1668,18 @@ stage.addEventListener("submit", (event) => {
     showError(error.message);
   }
 });
+stage.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && event.target.id === "doctrine-filter")
+    event.preventDefault();
+});
 stage.addEventListener("input", (event) => {
+  if (event.target.id === "doctrine-filter") {
+    const query = event.target.value.trim().toLowerCase();
+    stage.querySelectorAll("[data-doctrine-choice]").forEach((item) => {
+      item.hidden = !item.dataset.title.includes(query);
+    });
+    return;
+  }
   if (event.target.id === "repository-filter") {
     route().query = event.target.value;
     const account = state.accounts.find((item) => item.id === route().id);
@@ -1448,8 +1692,11 @@ stage.addEventListener("input", (event) => {
     route().draftName = event.target.value;
     return;
   }
-  if (form?.dataset.form === "account-confirm") return;
   if (form && form.dataset.form !== "complete") dirty = true;
+  if (form?.dataset.form === "agent") {
+    if (event.target.name === "name") syncSignature(form);
+    if (event.target.name === "prompt") growPrompt(form);
+  }
 });
 stage.addEventListener("change", (event) => {
   if (event.target.id === "repository-owner") {
@@ -1465,10 +1712,26 @@ stage.addEventListener("change", (event) => {
       .querySelector('button[type="submit"]').disabled =
       !event.target.checked || !Demo.setupStatus(state).ready;
   }
-  if (event.target.name === "confirmIdentity") {
-    event.target
-      .closest("form")
-      .querySelector('button[type="submit"]').disabled = !event.target.checked;
+  if (event.target.name === "doctrineIds") {
+    const form = event.target.closest("form");
+    form.querySelector("[data-doctrine-summary]").textContent =
+      `${form.querySelectorAll('[name="doctrineIds"]:checked').length} selected`;
+  }
+  if (event.target.closest('[data-form="agent"]')) {
+    const form = event.target.closest("form");
+    if (event.target.name === "model") syncSignature(form);
+    if (event.target.name === "model" || event.target.name === "accountId")
+      loadModels(form);
+  }
+  if (event.target.matches("[data-picker]")) {
+    const form = event.target.closest("form");
+    const value = event.target.value;
+    if (value) {
+      if (event.target.dataset.picker === "agents") form._agents.push(value);
+      else form._watched.push(value);
+      dirty = true;
+      renderRepoLists(form);
+    }
   }
   if (event.target.name === "schedule")
     syncSchedule(event.target.closest("form"));
@@ -1481,14 +1744,24 @@ popover.addEventListener("click", (event) => {
     switchTab(button.dataset.nav);
     return;
   }
-  if (button.dataset.lane) {
-    selectLane(button.dataset.lane);
+  if (button.dataset.queueFilter) {
+    remember();
+    queueFilter = button.dataset.queueFilter;
+    render();
+    stage
+      .querySelector(`[data-queue-filter="${queueFilter}"]`)
+      ?.focus({ preventScroll: true });
     return;
   }
   if (button.dataset.filter) {
     remember();
     historyFilter = button.dataset.filter;
     render();
+    return;
+  }
+  if (button.id === "notice-dismiss") {
+    notice.hidden = true;
+    clearTimeout(noticeTimer);
     return;
   }
   if (button.dataset.page) {
@@ -1536,24 +1809,140 @@ popover.addEventListener("click", (event) => {
     return;
   }
   if (action.startsWith("delete-")) {
+    const assigned =
+      action === "delete-agent"
+        ? state.repos
+            .filter((repo) => repo.agentIds.includes(id))
+            .map((repo) => repo.name)
+        : [];
     if (
       !confirm(
-        "Delete this shared prototype configuration? Existing history will be kept.",
+        `Delete this shared prototype configuration?${assigned.length ? ` It will be removed from ${assigned.join(", ")} first.` : ""} Existing history will be kept.`,
       )
     )
       return;
     if (perform(action, { id }, "Prototype configuration deleted.", false)) {
       dirty = false;
-      goBack();
+      if (["agent", "repo", "doctrine"].includes(route().page)) goBack();
+      else render();
     }
     return;
   }
   if (action === "account") {
-    perform(
-      "account",
-      { id },
-      "Demo connection updated; dependent work was reconciled.",
-    );
+    perform("account", { id }, "Account disconnected.");
+    return;
+  }
+  if (action === "changelog") {
+    if (route().page === "changelog") goBack();
+    else navigate("changelog");
+    return;
+  }
+  if (action === "toggle-repo") {
+    const repo = state.repos.find((item) => item.id === id);
+    if (
+      perform("save-repo", {
+        repo: { ...Demo.copy(repo), enabled: !repo.enabled },
+      })
+    )
+      stage
+        .querySelector(`[data-focus-key="toggle-${id}"]`)
+        ?.focus({ preventScroll: true });
+    return;
+  }
+  const form = button.closest("form");
+  const editorActions = {
+    "open-doctrines": () => setAgentView(form, "doctrines"),
+    "prompt-tip": () => {
+      const tip = form.querySelector(".tip-body");
+      tip.hidden = !tip.hidden;
+      button.setAttribute("aria-expanded", String(!tip.hidden));
+    },
+    "insert-token": () => {
+      const area = form.querySelector('textarea[name="prompt"]');
+      area.setRangeText(
+        `{{${button.dataset.token}}}`,
+        area.selectionStart,
+        area.selectionEnd,
+        "end",
+      );
+      area.dispatchEvent(new Event("input", { bubbles: true }));
+      area.focus();
+    },
+    "reset-signature": () => {
+      const signature = form.elements.namedItem("signature");
+      form.dataset.lastSignature = signature.value = Demo.defaultSignature(
+        form.elements.namedItem("name").value,
+        form.elements.namedItem("model").value,
+      );
+      dirty = true;
+      signature.focus();
+    },
+    "refresh-models": () => loadModels(form),
+    "edit-doctrine": () => {
+      captureDraft();
+      navigate("doctrine", id, true);
+    },
+    "assign-agent": () => {
+      const picker = form.querySelector('[data-picker="agents"]');
+      picker.hidden = !picker.hidden;
+      if (!picker.hidden) picker.focus();
+    },
+    "add-people": () => {
+      const picker = form.querySelector('[data-picker="people"]');
+      picker.hidden = !picker.hidden;
+      if (!picker.hidden) picker.focus();
+    },
+    "unassign-agent": () => {
+      form._agents = form._agents.filter((item) => item !== id);
+      dirty = true;
+      renderRepoLists(form);
+    },
+    "remove-person": () => {
+      form._watched = form._watched.filter(
+        (item) => item !== button.dataset.name,
+      );
+      dirty = true;
+      renderRepoLists(form);
+    },
+    "edit-assigned-agent": () => {
+      captureDraft();
+      navigate("agent", id, true);
+    },
+    "edit-repo-fields": () => {
+      const fields = form.querySelector(".repo-fields");
+      fields.hidden = !fields.hidden;
+      if (!fields.hidden) fields.querySelector("input").focus();
+    },
+    "unbind-account": () => {
+      form.elements.namedItem("accountId").value = "";
+      button.disabled = true;
+      dirty = true;
+      tell("Account unbound. Save the repository to apply.");
+    },
+    "verify-repo": () => {
+      const account = state.accounts.find(
+        (item) =>
+          item.id === form.elements.namedItem("accountId").value &&
+          item.connected,
+      );
+      if (account)
+        tell(`Verified as ${account.name} (demo). No request was made.`);
+      else
+        showError("No connected GitHub account is bound to this repository.");
+    },
+    "read-prs": () => {
+      const account = state.accounts.find(
+        (item) =>
+          item.id === form.elements.namedItem("accountId").value &&
+          item.connected,
+      );
+      if (account) tell("Read PR metadata (demo). Sample data only.");
+      else
+        showError("No connected GitHub account is bound to this repository.");
+    },
+  };
+  if (editorActions[action] && form) {
+    editorActions[action]();
     return;
   }
   const messages = {
@@ -1611,7 +2000,7 @@ function openPopover() {
   void popover.offsetWidth;
   popover.classList.add("is-opening");
   (
-    stage.querySelector('[role="tab"][aria-selected="true"]') || pageTitle
+    stage.querySelector('[data-queue-filter][aria-pressed="true"]') || pageTitle
   ).focus({ preventScroll: true });
 }
 function closePopover() {
@@ -1640,25 +2029,16 @@ document.addEventListener("pointerdown", (event) => {
 });
 document.addEventListener("keydown", (event) => {
   if (popover.hidden) return;
-  if (
-    event.target.matches('[role="tab"]') &&
-    ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)
-  ) {
-    event.preventDefault();
-    selectLane(
-      event.key === "Home"
-        ? "human"
-        : event.key === "End"
-          ? "agent"
-          : lane === "human"
-            ? "agent"
-            : "human",
-      true,
-    );
-    return;
-  }
   if (event.key === "Escape") {
     event.preventDefault();
+    const tip = stage.querySelector(".tip-body:not([hidden])");
+    if (tip) {
+      tip.hidden = true;
+      tip.parentElement
+        .querySelector(".info-tip")
+        .setAttribute("aria-expanded", "false");
+      return;
+    }
     closePopover();
     return;
   }

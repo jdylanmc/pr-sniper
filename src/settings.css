@@ -5,38 +5,20 @@
   line-height: 1.45;
   color-scheme: light;
 }
+.panel-shell[data-settings-sub="true"][data-detail="false"][data-setup="false"]
+  .panel-content,
 .panel-shell:has(.settings-window[data-settings-home]:not([hidden]))
   .panel-content {
   margin-top: -23px;
   position: relative;
 }
+.panel-shell[data-settings-sub="true"] .settings-window,
 .panel-shell .settings-window[data-settings-home] {
   background: transparent;
 }
 .panel-shell .settings-window[data-settings-home] #content {
   padding: 0 18px 14px;
 }
-.settings-overview .settings-intro {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 16px;
-  background: white;
-  border-radius: 14px;
-  margin-bottom: 14px;
-}
-.settings-intro strong {
-  color: #202b3b;
-  font-size: 16px;
-  font-weight: 650;
-  letter-spacing: -0.3px;
-}
-.settings-intro p {
-  font-size: 11px;
-  color: #52647b;
-  margin-top: 4px;
-}
-.settings-summary-icon,
 .settings-row-symbol {
   display: grid;
   place-items: center;
@@ -46,17 +28,6 @@
   border-radius: 9px;
   width: 31px;
   height: 31px;
-}
-.settings-summary-icon {
-  width: 44px;
-  height: 44px;
-  border-radius: 13px;
-  color: #327c84;
-  background: #e6f3f2;
-}
-.settings-summary-icon svg {
-  width: 24px;
-  height: 24px;
 }
 .settings-row-symbol svg {
   width: 18px;
@@ -89,8 +60,9 @@
 .settings-window .settings-home-row:hover {
   background: #f8fafb;
 }
-.settings-window .settings-home-row:focus-visible {
-  outline-offset: -3px;
+.panel-shell .settings-window .settings-home-row:focus-visible {
+  outline: none;
+  background: #f1f4f7;
 }
 .settings-window[data-account-overview] {
   background: #f0f3f6;
@@ -233,7 +205,12 @@
 .settings-window [data-home-genie] {
   color: #243247;
   border-color: #dce3eb;
-  font-size: 12px;
+  padding: 8px 14px;
+}
+.settings-window [data-home-genie] svg {
+  display: block;
+  width: 26px;
+  height: 26px;
 }
 @media (max-height: 440px) {
   .panel-shell:has(.settings-window[data-settings-home]:not([hidden]))
@@ -1503,6 +1480,19 @@
   border-radius: 12px;
   background: white;
 }
+.settings-window .doctrine-toolbar {
+  justify-content: flex-end;
+  padding: 0;
+  background: transparent;
+}
+.settings-window .doctrine-catalog-note {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 .resource-toolbar p {
   flex: 1 1 150px;
   font-size: 11px;
@@ -2280,4 +2270,1079 @@
     padding: 4px 8px;
     gap: 2px 5px;
   }
+}
+
+.settings-window .agent-footer {
+  justify-content: flex-end;
+  margin: 12px 0 0;
+  padding: 0;
+  background: transparent;
+}
+.settings-window .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.panel-shell[data-settings-sub="true"] .shared-resource-editor .dialog-head {
+  display: none;
+}
+.panel-shell .integration-group > h2 {
+  display: none;
+}
+.panel-shell
+  :is(.copilot-auth-card, .github-auth-card)
+  .account-connection-heading,
+.panel-shell :is(.copilot-auth-card, .github-auth-card) .account-scope,
+.panel-shell :is(.copilot-auth-card, .github-auth-card) .account-consent,
+.panel-shell
+  :is(.copilot-auth-card, .github-auth-card):has(.github-account)
+  .account-connection-state
+  > [role="status"],
+.panel-shell
+  .copilot-auth-card
+  .github-account[data-account-state="connected"]
+  button:not([aria-label^="Disconnect"]) {
+  display: none;
+}
+.panel-shell
+  :is(.copilot-auth-card, .github-auth-card)
+  .account-connection-state {
+  padding: 0;
+  background: none;
+}
+.panel-shell
+  :is(.copilot-flow, .github-auth-flow)
+  > button[data-account-action^="start_"].primary {
+  position: fixed;
+  right: 18px;
+  bottom: 104px;
+  z-index: 5;
+  border-radius: 999px;
+  padding: 12px 18px;
+  box-shadow: 0 6px 18px rgb(36 50 71 / 35%);
+}
+.panel-shell
+  :is(.copilot-auth-card, .github-auth-card)
+  .account-connection-state {
+  margin: 0;
+  min-height: 0;
+}
+.panel-shell
+  :is(.copilot-auth-card, .github-auth-card)
+  :is(.copilot-accounts, .github-auth-accounts) {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+.panel-shell
+  :is(.copilot-accounts, .github-auth-accounts)
+  > .github-account:first-child {
+  margin-top: 0;
+  border-top: 0;
+}
+.panel-shell :is(.copilot-auth-card, .github-auth-card) .github-account {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.panel-shell
+  :is(.copilot-auth-card, .github-auth-card)
+  .github-account
+  .github-auth-actions {
+  margin: 0;
+  flex: none;
+}
+.panel-shell
+  :is(.copilot-auth-card, .github-auth-card)
+  button.account-disconnect {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 10px;
+}
+.panel-shell :is(.copilot-auth-card, .github-auth-card) {
+  gap: 0;
+  padding-top: 0;
+}
+.panel-shell
+  :is(.copilot-auth-card, .github-auth-card)
+  :is(.copilot-flow, .github-auth-flow) {
+  margin: 0;
+}
+.panel-shell
+  :is(.copilot-auth-card, .github-auth-card):is(
+    [data-flow-state="connecting"],
+    [data-flow-state="pending_account_confirmation"],
+    [data-flow-state="failed"]
+  )
+  .account-connection-state {
+  padding: 10px;
+  margin-top: 12px;
+}
+.panel-shell
+  :is(.copilot-auth-card, .github-auth-card)
+  button.account-disconnect {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: #7a8aa0;
+}
+.panel-shell
+  :is(.copilot-auth-card, .github-auth-card)
+  button.account-disconnect:hover:not(:disabled) {
+  background: #eff2f5;
+  color: #202b3b;
+}
+.panel-shell
+  :is(
+    .copilot-auth-card,
+    .github-auth-card
+  )[data-empty="true"][data-flow-state="idle"] {
+  display: grid;
+  place-items: center;
+  min-height: 55vh;
+  border: 0;
+  background: transparent;
+}
+.panel-shell
+  :is(
+    .copilot-auth-card,
+    .github-auth-card
+  )[data-empty="true"][data-flow-state="idle"]
+  .account-connection-state
+  > [role="status"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.panel-shell
+  :is(
+    .copilot-auth-card,
+    .github-auth-card
+  )[data-empty="true"][data-flow-state="idle"]::before {
+  content: "";
+  grid-area: 1 / 1;
+  width: 112px;
+  height: 112px;
+  background: #c3ccd8;
+  -webkit-mask: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 7V4M15 7V4M7 7h10v4a5 5 0 0 1-10 0V7ZM12 16v4M3 3l18 18"/></svg>')
+    center / contain no-repeat;
+  mask: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 7V4M15 7V4M7 7h10v4a5 5 0 0 1-10 0V7ZM12 16v4M3 3l18 18"/></svg>')
+    center / contain no-repeat;
+}
+
+.panel-shell .settings-window .agent-card .resource-preview,
+.panel-shell .settings-window .agent-card [data-account-state]:empty {
+  display: none;
+}
+.panel-shell .settings-window .agent-card [data-account-state] {
+  color: #8b3021;
+  font-size: 12px;
+}
+.panel-shell .settings-window .agent-footer #new-agent {
+  position: fixed;
+  right: 18px;
+  bottom: 104px;
+  z-index: 5;
+  padding: 12px 18px;
+  border: 0;
+  border-radius: 999px;
+  background: #f68743;
+  color: #243247;
+  box-shadow: 0 6px 18px rgb(36 50 71 / 35%);
+}
+.panel-shell .settings-window .agent-footer #new-agent:disabled {
+  background: #c3ccd8;
+  box-shadow: none;
+}
+
+.panel-shell .settings-window :is(.agent-card, .doctrine-card) .card-actions {
+  flex-direction: row;
+  align-items: center;
+  align-self: center;
+}
+.panel-shell .settings-window :is(.agent-card, .doctrine-card) [data-edit] {
+  width: 0;
+  padding: 0;
+  overflow: visible;
+  font-size: 0;
+}
+.panel-shell .settings-window :is(.agent-card, .doctrine-card) [data-remove] {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 8px;
+  color: #8a96a6;
+  font-weight: 400;
+}
+.panel-shell
+  .settings-window
+  :is(.agent-card, .doctrine-card)
+  [data-remove]:hover {
+  color: #8b3021;
+  background: #f0f3f6;
+}
+.panel-shell
+  .settings-window
+  :is(.agent-card, .doctrine-card)
+  [data-remove]
+  svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.5;
+}
+
+/* Repositories: no prose, floating add, switch toggles. */
+.panel-shell .settings-window .repository-library h2,
+.panel-shell .settings-window .repository-library .settings-hint,
+.panel-shell
+  .settings-window
+  .repository-library
+  [data-repository-monitoring-detail],
+.panel-shell
+  .settings-window
+  .repository-library
+  .repository-open
+  .settings-row-value,
+.panel-shell
+  .settings-window
+  .repository-library
+  [data-repository-accounts]
+  small {
+  display: none;
+}
+.panel-shell .settings-window .repository-library > .section-actions {
+  margin: 0;
+}
+.panel-shell .settings-window .repository-library #add-repository {
+  position: fixed;
+  right: 18px;
+  bottom: 104px;
+  z-index: 5;
+  padding: 12px 18px;
+  border: 0;
+  border-radius: 999px;
+  background: #f68743;
+  color: #243247;
+  box-shadow: 0 6px 18px rgb(36 50 71 / 35%);
+}
+.panel-shell .settings-window .repository-monitoring-row {
+  flex-wrap: nowrap;
+  align-items: center;
+  padding: 0 14px 0 0;
+}
+.panel-shell .settings-window .repository-monitoring-row:hover {
+  background: #f8fafb;
+}
+.panel-shell .settings-window .repository-open {
+  flex-wrap: nowrap;
+  justify-content: space-between;
+}
+.panel-shell .settings-window .repository-open:hover {
+  background: transparent;
+}
+.panel-shell .settings-window .repository-open:focus-visible,
+.panel-shell .settings-window .native-repository-row:focus-visible {
+  outline: none;
+  background: #f1f4f7;
+}
+.panel-shell .settings-window .repository-monitoring-toggle {
+  position: relative;
+  flex: none;
+  width: 38px;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: #c3ccd8;
+  font-size: 0;
+}
+.panel-shell .settings-window .repository-monitoring-toggle::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: white;
+  transition: transform 0.12s;
+}
+.panel-shell
+  .settings-window
+  .repository-monitoring-toggle[aria-checked="true"] {
+  background: #328b94;
+}
+.panel-shell
+  .settings-window
+  .repository-monitoring-toggle[aria-checked="true"]::after {
+  transform: translateX(16px);
+}
+.panel-shell .settings-window [data-repository-accounts] .settings-empty {
+  display: none;
+}
+
+/* Agent editor: no prose; account separate from Intelligence. */
+.panel-shell .shared-resource-editor .settings-hint,
+.panel-shell .shared-resource-editor .resource-impact {
+  display: none;
+}
+.panel-shell .shared-resource-editor [data-editor-accounts]:empty {
+  display: none;
+}
+.panel-shell .shared-resource-editor .resource-intelligence h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+.panel-shell .shared-resource-editor .resource-intelligence h3 svg {
+  width: 18px;
+  height: 18px;
+  color: #58758b;
+}
+.panel-shell .shared-resource-host.dialog-fallback {
+  padding: 0 18px 12px;
+}
+.panel-shell .shared-resource-editor.settings-dialog[open] {
+  border: 0;
+  background: transparent;
+}
+.panel-shell .shared-resource-editor .dialog-body {
+  padding: 0;
+  overflow-y: auto;
+}
+.panel-shell .shared-resource-editor .agent-section {
+  display: block;
+  margin: 0 0 14px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid #e3e9ee;
+  border-radius: 12px;
+  background: white;
+}
+.panel-shell .shared-resource-editor .agent-section > label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #202b3b;
+}
+.panel-shell .shared-resource-editor .agent-section > * + * {
+  border-top: 1px solid #edf1f4;
+}
+.panel-shell
+  .shared-resource-editor
+  .agent-section
+  > label:not(:has(textarea))
+  :is(input, select) {
+  flex: 1;
+  min-width: 0;
+  max-width: 62%;
+  padding: 6px 4px;
+  border: 0;
+  background: transparent;
+  text-align: right;
+  text-align-last: right;
+  font-weight: 400;
+  color: #526274;
+}
+.panel-shell .shared-resource-editor .agent-section > label:has(textarea) {
+  display: grid;
+  gap: 8px;
+}
+.panel-shell .shared-resource-editor .agent-section textarea {
+  font-weight: 400;
+}
+.panel-shell .shared-resource-editor .agent-section.resource-intelligence {
+  padding: 0;
+  margin: 0 0 14px;
+  background: white;
+}
+.panel-shell .shared-resource-editor .resource-intelligence h3 {
+  margin: 0;
+  padding: 12px 14px 8px;
+}
+.panel-shell .shared-resource-editor .agent-section .resource-doctrines {
+  margin: 0;
+  padding: 10px 14px;
+  border: 0;
+  border-top: 1px solid #edf1f4;
+}
+.panel-shell .shared-resource-editor .agent-section .resource-doctrines legend {
+  padding: 0;
+  float: left;
+  width: 100%;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.panel-shell .shared-resource-editor .agent-section .resource-doctrines > * {
+  clear: both;
+}
+.panel-shell .shared-resource-editor .agent-section {
+  flex: none;
+}
+.panel-shell .shared-resource-editor .dialog-body > form {
+  display: block;
+}
+.panel-shell .shared-resource-host.dialog-fallback {
+  background: transparent;
+}
+.panel-shell .shared-resource-editor .agent-section > label {
+  padding-block: 4px;
+}
+.panel-shell
+  .shared-resource-editor
+  .agent-section
+  > label:not(:has(textarea)) {
+  min-height: 44px;
+}
+.panel-shell .shared-resource-editor .model-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.panel-shell .shared-resource-editor .model-label button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #8a96a6;
+}
+.panel-shell .shared-resource-editor .model-label button:hover {
+  color: #58758b;
+  background: #f0f3f6;
+}
+.panel-shell .shared-resource-editor .model-label svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.6;
+}
+.panel-shell .shared-resource-editor .model-label button[hidden] {
+  display: none;
+}
+.panel-shell
+  .shared-resource-editor
+  .model-label:has([data-cancel-models]:not([hidden]))
+  [data-retry-models] {
+  display: none;
+}
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #f6874355;
+  border-top-color: #f68743;
+  border-radius: 50%;
+  animation: pr-spin 0.8s linear infinite;
+}
+@keyframes pr-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 2.4s;
+  }
+}
+.panel-shell[data-settings-editor="true"] .panel-content {
+  overflow: hidden;
+}
+.panel-shell .shared-resource-editor .doctrine-choices {
+  max-height: none;
+  overflow: visible;
+}
+.panel-shell[data-settings-editor="true"]
+  .settings-window
+  #content
+  > :not(.shared-resource-host) {
+  visibility: hidden;
+}
+.panel-shell .shared-resource-editor .agent-section > label:has(textarea) {
+  gap: 0;
+  padding: 10px 14px 0;
+}
+.panel-shell .shared-resource-editor .agent-section > label:has(textarea) {
+  align-items: stretch;
+}
+.panel-shell .shared-resource-editor .agent-section textarea {
+  box-sizing: border-box;
+  display: block;
+  width: calc(100% + 28px);
+  min-height: 220px;
+  margin: 8px -14px 0;
+  padding: 12px 14px;
+  border: 0;
+  border-top: 1px solid #edf1f4;
+  border-radius: 0;
+  background: #fafbfc;
+  resize: none;
+  overflow: hidden;
+  line-height: 1.5;
+}
+.panel-shell .shared-resource-editor .agent-section > label:has(textarea) {
+  font-size: 13px;
+}
+.panel-shell .shared-resource-editor .prompt-label {
+  position: static;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.panel-shell .shared-resource-editor .info-tip {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #8a96a6;
+}
+.panel-shell .shared-resource-editor .info-tip:hover,
+.panel-shell .shared-resource-editor .info-tip[aria-expanded="true"] {
+  background: transparent;
+  color: #58758b;
+}
+.panel-shell .shared-resource-editor .info-tip svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.6;
+}
+.panel-shell .shared-resource-editor .agent-section > label:has(textarea) {
+  position: relative;
+}
+.panel-shell .shared-resource-editor .tip-body {
+  display: none;
+  position: absolute;
+  top: 38px;
+  left: 14px;
+  right: 14px;
+  z-index: 3;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #243247;
+  color: white;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  box-shadow: 0 8px 24px rgb(36 50 71 / 30%);
+}
+.panel-shell .shared-resource-editor .tip-body ul {
+  margin: 6px 0 0;
+  padding-left: 16px;
+}
+.panel-shell .shared-resource-editor .tip-body li {
+  margin: 0 0 4px;
+  font-size: 12px;
+}
+.panel-shell
+  .shared-resource-editor
+  .prompt-label:has(.info-tip[aria-expanded="true"])
+  .tip-body {
+  display: block;
+}
+.panel-shell .shared-resource-editor .agent-section > label:has(textarea) {
+  display: block;
+}
+.panel-shell .shared-resource-editor .agent-section textarea {
+  min-height: 112px;
+  max-width: none;
+}
+.panel-shell .shared-resource-editor .tip-body .tip-note {
+  display: block;
+  margin: 2px 0 6px;
+  opacity: 0.7;
+}
+.panel-shell .shared-resource-editor .token-list {
+  display: grid;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+.panel-shell .shared-resource-editor .token-list button {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+.panel-shell .shared-resource-editor .token-list button:hover {
+  background: rgb(255 255 255 / 12%);
+}
+.panel-shell .shared-resource-editor .token-list code {
+  color: #f6a96f;
+  font-size: 11px;
+}
+.panel-shell .shared-resource-editor .token-list span {
+  opacity: 0.8;
+  text-align: right;
+}
+.panel-shell
+  .shared-resource-editor
+  .agent-section
+  > label
+  input:not([type="checkbox"]) {
+  height: 30px;
+  min-height: 0;
+  margin: 0;
+  box-sizing: border-box;
+}
+
+/* Doctrines: summary row in the agent editor; full list as a drill-in. */
+.panel-shell .shared-resource-editor .doctrine-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #202b3b;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+}
+.panel-shell .shared-resource-editor .doctrine-row .doctrine-summary {
+  margin-left: auto;
+  color: #526274;
+  font-weight: 400;
+}
+.panel-shell .shared-resource-editor .doctrine-row svg {
+  width: 14px;
+  height: 14px;
+  color: #6e8192;
+}
+.panel-shell .shared-resource-editor .agent-section .resource-doctrines {
+  display: none;
+}
+.panel-shell
+  .shared-resource-editor
+  form[data-view="doctrines"]
+  > :not(.agent-section:has(.resource-doctrines)) {
+  display: none;
+}
+.panel-shell
+  .shared-resource-editor
+  form[data-view="doctrines"]
+  .agent-section
+  > :not(.resource-doctrines) {
+  display: none;
+}
+.panel-shell
+  .shared-resource-editor
+  form[data-view="doctrines"]
+  .agent-section
+  .resource-doctrines {
+  display: block;
+  padding: 0;
+  border: 0;
+}
+.panel-shell .shared-resource-editor .resource-doctrines > label {
+  display: block;
+  padding: 10px 14px;
+  font-size: 0;
+}
+.panel-shell .shared-resource-editor .resource-doctrines > label input {
+  font-size: 13px;
+}
+.panel-shell .shared-resource-editor .doctrine-choices [data-doctrine-choice] {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-top: 1px solid #edf1f4;
+}
+.panel-shell
+  .shared-resource-editor
+  .doctrine-choices
+  [data-doctrine-choice]
+  > span {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+}
+.panel-shell
+  .shared-resource-editor
+  .doctrine-choices
+  [data-doctrine-choice]
+  > button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #8a96a6;
+}
+.panel-shell
+  .shared-resource-editor
+  .doctrine-choices
+  [data-doctrine-choice]
+  > button
+  svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.6;
+}
+.panel-shell .shared-resource-host:has(~ .shared-resource-host) {
+  visibility: hidden;
+}
+.panel-shell
+  .shared-resource-editor
+  .dialog-body
+  > form:not(:has(.agent-section)) {
+  padding-top: 36px;
+}
+
+/* Errors float as a dismissible toast instead of pushing or covering layout. */
+.panel-shell .settings-window #error:not([hidden]) {
+  position: fixed;
+  left: 18px;
+  right: 18px;
+  bottom: 104px;
+  z-index: 20;
+  margin: 0;
+  padding: 10px 36px 10px 14px;
+  max-height: 96px;
+  border: 0;
+  border-left: 3px solid #a03134;
+  border-radius: 10px;
+  background: #fff0f0;
+  color: #7d1e12;
+  font-size: 12px;
+  line-height: 1.4;
+  box-shadow: 0 6px 18px rgb(36 50 71 / 25%);
+  cursor: pointer;
+}
+.panel-shell .settings-window #error:not([hidden])::after {
+  content: "\00d7";
+  position: absolute;
+  top: 6px;
+  right: 12px;
+  font-size: 16px;
+  opacity: 0.6;
+}
+
+/* Repository monitoring switch: slim pill, overrides global button sizing. */
+.panel-shell
+  .settings-window
+  .repository-monitoring-row
+  button.repository-monitoring-toggle {
+  box-sizing: border-box;
+  flex: none;
+  width: 40px;
+  min-width: 40px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 12px;
+  background: #c3ccd8;
+  transition: background 0.12s;
+}
+.panel-shell
+  .settings-window
+  .repository-monitoring-row
+  button.repository-monitoring-toggle::after {
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  box-shadow: 0 1px 2px rgb(36 50 71 / 30%);
+}
+.panel-shell
+  .settings-window
+  .repository-monitoring-row
+  button.repository-monitoring-toggle[aria-checked="true"] {
+  background: #328b94;
+}
+.panel-shell
+  .settings-window
+  .repository-monitoring-row
+  button.repository-monitoring-toggle[aria-checked="true"]::after {
+  transform: translateX(16px);
+}
+.panel-shell
+  .settings-window
+  .repository-monitoring-row
+  button.repository-monitoring-toggle:disabled {
+  opacity: 0.5;
+}
+.panel-shell .settings-window .repository-disconnected {
+  margin-top: 4px;
+  opacity: 0.75;
+}
+.panel-shell .settings-window .repository-disconnected[hidden],
+.panel-shell .settings-window .repository-list[hidden] {
+  display: none;
+}
+
+/* Repository editor: compact cards, no prose. */
+.panel-shell .repository-editor .repository-identity,
+.panel-shell .repository-editor [data-repository-monitoring-state],
+.panel-shell .repository-editor [data-global-schedule] {
+  display: none;
+}
+.panel-shell .repository-editor .dialog-body {
+  padding: 0;
+}
+.panel-shell .repository-editor .repository-group {
+  margin: 0 0 14px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid #e3e9ee;
+  border-radius: 12px;
+  background: white;
+}
+.panel-shell .repository-editor .repository-group > * {
+  margin: 0;
+  padding: 10px 14px;
+}
+.panel-shell .repository-editor .repository-group > * + * {
+  border-top: 1px solid #edf1f4;
+}
+.panel-shell .repository-editor .repository-group h2 {
+  font-size: 13px;
+  font-weight: 600;
+}
+.panel-shell .repository-editor .section-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.panel-shell .repository-editor .section-actions button {
+  padding: 5px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: #f68743;
+  color: #243247;
+  font-size: 12px;
+}
+.panel-shell .repository-editor .repository-check {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.panel-shell .repository-editor .repository-group select {
+  width: 100%;
+}
+
+/* Repository editor: rows, icons, no helper text. */
+.panel-shell .repository-editor .settings-hint:not(#repository-actor-status),
+.panel-shell .repository-editor .settings-empty,
+.panel-shell .repository-editor .assignment-row p:nth-of-type(2),
+.panel-shell .repository-editor .watchlist-row small,
+.panel-shell .repository-editor [role="status"]:empty {
+  display: none;
+}
+.panel-shell .repository-editor .assignment-list,
+.panel-shell .repository-editor .watchlist {
+  padding: 0;
+}
+.panel-shell .repository-editor .assignment-list:empty,
+.panel-shell .repository-editor .watchlist:empty {
+  display: none;
+}
+.panel-shell .repository-editor .assignment-row,
+.panel-shell .repository-editor .watchlist-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
+  border: 0;
+}
+.panel-shell .repository-editor .assignment-row + .assignment-row,
+.panel-shell .repository-editor .watchlist-row + .watchlist-row {
+  border-top: 1px solid #edf1f4;
+}
+.panel-shell .repository-editor .assignment-row p {
+  margin: 2px 0 0;
+  color: #637286;
+  font-size: 11px;
+}
+.panel-shell .repository-editor .assignment-row [data-edit] {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 0;
+}
+.panel-shell .repository-editor .assignment-row:hover {
+  background: #f8fafb;
+}
+.panel-shell .repository-editor .assignment-row [data-edit]:hover,
+.panel-shell .repository-editor .assignment-row [data-edit]:focus {
+  background: transparent;
+  color: transparent;
+}
+.panel-shell .repository-editor .assignment-row [data-remove],
+.panel-shell .repository-editor .watchlist-row [data-remove] {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #8a96a6;
+}
+.panel-shell .repository-editor [data-remove] svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.5;
+}
+.panel-shell .repository-editor details.repository-group summary {
+  padding: 12px 14px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* Repository editor: simplified Repository section. */
+.panel-shell
+  .repository-editor
+  details.repository-group
+  .repository-binding-details,
+.panel-shell
+  .repository-editor
+  details.repository-group
+  .connection
+  > :not(.settings-actions):not(button) {
+  display: none;
+}
+.panel-shell .repository-editor details.repository-group > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.panel-shell
+  .repository-editor
+  details.repository-group
+  > summary::-webkit-details-marker {
+  display: none;
+}
+.panel-shell .repository-editor details.repository-group > summary::after {
+  content: "";
+  float: right;
+  width: 7px;
+  height: 7px;
+  margin-top: 5px;
+  border-top: 1.5px solid #6e8192;
+  border-right: 1.5px solid #6e8192;
+  transform: rotate(45deg);
+}
+.panel-shell
+  .repository-editor
+  details.repository-group[open]
+  > summary::after {
+  transform: rotate(135deg);
+}
+.panel-shell .repository-editor details.repository-group .settings-actions,
+.panel-shell .repository-editor details.repository-group .connection {
+  display: grid;
+  gap: 0;
+  padding: 0;
+}
+.panel-shell
+  .repository-editor
+  details.repository-group
+  .settings-actions
+  button,
+.panel-shell .repository-editor details.repository-group .connection button {
+  width: 100%;
+  padding: 12px 14px;
+  border: 0;
+  border-top: 1px solid #edf1f4;
+  border-radius: 0;
+  background: transparent;
+  color: #202b3b;
+  font-size: 13px;
+  font-weight: 400;
+  text-align: left;
+}
+.panel-shell .repository-editor details.repository-group #remove-repository {
+  color: #8b3021;
+}
+.panel-shell .repository-editor details.repository-group button:disabled {
+  opacity: 0.4;
+}
+
+/* Account lookup failures stay visible and retryable. */
+.panel-shell .shared-resource-editor [data-editor-accounts] {
+  display: block;
+  color: #8b3021;
+  font-size: 12px;
+}
+.panel-shell .shared-resource-editor [data-retry-accounts] {
+  display: block;
+  margin: 6px 14px 10px;
+  padding: 4px 10px;
+  border: 0;
+  background: transparent;
+  color: #58758b;
+  font-size: 12px;
+}
+.panel-shell .shared-resource-editor [data-retry-accounts][hidden] {
+  display: none;
+}
+/* Focus rings on switches may touch the clipped list edge. */
+.settings-window .repository-disconnected {
+  padding-bottom: 4px;
+}
+/* Standalone settings window: icon buttons keep a hit target. */
+.settings-window
+  :is(.assignment-row, .watchlist-row, .agent-card, .doctrine-card)
+  [data-remove] {
+  display: grid;
+  place-items: center;
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0;
+}
+.settings-window [data-remove] svg {
+  width: 18px;
+  height: 18px;
 }

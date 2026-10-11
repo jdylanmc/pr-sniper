@@ -55,11 +55,17 @@ async function provider(page, models = () => [capable, plain]) {
 
 async function editor(page, existing = false) {
   await section(page, "Agents");
-  await page
-    .getByRole("button", { name: existing ? "Edit" : "New agent", exact: true })
-    .click();
+  const name = existing === true ? "Intelligence fixture" : existing;
+  if (existing)
+    await page
+      .locator(".agent-card")
+      .filter({ has: page.getByRole("heading", { name, exact: true }) })
+      .locator("[data-edit]")
+      .click({ force: true });
+  else
+    await page.getByRole("button", { name: "New agent", exact: true }).click();
   return page.getByRole("dialog", {
-    name: existing ? "Edit agent" : "New agent",
+    name: existing ? `Editing ${name}` : "New agent",
     exact: true,
   });
 }
@@ -160,9 +166,9 @@ test("retained compact Intelligence controls support keyboard focus, reduced mot
   const modal = await create(page);
   await modal.getByLabel("Reasoning effort").selectOption("high");
   await modal.getByLabel("Context window").selectOption("long_context");
-  await modal.getByLabel("Reasoning effort").focus();
+  await modal.getByLabel("Context window").focus();
   await page.keyboard.press("Tab");
-  await expect(modal.getByLabel("Context window")).toBeFocused();
+  await expect(modal.getByLabel("Reasoning effort")).toBeFocused();
   await page.screenshot({
     path: testInfo.outputPath("retained-agent-intelligence.png"),
   });
@@ -247,7 +253,7 @@ test("failed discovery keeps saved choices and validity distinct; retry exposes 
     return models;
   });
   await page.goto("/?view=settings");
-  let modal = await editor(page, true);
+  let modal = await editor(page, "Retained");
   await expect(modal.locator("[data-model-status]")).toContainText(
     "Fixture model transport is unavailable",
   );
@@ -260,10 +266,10 @@ test("failed discovery keeps saved choices and validity distinct; retry exposes 
   expect((await store("snapshot")).settings.agents[0].intelligence).toEqual(
     settings.agents[0].intelligence,
   );
-  modal = await editor(page, true);
+  modal = await editor(page, "Retained renamed");
   fail = false;
   await modal
-    .getByRole("button", { name: "Retry model list", exact: true })
+    .getByRole("button", { name: "Refresh model list", exact: true })
     .click();
   await expect(modal.locator("[data-intelligence-status]")).toContainText(
     "not advertised",
@@ -274,7 +280,7 @@ test("failed discovery keeps saved choices and validity distinct; retry exposes 
   );
   models = [];
   await modal
-    .getByRole("button", { name: "Retry model list", exact: true })
+    .getByRole("button", { name: "Refresh model list", exact: true })
     .click();
   await expect(modal.locator("[data-model-status]")).toContainText(
     "returned no models",

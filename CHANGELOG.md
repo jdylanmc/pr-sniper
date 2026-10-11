@@ -7,6 +7,16 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Added
 
+- Add `/wrap-up` (`.agents/skills/wrap-up/`): a human-invoked checkpoint that
+  freezes scope, makes tests, lint, docs and the visual POC true, true-ups with
+  `main`, and lands one green PR marked ready (never merged).
+- Expand `{{token}}` placeholders (`pr_title`, `pr_number`, `pr_author`,
+  `head_sha`, `base_sha`, `changed_files`, `changed_file_count`, `agent_name`)
+  in Agent and repository prompts when a review or reply runs. Unknown tokens
+  are left unchanged. The Agent editor lists them and inserts on click.
+- Default Agent signature `🔫 pr-sniper(<agent>:<model>)` with a reset icon.
+- In-app Changelog from the footer version; a standard macOS Edit menu so
+  copy, paste and the emoji picker reach text fields.
 - Install the `pull-request` and `create-pull-request` skills project-locally and
   require agents to use `/pull-request` for PR bodies (what/why/how, evidence,
   blast radius).
@@ -17,6 +27,15 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- Redesign the panel to be icon-first with minimal prose and consistent
+  navy-band overlap: pinned Queue title with toggle cards and grouped lists,
+  drill-in titles with the back arrow in the band, 8px rounded window corners
+  (transparent native window; enables the macOS private API), floating primary
+  buttons, slim switches, a three-card Agent editor with a Doctrines drill-in,
+  compact repository editor, and error toasts.
+- Copilot and GitHub accounts connect without a manual confirm step and
+  disconnect with an icon. A disconnected Copilot account is now forgotten, so
+  it can be reconnected without a duplicate-account error.
 - Adapt repository Joe-mode orchestration to the visible CMUX Maestro cockpit.
   Retire Paseo adapter files, retain shared team and independent merge gates,
   and keep activation human-only with no unattended CMUX scheduler.

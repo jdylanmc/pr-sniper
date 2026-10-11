@@ -25,7 +25,7 @@ for (const embedded of [true, false]) {
       await store("seed_settings", settings);
       const fixture = await providerFixture(page, store);
       await repositoryPage(page, store, embedded);
-      await expect(page.locator(".repository-list")).toHaveCSS(
+      await expect(page.locator(".repository-list").first()).toHaveCSS(
         "border-radius",
         "12px",
       );
@@ -48,7 +48,7 @@ for (const embedded of [true, false]) {
         .click();
       await page.locator("[data-repository]").click();
       editor = page.getByRole("dialog", {
-        name: "Settings for fixture/one",
+        name: "fixture/one",
         exact: true,
       });
       await expect(
@@ -139,7 +139,7 @@ test("owner browsing isolates results, retries errors, searches and reopens stab
   await browser.getByLabel("Find a repository").fill("one");
   await browser.locator("[data-pick]").click();
   const editor = page.getByRole("dialog", {
-    name: "Settings for orbit/one",
+    name: "orbit/one",
     exact: true,
   });
   await expect(editor).toBeVisible();
@@ -183,7 +183,7 @@ test("URL requires explicit choice across accounts, rejects unsupported provider
   await form
     .getByLabel("Repository URL")
     .fill("https://dev.azure.com/org/project/repo");
-  await expect(form.getByRole("status")).toContainText("Azure DevOps");
+  await expect(form.locator("[role=status]")).toContainText("Azure DevOps");
   await expect(
     form.getByRole("button", { name: "Add & configure" }),
   ).toBeDisabled();

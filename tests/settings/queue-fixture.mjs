@@ -177,3 +177,13 @@ export async function queueFixture(store) {
   await store("seed_queue_state", state);
   return { state, settings, review, published };
 }
+
+export async function showQueueGroup(page, kind) {
+  const metric = page.locator(`[data-queue-filter="${kind}"]`);
+  // Always click: the default view can flip once the first snapshot arrives,
+  // but an explicit choice is sticky.
+  await metric.evaluate((element) => element.click());
+  await page
+    .locator(`[data-queue-group="${kind}"]`)
+    .waitFor({ state: "visible" });
+}

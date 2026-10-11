@@ -367,7 +367,31 @@ export function renderQueue(
       actions.append(evidence);
       if (!options.compact) actions.append(github);
       row.append(actions);
-      root.append(row);
+      if (options.compact) {
+        const kind =
+          item.state === "machine_signed_off" ? "ready" : "attention";
+        let group = root.querySelector<HTMLElement>(
+          `[data-queue-group="${kind}"]`,
+        );
+        if (!group) {
+          group = document.createElement("div");
+          group.className = "queue-group";
+          group.dataset.queueGroup = kind;
+          root.append(group);
+        }
+        group.append(row);
+      } else root.append(row);
+    }
+    if (options.compact && items.length) {
+      for (const kind of ["ready", "attention"]) {
+        if (root.querySelector(`[data-queue-group="${kind}"]`)) continue;
+        const empty = document.createElement("div");
+        empty.className = "queue-group";
+        empty.dataset.queueGroup = kind;
+        empty.dataset.empty = "true";
+        empty.innerHTML = `<svg class="panel-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16l2 14H2L4 4Zm-1 9h5l2 3h4l2-3h5M7 8h10"/></svg><span class="sr-only">Nothing here</span>`;
+        root.append(empty);
+      }
     }
     if (initialized && selected !== null && !options.externalSelection) {
       const navigation = document.createElement("p");

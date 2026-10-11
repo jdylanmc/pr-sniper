@@ -49,8 +49,10 @@ async function check(engine, name) {
       await click(`[data-provider="${kind}"]`);
       await page.locator('input[name="accountName"]').fill(handle);
       await click('[data-form="account-signin"] button[type="submit"]');
-      await page.locator('input[name="confirmIdentity"]').check();
-      await click('[data-form="account-confirm"] button[type="submit"]');
+      assert.equal(
+        await page.locator('[data-form="account-confirm"]').count(),
+        0,
+      );
       assert.equal(
         await page.locator('.app-view[data-page="genie"]').count(),
         1,
@@ -84,11 +86,8 @@ async function check(engine, name) {
     );
     await page.setViewportSize({ width: 1440, height: 960 });
     await click('[data-nav="running"]');
-    assert(
-      (await page.locator(".empty-state").textContent()).includes(
-        "No reviews yet",
-      ),
-    );
+    assert.equal(await page.locator(".queue-empty").count(), 1);
+    assert.equal(await page.locator(".work-row").count(), 0);
     await click('[data-nav="reviewed"]');
     assert.equal(await page.locator(".review-open").count(), 0);
     await click('[data-nav="queue"]');
@@ -108,8 +107,7 @@ async function check(engine, name) {
       );
     await snapshot("choose-ai-provider");
     await click('[data-provider="copilot"]');
-    await page.locator('input[name="accountName"]').fill("not-confirmed");
-    await click('[data-form="account-signin"] button[type="submit"]');
+    await page.locator('input[name="accountName"]').fill("not-connected");
     await click('[data-action="cancel-account"]');
     assert.equal((await state()).accounts.length, 0);
     assert.equal(await page.locator('.app-view[data-page="genie"]').count(), 1);
@@ -170,12 +168,16 @@ async function check(engine, name) {
       );
     await click('[data-form="repo-url"] button[type="submit"]');
     await page.locator('input[name="enabled"]').check();
-    await page.locator('input[name="scope"]').check();
+    await click('[data-action="assign-agent"]');
     await page
-      .locator(`input[name="agentIds"][value="${current.agents[0].id}"]`)
-      .check();
-    await page.locator("details.check-group summary").click();
-    await page.locator('input[name="watched"]').first().check();
+      .locator('[data-picker="agents"]')
+      .selectOption(current.agents[0].id);
+    assert.equal(await page.locator('input[name="agentIds"]').count(), 1);
+    await click('[data-action="add-people"]');
+    await page.locator('[data-picker="people"]').selectOption({ index: 1 });
+    assert.equal(await page.locator('input[name="watched"]').count(), 1);
+    await page.locator(".schedule-details > summary").click();
+    await page.locator('input[name="scope"]').check();
     await page.locator('select[name="schedule"]').selectOption("cron");
     await page.locator('input[name="cron"]').fill("");
     await page.locator('input[name="zone"]').fill("");
@@ -228,11 +230,12 @@ async function check(engine, name) {
     assert.equal(current.agents.length, 1);
     assert.equal(current.repos.length, 1);
     assert.equal(current.reviews.length, 0);
-    assert.equal(await page.locator("#human-count").textContent(), "0");
-    assert.equal(await page.locator("#agent-count").textContent(), "0");
+    assert.equal(await page.locator("#ready-count").textContent(), "0");
+    assert.equal(await page.locator("#attention-count").textContent(), "0");
+    assert.equal(await page.locator(".queue-empty").count(), 1);
     assert.equal(await page.locator("#monitoring-toggle").isDisabled(), false);
     await snapshot("into-app");
-    await click("#agent-tab");
+    await click('[data-nav="running"]');
     await click('[data-action="detect"]');
     assert.equal((await state()).reviews.length, 1);
     assert.equal(await page.locator("#running-nav-count").textContent(), "1");
@@ -252,8 +255,8 @@ async function check(engine, name) {
     assert.equal(current.accounts.length, 3);
     assert.equal(current.agents.length, 6);
     assert.equal(current.reviews.length, 28);
-    assert.equal(await page.locator("#human-count").textContent(), "3");
-    assert.equal(await page.locator("#agent-count").textContent(), "18");
+    assert.equal(await page.locator("#ready-count").textContent(), "2");
+    assert.equal(await page.locator("#attention-count").textContent(), "1");
     assert.equal(await page.locator("#running-nav-count").textContent(), "4");
     await click("#human-list .review-open:first-child");
     assert.equal(

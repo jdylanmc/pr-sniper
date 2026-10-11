@@ -101,6 +101,12 @@ const pending = (provider) => ({
   account_id: "101",
   login: identity(provider).login,
 });
+// Browser sign-in auto-confirms a returned identity once. A confirmation error
+// keeps the manual Confirm and Cancel controls available for these tests.
+const manualPending = (provider) => ({
+  ...pending(provider),
+  confirmation_error: "credentials_unavailable",
+});
 const connecting = {
   state: "connecting",
   user_code: "TEST-CODE",
@@ -148,14 +154,9 @@ async function syntheticAuth(page, initial = {}) {
       state.flow = { state: "idle" };
     }
     if (command === role.disconnect)
-      state.accounts =
-        provider === "github"
-          ? state.accounts.filter((a) => a.account_id !== args.accountId)
-          : state.accounts.map((a) =>
-              a.account_id === args.accountId
-                ? { ...a, state: "reconnect_required", reason: "disconnected" }
-                : a,
-            );
+      state.accounts = state.accounts.filter(
+        (a) => a.account_id !== args.accountId,
+      );
     return structuredClone(state);
   });
   await page.addInitScript((commands) => {
@@ -307,12 +308,13 @@ for (const platform of ["Macintosh", "Windows"]) {
           { command: role.start, args: {} },
         ]);
         expect(fixture.states[provider].accounts).toHaveLength(1);
-        fixture.states[provider].flow = pending(provider);
+        fixture.states[provider].flow = manualPending(provider);
         await refresh(page, provider);
         await expect(card.getByRole("status")).toContainText(
-          `Confirm fixture-${provider}-101 (101)`,
+          provider === "github"
+            ? "Confirm fixture-github-101 (101)"
+            : "Connecting fixture-copilot-101",
         );
-        await expect(card).toContainText("not saved until you confirm");
         expect(effects(fixture.calls)).toHaveLength(1);
         await click(role.cancelLabel);
         expect(fixture.states[provider].accounts).toHaveLength(1);
@@ -320,7 +322,7 @@ for (const platform of ["Macintosh", "Windows"]) {
         await click(role.connectLabel);
         fixture.states[provider].flow = pending(provider);
         await refresh(page, provider);
-        await click(role.confirmLabel);
+        // The returned identity is confirmed automatically exactly once.
         await expect(card.locator(".github-account")).toHaveCount(2);
         expect(effects(fixture.calls)).toEqual([
           { command: role.start, args: {} },
@@ -439,9 +441,7 @@ for (const [provider, role] of Object.entries(roles)) {
     await page.evaluate(() => window.__settingsIdle());
     const before = (await store("snapshot")).settings;
     const card = page.locator(role.card);
-    await card
-      .getByRole("button", { name: role.confirmLabel, exact: true })
-      .click();
+    // The automatic confirmation attempt is the rejected one.
     await expect(card).toContainText("could not be saved securely");
     await expect(
       card.getByRole("button", { name: role.confirmLabel, exact: true }),
@@ -544,10 +544,9 @@ for (const [provider, role] of Object.entries(roles)) {
       .getByRole("button", { name: role.cancelLabel, exact: true })
       .click();
     await expect(card).not.toContainText("TEST-CODE");
-    const search = page.getByRole("button", {
-      name: "Set up with Genie",
-      exact: true,
-    });
+    const search = page
+      .getByRole("navigation", { name: "Settings sections" })
+      .getByRole("button", { name: "Agents", exact: true });
     await search.focus();
     held.resolve({ accounts: [], flow: connecting });
     await page.evaluate(() => window.__accountFixtureIdle());
@@ -633,7 +632,7 @@ for (const [provider, role] of Object.entries(roles)) {
     page,
   }) => {
     await syntheticAuth(page, {
-      [provider]: { accounts: [], flow: pending(provider) },
+      [provider]: { accounts: [], flow: manualPending(provider) },
     });
     await page.goto("/?view=settings");
     const card = page.locator(role.card);
@@ -695,7 +694,7 @@ for (const [provider, role] of Object.entries(roles)) {
       const reads = fixture.calls.length;
       await expect.poll(() => fixture.calls.length).toBeGreaterThan(reads + 2);
       await expect(copy).toBeFocused();
-      fixture.states[provider].flow = pending(provider);
+      fixture.states[provider].flow = manualPending(provider);
       await refresh(page, provider);
       const confirm = card.getByRole("button", {
         name: role.confirmLabel,
@@ -712,6 +711,7 @@ for (const [provider, role] of Object.entries(roles)) {
         background: getComputedStyle(element).backgroundColor,
         clipped: [...element.querySelectorAll("button, code")].some(
           (control) => {
+            if (!control.getClientRects().length) return false;
             const card = element.getBoundingClientRect();
             const box = control.getBoundingClientRect();
             return (
@@ -735,7 +735,11 @@ for (const [provider, role] of Object.entries(roles)) {
       await cancel.focus();
       await page.keyboard.press("Enter");
       await expect(action).toBeEnabled();
-      await expect(card.getByRole("status")).toBeFocused();
+      await expect(card).toHaveAttribute("data-flow-state", "idle");
+      // The empty idle status prose is CSS-hidden in the panel, which cannot
+      // hold focus; when it is shown it must own focus after Cancel.
+      const idleStatus = card.locator("[role=status]");
+      if (await idleStatus.isVisible()) await expect(idleStatus).toBeFocused();
       await expect(card).not.toContainText("TEST-CODE");
       expect(effects(fixture.calls)).toEqual([
         { command: role.start, args: {} },
@@ -781,7 +785,7 @@ for (const width of [320, 400, 408]) {
       await page.getByRole("button", { name: "Settings", exact: true }).click();
       await expect(page.locator(".settings-overview")).toBeVisible();
       const navigation = page.getByRole("button", {
-        name: /^Back to (AI Tooling|Git Repository)$/,
+        name: /^Back( to (AI Tooling|Git Repository))?$/,
       });
       await page.evaluate(() => window.__settingsIdle());
       const before = (await store("snapshot")).settings;
@@ -802,13 +806,16 @@ for (const width of [320, 400, 408]) {
           ["saved", { state: "idle" }],
           ["requesting", { state: "connecting" }],
           ["waiting", connecting],
-          ["confirmation", pending(provider)],
+          ["confirmation", manualPending(provider)],
           ["failed", { state: "failed", reason: "wrong_identity" }],
         ]) {
           fixture.states[provider] = { accounts, flow };
           await refresh(page, provider);
           const card = page.locator(role.card);
-          const controls = await card.locator("button:enabled, summary").all();
+          const controls = await card
+            .locator("button:enabled, summary")
+            .filter({ visible: true })
+            .all();
           const tabStops = await page
             .locator("button, input, select, textarea, summary, a[href]")
             .count();
@@ -888,6 +895,7 @@ for (const width of [320, 400, 408]) {
                     card.scrollWidth > card.clientWidth ||
                     [...card.querySelectorAll("button, summary, code")].some(
                       (control) => {
+                        if (!control.getClientRects().length) return false;
                         const rect = control.getBoundingClientRect();
                         return (
                           rect.left < cardBox.left ||
@@ -957,7 +965,7 @@ test("GitHub identity replacement and Copilot verification retain exact role-spe
   page,
 }) => {
   const fixture = await syntheticAuth(page, {
-    github: { accounts: [], flow: pending("github") },
+    github: { accounts: [], flow: manualPending("github") },
     copilot: idle([identity("copilot")]),
   });
   await page.goto("/?view=settings");

@@ -505,7 +505,12 @@ async fn failed_disconnect_retains_secret_and_reports_pending_then_failed_until_
         .fail_clear
         .store(false, Ordering::SeqCst);
     integration.disconnect("101").await.unwrap();
-    assert_eq!(account_view(&integration, "101")["reason"], "disconnected");
+    assert!(!integration
+        .auth
+        .lock()
+        .unwrap()
+        .accounts
+        .contains_key("101"));
     assert!(!integration
         .backend
         .pairs
@@ -874,13 +879,12 @@ async fn disconnect_fences_late_identity_publication_and_keeps_other_accounts() 
         .lock()
         .unwrap()
         .contains_key("202"));
-    assert!(matches!(
-        integration.auth.lock().unwrap().accounts.get("101"),
-        Some(GithubAccountState::ReconnectRequired {
-            reason: GithubAuthFailure::Disconnected,
-            ..
-        })
-    ));
+    assert!(!integration
+        .auth
+        .lock()
+        .unwrap()
+        .accounts
+        .contains_key("101"));
 }
 
 #[tokio::test]
@@ -1074,13 +1078,12 @@ async fn newly_requested_work_cannot_revive_an_account_while_disconnect_waits_fo
         .lock()
         .unwrap()
         .contains_key("101"));
-    assert!(matches!(
-        integration.auth.lock().unwrap().accounts.get("101"),
-        Some(GithubAccountState::ReconnectRequired {
-            reason: GithubAuthFailure::Disconnected,
-            ..
-        })
-    ));
+    assert!(!integration
+        .auth
+        .lock()
+        .unwrap()
+        .accounts
+        .contains_key("101"));
 }
 
 #[tokio::test]

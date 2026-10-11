@@ -34,6 +34,31 @@ const canonical = await Promise.all(
     }),
 );
 
+async function openDoctrinePicker(modal) {
+  if ((await modal.locator("form").getAttribute("data-view")) !== "doctrines")
+    await modal.locator("[data-open-doctrines]").click();
+}
+
+const doctrineBox = (modal, title) =>
+  modal.locator(`input[name=doctrine][value="${title}"]`);
+
+async function expectSelection(modal, selected, shown, hiddenSelected = 0) {
+  await expect(modal.locator("[data-doctrine-summary]")).toHaveText(
+    `${selected} selected`,
+  );
+  await expect(
+    modal.locator("[data-doctrine-choice]:not([hidden])"),
+  ).toHaveCount(shown);
+  await expect(
+    modal.locator("[data-doctrine-choice][hidden] input:checked"),
+  ).toHaveCount(hiddenSelected);
+}
+
+const editorLibrary = (modal) =>
+  modal
+    .locator("input[name=doctrine]")
+    .evaluateAll((inputs) => inputs.map((input) => input.value));
+
 async function diskSettings(dataRoot) {
   return JSON.parse(
     await readFile(join(dataRoot, "config/settings.json"), "utf8"),
@@ -96,40 +121,34 @@ test("stale 23-entry saved catalog is reset before the shared Agent selector ope
   await page.getByRole("button", { name: "New agent", exact: true }).click();
   const modal = page.getByRole("dialog", { name: "New agent", exact: true });
   await expect(modal.locator("[name=doctrine]")).toHaveCount(10);
-  await expect(modal.locator("[data-selection-count]")).toHaveText(
-    "0 selected / 10 shown",
+  await expect(modal.locator("[data-doctrine-summary]")).toHaveText(
+    "0 selected",
   );
-  await expect(modal.locator("[data-doctrine-catalog]")).toContainText(
-    "10 doctrines / config/settings.json; defaults: src-tauri/doctrines",
-  );
-  await modal.getByRole("checkbox", { name: "code", exact: true }).check();
+  await openDoctrinePicker(modal);
+  await expectSelection(modal, 0, 10);
+  await doctrineBox(modal, "code").check();
   await modal.getByLabel("Filter doctrines", { exact: true }).fill("testing");
-  await expect(modal.locator("[data-selection-count]")).toHaveText(
-    "1 selected (1 hidden by filter) / 1 shown",
-  );
+  await expectSelection(modal, 1, 1, 1);
   await modal.getByLabel("Filter doctrines", { exact: true }).fill("");
-  await expect(modal.locator("[data-selection-count]")).toHaveText(
-    "1 selected / 10 shown",
-  );
+  await expectSelection(modal, 1, 10);
   const catalog = (await store("snapshot")).doctrine_catalog;
   expect(catalog.source_revision).toBe(catalog.effective_revision);
   await closeDialog(page);
-  await page
-    .locator(".agent-card")
-    .getByRole("button", { name: "Edit", exact: true })
-    .click();
-  const edited = page.getByRole("dialog", { name: "Edit agent", exact: true });
-  await expect(edited.locator("[name=doctrine]")).toHaveCount(10);
-  await expect(edited.locator("[data-selection-count]")).toHaveText(
-    "2 selected / 10 shown",
+  await section(page, "Doctrines");
+  await expect(page.locator("[data-doctrine-catalog]")).toContainText(
+    "10 doctrines / config/settings.json; defaults: src-tauri/doctrines",
   );
-  await edited.getByLabel("Filter doctrines", { exact: true }).fill("testing");
-  await expect(edited.locator("[data-selection-count]")).toHaveText(
-    "2 selected (1 hidden by filter) / 1 shown",
-  );
-  await expect(edited.locator("[data-doctrine-catalog]")).toContainText(
+  await expect(page.locator("[data-doctrine-catalog]")).toContainText(
     catalog.effective_revision.slice(0, 12),
   );
+  const edited = await editAgent(page, "Retained reviewer");
+  await expect(edited.locator("[name=doctrine]")).toHaveCount(10);
+  await expect(edited.locator("[data-doctrine-summary]")).toHaveText(
+    "2 selected",
+  );
+  await openDoctrinePicker(edited);
+  await edited.getByLabel("Filter doctrines", { exact: true }).fill("testing");
+  await expectSelection(edited, 2, 1, 1);
   await closeDialog(page);
   expect((await diskSettings(dataRoot)).agents[0].doctrines).toEqual([
     "code",
@@ -298,9 +317,11 @@ test("resource save refreshes the whole resolved library and its selection count
   await page.getByRole("button", { name: "New agent", exact: true }).click();
   const modal = page.getByRole("dialog", { name: "New agent", exact: true });
   await expect(modal.locator("[name=doctrine]")).toHaveCount(12);
-  await expect(modal.locator("[data-selection-count]")).toHaveText(
-    "0 selected / 12 shown",
+  await expect(modal.locator("[data-doctrine-summary]")).toHaveText(
+    "0 selected",
   );
+  await openDoctrinePicker(modal);
+  await expectSelection(modal, 0, 12);
 });
 
 for (const [representation, references, selected] of [
@@ -360,17 +381,16 @@ for (const [representation, references, selected] of [
       await expect(page.locator("[data-catalog-conflict]")).toBeVisible();
       expect(await library(page)).toEqual(initial.doctrines);
       let modal = await editAgent(page);
-      await expect(
-        modal.getByRole("checkbox", { name: "code", exact: true }),
-      ).toBeChecked({ checked: selected === 1 });
-      await expect(modal.locator("[data-selection-count]")).toHaveText(
-        `${selected} selected / 10 shown`,
-      );
-      await expect(modal.locator("[data-doctrine-catalog]")).toContainText(
-        initialCatalog.effective_revision.slice(0, 12),
+      await openDoctrinePicker(modal);
+      await expect(doctrineBox(modal, "code")).toBeChecked({
+        checked: selected === 1,
+      });
+      await expectSelection(modal, selected, 10);
+      expect(await editorLibrary(modal)).toEqual(
+        initial.doctrines.map(({ title }) => title),
       );
       await modal
-        .getByRole("textbox", { name: "Prompt", exact: true })
+        .locator("textarea[name=prompt]")
         .fill("Keep my draft before explicit reload.");
       await modal
         .getByRole("button", { name: "Save agent", exact: true })
@@ -378,9 +398,9 @@ for (const [representation, references, selected] of [
       await expect(modal.getByRole("alert")).toContainText(
         "Resource changed in another window",
       );
-      await expect(
-        modal.getByRole("textbox", { name: "Prompt", exact: true }),
-      ).toHaveValue("Keep my draft before explicit reload.");
+      await expect(modal.locator("textarea[name=prompt]")).toHaveValue(
+        "Keep my draft before explicit reload.",
+      );
       expect(await diskSettings(dataRoot)).toEqual(resolved.settings);
       await closeDialog(page);
       await page
@@ -390,24 +410,22 @@ for (const [representation, references, selected] of [
         })
         .click();
       await expect(page.locator("[data-catalog-conflict]")).toBeHidden();
-      modal = await editAgent(page);
-      await expect(
-        modal.getByRole("checkbox", { name: "renamed-code", exact: true }),
-      ).toBeChecked({ checked: selected === 1 });
-      await expect(modal.locator("[name=doctrine]")).toHaveCount(11);
-      await expect(modal.locator("[data-selection-count]")).toHaveText(
-        `${selected} selected / 11 shown`,
-      );
-      await expect(modal.locator("[data-doctrine-catalog]")).toContainText(
+      await section(page, "Doctrines");
+      await expect(page.locator("[data-doctrine-catalog]")).toContainText(
         resolved.doctrine_catalog.effective_revision.slice(0, 12),
       );
-      await expect(
-        modal.getByRole("textbox", { name: "Prompt", exact: true }),
-      ).toHaveValue(
+      modal = await editAgent(page);
+      await openDoctrinePicker(modal);
+      await expect(doctrineBox(modal, "renamed-code")).toBeChecked({
+        checked: selected === 1,
+      });
+      await expect(modal.locator("[name=doctrine]")).toHaveCount(11);
+      await expectSelection(modal, selected, 11);
+      await expect(modal.locator("textarea[name=prompt]")).toHaveValue(
         concurrentEdit ? "Concurrent Agent prompt." : fixtureAgent.prompt,
       );
       await modal
-        .getByRole("textbox", { name: "Prompt", exact: true })
+        .locator("textarea[name=prompt]")
         .fill("Unrelated local Agent edit.");
       await modal
         .getByRole("button", { name: "Save agent", exact: true })
@@ -455,19 +473,16 @@ test("unrelated library refresh does not accept a concurrent still-valid Agent s
   await newDoctrine(page, "local-principle", "Saved in this window.");
   const resolved = (await store("snapshot")).settings;
   const modal = await editAgent(page);
-  await expect(
-    modal.getByRole("checkbox", { name: "code", exact: true }),
-  ).toBeChecked();
-  await modal
-    .getByRole("textbox", { name: "Prompt", exact: true })
-    .fill("Keep my draft.");
+  await openDoctrinePicker(modal);
+  await expect(doctrineBox(modal, "code")).toBeChecked();
+  await modal.locator("textarea[name=prompt]").fill("Keep my draft.");
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
   await expect(modal.getByRole("alert")).toContainText(
     "Resource changed in another window",
   );
-  await expect(
-    modal.getByRole("textbox", { name: "Prompt", exact: true }),
-  ).toHaveValue("Keep my draft.");
+  await expect(modal.locator("textarea[name=prompt]")).toHaveValue(
+    "Keep my draft.",
+  );
   expect(await diskSettings(dataRoot)).toEqual(resolved);
 });
 
@@ -542,6 +557,7 @@ for (const [scenario, references, selection] of [
     await expect(page.locator("[data-catalog-conflict]")).toBeVisible();
     expect(await library(page)).toEqual(initial.settings.doctrines);
     let modal = await editAgent(page);
+    await openDoctrinePicker(modal);
     expect(
       await modal
         .locator("[name=doctrine]:checked")
@@ -551,24 +567,20 @@ for (const [scenario, references, selection] of [
         .filter(({ title }) => references.doctrines.includes(title))
         .map(({ title }) => title),
     );
-    await expect(modal.locator("[data-selection-count]")).toHaveText(
-      `${references.doctrines.length} selected / 10 shown`,
+    await expectSelection(modal, references.doctrines.length, 10);
+    expect(await editorLibrary(modal)).toEqual(
+      initial.settings.doctrines.map(({ title }) => title),
     );
-    await expect(modal.locator("[data-doctrine-catalog]")).toContainText(
-      initial.doctrine_catalog.effective_revision.slice(0, 12),
-    );
-    await modal
-      .getByRole("textbox", { name: "Prompt", exact: true })
-      .fill("Keep my blocked draft.");
+    await modal.locator("textarea[name=prompt]").fill("Keep my blocked draft.");
     await modal
       .getByRole("button", { name: "Save agent", exact: true })
       .click();
     await expect(modal.getByRole("alert")).toContainText(
       "Resource changed in another window",
     );
-    await expect(
-      modal.getByRole("textbox", { name: "Prompt", exact: true }),
-    ).toHaveValue("Keep my blocked draft.");
+    await expect(modal.locator("textarea[name=prompt]")).toHaveValue(
+      "Keep my blocked draft.",
+    );
     expect(await diskSettings(dataRoot)).toEqual(resolved.settings);
     await closeDialog(page);
     if (scenario === "old title reused") {
@@ -597,7 +609,12 @@ for (const [scenario, references, selection] of [
       .getByRole("button", { name: "Reload Agents and doctrines", exact: true })
       .click();
     await expect(page.locator("[data-catalog-conflict]")).toBeHidden();
+    await section(page, "Doctrines");
+    await expect(page.locator("[data-doctrine-catalog]")).toContainText(
+      resolved.doctrine_catalog.effective_revision.slice(0, 12),
+    );
     modal = await editAgent(page);
+    await openDoctrinePicker(modal);
     const titles = resolved.settings.agents[0].doctrines;
     expect(
       await modal
@@ -608,22 +625,17 @@ for (const [scenario, references, selection] of [
         .filter(({ title }) => titles.includes(title))
         .map(({ title }) => title),
     );
-    await expect(modal.locator("[data-selection-count]")).toHaveText(
-      `${titles.length} selected / ${resolved.settings.doctrines.length} shown`,
+    await expectSelection(
+      modal,
+      titles.length,
+      resolved.settings.doctrines.length,
     );
     if (scenario === "old title reused") {
-      await expect(
-        modal.getByRole("checkbox", { name: "code", exact: true }),
-      ).not.toBeChecked();
-      await expect(
-        modal.getByRole("checkbox", { name: "renamed-code", exact: true }),
-      ).toBeChecked();
+      await expect(doctrineBox(modal, "code")).not.toBeChecked();
+      await expect(doctrineBox(modal, "renamed-code")).toBeChecked();
     }
-    await expect(modal.locator("[data-doctrine-catalog]")).toContainText(
-      resolved.doctrine_catalog.effective_revision.slice(0, 12),
-    );
     await modal
-      .getByRole("textbox", { name: "Prompt", exact: true })
+      .locator("textarea[name=prompt]")
       .fill("Explicitly refreshed edit.");
     await modal
       .getByRole("button", { name: "Save agent", exact: true })
@@ -747,7 +759,7 @@ test("doctrine edits, creation, deletion and delete-all persist without reseedin
     .getByRole("button", { name: "Edit", exact: true })
     .click();
   const modal = page.getByRole("dialog", {
-    name: "Edit doctrine",
+    name: `Editing ${canonical[0].title}`,
     exact: true,
   });
   const edited = {
@@ -782,9 +794,8 @@ test("doctrine edits, creation, deletion and delete-all persist without reseedin
   await expect(page.locator("#error")).toContainText("used by an Agent");
   expect((await store("snapshot")).settings.doctrines).toEqual(expected);
   const agent = await editAgent(page);
-  await agent
-    .getByRole("checkbox", { name: edited.title, exact: true })
-    .uncheck();
+  await openDoctrinePicker(agent);
+  await doctrineBox(agent, edited.title).uncheck();
   await agent.getByRole("button", { name: "Save agent", exact: true }).click();
   await expect(agent).toHaveCount(0);
   await section(page, "Doctrines");
@@ -880,10 +891,7 @@ test("doctrine drafts retain same-resource conflict protection and explicit disc
     .last()
     .getByRole("button", { name: "Edit", exact: true })
     .click();
-  const modal = page.getByRole("dialog", {
-    name: "Edit doctrine",
-    exact: true,
-  });
+  const modal = page.getByRole("dialog", { name: /^Editing / });
   await modal
     .getByRole("textbox", { name: "Principles", exact: true })
     .fill("My local draft.");

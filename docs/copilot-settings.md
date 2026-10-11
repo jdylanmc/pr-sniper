@@ -24,17 +24,28 @@ publication gate. See [owned-thread follow-ups](../README.md#owned-thread-follow
 
 ## Connect and configure
 
-1. In **Integrations > AI integration**, choose **Connect Copilot account**.
-   Complete the one-time code flow in your default browser. Choose the
-   intended GitHub account there; PR Sniper does not switch your terminal login.
-2. Check the returned login and stable numeric account ID. Choose **Confirm
-   Copilot account** to save its credentials in macOS Keychain, or cancel.
-   A green check means **verified sign-in only**.
+1. In **Accounts > AI Tooling > GitHub Copilot**, choose **Connect Copilot
+   account**. Complete the one-time code flow in your default browser. Choose
+   the intended GitHub account there; PR Sniper does not switch your terminal
+   login.
+2. When sign-in completes, PR Sniper saves the returned account's credentials
+   in macOS Keychain automatically and shows **Connected**. That means
+   **verified sign-in only**. Use the disconnect icon to remove the account
+   and its credentials; it can be connected again immediately.
 3. In **Agents**, create or edit an Agent. Explicitly choose its **AI account**,
-   then choose a **Model** from the catalog returned for that account. No account
-   or model is auto-selected. Claude models through Copilot are supported;
+   then choose a **Model** from the catalog returned for that account (the
+   refresh icon beside **Model** re-reads it). No account or model is
+   auto-selected. Claude models through Copilot are supported;
    direct Claude, Codex and Grok integrations remain unavailable.
-4. Choose **Save agent** to persist that shared Agent immediately. No later
+4. The Prompt may use tokens that are replaced when the review runs:
+   `{{pr_title}}`, `{{pr_number}}`, `{{pr_author}}`, `{{head_sha}}`,
+   `{{base_sha}}`, `{{changed_files}}`, `{{changed_file_count}}` and
+   `{{agent_name}}`. Click the info icon beside **Prompt** to list and insert
+   them; unknown tokens are left as written. The **Signature** defaults to
+   `🔫 pr-sniper(<agent>:<model>)` (lowercase, hyphenated); edit it or use the
+   reset icon to restore the default. Choose **Doctrines** to enable or
+   disable doctrines for the Agent or edit one.
+5. Choose **Save agent** to persist that shared Agent immediately. No later
    whole-Settings save is required. Doctrine and repository saves are likewise
    resource-scoped; **Save preferences** commits only global preferences.
    Authentication confirmation is immediate and independent of all those saves.

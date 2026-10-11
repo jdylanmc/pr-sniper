@@ -1,6 +1,6 @@
 import { test, expect } from "./fixtures.mjs";
 import { holdFocusFrames } from "./focus-frames.mjs";
-import { queueFixture } from "./queue-fixture.mjs";
+import { queueFixture, showQueueGroup } from "./queue-fixture.mjs";
 import { section } from "./navigation.mjs";
 
 test.use({ viewport: { width: 400, height: 680 } });
@@ -68,6 +68,8 @@ for (const newerFocus of [false, true]) {
     await queueFixture(store);
     await page.goto("/");
     await settled(page);
+    await page.setViewportSize({ width: 400, height: 250 });
+    await showQueueGroup(page, "attention");
     const button = page
       .locator("#handoff-queue")
       .getByRole("article", { name: "example/repo #3", exact: true })
@@ -113,6 +115,8 @@ test("rapid route changes reject an old frame even when focus stays on the share
   await frames.waitForCount(2);
   await expect(heading(page)).toHaveText("Your queue");
   await expect(heading(page)).toBeFocused();
+  await page.setViewportSize({ width: 400, height: 250 });
+  await showQueueGroup(page, "attention");
   const scroller = page.locator(".panel-content");
   await scroller.evaluate((element) => (element.scrollTop = 100));
   const scroll = await scroller.evaluate((element) => element.scrollTop);
@@ -173,6 +177,8 @@ test("deferred positioning yields after focus moves away and back to the same he
   await expect(heading(page)).toBeFocused();
   await tab(page, "Queue").focus();
   await heading(page).focus();
+  await page.setViewportSize({ width: 400, height: 250 });
+  await showQueueGroup(page, "attention");
   const scroller = page.locator(".panel-content");
   await scroller.evaluate((element) => (element.scrollTop = 100));
   const scroll = await scroller.evaluate((element) => element.scrollTop);

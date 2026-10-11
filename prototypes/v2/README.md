@@ -26,6 +26,43 @@ Open `http://127.0.0.1:4178`. No build, external fonts, CDN, or installation is
 needed. The desktop clock is real; the desktop, accounts, models, PRs, evidence,
 and outcomes are synthetic.
 
+## Current design
+
+Reconciled with the shipped panel UI: icon-first, minimal prose.
+
+- **Chrome:** a navy title band with white cards overlapping it by about 23px,
+  8px rounded window corners, and the sniper art hidden on editor pages. Drill-in
+  pages put their name and a back arrow in the band instead of in-page headings.
+  Primary actions are orange floating pills bottom-right, switches are slim
+  40x24 teal/grey, and errors appear as a dismissible toast above the tab bar
+  (red left edge, auto-dismiss after about 8 seconds).
+- **Queue:** two metric toggle cards, _Ready for you_ and _Needs attention_; the
+  active one is solid orange and the default is Ready when any exist. The title
+  band and cards stay pinned while one grouped list scrolls. Rows show a state
+  chip, title, `repo #number`, and a chevron. An empty group is a large grey
+  inbox icon. The footer has Status and Diagnostics at left and the version at
+  right, which opens a Changelog page.
+- **Running and Reviewed:** `.work-list` rows with state icons. Running shows
+  active work first, then waiting work.
+- **Settings:** a grouped overview with a small Genie icon beside the title.
+  Accounts (Copilot, GitHub), Agents, Repositories, Doctrines, and Preferences
+  are drill-ins. Connected accounts are rows with a subtle disconnect icon,
+  sign-in connects without a confirm step, and an empty list is a grey
+  crossed-plug icon.
+- **Agents and Doctrines:** a name plus `model / N repositories` card that opens
+  the editor, with an inline trash icon. The Agent editor ("Editing &lt;name&gt;")
+  has grouped cards for Name and AI account; Model (refresh icon, orange spinner
+  while loading), Context window, and Reasoning effort; and Doctrines (a
+  drill-in with filter, checkboxes, and pencil), Prompt (info tooltip of
+  insertable `{{tokens}}` and tips, auto-growing edge-to-edge text), and
+  Signature. The default signature `🔫 pr-sniper(<name>:<model>)` follows name
+  and model until edited, and has a reset icon.
+- **Repositories:** rows with the name, `GitHub / account`, and a slim monitor
+  switch; repositories whose account is disconnected sit dimmed at the bottom.
+  The repository editor is headed by the repository name and holds a Monitor
+  switch, Reviewer requests, Agents on this repository, People you watch, and a
+  collapsed _Repository_ disclosure of plain action rows.
+
 ## Visual evidence
 
 ### Repository browsing proposal — October 5, 2026
@@ -34,7 +71,7 @@ Human-reviewed direction and native follow-up:
 [#114](https://github.com/jdylanmc/pr-sniper/issues/114), under
 [#51](https://github.com/jdylanmc/pr-sniper/issues/51).
 
-Settings > Repositories now uses compact, drill-in rows rather than a local
+Settings > Repositories uses compact, drill-in rows rather than a local
 folder picker or a list of monitoring checkboxes. Each connected GitHub account
 has a magnifying-glass button. Its browser offers personal and organization
 owners separately, with searchable synthetic repositories belonging to the
@@ -50,7 +87,7 @@ belongs inside the provider browser.
 The separate **+ URL** action accepts a GitHub URL or `owner/repository` and
 requires an explicit acting account. Browse selection or **Add & configure**
 persists a disabled, unassigned repository and immediately opens its editor.
-Back/Cancel leaves that added row in **Needs setup**; it does not start monitoring.
+Back/Cancel leaves that added row with its monitor switch off; it does not start monitoring.
 Selecting an existing binding opens its editor instead of adding a duplicate.
 The same repository under another acting account is a distinct binding.
 
@@ -75,7 +112,7 @@ Two Chromium captures of the approved prototype, using synthetic fixtures.
 Click either image for the full-size view. The header reference-treatment
 provenance and production-clearance limit below also apply to these captures.
 
-**Configured queue:** human handoffs, queued work, and four running reviews.
+**Configured queue:** the _Ready for you_ list under the metric toggles.
 
 [![Configured desktop and PR Sniper queue](evidence/configured-queue.png)](evidence/configured-queue.png)
 
@@ -103,7 +140,7 @@ separate retained profiles. They never touch the real application.
 Fresh install opens a welcoming checklist with a **Set up with Genie** button.
 The button opens a guided wizard:
 
-1. Choose an **AI provider**, then connect and confirm a mock identity.
+1. Choose an **AI provider**, then connect a mock identity.
 2. Choose a **PR platform**, then connect its repository-access identity.
 3. Create an Agent with an explicitly selected account, model, prompt, and
    completion/comment permissions.
@@ -130,12 +167,12 @@ check** when you want to introduce sample work.
 
 ## App destinations
 
-| Destination | Working mock interactions                                                                                                            |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Queue       | Human/agent lanes, detail pages, trust confirmation, manual start, retries, and simulated detection.                                 |
-| Running     | Capacity, agent and PR ownership, stepped activity, interruption, and explicit sample completion.                                    |
-| Reviewed    | Filtered outcomes, synopsis, findings, ordered file guide, read-only conversation, stale/recovery scenarios, and a PR-platform link. |
-| Settings    | Account mocks, Agent/doctrine CRUD, repository assignments/watchlists/schedules/permissions, concurrency, preferences, and reset.    |
+| Destination | Working mock interactions                                                                                                                  |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Queue       | Ready/Needs-attention toggles, grouped lists, detail pages, trust confirmation, retries, Changelog, and simulated detection from Running.  |
+| Running     | Agent work as state-icon rows (running first, then waiting), detail pages, stepped activity, interruption, and explicit sample completion. |
+| Reviewed    | Filtered outcome rows, synopsis, findings, ordered file guide, read-only conversation, stale/recovery scenarios, and a PR-platform link.   |
+| Settings    | Account mocks, Agent/doctrine CRUD, repository assignments/watchlists/permissions, concurrency, preferences, and reset.                    |
 
 Pages slide inside the popover. Back preserves list position, and destinations
 retain their navigation stacks. Escape, close, or outside click dismisses the
@@ -175,16 +212,18 @@ controls remain mock application controls, not human PR-review authoring.
 
 ### Accounts and persistence
 
-**Settings > Accounts > Add account** shows repository and AI providers.
-GitHub/Copilot use a fictional handle and simulated browser sign-in, followed by
-an explicit identity confirmation. No OAuth page, device code, or credential
-request is involved. Cancel and failed sign-in create no account.
+**Settings > Accounts** opens GitHub Copilot and GitHub lists. GitHub/Copilot use
+a fictional handle and simulated browser sign-in that connects immediately; there
+is no confirm step. No OAuth page, device code, or credential request is
+involved. Cancel and failed sign-in create no account.
 
-Only **Confirm and connect** saves the account. GitHub identities appear only in
+The disconnect icon forgets the account, so the same identity can be added again
+at once and reconnects whatever depended on it. GitHub identities appear only in
 repository selectors; Copilot identities appear only in AI selectors. Existing
-bindings, monitoring state, and review work remain unchanged. Duplicate handles
-within one provider are rejected. Direct AI integrations are distinct from models
-offered through Copilot.
+bindings, monitoring state, and review work remain unchanged. Adding a handle
+that is already connected for a provider is rejected. Direct AI integrations are
+distinct from models offered through Copilot (Azure DevOps, Claude, Codex, and
+Grok remain **Coming soon** in the Genie provider chooser).
 
 The active scenario and saved mock state use **`pr-sniper.vnext.v2`** in
 `localStorage`. No other key is changed. Reload restores setup/workload without
@@ -216,8 +255,10 @@ The mock has no existing-backlog import, reviewer-assignment editor, real
 polling/cron execution, provider pagination, multi-Agent consensus, autonomous
 thread follow-up, or provider reconciliation. Cron validation checks five-field
 shape and IANA time zone, not execution semantics. File guides contain the complete
-three-file fixture, not a real repository inspection. Signature customization
-remains separate #30 work.
+three-file fixture, not a real repository inspection. Agent permissions stay on the Agent
+and the per-repository schedule, scope, and start/comment overrides stay in a
+collapsed prototype section; production assigns permissions per repository and
+uses a global schedule.
 
 Genie follows the shared-resource principle of the Configuration Wizard in #41,
 but is not that wizard's production implementation or proof of native acceptance.
@@ -239,6 +280,7 @@ From the repository root:
 node --test prototypes/v2/model.test.cjs
 node prototypes/v2/browser.test.cjs
 node prototypes/v2/onboarding.browser.test.cjs
+node prototypes/v2/repositories.browser.test.cjs
 ```
 
 Browser checks need the preview server, the repository's existing Playwright

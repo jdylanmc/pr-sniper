@@ -4,6 +4,13 @@ import { expect, test } from "./fixtures.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
 
 test.use({ viewport: { width: 408, height: 744 } });
+// Rows share one rounded group container, so the radius belongs to the group.
+const CARD_STYLE = {
+  radius: "14px",
+  titleSize: "13px",
+  referenceSize: "10px",
+  badgeSize: "9px",
+};
 const reference = new URL(
   "../../prototypes/v2/evidence/configured-queue.png",
   import.meta.url,
@@ -111,10 +118,17 @@ async function visualMeasurements(page, image) {
       const ready = box("[data-queue-ready-card]");
       const attention = box("[data-queue-attention-card]");
       const list = box("#handoff-queue");
-      const card = document.querySelector(".queue-item");
-      const readyBadge = document.querySelector(
-        '.queue-item[data-state="machine_signed_off"] .queue-state',
-      );
+      // Only the selected group is displayed; the other stays in the DOM.
+      const visible = (element) => element.getClientRects().length > 0;
+      const card = [...document.querySelectorAll(".queue-item")].find(visible);
+      const readyBadge = [
+        ...document.querySelectorAll(
+          '.queue-item[data-state="machine_signed_off"] .queue-state',
+        ),
+      ].find(visible);
+      const view = document.querySelector(
+        "[data-queue-filter][aria-pressed=true]",
+      )?.dataset.queueFilter;
       // The approved 1440x960 desktop capture contains a 408x744 panel
       // at (813,42). Compare its actual image colors and compact landmarks,
       // not the obsolete sample counts, Agent lane or desktop silhouette.
@@ -123,12 +137,15 @@ async function visualMeasurements(page, image) {
         attention,
         list,
         header: box(".panel-context"),
-        firstCard: document.querySelector(".queue-item")
-          ? box(".queue-item")
-          : box(".queue-empty"),
+        firstCard: card
+          ? (({ x, y, width, height }) => ({ x, y, width, height }))(
+              card.getBoundingClientRect(),
+            )
+          : box(".queue-group:not([hidden]) .queue-empty, .queue-empty"),
         cardStyle: card
           ? {
-              radius: getComputedStyle(card).borderRadius,
+              radius: getComputedStyle(card.closest(".queue-group"))
+                .borderRadius,
               titleSize: getComputedStyle(card.querySelector("h3")).fontSize,
               referenceSize: getComputedStyle(
                 card.querySelector(".queue-reference"),
@@ -137,6 +154,7 @@ async function visualMeasurements(page, image) {
                 .fontSize,
             }
           : null,
+        view,
         colors: [
           { expected: ref(820, 120), actual: current(7, 78) },
           {
@@ -222,17 +240,21 @@ for (const name of ["empty", "populated", "attention"]) {
     await expect(page.locator("#handoff-queue article")).toHaveCount(
       ready + attention,
     );
-    await expect(page.getByRole("term")).toHaveText([
-      "Ready for you",
-      "Needs attention",
-    ]);
-    await expect(page.getByRole("definition")).toHaveText([
-      `${ready}need your eyes`,
-      `${attention}need your input`,
-    ]);
     await expect(
-      page.getByRole("heading", { name: "Over to you", level: 2 }),
-    ).toBeVisible();
+      page.locator("[data-queue-filter] .queue-metric-label"),
+    ).toHaveText(["Ready for you", "Needs attention"]);
+    await expect(
+      page.locator("[data-queue-filter] .queue-metric-value span"),
+    ).toHaveText(["need your eyes", "need your input"]);
+    const view = ready > 0 ? "ready" : "attention";
+    await expect(page.locator("[data-queue-filter=ready]")).toHaveAttribute(
+      "aria-pressed",
+      String(view === "ready"),
+    );
+    await expect(page.locator("[data-queue-filter=attention]")).toHaveAttribute(
+      "aria-pressed",
+      String(view === "attention"),
+    );
     await expect(page.locator("#handoff-queue")).not.toContainText(
       "For agents",
     );
@@ -240,31 +262,39 @@ for (const name of ["empty", "populated", "attention"]) {
       page.getByRole("button", { name: /Start review|Simulate/ }),
     ).toHaveCount(0);
     if (name === "empty") {
-      await expect(
-        page.getByRole("heading", { name: "You're all caught up" }),
-      ).toBeVisible();
-      await expect(
-        page.getByRole("button", { name: "View Agent work in Running" }),
-      ).toBeVisible();
+      await expect(page.locator(".queue-empty")).toBeVisible();
+      await expect(page.locator(".queue-empty h3")).toHaveText(
+        "You're all caught up",
+      );
     }
     const measurements = await visualMeasurements(page, image);
-    // Approved: summary y=116, height=91, x=18/210, width=181;
-    // first card y=301, width=372. Leave explicit room for truthful
-    // production captions and platform font rasterization, not a new layout.
-    expect(Math.abs(measurements.ready.y - 116)).toBeLessThanOrEqual(8);
-    expect(Math.abs(measurements.ready.height - 91)).toBeLessThanOrEqual(8);
+    // Redesigned compact hierarchy: two metric buttons (y=113, 181x64, the
+    // pressed one orange) over a single visible group of slim handoff rows.
+    // The approved capture still anchors the header and list backgrounds.
+    expect(Math.abs(measurements.ready.y - 113)).toBeLessThanOrEqual(8);
+    expect(Math.abs(measurements.ready.height - 64)).toBeLessThanOrEqual(8);
     expect(Math.abs(measurements.ready.width - 181)).toBeLessThanOrEqual(3);
-    expect(Math.abs(measurements.attention.x - 210)).toBeLessThanOrEqual(3);
-    expect(Math.abs(measurements.firstCard.y - 301)).toBeLessThanOrEqual(18);
-    expect(Math.abs(measurements.firstCard.width - 372)).toBeLessThanOrEqual(3);
-    expect(measurements.firstCard.height).toBeLessThanOrEqual(190);
-    if (measurements.cardStyle)
-      expect(measurements.cardStyle).toEqual({
-        radius: "13px",
-        titleSize: "15px",
-        referenceSize: "10px",
-        badgeSize: "9px",
-      });
+    expect(Math.abs(measurements.attention.x - 209)).toBeLessThanOrEqual(3);
+    expect(Math.abs(measurements.list.width - 372)).toBeLessThanOrEqual(3);
+    expect(Math.abs(measurements.firstCard.y - 190)).toBeLessThanOrEqual(18);
+    if (measurements.cardStyle) {
+      expect(Math.abs(measurements.firstCard.width - 370)).toBeLessThanOrEqual(
+        3,
+      );
+      expect(measurements.firstCard.height).toBeLessThanOrEqual(90);
+      expect(measurements.cardStyle).toEqual(CARD_STYLE);
+    }
+    const pressed = {
+      active: [246, 135, 67],
+      idle: [255, 255, 255],
+    };
+    expect(measurements.view).toBe(view);
+    const [readyColor, attentionColor] = measurements.colors.slice(1, 3);
+    const readyPressed = view === "ready";
+    readyColor.expected = readyPressed ? pressed.active : pressed.idle;
+    attentionColor.expected = readyPressed ? pressed.idle : pressed.active;
+    if (measurements.colors[4])
+      measurements.colors[4].expected = [228, 243, 239];
     for (const color of measurements.colors)
       for (let channel = 0; channel < 3; channel++)
         expect(
@@ -304,6 +334,7 @@ test("Queue keeps exact handoff, stale destination, keyboard and scroll focus ac
   const fixture = await scenario(store, "populated");
   await page.clock.install();
   await page.goto("/");
+  await page.locator("[data-queue-filter=attention]").click();
   const button = page
     .getByRole("article", { name: "example/repo #3", exact: true })
     .getByRole("button", { name: "Evidence and actions" });
@@ -387,9 +418,7 @@ test("Queue scales, supports forced colors and reduced motion, and leaves Agent 
     ).toBe("none");
     await capture(page, testInfo, `queue-forced-${size.width}x${size.height}`);
   }
-  await page
-    .getByRole("button", { name: "View Agent work in Running" })
-    .click();
+  await tab(page, "Running").click();
   await expect(page.locator("[data-panel-heading]")).toHaveText("Work queue");
 });
 
@@ -488,6 +517,7 @@ for (const scenario of [
     });
     await page.goto("/");
     await page.evaluate(() => window.__settingsIdle());
+    await page.locator("[data-queue-filter=attention]").click();
     if (scenario.textScale === 2) {
       // Retain enlarged card text when real selection/refresh recreates rows.
       const rules = await page.evaluate(() =>
@@ -711,7 +741,7 @@ for (const scenario of [
     await page.getByRole("button", { name: "Back", exact: true }).click();
     await expect(last).toBeFocused();
     if (scenario.textScale === 2)
-      await expect(lastArticle.locator("h3")).toHaveCSS("font-size", "30px");
+      await expect(lastArticle.locator("h3")).toHaveCSS("font-size", "26px");
     expect(
       await page
         .locator(".panel-content")

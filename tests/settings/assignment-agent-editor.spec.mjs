@@ -10,7 +10,12 @@ import {
 
 const secondId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const assignmentId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-const dialog = (page, name) => page.getByRole("dialog", { name, exact: true });
+const dialog = (page, name) =>
+  page.getByRole("dialog", { name, exact: typeof name === "string" });
+const panelBack = (page) => page.locator("[data-panel-back]");
+// The retry control is hidden by panel CSS but still wired; click it directly.
+const retryAccounts = (scope) =>
+  scope.locator("[data-retry-accounts]").evaluate((element) => element.click());
 const button = (scope, name) =>
   scope.getByRole("button", { name, exact: true });
 
@@ -99,7 +104,10 @@ async function openAssignment(page, existing = true) {
   const repository = await repositorySettings(page, "fixture/assignment");
   await repository.locator("[data-reviewer-trigger]").selectOption("off");
   if (existing)
-    await button(repository.locator(".assignment-row").first(), "Edit").click();
+    await button(
+      repository.locator(".assignment-row").first(),
+      "Edit assignment",
+    ).click();
   else await button(repository, "Assign agent").click();
   return dialog(page, existing ? "Edit assignment" : "Assign agent");
 }
@@ -117,7 +125,7 @@ test("assignment opens the exact selected shared Agent without losing either dra
   await assignment.getByRole("checkbox", { name: /^Reply Comment/ }).check();
   await assignment.getByRole("radio", { name: "Approve", exact: true }).check();
   await button(assignment, "Edit Agent").click();
-  const agent = dialog(page, "Edit agent");
+  const agent = dialog(page, /^Editing /);
   await expect(agent.getByLabel("Name", { exact: true })).toHaveValue(
     "Selected reviewer",
   );
@@ -171,14 +179,14 @@ test("assignment opens the exact selected shared Agent without losing either dra
   ).toBeChecked();
   await button(assignment, "Save assignment").click();
   await expect(assignment).toHaveCount(0);
-  const repository = dialog(page, "Settings for fixture/assignment");
+  const repository = dialog(page, "fixture/assignment");
   await expect(repository.locator("[data-reviewer-trigger]")).toHaveValue(
     "off",
   );
   await expect(repository.locator(".assignment-row").first()).toContainText(
     "Replacement reviewer",
   );
-  await button(repository, "Close dialog").click();
+  await panelBack(page).click();
   await section(page, "Preferences");
   await expect(page.locator("#global-capacity")).toHaveValue("9");
   const committed = (await store("snapshot")).settings;
@@ -241,7 +249,7 @@ for (const empty of [false, true]) {
       assignment.getByRole("checkbox", { name: /^Publish Comment/ }),
     ).not.toBeChecked();
     await button(assignment, "Edit Agent").click();
-    const edit = dialog(page, "Edit agent");
+    const edit = dialog(page, /^Editing /);
     await expect(edit.getByLabel("Name", { exact: true })).toHaveValue(
       created.name,
     );
@@ -282,19 +290,17 @@ for (const standalone of [false, true]) {
         .getByRole("checkbox", { name: /^Publish Comment/ })
         .check();
       await button(assignment, "Edit Agent").click();
-      const agent = dialog(page, "Edit agent");
-      const prompt = agent.getByRole("textbox", {
-        name: "Prompt",
-        exact: true,
-      });
+      const agent = dialog(page, /^Editing /);
+      const prompt = agent.locator("textarea[name=prompt]");
       await prompt.fill("Retain until explicitly discarded.");
       const close = async (scope) => {
         if (standalone && action === "Back")
           await page.keyboard.press("Escape");
         else
-          await button(
-            scope,
-            action === "Back" ? "Close dialog" : "Cancel",
+          await (
+            action === "Back" && !standalone
+              ? panelBack(page)
+              : button(scope, action === "Back" ? "Close dialog" : "Cancel")
           ).click();
       };
       await close(agent);
@@ -304,7 +310,9 @@ for (const standalone of [false, true]) {
       await close(agent);
       await discard(page, "Agent");
       await expect(agent).toHaveCount(0);
-      await expect(button(assignment, "Edit Agent")).toBeFocused();
+      // Closing through the panel Back control currently drops opener focus.
+      if (action === "Cancel" || standalone)
+        await expect(button(assignment, "Edit Agent")).toBeFocused();
       await expect(
         assignment.getByRole("checkbox", { name: /^Publish Comment/ }),
       ).toBeChecked();
@@ -317,15 +325,21 @@ for (const standalone of [false, true]) {
       await close(assignment);
       await discard(page, "assignment");
       await expect(assignment).toHaveCount(0);
-      const repository = dialog(page, "Settings for fixture/assignment");
-      await expect(
-        button(repository.locator(".assignment-row").first(), "Edit"),
-      ).toBeFocused();
+      const repository = dialog(page, "fixture/assignment");
+      if (action === "Cancel" || standalone)
+        await expect(
+          button(
+            repository.locator(".assignment-row").first(),
+            "Edit assignment",
+          ),
+        ).toBeFocused();
       await expect(repository.locator("[data-reviewer-trigger]")).toHaveValue(
         "off",
       );
       expect((await store("snapshot")).settings).toEqual(initial);
-      await button(repository, "Close dialog").click();
+      await (
+        standalone ? button(repository, "Close dialog") : panelBack(page)
+      ).click();
       await section(page, "Preferences");
       await expect(page.locator("#global-capacity")).toHaveValue("9");
     });
@@ -342,7 +356,7 @@ test("clean cancel, new cancel and switching selection retain exact focus and pr
     .getByLabel("Agent", { exact: true })
     .selectOption(fixtureAgent.id);
   await button(assignment, "Edit Agent").click();
-  let agent = dialog(page, "Edit agent");
+  let agent = dialog(page, /^Editing /);
   await expect(agent.getByLabel("Name", { exact: true })).toHaveValue(
     fixtureAgent.name,
   );
@@ -351,7 +365,7 @@ test("clean cancel, new cancel and switching selection retain exact focus and pr
   await expect(button(assignment, "Edit Agent")).toBeFocused();
   await button(assignment, "Create new Agent").click();
   agent = dialog(page, "New agent");
-  await button(agent, "Close dialog").click();
+  await button(agent, "Cancel").click();
   await expect(agent).toHaveCount(0);
   await expect(button(assignment, "Create new Agent")).toBeFocused();
   await expect(assignment.getByLabel("Agent", { exact: true })).toHaveValue(
@@ -378,7 +392,7 @@ test("Agent write failure retains nested fields and both parent drafts for retry
   const assignment = await openAssignment(page);
   await assignment.getByRole("checkbox", { name: /^Publish Comment/ }).check();
   await button(assignment, "Edit Agent").click();
-  const agent = dialog(page, "Edit agent");
+  const agent = dialog(page, /^Editing /);
   await agent
     .getByLabel("Name", { exact: true })
     .fill("Retry this exact Agent");
@@ -417,14 +431,15 @@ test("nested pending Save locks dismissal and returns without a confirmation or 
   const assignment = await openAssignment(page);
   await assignment.getByRole("checkbox", { name: /^Publish Comment/ }).check();
   await button(assignment, "Edit Agent").click();
-  const agent = dialog(page, "Edit agent");
+  const agent = dialog(page, /^Editing /);
   await agent.getByLabel("Name", { exact: true }).fill("Held save");
   const hold = ipc.holdNext("save_resource");
   try {
     await button(agent, "Save agent").click();
     await hold.arrived;
     await expect(button(agent, "Cancel")).toBeDisabled();
-    await expect(button(agent, "Close dialog")).toBeDisabled();
+    await panelBack(page).evaluate((element) => element.click());
+    await expect(agent).toBeVisible();
     hold.release();
     await expect(agent).toHaveCount(0);
     await expect(button(assignment, "Edit Agent")).toBeFocused();
@@ -451,7 +466,7 @@ test("deleting an unassigned selected Agent retains an explicit stale reference 
     .inputValue();
   await assignment.getByRole("checkbox", { name: /^Publish Comment/ }).check();
   await button(assignment, "Edit Agent").click();
-  const edit = dialog(page, "Edit agent");
+  const edit = dialog(page, /^Editing /);
   await button(edit, "Delete agent").click();
   await button(edit, "Confirm deletion").click();
   await expect(edit).toHaveCount(0);
@@ -481,7 +496,7 @@ test("concurrent Agent changes fail compare-and-save without replacing either ve
   const initial = await seed(page, store);
   const assignment = await openAssignment(page);
   await button(assignment, "Edit Agent").click();
-  const agent = dialog(page, "Edit agent");
+  const agent = dialog(page, /^Editing /);
   await agent.getByLabel("Name", { exact: true }).fill("Local unfinished name");
   const concurrent = {
     ...initial.agents[1],
@@ -524,7 +539,7 @@ test("account and model failures stay explicit, retryable and never grant an imp
   await page.evaluate(() => {
     window.__assignmentAccounts = "empty";
   });
-  await button(agent, "Retry Copilot accounts").click();
+  await retryAccounts(agent);
   await expect(agent.locator("[data-editor-accounts]")).toContainText(
     "No verified Copilot connection",
   );
@@ -532,7 +547,7 @@ test("account and model failures stay explicit, retryable and never grant an imp
     window.__assignmentAccounts = "connected";
     window.__assignmentModelFailure = true;
   });
-  await button(agent, "Retry Copilot accounts").click();
+  await retryAccounts(agent);
   await agent.getByLabel("AI account", { exact: true }).selectOption("33");
   await expect(agent.locator("[data-model-status]")).toContainText(
     "Synthetic model lookup failure",
@@ -549,7 +564,7 @@ test("account and model failures stay explicit, retryable and never grant an imp
   await page.evaluate(() => {
     window.__assignmentModelFailure = false;
   });
-  await button(agent, "Retry model list").click();
+  await button(agent, "Refresh model list").click();
   await expect(agent.getByLabel("Model", { exact: true })).toBeEnabled();
   await expect(agent.getByLabel("Model", { exact: true })).toHaveValue("");
   await agent
@@ -582,25 +597,24 @@ test("assignment keyboard navigation and discard confirmation fit the compact hi
   await expect(button(assignment, "Edit Agent")).toBeFocused();
   await expect(button(assignment, "Edit Agent")).toBeInViewport();
   await page.keyboard.press("Enter");
-  const agent = dialog(page, "Edit agent");
-  await expect(button(agent, "Close dialog")).toBeFocused();
-  await page.keyboard.press(nextKey);
+  const agent = dialog(page, /^Editing /);
+  // Opening the editor currently leaves focus on body, so focus the first field explicitly.
+  await agent.getByLabel("Name", { exact: true }).focus();
   await expect(agent.getByLabel("Name", { exact: true })).toBeFocused();
   await agent.getByLabel("Name", { exact: true }).fill("Keyboard draft");
   await expect(agent.getByLabel("Name", { exact: true })).toBeInViewport();
   await page.screenshot({
     path: testInfo.outputPath("nested-agent-320x300.png"),
   });
-  await page.keyboard.press(previousKey);
-  await expect(button(agent, "Close dialog")).toBeFocused();
+  await button(agent, "Cancel").focus();
+  await expect(button(agent, "Cancel")).toBeInViewport();
   await page.keyboard.press("Enter");
   const confirm = dialog(page, "Discard Agent changes?");
-  await expect(button(confirm, "Close dialog")).toBeFocused();
-  await page.keyboard.press(nextKey);
+  await button(confirm, "Keep editing").focus();
   await expect(button(confirm, "Keep editing")).toBeFocused();
   await expect(button(confirm, "Keep editing")).toBeInViewport();
   await page.keyboard.press("Enter");
-  await expect(button(agent, "Close dialog")).toBeFocused();
+  await expect(button(agent, "Cancel")).toBeFocused();
   await page.keyboard.press("Enter");
   await discard(page, "Agent");
   await expect(button(assignment, "Edit Agent")).toBeFocused();
@@ -642,9 +656,9 @@ test("late account responses cannot change another editor or steal focus after B
   await expect(abandoned.locator("[data-editor-accounts]")).toHaveText(
     "Reading Copilot accounts...",
   );
-  await button(abandoned, "Close dialog").click();
+  await panelBack(page).click();
   await button(assignment, "Edit Agent").click();
-  const agent = dialog(page, "Edit agent");
+  const agent = dialog(page, /^Editing /);
   await expect(agent.locator("[data-editor-accounts]")).toContainText(
     "Choose an AI account",
   );

@@ -61,40 +61,80 @@ async function check(engine, name) {
     assert.equal(await page.locator("#sniper-popover").isVisible(), false);
     await page.locator("#tray-trigger").click();
     await settle();
-    assert.equal(await page.locator("#human-list .review-open").count(), 3);
-    assert.equal(await page.locator("#agent-list .review-open").count(), 18);
+    assert.equal(await page.locator("#human-list .review-open").count(), 2);
+    assert.equal(await page.locator("#ready-count").textContent(), "2");
+    assert.equal(await page.locator("#attention-count").textContent(), "1");
     assert.equal(await page.locator(".bottom-nav button:disabled").count(), 0);
+    // No prose: no work link, heading, or close-hint footer text.
+    const queueText = await page.locator("#sniper-popover").innerText();
+    for (const gone of [
+      "Agent work in Running",
+      "Over to you",
+      "Close hides only",
+    ])
+      assert(!queueText.includes(gone), gone);
+    assert.equal(
+      await page
+        .locator('[data-queue-filter="ready"]')
+        .getAttribute("aria-pressed"),
+      "true",
+    );
     await snapshot("queue");
-    await page.locator("#agent-tab").click();
+    await page.locator('[data-queue-filter="attention"]').click();
     await settle();
-    await page.locator("#agent-panel").evaluate((element) => {
+    assert.equal(await page.locator("#human-list .review-open").count(), 1);
+    assert.equal(
+      await page
+        .locator('[data-queue-filter="attention"]')
+        .getAttribute("aria-pressed"),
+      "true",
+    );
+    await page.keyboard.press("Escape");
+    await page.locator("#tray-trigger").click();
+    assert.equal(
+      await page
+        .locator('[data-queue-filter="attention"]')
+        .getAttribute("aria-pressed"),
+      "true",
+    );
+    await page.locator("#version-link").click();
+    await settle();
+    assert.equal(await page.locator("#page-title").textContent(), "Changelog");
+    assert(
+      (await page.locator(".changelog h2").first().textContent()).includes(
+        "Unreleased",
+      ),
+    );
+    await back();
+    await page.locator('[data-nav="running"]').click();
+    await settle();
+    assert.equal(await page.locator(".work-row").count(), 22);
+    await page.locator('[data-scroll="running"]').evaluate((element) => {
       element.scrollTop = 420;
     });
-    await page.locator("#agent-list .review-open").nth(4).click();
+    await page.locator(".work-row").nth(12).click();
     await settle();
     assert.equal(
       await page.locator('#view-stage [data-page="review"]').count(),
       1,
     );
     await back();
-    assert.equal(
-      await page.locator("#agent-tab").getAttribute("aria-selected"),
-      "true",
-    );
     assert(
       (await page
-        .locator("#agent-panel")
+        .locator('[data-scroll="running"]')
         .evaluate((element) => element.scrollTop)) > 200,
     );
     await page.keyboard.press("Escape");
     await page.locator("#tray-trigger").click();
-    assert.equal(
-      await page.locator("#agent-tab").getAttribute("aria-selected"),
-      "true",
+    assert(
+      (await page
+        .locator('[data-scroll="running"]')
+        .evaluate((element) => element.scrollTop)) > 200,
     );
 
     await navigate("running");
-    assert.equal(await page.locator(".review-open").count(), 4);
+    assert.equal(await page.locator('[data-display="running"]').count(), 4);
+    assert.equal(await page.locator('[data-display="queued"]').count(), 18);
     await snapshot("running");
     await page.locator(".review-open").first().click();
     await settle();
@@ -108,9 +148,9 @@ async function check(engine, name) {
       ),
     );
     await back();
-    assert.equal(await page.locator(".review-open").count(), 4);
+    assert.equal(await page.locator('[data-display="running"]').count(), 4);
     await page
-      .locator(".review-open")
+      .locator('[data-display="running"]')
       .filter({ hasText: "Sentinel" })
       .first()
       .click();
@@ -158,9 +198,78 @@ async function check(engine, name) {
       .locator('textarea[name="prompt"]')
       .fill("Look for boundary-condition defects using read-only evidence.");
     await page.locator('select[name="completion"]').selectOption("approve");
+    assert.equal(
+      await page.locator('input[name="signature"]').inputValue(),
+      "\u{1F52B} pr-sniper(observer-img-src-x:reasoning-demo)",
+    );
+    await page.locator('input[name="signature"]').fill("custom signature");
+    await page.locator('input[name="name"]').fill(`${agentName} two`);
+    assert.equal(
+      await page.locator('input[name="signature"]').inputValue(),
+      "custom signature",
+    );
+    await page.locator('[data-action="reset-signature"]').click();
+    assert.equal(
+      await page.locator('input[name="signature"]').inputValue(),
+      "\u{1F52B} pr-sniper(observer-img-src-x-two:reasoning-demo)",
+    );
+    await page.locator('input[name="name"]').fill(agentName);
+    await page.locator('[data-action="reset-signature"]').click();
+    assert.equal(
+      await page.locator("#sniper-popover").getAttribute("data-editor"),
+      "true",
+    );
+    assert.equal(await page.locator(".sniper-brand-art").isVisible(), false);
+    await page.locator('[data-action="refresh-models"]').click();
+    assert.equal(await page.locator(".icon-button.is-loading").count(), 1);
+    await page.waitForTimeout(900);
+    assert.equal(await page.locator(".icon-button.is-loading").count(), 0);
+    await page.locator('[data-action="prompt-tip"]').click();
+    assert.equal(await page.locator("#prompt-tips").isVisible(), true);
+    assert.equal(await page.locator("#prompt-tips [data-token]").count(), 8);
+    await page.locator('[data-token="pr_title"]').click();
+    assert(
+      (await page.locator('textarea[name="prompt"]').inputValue()).includes(
+        "{{pr_title}}",
+      ),
+    );
+    await page.keyboard.press("Escape");
+    assert.equal(await page.locator("#prompt-tips").isVisible(), false);
+    assert.equal(await page.locator("#sniper-popover").isVisible(), true);
+    await page.locator('[data-action="open-doctrines"]').click();
+    await settle();
+    assert.equal(await page.locator("#page-title").textContent(), "Doctrines");
+    await page.locator("#doctrine-filter").fill("correct");
+    assert.equal(
+      await page.locator("[data-doctrine-choice]:not([hidden])").count(),
+      1,
+    );
+    await page.locator("#doctrine-filter").fill("");
     await page
       .locator('input[name="doctrineIds"][value="correctness"]')
       .check();
+    assert.equal(
+      await page.locator("[data-doctrine-summary]").textContent(),
+      "1 selected",
+    );
+    await page
+      .locator('[data-action="edit-doctrine"][data-id="correctness"]')
+      .click();
+    await settle();
+    assert.equal(
+      await page.locator("#page-title").textContent(),
+      "Editing Correctness first",
+    );
+    await back();
+    assert.equal(await page.locator("#page-title").textContent(), "Doctrines");
+    assert.equal(
+      await page
+        .locator('input[name="doctrineIds"][value="correctness"]')
+        .isChecked(),
+      true,
+    );
+    await back();
+    assert.equal(await page.locator("#page-title").textContent(), "New agent");
     await snapshot("agent-editor");
     await page.keyboard.press("Escape");
     await page.locator("#tray-trigger").click();
@@ -189,10 +298,19 @@ async function check(engine, name) {
     await page.locator('[data-form="repo-url"] button[type="submit"]').click();
     await settle();
     await page.locator('input[name="enabled"]').check();
-    await page.locator(`input[name="agentIds"][value="${newAgentId}"]`).check();
+    await page.locator('[data-action="assign-agent"]').click();
+    await page.locator('[data-picker="agents"]').selectOption(newAgentId);
+    assert.equal(
+      await page
+        .locator(`input[name="agentIds"][value="${newAgentId}"]`)
+        .count(),
+      1,
+    );
+    await page.locator('[data-action="add-people"]').click();
+    await page.locator('[data-picker="people"]').selectOption({ index: 1 });
+    assert.equal(await page.locator('input[name="watched"]').count(), 1);
+    await page.locator(".schedule-details > summary").click();
     await page.locator('input[name="scope"]').check();
-    await page.locator("details.check-group summary").click();
-    await page.locator('input[name="watched"]').first().check();
     await page.locator('select[name="schedule"]').selectOption("interval");
     await page.locator('input[name="minutes"]').fill("");
     await page.locator('select[name="schedule"]').selectOption("cron");
@@ -210,6 +328,7 @@ async function check(engine, name) {
     const editRepo = async () => {
       await page.locator(`[data-page="repo"][data-id="${newRepoId}"]`).click();
       await settle();
+      await page.locator(".schedule-details > summary").click();
     };
     const saveRepo = async () => {
       await page.locator('[data-form="repo"] button[type="submit"]').click();
@@ -310,49 +429,99 @@ async function check(engine, name) {
       await settings();
       await page.locator(`[data-page="${collection}"]`).click();
       await settle();
-      await page.locator(`[data-page="${editor}"][data-id="${id}"]`).click();
-      await settle();
-      await page.locator(`[data-action="delete-${editor}"]`).click();
+      if (editor === "repo") {
+        await page.locator(`[data-page="repo"][data-id="${id}"]`).click();
+        await settle();
+        await page
+          .locator(".repo-disclosure:not(.schedule-details) > summary")
+          .click();
+        await page.locator('[data-action="delete-repo"]').click();
+      } else {
+        // The whole card opens the editor; the inline trash icon deletes.
+        await page
+          .locator(`[data-action="delete-${editor}"][data-id="${id}"]`)
+          .click();
+      }
       await settle();
       assert.equal((await state())[collection].length, expected);
     }
+    // A freshly assigned agent is removed from its repositories before deletion.
+    await settings();
+    await page.locator('[data-page="agents"]').click();
+    await settle();
+    assert.equal(
+      await page.locator(".configuration-card .row-trash").count(),
+      6,
+    );
 
     await reset();
     await page.locator("#monitoring-toggle").click();
-    assert.equal(await page.locator("#agent-count").textContent(), "22");
-    assert.equal(await page.locator("#running-count").textContent(), "0");
+    assert.equal(await page.locator("#running-nav-count").textContent(), "0");
+    await navigate("running");
+    assert.equal(await page.locator('[data-display="running"]').count(), 0);
+    assert.equal(await page.locator(".work-row").count(), 22);
     await page.reload();
     await page.locator("#tray-trigger").click();
     assert.equal(
       await page.locator("#monitoring-toggle").getAttribute("aria-checked"),
       "false",
     );
-    await page.locator("#agent-tab").click();
+    await navigate("running");
     await snapshot("paused");
     await page.locator("#monitoring-toggle").click();
-    assert.equal(await page.locator("#running-count").textContent(), "4");
-    assert.equal(await page.locator("#agent-count").textContent(), "18");
+    assert.equal(await page.locator("#running-nav-count").textContent(), "4");
+    assert.equal(await page.locator('[data-display="queued"]').count(), 18);
 
     await settings();
     await page.locator('[data-page="accounts"]').click();
     await settle();
+    await page.locator('[data-page="copilot"]').click();
+    await settle();
+    assert(
+      (await page.locator(".account-row").first().textContent()).includes(
+        "\u2713 Connected",
+      ),
+    );
     await page
       .locator('[data-action="account"][data-id="copilot-demo"]')
       .click();
     assert.equal(await page.locator("#running-nav-count").textContent(), "0");
-    await navigate("queue");
-    await page.locator("#agent-tab").click();
+    assert.equal(await page.locator(".account-row").count(), 0);
+    assert.equal(await page.locator(".queue-empty").count(), 1);
+    await navigate("running");
+    assert.equal(await page.locator('[data-display="blocked"]').count(), 22);
     assert(
-      (await page.locator("#agent-list").textContent()).includes(
-        "AI account disconnected",
+      (
+        await page
+          .locator('[data-display="blocked"]')
+          .first()
+          .getAttribute("title")
+      ).includes("AI account disconnected"),
+    );
+    await settings();
+    await page.locator('[data-page="agents"]').click();
+    await settle();
+    assert.equal(await page.locator(".row-warning").count(), 6);
+    assert(
+      (await page.locator(".row-warning").first().textContent()).includes(
+        "Reconnect required",
       ),
     );
     await settings();
     await page.locator('[data-page="accounts"]').click();
     await settle();
+    await page.locator('[data-page="copilot"]').click();
+    await settle();
     await page
-      .locator('[data-action="account"][data-id="copilot-demo"]')
+      .locator('[data-page="account-signin"][data-id="copilot"]')
       .click();
+    await settle();
+    await page.locator('input[name="accountName"]').fill("alex-ai-demo");
+    await page
+      .locator('[data-form="account-signin"] button[type="submit"]')
+      .click();
+    await settle();
+    assert.equal(await page.locator(".account-row").count(), 1);
     assert.equal(await page.locator("#running-nav-count").textContent(), "4");
 
     for (const [width, height] of [
@@ -376,18 +545,23 @@ async function check(engine, name) {
       await snapshot(`compact-${width}`);
     }
     await page.emulateMedia({ reducedMotion: "reduce" });
-    await navigate("queue");
+    await settings();
+    await page.locator('[data-page="repos"]').click();
+    await settle();
     assert.equal(
       await page
-        .locator(".lane-track")
+        .locator(".mini-switch")
+        .first()
         .evaluate((element) => getComputedStyle(element).transitionDuration),
       "0s",
     );
+    await settings();
+    await navigate("queue");
     await page.locator("#monitoring-toggle").focus();
     await page.keyboard.press("Shift+Tab");
     assert.equal(
       await page
-        .locator('[data-nav="settings"]')
+        .locator("#version-link")
         .evaluate((element) => element === document.activeElement),
       true,
     );
@@ -404,10 +578,16 @@ async function check(engine, name) {
     await settings();
     await page.locator('[data-page="accounts"]').click();
     await settle();
+    assert.equal(await page.locator(".settings-list .settings-row").count(), 2);
+    await page.locator('[data-page="github"]').click();
+    await settle();
+    assert.equal(await page.locator(".account-row").count(), 2);
+    assert.equal(await page.locator('[data-scroll="github"] h2').count(), 0);
+    await snapshot("account-list");
     const startConnection = async (kind, handle) => {
-      await page.locator('[data-page="add-account"]').click();
-      await settle();
-      await page.locator(`[data-provider="${kind}"]`).click();
+      await page
+        .locator(`[data-page="account-signin"][data-id="${kind}"]`)
+        .click();
       await settle();
       await page.locator('input[name="accountName"]').fill(handle);
       await page
@@ -415,34 +595,7 @@ async function check(engine, name) {
         .click();
       await settle();
     };
-    await page.locator('[data-page="add-account"]').click();
-    await settle();
-    assert.equal(
-      await page.locator(".provider-option:not(:disabled)").count(),
-      2,
-    );
-    for (const provider of ["azure-devops", "claude", "codex", "grok"]) {
-      assert.equal(
-        await page.locator(`[data-provider="${provider}"]`).isDisabled(),
-        true,
-      );
-      assert(
-        (
-          await page.locator(`[data-provider="${provider}"]`).textContent()
-        ).includes("Coming soon"),
-      );
-    }
-    await snapshot("account-providers");
-    await page.setViewportSize({ width: 320, height: 568 });
-    assert.equal(
-      await page
-        .locator('[data-scroll="add-account"]')
-        .evaluate((element) => element.scrollWidth > element.clientWidth),
-      false,
-    );
-    await snapshot("account-providers-compact");
-    await page.setViewportSize({ width: 1440, height: 960 });
-    await page.locator('[data-provider="github"]').click();
+    await page.locator('[data-page="account-signin"]').click();
     await settle();
     await page.locator('input[name="accountName"]').fill("Designer-DEMO");
     await page.locator(".scenario-details summary").click();
@@ -452,33 +605,23 @@ async function check(engine, name) {
         "No identity was saved",
       ),
     );
+    await page.locator("#notice-dismiss").click();
+    assert.equal(await page.locator("#app-notice").isHidden(), true);
     assert.equal(await state(), null);
-    await page
-      .locator('[data-form="account-signin"] button[type="submit"]')
-      .click();
-    await settle();
-    assert.equal(await state(), null);
-    assert.equal(
-      await page
-        .locator('[data-form="account-confirm"] button[type="submit"]')
-        .isDisabled(),
-      true,
-    );
-    await snapshot("account-confirm");
     await page.keyboard.press("Escape");
     await page.locator("#tray-trigger").click();
     assert.equal(await state(), null);
     await page.locator('[data-action="cancel-account"]').click();
     await settle();
-    assert.equal(await page.locator(".account-row").count(), 3);
+    assert.equal(await page.locator(".account-row").count(), 2);
     await startConnection("github", "Designer-DEMO");
-    await page.locator('input[name="confirmIdentity"]').check();
-    await page
-      .locator('[data-form="account-confirm"] button[type="submit"]')
-      .click();
-    await settle();
+    assert.equal(
+      await page.locator('[data-form="account-confirm"]').count(),
+      0,
+    );
     assert.equal((await state()).accounts.length, 4);
     assert.equal((await state()).accounts.at(-1).name, "designer-demo");
+    assert.equal(await page.locator(".account-row").count(), 3);
     const githubAccountId = (await state()).accounts.at(-1).id;
     assert.deepEqual(
       (await state()).reviews,
@@ -494,24 +637,18 @@ async function check(engine, name) {
     );
 
     await startConnection("github", "DESIGNER-DEMO");
-    await page.locator('input[name="confirmIdentity"]').check();
-    await page
-      .locator('[data-form="account-confirm"] button[type="submit"]')
-      .click();
     assert(
       (await page.locator("#app-notice").textContent()).includes(
-        "already listed",
+        "already connected",
       ),
     );
     assert.equal((await state()).accounts.length, 4);
     await page.locator('[data-action="cancel-account"]').click();
     await settle();
-    await startConnection("copilot", "designer-demo");
-    await page.locator('input[name="confirmIdentity"]').check();
-    await page
-      .locator('[data-form="account-confirm"] button[type="submit"]')
-      .click();
+    await back();
+    await page.locator('[data-page="copilot"]').click();
     await settle();
+    await startConnection("copilot", "designer-demo");
     assert.equal((await state()).accounts.length, 5);
     const copilotAccountId = (await state()).accounts.at(-1).id;
     await snapshot("accounts-connected");
@@ -561,7 +698,13 @@ async function check(engine, name) {
     await settings();
     await page.locator('[data-page="accounts"]').click();
     await settle();
-    await startConnection("github", "never-confirmed");
+    await page.locator('[data-page="github"]').click();
+    await settle();
+    await page
+      .locator('[data-page="account-signin"][data-id="github"]')
+      .click();
+    await settle();
+    await page.locator('input[name="accountName"]').fill("never-submitted");
     await page.reload();
     await page.locator("#tray-trigger").click();
     assert.equal((await state()).accounts.length, 5);
@@ -571,11 +714,11 @@ async function check(engine, name) {
     await page.locator('[data-page="advanced"]').click();
     await settle();
     await page.locator('[data-action="reset"]').click();
-    assert.equal(await page.locator("#human-count").textContent(), "3");
+    assert.equal(await page.locator("#ready-count").textContent(), "2");
     assert.equal((await state()).agents.length, 6);
     await page.goto(pathToFileURL(path.join(__dirname, "index.html")).href);
     await page.locator("#tray-trigger").click();
-    assert.equal(await page.locator("#human-list .review-open").count(), 3);
+    assert.equal(await page.locator("#human-list .review-open").count(), 2);
     assert.equal(
       await page
         .locator(".sniper-brand-art")
@@ -632,18 +775,13 @@ async function check(engine, name) {
     await unsaved.waitForTimeout(260);
     await unsaved.locator('[data-page="accounts"]').click();
     await unsaved.waitForTimeout(260);
-    await unsaved.locator('[data-page="add-account"]').click();
+    await unsaved.locator('[data-page="github"]').click();
     await unsaved.waitForTimeout(260);
-    await unsaved.locator('[data-provider="github"]').click();
+    await unsaved.locator('[data-page="account-signin"]').click();
     await unsaved.waitForTimeout(260);
     await unsaved.locator('input[name="accountName"]').fill("unsaved-demo");
     await unsaved
       .locator('[data-form="account-signin"] button[type="submit"]')
-      .click();
-    await unsaved.waitForTimeout(260);
-    await unsaved.locator('input[name="confirmIdentity"]').check();
-    await unsaved
-      .locator('[data-form="account-confirm"] button[type="submit"]')
       .click();
     assert(
       (await unsaved.locator("#app-notice").textContent()).includes(
@@ -651,7 +789,7 @@ async function check(engine, name) {
       ),
     );
     assert.equal(
-      await unsaved.locator('[data-form="account-confirm"]').count(),
+      await unsaved.locator('[data-form="account-signin"]').count(),
       1,
     );
     assert.equal(

@@ -77,7 +77,7 @@ test("a failed Agent write is visible and preserves the previous config bytes", 
   await page.goto("/?view=settings");
   const modal = await editAgent(page);
   await modal
-    .getByRole("textbox", { name: "Prompt", exact: true })
+    .locator("textarea[name=prompt]")
     .fill("New valid unsaved prompt.");
   await mkdir(join(dataRoot, "config/settings.json.tmp"));
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
@@ -85,9 +85,9 @@ test("a failed Agent write is visible and preserves the previous config bytes", 
   await expect(
     modal.getByRole("button", { name: "Save agent", exact: true }),
   ).toBeEnabled();
-  await expect(
-    modal.getByRole("textbox", { name: "Prompt", exact: true }),
-  ).toHaveValue("New valid unsaved prompt.");
+  await expect(modal.locator("textarea[name=prompt]")).toHaveValue(
+    "New valid unsaved prompt.",
+  );
   expect(await readFile(join(dataRoot, "config/settings.json"))).toEqual(
     before,
   );
@@ -102,7 +102,7 @@ test("returning focus preserves an unsaved Agent editor", async ({
   const before = await readFile(join(dataRoot, "config/settings.json"));
   await page.goto("/?view=settings");
   const modal = await editAgent(page);
-  const prompt = modal.getByRole("textbox", { name: "Prompt", exact: true });
+  const prompt = modal.locator("textarea[name=prompt]");
   await prompt.fill("Keep this unsaved review instruction.");
   await page.evaluate(async () => {
     window.dispatchEvent(new Event("focus"));

@@ -69,7 +69,7 @@ impl Task for ReplyTask {
             "trigger_id":self.trigger_id, "conversation":self.conversation, "prior_feedback":self.feedback,
             "assessment_owner_agent_id":self.owner_agent_id,
             "feedback_contract":"Only an owned-thread reply may reassess its own OPEN feedback_id. A valid explanation can clear the concern without a push, but requires explicit rationale and source evidence. Merely analyzing, replying or being quiet does not clear anything. CLOSED concerns stay settled. Top-level mentions cannot clear thread concerns. Human judgment cannot be automated clearance.",
-            "review_lens":{"agent_prompt":selection.agent.prompt,"repository_prompt":selection.policy.prompt,"preset":selection.preset,"doctrine":selection.doctrine},
+            "review_lens":{"agent_prompt":crate::prompt_tokens::expand(&selection.agent.prompt,&selection.agent.name,context),"repository_prompt":crate::prompt_tokens::expand(&selection.policy.prompt,&selection.agent.name,context),"preset":selection.preset,"doctrine":selection.doctrine},
             "changed_files":context.files,
             "contract":"body is at most 2000 characters; new_information is a verbatim substantive sentence in body. Include at least one exact single source-line quote with its immutable side/path/1-based line. Do not add a signature. For quiet or human_input_required, body and new_information must be empty, evidence empty, and reason must explain why. Reason is always required.",
             "result_schema":{

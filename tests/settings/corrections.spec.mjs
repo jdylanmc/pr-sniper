@@ -41,7 +41,7 @@ for (const api of ["showModal", "close"]) {
       .getByRole("button", { name: "Add & configure", exact: true })
       .click();
     await page
-      .getByRole("dialog", { name: "Settings for octo/fallback", exact: true })
+      .getByRole("dialog", { name: "octo/fallback", exact: true })
       .getByRole("button", { name: "Cancel repository changes" })
       .click();
     await saveChanges(page);
@@ -151,9 +151,7 @@ test("R2 dismissed repository reply cannot resurrect a reset draft", async ({
     await hold.arrived;
     await closeDialog(page);
     const agent = await editAgent(page);
-    await agent
-      .getByRole("textbox", { name: "Prompt", exact: true })
-      .fill("Reset this edit.");
+    await agent.locator("textarea[name=prompt]").fill("Reset this edit.");
     await closeDialog(page);
     await section(page, "Preferences");
     await page.locator("#global-capacity").fill("7");
@@ -227,9 +225,7 @@ for (const kind of ["add", "rename"]) {
       await section(page, "Repositories");
       if (kind === "rename") {
         const repository = await repositorySettings(page, "octo/original");
-        await repository
-          .getByText("Repository and connection", { exact: true })
-          .click();
+        await repository.locator("details.repository-group > summary").click();
         await repository
           .getByRole("button", { name: "Edit repository", exact: true })
           .click();
@@ -347,7 +343,7 @@ test("R2 repeated submit dispatch cannot start a second repository request", asy
     hold.release();
     await page.evaluate(() => window.__settingsIdle());
     await page
-      .getByRole("dialog", { name: "Settings for octo/once", exact: true })
+      .getByRole("dialog", { name: "octo/once", exact: true })
       .getByRole("button", { name: "Cancel repository changes" })
       .click();
     await saveChanges(page);
@@ -396,9 +392,7 @@ for (const editor of [
       let label;
       if (editor === "edit-repository") {
         const repository = await repositorySettings(page, "octo/original");
-        await repository
-          .getByText("Repository and connection", { exact: true })
-          .click();
+        await repository.locator("details.repository-group > summary").click();
         await repository
           .getByRole("button", { name: "Edit repository", exact: true })
           .click();
@@ -415,9 +409,12 @@ for (const editor of [
         await editAgent(page);
         label = "Prompt";
       }
-      const input = page
-        .getByRole("dialog")
-        .getByRole("textbox", { name: label, exact: true });
+      const input =
+        editor === "edit-agent"
+          ? page.getByRole("dialog").locator("textarea[name=prompt]")
+          : page
+              .getByRole("dialog")
+              .getByRole("textbox", { name: label, exact: true });
       const expected =
         editor === "edit-repository"
           ? "octo/unsaved-repository"
@@ -435,9 +432,9 @@ for (const editor of [
         await window.__settingsIdle();
       });
       const agent = await editAgent(page);
-      await expect(
-        agent.getByRole("textbox", { name: "Prompt", exact: true }),
-      ).toHaveValue("External update after deliberate close.");
+      await expect(agent.locator("textarea[name=prompt]")).toHaveValue(
+        "External update after deliberate close.",
+      );
     } finally {
       hold.release();
     }
@@ -472,7 +469,7 @@ for (const viewport of [
       .getByRole("button", { name: "octo/project", exact: true })
       .click();
     let modal = page.getByRole("dialog", {
-      name: "Settings for octo/project",
+      name: "octo/project",
       exact: true,
     });
     await modal
@@ -491,7 +488,7 @@ for (const viewport of [
     await expect(
       modal.getByRole("button", { name: "Add people", exact: true }),
     ).toBeFocused();
-    await modal.getByText("Repository and connection", { exact: true }).click();
+    await modal.locator("details.repository-group > summary").click();
     await expect(
       modal.getByRole("button", { name: "Edit repository", exact: true }),
     ).toBeVisible();

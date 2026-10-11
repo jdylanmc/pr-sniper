@@ -54,16 +54,26 @@ async function check(engine, name) {
       ),
     );
     await capture("list");
-    assert(
+    // No headings or hints: the grouped card overlaps the navy band by ~23px.
+    const overlap = await page
+      .locator(".repository-items")
+      .evaluate(
+        (el) =>
+          document.querySelector(".app-header").getBoundingClientRect().bottom -
+          el.getBoundingClientRect().top,
+      );
+    assert(overlap >= 20 && overlap <= 26, `band overlap ${overlap}`);
+    assert.equal(await page.locator('[data-scroll="repos"] h2').count(), 0);
+    assert.equal(await page.locator(".mini-switch").count(), 3);
+    assert.deepEqual(
       await page
-        .locator(".repository-heading")
-        .evaluate(
-          (el) =>
-            el.getBoundingClientRect().top >=
-            document.querySelector(".app-header").getBoundingClientRect()
-              .bottom,
-        ),
+        .locator(".mini-switch")
+        .first()
+        .boundingBox()
+        .then((box) => [Math.round(box.width), Math.round(box.height)]),
+      [40, 24],
     );
+    assert.equal(await page.locator(".floating-pill").innerText(), "URL");
     await click('[data-page="repo-browser"][data-id="github-personal"]');
     assert.equal(
       await page.locator("#repository-owner").inputValue(),
@@ -106,8 +116,10 @@ async function check(engine, name) {
       4,
     );
     assert.equal(
-      await page.locator(`[data-id="${repo.id}"] .row-value`).innerText(),
-      "Needs setup",
+      await page
+        .locator(`.mini-switch[data-id="${repo.id}"]`)
+        .getAttribute("aria-checked"),
+      "false",
     );
     await click('[data-page="repo-browser"][data-id="github-personal"]');
     await page.locator("#repository-owner").selectOption("orbit");

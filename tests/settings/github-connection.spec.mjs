@@ -12,7 +12,7 @@ import {
 
 async function connection(page, name = "jdylanmc/pr-sniper") {
   const modal = await repositorySettings(page, name);
-  await modal.getByText("Repository and connection", { exact: true }).click();
+  await modal.locator(".repository-group > summary").click();
   return modal;
 }
 
@@ -26,10 +26,10 @@ async function boundConnection(page, repository, accountCaption) {
   await expect(row).toContainText(`GitHub / ${accountCaption}`);
   await row.click();
   const modal = page.getByRole("dialog", {
-    name: `Settings for ${repository.name}`,
+    name: repository.name,
     exact: true,
   });
-  await modal.getByText("Repository and connection", { exact: true }).click();
+  await modal.locator(".repository-group > summary").click();
   await expect(modal.locator(".repository-binding-details dd")).toHaveText([
     repository.provider_account_id,
     repository.provider_repository_id,
@@ -144,7 +144,7 @@ test("verifying GitHub preserves drafts and does not enable automation", async (
   );
   await closeDialog(page);
   const modal = await editAgent(page);
-  const prompt = modal.getByRole("textbox", { name: "Prompt", exact: true });
+  const prompt = modal.locator("textarea[name=prompt]");
   await expect(prompt).toHaveValue("Keep this unsaved review prompt.");
   expect(calls).toEqual([
     {
@@ -326,10 +326,10 @@ test("retargeting a repository revalidates its stable binding", async ({
   await editor
     .getByRole("button", { name: "Add & configure", exact: true })
     .click();
-  await page
-    .getByRole("dialog", { name: "Settings for other/target", exact: true })
-    .getByRole("button", { name: "Close dialog", exact: true })
-    .click();
+  await expect(
+    page.getByRole("dialog", { name: "other/target", exact: true }),
+  ).toBeVisible();
+  await closeDialog(page);
   await saveChanges(page);
   expect((await store("snapshot")).settings.repositories).toEqual([
     expect.objectContaining({

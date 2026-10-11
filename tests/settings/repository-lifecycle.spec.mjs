@@ -69,7 +69,7 @@ test("adding, reopening, configuring, pausing and removing preserves identities 
     await section(page, "Repositories");
   }
   const editor = await repositorySettings(page, "fixture/one");
-  await editor.getByText("Repository and connection", { exact: true }).click();
+  await editor.locator(".repository-group > summary").click();
   await editor
     .getByRole("button", { name: "Remove repository", exact: true })
     .click();
@@ -106,7 +106,7 @@ test("editing a binding cannot reset an already configured stable repository", a
     .click();
   const before = (await store("snapshot")).settings;
   const editor = await repositorySettings(page, "fixture/one");
-  await editor.getByText("Repository and connection", { exact: true }).click();
+  await editor.locator(".repository-group > summary").click();
   await editor
     .getByRole("button", { name: "Edit repository", exact: true })
     .click();

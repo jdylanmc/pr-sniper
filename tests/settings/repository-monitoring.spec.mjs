@@ -1,7 +1,7 @@
 import { test, expect } from "./fixtures.mjs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { section } from "./navigation.mjs";
+import { section, backFromEditor } from "./navigation.mjs";
 import {
   providerFixture,
   repositoryPage,
@@ -49,7 +49,7 @@ async function seed(store, assigned = true) {
 const toggle = (page) =>
   page.locator(`.repository-list [data-toggle-repository="${repoId}"]`);
 const editor = (page) =>
-  page.getByRole("dialog", { name: "Settings for fixture/one", exact: true });
+  page.getByRole("dialog", { name: "fixture/one", exact: true });
 const openEditor = async (page) => {
   await page.locator(`[data-repository="${repoId}"]`).click();
   return editor(page);
@@ -123,9 +123,7 @@ test("failed new configuration Save cannot enable a later nested assignment Save
   await expect(
     modal.locator("[data-repository-monitoring-detail]"),
   ).toContainText("Starts after you save valid configuration");
-  await modal
-    .getByRole("button", { name: "Close dialog", exact: true })
-    .click();
+  await backFromEditor(page, modal);
   const row = page.locator(`[data-repository="${repository.id}"]`);
   await expect(row.locator("[data-monitoring-state]")).toHaveText("Disabled");
   await expect(
@@ -155,9 +153,7 @@ test("failed new configuration Save cannot enable a later nested assignment Save
     "Enabled",
   );
   await expect(monitoring).toBeChecked();
-  await modal
-    .getByRole("button", { name: "Close dialog", exact: true })
-    .click();
+  await backFromEditor(page, modal);
   await section(page, "Preferences");
   await expect(page.locator("#global-capacity")).toHaveValue("9");
 });
@@ -205,9 +201,7 @@ test("nested assignment Save refreshes the editor and listing from actual saved 
   await expect(
     modal.locator("[data-repository-monitoring-detail]"),
   ).not.toContainText("Needs setup");
-  await modal
-    .getByRole("button", { name: "Close dialog", exact: true })
-    .click();
+  await backFromEditor(page, modal);
   await expect(page.locator(`[data-repository="${repoId}"]`)).not.toContainText(
     "Needs setup",
   );
@@ -254,7 +248,7 @@ for (const width of [280, 320]) {
         reducedMotion: "reduce",
       });
       await repositoryPage(page, store, false);
-      const list = page.locator(".repository-list");
+      const lists = page.locator(".repository-list");
       const open = page.locator(`[data-repository="${repoId}"]`);
       await expect(open).toContainText(
         failedAccount ? "Reconnect account" : "Global Monitoring paused",
@@ -268,11 +262,13 @@ for (const width of [280, 320]) {
           ? "Alt+Tab"
           : "Tab";
       const enlargeText = () =>
-        list.evaluate((root) => {
-          const sizes = [...root.querySelectorAll("*")].map((node) => [
-            node,
-            parseFloat(getComputedStyle(node).fontSize),
-          ]);
+        lists.evaluateAll((roots) => {
+          const sizes = roots.flatMap((root) =>
+            [...root.querySelectorAll("*")].map((node) => [
+              node,
+              parseFloat(getComputedStyle(node).fontSize),
+            ]),
+          );
           for (const [node, size] of sizes)
             node.style.fontSize = `${size * 2}px`;
         });
@@ -406,9 +402,7 @@ for (const width of [280, 320]) {
       await expect(
         editor(page).locator("[data-repository-monitoring-state]"),
       ).toHaveText(failedAccount ? "Disabled" : "Enabled");
-      await editor(page)
-        .getByRole("button", { name: "Close dialog", exact: true })
-        .click();
+      await backFromEditor(page, editor(page));
       await expect(open).toBeFocused();
     });
   }
@@ -430,76 +424,84 @@ for (const embedded of [true, false]) {
         await store("set_automation_paused", { paused: true });
         await providerFixture(page, store);
         await repositoryPage(page, store, embedded);
-        const list = page.locator(".repository-list");
+        const lists = page.locator(".repository-list");
         const originalControlSize = await toggle(page).evaluate((control) =>
           parseFloat(getComputedStyle(control).fontSize),
         );
         const enlargeText = () =>
-          list.evaluate((root, scale) => {
-            const sizes = [...root.querySelectorAll("*")].map((element) => ({
-              element,
-              size: parseFloat(getComputedStyle(element).fontSize),
-            }));
+          lists.evaluateAll((roots, scale) => {
+            const sizes = roots.flatMap((root) =>
+              [...root.querySelectorAll("*")].map((element) => ({
+                element,
+                size: parseFloat(getComputedStyle(element).fontSize),
+              })),
+            );
             for (const { element, size } of sizes)
               element.style.fontSize = `${size * scale}px`;
           }, textScale);
         await enlargeText();
-        const contained = () =>
-          list.evaluate((root) => {
-            const bounds = root.getBoundingClientRect();
-            const inside = (rect) =>
-              rect.left >= bounds.left &&
-              rect.right <= bounds.right &&
-              rect.top >= bounds.top &&
-              rect.bottom <= bounds.bottom;
-            const rows = [
-              ...root.querySelectorAll(".repository-monitoring-row"),
-            ];
-            return rows.map((row) => {
-              const open = row.querySelector("[data-repository]");
-              const copy = row.querySelector(".settings-row-copy");
-              const state = row.querySelector("[data-monitoring-state]");
-              const control = row.querySelector("[data-toggle-repository]");
-              const rowBounds = row.getBoundingClientRect();
-              const controlBounds = control.getBoundingClientRect();
-              const text = document.createRange();
-              text.selectNodeContents(state);
-              const controlText = document.createRange();
-              controlText.selectNodeContents(control);
-              const copyBounds = copy.getBoundingClientRect();
-              const copyText = [...copy.querySelectorAll("strong,small")].every(
-                (element) => {
-                  const range = document.createRange();
-                  range.selectNodeContents(element);
-                  return [...range.getClientRects()].every(
-                    (rect) =>
-                      inside(rect) &&
-                      rect.left >= copyBounds.left &&
-                      rect.right <= copyBounds.right,
-                  );
-                },
-              );
-              return {
-                row: inside(row.getBoundingClientRect()),
-                open: inside(open.getBoundingClientRect()),
-                state: [...text.getClientRects()].every(inside),
-                control: inside(control.getBoundingClientRect()),
-                controlText: [...controlText.getClientRects()].every(inside),
-                readableState: state.scrollWidth <= state.clientWidth,
-                readableControl: control.scrollWidth <= control.clientWidth,
-                copyText,
-                fontSize: parseFloat(getComputedStyle(control).fontSize),
-                extents: {
-                  listLeft: bounds.left,
-                  listRight: bounds.right,
-                  rowLeft: rowBounds.left,
-                  rowRight: rowBounds.right,
-                  switchLeft: controlBounds.left,
-                  switchRight: controlBounds.right,
-                },
-              };
-            });
-          });
+        const contained = async () =>
+          (
+            await lists.evaluateAll((roots) =>
+              roots.map((root) => {
+                const bounds = root.getBoundingClientRect();
+                const inside = (rect) =>
+                  rect.left >= bounds.left &&
+                  rect.right <= bounds.right &&
+                  rect.top >= bounds.top &&
+                  rect.bottom <= bounds.bottom;
+                const rows = [
+                  ...root.querySelectorAll(".repository-monitoring-row"),
+                ];
+                return rows.map((row) => {
+                  const open = row.querySelector("[data-repository]");
+                  const copy = row.querySelector(".settings-row-copy");
+                  const state = row.querySelector("[data-monitoring-state]");
+                  const control = row.querySelector("[data-toggle-repository]");
+                  const rowBounds = row.getBoundingClientRect();
+                  const controlBounds = control.getBoundingClientRect();
+                  const text = document.createRange();
+                  text.selectNodeContents(state);
+                  const controlText = document.createRange();
+                  controlText.selectNodeContents(control);
+                  const copyBounds = copy.getBoundingClientRect();
+                  const copyText = [
+                    ...copy.querySelectorAll("strong,small"),
+                  ].every((element) => {
+                    const range = document.createRange();
+                    range.selectNodeContents(element);
+                    return [...range.getClientRects()].every(
+                      (rect) =>
+                        inside(rect) &&
+                        rect.left >= copyBounds.left &&
+                        rect.right <= copyBounds.right,
+                    );
+                  });
+                  return {
+                    row: inside(row.getBoundingClientRect()),
+                    open: inside(open.getBoundingClientRect()),
+                    state: [...text.getClientRects()].every(inside),
+                    control: inside(control.getBoundingClientRect()),
+                    controlText: [...controlText.getClientRects()].every(
+                      inside,
+                    ),
+                    readableState: state.scrollWidth <= state.clientWidth,
+                    readableControl: control.scrollWidth <= control.clientWidth,
+                    copyText,
+                    fontSize: parseFloat(getComputedStyle(control).fontSize),
+                    extents: {
+                      listLeft: bounds.left,
+                      listRight: bounds.right,
+                      rowLeft: rowBounds.left,
+                      rowRight: rowBounds.right,
+                      switchLeft: controlBounds.left,
+                      switchRight: controlBounds.right,
+                    },
+                  };
+                });
+              }),
+            )
+          ).flat();
         const geometry = await contained();
         expect(geometry).toHaveLength(2);
         const measurements = info.outputPath("containment.json");
@@ -838,9 +840,7 @@ test("new rows stay disabled until valid Save and an explicit off choice survive
   expect((await store("snapshot")).settings.repositories[0].enabled).toBe(
     false,
   );
-  await modal
-    .getByRole("button", { name: "Close dialog", exact: true })
-    .click();
+  await backFromEditor(page, modal);
   await page.locator("[data-repository]").click();
   modal = editor(page);
   await expect(
