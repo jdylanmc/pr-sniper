@@ -4,7 +4,7 @@ use std::{
     sync::Mutex,
     time::{Duration, Instant},
 };
-use tauri::{Emitter, LogicalSize, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder};
 
 pub const LABEL: &str = "panel";
 pub const EVENT: &str = "pr-sniper:panel";
@@ -285,38 +285,12 @@ fn position(
     app: &tauri::AppHandle,
     window: &tauri::WebviewWindow,
 ) -> Result<Option<String>, String> {
-    // Every screen has its own menu bar, so the tray rectangle can describe any
-    // of them. The pointer is on the screen the user just clicked: use it.
-    #[cfg(target_os = "macos")]
-    let pointer_monitor = match window.cursor_position() {
-        Ok(cursor) => window
-            .monitor_from_point(cursor.x, cursor.y)
-            .ok()
-            .flatten()
-            .map(|monitor| (cursor, monitor)),
-        Err(_) => None,
-    };
-    #[cfg(not(target_os = "macos"))]
-    let pointer_monitor: Option<(tauri::PhysicalPosition<f64>, tauri::Monitor)> = None;
     let tray = app
         .tray_by_id("pr-sniper")
         .ok_or("Tray is unavailable.")?
         .rect()
         .map_err(|_| "Tray rectangle unavailable.")?;
-    let (anchor, warning) = if let Some((cursor, monitor)) = &pointer_monitor {
-        // Hang the panel from that screen's menu bar under the pointer.
-        let top = monitor.position().y as f64;
-        let bar = (monitor.work_area().position.y as f64 - top).max(1.0);
-        (
-            Rect {
-                x: cursor.x,
-                y: top,
-                width: 1.0,
-                height: bar,
-            },
-            None,
-        )
-    } else if let Some(rect) = tray {
+    let (anchor, warning) = if let Some(rect) = tray {
         (physical(rect)?, None)
     } else {
         let cursor = window
@@ -334,15 +308,12 @@ fn position(
             ),
         )
     };
-    let monitor = match pointer_monitor {
-        Some((_, monitor)) => Some(monitor),
-        None => window
-            .monitor_from_point(
-                anchor.x + anchor.width / 2.0,
-                anchor.y + anchor.height / 2.0,
-            )
-            .map_err(|_| "Tray monitor unavailable.")?,
-    };
+    let monitor = window
+        .monitor_from_point(
+            anchor.x + anchor.width / 2.0,
+            anchor.y + anchor.height / 2.0,
+        )
+        .map_err(|_| "Tray monitor unavailable.")?;
     let monitor = match monitor {
         Some(monitor) => Some(monitor),
         None => window
@@ -362,7 +333,35 @@ fn position(
         monitor.scale_factor(),
     )?;
     let scale = monitor.scale_factor();
-    let position = PhysicalPosition::new(frame.x.round() as i32, frame.y.round() as i32);
+    if std::env::var_os("PR_SNIPER_PANEL_DEBUG").is_some() {
+        let all = window.available_monitors().unwrap_or_default();
+        eprintln!("[panel] monitors={}", all.len());
+        for m in &all {
+            eprintln!(
+                "[panel]   pos={:?} size={:?} work={:?}/{:?} scale={}",
+                m.position(),
+                m.size(),
+                m.work_area().position,
+                m.work_area().size,
+                m.scale_factor()
+            );
+        }
+        eprintln!(
+            "[panel] cursor={:?} app_cursor={:?} tray={:?} chosen_pos={:?} scale={} frame=({},{} {}x{})",
+            window.cursor_position().ok(),
+            app.cursor_position().ok(),
+            tray,
+            monitor.position(),
+            scale,
+            frame.x,
+            frame.y,
+            frame.width,
+            frame.height
+        );
+    }
+    // Physical coordinates are converted with the window's *current* screen, so
+    // use logical points from the target screen's own scale instead.
+    let position = LogicalPosition::new(frame.x / scale, frame.y / scale);
     // Logical size is independent of whichever monitor the window is on now;
     // a physical size is converted with that monitor's scale and goes wrong
     // when the tray's monitor has a different scale. Place, size, then re-place.
@@ -469,6 +468,9 @@ pub(crate) async fn show(app: &tauri::AppHandle, route: Option<Route>) -> Result
             window
                 .set_focus()
                 .map_err(|_| "Cannot focus the application panel.")?;
+            // macOS can keep a hidden window's previous frame until it is shown on
+            // another screen; apply the placement again so it never visibly moves.
+            let _ = position(&present_app, &window);
             {
                 let mut session = host
                     .panel

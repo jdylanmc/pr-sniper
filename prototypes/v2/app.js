@@ -1278,7 +1278,7 @@ const changelogSource = `# Changelog
 
 ### Fixed
 
-- Relaunching opens the panel; the panel opens on the screen under the pointer.
+- Relaunching opens the panel; it opens under the tray icon of the clicked screen.
 
 ## 0.2.0 - 2026-10-10
 
