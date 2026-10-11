@@ -118,7 +118,7 @@ const sections: Record<Section, [string, string]> = {
     "Git Repository",
     "Repository access and publication identities.",
   ],
-  copilot: ["GitHub Copilot", "AI access, separate from repository identity."],
+  copilot: ["GitHub Copilot", ""],
   github: ["GitHub", "Repository access and publication identity."],
   repositories: ["Repositories", "Acting accounts and review assignments."],
   capacity: [
@@ -137,8 +137,26 @@ const sections: Record<Section, [string, string]> = {
 };
 // Bespoke reticle/scope marks, not a generic icon-kit -- each nods at the
 // tab's job rather than a stock glyph.
+const promptTokens: [string, string][] = [
+  ["pr_title", "Pull request title"],
+  ["pr_number", "Pull request number"],
+  ["pr_author", "Author login"],
+  ["head_sha", "Head commit"],
+  ["base_sha", "Base commit"],
+  ["changed_files", "Changed paths, one per line"],
+  ["changed_file_count", "Number of changed files"],
+  ["agent_name", "This agent's name"],
+];
 const iconPaths = {
   back: '<path d="m14 6-6 6 6 6M8 12h12"/>',
+  brain:
+    '<path d="M9 4a3 3 0 0 0-3 3 3 3 0 0 0-2 5 3 3 0 0 0 2 5 3 3 0 0 0 6 1V4a3 3 0 0 0-3 0Zm6 0a3 3 0 0 1 3 3 3 3 0 0 1 2 5 3 3 0 0 1-2 5 3 3 0 0 1-6 1"/>',
+  refresh:
+    '<path d="M20 11a8 8 0 0 0-14-4M4 4v4h4M4 13a8 8 0 0 0 14 4m2 3v-4h-4"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
+  pencil: '<path d="M4 20h4L19 9l-4-4L4 16zM14 6l4 4"/>',
+  reset: '<path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5"/>',
+  trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5"/>',
   home: '<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="10" cy="18" r="2"/>',
   accounts:
     '<circle cx="9" cy="7" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 4a3 3 0 0 1 0 6m2 4a6 6 0 0 1 3 4v3"/>',
@@ -152,6 +170,8 @@ const iconPaths = {
     '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/>',
   preferences: '<circle cx="12" cy="12" r="7.5"/><path d="M12 8v4l2.6 2.6"/>',
   folder: '<path d="M3 6h7l2 2h9v12H3zM3 6V4h7l2 2"/>',
+  genie:
+    '<path d="M10.2 6.4V4.2a1.8 1.8 0 0 1 3.6 0v2.2M9.6 7.4c1.4 1 3.4 1 4.8 0M12 8.2C9 7.4 3 8.4 3 11.4c0 2.6 4.5 3.4 7.4 1.6M12 8.2c3-.8 9 .2 9 3.2 0 2.6-4.5 3.4-7.4 1.6M10.4 13c1.2.5 2.8.5 3.2 0M7.6 14.2c.6 3.4 2.8 5.7 5.8 6.6 2.2.4 4-.3 5-1.6-1.5.5-2.9.1-3.7-1 1.2-1.5 1.7-3.1 1.6-5"/>',
 };
 const icon = (key: keyof typeof iconPaths) =>
   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${iconPaths[key]}</svg>`;
@@ -295,10 +315,14 @@ export async function mountSettings(
       .map(([key, [title]]) => option(key, title, "accounts"))
       .join("")}</select></label></aside>`
   }
-    <div class="settings-main"><div class="settings-genie-entry"><button type="button" data-open-genie>Set up with Genie</button><button type="button" data-return-genie hidden>Back to Genie</button><p data-genie-save-note hidden>Each save is applied immediately. Close hides this editor; Back and Cancel follow the unsaved-field guidance below. Repository Save is authorization; no further scope confirmation is needed.</p></div><header class="settings-heading"><h1 tabindex="-1">Settings</h1><p>Sign in to an AI subscription, then connect the repositories it should watch.</p></header>
+    <div class="settings-main"><div class="settings-genie-entry"><button type="button" data-open-genie hidden>Set up with Genie</button><button type="button" data-return-genie hidden>Back to Genie</button><p data-genie-save-note hidden>Each save is applied immediately. Close hides this editor; Back and Cancel follow the unsaved-field guidance below. Repository Save is authorization; no further scope confirmation is needed.</p></div><header class="settings-heading"><h1 tabindex="-1">Settings</h1><p>Sign in to an AI subscription, then connect the repositories it should watch.</p></header>
     <p id="error" role="alert" hidden></p><div data-catalog-conflict hidden><p role="alert">Resource saved. Agents changed in another window. The previous doctrine catalog and Agent selections are retained until you reload. Close open editors first; unrelated preference and repository drafts stay intact.</p><button type="button" data-reload-catalog>Reload Agents and doctrines</button></div><section id="content"></section>
     <footer class="settings-savebar"><span role="status" id="save-status">Loading settings...</span><button id="reload-settings" hidden>Discard draft and reload</button><button id="reset-settings" disabled>Reset changes</button><button class="primary" id="save-settings" disabled>Save preferences</button></footer></div>`;
   const content = app.querySelector<HTMLElement>("#content")!;
+  const legacyGenie =
+    app.querySelector<HTMLButtonElement>("[data-open-genie]")!;
+  legacyGenie.hidden = !!options.embedded || !options.openGenie;
+  legacyGenie.onclick = () => options.openGenie?.(legacyGenie);
   const error = app.querySelector<HTMLElement>("#error")!;
   const status = app.querySelector<HTMLElement>("#save-status")!;
   const save = app.querySelector<HTMLButtonElement>("#save-settings")!;
@@ -374,7 +398,6 @@ export async function mountSettings(
   const returnGenie = app.querySelector<HTMLButtonElement>(
     "[data-return-genie]",
   )!;
-  const openGenie = app.querySelector<HTMLButtonElement>("[data-open-genie]")!;
   const genieNote = app.querySelector<HTMLElement>("[data-genie-save-note]")!;
   genieNote.className = "settings-hint";
   const settingsHeading = app.querySelector<HTMLElement>(".settings-heading")!;
@@ -386,14 +409,11 @@ export async function mountSettings(
   settingsHeading
     .querySelector("h1")!
     .after(app.querySelector(".settings-genie-entry")!);
-  openGenie.hidden = !options.openGenie;
-  openGenie.onclick = () => options.openGenie?.(openGenie);
   returnGenie.onclick = () => guidance?.back();
   const leaveGuidance = () => {
     guidance = undefined;
     returnGenie.hidden = true;
     app.querySelector<HTMLElement>("[data-genie-save-note]")!.hidden = true;
-    openGenie.hidden = !options.openGenie;
     settingsBack.hidden = !options.embedded || section === "home";
   };
   const dialogs = createDialogs(
@@ -408,10 +428,14 @@ export async function mountSettings(
   const preferencesDirty = () =>
     !!draft &&
     !sameResource(globalPreferences(draft), globalPreferences(saved));
+  let errorTimer: ReturnType<typeof setTimeout> | undefined;
   const showError = (message: string) => {
     error.textContent = message;
     error.hidden = false;
+    clearTimeout(errorTimer);
+    errorTimer = setTimeout(() => (error.hidden = true), 8000);
   };
+  error.addEventListener("click", () => (error.hidden = true));
   const clearError = () => {
     error.hidden = true;
     error.textContent = "";
@@ -668,8 +692,20 @@ export async function mountSettings(
     settingsBack.title = `Back to ${sections[parent][0]}; retain unsaved changes`;
     app.querySelector<HTMLElement>(".settings-savebar")!.hidden =
       section === "repositories" ||
-      (!!options.embedded && (section === "home" || accountOverview));
+      (!!options.embedded &&
+        (section === "home" ||
+          accountOverview ||
+          ["copilot", "github", "agents", "doctrines"].includes(section)));
     settingsHeading.hidden = section === "home";
+    if (options.embedded)
+      app.dispatchEvent(
+        new CustomEvent("pr-sniper:settings-section", {
+          detail: {
+            title: section === "home" ? "" : sections[section][0],
+            back: !settingsBack.hidden,
+          },
+        }),
+      );
     app.dataset.resourceLibrary =
       section === "repositories"
         ? "repositories"
@@ -791,7 +827,6 @@ export async function mountSettings(
         key === "preferences" ? "home" : key,
       );
     content.innerHTML = `<div class="settings-overview">
-      <div class="settings-intro"><span class="settings-summary-icon">${icon("home")}</span><div><strong>Your review setup</strong><p>Shared agents. Your rules.</p></div></div>
       <nav aria-label="Review setup" class="settings-home-group">
         ${row("accounts", "GitHub and Copilot, kept separate", "Reading...")}
         ${row("agents", "Reusable review configurations", String(saved.agents?.length ?? 0))}
@@ -802,7 +837,7 @@ export async function mountSettings(
         ${row("capacity", "A limit on running work, not saved agents", String(saved.capacity))}
         ${row("preferences", "Automation, notifications, startup")}
       </nav>
-      <button type="button" data-home-genie data-focus-key="settings:genie">Set up with Genie</button>
+      ${options.openGenie ? `<button type="button" data-home-genie data-focus-key="settings:genie" aria-label="Set up with Genie" title="Set up with Genie">${icon("genie")}</button>` : ""}
     </div>`;
     content
       .querySelectorAll<HTMLButtonElement>("[data-settings-destination]")
@@ -810,10 +845,8 @@ export async function mountSettings(
         button.onclick = () =>
           openFromHome(button.dataset.settingsDestination as Section);
       });
-    const genie =
-      content.querySelector<HTMLButtonElement>("[data-home-genie]")!;
-    genie.hidden = !options.openGenie;
-    genie.onclick = () => options.openGenie?.(genie);
+    const genie = content.querySelector<HTMLButtonElement>("[data-home-genie]");
+    if (genie) genie.onclick = () => options.openGenie?.(genie);
     refreshAccountSummaries();
   }
 
@@ -928,12 +961,81 @@ export async function mountSettings(
       ),
     );
 
+  async function unassignAgent(agent: Agent) {
+    for (const repository of agentRepositories(agent)) {
+      const current =
+        saved.repositories?.find((r) => r.id === repository.id) ?? repository;
+      const remaining = (current.assignments ?? []).filter(
+        (assignment) => assignment.agent_id !== agent.id,
+      );
+      const next = { ...clone(current), assignments: remaining };
+      if (!remaining.some((a) => a.id === next.primary_assignment_id))
+        delete next.primary_assignment_id;
+      // Monitoring needs at least one assigned Agent.
+      if (!remaining.length) next.enabled = false;
+      await commitResource(repositoryEdit(current, next));
+    }
+  }
+
+  const assignedNote = (agent: Agent) => {
+    const names = agentRepositories(agent).map((r) => escape(r.name));
+    return names.length
+      ? ` It is assigned to ${names.length} ${names.length === 1 ? "repository" : "repositories"} (${names.join(", ")}); it will be removed from ${names.length === 1 ? "it" : "them"} first.`
+      : "";
+  };
+
+  const editorStack: {
+    modal: HTMLDialogElement;
+    title: string;
+    back: () => void;
+  }[] = [];
+  function announceEditor() {
+    const top = editorStack[editorStack.length - 1];
+    app.dispatchEvent(
+      new CustomEvent("pr-sniper:settings-editor", {
+        detail: top ? { title: top.title, back: top.back } : null,
+      }),
+    );
+  }
+  function dropEditor(match: (entry: (typeof editorStack)[number]) => boolean) {
+    for (let i = editorStack.length - 1; i >= 0; i--)
+      if (match(editorStack[i])) editorStack.splice(i, 1);
+    announceEditor();
+  }
+
   function compactEditor(modal: HTMLDialogElement, backTitle: string) {
     modal.classList.add("shared-resource-editor");
     if (modal.parentElement?.classList.contains("dialog-fallback"))
       modal.parentElement.classList.add("shared-resource-host");
     const back = modal.querySelector<HTMLButtonElement>(".dialog-head button")!;
     back.classList.add("resource-back");
+    if (options.embedded) {
+      const entry = {
+        modal,
+        title: modal.getAttribute("aria-label") ?? "",
+        back: () => back.click(),
+      };
+      editorStack.push(entry);
+      announceEditor();
+      // The modal's own header button hides once the panel title takes over.
+      requestAnimationFrame(() => {
+        const active = document.activeElement;
+        if (
+          modal.isConnected &&
+          (!active ||
+            active === document.body ||
+            (active instanceof HTMLElement && !active.getClientRects().length))
+        )
+          modal
+            .querySelector<HTMLElement>(
+              ".dialog-body :is(input, select, textarea, button):not(:disabled)",
+            )
+            ?.focus({ preventScroll: true });
+      });
+      const release = () => dropEditor((e) => e.modal === modal);
+      modal.addEventListener("close", release);
+      modal.addEventListener("pr-sniper:dialog-closed", release);
+    }
     back.title = backTitle;
     back.innerHTML = icon("back");
   }
@@ -982,7 +1084,11 @@ export async function mountSettings(
 
   function resourceEditor(
     modal: HTMLDialogElement,
-    deletion?: { edit: ResourceEdit; blocked: string },
+    deletion?: {
+      edit: ResourceEdit;
+      blocked: string;
+      before?: () => Promise<void>;
+    },
     onDeleted?: () => void,
   ) {
     compactEditor(modal, "Back to library; discard unsaved fields");
@@ -1016,6 +1122,7 @@ export async function mountSettings(
       "[data-confirm-delete]",
     )!.onclick = async () => {
       try {
+        await deletion.before?.();
         await commitResource(deletion.edit, modal);
         if (onDeleted) onDeleted();
         else {
@@ -1035,7 +1142,7 @@ export async function mountSettings(
     ${existing ? `<button type="button" class="resource-delete" data-delete-resource>Delete ${kind}</button><div data-delete-confirmation hidden><p>Delete this saved ${kind} and discard these unsaved fields? Completed review evidence is retained.</p><div class="resource-actions"><button type="button" data-confirm-delete>Confirm deletion</button><button type="button" data-keep-resource>Keep ${kind}</button></div></div>` : ""}`;
 
   function renderDoctrines() {
-    content.innerHTML = `<p class="settings-hint" data-doctrine-catalog>${escape(doctrineCatalogLabel(snapshot.doctrine_catalog))}</p><div class="section-actions resource-toolbar"><p>Reusable principles, shared across Agents. Plain text, never commands.</p><button class="primary" id="new-doctrine">New doctrine</button></div><div class="doctrine-list resource-library"></div>`;
+    content.innerHTML = `<p class="settings-hint doctrine-catalog-note" data-doctrine-catalog>${escape(doctrineCatalogLabel(snapshot.doctrine_catalog))}</p><div class="section-actions resource-toolbar doctrine-toolbar"><button class="primary" id="new-doctrine">New doctrine</button></div><div class="doctrine-list resource-library"></div>`;
     const list = content.querySelector(".doctrine-list")!;
     if (!doctrines().length)
       list.innerHTML =
@@ -1043,7 +1150,7 @@ export async function mountSettings(
     for (const doctrine of doctrines()) {
       const row = document.createElement("article");
       row.className = "doctrine-card resource-card";
-      row.innerHTML = `<span class="resource-symbol">${icon("doctrines")}</span><div class="resource-copy"><h3>${escape(doctrine.title)}</h3><p class="resource-preview">${escape(doctrine.body)}</p><p class="word-count">${words(doctrine.body)} words / ${doctrineUsers(doctrine).length} Agents</p></div><div class="card-actions"><button data-edit>Edit</button><button data-remove>Delete</button></div>`;
+      row.innerHTML = `<span class="resource-symbol">${icon("doctrines")}</span><div class="resource-copy"><h3>${escape(doctrine.title)}</h3><p class="resource-preview">${escape(doctrine.body)}</p><p class="word-count">${words(doctrine.body)} words / ${doctrineUsers(doctrine).length} Agents</p></div><div class="card-actions"><button data-edit>Edit</button><button data-remove aria-label="Delete" title="Delete">${icon("trash")}</button></div>`;
       for (const action of ["edit", "remove"])
         row.querySelector<HTMLElement>(`[data-${action}]`)!.dataset.focusKey =
           `doctrine:${doctrine.title}:${action}`;
@@ -1089,10 +1196,14 @@ export async function mountSettings(
     ) => editDoctrine(event.currentTarget as HTMLButtonElement);
   }
 
-  function editDoctrine(opener: HTMLElement, existing?: Doctrine) {
+  function editDoctrine(
+    opener: HTMLElement,
+    existing?: Doctrine,
+    onDone?: (saved: Doctrine) => void,
+  ) {
     const users = existing ? doctrineUsers(existing) : [];
     const modal = dialog(
-      existing ? "Edit doctrine" : "New doctrine",
+      existing ? `Editing ${existing.title}` : "New doctrine",
       `<form><label>Title<input name="title" required maxlength="100" value="${escape(existing?.title ?? "")}" placeholder="e.g. bounded-context" /></label><label>Principles<textarea name="body" rows="10" required>${escape(existing?.body ?? "")}</textarea></label><p class="word-count" data-count>${words(existing?.body ?? "")} words</p><p class="settings-hint">Title doubles as this doctrine's slug -- keep it short and unique. Plain text only, never commands or credentials. Around 500 words is a friendly length, not a limit.</p>
       <p class="resource-impact">${users.length ? `Shared by ${users.length} Agents: ${escape(users.map((agent) => agent.name).join(", "))}. Saving updates their shared principles; renaming preserves references. Remove these references and save the Agents before deleting.` : "Not used by any Agent. Select this doctrine from an Agent editor to share it."} Completed review evidence keeps its captured text.</p>${resourceActions("doctrine", !!existing)}</form>`,
       opener,
@@ -1148,7 +1259,8 @@ export async function mountSettings(
         );
         if (existing) opener.dataset.focusKey = `doctrine:${title}:edit`;
         modal.close();
-        render();
+        if (onDone) onDone({ title, body: body.value });
+        else render();
       } catch (cause) {
         alert.textContent = typeof cause === "string" ? cause : reason(cause);
         alert.hidden = false;
@@ -1159,7 +1271,7 @@ export async function mountSettings(
   // -------------------------------------------------------------------- Agents
 
   function renderAgents(onReady: () => void) {
-    content.innerHTML = `<div class="section-actions resource-toolbar"><p>Unlimited saved configurations. AI capacity is set separately.</p><button class="primary" id="new-agent" disabled>New agent</button></div><div class="resource-account-notice"><p class="settings-hint" data-copilot-status>Reading Copilot accounts...</p><button id="manage-copilot">Manage Copilot accounts</button></div><div class="agent-list resource-library"></div>`;
+    content.innerHTML = `<div class="agent-list resource-library"></div><div class="section-actions resource-toolbar agent-footer"><button class="primary" id="new-agent" disabled>New agent</button><p class="settings-hint sr-only" data-copilot-status>Reading Copilot accounts...</p></div>`;
     const list = content.querySelector(".agent-list")!;
     if (!agents().length)
       list.innerHTML = `<div class="settings-empty"><strong>No agents yet</strong><p>Create one to start assigning it to repositories in Repositories.</p></div>`;
@@ -1169,7 +1281,7 @@ export async function mountSettings(
       );
       const row = document.createElement("article");
       row.className = "agent-card resource-card";
-      row.innerHTML = `<span class="resource-symbol">${icon("agents")}</span><div class="resource-copy"><h3>${escape(agent.name)}</h3><p class="resource-meta">${escape(agent.model)} / ${agentRepositories(agent).length} repositories</p><p class="resource-preview">${escape(agent.prompt)}</p><p data-account-state>${escape(agent.ai_account ? `Copilot: ${account?.login ?? agent.ai_account.account_id}. ${account?.state === "connected" ? "Sign-in verified; model access checked in Edit." : "Reconnect required; Agent blocked."}` : "Unconfigured. Choose an AI account and an actual model; the legacy selection is retained.")}</p></div><div class="card-actions"><button data-edit>Edit</button><button data-remove>Delete</button></div>`;
+      row.innerHTML = `<span class="resource-symbol">${icon("agents")}</span><div class="resource-copy"><h3>${escape(agent.name)}</h3><p class="resource-meta">${escape(agent.model)} / ${agentRepositories(agent).length} repositories</p><p class="resource-preview">${escape(agent.prompt)}</p><p data-account-state>${agent.ai_account ? (account?.state === "connected" ? "" : "Reconnect required") : "Unconfigured"}</p></div><div class="card-actions"><button data-edit>Edit</button><button data-remove aria-label="Delete" title="Delete">${icon("trash")}</button></div>`;
       row.dataset.agentId = agent.id;
       for (const action of ["edit", "remove"])
         row.querySelector<HTMLElement>(`[data-${action}]`)!.dataset.focusKey =
@@ -1181,22 +1293,19 @@ export async function mountSettings(
       ) => {
         const opener = event.currentTarget as HTMLButtonElement;
         const assigned = agentRepositories(agent);
-        if (assigned.length) {
-          showError(
-            "This Agent is assigned to a repository. Remove or replace its assignments and save the repository before deleting it.",
-          );
-          return;
-        }
         if (
           !(await confirmDialog(
             "Delete this agent?",
-            `Delete "${escape(agent.name)}" from saved Agents? Completed review evidence is retained.`,
-            "Delete agent",
+            `Delete "${escape(agent.name)}" from saved Agents?${assignedNote(agent)} Completed review evidence is retained.`,
+            assigned.length
+              ? "Remove from repositories and delete"
+              : "Delete agent",
             opener,
           ))
         )
           return;
         try {
+          await unassignAgent(agent);
           await commitResource({
             kind: "agent",
             id: agent.id,
@@ -1212,14 +1321,6 @@ export async function mountSettings(
     }
     content.querySelector<HTMLButtonElement>("#new-agent")!.onclick = (event) =>
       editAgent(event.currentTarget as HTMLButtonElement);
-    content.querySelector<HTMLButtonElement>("#manage-copilot")!.onclick =
-      () => {
-        navigate(options.embedded ? "copilot" : "accounts");
-        if (options.embedded) {
-          homeOpener = "accounts";
-          settingsHeading.querySelector<HTMLElement>("h1")!.focus();
-        }
-      };
     const notice = content.querySelector<HTMLElement>("[data-copilot-status]")!;
     let accountRequest = 0;
     const refreshAccounts = () => {
@@ -1247,7 +1348,8 @@ export async function mountSettings(
               (a) => a.account_id === agent.ai_account?.account_id,
             );
             if (state && agent.ai_account)
-              state.textContent = `Copilot: ${account?.login ?? agent.ai_account.account_id}. ${account?.state === "connected" ? "Sign-in verified; model access checked in Edit." : "Reconnect required; Agent blocked."}`;
+              state.textContent =
+                account?.state === "connected" ? "" : "Reconnect required";
           }
           if (view.accounts.some((a) => a.reason === "verification_pending"))
             setTimeout(refreshAccounts, 350);
@@ -1263,6 +1365,16 @@ export async function mountSettings(
     refreshAccounts();
   }
 
+  const slug = (value: string, fallback: string) =>
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || fallback;
+  const defaultSignature = (name: string, model: string) =>
+    `\u{1F52B} pr-sniper(${slug(name, "agent")}:${slug(model, "model")})`;
+  const doctrineChoice = (title: string, checked: boolean) =>
+    `<label data-doctrine-choice><input type="checkbox" name="doctrine" value="${escape(title)}" ${checked ? "checked" : ""} /><span>${escape(title)}</span><button type="button" data-edit-doctrine="${escape(title)}" aria-label="Edit doctrine ${escape(title)}" title="Edit doctrine">${icon("pencil")}</button></label>`;
+
   function editAgent(
     opener: HTMLElement,
     existing?: Agent,
@@ -1273,31 +1385,66 @@ export async function mountSettings(
       saved.agents?.find((a) => a.id === existing?.id) ?? null,
     );
     const modal = dialog(
-      existing ? "Edit agent" : "New agent",
-      `<form><label>Name<input name="name" required maxlength="80" value="${escape(existing?.name ?? "")}" placeholder="e.g. The Nitpicker" /></label>
-        <div class="resource-intelligence"><h3>Intelligence</h3><p class="settings-hint">GitHub Copilot. The AI account is separate from the GitHub account used for repository actions.</p>
+      existing ? `Editing ${existing.name}` : "New agent",
+      `<form><section class="agent-section"><label>Name<input name="name" required maxlength="80" value="${escape(existing?.name ?? "")}" placeholder="e.g. The Nitpicker" /></label>
         <label>AI account<select name="ai-account" aria-label="AI account"><option value="">Choose a Copilot account</option>${copilotAccounts.map((a) => `<option value="${escape(a.account_id)}" ${a.account_id === existing?.ai_account?.account_id ? "selected" : ""} ${a.state === "connected" ? "" : "disabled"}>${escape(a.login)} (${escape(a.account_id)})${a.state === "connected" ? "" : " - reconnect required"}</option>`).join("")}${existing?.ai_account && !copilotAccounts.some((a) => a.account_id === existing.ai_account?.account_id) ? `<option selected disabled value="${escape(existing.ai_account.account_id)}">Copilot ${escape(existing.ai_account.account_id)} - reconnect required</option>` : ""}</select></label>
-        ${onSaved ? '<p class="settings-hint" data-editor-accounts role="status">Reading Copilot accounts...</p><button type="button" data-retry-accounts>Retry Copilot accounts</button>' : ""}
-        <label>Model<select name="model" aria-label="Model" disabled><option value="${escape(existing?.model ?? "")}">${escape(existing?.model ?? "Choose an account first")}</option></select></label>
-        <label>Reasoning effort<select name="reasoning-effort" aria-label="Reasoning effort" disabled></select></label>
+        ${onSaved ? '<p class="settings-hint" data-editor-accounts role="status">Reading Copilot accounts...</p><button type="button" data-retry-accounts>Retry Copilot accounts</button>' : ""}</section>
+        <section class="agent-section resource-intelligence">
+        <label><span class="model-label">Model<button type="button" data-retry-models aria-label="Refresh model list" title="Refresh model list">${icon("refresh")}</button><button type="button" data-cancel-models aria-label="Cancel model lookup" title="Cancel model lookup" hidden><span class="spinner" aria-hidden="true"></span></button></span><select name="model" aria-label="Model" disabled><option value="${escape(existing?.model ?? "")}">${escape(existing?.model ?? "Choose an account first")}</option></select></label>
         <label>Context window<select name="context-tier" aria-label="Context window" disabled></select></label>
+        <label>Reasoning effort<select name="reasoning-effort" aria-label="Reasoning effort" disabled></select></label>
         <p class="settings-hint" data-intelligence-status aria-live="polite"></p>
-        <p class="settings-hint" data-model-status role="status"></p><button type="button" data-retry-models>Retry model list</button><button type="button" data-cancel-models hidden>Cancel model lookup</button></div>
-        <label>Prompt<textarea name="prompt" rows="4" required>${escape(existing?.prompt ?? "Review this pull request for correctness, risk, and readability.")}</textarea></label>
-        <fieldset class="resource-doctrines"><legend>Doctrines</legend><p class="settings-hint" data-doctrine-catalog>${escape(doctrineCatalogLabel(snapshot.doctrine_catalog))}</p><p class="settings-hint">Select zero, one or many. Existing order is retained; new selections append in library order. Filtering does not change selections.</p><label>Filter doctrines<input type="search" data-doctrine-filter placeholder="Find principles..." /></label><p class="settings-hint" data-selection-count aria-live="polite"></p><div class="doctrine-choices" tabindex="0" role="group" aria-label="Available doctrines">${doctrines()
-          .map(
-            (d) =>
-              `<label data-doctrine-choice><input type="checkbox" name="doctrine" value="${escape(d.title)}" ${existing && doctrineTitles(existing).some((t) => t.trim().toLowerCase() === d.title.trim().toLowerCase()) ? "checked" : ""} /><span>${escape(d.title)}</span></label>`,
+        <p class="settings-hint" data-model-status role="status"></p></section>
+        <section class="agent-section"><button type="button" class="doctrine-row" data-open-doctrines aria-label="Choose doctrines"><span>Doctrines</span><span class="doctrine-summary" data-doctrine-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button><fieldset class="resource-doctrines"><legend class="sr-only">Doctrines</legend><label>Filter doctrines<input type="search" data-doctrine-filter placeholder="Find principles..." /></label><div class="doctrine-choices" role="group" aria-label="Available doctrines">${doctrines()
+          .map((d) =>
+            doctrineChoice(
+              d.title,
+              !!existing &&
+                doctrineTitles(existing).some(
+                  (t) =>
+                    t.trim().toLowerCase() === d.title.trim().toLowerCase(),
+                ),
+            ),
           )
           .join(
             "",
           )}</div><p class="settings-hint" data-no-doctrines hidden></p></fieldset>
-        <label>Signature<input name="signature" required maxlength="80" value="${escape(existing?.signature ?? "PR Sniper \u{1F3AF}")}" /></label>
+        <label><span class="prompt-label">Prompt<button type="button" class="info-tip" aria-label="Prompt tips" aria-expanded="false" aria-controls="prompt-tips">${icon("info")}</button><span class="tip-body" id="prompt-tips" role="group" aria-label="Prompt tokens and tips"><strong>Tokens</strong><span class="tip-note">Click to insert. Replaced when the review runs.</span><span class="token-list">${promptTokens.map(([token, hint]) => `<button type="button" data-token="${token}"><code>{{${token}}}</code><span>${escape(hint)}</span></button>`).join("")}</span><strong>Tips</strong><ul><li>Open with a role and goal.</li><li>Say what to flag, what to ignore, and the severity bar.</li><li>Ask for file, line and a suggested fix.</li></ul></span></span><textarea name="prompt" aria-label="Prompt" rows="4" required>${escape(existing?.prompt ?? "Review this pull request for correctness, risk, and readability.")}</textarea></label>
+        <label><span class="model-label">Signature<button type="button" data-reset-signature aria-label="Reset signature to default" title="Reset to default">${icon("reset")}</button></span><input name="signature" aria-label="Signature" required maxlength="200" value="${escape(existing?.signature ?? defaultSignature(existing?.name ?? "", existing?.model ?? ""))}" /></label></section>
         <p class="settings-hint">Custom signature is saved for the signature-customization follow-up. Current publication uses the canonical PR Sniper signature.</p>
         <p class="settings-hint">No review or test prompt runs here. Saving an existing unconfigured Agent preserves its selection until you explicitly replace it.</p>
         <p class="resource-impact">${assigned.length ? `Shared by ${assigned.length} repositories: ${escape(assigned.map((repository) => repository.name).join(", "))}. Remove or replace those assignments and save the repositories before deleting.` : "Not assigned to any repository."} Publish Comment, Reply Comment, Approve &amp; Merge and primary designation belong to repository assignments, never this shared Agent. Completed evidence keeps its captured configuration.</p>${resourceActions("agent", !!existing)}</form>`,
       opener,
     );
+    const promptField = modal.querySelector<HTMLTextAreaElement>(
+      "textarea[name=prompt]",
+    )!;
+    const grow = () => {
+      promptField.style.height = "auto";
+      promptField.style.height = `${promptField.scrollHeight}px`;
+    };
+    modal.querySelectorAll<HTMLButtonElement>("[data-token]").forEach((b) => {
+      b.onclick = () => {
+        const text = `{{${b.dataset.token}}}`;
+        const { selectionStart: from, selectionEnd: to } = promptField;
+        promptField.setRangeText(text, from, to, "end");
+        promptField.dispatchEvent(new Event("input", { bubbles: true }));
+        promptField.focus();
+      };
+    });
+    const tipButton = modal.querySelector<HTMLButtonElement>(".info-tip")!;
+    const setTip = (open: boolean) =>
+      tipButton.setAttribute("aria-expanded", String(open));
+    tipButton.onclick = () =>
+      setTip(tipButton.getAttribute("aria-expanded") !== "true");
+    modal.addEventListener("click", (event) => {
+      if (!(event.target as Element).closest(".prompt-label")) setTip(false);
+    });
+    modal.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") setTip(false);
+    });
+    promptField.addEventListener("input", grow);
+    requestAnimationFrame(grow);
     let releaseDiscardGuard: (() => void) | undefined;
     const finish = (agent?: Agent) => {
       releaseDiscardGuard?.();
@@ -1315,9 +1462,8 @@ export async function mountSettings(
               expected,
               value: null,
             },
-            blocked: assigned.length
-              ? "This Agent is assigned to a repository. Remove or replace its assignments and save the repository before deleting it."
-              : "",
+            blocked: "",
+            before: existing ? () => unassignAgent(existing) : undefined,
           }
         : undefined,
       () => finish(),
@@ -1330,7 +1476,8 @@ export async function mountSettings(
     const filter = modal.querySelector<HTMLInputElement>(
       "[data-doctrine-filter]",
     )!;
-    const choices = [
+    const list = modal.querySelector<HTMLElement>(".doctrine-choices")!;
+    let choices = [
       ...modal.querySelectorAll<HTMLElement>("[data-doctrine-choice]"),
     ];
     const updateChoices = () => {
@@ -1347,8 +1494,9 @@ export async function mountSettings(
           if (choice.hidden) hiddenSelected++;
         }
       }
-      modal.querySelector("[data-selection-count]")!.textContent =
-        `${selected} selected${hiddenSelected ? ` (${hiddenSelected} hidden by filter)` : ""} / ${visible} shown`;
+      void hiddenSelected;
+      modal.querySelector("[data-doctrine-summary]")!.textContent =
+        `${selected} selected`;
       const empty = modal.querySelector<HTMLElement>("[data-no-doctrines]")!;
       empty.hidden = visible > 0;
       empty.textContent = choices.length
@@ -1359,13 +1507,70 @@ export async function mountSettings(
     filter.onkeydown = (event) => {
       if (event.key === "Enter") event.preventDefault();
     };
-    modal
-      .querySelector(".doctrine-choices")!
-      .addEventListener("change", updateChoices);
+    list.addEventListener("change", updateChoices);
     updateChoices();
+    const agentForm = modal.querySelector<HTMLFormElement>("form")!;
+    const openRow = modal.querySelector<HTMLButtonElement>(
+      "[data-open-doctrines]",
+    )!;
+    const closePicker = () => {
+      delete agentForm.dataset.view;
+      dropEditor((e) => e.modal === modal && e.title === "Doctrines");
+      openRow.focus({ preventScroll: true });
+    };
+    openRow.onclick = () => {
+      agentForm.dataset.view = "doctrines";
+      if (options.embedded) {
+        editorStack.push({ modal, title: "Doctrines", back: closePicker });
+        announceEditor();
+      }
+      filter.focus({ preventScroll: true });
+    };
+    list.addEventListener("click", (event) => {
+      const pencil = (event.target as Element).closest<HTMLButtonElement>(
+        "[data-edit-doctrine]",
+      );
+      if (!pencil) return;
+      const title = pencil.dataset.editDoctrine!;
+      const doctrine = doctrines().find((d) => d.title === title);
+      if (!doctrine) return;
+      editDoctrine(pencil, doctrine, (updated) => {
+        const checked = new Set(
+          [...list.querySelectorAll<HTMLInputElement>("input:checked")].map(
+            (i) => (i.value === title ? updated.title : i.value),
+          ),
+        );
+        list.innerHTML = doctrines()
+          .map((d) => doctrineChoice(d.title, checked.has(d.title)))
+          .join("");
+        choices = [
+          ...modal.querySelectorAll<HTMLElement>("[data-doctrine-choice]"),
+        ];
+        updateChoices();
+      });
+    });
     const accountSelect =
       modal.querySelector<HTMLSelectElement>("[name=ai-account]")!;
     const modelSelect = modal.querySelector<HTMLSelectElement>("[name=model]")!;
+    const nameInput = modal.querySelector<HTMLInputElement>("[name=name]")!;
+    const signatureInput =
+      modal.querySelector<HTMLInputElement>("[name=signature]")!;
+    const computedSignature = () =>
+      defaultSignature(nameInput.value, modelSelect.value);
+    let lastSignature = computedSignature();
+    // An untouched default follows the name and model; an edited one never moves.
+    const syncSignature = () => {
+      const next = computedSignature();
+      if (signatureInput.value === lastSignature) signatureInput.value = next;
+      lastSignature = next;
+    };
+    nameInput.addEventListener("input", syncSignature);
+    modelSelect.addEventListener("change", syncSignature);
+    modal.querySelector<HTMLButtonElement>("[data-reset-signature]")!.onclick =
+      () => {
+        signatureInput.value = lastSignature = computedSignature();
+        signatureInput.focus();
+      };
     const modelStatus = modal.querySelector<HTMLElement>(
       "[data-model-status]",
     )!;
@@ -1536,6 +1741,7 @@ export async function mountSettings(
             )
             .join("");
         modelSelect.disabled = !models.some(modelSelectable);
+        syncSignature();
         describeModel();
       } catch (cause) {
         if (modal.isConnected && current === request)
@@ -1812,6 +2018,7 @@ export async function mountSettings(
     content.innerHTML = `<section class="repository-library" aria-label="Repositories">
       <div class="section-actions"><h2>Your repositories</h2><button class="primary" id="add-repository" aria-label="Add repository by URL">+ URL</button></div>
       <div class="repository-list native-repository-list"></div>
+      <div class="repository-list native-repository-list repository-disconnected" data-repository-disconnected hidden></div>
       ${conflict ? '<p role="alert">Saved settings changed in another window. Your unsaved draft is retained.</p><button data-repository-reload>Discard draft and reload</button>' : ""}
       <h2>Browse from an account</h2><div data-repository-accounts class="native-repository-list"></div>
       <p class="settings-hint">Choose a personal or organization owner. Saving repository configuration authorizes current and future matching pull requests.</p>
@@ -1823,8 +2030,20 @@ export async function mountSettings(
       );
       if (!list || !accounts) return;
       const restore = rememberControl(content);
-      list.innerHTML =
+      const disconnected = content.querySelector<HTMLElement>(
+        "[data-repository-disconnected]",
+      )!;
+      const rowsFor = (disconnectedGroup: boolean) =>
         repositories()
+          .filter((repository) => {
+            const account = githubAccounts.find(
+              (a) => a.account_id === repository.provider_account_id,
+            );
+            const isDisconnected =
+              repositoryAccountsState === "ready" &&
+              account?.state !== "connected";
+            return isDisconnected === disconnectedGroup;
+          })
           .map((repository) => {
             const account = githubAccounts.find(
               (a) => a.account_id === repository.provider_account_id,
@@ -1852,8 +2071,15 @@ export async function mountSettings(
               : " / Draft"
           }</span><span aria-hidden="true">›</span></button><button type="button" class="repository-monitoring-toggle" role="switch" aria-checked="${committed.enabled}" aria-label="Monitor ${escape(label)}" data-toggle-repository="${escape(repository.id)}" data-focus-key="repository:${escape(repository.id)}:monitoring" ${busy ? "disabled" : ""}>${committed.enabled ? "Disable" : "Enable"}</button></div>`;
           })
-          .join("") ||
-        '<p class="settings-empty">No repositories yet. Browse an account below or add a GitHub URL.</p>';
+          .join("");
+      disconnected.innerHTML = rowsFor(true);
+      disconnected.hidden = !disconnected.innerHTML;
+      list.innerHTML =
+        rowsFor(false) ||
+        (disconnected.hidden
+          ? '<p class="settings-empty">No repositories yet. Browse an account below or add a GitHub URL.</p>'
+          : "");
+      list.hidden = !list.innerHTML;
       accounts.innerHTML =
         repositoryAccountsState === "unavailable"
           ? '<p role="alert">GitHub accounts are unavailable. No connection is assumed.</p><button data-retry-accounts>Retry reading accounts</button>'
@@ -1873,8 +2099,11 @@ export async function mountSettings(
             new Event("pr-sniper:refresh-provider-accounts"),
           ),
         );
-      list
-        .querySelectorAll<HTMLButtonElement>("[data-toggle-repository]")
+      const lists = [list, disconnected];
+      lists
+        .flatMap((l) => [
+          ...l.querySelectorAll<HTMLButtonElement>("[data-toggle-repository]"),
+        ])
         .forEach((button) => {
           button.onclick = async () => {
             clearError();
@@ -1894,8 +2123,10 @@ export async function mountSettings(
             }
           };
         });
-      list
-        .querySelectorAll<HTMLButtonElement>("[data-repository]")
+      lists
+        .flatMap((l) => [
+          ...l.querySelectorAll<HTMLButtonElement>("[data-repository]"),
+        ])
         .forEach((button) => {
           button.onclick = () =>
             repositoryDialog(
@@ -2514,7 +2745,7 @@ export async function mountSettings(
     const schedule = saved.defaults.schedule;
     const pendingPull = pendingPullRequests.get(repository.id);
     const modal = dialog(
-      `Settings for ${repository.name}`,
+      repository.name,
       `<section class="repository-identity"><h3>${escape(repository.name)}</h3><p class="settings-hint">${escape(repository.provider === "github" ? `GitHub acting account: ${githubAccounts.find((account) => account.account_id === repository.provider_account_id)?.login ?? (repository.provider_account_id ? "Saved account unavailable" : "No account selected")}.` : "Azure DevOps account binding is not available in this build.")}</p></section>
         <section class="repository-group"><label class="repository-check"><input type="checkbox" role="switch" aria-label="Monitor ${escape(repository.name)}" data-repository-enabled ${repository.enabled || (pendingSetup.has(repository.id) && !setupMonitoringOff.has(repository.id)) ? "checked" : ""} /><span>Monitor this repository</span></label><p data-repository-monitoring-state role="status"></p><p class="settings-hint" data-repository-monitoring-detail></p></section>
         <section class="repository-group"><h2>Pull requests to watch</h2>
@@ -2529,7 +2760,7 @@ export async function mountSettings(
         <div class="watchlist"></div>
         <p class="settings-hint">Optional. A nonempty effective watched-author filter qualifies those authors. An empty effective author filter means all authors. Pull requests requesting the signed-in account also qualify when the reviewer-request trigger is enabled. Exact GitHub login, no wildcards.</p>
         </section><section class="repository-group" data-global-schedule><h2>Saved global schedule</h2><p>${schedule.kind === "cron" ? `<code>${escape(schedule.expression)}</code>` : `Every ${schedule.minutes} minutes (saved legacy schedule)`} / ${escape(schedule.timezone)}</p><p class="settings-hint">${schedule.kind === "cron" ? "One schedule scans enabled repositories. Change it in Preferences;" : "Polling is blocked until you choose a global five-field cron schedule in Preferences. The saved legacy interval is retained;"} repository and Agent assignments have no separate polling controls.</p></section>
-        <details class="repository-group"><summary>Repository and connection</summary><dl class="repository-binding-details"><dt>Account ID</dt><dd>${escape(repository.provider_account_id ?? "Unbound")}</dd><dt>Repository ID</dt><dd>${escape(repository.provider_repository_id ?? "Not verified")}</dd></dl><div class="settings-actions"><button id="rename-repository">Edit repository</button><button data-unbind-repository ${repository.provider_account_id ? "" : "disabled"}>Unbind account</button><button id="remove-repository">Remove repository</button></div><div class="connection"></div></details>
+        <details class="repository-group"><summary>Repository</summary><dl class="repository-binding-details"><dt>Account ID</dt><dd>${escape(repository.provider_account_id ?? "Unbound")}</dd><dt>Repository ID</dt><dd>${escape(repository.provider_repository_id ?? "Not verified")}</dd></dl><div class="settings-actions"><button id="rename-repository">Edit repository</button><button data-unbind-repository ${repository.provider_account_id ? "" : "disabled"}>Unbind account</button><button id="remove-repository">Remove repository</button></div><div class="connection"></div></details>
         <p class="settings-hint">Save applies only this repository. Back retains its draft for this session; Cancel discards it. Earlier assignment saves stay applied.</p>
         <p class="settings-hint" role="status" data-explicit-pr-status ${pendingPull ? "" : "hidden"}>${pendingPull ? `PR #${pendingPull.number} will be queued after valid Save, even outside watch filters. Pause, repository disablement, account/Agent availability and capacity still apply.` : ""}</p>
         <p role="alert" data-earlier-intake-error hidden></p>
@@ -2900,7 +3131,7 @@ export async function mountSettings(
         const row = document.createElement("div");
         row.className = "assignment-row";
         const primary = primaryAssignmentId(repository) === assignment.id;
-        row.innerHTML = `<div><strong>${escape(agent?.name ?? "Deleted agent")}</strong><p>${primary ? `Primary${assignments.length === 1 ? " (automatic)" : ""} \u00b7 ` : "Secondary \u00b7 "}${assignment.comment ? "Publish Comment" : "Initial findings local"}${primary && assignment.actions?.reply ? " \u00b7 Reply Comment" : ""}${primary && assignment.actions?.merge ? " \u00b7 Approve & Merge" : primary && assignment.actions?.approve ? " \u00b7 Approve" : ""}</p><p>${escape(agent?.model ?? "Repair the shared Agent reference")} / one normal pass</p></div><button data-edit>Edit</button><button data-remove>Remove</button>`;
+        row.innerHTML = `<div><strong>${escape(agent?.name ?? "Deleted agent")}</strong><p>${primary ? `Primary${assignments.length === 1 ? " (automatic)" : ""} \u00b7 ` : "Secondary \u00b7 "}${assignment.comment ? "Publish Comment" : "Initial findings local"}${primary && assignment.actions?.reply ? " \u00b7 Reply Comment" : ""}${primary && assignment.actions?.merge ? " \u00b7 Approve & Merge" : primary && assignment.actions?.approve ? " \u00b7 Approve" : ""}</p><p>${escape(agent?.model ?? "Repair the shared Agent reference")} / one normal pass</p></div><button data-edit aria-label="Edit assignment">Edit</button><button data-remove aria-label="Remove assignment" title="Remove">${icon("trash")}</button>`;
         for (const action of ["edit", "remove"])
           row.querySelector<HTMLElement>(`[data-${action}]`)!.dataset.focusKey =
             `assignment:${assignment.id}:${action}`;
@@ -2947,7 +3178,7 @@ export async function mountSettings(
       for (const person of people) {
         const row = document.createElement("div");
         row.className = "watchlist-row";
-        row.innerHTML = `<span><span>@${escape(person.login)}</span><small>GitHub ID ${escape(person.id)}</small></span><button data-remove aria-label="Remove ${escape(person.login)}">Remove</button>`;
+        row.innerHTML = `<span><span>@${escape(person.login)}</span><small>GitHub ID ${escape(person.id)}</small></span><button data-remove aria-label="Remove ${escape(person.login)}" title="Remove">${icon("trash")}</button>`;
         row.querySelector<HTMLElement>("[data-remove]")!.dataset.focusKey =
           `person:${person.id}:remove`;
         row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick = (
@@ -3554,7 +3785,6 @@ export async function mountSettings(
       }
       guidance = origin;
       returnGenie.hidden = false;
-      openGenie.hidden = true;
       app.querySelector<HTMLElement>("[data-genie-save-note]")!.hidden = false;
       const next: Section =
         target === "ai" || target === "repository-account"

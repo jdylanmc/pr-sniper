@@ -55,6 +55,7 @@ export function createDialogs(
       const items = panelView
         ? [
             ...shellControls(".panel-header"),
+            ...shellControls(".panel-context"),
             ...shellControls(".panel-tabs"),
             ...controls(entry.modal),
             ...shellControls(".panel-footer"),
@@ -96,7 +97,7 @@ export function createDialogs(
         panelView &&
         event.target instanceof Element &&
         event.target.closest(
-          "[data-panel-navigation],.panel-header,.panel-footer",
+          "[data-panel-navigation],.panel-header,.panel-context,.panel-footer",
         )
       ) &&
       event.target instanceof Node &&
@@ -133,7 +134,8 @@ export function createDialogs(
       return false;
     const ownedFocus =
       entry.modal.contains(document.activeElement) ||
-      document.activeElement === document.body;
+      document.activeElement === document.body ||
+      !!document.activeElement?.closest("[data-panel-back]");
     changed();
     stack.pop();
     if (entry.nativeClose) entry.nativeClose();

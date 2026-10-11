@@ -76,10 +76,14 @@ a {
   color: inherit;
   text-underline-offset: 3px;
 }
-a:focus-visible,
-#evidence-heading:focus-visible {
+a:focus-visible {
   outline: 3px solid #d47516;
   outline-offset: 3px;
+}
+/* Headings and dialog shells take focus only so route changes are announced; they are not controls. */
+:is(h1, h2, h3, h4)[tabindex][tabindex]:focus-visible,
+dialog[tabindex]:focus-visible {
+  outline: none;
 }
 @media (max-width: 480px) {
   main {
