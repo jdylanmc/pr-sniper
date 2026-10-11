@@ -180,8 +180,9 @@ export async function queueFixture(store) {
 
 export async function showQueueGroup(page, kind) {
   const metric = page.locator(`[data-queue-filter="${kind}"]`);
-  if ((await metric.getAttribute("aria-pressed")) !== "true")
-    await metric.evaluate((element) => element.click());
+  // Always click: the default view can flip once the first snapshot arrives,
+  // but an explicit choice is sticky.
+  await metric.evaluate((element) => element.click());
   await page
     .locator(`[data-queue-group="${kind}"]`)
     .waitFor({ state: "visible" });
