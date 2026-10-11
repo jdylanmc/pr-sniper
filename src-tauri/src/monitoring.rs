@@ -1,3 +1,4 @@
+use crate::admission::AdmissionConfig;
 use crate::github::{
     metadata::{Lifecycle, PullRequest},
     provider::Connection,
@@ -427,6 +428,7 @@ pub struct ActivationContext {
     pub provider_repository_id: String,
     pub policy: Policy,
     pub watched_authors: Vec<WatchedIdentity>,
+    pub admission: Option<AdmissionConfig>,
     pub trigger_policy: String,
 }
 
@@ -488,6 +490,7 @@ pub struct PollTicket {
     pub provider_repository_id: String,
     pub policy: Policy,
     pub watched_authors: Vec<WatchedIdentity>,
+    pub admission: Option<AdmissionConfig>,
     pub trigger_policy: String,
     pub updated_after: Option<String>,
     pub activation_version: String,
@@ -553,6 +556,7 @@ struct ConfiguredSchedule {
     agent_name: Option<String>,
     policy: Policy,
     watched_authors: Vec<WatchedIdentity>,
+    admission: Option<AdmissionConfig>,
     trigger_policy: Option<String>,
     assignments: Vec<ScanAssignment>,
 }
@@ -632,8 +636,12 @@ impl Monitor {
             return Err(ConnectionError::Configuration);
         }
         let policy = repository.overrides.effective(&settings.defaults);
-        let watched_authors = effective_watched_authors(repository, &policy);
-        let trigger_policy = trigger_policy(&watched_authors, policy.reviewer_assignment)?;
+        let (watched_authors, admission) = effective_admission(repository, &policy);
+        let trigger_policy = trigger_policy(
+            &watched_authors,
+            policy.reviewer_assignment,
+            admission.as_ref(),
+        )?;
         Ok(ActivationContext {
             repository_id: repository.id.clone(),
             name: repository.name.clone(),
@@ -641,6 +649,7 @@ impl Monitor {
             provider_repository_id: binding.repository.repository_id,
             policy,
             watched_authors,
+            admission,
             trigger_policy,
         })
     }
@@ -733,11 +742,12 @@ impl Monitor {
             }
             let eligibility = eligibility(
                 &current.watched_authors,
+                current.admission.as_ref(),
                 &current.policy,
                 &current.account_id,
                 &pull,
             );
-            if !eligibility.eligible() && !pull.mentioned {
+            if !eligibility.admitted {
                 continue;
             }
             let candidate = ActivationCandidate {
@@ -929,7 +939,7 @@ impl Monitor {
                 let policy = repository.overrides.effective(&resources.settings.defaults);
                 (
                     repository.id.clone(),
-                    effective_watched_authors(repository, &policy),
+                    effective_admission(repository, &policy).0,
                 )
             })
             .collect();
@@ -1189,6 +1199,7 @@ impl Monitor {
             provider_repository_id: binding.repository.repository_id,
             policy: configuration.policy.clone(),
             watched_authors: configuration.watched_authors.clone(),
+            admission: configuration.admission.clone(),
             trigger_policy: configuration
                 .trigger_policy
                 .clone()
@@ -1991,6 +2002,7 @@ impl Monitor {
                 provider_repository_id: repository_id.clone(),
                 policy: configuration.policy.clone(),
                 watched_authors: configuration.watched_authors.clone(),
+                admission: configuration.admission.clone(),
                 trigger_policy: policy_key.clone(),
                 updated_after: cursor.and_then(|cursor| cursor.updated_after),
                 activation_version: activation.version.clone(),
@@ -2297,6 +2309,7 @@ impl Monitor {
             let admission_candidate = activation_admission_candidate(&mut activation, &pull);
             let eligibility = eligibility(
                 &ticket.watched_authors,
+                ticket.admission.as_ref(),
                 &ticket.policy,
                 &result.connection.identity.id,
                 &pull,
@@ -2327,10 +2340,10 @@ impl Monitor {
                     && (pull.state != Lifecycle::Open
                         || pull.draft
                         || (explicit_pull_id != Some(pull.id.as_str())
-                            && (!(eligibility.eligible() || pull.mentioned)
+                            && (!eligibility.admitted
                                 || !(admission_candidate
                                     || eligibility.requested_reviewer
-                                    || pull.mentioned))))
+                                    || eligibility.mention_bypass))))
                 {
                     continue;
                 }
@@ -2616,20 +2629,31 @@ struct Eligibility {
     watched_author: bool,
     all_authors: bool,
     requested_reviewer: bool,
-}
-
-impl Eligibility {
-    fn eligible(self) -> bool {
-        self.watched_author || self.all_authors || self.requested_reviewer
-    }
+    /// The final decision, including mentions.
+    admitted: bool,
+    /// An admitting mention also bypasses the activation baseline.
+    mention_bypass: bool,
 }
 
 fn eligibility(
     watched_authors: &[WatchedIdentity],
+    admission: Option<&AdmissionConfig>,
     policy: &Policy,
     account_id: &str,
     pull: &PullRequest,
 ) -> Eligibility {
+    if let Some(admission) = admission {
+        use crate::admission::AdmissionMode;
+        let all_authors = admission.mode == AdmissionMode::All;
+        let requested_reviewer = !all_authors && admission.assigned_matches(account_id, pull);
+        return Eligibility {
+            watched_author: !all_authors && admission.include_users_matches(pull),
+            all_authors,
+            requested_reviewer,
+            admitted: admission.admits(account_id, pull),
+            mention_bypass: !all_authors && pull.mentioned && admission.mentioned_enabled(),
+        };
+    }
     let watched_author = pull.author.as_ref().is_some_and(|author| {
         watched_authors
             .iter()
@@ -2645,18 +2669,29 @@ fn eligibility(
         watched_author,
         all_authors,
         requested_reviewer,
+        admitted: watched_author || all_authors || requested_reviewer || pull.mentioned,
+        mention_bypass: pull.mentioned,
     }
 }
 
 pub(crate) fn scan_admits(ticket: &PollTicket, pull: &PullRequest) -> bool {
     eligibility(
         &ticket.watched_authors,
+        ticket.admission.as_ref(),
         &ticket.policy,
         &ticket.provider_account_id,
         pull,
     )
-    .eligible()
-        || pull.mentioned
+    .admitted
+}
+
+/// True when path rules decide this pull request but its changed files have
+/// not been loaded; the polling listing does not include them.
+pub fn needs_changed_files(ticket: &PollTicket, pull: &PullRequest) -> bool {
+    ticket
+        .admission
+        .as_ref()
+        .is_some_and(|admission| admission.needs_changed_files(&ticket.provider_account_id, pull))
 }
 
 fn activation_admission_candidate(
@@ -2701,7 +2736,19 @@ fn mark_activation_admitted(activation: &mut MonitoringActivation, pull: &PullRe
     }
 }
 
-fn effective_watched_authors(
+/// Legacy effective watched authors, or the enabled include-users list when
+/// admission rules apply (display and legacy-shaped evidence only).
+fn effective_admission(
+    repository: &crate::storage::Repository,
+    policy: &Policy,
+) -> (Vec<WatchedIdentity>, Option<AdmissionConfig>) {
+    match &repository.admission {
+        Some(admission) => (admission.watched_authors(), Some(admission.clone())),
+        None => (effective_watched_authors(repository, policy), None),
+    }
+}
+
+pub(crate) fn effective_watched_authors(
     repository: &crate::storage::Repository,
     policy: &Policy,
 ) -> Vec<WatchedIdentity> {
@@ -2739,8 +2786,13 @@ fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {
     for repository in &settings.repositories {
         let mut policy = repository.overrides.effective(&settings.defaults);
         policy.schedule = settings.defaults.schedule.clone();
-        let watched_authors = effective_watched_authors(repository, &policy);
-        let policy_key = trigger_policy(&watched_authors, policy.reviewer_assignment).ok();
+        let (watched_authors, admission) = effective_admission(repository, &policy);
+        let policy_key = trigger_policy(
+            &watched_authors,
+            policy.reviewer_assignment,
+            admission.as_ref(),
+        )
+        .ok();
         let binding = repository.account_binding();
         let provider_supported = binding.as_ref().is_some_and(|binding| {
             binding.account.provider == ProviderId::Github
@@ -2766,6 +2818,7 @@ fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {
             agent_name: None,
             policy,
             watched_authors,
+            admission,
             trigger_policy: policy_key,
             assignments: repository
                 .assignments
@@ -3131,14 +3184,19 @@ fn configuration_changed() -> MonitoringError {
 fn trigger_policy(
     watched_authors: &[WatchedIdentity],
     reviewer_assignment: bool,
+    admission: Option<&AdmissionConfig>,
 ) -> Result<String, ConnectionError> {
     let mut authors: Vec<_> = watched_authors
         .iter()
         .map(|author| author.id.as_str())
         .collect();
     authors.sort_unstable();
-    serde_json::to_string(&(authors, reviewer_assignment))
-        .map_err(|_| ConnectionError::Configuration)
+    // Legacy keys keep their exact shape so unchanged repositories stay valid.
+    match admission {
+        None => serde_json::to_string(&(authors, reviewer_assignment)),
+        Some(admission) => serde_json::to_string(&("admission", admission)),
+    }
+    .map_err(|_| ConnectionError::Configuration)
 }
 
 pub fn review_policy(
@@ -3182,11 +3240,12 @@ pub fn review_policy(
             || (job.work.is_none()
                 && !eligibility(
                     &configuration.watched_authors,
+                    configuration.admission.as_ref(),
                     &configuration.policy,
                     &job.account_id,
                     pull,
                 )
-                .eligible())
+                .admitted)
         {
             return Err(
                 "Pull request revision or eligibility changed; wait for the next poll.".into(),
@@ -3291,5 +3350,236 @@ mod read_diagnostic_tests {
                 ..
             }
         ));
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    use crate::admission::{AdmissionMode, AdmissionRule, AdmissionRuleKind};
+    use crate::github::metadata::ChangedFile;
+    use crate::github::Identity;
+
+    const ACCOUNT: &str = "22";
+    const REPO_ID: &str = "00000000-0000-4000-8000-000000000001";
+
+    fn settings(admission: serde_json::Value) -> Settings {
+        let mut repository = serde_json::json!({
+            "id": REPO_ID, "provider": "github", "name": "o/r", "enabled": true,
+            "provider_account_id": ACCOUNT, "provider_repository_id": "100",
+            "watched_authors": [{"id": "11", "login": "legacy"}]
+        });
+        if !admission.is_null() {
+            repository["admission"] = admission;
+        }
+        let mut settings = Settings::default();
+        settings
+            .repositories
+            .push(serde_json::from_value(repository).unwrap());
+        settings
+    }
+
+    fn pull(author: &str, reviewers: &[&str], mentioned: bool, paths: &[&str]) -> PullRequest {
+        PullRequest {
+            mentioned,
+            id: "1".into(),
+            number: 1,
+            title: "t".into(),
+            author: Some(Identity {
+                id: author.into(),
+                login: "a".into(),
+            }),
+            requested_reviewers: reviewers
+                .iter()
+                .map(|id| Identity {
+                    id: (*id).into(),
+                    login: "r".into(),
+                })
+                .collect(),
+            requested_teams: Vec::new(),
+            state: Lifecycle::Open,
+            draft: false,
+            head_sha: "a".repeat(40),
+            base_sha: "b".repeat(40),
+            head_repository_id: None,
+            base_repository_id: "100".into(),
+            updated_at: "2026-10-01T00:00:00Z".into(),
+            files: paths
+                .iter()
+                .map(|path| ChangedFile {
+                    path: (*path).into(),
+                    previous_path: None,
+                    status: "modified".into(),
+                    additions: 1,
+                    deletions: 0,
+                    changes: 1,
+                    sha: "c".repeat(40),
+                })
+                .collect(),
+        }
+    }
+
+    fn eligible(settings: &Settings, pull: &PullRequest) -> Eligibility {
+        let configuration = configured_schedules(settings).remove(0);
+        eligibility(
+            &configuration.watched_authors,
+            configuration.admission.as_ref(),
+            &configuration.policy,
+            ACCOUNT,
+            pull,
+        )
+    }
+
+    #[test]
+    fn absent_admission_keeps_legacy_behavior_and_trigger_key() {
+        let legacy = settings(serde_json::Value::Null);
+        assert!(eligible(&legacy, &pull("11", &[], false, &[])).admitted);
+        assert!(!eligible(&legacy, &pull("12", &[], false, &[])).admitted);
+        assert!(eligible(&legacy, &pull("12", &[ACCOUNT], false, &[])).admitted);
+        let mentioned = eligible(&legacy, &pull("12", &[], true, &[]));
+        assert!(mentioned.admitted && mentioned.mention_bypass);
+        let configuration = configured_schedules(&legacy).remove(0);
+        assert_eq!(
+            configuration.trigger_policy.as_deref(),
+            Some(r#"[["11"],true]"#)
+        );
+        assert!(configuration.admission.is_none());
+    }
+
+    #[test]
+    fn admission_replaces_legacy_watched_authors_and_reviewer_toggle() {
+        let filtered = settings(serde_json::json!({
+            "mode": "filtered",
+            "rules": [{"kind": "mentioned", "enabled": true}]
+        }));
+        // The legacy watched author no longer admits; only the mention does.
+        assert!(!eligible(&filtered, &pull("11", &[ACCOUNT], false, &[])).admitted);
+        let mention = eligible(&filtered, &pull("12", &[], true, &[]));
+        assert!(mention.admitted && mention.mention_bypass && !mention.requested_reviewer);
+
+        let assigned = settings(serde_json::json!({
+            "mode": "filtered",
+            "rules": [{"kind": "assigned", "enabled": true}]
+        }));
+        let reviewer = eligible(&assigned, &pull("12", &[ACCOUNT], true, &[]));
+        assert!(reviewer.admitted && reviewer.requested_reviewer && !reviewer.mention_bypass);
+        assert!(!eligible(&assigned, &pull("12", &[], true, &[])).admitted);
+
+        let all = settings(serde_json::json!({"mode": "all", "rules": []}));
+        let everyone = eligible(&all, &pull("99", &[], false, &[]));
+        assert!(everyone.admitted && everyone.all_authors && !everyone.watched_author);
+    }
+
+    #[test]
+    fn exclusions_beat_mentions_and_path_rules_use_loaded_files() {
+        let configured = settings(serde_json::json!({"mode": "filtered", "rules": [
+            {"kind": "exclude_paths", "enabled": true, "paths": ["docs/"]},
+            {"kind": "mentioned", "enabled": true},
+            {"kind": "include_paths", "enabled": true, "paths": ["src/"]}
+        ]}));
+        assert!(!eligible(&configured, &pull("12", &[], true, &["docs/a.md"])).admitted);
+        assert!(eligible(&configured, &pull("12", &[], true, &["docs/a.md", "x"])).admitted);
+        assert!(eligible(&configured, &pull("12", &[], false, &["src/a.rs"])).admitted);
+        assert!(!eligible(&configured, &pull("12", &[], false, &["lib/a.rs"])).admitted);
+    }
+
+    fn ticket_for(settings: &Settings) -> PollTicket {
+        let configuration = configured_schedules(settings).remove(0);
+        PollTicket {
+            health_key: configuration.health_key,
+            assignment_id: None,
+            repository_id: configuration.repository_id,
+            name: configuration.name,
+            provider_account_id: ACCOUNT.into(),
+            provider_repository_id: "100".into(),
+            policy: configuration.policy,
+            watched_authors: configuration.watched_authors,
+            admission: configuration.admission,
+            trigger_policy: configuration.trigger_policy.unwrap(),
+            updated_after: None,
+            activation_version: String::new(),
+            account_generation: 0,
+            assignments: Vec::new(),
+            tracked: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn scan_admission_and_file_hydration_follow_the_ticket() {
+        let configured = settings(serde_json::json!({"mode": "filtered", "rules": [
+            {"kind": "assigned", "enabled": true},
+            {"kind": "include_paths", "enabled": true, "paths": ["src/"]}
+        ]}));
+        let ticket = ticket_for(&configured);
+        let reviewed = pull("12", &[ACCOUNT], false, &[]);
+        assert!(scan_admits(&ticket, &reviewed));
+        assert!(!needs_changed_files(&ticket, &reviewed));
+        let unknown = pull("12", &[], false, &[]);
+        assert!(needs_changed_files(&ticket, &unknown));
+        assert!(!scan_admits(&ticket, &unknown));
+        let loaded = pull("12", &[], false, &["src/a.rs"]);
+        assert!(!needs_changed_files(&ticket, &loaded));
+        assert!(scan_admits(&ticket, &loaded));
+        // Legacy tickets never fetch files.
+        assert!(!needs_changed_files(
+            &ticket_for(&settings(serde_json::Value::Null)),
+            &unknown
+        ));
+    }
+
+    #[test]
+    fn changing_admission_changes_the_trigger_key_and_activation_context() {
+        let base = settings(serde_json::json!({"mode": "filtered", "rules": [
+            {"kind": "mentioned", "enabled": true}
+        ]}));
+        let key = |settings: &Settings| {
+            configured_schedules(settings)
+                .remove(0)
+                .trigger_policy
+                .unwrap()
+        };
+        let context = |settings: &Settings| Monitor::activation_context(settings, REPO_ID).unwrap();
+        let mut variants = Vec::new();
+        type Edit = fn(&mut crate::admission::AdmissionConfig);
+        let edits: [Edit; 4] = [
+            |c| c.mode = AdmissionMode::All,
+            |c| c.rules[0].enabled = false,
+            |c| {
+                c.rules
+                    .push(AdmissionRule::default_for_test(AdmissionRuleKind::Assigned))
+            },
+            |c| {
+                c.rules.push(AdmissionRule::default_for_test(
+                    AdmissionRuleKind::ExcludePaths,
+                ));
+                c.rules[1].paths = Some(vec!["docs/".into()]);
+            },
+        ];
+        for edit in edits {
+            let mut changed = base.clone();
+            edit(changed.repositories[0].admission.as_mut().unwrap());
+            assert_ne!(key(&changed), key(&base));
+            assert_ne!(context(&changed), context(&base));
+            assert_ne!(
+                context(&changed).trigger_policy,
+                context(&base).trigger_policy
+            );
+            variants.push(key(&changed));
+        }
+        // Reordering is an admission change too.
+        let mut reordered = settings(serde_json::json!({"mode": "filtered", "rules": [
+            {"kind": "assigned", "enabled": true},
+            {"kind": "mentioned", "enabled": true}
+        ]}));
+        let before = key(&reordered);
+        reordered.repositories[0]
+            .admission
+            .as_mut()
+            .unwrap()
+            .rules
+            .reverse();
+        assert_ne!(key(&reordered), before);
+        // The key is stable for identical configuration.
+        assert_eq!(key(&base), key(&base.clone()));
     }
 }

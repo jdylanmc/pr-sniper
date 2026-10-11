@@ -42,6 +42,7 @@ fn repository(enabled: bool) -> Repository {
         overrides: PolicyOverrides::default(),
         review_preset: None,
         watched_authors: Vec::new(),
+        admission: None,
         assignments: Vec::new(),
         primary_assignment_id: None,
     }

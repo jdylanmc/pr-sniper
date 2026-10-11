@@ -127,6 +127,69 @@ impl<T: Transport> GithubClient<T> {
         Ok(pulls)
     }
 
+    /// Changed files of one pull request; the listing endpoint omits them.
+    pub fn pull_request_files(
+        &self,
+        repository: &RemoteRepository,
+        number: u64,
+    ) -> Result<Vec<ChangedFile>, ConnectionError> {
+        let name = crate::storage::canonical_repository(&repository.name)
+            .map_err(|_| ConnectionError::InvalidRepository)?;
+        let path = format!("/repos/{name}/pulls/{number}");
+        let (detail, _) = self.read(&path)?;
+        let count = detail["changed_files"]
+            .as_u64()
+            .ok_or(ConnectionError::InvalidResponse)?;
+        self.changed_files(&path, count)
+    }
+
+    fn changed_files(&self, path: &str, count: u64) -> Result<Vec<ChangedFile>, ConnectionError> {
+        // GitHub's files endpoint cannot return more than 3,000 files.
+        if count > 3_000 {
+            return Err(ConnectionError::IncompleteRead);
+        }
+        let raw_files = self.pages(&format!("{path}/files?per_page=100&page=1"))?;
+        if raw_files.len() as u64 != count {
+            return Err(ConnectionError::IncompleteRead);
+        }
+        let mut paths = HashSet::new();
+        let mut files = Vec::new();
+        for file in raw_files {
+            let filename = text(&file["filename"])?;
+            if !paths.insert(filename.clone()) {
+                return Err(ConnectionError::IncompleteRead);
+            }
+            let status = text(&file["status"])?;
+            if ![
+                "added",
+                "removed",
+                "modified",
+                "renamed",
+                "copied",
+                "changed",
+                "unchanged",
+            ]
+            .contains(&status.as_str())
+            {
+                return Err(ConnectionError::InvalidResponse);
+            }
+            let previous_path = optional_text(file.get("previous_filename"))?;
+            if status == "renamed" && previous_path.is_none() {
+                return Err(ConnectionError::InvalidResponse);
+            }
+            files.push(ChangedFile {
+                path: filename,
+                previous_path,
+                status,
+                additions: unsigned(&file["additions"])?,
+                deletions: unsigned(&file["deletions"])?,
+                changes: unsigned(&file["changes"])?,
+                sha: sha(&file["sha"])?,
+            });
+        }
+        Ok(files)
+    }
+
     pub fn pull_requests(
         &self,
         repository: &RemoteRepository,
@@ -163,45 +226,7 @@ impl<T: Transport> GithubClient<T> {
             if count > 3_000 {
                 return Err(ConnectionError::IncompleteRead);
             }
-            let raw_files = self.pages(&format!("{path}/files?per_page=100&page=1"))?;
-            if raw_files.len() as u64 != count {
-                return Err(ConnectionError::IncompleteRead);
-            }
-            let mut paths = HashSet::new();
-            let mut files = Vec::new();
-            for file in raw_files {
-                let filename = text(&file["filename"])?;
-                if !paths.insert(filename.clone()) {
-                    return Err(ConnectionError::IncompleteRead);
-                }
-                let status = text(&file["status"])?;
-                if ![
-                    "added",
-                    "removed",
-                    "modified",
-                    "renamed",
-                    "copied",
-                    "changed",
-                    "unchanged",
-                ]
-                .contains(&status.as_str())
-                {
-                    return Err(ConnectionError::InvalidResponse);
-                }
-                let previous_path = optional_text(file.get("previous_filename"))?;
-                if status == "renamed" && previous_path.is_none() {
-                    return Err(ConnectionError::InvalidResponse);
-                }
-                files.push(ChangedFile {
-                    path: filename,
-                    previous_path,
-                    status,
-                    additions: unsigned(&file["additions"])?,
-                    deletions: unsigned(&file["deletions"])?,
-                    changes: unsigned(&file["changes"])?,
-                    sha: sha(&file["sha"])?,
-                });
-            }
+            let files = self.changed_files(&path, count)?;
             let (reviewers, response) = self.read(&format!("{path}/requested_reviewers"))?;
             if response.headers.contains_key("link") {
                 return Err(ConnectionError::IncompleteRead);

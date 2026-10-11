@@ -1,4 +1,5 @@
 pub mod actions;
+pub mod admission;
 pub mod capacity;
 mod copilot;
 mod doctrine_seeds;
@@ -1480,6 +1481,15 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                 }
                 let mut pull_requests = client
                     .poll_tracked_pull_requests(&connection.repository, &ticket_for_poll.tracked)?;
+                // The polling listing has no changed files; load them only
+                // for pull requests that an enabled path rule must decide.
+                for pull in pull_requests.iter_mut().filter(|pull| {
+                    pull.state == github::metadata::Lifecycle::Open
+                        && !pull.draft
+                        && monitoring::needs_changed_files(&ticket_for_poll, pull)
+                }) {
+                    pull.files = client.pull_request_files(&connection.repository, pull.number)?;
+                }
                 let follow_ups = follow_up::host::scan(
                     &app,
                     &ticket_for_poll,
@@ -4531,6 +4541,7 @@ mod github_auth_tests {
                 id: "11".into(),
                 login: "author".into(),
             }],
+            admission: None,
             assignments: Vec::new(),
             primary_assignment_id: None,
         });

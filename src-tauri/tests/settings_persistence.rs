@@ -207,6 +207,7 @@ fn ordinary_configuration_contains_only_nonsecret_settings() {
             "doctrines": [],
             "doctrine_catalog_version": 1,
             "capacity": 4,
+            "admission_migration_version": 1,
             "defaults": {
                 "schedule": {"kind":"cron","expression":"*/15 * * * *","timezone":"UTC"},
                 "watched_authors": [],
@@ -299,6 +300,7 @@ fn the_same_provider_repository_persists_as_distinct_account_bindings() {
         },
         review_preset: None,
         watched_authors: Vec::new(),
+        admission: None,
         assignments: Vec::new(),
         primary_assignment_id: None,
     });
@@ -341,6 +343,7 @@ fn azure_devops_contract_persists_without_a_live_provider_implementation() {
         overrides: PolicyOverrides::default(),
         review_preset: None,
         watched_authors: Vec::new(),
+        admission: None,
         assignments: Vec::new(),
         primary_assignment_id: None,
     });
