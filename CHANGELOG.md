@@ -5,6 +5,8 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+## 0.2.0 - 2026-10-10
+
 ### Added
 
 - Add `/wrap-up` (`.agents/skills/wrap-up/`): a human-invoked checkpoint that
