@@ -5,6 +5,21 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+## 0.2.1 - 2026-10-11
+
+### Fixed
+
+- Launching the app again (Finder, Spotlight, Dock) now opens the panel instead
+  of doing nothing.
+- Open the panel under the tray icon of the screen that was clicked, at the
+  right size and position on mixed-density multi-screen setups. Size and place
+  it in logical points of the target screen, and apply the placement again
+  after showing, so it no longer appears on another screen first.
+- `npm run dev:signed` (macOS) signs dev builds with a stable identity so
+  keychain "Always Allow" survives rebuilds.
+- Set `PR_SNIPER_PANEL_DEBUG=1` to log each screen, the tray rectangle and the
+  chosen frame when the panel opens.
+
 ## 0.2.0 - 2026-10-10
 
 ### Added

@@ -1274,6 +1274,12 @@ const changelogSource = `# Changelog
 
 ## Unreleased
 
+## 0.2.1 - 2026-10-11
+
+### Fixed
+
+- Relaunching opens the panel; it opens under the tray icon of the clicked screen.
+
 ## 0.2.0 - 2026-10-10
 
 ### Added

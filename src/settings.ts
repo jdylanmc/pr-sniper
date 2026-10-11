@@ -2748,10 +2748,25 @@ export async function mountSettings(
       repository.name,
       `<section class="repository-identity"><h3>${escape(repository.name)}</h3><p class="settings-hint">${escape(repository.provider === "github" ? `GitHub acting account: ${githubAccounts.find((account) => account.account_id === repository.provider_account_id)?.login ?? (repository.provider_account_id ? "Saved account unavailable" : "No account selected")}.` : "Azure DevOps account binding is not available in this build.")}</p></section>
         <section class="repository-group"><label class="repository-check"><input type="checkbox" role="switch" aria-label="Monitor ${escape(repository.name)}" data-repository-enabled ${repository.enabled || (pendingSetup.has(repository.id) && !setupMonitoringOff.has(repository.id)) ? "checked" : ""} /><span>Monitor this repository</span></label><p data-repository-monitoring-state role="status"></p><p class="settings-hint" data-repository-monitoring-detail></p></section>
-        <section class="repository-group"><h2>Pull requests to watch</h2>
+        <section class="repository-group" data-watch-group>
         <p class="settings-hint">Save authorizes all currently open and future matching pull requests. Eligible reviews start automatically; global monitoring off, pause and repository disablement still apply. Adding this row alone does not start monitoring.</p>
-        <label for="repository-reviewer-trigger">Reviewer requests</label><select id="repository-reviewer-trigger" data-reviewer-trigger><option value="inherit">Use default (${saved.defaults.reviewer_assignment ? "on" : "off"})</option><option value="on">Include PRs explicitly requesting the acting account</option><option value="off">Do not admit through reviewer requests</option></select>
+        <button type="button" class="doctrine-row" data-open-reviewers><span>Reviewer requests</span><span class="doctrine-summary" data-reviewer-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button><select id="repository-reviewer-trigger" class="sr-only" data-reviewer-trigger aria-label="Reviewer requests"><option value="inherit">Use default (${saved.defaults.reviewer_assignment ? "on" : "off"})</option><option value="on">Include PRs explicitly requesting the acting account</option><option value="off">Do not admit through reviewer requests</option></select>
         <p class="settings-hint">Reviewer requests independently admit older or unwatched PRs. Once admitted, work stays tracked until verified closure or merge. Disablement and execution permissions still apply.</p></section>
+        <section class="repository-group reviewer-picker" role="radiogroup" aria-label="Reviewer request options">${(
+          [
+            [
+              "inherit",
+              `Use default (${saved.defaults.reviewer_assignment ? "on" : "off"})`,
+            ],
+            ["on", "Include PRs requesting this account"],
+            ["off", "Do not admit through reviewer requests"],
+          ] as const
+        )
+          .map(
+            ([value, label]) =>
+              `<label data-reviewer-choice><input type="radio" name="reviewer-choice" value="${value}" /><span>${escape(label)}</span></label>`,
+          )
+          .join("")}</section>
         <section class="repository-group"><div class="section-actions"><h2>Agents on this repository</h2><button class="primary" data-assign-agent>Assign agent</button></div>
         <div class="assignment-list"></div>
         ${agents().length ? "" : '<p class="settings-hint">Create a shared Agent from Assign agent, then choose its repository permissions.</p>'}
@@ -2900,6 +2915,49 @@ export async function mountSettings(
           reviewerTrigger.value === "on";
       changed();
     };
+    const reviewerLabels: Record<string, string> = {
+      inherit: `Default (${saved.defaults.reviewer_assignment ? "on" : "off"})`,
+      on: "On",
+      off: "Off",
+    };
+    const syncReviewerRow = () => {
+      modal.querySelector("[data-reviewer-summary]")!.textContent =
+        reviewerLabels[reviewerTrigger.value];
+      for (const radio of modal.querySelectorAll<HTMLInputElement>(
+        "[data-reviewer-choice] input",
+      ))
+        radio.checked = radio.value === reviewerTrigger.value;
+    };
+    reviewerTrigger.addEventListener("change", syncReviewerRow);
+    syncReviewerRow();
+    const closeReviewers = () => {
+      delete modal.dataset.view;
+      dropEditor((e) => e.modal === modal && e.title === "Reviewer requests");
+      modal
+        .querySelector<HTMLElement>("[data-open-reviewers]")
+        ?.focus({ preventScroll: true });
+    };
+    modal.querySelector<HTMLButtonElement>("[data-open-reviewers]")!.onclick =
+      () => {
+        modal.dataset.view = "reviewers";
+        if (options.embedded) {
+          editorStack.push({
+            modal,
+            title: "Reviewer requests",
+            back: closeReviewers,
+          });
+          announceEditor();
+        }
+      };
+    modal
+      .querySelector<HTMLElement>(".reviewer-picker")!
+      .addEventListener("change", (event) => {
+        const radio = event.target as HTMLInputElement;
+        if (!radio.matches("input[type=radio]")) return;
+        reviewerTrigger.value = radio.value;
+        reviewerTrigger.dispatchEvent(new Event("change"));
+        closeReviewers();
+      });
     modal.querySelector<HTMLButtonElement>("[data-save-repository]")!.onclick =
       async () => {
         const requestedPull = pendingPullRequests.get(repository.id);

@@ -3346,3 +3346,67 @@
   width: 18px;
   height: 18px;
 }
+
+/* Repository editor: Reviewer requests drills in like Doctrines. */
+.panel-shell .repository-editor .reviewer-picker {
+  display: none;
+}
+.panel-shell .repository-editor[data-view="reviewers"] .dialog-body > * {
+  display: none;
+}
+.panel-shell
+  .repository-editor[data-view="reviewers"]
+  .dialog-body
+  > .reviewer-picker {
+  display: block;
+}
+.panel-shell .repository-editor [data-reviewer-choice] {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  font-size: 13px;
+}
+.panel-shell
+  .repository-editor
+  [data-reviewer-choice]
+  + [data-reviewer-choice] {
+  border-top: 1px solid #edf1f4;
+}
+.panel-shell .repository-editor .repository-group .doctrine-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #202b3b;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+}
+.panel-shell .repository-editor .doctrine-row .doctrine-summary {
+  margin-left: auto;
+  color: #526274;
+  font-weight: 400;
+}
+.panel-shell .repository-editor .doctrine-row svg {
+  width: 14px;
+  height: 14px;
+  color: #6e8192;
+}
+/* Long repository names truncate in the title band. */
+.panel-shell[data-settings-editor="true"] .panel-context h1 {
+  min-width: 0;
+  font-size: 22px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.panel-shell .repository-editor [data-watch-group] > h2 {
+  display: none;
+}
