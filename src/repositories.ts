@@ -1,5 +1,24 @@
 import type { Assignment, PolicyOverrides, WatchedIdentity } from "./policy";
 
+export type AdmissionKind =
+  | "assigned"
+  | "mentioned"
+  | "include_users"
+  | "exclude_users"
+  | "include_paths"
+  | "exclude_paths";
+export interface AdmissionRule {
+  kind: AdmissionKind;
+  enabled: boolean;
+  users?: WatchedIdentity[];
+  paths?: string[];
+}
+/** All pull requests, or the first enabled matching rule (in order) decides. */
+export interface Admission {
+  mode: "all" | "filtered";
+  rules: AdmissionRule[];
+}
+
 export interface Repository {
   id: string;
   provider: "github" | "azure_devops";
@@ -11,6 +30,7 @@ export interface Repository {
   /** Optional per-repository watchlist, shared across this repository's
    * assignments. Exact login + stable id, no wildcards. */
   watched_authors?: WatchedIdentity[];
+  admission?: Admission;
   /** N agents with repository-scoped permissions. */
   assignments?: Assignment[];
   primary_assignment_id?: string;

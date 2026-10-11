@@ -3347,32 +3347,7 @@
   height: 18px;
 }
 
-/* Repository editor: Reviewer requests drills in like Doctrines. */
-.panel-shell .repository-editor .reviewer-picker {
-  display: none;
-}
-.panel-shell .repository-editor[data-view="reviewers"] .dialog-body > * {
-  display: none;
-}
-.panel-shell
-  .repository-editor[data-view="reviewers"]
-  .dialog-body
-  > .reviewer-picker {
-  display: block;
-}
-.panel-shell .repository-editor [data-reviewer-choice] {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px;
-  font-size: 13px;
-}
-.panel-shell
-  .repository-editor
-  [data-reviewer-choice]
-  + [data-reviewer-choice] {
-  border-top: 1px solid #edf1f4;
-}
+/* Repository editor: admission (All / Filtered) drill-ins. */
 .panel-shell .repository-editor .repository-group .doctrine-row {
   display: flex;
   align-items: center;
@@ -3407,6 +3382,173 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.panel-shell .repository-editor [data-watch-group] > h2 {
+
+.panel-shell
+  .repository-editor[data-view="admission"]
+  .dialog-body
+  > :not(.admission-view) {
+  display: none;
+}
+.panel-shell .repository-editor .admission-view[hidden] {
+  display: none;
+}
+.panel-shell .repository-editor .admission-group > * + * {
+  border-top: 1px solid #edf1f4;
+}
+.panel-shell .repository-editor .admission-group .repository-check {
+  padding: 12px 14px;
+}
+.panel-shell .repository-editor .doctrine-row:disabled {
+  opacity: 0.4;
+}
+.panel-shell .repository-editor .admission-rule {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px 0 0;
+}
+.panel-shell .repository-editor .admission-rule + .admission-rule {
+  border-top: 1px solid #edf1f4;
+}
+.panel-shell .repository-editor .admission-open {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 52px;
+  padding: 10px 6px 10px 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #202b3b;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+}
+.panel-shell .repository-editor .admission-open:disabled {
+  opacity: 1;
+  cursor: default;
+}
+.panel-shell .repository-editor .admission-open .doctrine-summary {
+  margin-left: auto;
+  color: #526274;
+  font-weight: 400;
+}
+.panel-shell .repository-editor .admission-open svg {
+  width: 14px;
+  height: 14px;
+  color: #6e8192;
+}
+.panel-shell .repository-editor .admission-move {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #8a96a6;
+}
+.panel-shell .repository-editor .admission-move:disabled {
+  opacity: 0.25;
+}
+.panel-shell .repository-editor .admission-move svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.6;
+}
+.panel-shell .repository-editor .admission-switch,
+.panel-shell .repository-editor [data-admission-all-input] {
+  appearance: none;
+  flex: none;
+  width: 40px;
+  min-width: 40px;
+  height: 24px;
+  margin: 0 0 0 6px;
+  border-radius: 12px;
+  background: #c3ccd8;
+  position: relative;
+  transition: background 0.12s;
+}
+.panel-shell .repository-editor .admission-switch::after,
+.panel-shell .repository-editor [data-admission-all-input]::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 1px 2px rgb(36 50 71 / 30%);
+  transition: transform 0.12s;
+}
+.panel-shell .repository-editor .admission-switch:checked,
+.panel-shell .repository-editor [data-admission-all-input]:checked {
+  background: #328b94;
+}
+.panel-shell .repository-editor .admission-switch:checked::after,
+.panel-shell .repository-editor [data-admission-all-input]:checked::after {
+  transform: translateX(16px);
+}
+.panel-shell .repository-editor .admission-group .repository-check {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-direction: row-reverse;
+}
+.panel-shell .repository-editor .admission-add {
+  position: fixed;
+  right: 18px;
+  bottom: 104px;
+  z-index: 5;
+  padding: 12px 18px;
+  border: 0;
+  border-radius: 999px;
+  background: #f68743;
+  color: #243247;
+  box-shadow: 0 6px 18px rgb(36 50 71 / 35%);
+}
+.panel-shell .repository-editor .admission-path-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.panel-shell .repository-editor .admission-path-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+}
+.panel-shell .repository-editor .admission-path-form [role="alert"] {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 12px;
+}
+.panel-shell .repository-editor .admission-values code {
+  font-size: 12px;
+}
+
+.repository-editor .admission-view[hidden] {
+  display: none;
+}
+.repository-editor .admission-back {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 6px 10px 6px 6px;
+  border: 0;
+  background: transparent;
+  color: #202b3b;
+  font-weight: 600;
+}
+.repository-editor .admission-back svg {
+  width: 18px;
+  height: 18px;
+}
+.panel-shell .repository-editor .admission-back {
   display: none;
 }

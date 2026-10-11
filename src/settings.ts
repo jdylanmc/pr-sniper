@@ -23,6 +23,9 @@ import {
 } from "./copilot";
 import type { Agent, Doctrine, Assignment, WatchedIdentity } from "./policy";
 import {
+  type Admission,
+  type AdmissionKind,
+  type AdmissionRule,
   type Repository,
   primaryAssignmentId,
   repositoryProviderContext,
@@ -156,6 +159,8 @@ const iconPaths = {
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
   pencil: '<path d="M4 20h4L19 9l-4-4L4 16zM14 6l4 4"/>',
   reset: '<path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5"/>',
+  up: '<path d="m6 14 6-6 6 6"/>',
+  down: '<path d="m6 10 6 6 6-6"/>',
   trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5"/>',
   home: '<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="10" cy="18" r="2"/>',
   accounts:
@@ -988,6 +993,7 @@ export async function mountSettings(
     modal: HTMLDialogElement;
     title: string;
     back: () => void;
+    admission?: boolean;
   }[] = [];
   function announceEditor() {
     const top = editorStack[editorStack.length - 1];
@@ -2748,32 +2754,12 @@ export async function mountSettings(
       repository.name,
       `<section class="repository-identity"><h3>${escape(repository.name)}</h3><p class="settings-hint">${escape(repository.provider === "github" ? `GitHub acting account: ${githubAccounts.find((account) => account.account_id === repository.provider_account_id)?.login ?? (repository.provider_account_id ? "Saved account unavailable" : "No account selected")}.` : "Azure DevOps account binding is not available in this build.")}</p></section>
         <section class="repository-group"><label class="repository-check"><input type="checkbox" role="switch" aria-label="Monitor ${escape(repository.name)}" data-repository-enabled ${repository.enabled || (pendingSetup.has(repository.id) && !setupMonitoringOff.has(repository.id)) ? "checked" : ""} /><span>Monitor this repository</span></label><p data-repository-monitoring-state role="status"></p><p class="settings-hint" data-repository-monitoring-detail></p></section>
-        <section class="repository-group" data-watch-group>
-        <p class="settings-hint">Save authorizes all currently open and future matching pull requests. Eligible reviews start automatically; global monitoring off, pause and repository disablement still apply. Adding this row alone does not start monitoring.</p>
-        <button type="button" class="doctrine-row" data-open-reviewers><span>Reviewer requests</span><span class="doctrine-summary" data-reviewer-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button><select id="repository-reviewer-trigger" class="sr-only" data-reviewer-trigger aria-label="Reviewer requests"><option value="inherit">Use default (${saved.defaults.reviewer_assignment ? "on" : "off"})</option><option value="on">Include PRs explicitly requesting the acting account</option><option value="off">Do not admit through reviewer requests</option></select>
-        <p class="settings-hint">Reviewer requests independently admit older or unwatched PRs. Once admitted, work stays tracked until verified closure or merge. Disablement and execution permissions still apply.</p></section>
-        <section class="repository-group reviewer-picker" role="radiogroup" aria-label="Reviewer request options">${(
-          [
-            [
-              "inherit",
-              `Use default (${saved.defaults.reviewer_assignment ? "on" : "off"})`,
-            ],
-            ["on", "Include PRs requesting this account"],
-            ["off", "Do not admit through reviewer requests"],
-          ] as const
-        )
-          .map(
-            ([value, label]) =>
-              `<label data-reviewer-choice><input type="radio" name="reviewer-choice" value="${value}" /><span>${escape(label)}</span></label>`,
-          )
-          .join("")}</section>
+        <section class="repository-group admission-group"><label class="repository-check" data-admission-all><input type="checkbox" role="switch" aria-label="All pull requests" data-admission-all-input /><span>All pull requests</span></label><button type="button" class="doctrine-row" data-open-filters><span>Filtered pull requests</span><span class="doctrine-summary" data-filter-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button></section>
+        <div class="admission-view" data-admission-view hidden></div>
         <section class="repository-group"><div class="section-actions"><h2>Agents on this repository</h2><button class="primary" data-assign-agent>Assign agent</button></div>
         <div class="assignment-list"></div>
         ${agents().length ? "" : '<p class="settings-hint">Create a shared Agent from Assign agent, then choose its repository permissions.</p>'}
         <p class="settings-hint">Each assignment receives its own normal pass. Permissions belong here, not to the reusable Agent. Only the primary assesses eligible conversations on admitted open PRs. Primary selection grants no permissions; without a primary, reviews and permitted initial comments continue but replies, approval and merge are unavailable.</p>
-        </section><section class="repository-group"><div class="section-actions"><h2>People you watch</h2><button data-add-people>Add people</button></div>
-        <div class="watchlist"></div>
-        <p class="settings-hint">Optional. A nonempty effective watched-author filter qualifies those authors. An empty effective author filter means all authors. Pull requests requesting the signed-in account also qualify when the reviewer-request trigger is enabled. Exact GitHub login, no wildcards.</p>
         </section><section class="repository-group" data-global-schedule><h2>Saved global schedule</h2><p>${schedule.kind === "cron" ? `<code>${escape(schedule.expression)}</code>` : `Every ${schedule.minutes} minutes (saved legacy schedule)`} / ${escape(schedule.timezone)}</p><p class="settings-hint">${schedule.kind === "cron" ? "One schedule scans enabled repositories. Change it in Preferences;" : "Polling is blocked until you choose a global five-field cron schedule in Preferences. The saved legacy interval is retained;"} repository and Agent assignments have no separate polling controls.</p></section>
         <details class="repository-group"><summary>Repository</summary><dl class="repository-binding-details"><dt>Account ID</dt><dd>${escape(repository.provider_account_id ?? "Unbound")}</dd><dt>Repository ID</dt><dd>${escape(repository.provider_repository_id ?? "Not verified")}</dd></dl><div class="settings-actions"><button id="rename-repository">Edit repository</button><button data-unbind-repository ${repository.provider_account_id ? "" : "disabled"}>Unbind account</button><button id="remove-repository">Remove repository</button></div><div class="connection"></div></details>
         <p class="settings-hint">Save applies only this repository. Back retains its draft for this session; Cancel discards it. Earlier assignment saves stay applied.</p>
@@ -2897,67 +2883,6 @@ export async function mountSettings(
         updateMonitoring();
       }
     };
-    const reviewerTrigger = modal.querySelector<HTMLSelectElement>(
-      "[data-reviewer-trigger]",
-    )!;
-    reviewerTrigger.value =
-      repository.overrides?.reviewer_assignment === undefined
-        ? "inherit"
-        : repository.overrides.reviewer_assignment
-          ? "on"
-          : "off";
-    reviewerTrigger.onchange = () => {
-      repository.overrides ??= {};
-      if (reviewerTrigger.value === "inherit")
-        delete repository.overrides.reviewer_assignment;
-      else
-        repository.overrides.reviewer_assignment =
-          reviewerTrigger.value === "on";
-      changed();
-    };
-    const reviewerLabels: Record<string, string> = {
-      inherit: `Default (${saved.defaults.reviewer_assignment ? "on" : "off"})`,
-      on: "On",
-      off: "Off",
-    };
-    const syncReviewerRow = () => {
-      modal.querySelector("[data-reviewer-summary]")!.textContent =
-        reviewerLabels[reviewerTrigger.value];
-      for (const radio of modal.querySelectorAll<HTMLInputElement>(
-        "[data-reviewer-choice] input",
-      ))
-        radio.checked = radio.value === reviewerTrigger.value;
-    };
-    reviewerTrigger.addEventListener("change", syncReviewerRow);
-    syncReviewerRow();
-    const closeReviewers = () => {
-      delete modal.dataset.view;
-      dropEditor((e) => e.modal === modal && e.title === "Reviewer requests");
-      modal
-        .querySelector<HTMLElement>("[data-open-reviewers]")
-        ?.focus({ preventScroll: true });
-    };
-    modal.querySelector<HTMLButtonElement>("[data-open-reviewers]")!.onclick =
-      () => {
-        modal.dataset.view = "reviewers";
-        if (options.embedded) {
-          editorStack.push({
-            modal,
-            title: "Reviewer requests",
-            back: closeReviewers,
-          });
-          announceEditor();
-        }
-      };
-    modal
-      .querySelector<HTMLElement>(".reviewer-picker")!
-      .addEventListener("change", (event) => {
-        const radio = event.target as HTMLInputElement;
-        if (!radio.matches("input[type=radio]")) return;
-        reviewerTrigger.value = radio.value;
-        reviewerTrigger.dispatchEvent(new Event("change"));
-        closeReviewers();
-      });
     modal.querySelector<HTMLButtonElement>("[data-save-repository]")!.onclick =
       async () => {
         const requestedPull = pendingPullRequests.get(repository.id);
@@ -3060,7 +2985,6 @@ export async function mountSettings(
       render();
     };
     renderAssignments();
-    renderWatchlist();
     if (
       saved.repositories?.some(
         (r) => r.id === repository.id && r.name === repository.name,
@@ -3087,17 +3011,6 @@ export async function mountSettings(
         repository,
         () => {
           renderAssignments();
-          refreshSavedMonitoring();
-        },
-      );
-    modal.querySelector<HTMLButtonElement>("[data-add-people]")!.onclick = (
-      event,
-    ) =>
-      addPersonDialog(
-        event.currentTarget as HTMLButtonElement,
-        repository,
-        () => {
-          renderWatchlist();
           refreshSavedMonitoring();
         },
       );
@@ -3218,38 +3131,251 @@ export async function mountSettings(
       }
       restoreFocus();
     }
-    function renderWatchlist(opener = document.activeElement) {
-      const list = modal.querySelector<HTMLElement>(".watchlist")!;
-      const restoreFocus = rememberControl(
-        list,
-        modal.querySelector<HTMLElement>("[data-add-people]")!,
-        opener,
-      );
-      const people = repository.watched_authors ?? [];
-      if (!people.length) {
-        list.innerHTML =
-          '<p class="settings-empty">No people added for this repository. Inherited watched authors still apply; if the effective author filter is empty, all authors qualify under the saved configuration. Reviewer requests qualify when that trigger is enabled.</p>';
-        restoreFocus();
-        return;
+    const defaultAdmission = (): Admission => {
+      const authors = repository.watched_authors ?? [];
+      const rule = (
+        kind: AdmissionKind,
+        enabled: boolean,
+        extra: Partial<AdmissionRule> = {},
+      ): AdmissionRule => ({ kind, enabled, ...extra });
+      return {
+        mode: authors.length ? "filtered" : "all",
+        rules: [
+          rule("assigned", true),
+          rule("mentioned", true),
+          rule("include_users", authors.length > 0, { users: [...authors] }),
+          rule("exclude_users", false, { users: [] }),
+          rule("include_paths", false, { paths: [] }),
+          rule("exclude_paths", false, { paths: [] }),
+        ],
+      };
+    };
+    // Reads never mutate the draft; the first edit materializes the default.
+    let shown: Admission | undefined;
+    const admission = (): Admission =>
+      repository.admission ?? (shown ??= defaultAdmission());
+    const editAdmission = (): Admission =>
+      (repository.admission ??= shown ?? defaultAdmission());
+    const kindLabels: Record<AdmissionKind, string> = {
+      assigned: "Assigned to me for review",
+      mentioned: "Mentioning me in comments",
+      include_users: "Include users",
+      exclude_users: "Exclude users",
+      include_paths: "Include paths",
+      exclude_paths: "Exclude paths",
+    };
+    const valueKind = (kind: AdmissionKind) =>
+      kind.endsWith("_users") || kind.endsWith("_paths");
+    const ruleCount = (rule: AdmissionRule) =>
+      rule.users?.length ?? rule.paths?.length ?? 0;
+    const chevron =
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>';
+
+    function setupAdmission() {
+      const allInput = modal.querySelector<HTMLInputElement>(
+        "[data-admission-all-input]",
+      )!;
+      const openFilters = modal.querySelector<HTMLButtonElement>(
+        "[data-open-filters]",
+      )!;
+      const view = modal.querySelector<HTMLElement>("[data-admission-view]")!;
+      const route: string[] = [];
+      const sync = () => {
+        const a = admission();
+        allInput.checked = a.mode === "all";
+        openFilters.disabled = a.mode === "all";
+        const on = a.rules.filter((r) => r.enabled).length;
+        modal.querySelector("[data-filter-summary]")!.textContent =
+          a.mode === "all" ? "" : `${on} on`;
+      };
+      const dropTop = () => {
+        for (let i = editorStack.length - 1; i >= 0; i--)
+          if (editorStack[i].modal === modal && editorStack[i].admission) {
+            editorStack.splice(i, 1);
+            break;
+          }
+        announceEditor();
+      };
+      const pop = () => {
+        route.pop();
+        if (options.embedded) dropTop();
+        const next = route[route.length - 1];
+        if (!next) {
+          view.hidden = true;
+          view.replaceChildren();
+          delete modal.dataset.view;
+          sync();
+          openFilters.focus({ preventScroll: true });
+        } else if (next === "filters") {
+          renderFilters();
+          if (!options.embedded) {
+            const back = document.createElement("button");
+            back.type = "button";
+            back.className = "admission-back";
+            back.setAttribute("aria-label", "Back from Filtered pull requests");
+            back.innerHTML = `${icon("back")}<span>Filtered pull requests</span>`;
+            back.onclick = () => pop();
+            view.prepend(back);
+          }
+        }
+      };
+      const push = (title: string, name: string, render: () => void) => {
+        route.push(name);
+        view.hidden = false;
+        modal.dataset.view = "admission";
+        render();
+        if (!options.embedded) {
+          const back = document.createElement("button");
+          back.type = "button";
+          back.className = "admission-back";
+          back.setAttribute("aria-label", `Back from ${title}`);
+          back.innerHTML = `${icon("back")}<span>${escape(title)}</span>`;
+          back.onclick = () => pop();
+          view.prepend(back);
+        }
+        if (options.embedded) {
+          editorStack.push({ modal, title, back: pop, admission: true });
+          announceEditor();
+        }
+      };
+      allInput.onchange = () => {
+        editAdmission().mode = allInput.checked ? "all" : "filtered";
+        changed();
+        sync();
+      };
+
+      function renderFilters() {
+        const a = admission();
+        view.replaceChildren();
+        const group = document.createElement("section");
+        group.className = "repository-group";
+        a.rules.forEach((rule, index) => {
+          const label = kindLabels[rule.kind];
+          const row = document.createElement("div");
+          row.className = "admission-rule";
+          row.dataset.rule = rule.kind;
+          row.innerHTML = `<button type="button" class="admission-open" ${valueKind(rule.kind) ? "" : "disabled"} aria-label="${escape(label)}${valueKind(rule.kind) ? ": edit values" : ""}"><span class="admission-label">${escape(label)}</span><span class="doctrine-summary">${valueKind(rule.kind) ? String(ruleCount(rule)) : ""}</span>${valueKind(rule.kind) ? chevron : ""}</button><button type="button" class="admission-move" data-up aria-label="Move ${escape(label)} up" title="Move up" ${index === 0 ? "disabled" : ""}>${icon("up")}</button><button type="button" class="admission-move" data-down aria-label="Move ${escape(label)} down" title="Move down" ${index === a.rules.length - 1 ? "disabled" : ""}>${icon("down")}</button><input type="checkbox" role="switch" class="admission-switch" aria-label="${escape(label)}" ${rule.enabled ? "checked" : ""} />`;
+          row.querySelector<HTMLInputElement>(".admission-switch")!.onchange = (
+            event,
+          ) => {
+            editAdmission();
+            rule.enabled = (event.target as HTMLInputElement).checked;
+            changed();
+          };
+          const move = (delta: number) => {
+            editAdmission();
+            const target = index + delta;
+            [a.rules[index], a.rules[target]] = [
+              a.rules[target],
+              a.rules[index],
+            ];
+            changed();
+            renderFilters();
+            view
+              .querySelector<HTMLElement>(
+                `[data-rule="${rule.kind}"] ${delta < 0 ? "[data-up]" : "[data-down]"}`,
+              )
+              ?.focus({ preventScroll: true });
+          };
+          row.querySelector<HTMLElement>("[data-up]")!.onclick = () => move(-1);
+          row.querySelector<HTMLElement>("[data-down]")!.onclick = () =>
+            move(1);
+          if (valueKind(rule.kind))
+            row.querySelector<HTMLElement>(".admission-open")!.onclick = () =>
+              push(label, `rule:${rule.kind}`, () => renderRule(rule));
+          group.append(row);
+        });
+        view.append(group);
       }
-      list.innerHTML = "";
-      for (const person of people) {
-        const row = document.createElement("div");
-        row.className = "watchlist-row";
-        row.innerHTML = `<span><span>@${escape(person.login)}</span><small>GitHub ID ${escape(person.id)}</small></span><button data-remove aria-label="Remove ${escape(person.login)}" title="Remove">${icon("trash")}</button>`;
-        row.querySelector<HTMLElement>("[data-remove]")!.dataset.focusKey =
-          `person:${person.id}:remove`;
-        row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick = (
-          event,
-        ) => {
-          repository.watched_authors = people.filter((p) => p !== person);
-          changed();
-          renderWatchlist(event.currentTarget as HTMLButtonElement);
+
+      function renderRule(rule: AdmissionRule) {
+        view.replaceChildren();
+        const group = document.createElement("section");
+        group.className = "repository-group";
+        const list = document.createElement("div");
+        list.className = "admission-values";
+        const users = rule.kind.endsWith("_users");
+        const draw = () => {
+          list.replaceChildren();
+          const values: string[] = users
+            ? (rule.users ?? []).map((u) => `@${u.login}`)
+            : (rule.paths ?? []);
+          values.forEach((value, index) => {
+            const row = document.createElement("div");
+            row.className = "watchlist-row";
+            row.innerHTML = `<span>${users ? escape(value) : `<code>${escape(value)}</code>`}</span><button type="button" data-remove aria-label="Remove ${escape(value)}" title="Remove">${icon("trash")}</button>`;
+            row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick =
+              () => {
+                editAdmission();
+                if (users)
+                  rule.users = (rule.users ?? []).filter((_, i) => i !== index);
+                else
+                  rule.paths = (rule.paths ?? []).filter((_, i) => i !== index);
+                changed();
+                draw();
+                // The removed row's trash button is gone: land on the add control.
+                view
+                  .querySelector<HTMLElement>(
+                    ".admission-add, .admission-path-form input",
+                  )
+                  ?.focus({ preventScroll: true });
+              };
+            list.append(row);
+          });
         };
-        list.append(row);
+        group.append(list);
+        if (users) {
+          const add = document.createElement("button");
+          add.type = "button";
+          add.className = "primary admission-add";
+          add.textContent = "Add people";
+          add.onclick = () =>
+            addPersonDialog(add, repository, rule.users ?? [], (identity) => {
+              editAdmission();
+              rule.users = [...(rule.users ?? []), identity];
+              rule.enabled = true;
+              changed();
+              draw();
+            });
+          view.append(group, add);
+        } else {
+          const form = document.createElement("form");
+          form.className = "admission-path-form";
+          form.innerHTML = `<input name="path" aria-label="Path pattern" placeholder="docs/ or src/**/*.ts" autocomplete="off" /><button type="submit" class="primary">Add</button><p role="alert" hidden></p>`;
+          form.onsubmit = (event) => {
+            event.preventDefault();
+            const input = form.querySelector<HTMLInputElement>("[name=path]")!;
+            const alert = form.querySelector<HTMLElement>("[role=alert]")!;
+            const value = input.value.trim();
+            const problem = !value
+              ? "Enter a path."
+              : value.length > 256 ||
+                  value.startsWith("/") ||
+                  value.split("/").includes("..")
+                ? "Use a repository-relative pattern without .. or a leading /."
+                : (rule.paths ?? []).includes(value)
+                  ? "Already added."
+                  : "";
+            alert.hidden = !problem;
+            alert.textContent = problem;
+            if (problem) return;
+            editAdmission();
+            rule.paths = [...(rule.paths ?? []), value];
+            rule.enabled = true;
+            changed();
+            input.value = "";
+            draw();
+          };
+          view.append(group, form);
+        }
+        draw();
       }
-      restoreFocus();
+
+      openFilters.onclick = () =>
+        push("Filtered pull requests", "filters", renderFilters);
+      sync();
     }
+    setupAdmission();
   }
 
   function assignAgentDialog(
@@ -3405,7 +3531,8 @@ export async function mountSettings(
   function addPersonDialog(
     opener: HTMLElement,
     repository: ConfiguredRepository,
-    onSaved: () => void,
+    people: WatchedIdentity[],
+    onAdd: (identity: WatchedIdentity) => void,
   ) {
     const availableAccounts = githubAccounts.filter(
       (account) =>
@@ -3413,7 +3540,6 @@ export async function mountSettings(
         (!repository.provider_account_id ||
           account.account_id === repository.provider_account_id),
     );
-    const people = repository.watched_authors ?? [];
     const picker = dialog(
       "Add people",
       `<form class="person-lookup"><label>Acting GitHub account<select name="account" required>${option("", "Choose a GitHub account", repository.provider_account_id ?? "")}${availableAccounts.map((account) => option(account.account_id, `${account.login} (${account.account_id})`, repository.provider_account_id ?? "")).join("")}</select></label><label>GitHub login<input name="login" placeholder="octocat" autocomplete="off" required /></label><p class="settings-hint">${availableAccounts.length ? "Looks up the exact login through the selected GitHub account and stores its stable identity. No wildcards." : `No connected GitHub account is available. Connect one in ${accountSection}.`}</p><p role="alert" hidden></p><div class="resource-actions"><button type="submit" class="primary" ${availableAccounts.length ? "" : "disabled"}>Add person</button><button type="button" data-cancel-resource>Cancel</button></div></form>`,
@@ -3443,11 +3569,9 @@ export async function mountSettings(
         if (!picker.open || lookupRevision !== revision)
           throw "Settings changed during lookup. Add this person again.";
         if (people.some((p) => p.id === identity.id))
-          throw "This person is already in this watchlist.";
-        repository.watched_authors = [...people, identity];
-        changed();
+          throw "This person is already in this list.";
         picker.close();
-        onSaved();
+        onAdd(identity);
       } catch (cause) {
         alert.textContent = reason(cause);
         alert.hidden = false;

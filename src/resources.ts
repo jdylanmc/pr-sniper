@@ -14,6 +14,7 @@ export interface Settings {
   presets?: { id: string; name: string; body: string }[];
   default_review_preset?: string;
   doctrine_catalog_version?: number;
+  admission_migration_version?: number;
   doctrine_reset?: { previous_count: number; removed_references: number };
 }
 
