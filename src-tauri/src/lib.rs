@@ -4026,9 +4026,12 @@ pub fn run() {
         }
     }
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|_app, _args, _| {
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _| {
             #[cfg(windows)]
-            notifications::windows::forward(_app, &_args);
+            notifications::windows::forward(app, &_args);
+            // Launching the app again (Finder, Spotlight) opens the panel.
+            #[cfg(not(windows))]
+            show_queue_panel(app);
         }))
         .invoke_handler(tauri::generate_handler![
             result_page,
@@ -4376,6 +4379,10 @@ pub fn run() {
             std::process::exit(1);
         });
     app.run(|app, event| {
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen { .. } = event {
+            show_queue_panel(app);
+        }
         #[cfg(windows)]
         if let tauri::RunEvent::Exit = event {
             notifications::windows::shutdown(app);
@@ -4384,6 +4391,15 @@ pub fn run() {
             if !app.state::<Host>().quitting.load(Ordering::SeqCst) {
                 api.prevent_exit();
             }
+        }
+    });
+}
+
+fn show_queue_panel(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = panel::show(&app, Some(panel::Route::tab(panel::Tab::Queue))).await {
+            report(&app, error);
         }
     });
 }

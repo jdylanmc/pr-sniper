@@ -5,6 +5,17 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+## 0.2.1 - 2026-10-11
+
+### Fixed
+
+- Launching the app again (Finder, Spotlight, Dock) now opens the panel instead
+  of doing nothing.
+- On macOS, open the panel on the screen under the pointer, under that screen's
+  menu bar. With several screens the tray rectangle could describe any of them.
+- Size the panel in logical points so it is the right size when monitors have
+  different scale factors.
+
 ## 0.2.0 - 2026-10-10
 
 ### Added
