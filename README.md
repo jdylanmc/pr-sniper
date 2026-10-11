@@ -348,8 +348,7 @@ buttons and asynchronously opened nested dialogs.
 Settings saves and repository cancellation retain that logical opener through
 the final parent and account-refresh redraw, using stable resource identities
 even after renaming. Removed resources return focus to the visible section
-heading; removed assignments or watched people return to their respective Add
-control, never another row. Background completion does not move focus out of
+heading; removed assignments return to their Add control, never another row. Background completion does not move focus out of
 the current destination. Repository monitoring checkboxes explicitly retain
 activation focus on WebKit as well as Chromium.
 
@@ -592,7 +591,7 @@ are not native acceptance evidence.
 
 Repository **Settings** assigns reusable Agents with direct repository-scoped
 **Publish Comment**, primary **Reply Comment**, **Approve** or **Approve & Merge**
-permissions, and resolves watched people using the repository's
+permissions, and resolves people for admission rules using the repository's
 explicit GitHub account. Existing global defaults and overrides remain
 preserved in storage. Eligible review execution is always automatic; comment
 publication remains separately gated. Legacy start/publication defaults and
@@ -608,8 +607,8 @@ disabled with a visible notice, never auto-promoted; actual jobs/receipts are
 unchanged. Opted-in provider
 actions require aggregate clearance and the primary final-review path below.
 Its compact editor exposes the stable account/repository IDs, enablement,
-saved author filters, independent reviewer-request override, verified
-watched people and the **saved global schedule** (not an unsaved Preferences
+the **All pull requests** switch and **Filtered pull requests** admission
+rules (below) and the **saved global schedule** (not an unsaved Preferences
 draft). No repository or Agent polling builder is exposed. Each new assignment
 receives missing normal review work at the next global scan; saving is not a scan.
 **Repository** retains verification, metadata reads, edit,
@@ -883,13 +882,25 @@ tracked iterations. In-flight results still pin their original configuration
 and reject stale results.
 
 Polling reads paginated open pull-request metadata through the repository's
-connected OAuth account. A populated watched-author filter or a request for the
-signed-in account as reviewer admits a non-draft revision. An empty effective
-watched-author filter matches all authors. Saved repository configuration and
+connected OAuth account. Each repository has an **admission** setting. **All
+pull requests** admits every non-draft revision. **Filtered pull requests** is
+an ordered list of six rules you can reorder and switch on or off: **Assigned
+to me for review**, **Mentioning me in comments**, **Include users**,
+**Exclude users**, **Include paths** and **Exclude paths**. The first enabled
+rule that matches decides, so order is precedence; a pull request that matches
+no enabled rule is not admitted. Include paths matches when any changed file
+matches; Exclude paths matches only when every changed file matches (renames
+count both paths). Paths are repository-relative: a trailing `/` is a
+directory prefix, and `*`, `**` and `?` are the only wildcards (for example
+`docs/` or `src/**/*.ts`). Changed files are read only when an enabled path
+rule can decide. Existing repositories migrate once from their watched
+authors and reviewer-request setting, **with monitoring switched off** until
+you review them; a repository without saved admission keeps the earlier
+behavior. Saved repository configuration and
 Agent assignments authorize ongoing read-only reviews,
 including forks, reviewer-requested PRs and later revisions, without a separate
 revision-trust prompt. Admission remains sticky after
-watchlist/reviewer removal, without bypassing current account,
+rule removal, without bypassing current account,
 repository, pause, capacity or publication gates. Repeated scans reuse each assignment's
 normal job for the same PR iteration, regardless of later filter changes. Adding
 an Agent creates its missing job at the next scan without repeating completed

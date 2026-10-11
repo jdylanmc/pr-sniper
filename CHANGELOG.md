@@ -5,6 +5,15 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+### Changed
+
+- Repository admission is now **All pull requests** or an ordered, sortable
+  list of **Filtered pull requests** rules (assigned to me, mentioning me,
+  include/exclude users, include/exclude paths); the first enabled matching
+  rule decides. Path rules use prefix or glob patterns. Existing repositories
+  migrate once and have monitoring switched off until reviewed. The repository
+  editor replaces Reviewer requests and People you watch with these controls.
+
 ## 0.2.1 - 2026-10-11
 
 ### Fixed
