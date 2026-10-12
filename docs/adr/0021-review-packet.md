@@ -32,6 +32,6 @@ Today the agent prompt is one JSON string built in `src-tauri/src/review/runtime
 - Larger context per run. CI and conversation data add cost and latency.
 - Result schema moves from prompt JSON to tool arguments. Needs a `schema` version and a migration for stored results.
 - Extends [ADR 0020](0020-constrained-host-owned-review-tools.md): the 3-tool allowlist becomes a registry. Allowlist drift still blocks the run.
-- Providers writes stay in host code: the model can never post, approve or merge by itself.
+- Provider writes stay in host code: the model can never post, approve or merge by itself.
 - Keeps [ADR 0008](0008-one-review-per-head-sha.md) and [ADR 0017](0017-opt-in-provider-actions.md): grants gate which terminal tools exist.
 - Delivered in phases; early phases change content, not behavior.
