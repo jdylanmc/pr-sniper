@@ -118,7 +118,14 @@ pub(crate) fn scan(
             .iter()
             .find(|p| p.id == origin.proof.pull_request_id)
             .ok_or(github::ConnectionError::IncompleteRead)?;
-        let threads = client.owned_threads_at(&origin.proof, &pull.head_sha)?;
+        let threads = match client.owned_threads_at(&origin.proof, &pull.head_sha) {
+            Ok(threads) => threads,
+            Err(github::ConnectionError::InvalidResponse) => {
+                crate::record(app, crate::DiagnosticEvent::ThreadSkipped);
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         result.retained.push(crate::retention::Observed {
             origin,
             head: pull.head_sha.clone(),
@@ -130,7 +137,14 @@ pub(crate) fn scan(
             .iter()
             .find(|p| p.id == origin.review.job.pull_request_id)
             .ok_or(github::ConnectionError::IncompleteRead)?;
-        let threads = client.owned_threads_at(&origin, &pull.head_sha)?;
+        let threads = match client.owned_threads_at(&origin, &pull.head_sha) {
+            Ok(threads) => threads,
+            Err(github::ConnectionError::InvalidResponse) => {
+                crate::record(app, crate::DiagnosticEvent::ThreadSkipped);
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         result.feedback.push(Observed {
             origin,
             head: pull.head_sha.clone(),
@@ -171,14 +185,20 @@ pub(crate) fn scan(
                 && tracked.lifecycle == github::metadata::Lifecycle::Open
         }) || monitoring::scan_admits(ticket, pull);
         if admitted {
-            let threads = client.review_threads_at(
+            match client.review_threads_at(
                 &binding.repository_name,
                 &binding.repository_id,
                 &binding.pull_request_id,
                 binding.number,
                 &pull.head_sha,
-            )?;
-            result.threads.push((binding.clone(), threads));
+            ) {
+                Ok(threads) => result.threads.push((binding.clone(), threads)),
+                // A malformed discussion on one PR must not fail the repository scan.
+                Err(github::ConnectionError::InvalidResponse) => {
+                    crate::record(app, crate::DiagnosticEvent::ThreadSkipped);
+                }
+                Err(error) => return Err(error),
+            }
         }
         result.mentions.push((binding, comments));
     }
@@ -315,7 +335,7 @@ pub(crate) fn admit_scan(
             } else {
                 let tracked = binding.tracked(&queue.tracked)?;
                 if tracked.lifecycle != github::metadata::Lifecycle::Open {
-                    return Err("The observed mention's tracked PR is no longer open.".into());
+                    continue;
                 }
                 tracked.item_id.clone()
             };
@@ -520,7 +540,9 @@ fn admit_thread_intents(
     now: i64,
 ) -> Result<(), String> {
     for (binding, threads) in observations {
-        let pr = binding.tracked(tracked)?;
+        let Ok(pr) = binding.tracked(tracked) else {
+            continue;
+        };
         if pr.lifecycle != github::metadata::Lifecycle::Open {
             continue;
         }
@@ -561,7 +583,12 @@ fn admit_thread_intents(
                     fresh = added;
                 }
             }
-            let root = thread.root().map_err(|_| "Invalid discussion root.")?;
+            // One malformed thread must never fail the whole repository scan: its
+            // comments are already recorded as seen, so it cannot replay.
+            let Some(root) = thread.tolerant_root() else {
+                let _ = store.record(crate::storage::DiagnosticEvent::ThreadSkipped);
+                continue;
+            };
             let closed = ledger.records.iter().any(|record| {
                 record.context.root_id == root.id
                     && binding.matches(&record.job)

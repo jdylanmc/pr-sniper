@@ -836,6 +836,90 @@ fn retention_mixed_old_and_new_publications_observe_all_feedback_before_admittin
     assert_eq!(runs[0].context.feedback.len(), 2);
 }
 
+fn thread_scan(threads: Vec<Thread>) -> Scan {
+    Scan {
+        retained: vec![],
+        feedback: vec![],
+        mentions: vec![],
+        threads: vec![(
+            MentionBinding {
+                configuration_id: REPO.into(),
+                account_id: "22".into(),
+                account_login: "actor".into(),
+                repository_id: "100".into(),
+                repository_name: "example/repo".into(),
+                pull_request_id: "9".into(),
+                number: 1,
+            },
+            threads,
+        )],
+    }
+}
+
+#[test]
+fn a_malformed_thread_never_fails_the_scan_and_other_threads_still_admit() {
+    let (_root, store, _origin, template) = fixture(1);
+    let ticket = poll(&store, 'a', NOW + 10);
+    let external = |id: &str, comment: &str, reply_to: Option<&str>| {
+        let mut thread = template.clone();
+        thread.id = id.into();
+        thread.resolved = false;
+        thread.comments.truncate(1);
+        thread.comments[0].id = comment.into();
+        thread.comments[0].author_id = Some("11".into());
+        thread.comments[0].body = "Please change this.".into();
+        thread.comments[0].review_id = None;
+        thread.comments[0].reply_to = reply_to.map(str::to_string);
+        thread
+    };
+    // First observation initializes the cursor.
+    admit_scan(&store, &ticket, thread_scan(vec![]), NOW + 11).unwrap();
+    // The first comment of "bad" is a reply, so it has no root: it is skipped.
+    let bad = external("bad", "400", Some("999"));
+    let good = external("good", "300", None);
+    admit_scan(
+        &store,
+        &ticket,
+        thread_scan(vec![bad.clone(), good]),
+        NOW + 12,
+    )
+    .unwrap();
+    let ledger = store.load_feedback().unwrap();
+    assert_eq!(ledger.pending_threads.len(), 1);
+    assert_eq!(ledger.pending_threads[0].thread.id, "good");
+    // Its comments are recorded as seen, so it cannot replay later.
+    let cursor = &ledger.conversation_cursors[0];
+    assert!(cursor
+        .threads
+        .contains(&serde_json::json!(["bad", "400"]).to_string()));
+    admit_scan(&store, &ticket, thread_scan(vec![bad]), NOW + 13).unwrap();
+    assert_eq!(store.load_feedback().unwrap().pending_threads.len(), 1);
+    // The skip leaves a content-free diagnostic.
+    let events = store.diagnostics().unwrap();
+    assert!(events
+        .iter()
+        .any(|d| d.event == crate::DiagnosticEvent::ThreadSkipped));
+}
+
+#[test]
+fn tolerant_root_prefers_a_true_root_and_rejects_rootless_threads() {
+    let (_root, _store, _origin, template) = fixture(1);
+    let mut thread = template.clone();
+    let mut reply = thread.comments[0].clone();
+    reply.id = "first-reply".into();
+    reply.reply_to = Some("real-root".into());
+    reply.published_at = "2026-01-02T00:00:00Z".into();
+    let mut root = thread.comments[0].clone();
+    root.id = "real-root".into();
+    root.reply_to = None;
+    root.published_at = "2026-01-01T00:00:00Z".into();
+    thread.comments = vec![reply.clone(), root];
+    assert!(thread.root().is_err());
+    assert_eq!(thread.tolerant_root().unwrap().id, "real-root");
+    thread.comments = vec![reply];
+    assert!(thread.tolerant_root().is_none());
+}
+
 fn finish_scan(store: Store, observations: Scan, now: i64) -> (Store, Result<(), String>) {
     let mut monitor = Monitor::restore(&store).unwrap();
     if let Some(operation) = monitor.snapshot()[0].operation.as_ref().filter(|o| {
@@ -1103,6 +1187,14 @@ fn r73_follow_up_write_failure_retains_mention_intent_and_recovers_without_redis
         Some("conversation_admission")
     );
     assert!(health.conversation_admission_pending);
+    // An admission error is transient: it retries instead of parking at once.
+    let operation = health.operation.as_ref().unwrap();
+    assert_eq!(
+        operation.failure,
+        Some(crate::monitoring::OperationFailure::Provider)
+    );
+    assert_eq!(operation.state, crate::monitoring::OperationState::Queued);
+    assert!(health.last_error.as_deref().is_some_and(|m| !m.is_empty()));
     assert_ne!(current_state(&store), crate::queue::State::MachineSignedOff);
     assert!(Capacity::default()
         .snapshot(&store, NOW + 22)

@@ -171,6 +171,9 @@ pub struct ScheduleHealth {
     pub next_run: i64,
     pub schedule_available: bool,
     pub last_failure: Option<String>,
+    /// Underlying message of the last failed check, shown as the raw error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
     pub in_flight: bool,
     #[serde(default)]
     pub conversation_admission_pending: bool,
@@ -1665,6 +1668,7 @@ impl Monitor {
                     next_run: 0,
                     schedule_available: false,
                     last_failure: None,
+                    last_error: None,
                     in_flight: false,
                     conversation_admission_pending: false,
                     manual_pending: false,
@@ -2036,6 +2040,7 @@ impl Monitor {
 
             health.last_attempt = Some(now);
             health.last_failure = None;
+            health.last_error = None;
             health.in_flight = true;
             health.manual_pending = false;
             start_poll_operation(health, configuration, now, false);
@@ -2162,7 +2167,8 @@ impl Monitor {
                         admit(store, &ticket).map_err(|message| MonitoringError::Recoverable {
                             code: "conversation_admission".into(),
                             message,
-                            failure: OperationFailure::Permanent,
+                            // A failed admission may clear on a fresh attempt.
+                            failure: OperationFailure::Provider,
                             retry_after_seconds: None,
                         })?;
                         Ok(login)
@@ -2184,6 +2190,7 @@ impl Monitor {
                         health.account_login = Some(login.clone());
                         health.last_success = Some(now);
                         health.last_failure = None;
+                        health.last_error = None;
                         health.conversation_admission_pending = false;
                         if let Some(operation) = health.operation.as_mut() {
                             operation.state = OperationState::Completed;
@@ -2193,6 +2200,7 @@ impl Monitor {
                     }
                     Err(error) => {
                         health.last_failure = Some(error.health_failure().into());
+                        health.last_error = Some(error.message().into());
                         finish_failed_operation(health, error, now);
                     }
                 }
@@ -2281,6 +2289,7 @@ impl Monitor {
         operation.resume_cycle = 0;
         operation.resume_at = None;
         health.last_failure = None;
+        health.last_error = None;
         health.next_run = now;
         health.schedule_available = true;
         if let Some(scan) = &mut self.state.global_scan {
@@ -3625,6 +3634,7 @@ impl Monitor {
             let account = reconnected.contains(&operation.account_id);
             if operation.auto_resume(account, now) {
                 health.last_failure = None;
+                health.last_error = None;
                 health.next_run = now;
                 health.schedule_available = true;
                 resumed += 1;

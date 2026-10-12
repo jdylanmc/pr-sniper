@@ -33,6 +33,7 @@ pub enum DiagnosticEvent {
     NotificationFailed,
     NotificationOpened,
     NotificationActivated,
+    ThreadSkipped,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

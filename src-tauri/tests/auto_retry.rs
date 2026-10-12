@@ -2,8 +2,8 @@ use pr_sniper_lib::{
     capacity,
     github::ConnectionError,
     monitoring::{
-        AccountAvailability, FailureClass, JobOperation, Monitor, OperationFailure, OperationState,
-        QueueJob, RESUME_COOLDOWNS_SECONDS,
+        AccountAvailability, FailureClass, JobOperation, Monitor, MonitoringError,
+        OperationFailure, OperationState, QueueJob, RESUME_COOLDOWNS_SECONDS,
     },
     queue::{self, State},
     review::{self, Failure, ReviewRun, Selection},
@@ -484,4 +484,34 @@ fn legacy_operations_without_resume_fields_still_load() {
     legacy.as_object_mut().unwrap().remove("resume_at");
     let restored: JobOperation = serde_json::from_value(legacy).unwrap();
     assert_eq!((restored.resume_cycle, restored.resume_at), (0, None));
+}
+
+#[test]
+fn conversation_admission_errors_retry_park_with_a_cooldown_and_resume() {
+    let error = MonitoringError::Recoverable {
+        code: "conversation_admission".into(),
+        message: "Could not write conversation state.".into(),
+        failure: OperationFailure::Provider,
+        retry_after_seconds: None,
+    };
+    let mut operation = JobOperation::review(&job(), 1_000);
+    let mut now = 0;
+    for attempt in 1..=3 {
+        now = operation.next_attempt_at.unwrap();
+        operation.begin_attempt(now).unwrap();
+        operation.fail(&error, now);
+        assert_eq!(
+            operation.state,
+            if attempt < 3 {
+                OperationState::Queued
+            } else {
+                OperationState::ManualRetry
+            }
+        );
+    }
+    assert_eq!(operation.failure_class(), Some(FailureClass::Other));
+    assert_eq!(operation.resume_at, Some(now + RESUME_COOLDOWNS_SECONDS[0]));
+    assert!(operation.auto_resume(false, now + RESUME_COOLDOWNS_SECONDS[0]));
+    assert_eq!(operation.state, OperationState::Queued);
+    assert_eq!(operation.resume_cycle, 1);
 }
