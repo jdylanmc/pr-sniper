@@ -452,6 +452,9 @@ impl Failure {
                 "GitHub could not verify this Copilot identity. Retry or reconnect." => {
                     OperationFailure::Provider
                 }
+                message if crate::copilot::credential_error(message) => {
+                    OperationFailure::Credentials
+                }
                 _ => OperationFailure::Permanent,
             };
             Self {
@@ -468,6 +471,10 @@ impl Failure {
             ErrorKind::Io => OperationFailure::Network,
             ErrorKind::Protocol(ProtocolErrorKind::CliStartupTimeout)
             | ErrorKind::Session(SessionErrorKind::Timeout(_)) => OperationFailure::Timeout,
+            ErrorKind::GitHubTokenProvider => OperationFailure::Credentials,
+            ErrorKind::Protocol(_) | ErrorKind::Rpc { .. } | ErrorKind::Session(_) => {
+                OperationFailure::Provider
+            }
             _ => OperationFailure::Permanent,
         };
         Self { cancelled: false, kind, message: "Copilot runtime request failed; check account, model, and runtime availability before retrying.".into(), retry_after_seconds: None }
@@ -476,11 +483,14 @@ impl Failure {
         let kind = match data["statusCode"].as_u64() {
             Some(408) => OperationFailure::Timeout,
             Some(429) => OperationFailure::RateLimited,
+            Some(401) => OperationFailure::Credentials,
+            Some(403) => OperationFailure::Permission,
             Some(500..=599) => OperationFailure::Provider,
-            _ => match data["errorType"].as_str() {
+            Some(_) => OperationFailure::Permanent,
+            None => match data["errorType"].as_str() {
                 Some("timeout") => OperationFailure::Timeout,
                 Some("network") => OperationFailure::Network,
-                _ => OperationFailure::Permanent,
+                _ => OperationFailure::Provider,
             },
         };
         let retry_after_seconds = data["retryAfterSeconds"].as_i64().filter(|n| *n >= 0);

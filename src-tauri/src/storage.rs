@@ -740,13 +740,6 @@ fn migrate_admission_rules(settings: &mut Settings) -> bool {
             .insert(repository.id.clone(), None);
         migrated += 1;
     }
-    if migrated > 0 {
-        let notice = format!("Admission filters replaced watched authors: {migrated} repositor{} migrated and monitoring was turned off. Review each repository's admission rules, then re-enable monitoring.", if migrated == 1 { "y was" } else { "ies were" });
-        settings.capability_notice = Some(match settings.capability_notice.take() {
-            Some(existing) => format!("{existing} {notice}"),
-            None => notice,
-        });
-    }
     migrated > 0
 }
 

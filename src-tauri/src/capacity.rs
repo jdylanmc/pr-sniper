@@ -49,6 +49,7 @@ pub struct Work {
     pub enqueue_order: u64,
     pub state: &'static str,
     pub reason: Option<String>,
+    pub failure: Option<crate::monitoring::FailureClass>,
 }
 
 #[derive(Debug, Serialize)]
@@ -140,6 +141,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                     .blocked
                     .unwrap_or_else(|| "Primary discussion assessment unavailable.".into()),
             ),
+            failure: None,
         });
     }
     for mention in store.load_feedback()?.mentions.into_iter().filter(|m| {
@@ -160,6 +162,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                     .blocked
                     .unwrap_or_else(|| "Mention routing is unavailable.".into()),
             ),
+            failure: None,
         });
     }
     for candidate in review::host::candidates(store)? {
@@ -218,6 +221,10 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                 "waiting"
             },
             reason,
+            failure: candidate
+                .run
+                .as_ref()
+                .and_then(|run| run.operation.failure_class()),
         });
     }
     for candidate in follow_ups {
@@ -264,6 +271,11 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                 "waiting"
             },
             reason,
+            failure: run
+                .analysis
+                .as_ref()
+                .and_then(|op| op.failure_class())
+                .or_else(|| run.publication.as_ref().and_then(|op| op.failure_class())),
         });
     }
     result.sort_by(|a, b| (a.enqueue_order, &a.key).cmp(&(b.enqueue_order, &b.key)));
@@ -323,6 +335,7 @@ impl Coordinator {
                         .interruption
                         .map(|r| format!("{r:?}; waiting for worker teardown."))
                 }),
+                failure: None,
             };
             if let Some(old) = work.iter_mut().find(|w| w.key == entry.key) {
                 *old = entry;

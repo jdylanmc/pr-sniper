@@ -30,7 +30,8 @@ pub const WAITING_MERGED: &str = "merged";
 pub const WAITING_ASSIGNMENT_REMOVED: &str = "assignment_removed";
 pub const CONFIGURATION_SAVE_REQUIRED: &str = "repository_configuration_required";
 const RETRY_WINDOW_SECONDS: i64 = 15 * 60;
-const MAX_RETRIES: u8 = 3;
+// A job iteration parks after this many failed attempts.
+pub(crate) const MAX_FAILED_ATTEMPTS: u8 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -52,6 +53,35 @@ pub enum OperationFailure {
     Provider,
     Permanent,
     Superseded,
+    Credentials,
+    Permission,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureClass {
+    Credentials,
+    Permission,
+    Network,
+    Other,
+}
+
+impl OperationFailure {
+    pub fn class(&self) -> FailureClass {
+        match self {
+            Self::Credentials => FailureClass::Credentials,
+            Self::Permission => FailureClass::Permission,
+            Self::Timeout | Self::RateLimited | Self::Network => FailureClass::Network,
+            Self::Provider | Self::Permanent | Self::Superseded => FailureClass::Other,
+        }
+    }
+
+    pub fn transient(&self) -> bool {
+        matches!(
+            self,
+            Self::Timeout | Self::RateLimited | Self::Network | Self::Provider
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -566,6 +596,7 @@ pub struct Monitor {
     state: MonitoringState,
     leases: BTreeMap<String, String>,
     previews: BTreeMap<String, ActivationPreview>,
+    lifecycle_next: i64,
 }
 
 impl Monitor {
@@ -573,6 +604,7 @@ impl Monitor {
         Self {
             state,
             leases: Default::default(),
+            lifecycle_next: 0,
             previews: Default::default(),
         }
     }
@@ -610,6 +642,7 @@ impl Monitor {
         Ok(Self {
             state,
             leases: BTreeMap::new(),
+            lifecycle_next: 0,
             previews: BTreeMap::new(),
         })
     }
@@ -2880,7 +2913,7 @@ fn start_poll_operation(
             .next_attempt_at
             .is_some_and(|next| manual || now >= next)
             && now < operation.retry_deadline
-            && operation.attempt_count <= MAX_RETRIES
+            && operation.attempt_count < MAX_FAILED_ATTEMPTS
     });
     if retrying {
         if let Some(operation) = health.operation.as_mut() {
@@ -2956,41 +2989,52 @@ impl JobOperation {
         self.next_attempt_at = Some(now);
     }
 
+    /// Transient failures back off and retry until `MAX_FAILED_ATTEMPTS`, then
+    /// park as `ManualRetry`; terminal, credential and permission failures
+    /// park at once as `Failed`. `failure` keeps the classified cause.
     pub fn fail(&mut self, error: &MonitoringError, now: i64) {
         self.ai_attempt = None;
         self.interruption = None;
-        let operation = self;
         let failure = retryable_failure(error);
-        operation.failure = Some(failure.clone());
-        if matches!(
-            failure,
-            OperationFailure::Permanent | OperationFailure::Superseded
-        ) {
-            operation.state = OperationState::Failed;
-            operation.next_attempt_at = None;
+        self.failure = Some(failure.clone());
+        self.next_attempt_at = None;
+        if !failure.transient() {
+            self.state = OperationState::Failed;
             return;
         }
-        if operation.attempt_count > MAX_RETRIES || now >= operation.retry_deadline {
-            operation.state = OperationState::ManualRetry;
-            operation.next_attempt_at = None;
+        if self.attempt_count >= MAX_FAILED_ATTEMPTS || now >= self.retry_deadline {
+            self.state = OperationState::ManualRetry;
             return;
         }
-        let retry_count = operation.attempt_count;
         let delay = match error {
             MonitoringError::Recoverable {
                 retry_after_seconds: Some(delay),
                 ..
             } => *delay,
-            _ => retry_delay_seconds(&operation.id, retry_count),
+            _ => retry_delay_seconds(&self.id, self.attempt_count),
         };
         let next_attempt = now.saturating_add(delay);
-        if next_attempt >= operation.retry_deadline {
-            operation.state = OperationState::ManualRetry;
-            operation.next_attempt_at = None;
+        if next_attempt >= self.retry_deadline {
+            self.state = OperationState::ManualRetry;
             return;
         }
-        operation.state = OperationState::Queued;
-        operation.next_attempt_at = Some(next_attempt);
+        self.state = OperationState::Queued;
+        self.next_attempt_at = Some(next_attempt);
+    }
+
+    pub fn parked(&self) -> bool {
+        matches!(
+            self.state,
+            OperationState::Failed | OperationState::ManualRetry
+        )
+    }
+
+    pub fn failure_class(&self) -> Option<FailureClass> {
+        self.parked().then(|| {
+            self.failure
+                .as_ref()
+                .map_or(FailureClass::Other, OperationFailure::class)
+        })
     }
 
     pub fn begin_attempt(&mut self, now: i64) -> Result<(), String> {
@@ -3009,7 +3053,7 @@ impl JobOperation {
             self.initial_attempt_at = now;
             self.retry_deadline = now + RETRY_WINDOW_SECONDS;
         }
-        if now >= self.retry_deadline || self.attempt_count > MAX_RETRIES {
+        if now >= self.retry_deadline || self.attempt_count >= MAX_FAILED_ATTEMPTS {
             self.state = OperationState::ManualRetry;
             self.next_attempt_at = None;
             return Err("Review retry budget exhausted. Manual retry is required.".into());
@@ -3109,6 +3153,20 @@ pub(crate) fn check_error(error: ConnectionError) -> MonitoringError {
         ConnectionError::RateLimitedAfter(retry_after_seconds) => {
             (OperationFailure::RateLimited, Some(retry_after_seconds))
         }
+        ConnectionError::SignedOut
+        | ConnectionError::WrongIdentity
+        | ConnectionError::MissingScope
+        | ConnectionError::ScopeUnverified
+        | ConnectionError::OrganizationPolicyDeniedWithMissingScope
+        | ConnectionError::RateLimitedWithContext {
+            missing_repo_scope: true,
+            ..
+        }
+        | ConnectionError::ProviderRejectedStatus(401) => (OperationFailure::Credentials, None),
+        ConnectionError::MissingReadPermission
+        | ConnectionError::RepositoryUnavailable
+        | ConnectionError::OrganizationPolicyDenied
+        | ConnectionError::ProviderRejectedStatus(403) => (OperationFailure::Permission, None),
         ConnectionError::RateLimitedWithContext {
             retry_after_seconds,
             reset_at,
@@ -3309,6 +3367,124 @@ pub fn next_run(schedule: &Schedule, now: i64) -> Result<i64, ConnectionError> {
                 .map(|time| time.timestamp())
                 .map_err(|_| ConnectionError::Configuration)
         }
+    }
+}
+
+/// Seconds between lightweight lifecycle sweeps of PRs in unmonitored repositories.
+pub const LIFECYCLE_SWEEP_SECONDS: i64 = 600;
+
+/// One repository whose tracked open PRs still need a state-only refresh.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LifecycleTicket {
+    pub configuration_id: String,
+    pub name: String,
+    pub provider_account_id: String,
+    pub provider_repository_id: String,
+    pub tracked: Vec<(String, u64)>,
+}
+
+impl Monitor {
+    /// Tracked, non-terminal PRs of disabled or unassigned repositories keep a
+    /// state-only refresh (no admission, no new work) while their account is
+    /// connected, so a merge or close still reaches the Queue.
+    pub fn lifecycle_tickets(
+        &mut self,
+        store: &Store,
+        accounts: &BTreeMap<String, AccountAvailability>,
+        now: i64,
+    ) -> Result<Vec<LifecycleTicket>, String> {
+        if now < self.lifecycle_next {
+            return Ok(Vec::new());
+        }
+        let settings = store.load_settings()?;
+        let queue = store.load_queue_state()?;
+        let mut tickets = Vec::new();
+        for configuration in configured_schedules(&settings) {
+            if configuration.enabled && !configuration.assignments.is_empty() {
+                continue;
+            }
+            let (Some(account), Some(repository)) = (
+                configuration.provider_account_id.as_ref(),
+                configuration.provider_repository_id.as_ref(),
+            ) else {
+                continue;
+            };
+            if !configuration.provider_supported
+                || !accounts.get(account).is_some_and(|a| a.connected)
+            {
+                continue;
+            }
+            let tracked: std::collections::BTreeSet<_> = queue
+                .tracked
+                .iter()
+                .filter(|p| {
+                    !p.terminal_observed
+                        && p.configuration_id == configuration.repository_id
+                        && &p.account_id == account
+                        && &p.repository_id == repository
+                })
+                .map(|p| (p.pull_request_id.clone(), p.number))
+                .collect();
+            if tracked.is_empty() {
+                continue;
+            }
+            tickets.push(LifecycleTicket {
+                configuration_id: configuration.repository_id.clone(),
+                name: configuration.name.clone(),
+                provider_account_id: account.clone(),
+                provider_repository_id: repository.clone(),
+                tracked: tracked.into_iter().collect(),
+            });
+        }
+        self.lifecycle_next = now + LIFECYCLE_SWEEP_SECONDS;
+        Ok(tickets)
+    }
+
+    /// Records only terminal observations; provider failures are retried on the
+    /// next sweep and never surface for unmonitored repositories.
+    pub fn apply_lifecycle(
+        &mut self,
+        store: &Store,
+        ticket: &LifecycleTicket,
+        observed: Result<Vec<(String, Lifecycle)>, ConnectionError>,
+        now: i64,
+    ) -> Result<(), String> {
+        let Ok(observed) = observed else {
+            return Ok(());
+        };
+        let mut queue = store.load_queue_state()?;
+        let previous = queue.clone();
+        for (id, state) in observed {
+            if state == Lifecycle::Open {
+                continue;
+            }
+            let Some(tracked) = queue.tracked.iter_mut().find(|p| {
+                p.pull_request_id == id
+                    && p.configuration_id == ticket.configuration_id
+                    && p.account_id == ticket.provider_account_id
+                    && p.repository_id == ticket.provider_repository_id
+            }) else {
+                continue;
+            };
+            tracked.lifecycle = state.clone();
+            tracked.terminal_observed = true;
+            tracked.observed_at = now;
+            let tracked = tracked.clone();
+            for job in queue.jobs.iter_mut().filter(|j| tracked.matches(j)) {
+                if !matches!(job.waiting.as_str(), WAITING_CLOSED | WAITING_MERGED) {
+                    job.waiting = if state == Lifecycle::Merged {
+                        WAITING_MERGED
+                    } else {
+                        WAITING_CLOSED
+                    }
+                    .into();
+                }
+            }
+        }
+        if queue != previous {
+            store.save_queue_state(&queue)?;
+        }
+        Ok(())
     }
 }
 

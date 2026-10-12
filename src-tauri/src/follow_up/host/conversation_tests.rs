@@ -668,7 +668,8 @@ fn r73_completed_receipt_does_not_relax_pending_new_mutation_or_current_configur
             _ => unreachable!(),
         }
         store.save_settings(&changed).unwrap();
-        assert_ne!(
+        // Finished, published work survives configuration drift.
+        assert_eq!(
             current_state(&store),
             crate::queue::State::MachineSignedOff,
             "{change}"
@@ -1232,7 +1233,7 @@ fn r73_mention_recovery_never_replaces_linked_or_uncertain_execution() {
     let mention = store.load_feedback().unwrap().mentions.remove(0);
     assert_eq!(mention.follow_up_id.as_deref(), Some(runs[0].id.as_str()));
     assert!(mention.blocked.unwrap().contains("no replacement"));
-    assert_eq!(current_state(&store), crate::queue::State::Blocked);
+    assert_eq!(current_state(&store), crate::queue::State::Failed);
 }
 
 #[test]

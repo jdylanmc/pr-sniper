@@ -105,9 +105,7 @@ pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
             queue::State::ConfirmationRequired => Some(Category::Confirmation),
             queue::State::WaitingForHuman => Some(Category::HumanInput),
             queue::State::MachineSignedOff => Some(Category::Ready),
-            queue::State::Failed | queue::State::Blocked | queue::State::StaleAfterPublication => {
-                Some(Category::Failure)
-            }
+            queue::State::Failed | queue::State::StaleAfterPublication => Some(Category::Failure),
             _ => None,
         };
         if item.state == queue::State::MachineSignedOff
@@ -247,9 +245,7 @@ pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
                 && Some(&item.job.account_id) == health.provider_account_id.as_ref()
                 && matches!(
                     item.state,
-                    queue::State::Failed
-                        | queue::State::Blocked
-                        | queue::State::StaleAfterPublication
+                    queue::State::Failed | queue::State::StaleAfterPublication
                 )
         });
         frames.push(Frame {

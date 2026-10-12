@@ -92,6 +92,7 @@ pub(crate) fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                 "waiting"
             },
             reason,
+            failure: run.execution.operation.failure_class(),
         });
     }
     Ok(result)

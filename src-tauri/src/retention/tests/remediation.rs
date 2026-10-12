@@ -560,7 +560,7 @@ fn r3_full_and_compact_settlement_parity_preserves_unsettled_replies() {
                     assert_eq!(
                         state,
                         if closure {
-                            crate::queue::State::Blocked
+                            crate::queue::State::Queued
                         } else {
                             crate::queue::State::WaitingForHuman
                         },

@@ -2,7 +2,7 @@ use crate::{
     follow_up,
     monitoring::{self, OperationState, QueueJob, ScheduleHealth},
     publication::{self, RemoteState},
-    review::{self, Decision, Selection},
+    review::{self, Decision},
     storage::{Settings, Store},
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -17,7 +17,6 @@ pub enum State {
     StaleAfterPublication,
     Stale,
     Failed,
-    Blocked,
     WaitingForHuman,
     ConfirmationRequired,
     Reviewing,
@@ -33,7 +32,7 @@ impl State {
     fn priority(self) -> u8 {
         match self {
             Self::MachineSignedOff | Self::WaitingForHuman => 0,
-            Self::Failed | Self::Blocked | Self::ConfirmationRequired => 1,
+            Self::Failed | Self::ConfirmationRequired => 1,
             Self::StaleAfterPublication => 2,
             Self::Reviewing | Self::Queued | Self::AwaitingPublication => 3,
             Self::WaitingForAuthor => 4,
@@ -52,7 +51,6 @@ impl State {
             Self::Queued => "Waiting for assigned review work. Every current assignment must finish before this PR can be machine-cleared.",
             Self::AwaitingPublication => "Review output is local; comment publication is pending. No completed handoff yet.",
             Self::Failed => "An operation failed or its remote outcome is unresolved. Inspect the original operation and retry or reconcile; a local sign-off does not clear this failure.",
-            Self::Blocked => "Current configuration or access prevents a completed handoff. Inspect evidence, schedule health and Settings.",
             Self::Stale => "This review no longer establishes readiness for the current PR or configuration. Check the latest revision; saved evidence remains available.",
             Self::StaleAfterPublication => "Comments were published, but the reviewed state is now stale. They do not establish readiness for the current PR.",
             Self::Closed => "GitHub reports this PR closed. This iteration is terminal; saved evidence is retained.",
@@ -69,6 +67,8 @@ pub struct Item {
     pub aliases: Vec<String>,
     pub job: QueueJob,
     pub state: State,
+    // Set only for failed items; the Queue shows credential failures only.
+    pub failure_class: Option<monitoring::FailureClass>,
     pub summary: &'static str,
     pub review_keys: Vec<String>,
     pub follow_up_ids: Vec<String>,
@@ -201,8 +201,13 @@ fn review_state(
     if publication.is_some_and(|p| p.uncertain || failed(&p.operation) || p.error.is_some()) {
         return State::Failed;
     }
-    if candidate.blocked.is_some() {
-        return State::Blocked;
+    let finished = candidate
+        .run
+        .as_ref()
+        .is_some_and(|r| r.operation.state == OperationState::Completed && r.result.is_some());
+    // Finished work stays finished when its assignment or repository goes away.
+    if candidate.blocked.is_some() && !finished {
+        return State::Queued;
     }
     let Some(run) = &candidate.run else {
         return State::Queued;
@@ -223,16 +228,7 @@ fn review_state(
     if result.output.feedback_conflict || !result.output.held_findings.is_empty() {
         return State::WaitingForHuman;
     }
-    let Ok(current) = Selection::resolve(settings, &candidate.job, &candidate.assignment_id) else {
-        return State::Blocked;
-    };
-    if current.agent != run.selection.agent
-        || current.doctrine != run.selection.doctrine
-        || current.preset != run.selection.preset
-        || current.policy.prompt != run.selection.policy.prompt
-        || current.policy.adapter != run.selection.policy.adapter
-        || result.reviewed_base_sha.is_none()
-    {
+    if result.reviewed_base_sha.is_none() {
         return State::Stale;
     }
     match &candidate.job.observed_base_sha {
@@ -246,26 +242,28 @@ fn review_state(
         None => return State::Queued,
         Some(_) => {}
     }
-    if publication.is_none()
-        && batch
-            .and_then(|p| p.blocked.as_deref())
-            .is_some_and(|reason| reason != "Comments are disabled for this Agent assignment.")
-    {
-        return State::Blocked;
-    }
-    let comments = settings
+    let assignment = settings
         .repositories
         .iter()
-        .find(|r| r.id == candidate.job.configuration_id)
+        .find(|r| r.id == candidate.job.configuration_id && r.enabled)
         .and_then(|r| {
             r.assignments
                 .iter()
                 .find(|a| a.id == candidate.assignment_id)
-        })
-        .is_some_and(|a| a.comment);
+        });
+    if assignment.is_some()
+        && publication.is_none()
+        && batch
+            .and_then(|p| p.blocked.as_deref())
+            .is_some_and(|reason| reason != "Comments are disabled for this Agent assignment.")
+    {
+        return State::Failed;
+    }
+    let comments = assignment.is_some_and(|a| a.comment);
     if comments || publication.is_some() {
-        if batch.is_some_and(|p| p.blocked.is_some()) {
-            return State::Blocked;
+        // A recorded publication outlives later configuration edits.
+        if publication.is_none() && batch.is_some_and(|p| p.blocked.is_some()) {
+            return State::Failed;
         }
         if let Some(publication) = publication {
             if publication.phase != publication::Phase::Published
@@ -340,7 +338,7 @@ fn follow_up_state(candidate: &follow_up::host::Candidate) -> Option<State> {
         return Some(State::Failed);
     }
     if candidate.blocked.is_some() {
-        return Some(State::Blocked);
+        return Some(State::Queued);
     }
     if candidate.human_gate || run.phase == Phase::HumanInputRequired {
         return Some(State::WaitingForHuman);
@@ -416,6 +414,26 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             })
             .collect();
         let mut warnings = BTreeSet::new();
+        let mut failures: Vec<monitoring::FailureClass> = Vec::new();
+        failures.extend(
+            reviews
+                .iter()
+                .filter_map(|r| r.run.as_ref()?.operation.failure_class()),
+        );
+        failures.extend(
+            snapshot
+                .publications
+                .iter()
+                .filter_map(|p| p.publication.as_ref())
+                .filter(|p| item_id(current(&p.review.job)) == id)
+                .filter_map(|p| p.operation.failure_class()),
+        );
+        failures.extend(follow_ups.iter().flat_map(|f| {
+            [&f.run.analysis, &f.run.publication]
+                .into_iter()
+                .flatten()
+                .filter_map(|op| op.failure_class())
+        }));
         for review in &reviews {
             if let Some(error) = &review.blocked {
                 warnings.insert(error.clone());
@@ -482,7 +500,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             match concern.state {
                 "open" => states.push(State::WaitingForAuthor),
                 "human_input_required" => states.push(State::WaitingForHuman),
-                "unavailable" | "owner_unavailable" => states.push(State::Blocked),
+                "unavailable" | "owner_unavailable" => states.push(State::Queued),
                 _ => {}
             }
         }
@@ -497,16 +515,22 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 Err(reason) => {
                     // Missing execution or ambiguous legacy evidence is not
                     // proof that an old operation or human concern is settled.
-                    states.push(State::Blocked);
+                    states.push(State::Queued);
                     warnings.insert(reason.into());
                 }
             }
             if mention.follow_up_id.is_none() {
-                states.push(State::Blocked);
+                states.push(State::Queued);
                 warnings.insert("Observed mention is awaiting durable execution admission.".into());
             }
             if let Some(reason) = &mention.blocked {
-                states.push(State::Blocked);
+                // Admission still pending is autonomous waiting; a blocked
+                // executed mention cannot proceed on its own.
+                states.push(if mention.follow_up_id.is_some() {
+                    State::Failed
+                } else {
+                    State::Queued
+                });
                 warnings.insert(reason.clone());
             }
             if mention
@@ -514,7 +538,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 .as_ref()
                 .is_some_and(|id| !snapshot.follow_ups.iter().any(|f| &f.run.id == id))
             {
-                states.push(State::Blocked);
+                states.push(State::Failed);
                 warnings.insert(
                     "Mention execution history is unavailable; no replay or clearance inferred."
                         .into(),
@@ -535,7 +559,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                         .any(|candidate| &candidate.run.id == id)
                 })
             {
-                states.push(State::Blocked);
+                states.push(State::Queued);
                 warnings.insert(intent.blocked.clone().unwrap_or_else(|| "Observed discussion awaits durable primary assessment; no clearance inferred.".into()));
             }
         }
@@ -584,19 +608,33 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 states.push(State::Queued);
                 warnings.insert("Waiting for every currently assigned Agent to detect and review this revision.".into());
             }
-            if monitoring::review_policy(settings, job, None).is_err() {
-                states.push(State::Blocked);
-            }
             for health in snapshot.health.iter().filter(|h| {
                 h.repository_id == job.configuration_id
                     && h.provider_account_id.as_deref() == Some(&job.account_id)
             }) {
                 if health.conversation_admission_pending {
-                    states.push(State::Blocked);
+                    states.push(State::Queued);
                     warnings.insert("Conversation observations are not fully admitted; retry the repository check before relying on readiness.".into());
                 }
                 if let Some(failure) = &health.last_failure {
+                    let credentials = matches!(
+                        failure.as_str(),
+                        "account_disconnected" | "account_binding_required"
+                    );
+                    // A check that is still backing off retries on its own.
+                    if !credentials && health.operation.as_ref().is_some_and(|op| !op.parked()) {
+                        continue;
+                    }
                     states.push(State::Failed);
+                    failures.push(if credentials {
+                        monitoring::FailureClass::Credentials
+                    } else {
+                        health
+                            .operation
+                            .as_ref()
+                            .and_then(|op| op.failure.as_ref())
+                            .map_or(monitoring::FailureClass::Other, |f| f.class())
+                    });
                     warnings.insert(format!("Monitoring failure: {failure}. Check schedule health before relying on this saved revision."));
                 }
             }
@@ -604,7 +642,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
         let state = match job.waiting.as_str() {
             monitoring::WAITING_CLOSED => State::Closed,
             monitoring::WAITING_MERGED => State::Merged,
-            _ => states.into_iter().min().unwrap_or(State::Blocked),
+            _ => states.into_iter().min().unwrap_or(State::Queued),
         };
         items.push(Item {
             action_status: None,
@@ -618,6 +656,12 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             id,
             job: job.clone(),
             state,
+            failure_class: (state == State::Failed).then(|| {
+                failures
+                    .into_iter()
+                    .min()
+                    .unwrap_or(monitoring::FailureClass::Other)
+            }),
             summary: state.summary(),
             review_keys: reviews.iter().map(|r| r.key.clone()).collect(),
             follow_up_ids: follow_ups.iter().map(|f| f.run.id.clone()).collect(),

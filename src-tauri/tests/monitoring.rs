@@ -1656,12 +1656,12 @@ fn interrupted_poll_past_its_deadline_requires_manual_retry() {
 }
 
 #[test]
-fn transient_poll_failures_stop_after_three_retries_and_manual_retry_resets_budget() {
+fn transient_poll_failures_park_after_three_failed_attempts_and_manual_retry_resets_budget() {
     let (_root, store) = store();
     let mut monitor = Monitor::restore(&store).unwrap();
     let mut now = 1_800_000_000;
 
-    for expected_attempt in 1..=4 {
+    for expected_attempt in 1..=3 {
         let mut tickets = monitor
             .prepare_checks(&store, now, expected_attempt == 1)
             .unwrap();
@@ -1685,7 +1685,7 @@ fn transient_poll_failures_stop_after_three_retries_and_manual_retry_resets_budg
         let health = &monitor.snapshot()[0];
         let operation = health.operation.as_ref().unwrap();
         assert_eq!(operation.failure, Some(OperationFailure::Network));
-        if expected_attempt < 4 {
+        if expected_attempt < 3 {
             assert_eq!(operation.state, OperationState::Queued);
             now = operation.next_attempt_at.unwrap();
         } else {
@@ -1714,7 +1714,7 @@ fn valid_global_cron_clears_stale_schedule_error_while_manual_retry_remains() {
     let mut monitor = Monitor::restore(&store).unwrap();
     let mut now = 1_800_000_000;
 
-    for attempt in 1..=4 {
+    for attempt in 1..=3 {
         let mut tickets = monitor.prepare_checks(&store, now, attempt == 1).unwrap();
         assert_eq!(tickets.len(), 1);
         monitor
@@ -1725,7 +1725,7 @@ fn valid_global_cron_clears_stale_schedule_error_while_manual_retry_remains() {
                 now + 1,
             )
             .unwrap_err();
-        if attempt < 4 {
+        if attempt < 3 {
             now = monitor.snapshot()[0]
                 .operation
                 .as_ref()
@@ -1928,7 +1928,7 @@ fn permanent_poll_failure_requires_manual_retry_without_an_automatic_retry() {
     let health = &monitor.snapshot()[0];
     let operation = health.operation.as_ref().unwrap();
     assert_eq!(operation.state, OperationState::Failed);
-    assert_eq!(operation.failure, Some(OperationFailure::Permanent));
+    assert_eq!(operation.failure, Some(OperationFailure::Credentials));
     assert_eq!(operation.attempt_count, 1);
     assert_eq!(operation.attempted_mutation, None);
     assert_eq!(operation.confirmed_receipt, None);

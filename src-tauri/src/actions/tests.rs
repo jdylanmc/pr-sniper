@@ -608,7 +608,7 @@ fn correction_action_read_error_opt_out_restores_personal_handoff_after_restart(
     assert!(before.effects.is_empty());
     assert_eq!(
         queue::snapshot(&store, vec![]).unwrap().items[0].state,
-        State::Blocked
+        State::Failed
     );
     let mut settings = store.load_settings().unwrap();
     settings.repositories[0].assignments[0].actions = Some(ActionPermissions {
@@ -747,7 +747,7 @@ fn correction_opt_out_preserves_pending_unknown_and_unverified_receipts_for_reco
         assert_eq!(status.personal_review, "Not inferred.");
         assert!(matches!(
             snapshot.items[0].state,
-            State::Blocked | State::Failed
+            State::Queued | State::Failed
         ));
         assert_eq!(store.load_actions().unwrap(), before);
         assert!(ready(&store, &run, &observed(), Action::Approve).is_err());
@@ -870,6 +870,23 @@ fn all_current_agents_clear_and_local_only_handoff_precede_distinct_shared_final
     store.save_settings(&settings).unwrap();
     assert!(ready(&store, &final_review, &observed(), Action::Approve).is_err());
     assert_eq!(store.load_reviews().unwrap(), original);
+}
+
+#[test]
+fn completed_review_stays_ready_after_repository_disabled_or_agent_edited() {
+    let (_root, store, _item) = fixture(1, false, false);
+    assert_eq!(
+        queue::snapshot(&store, vec![]).unwrap().items[0].state,
+        State::MachineSignedOff
+    );
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].enabled = false;
+    settings.agents[0].prompt = "Changed after the review.".into();
+    store.save_settings(&settings).unwrap();
+    assert_eq!(
+        queue::snapshot(&store, vec![]).unwrap().items[0].state,
+        State::MachineSignedOff
+    );
 }
 
 #[test]

@@ -1455,12 +1455,59 @@ fn finish_monitored_ticket(
     }
 }
 
+fn start_lifecycle_refresh(app: &tauri::AppHandle) {
+    let host = app.state::<Host>();
+    let tickets = (|| -> Result<_, String> {
+        let accounts = host
+            .github_auth
+            .lock()
+            .map_err(|_| "GitHub connection state is unavailable.")?
+            .monitoring_accounts();
+        let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+        let mut monitor = host
+            .monitor
+            .lock()
+            .map_err(|_| "Monitoring is unavailable.")?;
+        monitor.lifecycle_tickets(&store, &accounts, now_seconds()?)
+    })()
+    .unwrap_or_default();
+    for ticket in tickets {
+        let app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let host = app.state::<Host>();
+            let observed = (|| {
+                let (_, client) = github_session(&host, &ticket.provider_account_id)?;
+                let connection = client.connect(&ticket.name, Some(&ticket.provider_account_id))?;
+                if connection.repository.id != ticket.provider_repository_id {
+                    return Err(ConnectionError::RepositoryChanged);
+                }
+                let mut seen = Vec::new();
+                for (id, number) in &ticket.tracked {
+                    if let Ok(pull) = client.review_pull(&connection.repository, *number) {
+                        if &pull.id == id {
+                            seen.push((pull.id, pull.state));
+                        }
+                    }
+                }
+                Ok(seen)
+            })();
+            let (Ok(now), Ok(store), Ok(mut monitor)) =
+                (now_seconds(), host.store.lock(), host.monitor.lock())
+            else {
+                return;
+            };
+            let _ = monitor.apply_lifecycle(&store, &ticket, observed, now);
+        });
+    }
+}
+
 fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
     let host = app.state::<Host>();
     if host.quitting.load(Ordering::SeqCst) {
         return Err("PR Sniper is quitting.".into());
     }
     let tickets = prepare_monitoring_checks(&host, now_seconds()?, immediate)?;
+    start_lifecycle_refresh(app);
     for ticket in tickets {
         let app = app.clone();
         tauri::async_runtime::spawn_blocking(move || {

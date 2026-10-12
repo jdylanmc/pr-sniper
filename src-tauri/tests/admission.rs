@@ -80,11 +80,7 @@ fn migration_materializes_legacy_values_and_disables_monitoring() {
     assert!(!settings.repositories[1].enabled);
     // The global watched author applies, reviewer assignment overridden off.
     assert_eq!(kinds(second)[1], (Assigned, false));
-    assert!(settings
-        .capability_notice
-        .as_deref()
-        .unwrap()
-        .contains("2 repositories"));
+    assert!(settings.capability_notice.is_none());
 }
 
 #[test]
