@@ -32,6 +32,9 @@ pub const CONFIGURATION_SAVE_REQUIRED: &str = "repository_configuration_required
 const RETRY_WINDOW_SECONDS: i64 = 15 * 60;
 // A job iteration parks after this many failed attempts.
 pub(crate) const MAX_FAILED_ATTEMPTS: u8 = 3;
+// A parked failure earns a fresh attempt budget after each cooldown, bounding
+// AI cost: 30m, 1h, 2h, 4h, 8h, then it waits for a human.
+pub const RESUME_COOLDOWNS_SECONDS: [i64; 5] = [1_800, 3_600, 7_200, 14_400, 28_800];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -82,6 +85,16 @@ impl OperationFailure {
             Self::Timeout | Self::RateLimited | Self::Network | Self::Provider
         )
     }
+
+    /// Parked failures that may clear on their own after a cooldown; access can
+    /// be granted, credentials resume on reconnect instead.
+    pub fn resumable(&self) -> bool {
+        self.transient() || matches!(self, Self::Permission)
+    }
+}
+
+fn is_zero(value: &u8) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,6 +104,12 @@ pub struct JobOperation {
     pub ai_attempt: Option<AttemptBudget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interruption: Option<crate::capacity::Interruption>,
+    /// Cooldown cycles already spent; an explicit retry starts a new operation.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub resume_cycle: u8,
+    /// When a parked failure earns its next automatic attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_at: Option<i64>,
     pub id: String,
     pub provider: String,
     pub account_id: String,
@@ -597,6 +616,7 @@ pub struct Monitor {
     leases: BTreeMap<String, String>,
     previews: BTreeMap<String, ActivationPreview>,
     lifecycle_next: i64,
+    connected_seen: Option<std::collections::BTreeSet<String>>,
 }
 
 impl Monitor {
@@ -605,6 +625,7 @@ impl Monitor {
             state,
             leases: Default::default(),
             lifecycle_next: 0,
+            connected_seen: None,
             previews: Default::default(),
         }
     }
@@ -643,6 +664,7 @@ impl Monitor {
             state,
             leases: BTreeMap::new(),
             lifecycle_next: 0,
+            connected_seen: None,
             previews: BTreeMap::new(),
         })
     }
@@ -2256,6 +2278,8 @@ impl Monitor {
         operation.retry_deadline = now + RETRY_WINDOW_SECONDS;
         operation.next_attempt_at = Some(now);
         operation.failure = None;
+        operation.resume_cycle = 0;
+        operation.resume_at = None;
         health.last_failure = None;
         health.next_run = now;
         health.schedule_available = true;
@@ -2926,6 +2950,8 @@ fn start_poll_operation(
     health.operation = Some(JobOperation {
         ai_attempt: None,
         interruption: None,
+        resume_cycle: 0,
+        resume_at: None,
         id: uuid::Uuid::new_v4().to_string(),
         provider: "github".into(),
         account_id: configuration
@@ -2993,6 +3019,49 @@ impl JobOperation {
     /// park as `ManualRetry`; terminal, credential and permission failures
     /// park at once as `Failed`. `failure` keeps the classified cause.
     pub fn fail(&mut self, error: &MonitoringError, now: i64) {
+        self.fail_attempt(error, now);
+        if self.parked() {
+            self.schedule_resume(now);
+        }
+    }
+
+    fn schedule_resume(&mut self, now: i64) {
+        self.resume_at = self
+            .failure
+            .as_ref()
+            .filter(|failure| failure.resumable())
+            .and_then(|_| RESUME_COOLDOWNS_SECONDS.get(usize::from(self.resume_cycle)))
+            .map(|cooldown| now.saturating_add(*cooldown));
+    }
+
+    /// Starts the next automatic attempt window for a parked failure: after its
+    /// cooldown (spending a cycle) or, for credentials, once the account is
+    /// connected again. Returns whether the operation was requeued.
+    pub fn auto_resume(&mut self, reconnected: bool, now: i64) -> bool {
+        if !self.parked() {
+            return false;
+        }
+        let cooled = self.resume_at.is_some_and(|at| now >= at);
+        let credentials = reconnected && self.failure == Some(OperationFailure::Credentials);
+        if !cooled && !credentials {
+            return false;
+        }
+        if cooled {
+            self.resume_cycle = self.resume_cycle.saturating_add(1);
+        }
+        self.state = OperationState::Queued;
+        self.attempt_count = 0;
+        self.initial_attempt_at = now;
+        self.retry_deadline = now + RETRY_WINDOW_SECONDS;
+        self.next_attempt_at = Some(now);
+        self.failure = None;
+        self.resume_at = None;
+        self.ai_attempt = None;
+        self.interruption = None;
+        true
+    }
+
+    fn fail_attempt(&mut self, error: &MonitoringError, now: i64) {
         self.ai_attempt = None;
         self.interruption = None;
         let failure = retryable_failure(error);
@@ -3056,6 +3125,7 @@ impl JobOperation {
         if now >= self.retry_deadline || self.attempt_count >= MAX_FAILED_ATTEMPTS {
             self.state = OperationState::ManualRetry;
             self.next_attempt_at = None;
+            self.schedule_resume(now);
             return Err("Review retry budget exhausted. Manual retry is required.".into());
         }
         if !matches!(
@@ -3075,6 +3145,8 @@ impl JobOperation {
         Self {
             ai_attempt: None,
             interruption: None,
+            resume_cycle: 0,
+            resume_at: None,
             id: uuid::Uuid::new_v4().to_string(),
             provider: job.provider.clone(),
             account_id: job.account_id.clone(),
@@ -3485,6 +3557,87 @@ impl Monitor {
             store.save_queue_state(&queue)?;
         }
         Ok(())
+    }
+}
+
+impl Monitor {
+    /// Requeues parked failures that earned another attempt: after their
+    /// cooldown, or (credentials) once a relevant GitHub or Copilot account is
+    /// connected again. Superseded and terminal work is never resumed.
+    pub fn auto_resume(
+        &mut self,
+        store: &Store,
+        accounts: &BTreeMap<String, AccountAvailability>,
+        now: i64,
+    ) -> Result<usize, String> {
+        let connected: std::collections::BTreeSet<String> = accounts
+            .iter()
+            .filter(|(_, account)| account.connected)
+            .map(|(id, _)| id.clone())
+            .collect();
+        // The first tick cannot see a transition, so connected accounts count.
+        let reconnected: std::collections::BTreeSet<String> = match &self.connected_seen {
+            Some(seen) => connected.difference(seen).cloned().collect(),
+            None => connected.clone(),
+        };
+        self.connected_seen = Some(connected);
+        let mut resumed = 0;
+        let mut reviews = store.load_reviews()?;
+        let mut changed = false;
+        let jobs = store.load_queue()?;
+        for run in &mut reviews {
+            let finished = |waiting: &str| {
+                matches!(
+                    waiting,
+                    WAITING_SUPERSEDED | WAITING_CLOSED | WAITING_MERGED
+                )
+            };
+            if finished(&run.job.waiting)
+                || jobs
+                    .iter()
+                    .any(|job| run.matches_job(job) && finished(&job.waiting))
+            {
+                continue;
+            }
+            let account = reconnected.contains(&run.job.account_id)
+                || run
+                    .selection
+                    .agent
+                    .ai_account
+                    .as_ref()
+                    .is_some_and(|ai| reconnected.contains(&ai.account_id));
+            if run.operation.auto_resume(account, now) {
+                run.error = None;
+                run.phase = "Waiting for shared AI capacity".into();
+                resumed += 1;
+                changed = true;
+            }
+        }
+        if changed {
+            store.save_reviews(&reviews)?;
+        }
+        let previous = self.state.clone();
+        let mut health_changed = false;
+        for health in self.state.health.values_mut() {
+            let Some(operation) = health.operation.as_mut() else {
+                continue;
+            };
+            let account = reconnected.contains(&operation.account_id);
+            if operation.auto_resume(account, now) {
+                health.last_failure = None;
+                health.next_run = now;
+                health.schedule_available = true;
+                resumed += 1;
+                health_changed = true;
+            }
+        }
+        if health_changed {
+            if let Err(error) = store.save_monitoring_state(&self.state) {
+                self.state = previous;
+                return Err(error);
+            }
+        }
+        Ok(resumed)
     }
 }
 

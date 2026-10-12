@@ -312,7 +312,8 @@ fn runtime_errors_preserve_retry_classification_without_provider_messages() {
         (503, OperationFailure::Provider),
         (401, OperationFailure::Credentials),
         (403, OperationFailure::Permission),
-        (400, OperationFailure::Permanent),
+        // Unclassified provider statuses retry: an execution failure is not proof of a permanent fault.
+        (400, OperationFailure::Provider),
     ] {
         let error = Events::default()
             .push(

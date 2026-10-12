@@ -1455,6 +1455,28 @@ fn finish_monitored_ticket(
     }
 }
 
+fn auto_resume_parked(app: &tauri::AppHandle) -> Result<(), String> {
+    let host = app.state::<Host>();
+    let mut accounts = host
+        .github_auth
+        .lock()
+        .map_err(|_| "GitHub connection state is unavailable.")?
+        .monitoring_accounts();
+    accounts.extend(
+        host.copilot
+            .auth
+            .lock()
+            .map_err(|_| "Copilot connection state is unavailable.")?
+            .monitoring_accounts(),
+    );
+    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+    host.monitor
+        .lock()
+        .map_err(|_| "Monitoring is unavailable.")?
+        .auto_resume(&store, &accounts, now_seconds()?)?;
+    Ok(())
+}
+
 fn start_lifecycle_refresh(app: &tauri::AppHandle) {
     let host = app.state::<Host>();
     let tickets = (|| -> Result<_, String> {
@@ -4264,6 +4286,9 @@ pub fn run() {
                         report(&scheduler_app, error);
                     }
                     if let Err(error) = retention_maintenance(&scheduler_app) {
+                        report(&scheduler_app, error);
+                    }
+                    if let Err(error) = auto_resume_parked(&scheduler_app) {
                         report(&scheduler_app, error);
                     }
                     if let Err(error) = capacity::Coordinator::pump(&scheduler_app) {

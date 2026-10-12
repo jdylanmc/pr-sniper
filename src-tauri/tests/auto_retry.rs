@@ -1,7 +1,10 @@
 use pr_sniper_lib::{
     capacity,
     github::ConnectionError,
-    monitoring::{FailureClass, JobOperation, OperationFailure, OperationState, QueueJob},
+    monitoring::{
+        AccountAvailability, FailureClass, JobOperation, Monitor, OperationFailure, OperationState,
+        QueueJob, RESUME_COOLDOWNS_SECONDS,
+    },
     queue::{self, State},
     review::{self, Failure, ReviewRun, Selection},
     storage::{Settings, Store},
@@ -286,4 +289,199 @@ fn retrying_work_is_not_a_failure() {
     assert_eq!(item.failure_class, None);
     let work = capacity::candidates(&store, 1_000).unwrap();
     assert_eq!(work[0].failure, None);
+}
+
+fn park(operation: &mut JobOperation, kind: OperationFailure) -> i64 {
+    let mut now = 0;
+    for _ in 0..3 {
+        if operation.parked() {
+            break;
+        }
+        now = attempt(operation, &failure(kind.clone(), None));
+    }
+    now
+}
+
+#[test]
+fn cooldown_cycles_escalate_30m_1h_2h_4h_8h_then_wait_for_a_human() {
+    assert_eq!(
+        RESUME_COOLDOWNS_SECONDS,
+        [1_800, 3_600, 7_200, 14_400, 28_800]
+    );
+    let mut operation = JobOperation::review(&job(), 1_000);
+    for (cycle, cooldown) in RESUME_COOLDOWNS_SECONDS.into_iter().enumerate() {
+        let parked_at = park(&mut operation, OperationFailure::Network);
+        assert!(operation.parked());
+        assert_eq!(operation.resume_cycle as usize, cycle);
+        assert_eq!(operation.resume_at, Some(parked_at + cooldown));
+        assert!(!operation.auto_resume(false, parked_at + cooldown - 1));
+        assert!(operation.auto_resume(false, parked_at + cooldown));
+        assert_eq!(operation.state, OperationState::Queued);
+        assert_eq!(operation.attempt_count, 0);
+        assert_eq!(operation.failure, None);
+        assert_eq!(operation.resume_at, None);
+        assert_eq!(operation.resume_cycle as usize, cycle + 1);
+    }
+    // The fifth resumed budget also fails: now only a human can continue.
+    park(&mut operation, OperationFailure::Network);
+    assert!(operation.parked());
+    assert_eq!(operation.resume_at, None);
+    assert!(!operation.auto_resume(true, i64::MAX));
+}
+
+#[test]
+fn only_resumable_failures_get_a_cooldown_and_explicit_retry_resets_the_cycle() {
+    for (kind, resumes) in [
+        (OperationFailure::Timeout, true),
+        (OperationFailure::RateLimited, true),
+        (OperationFailure::Provider, true),
+        (OperationFailure::Permission, true),
+        (OperationFailure::Permanent, false),
+        (OperationFailure::Credentials, false),
+    ] {
+        let mut operation = JobOperation::review(&job(), 1_000);
+        park(&mut operation, kind.clone());
+        assert!(operation.parked(), "{kind:?}");
+        assert_eq!(operation.resume_at.is_some(), resumes, "{kind:?}");
+    }
+    let mut operation = JobOperation::review(&job(), 1_000);
+    let at = park(&mut operation, OperationFailure::Network);
+    assert!(operation.auto_resume(false, at + 1_800));
+    assert_eq!(operation.resume_cycle, 1);
+    // An explicit Retry creates a new operation with a clean cycle count.
+    let retried = JobOperation::review(&job(), at + 2_000);
+    assert_eq!((retried.resume_cycle, retried.resume_at), (0, None));
+    let stored = serde_json::to_value(&retried).unwrap();
+    assert!(stored.get("resume_cycle").is_none() && stored.get("resume_at").is_none());
+}
+
+#[test]
+fn did_not_read_every_changed_file_is_retryable_provider_class() {
+    let failure = Failure::provider(
+        "Copilot did not read every changed file; no review result was accepted.",
+    );
+    assert_eq!(failure.kind, OperationFailure::Provider);
+    let mut operation = JobOperation::review(&job(), 1_000);
+    let now = operation.next_attempt_at.unwrap();
+    operation.begin_attempt(now).unwrap();
+    operation.fail(&failure.monitoring(), now);
+    assert_eq!(operation.state, OperationState::Queued);
+    assert!(operation.next_attempt_at.is_some());
+    park(&mut operation, OperationFailure::Provider);
+    assert_eq!(operation.state, OperationState::ManualRetry);
+    assert!(operation.resume_at.is_some());
+}
+
+fn accounts(connected: bool) -> std::collections::BTreeMap<String, AccountAvailability> {
+    ["22", "33"]
+        .into_iter()
+        .map(|id| {
+            (
+                id.to_string(),
+                AccountAvailability {
+                    login: id.into(),
+                    connected,
+                },
+            )
+        })
+        .collect()
+}
+
+fn store_with(run: &ReviewRun) -> (tempfile::TempDir, Store) {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    store.save_settings(&settings()).unwrap();
+    store.save_queue(std::slice::from_ref(&run.job)).unwrap();
+    store.save_reviews(std::slice::from_ref(run)).unwrap();
+    (root, store)
+}
+
+#[test]
+fn credential_failures_resume_when_the_account_connects_again_without_a_human_retry() {
+    let run = parked_review(OperationFailure::Credentials, OperationState::Failed);
+    let (_root, store) = store_with(&run);
+    let mut monitor = Monitor::default();
+    // Disconnected: nothing resumes, and a steady state never resumes either.
+    assert_eq!(
+        monitor.auto_resume(&store, &accounts(false), 10).unwrap(),
+        0
+    );
+    assert_eq!(
+        queue::snapshot(&store, vec![]).unwrap().items[0].failure_class,
+        Some(FailureClass::Credentials)
+    );
+    // The account flips to connected: fresh budget, no human action.
+    assert_eq!(monitor.auto_resume(&store, &accounts(true), 20).unwrap(), 1);
+    let resumed = store.load_reviews().unwrap().remove(0);
+    assert_eq!(resumed.operation.state, OperationState::Queued);
+    assert_eq!(resumed.operation.attempt_count, 0);
+    assert_eq!(resumed.operation.resume_cycle, 0);
+    assert_eq!(resumed.error, None);
+    let item = queue::snapshot(&store, vec![]).unwrap().items.remove(0);
+    assert_eq!(item.failure_class, None);
+    assert_ne!(item.state, State::Failed);
+    // Failing again with the account still connected does not loop.
+    let mut again = resumed;
+    again.operation.state = OperationState::Failed;
+    again.operation.failure = Some(OperationFailure::Credentials);
+    store.save_reviews(&[again]).unwrap();
+    assert_eq!(monitor.auto_resume(&store, &accounts(true), 30).unwrap(), 0);
+}
+
+#[test]
+fn cooldown_resume_requeues_a_parked_review_and_exposes_the_hint() {
+    let mut run = parked_review(OperationFailure::Network, OperationState::ManualRetry);
+    run.operation.resume_at = Some(5_000);
+    let (_root, store) = store_with(&run);
+    let item = queue::snapshot(&store, vec![]).unwrap().items.remove(0);
+    assert_eq!(item.state, State::Failed);
+    assert_eq!(item.resume_at, Some(5_000));
+    assert_eq!(
+        serde_json::to_value(&item).unwrap()["resume_at"],
+        json!(5_000)
+    );
+    let mut monitor = Monitor::default();
+    assert_eq!(
+        monitor.auto_resume(&store, &accounts(true), 4_999).unwrap(),
+        0
+    );
+    assert_eq!(
+        monitor.auto_resume(&store, &accounts(true), 5_000).unwrap(),
+        1
+    );
+    let resumed = store.load_reviews().unwrap().remove(0);
+    assert_eq!(resumed.operation.resume_cycle, 1);
+    assert_eq!(resumed.operation.state, OperationState::Queued);
+    let item = queue::snapshot(&store, vec![]).unwrap().items.remove(0);
+    assert_eq!((item.failure_class, item.resume_at), (None, None));
+}
+
+#[test]
+fn a_new_head_supersedes_a_parked_failure_on_the_old_head() {
+    let mut run = parked_review(OperationFailure::Network, OperationState::ManualRetry);
+    run.operation.resume_at = Some(5_000);
+    let (_root, store) = store_with(&run);
+    let mut old = run.job.clone();
+    old.waiting = "superseded".into();
+    let mut next = run.job.clone();
+    next.head_sha = "c".repeat(40);
+    next.waiting = "human_start".into();
+    store.save_queue(&[old, next]).unwrap();
+    let snapshot = queue::snapshot(&store, vec![]).unwrap();
+    assert!(snapshot.items.iter().all(|i| i.state != State::Failed));
+    // A superseded run is never resumed.
+    let mut monitor = Monitor::default();
+    assert_eq!(
+        monitor.auto_resume(&store, &accounts(true), 9_999).unwrap(),
+        0
+    );
+}
+
+#[test]
+fn legacy_operations_without_resume_fields_still_load() {
+    let mut legacy = serde_json::to_value(JobOperation::review(&job(), 1_000)).unwrap();
+    legacy.as_object_mut().unwrap().remove("resume_cycle");
+    legacy.as_object_mut().unwrap().remove("resume_at");
+    let restored: JobOperation = serde_json::from_value(legacy).unwrap();
+    assert_eq!((restored.resume_cycle, restored.resume_at), (0, None));
 }

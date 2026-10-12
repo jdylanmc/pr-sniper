@@ -69,6 +69,8 @@ pub struct Item {
     pub state: State,
     // Set only for failed items; the Queue shows credential failures only.
     pub failure_class: Option<monitoring::FailureClass>,
+    // Earliest automatic resume of a parked failure; absent once it waits for a human.
+    pub resume_at: Option<i64>,
     pub summary: &'static str,
     pub review_keys: Vec<String>,
     pub follow_up_ids: Vec<String>,
@@ -420,6 +422,12 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 .iter()
                 .filter_map(|r| r.run.as_ref()?.operation.failure_class()),
         );
+        let resume_at = reviews
+            .iter()
+            .filter_map(|r| r.run.as_ref())
+            .filter(|r| r.operation.parked())
+            .filter_map(|r| r.operation.resume_at)
+            .min();
         failures.extend(
             snapshot
                 .publications
@@ -656,6 +664,11 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             id,
             job: job.clone(),
             state,
+            resume_at: if state == State::Failed {
+                resume_at
+            } else {
+                None
+            },
             failure_class: (state == State::Failed).then(|| {
                 failures
                     .into_iter()

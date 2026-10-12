@@ -427,6 +427,13 @@ impl Failure {
             retry_after_seconds: None,
         }
     }
+    /// Agent-quality rejections are transient: a fresh attempt may succeed.
+    pub fn provider(message: impl Into<String>) -> Self {
+        Self {
+            kind: OperationFailure::Provider,
+            ..Self::permanent(message)
+        }
+    }
     pub fn timeout() -> Self {
         Self {
             cancelled: false,
@@ -486,7 +493,7 @@ impl Failure {
             Some(401) => OperationFailure::Credentials,
             Some(403) => OperationFailure::Permission,
             Some(500..=599) => OperationFailure::Provider,
-            Some(_) => OperationFailure::Permanent,
+            Some(_) => OperationFailure::Provider,
             None => match data["errorType"].as_str() {
                 Some("timeout") => OperationFailure::Timeout,
                 Some("network") => OperationFailure::Network,
