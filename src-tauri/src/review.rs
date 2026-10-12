@@ -1,5 +1,6 @@
 pub(crate) mod diagnostics;
 pub(crate) mod host;
+pub(crate) mod rereview;
 pub(crate) mod runtime;
 
 use crate::{
@@ -73,6 +74,23 @@ impl Selection {
                 (None, None) => true,
                 _ => false,
             }
+    }
+
+    /// Stable id of the review lens (the fields a lens change discards a batch for).
+    pub fn lens_hash(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let lens = serde_json::json!([
+            self.agent,
+            self.doctrine,
+            self.preset,
+            self.policy.prompt,
+            self.policy.adapter
+        ]);
+        Sha256::digest(lens.to_string().as_bytes())
+            .iter()
+            .take(8)
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
     }
 
     pub fn resolve(

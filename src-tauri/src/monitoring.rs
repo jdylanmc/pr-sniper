@@ -130,6 +130,9 @@ pub struct JobOperation {
     pub owned_thread_id: Option<String>,
     pub triggering_external_comment_id: Option<String>,
     pub confirmed_receipt: Option<String>,
+    /// Lens hash an automatic re-review of a discarded batch ran under; the once-per-lens marker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rereview_lens: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2990,6 +2993,7 @@ fn start_poll_operation(
         owned_thread_id: None,
         triggering_external_comment_id: None,
         confirmed_receipt: None,
+        rereview_lens: None,
     });
 }
 
@@ -3193,6 +3197,7 @@ impl JobOperation {
             owned_thread_id: None,
             triggering_external_comment_id: None,
             confirmed_receipt: None,
+            rereview_lens: None,
         }
     }
 }
