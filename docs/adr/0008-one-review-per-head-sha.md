@@ -20,3 +20,7 @@ Pushes, polls, restarts, and comment activity all re-detect the same PR. Re-revi
 - A discarded, never-published batch (changed lens, diverged comments), or a completed review of a commenting assignment whose lens changed before any batch existed, earns one automatic re-review of that head per lens: `JobOperation::rereview_lens` holds the lens hash. A published receipt, a moved head or a closed PR never re-reviews. Replaces the old result in the Queue.
 - Stale only on new head/base. Config drift or disabled repo does not stale a completed review.
 - Merged/closed PRs move to Reviewed. Tracked PRs of disabled repos keep light lifecycle refresh.
+
+## Proposed change ([ADR 0021](0021-review-packet.md))
+
+One review per head SHA generalizes to **one successful exit per PR state**. A state covers head, comments, edits and CI. Revisions and new comments are just new states. The queue holds the PR; the packet is built from its latest state when an agent takes it. Not yet implemented.

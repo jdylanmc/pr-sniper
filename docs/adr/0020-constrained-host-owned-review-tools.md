@@ -19,3 +19,7 @@ Review reads untrusted PR content. Letting the model clone or execute repo code 
 - Allowlist drift blocks reviews. Loud, not silent.
 - Process is current-user constrained. Explicitly not an OS sandbox.
 - Reviews cannot run tests or build.
+
+## Proposed change ([ADR 0021](0021-review-packet.md))
+
+The fixed three-tool allowlist becomes a per-assignment tool set plus grant-gated exits. Allowlist drift still blocks a run. Paging and byte coverage stay. Not yet implemented.
