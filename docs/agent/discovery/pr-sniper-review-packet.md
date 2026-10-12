@@ -2,11 +2,11 @@
 
 - Subject: https://github.com/jdylanmc/pr-sniper/issues/172
 - Slug: pr-sniper-review-packet
-- Alignment: confirmed by the human, 2026-10-12 (findings, exits, gates, PR state; #171 reviewed "looks good")
+- Alignment: confirmed by the human, 2026-10-12 (findings, exits, gates, PR state; #171 reviewed "looks good"); composition decision 2026-10-12 19:00 (section 22) and teammate reports decision 2026-10-12 19:10 (section 23) and report format, heartbeat, consume, delivery, sandbox decisions 2026-10-12 19:40 (section 24)
 - Format: narrative copy of the session discovery foundation, not the schema-2 tool format; no tool-verified digests
-- Source revision: SHA-256 of the section below, from the session artifact `discovery-172-foundation.md`
+- Source revision: 757d17c13aa8e919fa0d6921cc5932b4d47951f8d2731df98f42e73c14fcc36c (SHA-256 of the session artifact `foundation-new.md`, which is the body below)
 
-The body is verbatim. Later sections supersede earlier ones where they conflict (see section 21).
+The body is verbatim. Later sections supersede earlier ones where they conflict (see sections 21-24). The human's 2026-10-12 ~19:20 teammate-failure correction (a teammate failure blocks the primary; failure taxonomy) came after this copy and is recorded in the specification, not here.
 
 ---
 
@@ -276,3 +276,21 @@ Agent-derived implications to confirm: (1) our own writes (comments, approval, r
 - #171 (spec + ADR 0021, reworked around PR state, consume-time packets and exits; ADR 0008/0020 amended as proposed changes) reviewed by the human: "171 looks good."
 - Superseded in this artifact: section 4 "Run kinds: review, reply, final" and the "version" wording (now PR state); the constraint "one review per head SHA" (now one successful exit per PR state; ADR 0008 proposed amendment).
 - Specify invoked by the human on 2026-10-12.
+
+## 22. Composition decision and delivery mode, human 2026-10-12 19:00
+
+- **Multi-agent composition (resolves spec C-06 / OQ-01):** with several assignments, change the model. **The primary agent executes last.** All non-primary agents run first and each generates a **concise report for the primary agent**. Then the primary gets its turn and has **the actual exit tools**. (Agent reading, to confirm in the spec: non-primary runs end by submitting a report, not an exit; only the primary is offered the exits; a sole assignment is primary and gets no reports; the separate primary "final review" run is replaced by this primary turn; Publish Comment/Reply Comment/Approve/& Merge grants matter only on the primary.)
+- **Delivery mode:** treat this as an **ad hoc session**; reconcile existing specs and ADRs as needed; "completely get this working end to end." (Implementation authorized in this session; formal ticket breakdown skipped by the human. Agent-made decisions where Discovery left gaps must be labeled as ad hoc and flagged for owner review.)
+
+## 23. Teammate reports, human 2026-10-12 19:10
+
+Example: the operator creates a SOLID agent and a PRAGMATIC agent (non-primary, each with its own doctrine lens) and both run. Their reports feed the PRIMARY agent's work packet. The primary must realize these are **reports from its configured teammates** on their findings, and it can take their findings into account. (Agent reading: the Reports section names each teammate and its lens; the packet rules frame them as colleagues' findings to weigh, not commands; the primary decides and verifies what it relies on.)
+
+## 24. Report format, heartbeat, consume time, delivery, taxonomy, sandbox, human 2026-10-12 19:40
+
+- **Teammate report format.** Teammates **always use caveman** for inter-agent reports. A teammate has a **single exit tool, `submit_report`**, like a sub-agent evaluation. It accepts an **array of findings**; each finding has `file`, `line` (number), `nano` (short description, 100 words or less), `full` (full description, up to 4 KB) and `fix` (recommended fix, up to 4 KB). (Agent reading, to confirm: teammates keep their configured investigation tools; "single tool" means the single exit tool.) The primary's Teammate reports section renders the findings (nano by default; full and fix available), fenced as agent output. All agent-to-agent text is caveman.
+- **Heartbeat.** The default stays the current default (not changed to 5 minutes). Each heartbeat only checks whether something needs to be **added** to the queue or **removed** from it (PR closed or merged before its turn).
+- **Consume time.** When a PR's turn comes up in the queue it refreshes itself with fresh state. No drop-and-requeue for a state that moved while queued: "at worst there are no changes; if there are changes, pick them up automatically". Only a state that moves **during a run** is tossed and re-queued.
+- **Delivery.** One big PR, no incremental PR per phase: build packet mode end to end, verify it works (sandbox repo run), then remove the old path. No "legacy until Tools is set" idea: packet mode replaces the old path for all assignments once verified. Internal milestones are fine.
+- **Taxonomy confirmed by the human.** Permission is recoverable by cooldown; schema failures are permanent. The taxonomy items are no longer ad hoc.
+- **Sandbox.** A private repository `jdylanmc/pr-sniper-sandbox` with disposable PRs will be used for the self-approval probe and the live run.

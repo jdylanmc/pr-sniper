@@ -21,3 +21,12 @@ Agents are reused across repos. Permissions must not travel with them. Approve a
 - GitHub lacks an expected-base merge condition. Base move caught by pre/post observation. Confirmed effects retained, not falsely undone.
 - Obsolete grants are not promoted.
 - A confirmed approval of the current head is `Approved`: out of the Queue, into Reviewed. Ready for you means signed off and not approved.
+
+## Proposed change ([ADR 0021](0021-review-packet.md))
+
+- With several assignments the primary runs last, after every teammate (non-primary) has submitted a report. The distinct primary final review run is replaced by the primary's turn.
+- Grants apply to the primary's exits: Publish Comment and Reply Comment gate `leave_comments`, Approve gates `approve_pull_request`, Approve & Merge gates `approve_and_merge`. A non-primary assignment's grants are ignored and the settings do not offer them. A teammate ends with `submit_report`, which is not a provider write and needs no grant, so it only produces a report.
+- Approve & Merge gets an **Include self** option, default off (ad hoc decision, owner review requested). It lifts the "not the author" gate. Whether GitHub accepts an author approving their own PR is unverified; if it does not, the option has no effect and that is reported.
+- Approve gate relaxations: others' unresolved threads and others' changes requested no longer block approve; merge gates are unchanged. Not offered while a PR is a draft.
+- Evidence limits, HAS_HOOKS, merge queue and no-bypass rules stay.
+- Not yet implemented.

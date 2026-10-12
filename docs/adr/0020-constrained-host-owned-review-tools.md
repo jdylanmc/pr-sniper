@@ -22,4 +22,4 @@ Review reads untrusted PR content. Letting the model clone or execute repo code 
 
 ## Proposed change ([ADR 0021](0021-review-packet.md))
 
-The fixed three-tool allowlist becomes a per-assignment tool set plus grant-gated exits. Allowlist drift still blocks a run. Paging and byte coverage stay. Not yet implemented.
+The fixed three-tool allowlist becomes a per-assignment tool set plus grant-gated exits (the primary's only; a teammate has `submit_report`). Allowlist drift still blocks a run. Paging stays. The byte-coverage rule above becomes informational: the host records which parts and bytes it served (for example "12 of 64 files read") for audit and the Activity view, and never rejects, fails or retries a review because the agent did not read every file or byte. The agent decides what to read; the rules tell it to say what it did not read. A response that cannot fit the limit is still a failure, never a partial answer. Not yet implemented.
