@@ -131,17 +131,24 @@ function fixTarget(cause: string): FixTarget | undefined {
   return /copilot|^ai_/.test(cause) ? "ai" : "repository-account";
 }
 
-// Picks the existing recovery command for this failure.
-export function retryCommand(
+export type RecoveryCommand = [string, Record<string, unknown>];
+
+// Every recovery this failure needs: a repository poll retry and each of the
+// item's own failed review runs. Poll first, so reviews restart on fresh data.
+export function retryCommands(
   item: QueueItem,
   snapshot: MonitoringSnapshot,
-): [string, Record<string, unknown>] {
+): RecoveryCommand[] {
+  const commands: RecoveryCommand[] = [];
   const effect = item.action_status?.effects.find(
     (entry) =>
       entry.state === "uncertain" ||
       (entry.state === "confirmed" && entry.error),
   );
-  if (effect) return ["reconcile_provider_action", { id: effect.id }];
+  if (effect) {
+    commands.push(["reconcile_provider_action", { id: effect.id }]);
+    return commands;
+  }
   const cause = failureCause(item, snapshot);
   const operation = (snapshot.health ?? []).find(
     (entry) =>
@@ -149,35 +156,59 @@ export function retryCommand(
       entry.provider_account_id === item.job.account_id &&
       ["manual_retry", "failed"].includes(entry.operation?.state ?? ""),
   )?.operation;
-  // Repository-level poll failures retry the poll, never the review.
+  // Repository-level poll failures retry the poll.
   const monitoring = !["review_failed", "publication_unresolved", ""].includes(
     cause,
   );
   if (monitoring && operation)
-    return ["retry_monitoring_operation", { operationId: operation.id }];
+    commands.push([
+      "retry_monitoring_operation",
+      { operationId: operation.id },
+    ]);
   // A revision is reviewed once: only a run that itself failed, with nothing
   // published or pending for it, may be started again.
-  const review = failedReviews(item, snapshot).find(
-    (candidate) =>
-      !candidate.run?.result &&
-      !(snapshot.publications ?? []).some(
+  for (const candidate of failedReviews(item, snapshot)) {
+    if (
+      candidate.run?.result ||
+      (snapshot.publications ?? []).some(
         (publication) =>
           publication.publication &&
           publication.review_operation_id === candidate.run?.operation.id,
-      ),
-  );
-  if (review) return ["start_review", { candidateKey: review.key }];
+      )
+    )
+      continue;
+    commands.push(["start_review", { candidateKey: candidate.key }]);
+  }
+  if (commands.length) return commands;
   if (operation)
-    return ["retry_monitoring_operation", { operationId: operation.id }];
-  if (monitoring) return ["check_now", {}];
+    return [["retry_monitoring_operation", { operationId: operation.id }]];
+  if (monitoring) return [["check_now", {}]];
   const status = item.action_status;
   if (
     status?.blockers.length &&
     status.provider_observed_at &&
     status.observation_retry_blocker === null
   )
-    return ["retry_action_observation", { itemId: status.item_id }];
-  return ["check_now", {}];
+    return [["retry_action_observation", { itemId: status.item_id }]];
+  return [["check_now", {}]];
+}
+
+// Runs recoveries once each, in order, never repeating an identical command.
+export async function runRecoveries(
+  commands: RecoveryCommand[],
+  onError: (error: unknown) => void,
+) {
+  const done = new Set<string>();
+  for (const command of commands) {
+    const key = JSON.stringify(command);
+    if (done.has(key)) continue;
+    done.add(key);
+    try {
+      await invoke(...command);
+    } catch (error) {
+      onError(error);
+    }
+  }
 }
 
 function button(label: string, path: string, name: string) {
@@ -233,10 +264,9 @@ export function renderQueueStatus(
     const retry = async (control: HTMLButtonElement) => {
       control.disabled = true;
       try {
-        const [command, args] = retryCommand(item, context.snapshot);
-        await invoke(command, args);
-      } catch (error) {
-        context.showError(typeof error === "string" ? error : "Failed");
+        await runRecoveries(retryCommands(item, context.snapshot), (error) =>
+          context.showError(typeof error === "string" ? error : "Failed"),
+        );
       } finally {
         control.disabled = false;
         await context.refresh();

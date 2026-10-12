@@ -17,7 +17,7 @@ import type { AutomationSnapshot, FailureClass } from "./automation";
 import crosshair from "./crosshair.svg";
 import sniperArt from "./sniper-mark.png";
 import { humanQueue } from "./queue";
-import { retryCommand } from "./queue-detail";
+import { retryCommands, runRecoveries } from "./queue-detail";
 import {
   workPresentation,
   purposes,
@@ -436,21 +436,19 @@ export async function mountPanel(app: HTMLElement) {
   app.addEventListener("pr-sniper:retry-items", (event) => {
     const ids = (event as CustomEvent<{ ids: string[] }>).detail.ids;
     void (async () => {
-      // Several PRs can share one recovery (a repository's monitoring retry).
-      const done = new Set<string>();
-      for (const id of ids) {
+      // Several PRs can share one recovery (a repository's poll retry); poll
+      // retries go first, then every failed review is enqueued.
+      const commands = ids.flatMap((id) => {
         const item = snapshot?.items?.find((entry) => entry.id === id);
-        if (!item || !snapshot) continue;
-        const command = retryCommand(item, snapshot);
-        const key = JSON.stringify(command);
-        if (done.has(key)) continue;
-        done.add(key);
-        try {
-          await invoke(...command);
-        } catch (error) {
-          showError(typeof error === "string" ? error : "Failed");
-        }
-      }
+        return item && snapshot ? retryCommands(item, snapshot) : [];
+      });
+      commands.sort(
+        (a, b) =>
+          Number(a[0] === "start_review") - Number(b[0] === "start_review"),
+      );
+      await runRecoveries(commands, (error) =>
+        showError(typeof error === "string" ? error : "Failed"),
+      );
       void monitor.refresh();
     })();
   });

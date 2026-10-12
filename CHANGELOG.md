@@ -7,6 +7,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- Retry and Retry all restart the repository poll and every failed review
+  of the selected PRs, once per command, so all of them enqueue (capacity
+  decides how many run at once).
 - Retry on a repository poll failure retries the poll, never the published review; errors are terse toasts; stale `conversation_admission` poll failures requeue once.
 - Repository admission is now **All pull requests** or an ordered, sortable
   list of **Filtered pull requests** rules (assigned to me, mentioning me,
