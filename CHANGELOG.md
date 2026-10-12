@@ -17,6 +17,12 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- A discarded, unpublished batch (review lens edited, or remote comments
+  diverged), or a finished unpublished review whose lens changed, is
+  re-reviewed automatically, once per head and lens, under the
+  current configuration, then published normally; existing discarded batches
+  are picked up on upgrade. Published, moved-head and closed PRs are left
+  alone. **Review again** no longer appears for these.
 - Publications recover on their own. A pending batch whose inline comments
   differ from the frozen batch (edited, deleted, empty), or whose review lens
   changed, or that was withdrawn, is deleted when it is the exact owned
