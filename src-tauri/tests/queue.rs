@@ -582,3 +582,147 @@ fn lifecycle_sweep_skips_monitored_repositories_and_disconnected_accounts() {
         .unwrap()
         .is_empty());
 }
+
+#[test]
+fn discarded_batch_leaves_attention_and_the_review_decision_stands_even_after_a_lens_change() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let mut run = review(1);
+    let mut batch = Publication::new(run.clone(), true, false, 100).unwrap();
+    batch.phase = publication::Phase::Pending;
+    batch.operation.state = OperationState::Failed;
+    batch.error = Some("Rejected".into());
+    seed(&store, std::slice::from_ref(&run), &[batch.clone()]);
+    assert_eq!(state(&store), State::Failed);
+    batch.phase = publication::Phase::Discarded;
+    batch.operation.state = OperationState::Completed;
+    batch.error = None;
+    batch.receipts = vec![Receipt {
+        review_id: "42".into(),
+        state: RemoteState::Deleted,
+        comment_ids: vec![],
+    }];
+    seed(&store, std::slice::from_ref(&run), &[batch.clone()]);
+    assert_eq!(state(&store), State::MachineSignedOff);
+    let mut configuration = settings();
+    configuration.agents[0].prompt = "A different lens.".into();
+    store.save_settings(&configuration).unwrap();
+    assert_eq!(state(&store), State::MachineSignedOff);
+    run.result.as_mut().unwrap().output.decision = Decision::HumanInputRequired;
+    batch.review = run.clone();
+    seed(&store, std::slice::from_ref(&run), &[batch]);
+    assert_eq!(state(&store), State::WaitingForHuman);
+}
+
+#[test]
+fn a_resumed_publication_that_completes_clears_attention() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let run = review(1);
+    let mut batch = published(&run);
+    batch.operation.state = OperationState::ManualRetry;
+    batch.operation.failure = Some(pr_sniper_lib::monitoring::OperationFailure::Network);
+    batch.phase = publication::Phase::Unresolved;
+    batch.uncertain = true;
+    batch.error = Some("Repository check failed: Timeout".into());
+    seed(&store, std::slice::from_ref(&run), &[batch.clone()]);
+    let snapshot = queue::snapshot(&store, vec![]).unwrap();
+    assert_eq!(snapshot.items[0].state, State::Failed);
+    assert_eq!(
+        snapshot.items[0].failure_class,
+        Some(pr_sniper_lib::monitoring::FailureClass::Network)
+    );
+    assert_eq!(
+        snapshot.items[0].failure_cause,
+        Some("publication_unresolved")
+    );
+    batch.uncertain = false;
+    seed(&store, std::slice::from_ref(&run), &[batch.clone()]);
+    assert_eq!(
+        queue::snapshot(&store, vec![]).unwrap().items[0].failure_cause,
+        Some("publication_failed")
+    );
+    batch.uncertain = true;
+    batch.operation.state = OperationState::Completed;
+    batch.operation.failure = None;
+    batch.phase = publication::Phase::Published;
+    batch.uncertain = false;
+    batch.error = None;
+    seed(&store, std::slice::from_ref(&run), &[batch]);
+    assert_eq!(state(&store), State::MachineSignedOff);
+}
+
+fn accounts() -> std::collections::BTreeMap<String, AccountAvailability> {
+    ["22", "33"]
+        .into_iter()
+        .map(|id| {
+            (
+                id.to_string(),
+                AccountAvailability {
+                    login: id.into(),
+                    connected: true,
+                },
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn transient_publication_failures_resume_on_the_cooldown_table_and_credentials_on_reconnect() {
+    use pr_sniper_lib::monitoring::{OperationFailure, RESUME_COOLDOWNS_SECONDS};
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let run = review(1);
+    let mut batch = published(&run);
+    batch.operation.state = OperationState::ManualRetry;
+    batch.operation.failure = Some(OperationFailure::Timeout);
+    batch.operation.attempt_count = 3;
+    batch.phase = publication::Phase::Unresolved;
+    batch.uncertain = true;
+    batch.error = Some("Repository check failed: Timeout".into());
+    batch.receipts.clear();
+    let at = 1_000;
+    batch.operation.resume_at = Some(at + RESUME_COOLDOWNS_SECONDS[0]);
+    seed(&store, std::slice::from_ref(&run), &[batch.clone()]);
+    let item = queue::snapshot(&store, vec![]).unwrap().items.remove(0);
+    assert_eq!(item.state, State::Failed);
+    assert_eq!(item.resume_at, Some(at + RESUME_COOLDOWNS_SECONDS[0]));
+    let mut monitor = Monitor::default();
+    let due = at + RESUME_COOLDOWNS_SECONDS[0];
+    assert_eq!(
+        monitor.auto_resume(&store, &accounts(), due - 1).unwrap(),
+        0
+    );
+    assert_eq!(monitor.auto_resume(&store, &accounts(), due).unwrap(), 1);
+    let resumed = store.load_publications().unwrap().remove(0);
+    assert_eq!(resumed.operation.state, OperationState::Queued);
+    assert_eq!(resumed.operation.attempt_count, 0);
+    assert_eq!(resumed.operation.resume_cycle, 1);
+    assert_eq!(resumed.operation.next_attempt_at, Some(due));
+    assert!(
+        resumed.uncertain,
+        "the original intent is kept for reconcile"
+    );
+    assert_eq!(resumed.id, batch.id);
+    assert_eq!(resumed.error, None);
+    // Fifth failure ends the cycles: no sixth automatic attempt.
+    let mut spent = resumed;
+    spent.operation.resume_cycle = RESUME_COOLDOWNS_SECONDS.len() as u8;
+    spent.operation.state = OperationState::ManualRetry;
+    spent.operation.resume_at = None;
+    store.save_publications(&[spent]).unwrap();
+    assert_eq!(
+        monitor.auto_resume(&store, &accounts(), i64::MAX).unwrap(),
+        0
+    );
+    // Permanent publication failures never resume.
+    let mut permanent = batch;
+    permanent.operation.state = OperationState::Failed;
+    permanent.operation.failure = Some(OperationFailure::Permanent);
+    permanent.operation.resume_at = None;
+    store.save_publications(&[permanent]).unwrap();
+    assert_eq!(
+        monitor.auto_resume(&store, &accounts(), i64::MAX).unwrap(),
+        0
+    );
+}

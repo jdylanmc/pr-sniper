@@ -32,6 +32,8 @@ pub enum Phase {
     Stale,
     StaleAfterPublication,
     Stopped,
+    /// Unusable batch removed (or never created); the review result stands local-only.
+    Discarded,
     Unresolved,
 }
 
@@ -143,6 +145,29 @@ impl Publication {
         Ok(())
     }
 
+    /// Parked states earlier builds never scheduled again: a transient failure
+    /// without a cooldown, or a permanent stop with an owned pending batch whose
+    /// remote state was never re-observed. Reconcile decides; nothing is resent.
+    fn reobserve_parked(&self) -> bool {
+        let operation = &self.operation;
+        if !operation.parked() {
+            return false;
+        }
+        let transient = operation
+            .failure
+            .as_ref()
+            .is_some_and(|failure| failure.resumable());
+        if transient {
+            return operation.resume_at.is_none() && operation.resume_cycle == 0;
+        }
+        self.phase == Phase::Pending
+            && !self.uncertain
+            && self
+                .receipts
+                .last()
+                .is_some_and(|r| r.state == RemoteState::Pending)
+    }
+
     pub fn marker(&self) -> String {
         format!("<!-- pr-sniper:publication:{} -->", self.id)
     }
@@ -195,18 +220,21 @@ impl Publication {
     }
 }
 
+fn lens_differs(current: &Selection, review: &Selection) -> bool {
+    current.agent != review.agent
+        || current.doctrine != review.doctrine
+        || current.preset != review.preset
+        || current.policy.prompt != review.policy.prompt
+        || current.policy.adapter != review.policy.adapter
+}
+
 pub fn automatic_policy(
     settings: &Settings,
     review: &ReviewRun,
     job: &QueueJob,
 ) -> Result<bool, String> {
     let current = Selection::resolve(settings, job, &review.assignment_id)?;
-    if current.agent != review.selection.agent
-        || current.doctrine != review.selection.doctrine
-        || current.preset != review.selection.preset
-        || current.policy.prompt != review.selection.policy.prompt
-        || current.policy.adapter != review.selection.policy.adapter
-    {
+    if lens_differs(&current, &review.selection) {
         return Err("The review lens changed; run a new review before publishing.".into());
     }
     let assignment = settings
@@ -302,20 +330,34 @@ pub fn evaluate_review_gate(
     if stop.is_none() && !can_comment {
         stop = Some("The acting GitHub account cannot publish to this repository.".into());
     }
+    // Withdrawn or lens-changed output can never publish: its batch is discarded.
+    let lens_changed = current_job.is_some_and(|job| {
+        Selection::resolve(settings, job, &review.assignment_id)
+            .is_ok_and(|current| lens_differs(&current, &review.selection))
+    });
     Gate {
         stop,
         stale,
         requeue,
+        discard: cancelled || lens_changed,
     }
 }
 
 pub fn restore(store: &Store) -> Result<(), String> {
+    restore_at(store, crate::now_seconds()?)
+}
+
+pub fn restore_at(store: &Store, now: i64) -> Result<(), String> {
     let mut publications = store.load_publications()?;
     let mut changed = false;
     for publication in &mut publications {
         if publication.operation.state == OperationState::Running {
             publication.operation.state = OperationState::Interrupted;
             publication.operation.next_attempt_at = Some(0);
+            changed = true;
+        } else if publication.reobserve_parked() {
+            publication.operation.requeue_fresh(now);
+            publication.error = None;
             changed = true;
         }
     }
@@ -329,6 +371,8 @@ pub struct Gate {
     pub stop: Option<String>,
     pub stale: bool,
     pub requeue: bool,
+    /// The stop makes the unpublished batch permanently unusable.
+    pub discard: bool,
 }
 
 pub struct WriteFailure {
@@ -346,6 +390,10 @@ pub trait Environment {
     fn inspect(&mut self, publication: &Publication) -> Result<Gate, Failure>;
     fn prepare(&mut self, publication: &Publication) -> Result<Batch, Failure>;
     fn reconcile(&mut self, publication: &Publication) -> Result<Option<Receipt>, Failure>;
+    /// The owned review, when only its inline comments differ from the frozen batch.
+    fn divergent(&mut self, _: &Publication) -> Result<Option<Receipt>, Failure> {
+        Ok(None)
+    }
     fn mutate(
         &mut self,
         publication: &Publication,
@@ -406,7 +454,10 @@ fn drive(env: &mut impl Environment, run: &mut Publication) -> Result<(), Failur
         });
         env.save(run)?;
     }
-    let remote = env.reconcile(run)?;
+    let remote = match env.reconcile(run) {
+        Ok(remote) => remote,
+        Err(failure) => return diverged(env, run, failure),
+    };
     if let Some(receipt) = remote {
         run.accept(receipt)?;
         env.save(run)?;
@@ -473,6 +524,49 @@ fn drive(env: &mut impl Environment, run: &mut Publication) -> Result<(), Failur
     }
     let gate = env.inspect(run)?;
     complete(env, run, gate)
+}
+
+// An owned remote review whose comments no longer match the frozen batch is
+// unusable. A submitted one is an immutable receipt; a pending one is removed.
+fn diverged(
+    env: &mut impl Environment,
+    run: &mut Publication,
+    failure: Failure,
+) -> Result<(), Failure> {
+    if failure.cancelled || failure.kind != OperationFailure::Permanent {
+        return Err(failure);
+    }
+    let Some(receipt) = env.divergent(run)? else {
+        return Err(failure);
+    };
+    match receipt.state {
+        RemoteState::Commented => {
+            let gate = env.inspect(run)?;
+            run.accept(receipt)?;
+            env.save(run)?;
+            complete(env, run, gate)
+        }
+        RemoteState::Pending => {
+            run.accept(receipt)?;
+            env.save(run)?;
+            if defer_paused(env, run)? {
+                return Ok(());
+            }
+            effect(env, run, Mutation::Discard)?;
+            discarded(env, run)
+        }
+        RemoteState::Deleted => Err(failure),
+    }
+}
+
+fn discarded(env: &mut impl Environment, run: &mut Publication) -> Result<(), Failure> {
+    run.phase = Phase::Discarded;
+    run.error = None;
+    run.uncertain = false;
+    run.operation.state = OperationState::Completed;
+    run.operation.failure = None;
+    run.operation.next_attempt_at = None;
+    env.save(run)
 }
 
 fn defer_paused(env: &mut impl Environment, run: &mut Publication) -> Result<bool, Failure> {
@@ -558,6 +652,19 @@ fn stop(env: &mut impl Environment, run: &mut Publication, gate: Gate) -> Result
         {
             return complete(env, run, gate);
         }
+    }
+    if !gate.stale
+        && (run
+            .receipts
+            .last()
+            .is_some_and(|r| r.state == RemoteState::Deleted)
+            || gate.discard && !run.uncertain && run.receipts.is_empty())
+    {
+        discarded(env, run)?;
+        if gate.requeue {
+            env.requeue(run)?;
+        }
+        return Ok(());
     }
     run.phase = if gate.stale {
         Phase::Stale

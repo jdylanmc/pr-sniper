@@ -178,7 +178,7 @@ impl Coordinator {
             .active
             .lock()
             .map_err(|_| "Publication coordination unavailable.")?;
-        if active.is_some() {
+        if active.is_some() && !manual {
             return Err("Another publication is running; wait before retrying.".into());
         }
         let generation = host
@@ -190,8 +190,21 @@ impl Coordinator {
                 .store
                 .lock()
                 .map_err(|_| "Publication storage unavailable.")?;
+            if let Some(running) = active.as_deref() {
+                if store
+                    .load_publications()?
+                    .iter()
+                    .any(|p| p.id == running && p.review.operation.id == review_id)
+                {
+                    return Err("This publication is already running.".into());
+                }
+            }
             prepare_launch(&store, review_id, manual, now_seconds()?)?
         };
+        if active.is_some() {
+            // The retry is saved; the scheduler starts it once the running one ends.
+            return Ok(());
+        }
         let generation = generation
             .get(&run.review.job.account_id)
             .copied()
@@ -571,11 +584,27 @@ impl Environment for Native {
         Ok(result)
     }
 
+    fn divergent(&mut self, run: &Publication) -> Result<Option<Receipt>, Failure> {
+        let result = self.read_client(run, false)?.divergent_publication(run)?;
+        self.connection_gate(run)?;
+        Ok(result)
+    }
+
     fn mutate(&mut self, run: &Publication, mutation: Mutation) -> Result<Receipt, WriteFailure> {
         let preparation = (|| {
             let client = self.session(run)?;
             if mutation != Mutation::Create {
-                let receipt = self.reconcile(run)?.ok_or_else(|| {
+                let observed = match self.reconcile(run) {
+                    Err(failure)
+                        if mutation == Mutation::Discard
+                            && !failure.cancelled
+                            && failure.kind == OperationFailure::Permanent =>
+                    {
+                        self.divergent(run)?
+                    }
+                    other => other?,
+                };
+                let receipt = observed.ok_or_else(|| {
                     Failure::permanent("The original pending review cannot be found.")
                 })?;
                 if receipt.state == RemoteState::Commented {

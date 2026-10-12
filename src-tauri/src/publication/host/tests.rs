@@ -185,6 +185,7 @@ fn nested_gate_storage_failures_keep_host_warning_after_successful_item_save() {
                 stop,
                 stale: false,
                 requeue: false,
+                discard: false,
             })
         }
         fn prepare(&mut self, _: &Publication) -> Result<Batch, Failure> {
@@ -289,6 +290,7 @@ fn recovered_storage_write_failure_still_requires_host_warning() {
                 stop: None,
                 stale: false,
                 requeue: false,
+                discard: false,
             })
         }
         fn prepare(&mut self, run: &Publication) -> Result<Batch, Failure> {
@@ -396,6 +398,7 @@ fn executed_provider_mismatch_remains_item_local_without_infrastructure_warning(
                 stop: None,
                 stale: false,
                 requeue: false,
+                discard: false,
             })
         }
         fn prepare(&mut self, _: &Publication) -> Result<Batch, Failure> {

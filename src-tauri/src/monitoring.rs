@@ -3038,7 +3038,7 @@ impl JobOperation {
     }
 
     /// Fresh attempt window with no failure history carried over.
-    fn requeue_fresh(&mut self, now: i64) {
+    pub(crate) fn requeue_fresh(&mut self, now: i64) {
         self.state = OperationState::Queued;
         self.attempt_count = 0;
         self.initial_attempt_at = now;
@@ -3641,6 +3641,21 @@ impl Monitor {
         }
         if changed {
             store.save_reviews(&reviews)?;
+        }
+        // Publications resume through the same reconcile path as a manual
+        // retry: the original batch is observed, never replaced.
+        let mut publications = store.load_publications()?;
+        let mut publications_changed = false;
+        for publication in &mut publications {
+            let account = reconnected.contains(&publication.review.job.account_id);
+            if publication.operation.auto_resume(account, now) {
+                publication.error = None;
+                resumed += 1;
+                publications_changed = true;
+            }
+        }
+        if publications_changed {
+            store.save_publications(&publications)?;
         }
         let previous = self.state.clone();
         let mut health_changed = false;
