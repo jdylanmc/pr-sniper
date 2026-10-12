@@ -36,10 +36,10 @@ Reference for the tray icon, the retained panel, navigation rules and the Runnin
 ## Queue tab
 
 - Two toggle cards: **Ready for you**, **Needs attention**. Active card orange.
-- **Ready for you**: human handoffs. One current handoff per account/repo PR. Completed reviews stay Ready despite config drift or disabled repo. Stale only on new head/base.
+- **Ready for you**: machine-signed-off PRs the agent did not approve (no Approve grant); the human decides. Confirmed approval of the current head moves the PR to Reviewed (**Approved**), out of both cards. One current handoff per account/repo PR. Completed reviews stay Ready despite config drift or disabled repo. Stale only on new head/base.
 - **Needs attention**: every parked failure. Cause chip: Credentials, Permission, Network, Failed. Row action **Fix** (credentials, opens Accounts) or **Retry**. **Retry all** pill.
 - Queue item detail: status block (PR title, short state label, Fix / Retry / Open) plus collapsed **Details**.
-- Merged or closed PRs move to Reviewed.
+- Approved (current head), merged or closed PRs move to Reviewed.
 - States, evidence, links: [review-queue.md](review-queue.md).
 
 ## Running tab

@@ -6,7 +6,7 @@ Reference for Queue states, evidence, local Agent reviews, retry/parking and not
 
 - Handoff states: **Ready for your final review**, **Waiting for PR author**, **Needs your input**.
 - Distinct, never merged: queued/reviewing, pending publication, failed, stale. No user-facing Blocked state ([ADR-0007](adr/0007-retry-then-park-single-inbox.md)).
-- Machine sign-off is not approval. Human decides approve and merge.
+- Machine sign-off is not approval. Ready for you = signed off and not approved by PR Sniper. A confirmed approval of the current head (`State::Approved`) leaves the Queue for Reviewed (**Approved**); a new head voids it. Unsettled or failed approval stays in Needs attention.
 - Retry: transient failures retry with backoff, 3 failed attempts, then **park** (`MAX_FAILED_ATTEMPTS`, `RETRY_WINDOW_SECONDS` = 15 min in `src-tauri/src/monitoring.rs`). Credential, permission and permanent failures park immediately.
 - Auto-resume: a parked Network/Provider/Timeout/RateLimited/Permission failure gets a fresh 3-attempt budget after a cooldown of 30m, 1h, 2h, 4h, 8h (`RESUME_COOLDOWNS_SECONDS`; `resume_cycle`, `resume_at` on the operation). After five cycles it waits for a human. Credential failures resume when the GitHub or Copilot account connects again. Explicit Retry starts a new operation (cycle 0): a poll failure retries the repository poll; a review restarts only if its own run failed with nothing published for that revision. Publication operations resume the same way (reconcile the original). Permanent failures never resume. Superseded, closed and merged work is never resumed.
 - Parked failures live in Queue > **Needs attention**: cause chip, **Fix** (credentials → Accounts) or **Retry**, **Retry all** pill. A clock + time shows the next automatic retry. Failed detail lists Cause, Attempts, Last attempt, Next retry, Agent, Revision, Account and the raw error. Running holds active + queued only.
@@ -16,6 +16,7 @@ Reference for Queue states, evidence, local Agent reviews, retry/parking and not
 ## Evidence and actions
 
 - Evidence: ordered changed-file guide, findings, conversations, acting account, receipts, mutation recovery. Human comments and reviews stay on GitHub.
+- Item detail: **Activity** rows under the status block (Reviewed · files, Findings, Commented · inline, Replied, Final, Retried · Nx, Approved · head, Merged); tap expands key/value facts (IDs copy on tap), GitHub arrow opens the PR. Collapsed Details: Agent / Result / Provider key/value groups. CI is not in the snapshot, so no CI row.
 - Gated start, confirm and retry controls. **Open Settings**, **Open Diagnostics**, schedule recovery stay available.
 - Selection persists in private `state/queue-selection.json` (isolated profiles too). Unavailable identity: missing-destination message.
 - Open-PR and file links resolve from saved native queue identity. File links open the anchor in the current PR diff (deleted/renamed ok). They are not the immutable saved review: compare the displayed reviewed head with GitHub's current revision, browser account and merge requirements.

@@ -5,6 +5,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+### Changed
+
+- Queue item detail leads with an **Activity** list: one icon row per agent action on the current head (Reviewed, Findings, Commented, Replied, Final, Retried, Approved, Merged), tap for key/value facts. Evidence sentences and the visible **Retry provider evidence** button are gone; Details groups Agent, Result and Provider rows (refresh is an icon in Provider).
+
 ### Fixed
 
 - Review tools no longer truncate. The Copilot runtime cut tool results over
@@ -17,6 +21,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- PRs PR Sniper approved (confirmed receipt for the current head) leave the
+  Queue and show **Approved** in Reviewed instead of **Ready for you**. Ready
+  now means signed off without approval; a new head voids the approval.
 - A discarded, unpublished batch (review lens edited, or remote comments
   diverged), or a finished unpublished review whose lens changed, is
   re-reviewed automatically, once per head and lens, under the
