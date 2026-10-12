@@ -1,6 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { MonitoringSnapshot } from "./monitoring";
-import { compactDuration, openDestination, type QueueItem } from "./queue";
+import type { MonitoringSnapshot, PublicationCandidate } from "./monitoring";
+import {
+  compactDuration,
+  failureChip,
+  openDestination,
+  type QueueItem,
+} from "./queue";
 
 export type FixTarget = "ai" | "repository-account";
 
@@ -51,7 +56,8 @@ const causes: Record<string, [string, "fix" | "retry"]> = {
   review_failed: ["Review failed", "retry"],
   conversation_admission: ["Reply admission failed", "retry"],
   provider: ["Provider error", "retry"],
-  publication_unresolved: ["Publication unresolved", "retry"],
+  publication_failed: ["Publish failed", "retry"],
+  publication_unresolved: ["Unverified", "retry"],
   action_unresolved: ["Action unresolved", "retry"],
 };
 
@@ -94,6 +100,31 @@ export function failedReviews(item: QueueItem, snapshot: MonitoringSnapshot) {
   );
 }
 
+// Parked publications this item can retry. Terminal ones (stale, discarded,
+// a deleted remote batch) never take another batch.
+export function failedPublications(
+  item: QueueItem,
+  snapshot: MonitoringSnapshot,
+): PublicationCandidate[] {
+  const runs = new Set(
+    (snapshot.reviews ?? [])
+      .filter((candidate) => item.review_keys.includes(candidate.key))
+      .map((candidate) => candidate.run?.operation.id),
+  );
+  return (snapshot.publications ?? []).filter((candidate) => {
+    const publication = candidate.publication;
+    return (
+      publication &&
+      runs.has(candidate.review_operation_id) &&
+      !["discarded", "stale"].includes(publication.phase) &&
+      publication.receipts.at(-1)?.state !== "deleted" &&
+      publication.operation.state !== "completed" &&
+      (publication.uncertain ||
+        ["failed", "manual_retry"].includes(publication.operation.state))
+    );
+  });
+}
+
 export function failureCause(item: QueueItem, snapshot: MonitoringSnapshot) {
   for (const warning of item.warnings) {
     const match = /^Monitoring failure: ([a-z0-9_]+)\./.exec(warning);
@@ -112,17 +143,16 @@ export function failureCause(item: QueueItem, snapshot: MonitoringSnapshot) {
     item.action_status?.effects.some((effect) => effect.state === "uncertain")
   )
     return "action_unresolved";
-  if (
-    item.warnings.some((warning) =>
-      /^Publication outcome unresolved/.test(warning),
-    )
-  )
-    return "publication_unresolved";
+  if (item.failure_cause)
+    return item.failure_class === "credentials"
+      ? "signed_out"
+      : item.failure_cause;
   if (failedReviews(item, snapshot).length) return "review_failed";
   return "";
 }
 
-export function failureLabel(cause: string) {
+export function failureLabel(cause: string, item?: QueueItem) {
+  if (item && cause.startsWith("publication_")) return failureChip(item);
   return causes[cause]?.[0] ?? (cause ? humanize(cause) : "Failed");
 }
 
@@ -157,9 +187,12 @@ export function retryCommands(
       ["manual_retry", "failed"].includes(entry.operation?.state ?? ""),
   )?.operation;
   // Repository-level poll failures retry the poll.
-  const monitoring = !["review_failed", "publication_unresolved", ""].includes(
-    cause,
-  );
+  const monitoring = ![
+    "review_failed",
+    "publication_failed",
+    "publication_unresolved",
+    "",
+  ].includes(cause);
   if (monitoring && operation)
     commands.push([
       "retry_monitoring_operation",
@@ -179,6 +212,12 @@ export function retryCommands(
       continue;
     commands.push(["start_review", { candidateKey: candidate.key }]);
   }
+  // Parked publications reconcile the original batch; the host never reposts.
+  for (const candidate of failedPublications(item, snapshot))
+    commands.push([
+      "publish_review",
+      { reviewOperationId: candidate.review_operation_id },
+    ]);
   if (commands.length) return commands;
   if (operation)
     return [["retry_monitoring_operation", { operationId: operation.id }]];
@@ -254,7 +293,7 @@ export function renderQueueStatus(
   label.innerHTML = icon(failed ? paths.fail : paths.ok);
   label.append(
     Object.assign(document.createElement("strong"), {
-      textContent: failed ? failureLabel(cause) : stateLabels[item.state],
+      textContent: failed ? failureLabel(cause, item) : stateLabels[item.state],
     }),
   );
   const actions = document.createElement("div");
@@ -317,8 +356,11 @@ function renderFailureFacts(
 ) {
   const now = Date.now() / 1000;
   const review = failedReviews(item, context.snapshot)[0];
+  const publication = failedPublications(item, context.snapshot)[0]
+    ?.publication;
   const operation =
     review?.run?.operation ??
+    publication?.operation ??
     (context.snapshot.health ?? []).find(
       (entry) =>
         entry.repository_id === item.job.configuration_id &&
@@ -347,9 +389,10 @@ function renderFailureFacts(
       }`,
     ]);
   }
-  const last = review
-    ? operation?.initial_attempt_at
-    : (health?.last_attempt ?? operation?.initial_attempt_at);
+  const last =
+    review || publication
+      ? operation?.initial_attempt_at
+      : (health?.last_attempt ?? operation?.initial_attempt_at);
   if (last) rows.push(["Last attempt", `${compactDuration(now - last)} ago`]);
   const next = document.createElement("span");
   const resume = item.resume_at ?? operation?.resume_at ?? null;
@@ -377,7 +420,7 @@ function renderFailureFacts(
     list.append(term, description);
   }
   block.append(list);
-  const detail = review?.run?.error ?? health?.last_error;
+  const detail = review?.run?.error ?? publication?.error ?? health?.last_error;
   if (detail) {
     const line = document.createElement("code");
     line.className = "queue-error";

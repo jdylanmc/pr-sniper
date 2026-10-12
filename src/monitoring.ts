@@ -104,7 +104,7 @@ export interface MonitoringSnapshot {
   follow_ups?: FollowUpCandidate[];
 }
 
-interface PublicationCandidate {
+export interface PublicationCandidate {
   local_only?: boolean;
   review_operation_id: string;
   automatic: boolean;
@@ -118,6 +118,7 @@ interface PublicationCandidate {
       | "stale"
       | "stale_after_publication"
       | "stopped"
+      | "discarded"
       | "unresolved";
     operation: NonNullable<Health["operation"]>;
     error: string | null;
@@ -711,6 +712,7 @@ export function renderMonitoring(
     }
     const terminal =
       publication?.phase === "stale" ||
+      publication?.phase === "discarded" ||
       (publication?.operation.state === "completed" &&
         ["published", "stale_after_publication"].includes(publication.phase)) ||
       receipt?.state === "deleted";
