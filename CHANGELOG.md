@@ -18,6 +18,14 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   lists every parked failure with a cause chip: **Fix** for credentials,
   **Retry** for the rest, plus **Retry all**. Running shows only active and
   queued work.
+- Parked failures auto-resume. Network, provider, timeout, rate-limit and
+  permission failures get a fresh 3-attempt budget after 30m, 1h, 2h, 4h, 8h
+  (five cycles), then wait for a human. Credential failures resume when the
+  GitHub or Copilot account connects again. Agent-quality rejections ("did not
+  read every changed file", "execution failure") now retry. A new head
+  supersedes a parked older-head failure. Needs attention rows show a clock
+  and time to the next retry; failed detail shows a facts grid (cause,
+  attempts, last attempt, next retry, Agent, revision, account, raw error).
 - Remove the **Blocked** state. A completed review stays Ready after config
   drift or a disabled repository; it goes Stale only on a new head or base.
 - Queue item detail leads with the failure or state and one action

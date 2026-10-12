@@ -139,7 +139,7 @@ _Avoid_: Auto-merge approval
 ### Failure and retry
 
 **Retry budget**:
-Persisted per operation: attempt count, retry deadline, state. Survives restart and resume without reset. Transient failures auto-retry with backoff; 3 failed attempts then **Park**. The AI review window starts when the worker starts, not at enqueue. Credentials, permission and permanent failures park at once. Parked retry starts a new operation, keeping history.
+Persisted per operation: attempt count, retry deadline, state. Survives restart and resume without reset. Transient failures auto-retry with backoff; 3 failed attempts then **Park**. The AI review window starts when the worker starts, not at enqueue. Credentials, permission and permanent failures park at once. Parked retry starts a new operation, keeping history. Cooldown cycles (30m, 1h, 2h, 4h, 8h; `resume_cycle`, `resume_at`) grant each resumable failure a fresh budget, up to five.
 _Avoid_: Retry count, unlimited retry
 
 **Failure class**:
@@ -147,7 +147,7 @@ Cause label on a failed item: Credentials, Permission, Network, Failed. Decides 
 _Avoid_: Error type
 
 **Parked failure**:
-Operation that exhausted its **Retry budget** or failed non-transiently. Waits for explicit user action in Queue under **Needs Attention**, never in Running.
+Operation that exhausted its **Retry budget** or failed non-transiently. Listed in Queue under **Needs Attention**, never in Running. Auto-resumes: network, provider, timeout, rate-limit and permission failures after a cooldown (five cycles, then a human); credentials when the account connects again. Permanent failures wait for the user.
 _Avoid_: Blocked, dead job
 
 **Stopping slot**:

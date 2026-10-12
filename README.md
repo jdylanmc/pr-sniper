@@ -28,7 +28,7 @@ PR queues grow. Agents read diffs fast and never get bored. Humans should read P
 2. Admission decides which PRs enter: **All** or ordered **Filtered** rules (assigned, mentioned, include/exclude users, include/exclude paths). First enabled matching rule wins.
 3. One review per head SHA. New push = new revision = another review. Same revision: agent only replies to new comments.
 4. Agents see description, changed files and all comments. They act only with explicit permissions: **Publish Comment**, **Reply Comment**, **Approve**, **& Merge**. New assignments start with every grant off.
-5. Results land in **Queue**: **Ready for you** or **Needs attention**. Transient failures retry with backoff, 3 attempts, then park. Credential, permission and permanent failures park at once. Parked rows offer **Fix** (credentials, goes to Accounts) or **Retry**.
+5. Results land in **Queue**: **Ready for you** or **Needs attention**. Transient failures retry with backoff, 3 attempts, then park. Credential, permission and permanent failures park at once. Parked failures auto-resume (cooldowns 30m to 8h, five cycles; credentials on reconnect). Rows offer **Fix** (credentials, goes to Accounts) or **Retry**.
 6. Merged or closed PRs move to **Reviewed**. Results stay local.
 
 ## Install

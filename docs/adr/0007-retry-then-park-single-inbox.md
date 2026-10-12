@@ -12,13 +12,17 @@ Provider and AI failures are transient or permanent. Unbounded retry hides fault
 - Every parked failure lands in one inbox: Queue > **Needs attention**. Cause chip: Credentials, Permission, Network, Failed.
 - Row action: **Fix** for credentials (opens Accounts), **Retry** otherwise. **Retry all** pill.
 - No user-facing "Blocked" state. Running tab shows active + queued only.
-- User Retry or Fix starts a new operation. History kept. Resume never resets counts.
+- User Retry starts a new operation (cooldown cycle 0). History kept.
+- Auto-resume: resumable parked failures (transient, permission) requeue with a fresh 3-attempt budget after 30m, 1h, 2h, 4h, 8h; five cycles then human-only. Credentials resume when the GitHub or Copilot account connects again (a connect transition, or the first tick after start). Permanent never resumes. Superseded/closed/merged work is skipped.
+- Agent-quality rejections ("did not read every changed file", "execution failure") are Provider-class, so they retry.
 - AI budget starts at worker start. Cancel refunds only intentional cancel or discarded successful output. Real failure racing pause stays failure.
 
 ## Consequences
 
 - Restart-safe. No silent retry loops.
-- Parked work waits for a human. Nothing auto-resumes.
+- AI cost is bounded: at most 3 attempts x 6 windows per failing work item before a human is needed.
+- Cooldown state persists (serde-default `resume_cycle`, `resume_at`); old data loads.
+- Auto-resume covers review runs and repository poll operations. Follow-up/primary-final/publication operations still wait for a human.
 - Completed reviews stay Ready despite config drift or disabled repo.
 - Rust-internal `blocked` reason may linger in `capacity`. Not surfaced.
 - Code = 3 attempts total. Old prose said "three retries".
