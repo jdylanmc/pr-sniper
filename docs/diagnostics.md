@@ -18,9 +18,9 @@ Reference ([ADR-0019](adr/0019-bounded-content-free-diagnostics.md)) for retaine
 
 ## Tool evidence
 
-- Records requested known paths, unknown-path count, returned paths, distinct paths registered by `read_changes`. `read_source` and searches do not satisfy coverage.
+- Records requested known paths, unknown-path count, returned paths, and files whose every part was fully served by `read_changes` (byte coverage). `read_source` and searches do not satisfy coverage.
 - Byte counts = serialized JSON payload, not RPC framing. Failed or rejected reads = unavailable.
-- Response-limit flag = app limit. Separate from runtime tool failure and conversation truncation. Per-tool runtime truncation is not exposed by the pinned SDK. Stop-hook reasons are allowlisted, else `not_exposed`.
+- Response-limit flag = app limit (32,000 bytes per tool response). Separate from runtime tool failure and conversation truncation. Per-tool runtime truncation is not exposed by the pinned SDK. Stop-hook reasons are allowlisted, else `not_exposed`.
 
 ## Never recorded
 

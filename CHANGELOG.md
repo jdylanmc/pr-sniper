@@ -5,6 +5,16 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+### Fixed
+
+- Review tools no longer truncate. The Copilot runtime cut tool results over
+  ~50 KB, so large files and lockfiles reached the Agent partial and reviews
+  ended as **Your input**. `read_changes`, `read_source` and `search_paths`
+  now page in byte chunks (`offset`, `next_offset`, `complete`), and a review
+  is accepted only after every byte of every changed file was served. Limit
+  hits fail the review as retryable. Failed-error detail wraps instead of
+  ellipsizing. Reviews already published are not redone.
+
 ### Changed
 
 - Publications recover on their own. A pending batch whose inline comments

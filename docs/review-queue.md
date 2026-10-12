@@ -31,7 +31,7 @@ Reference for Queue states, evidence, local Agent reviews, retry/parking and not
 - Reserve path: `capacity::Coordinator::reserve` (`src-tauri/src/capacity.rs`).
 - Keychain: GitHub and Copilot tokens in separate account-addressed services. Never in config, state or diagnostics. See [ADR-0001](adr/0001-macos-foundation.md).
 - Green Copilot check = sign-in only. No seat, subscription or inference proof.
-- Review tools: three host-owned read-only tools, not an OS sandbox.
+- Review tools: three host-owned read-only tools, not an OS sandbox. Reads are paged in byte chunks and never truncated; a review is accepted only after every byte of every changed file was served ([ADR-0020](adr/0020-constrained-host-owned-review-tools.md)). Results stored before this carry no `byte_coverage` flag; published ones are not redone (one review per head SHA).
 
 ## Notifications
 
