@@ -3,6 +3,8 @@ const known: [RegExp, string | null][] = [
   [/^Reconcile the original publication/i, "Already reviewed"],
   [/already reviewed this revision/i, "Already reviewed"],
   [/not waiting for manual retry/i, null],
+  // Saved and queued; the scheduler starts it when the running mutation ends.
+  [/another provider mutation is running/i, null],
   [/retry budget exhausted/i, "Retries used up"],
   [/running or stopping/i, "Still running"],
   [/no longer available/i, "Unavailable"],

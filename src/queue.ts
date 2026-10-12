@@ -68,6 +68,7 @@ export interface QueueItem {
     | "failed"
     | "stale"
     | "stale_after_publication"
+    | "approved"
     | "closed"
     | "merged";
   failure_class?: FailureClass | null;
@@ -90,6 +91,7 @@ const labels: Record<QueueItem["state"], string> = {
   failed: "Failed",
   stale: "Stale review",
   stale_after_publication: "Stale after publication",
+  approved: "Approved",
   closed: "Closed on GitHub",
   merged: "Merged on GitHub",
 };
@@ -156,6 +158,7 @@ export function humanQueue(items: QueueItem[]): QueueItem[] {
           "reviewing",
           "awaiting_publication",
           "waiting_for_author",
+          "approved",
           "closed",
           "merged",
         ].includes(item.state),

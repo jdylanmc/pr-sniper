@@ -7,6 +7,8 @@ import {
 } from "./navigation.mjs";
 import { createHash } from "node:crypto";
 
+const kv = (root, label) => root.locator(`dt:text-is("${label}") + dd`);
+
 async function actionFixture(store, observe = true, intelligence) {
   const fixture = await queueFixture(store);
   if (intelligence) {
@@ -145,9 +147,9 @@ test("confirmed peer approval is shown without fabricating a merging author's vo
     observation: fixture.observation,
   });
   await page.goto("/?view=queue");
-  await expect(page.locator("#handoff-queue")).toContainText(
-    "Provider approval 144 by 44",
-  );
+  const queue = page.locator("#handoff-queue");
+  await expect(kv(queue, "Approval")).toHaveText("144");
+  await expect(kv(queue, "Actor")).toHaveText("44");
   const snapshot = await store("monitoring_snapshot");
   expect(snapshot.items[0].action_status.provider_approval).toMatchObject({
     id: "144",
@@ -334,7 +336,7 @@ for (const surface of ["standalone", "panel"]) {
         });
         await expect(captured).toContainText("long_context");
         await expect(captured).not.toContainText("later-final-model");
-        const raw = page.getByText("Final review context", { exact: true });
+        const raw = page.getByText("JSON", { exact: true });
         await raw.click();
         const finalEvidence = raw.locator("..");
         await expect(finalEvidence).toContainText("actual-final-session-128");
@@ -480,12 +482,12 @@ for (const destination of ["panel", "legacy queue"]) {
       destination === "panel"
         ? page.locator("[data-queue-details]")
         : page.locator("#handoff-queue");
-    await expect(evidence).toContainText("personal review Required");
-    await expect(evidence).toContainText(
+    await expect(kv(evidence, "Personal review")).toHaveText("Required");
+    await expect(kv(evidence, "Blocked")).toHaveText(
       "Optional action evidence unavailable.",
     );
-    await expect(evidence).toContainText(
-      "Refresh unavailable: No enabled provider action",
+    await expect(kv(evidence, "Refresh")).toContainText(
+      "No enabled provider action",
     );
     await expect(
       evidence.getByRole("button", {
@@ -611,9 +613,9 @@ test("panel primary-final route exposes only that final and returns to its exact
     .locator('[data-panel-view="reviewed"] article')
     .filter({ hasText: "Primary final review" });
   await row.getByRole("button", { name: "Open job", exact: true }).click();
-  await expect(page.locator("[data-item-evidence]")).toContainText(
-    "Primary final full review complete",
-  );
+  await expect(
+    kv(page.locator('[data-action-group="Agent"]'), "State"),
+  ).toHaveText("completed");
   await expect(page.locator("[data-work-context]")).toContainText(
     "Primary final review",
   );
@@ -630,9 +632,7 @@ test("panel primary-final route exposes only that final and returns to its exact
     "Review correctness.",
   );
   await captureInspector(page, "primary-final-done");
-  await page
-    .getByText("Complete final file guide (3 files)", { exact: true })
-    .click();
+  await page.getByText("Files (3)", { exact: true }).click();
   await expect(page.locator("[data-item-evidence] ol li")).toHaveText([
     "z-first.rs: Read this first.",
     "a-second.rs: Then read this.",
@@ -727,12 +727,12 @@ test("current normal clearance hands off personally and exposes a distinct durab
   await expect(page.locator("#handoff-queue")).toContainText(
     "Ready for your final review",
   );
-  await expect(page.locator("#handoff-queue")).toContainText(
-    "personal review Required",
-  );
-  await expect(page.locator("#handoff-queue")).toContainText(
-    "Primary final full review",
-  );
+  await expect(
+    kv(page.locator("#handoff-queue"), "Personal review"),
+  ).toHaveText("Required");
+  await expect(
+    kv(page.locator('#handoff-queue [data-action-group="Agent"]'), "State"),
+  ).toHaveText("queued");
   await expect(page.getByRole("checkbox", { name: /trust/i })).toHaveCount(0);
   expect(fixture.actions.finals[0].execution.trust_confirmed).toBe(false);
   await expect(
@@ -765,7 +765,7 @@ test("current normal clearance hands off personally and exposes a distinct durab
   ).toHaveCount(0);
 });
 
-test("approval receipt retains personal handoff, whereas confirmed merge is terminal without a human-review claim", async ({
+test("approval receipt leaves the Queue for Reviewed yet keeps personal review required, whereas confirmed merge is terminal without a human-review claim", async ({
   page,
   store,
 }) => {
@@ -803,18 +803,30 @@ test("approval receipt retains personal handoff, whereas confirmed merge is term
   fixture.state.actions = fixture.actions;
   await store("seed_queue_state", fixture.state);
   await page.goto("/?view=queue");
-  await expect(page.locator("#handoff-queue")).toContainText(
-    "GitHub approval: confirmed",
-  );
-  await expect(page.locator("#handoff-queue")).toContainText("receipt 401; 22");
-  await expect(page.locator("#handoff-queue")).toContainText(
-    "personal review Required",
-  );
+  const queue = page.locator("#handoff-queue");
+  await expect(kv(queue, "Approve")).toHaveText("confirmed");
+  await expect(kv(queue, "Approve receipt")).toHaveText("401");
+  await expect(kv(queue, "Approve actor")).toHaveText("22");
+  await expect(kv(queue, "Personal review")).toHaveText("Required");
   await store("set_notifications_enabled", { enabled: true });
   const ledger = await store("observe_notifications");
   expect(ledger.notices.some((n) => n.event.category === "approved")).toBe(
     true,
   );
+  const approvedItem = (await store("monitoring_snapshot")).items[0];
+  expect(approvedItem.state).toBe("approved");
+  await page.goto("/");
+  await expect(page.locator("#handoff-queue article")).toHaveCount(0);
+  await expect(page.locator("[data-queue-ready]")).toHaveText("0");
+  await expect(page.locator("[data-queue-attention]")).toHaveText("0");
+  await page
+    .getByRole("navigation", { name: "Application destinations" })
+    .getByRole("button", { name: "Reviewed", exact: true })
+    .click();
+  await expect(
+    page.locator('[data-panel-view="reviewed"] [data-work-state="approved"]'),
+  ).toContainText("Approved");
+  await page.goto("/?view=queue");
   fixture.actions.effects.push({
     ...effect,
     id: "merge-intent",
@@ -837,9 +849,9 @@ test("approval receipt retains personal handoff, whereas confirmed merge is term
   await expect(page.locator("#handoff-queue")).toContainText(
     "Merged on GitHub",
   );
-  await expect(page.locator("#handoff-queue")).toContainText(
-    "personal review Not inferred",
-  );
+  await expect(
+    kv(page.locator("#handoff-queue"), "Personal review"),
+  ).toHaveText("Not inferred");
   await expect(page.locator("#handoff-queue")).not.toContainText(
     "Ready for your final review",
   );
@@ -915,12 +927,12 @@ test("unknown effects expose original reconciliation rather than another approve
   await expect(page.locator("[data-item-evidence]")).toContainText(
     "Action unresolved",
   );
-  await expect(page.locator("[data-queue-details]")).toContainText(
-    "no receipt",
-  );
-  await expect(page.locator("[data-queue-details]")).toContainText(
-    "personal review Not inferred",
-  );
+  await expect(
+    kv(page.locator("[data-queue-details]"), "Approve receipt"),
+  ).toHaveText("None");
+  await expect(
+    kv(page.locator("[data-queue-details]"), "Personal review"),
+  ).toHaveText("Not inferred");
   const before = (await store("monitoring_snapshot")).items[0].action_status
     .effects[0];
   await page.getByRole("button", { name: "Reconcile original action" }).click();
@@ -970,4 +982,92 @@ test("publication off shows local-only evidence while an existing pending batch 
   await expect(page.locator("#handoff-queue")).not.toContainText(
     "Ready for your final review",
   );
+});
+
+test("panel detail shows terse Activity rows, expandable facts and no evidence prose", async ({
+  page,
+  store,
+}) => {
+  const fixture = await actionFixture(store);
+  const final = fixture.actions.finals[0];
+  final.execution.result = fixture.review.result;
+  final.execution.operation.state = "completed";
+  final.execution.operation.attempt_count = 2;
+  const head = fixture.review.job.head_sha;
+  fixture.actions.effects = [
+    {
+      cancelled: false,
+      reconcile_attempts: 0,
+      reconcile_requested: false,
+      id: "approval-intent",
+      final_id: final.id,
+      item_id: "action-iteration",
+      action: "approve",
+      operation: {
+        ...fixture.review.operation,
+        id: "approval-op",
+        operation_type: "github_approve",
+      },
+      observation: fixture.observation,
+      body: "Frozen fixture approval.",
+      state: "confirmed",
+      error: null,
+      receipt: {
+        id: "5493796731",
+        actor_id: "22",
+        head,
+        action: "approve",
+        merge_commit: null,
+      },
+    },
+  ];
+  fixture.state.actions = fixture.actions;
+  await store("seed_queue_state", fixture.state);
+  await store("panel_navigate", {
+    route: {
+      tab: "queue",
+      detail: { type: "item", item_id: "action-iteration" },
+    },
+  });
+  await page.goto("/");
+  const activity = page.locator("[data-queue-activity]");
+  await expect(activity).toBeVisible();
+  const kinds = await activity
+    .locator("[data-activity]")
+    .evaluateAll((rows) => rows.map((row) => row.dataset.activity));
+  expect(kinds).toEqual(["review", "findings", "final", "retried", "approve"]);
+  const approved = activity.locator('[data-activity="approve"]');
+  await expect(approved.locator(".activity-verb")).toHaveText("Approved");
+  await expect(approved.locator(".activity-value")).toHaveText(
+    head.slice(0, 7),
+  );
+  await expect(
+    approved.getByRole("button", { name: /Open approved/ }),
+  ).toBeVisible();
+  await expect(approved.locator(".queue-facts")).toBeHidden();
+  await approved.locator(".activity-toggle").click();
+  await expect(kv(approved, "Receipt")).toHaveText("5493796731");
+  await expect(
+    activity.locator('[data-activity="retried"] .activity-value'),
+  ).toHaveText("1x");
+  const status = page.locator("[data-item-evidence]");
+  for (const prose of [
+    "Machine clearance",
+    "Final evidence",
+    "verified green",
+    "review this unmerged PR",
+    "provider actions and personal review are separate",
+  ])
+    await expect(page.locator("body")).not.toContainText(prose);
+  await expect(
+    status.getByRole("button", { name: "Retry provider evidence" }),
+  ).toHaveCount(0);
+  const details = page.locator("[data-queue-details]");
+  await expect(details).not.toHaveAttribute("open");
+  await details.evaluate((element) => (element.open = true));
+  for (const title of ["Agent", "Result", "Provider"])
+    await expect(details.locator(`[data-action-group="${title}"]`)).toHaveCount(
+      1,
+    );
+  await expect(kv(details, "Approve receipt")).toHaveText("5493796731");
 });

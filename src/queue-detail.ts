@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { renderActivity } from "./activity";
 import type { MonitoringSnapshot, PublicationCandidate } from "./monitoring";
 import {
   compactDuration,
@@ -27,6 +28,7 @@ const stateLabels: Record<QueueItem["state"], string> = {
   failed: "Failed",
   stale: "Stale",
   stale_after_publication: "Stale",
+  approved: "Approved",
   closed: "Closed",
   merged: "Merged",
 };
@@ -334,6 +336,7 @@ export function renderQueueStatus(
   if (failed) renderFailureFacts(block, item, cause, context);
   block.append(actions);
   root.append(block);
+  renderActivity(root, item, context.snapshot, context.showError);
   if (!failed) {
     const synopsis = (context.snapshot.reviews ?? [])
       .filter((candidate) => item.review_keys.includes(candidate.key))

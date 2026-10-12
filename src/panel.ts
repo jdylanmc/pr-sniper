@@ -786,7 +786,7 @@ export async function mountPanel(app: HTMLElement) {
           state: final.execution.phase,
           work: workPresentation(snapshot, "primary_final", final.id),
         });
-      if (["closed", "merged"].includes(item.state)) {
+      if (["approved", "closed", "merged"].includes(item.state)) {
         rows.push({
           id: item.id,
           kind: "item",

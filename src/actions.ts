@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { keyValues, type KeyValue } from "./key-values";
 import { renderConfiguration } from "./work-presentation";
 import type { Job, ReviewCandidate } from "./monitoring";
 import { openDestination } from "./queue";
@@ -38,6 +39,36 @@ export interface ActionStatus {
   blockers: string[];
 }
 
+const retryPath = "M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5";
+const okPath = "M5 12.5 10 17.5 19 7";
+const warnPath = "M12 3 2 20h20L12 3Zm0 6v5m0 3v.5";
+
+const label = (value: string) => value.replaceAll("_", " ");
+
+function chip(text: string, ok: boolean, path: string) {
+  const element = document.createElement("span");
+  element.className = "action-chip";
+  element.dataset.ok = String(ok);
+  element.innerHTML = `<svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${path}"/></svg>`;
+  element.append(text);
+  return element;
+}
+
+function group(section: HTMLElement, title: string, rows: KeyValue[]) {
+  const visible = rows.filter(([, value]) => value !== "");
+  if (!visible.length) return null;
+  const element = document.createElement("div");
+  element.className = "action-group";
+  element.dataset.actionGroup = title;
+  const heading = document.createElement("div");
+  heading.className = "action-group-title";
+  heading.textContent = title;
+  element.append(heading);
+  keyValues(element, visible);
+  section.append(element);
+  return heading;
+}
+
 export function renderActions(
   root: HTMLElement,
   status: ActionStatus,
@@ -47,22 +78,26 @@ export function renderActions(
 ) {
   const section = document.createElement("section");
   section.className = "review-run";
-  const summary = document.createElement("p");
-  summary.textContent = `Machine clearance: ${status.machine_clear ? "clear" : "not clear"}; primary ${status.primary_assignment_id ?? "none"}; approve ${status.permissions.approve ? "on" : "off"}; merge ${status.permissions.merge ? "on" : "off"}; personal review ${status.personal_review}`;
-  section.append(summary);
-  const observed = document.createElement("p");
-  observed.textContent = `Final evidence: ${status.final_valid ? "valid" : "not validated"}; observed ${status.provider_observed_at ? new Date(status.provider_observed_at * 1000).toISOString() : "never"}`;
-  section.append(observed);
-  if (status.provider_approval) {
-    const approval = document.createElement("p");
-    approval.textContent = `Provider approval ${status.provider_approval.id} by ${status.provider_approval.actor_id} on ${status.provider_approval.head}`;
-    section.append(approval);
-  }
-  for (const blocker of status.blockers) {
-    const message = document.createElement("p");
-    message.textContent = blocker;
-    section.append(message);
-  }
+  const chips = document.createElement("div");
+  chips.className = "action-chips";
+  chips.append(
+    chip(
+      status.machine_clear ? "Clear" : "Not clear",
+      status.machine_clear,
+      status.machine_clear ? okPath : warnPath,
+    ),
+    chip(
+      status.final_valid ? "Valid" : "Unvalidated",
+      status.final_valid,
+      status.final_valid ? okPath : warnPath,
+    ),
+  );
+  for (const [name, on] of [
+    ["Approve", status.permissions.approve],
+    ["Merge", status.permissions.merge],
+  ] as const)
+    if (on) chips.append(chip(name, true, okPath));
+  section.append(chips);
   const act = async (
     command: string,
     args: Record<string, unknown>,
@@ -78,37 +113,106 @@ export function renderActions(
       await refresh();
     }
   };
-  if (status.blockers.length && status.provider_observed_at) {
+  const final = status.final_review;
+  const execution = final?.execution;
+  const result = execution?.result ?? null;
+  const agent = execution?.selection.agent;
+  group(section, "Agent", [
+    ["Agent", agent?.name ?? ""],
+    ["Model", result?.model ?? agent?.model ?? ""],
+    [
+      "Effort",
+      agent ? (agent.intelligence?.reasoning_effort ?? "Default") : "",
+    ],
+    [
+      "Tokens",
+      result ? `${result.input_tokens} / ${result.output_tokens}` : "",
+    ],
+    ["Tools", result ? String(result.tool_calls) : ""],
+    ["Session", result?.session_id ?? "", true],
+    ["State", execution ? label(execution.operation.state) : ""],
+    ["Attempts", execution ? String(execution.operation.attempt_count) : ""],
+    ["Order", final ? String(final.enqueue_order) : ""],
+  ]);
+  group(section, "Result", [
+    ["Decision", result ? label(result.output.decision) : ""],
+    ["Files", result ? String(result.output.files.length) : ""],
+    ["Findings", result ? String(result.output.findings.length) : ""],
+    [
+      "Personal review",
+      status.personal_review.startsWith("Required")
+        ? "Required"
+        : "Not inferred",
+    ],
+    ["Evidence", status.final_valid ? "Valid" : "Unvalidated"],
+    [
+      "Observed",
+      status.provider_observed_at
+        ? new Date(status.provider_observed_at * 1000).toISOString()
+        : "Never",
+    ],
+    ["Primary", status.primary_assignment_id ?? ""],
+  ]);
+  const provider: KeyValue[] = [];
+  const peer = status.provider_approval;
+  if (peer)
+    provider.push(
+      ["Approval", peer.id, true],
+      ["Actor", peer.actor_id],
+      ["Head", peer.head, true],
+    );
+  for (const effect of status.effects) {
+    const name = effect.action === "approve" ? "Approve" : "Merge";
+    provider.push([
+      name,
+      label(effect.state) + (effect.cancelled ? " \u00b7 cancelled" : ""),
+    ]);
+    provider.push([
+      `${name} receipt`,
+      effect.receipt?.id ?? "None",
+      !!effect.receipt,
+    ]);
+    if (effect.receipt) {
+      provider.push([`${name} actor`, effect.receipt.actor_id]);
+      provider.push([`${name} head`, effect.receipt.head, true]);
+      if (effect.receipt.merge_commit)
+        provider.push(["Merge commit", effect.receipt.merge_commit, true]);
+    }
+    if (effect.error) provider.push([`${name} error`, effect.error]);
+  }
+  for (const blocker of new Set(status.blockers))
+    provider.push(["Blocked", blocker]);
+  if (status.observation_retry_blocker)
+    provider.push(["Refresh", status.observation_retry_blocker]);
+  const heading = group(section, "Provider", provider);
+  const refreshable = status.blockers.length && status.provider_observed_at;
+  if (refreshable) {
     const retry = document.createElement("button");
-    retry.textContent = "Retry provider evidence";
+    retry.type = "button";
+    retry.className = "action-refresh";
+    retry.title = "Retry provider evidence";
+    retry.setAttribute("aria-label", "Retry provider evidence");
+    retry.innerHTML = `<svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${retryPath}"/></svg>`;
     retry.disabled = status.observation_retry_blocker !== null;
     retry.onclick = () =>
       void act("retry_action_observation", { itemId: status.item_id }, retry);
-    section.append(retry);
-    if (status.observation_retry_blocker) {
-      const reason = document.createElement("p");
-      reason.textContent = `Refresh unavailable: ${status.observation_retry_blocker}`;
-      section.append(reason);
-    }
+    if (heading) heading.append(retry);
+    else section.append(retry);
   }
-  if (status.final_review) {
-    const final = status.final_review;
-    const state = document.createElement("p");
-    state.textContent = `Primary final full review: ${final.execution.phase}. State: ${final.execution.operation.state}; attempt ${final.execution.operation.attempt_count}; queue order ${final.enqueue_order}`;
-    section.append(state);
+  if (final && execution) {
     if (configuration)
       renderConfiguration(
         section,
-        final.execution.operation.attempt_count > 0
-          ? "Captured final execution configuration"
-          : "Planned final configuration",
-        final.execution.selection,
+        execution.operation.attempt_count > 0
+          ? "Configuration"
+          : "Planned configuration",
+        execution.selection,
       );
-    if (final.execution.result) {
+    if (result) {
       const guide = document.createElement("details");
       const summary = document.createElement("summary");
-      const files = final.execution.result.output.files;
-      summary.textContent = `Complete final file guide (${files.length} files)`;
+      const files = result.output.files;
+      summary.textContent = `Files (${files.length})`;
       const list = document.createElement("ol");
       for (const file of [...files].sort((a, b) => a.order - b.order)) {
         const entry = document.createElement("li");
@@ -127,15 +231,15 @@ export function renderActions(
     }
     const details = document.createElement("details");
     const title = document.createElement("summary");
-    title.textContent = "Final review context";
+    title.textContent = "JSON";
     const body = document.createElement("pre");
     body.textContent = JSON.stringify(final, null, 2);
     details.append(title, body);
     section.append(details);
-    if (final.execution.operation.state !== "completed") {
-      const running = final.execution.operation.state === "running";
+    if (execution.operation.state !== "completed") {
+      const running = execution.operation.state === "running";
       const queued = ["queued", "interrupted"].includes(
-        final.execution.operation.state,
+        execution.operation.state,
       );
       const button = document.createElement("button");
       button.textContent = running
@@ -155,19 +259,11 @@ export function renderActions(
         );
       section.append(button);
     }
-  } else if (status.permissions.approve || status.permissions.merge) {
-    const message = document.createElement("p");
-    message.textContent = "No valid final review";
-    section.append(message);
   }
   for (const effect of status.effects) {
-    const line = document.createElement("p");
-    line.textContent = `${effect.action === "approve" ? "GitHub approval" : "GitHub merge"}: ${effect.state.replaceAll("_", " ")}; ${effect.receipt ? `receipt ${effect.receipt.id}; ${effect.receipt.actor_id}; ${effect.receipt.head}` : "no receipt"}${effect.error ? `; ${effect.error}` : ""}`;
-    if (effect.cancelled) line.append("; cancelled");
-    section.append(line);
     const evidence = document.createElement("details");
     const heading = document.createElement("summary");
-    heading.textContent = `${effect.action} receipt`;
+    heading.textContent = `JSON ${effect.action}`;
     const body = document.createElement("pre");
     body.textContent = JSON.stringify(effect, null, 2);
     evidence.append(heading, body);

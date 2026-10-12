@@ -521,7 +521,7 @@ export function renderMonitoring(
           );
           if (jobDetail.kind === "primary_final" && item?.action_status) {
             const context = document.createElement("h2");
-            context.textContent = "PR-level provider evidence and recovery";
+            context.textContent = "Provider";
             evidence.append(context);
             renderActions(
               evidence,
