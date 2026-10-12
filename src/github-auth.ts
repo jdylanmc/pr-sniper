@@ -51,7 +51,7 @@ export function renderGithubAuth(
   root: HTMLElement,
   accountsChanged?: (accounts: GithubAccount[] | null) => void,
 ) {
-  root.innerHTML = `<div class="github-auth-card account-connection" data-account-role="repository"><header class="account-connection-heading"><h2>GitHub accounts</h2><p>Repository access and publication identity</p></header><p class="account-scope">Requests broad public/private repository access, not Copilot AI access.</p><div class="account-connection-state"><p role="status" tabindex="-1">Reading connection state...</p><div class="github-auth-flow"></div></div><details class="account-consent"><summary>GitHub access and consent</summary><p>GitHub's broad <code>repo</code> scope grants access to public and private repositories available to the account. PR Sniper lists them for explicit selection and never starts monitoring every accessible repository automatically.</p><p>Only confirming the returned identity saves this connection. Repository selection and action permissions stay separate. Disconnect removes this role's local credential, not your GitHub authorization or Copilot connection.</p></details><div class="github-auth-accounts"></div><div class="github-auth-repositories"></div></div>`;
+  root.innerHTML = `<div class="github-auth-card account-connection" data-account-role="repository"><header class="account-connection-heading"><h2>GitHub accounts</h2><p>Repository access and publication identity</p></header><div class="account-connection-state"><p role="status" tabindex="-1">Loading</p><div class="github-auth-flow"></div></div><div class="github-auth-accounts"></div><div class="github-auth-repositories"></div></div>`;
   const card = root.querySelector<HTMLElement>(".account-connection")!;
   const status = root.querySelector<HTMLElement>("[role=status]")!;
   const actions = root.querySelector<HTMLElement>(".github-auth-flow")!;
@@ -94,8 +94,7 @@ export function renderGithubAuth(
       card.dataset.flowState = "failed";
       publishAccountStates([]);
       accountsChanged?.(null);
-      status.textContent =
-        "GitHub connection state is unavailable after the failed operation. No connection is assumed.";
+      status.textContent = "Unavailable";
       actions.replaceChildren();
       commandButton(
         actions,
@@ -104,18 +103,15 @@ export function renderGithubAuth(
       );
       return;
     }
-    const currentState = status.textContent ?? "";
     status.textContent = failure.includes("saved securely")
-      ? `GitHub credentials could not be saved securely. The account is still pending; retry Confirm or cancel without connecting it. ${currentState}`
+      ? "Storage failed"
       : failure.includes("missing_scope")
-        ? "GitHub no longer grants the required repo scope. Reconnect and review the broad public/private repository access request."
+        ? "Reconnect required"
         : failure.includes("organization_policy_denied")
-          ? "GitHub organization policy or SAML single sign-on blocked repository access. Authorize the OAuth App for that organization or contact its administrator."
+          ? "Blocked by organization"
           : failure.includes("network")
-            ? "The GitHub network request failed. No authorization or automation was assumed."
-            : failure.includes("provider")
-              ? "GitHub returned an error. No authorization or automation was assumed."
-              : "GitHub connection could not be updated. No authorization or automation was assumed.";
+            ? "Offline"
+            : "Failed";
   }
 
   function actionButton(
@@ -212,8 +208,8 @@ export function renderGithubAuth(
     accountsChanged?.(view.accounts);
 
     status.textContent = view.accounts.length
-      ? `${view.accounts.length} GitHub ${view.accounts.length === 1 ? "account" : "accounts"} configured. Repository access and automation are not implied.`
-      : "No GitHub accounts connected. Adding an account does not enable reviews, comments, notifications, or merging.";
+      ? `${view.accounts.length} ${view.accounts.length === 1 ? "account" : "accounts"}`
+      : "Not connected";
 
     for (const account of view.accounts) {
       const item = document.createElement("article");
@@ -227,9 +223,9 @@ export function renderGithubAuth(
       state.textContent =
         account.state === "connected"
           ? account.warning
-            ? `Connected through the PR Sniper GitHub OAuth App. Last verification needs retry: ${githubAccountFailureMessage(account.warning)}`
+            ? `Connected; ${githubAccountFailureMessage(account.warning)}`
             : "\u2713 Connected"
-          : `Needs attention. ${githubAccountFailureMessage(account.reason)}`;
+          : githubAccountFailureMessage(account.reason);
       description.append(heading, state);
       const accountActions = document.createElement("div");
       accountActions.className = "github-auth-actions";
@@ -274,12 +270,11 @@ export function renderGithubAuth(
     if (view.flow.state === "connecting") {
       if (view.flow.user_code && view.flow.verification_uri) {
         const userCode = view.flow.user_code;
-        status.textContent =
-          "GitHub opened in your default browser. Copy the one-time code, paste it on GitHub, then return here.";
+        status.textContent = "Waiting";
         const device = document.createElement("div");
         device.className = "github-device";
         const guidance = document.createElement("p");
-        guidance.textContent = `Paste this code at ${view.flow.verification_uri}`;
+        guidance.textContent = view.flow.verification_uri;
         const codeRow = document.createElement("div");
         codeRow.className = "github-device-code-row";
         const code = document.createElement("code");
@@ -301,11 +296,10 @@ export function renderGithubAuth(
           try {
             await navigator.clipboard.writeText(userCode);
             feedback.removeAttribute("role");
-            feedback.textContent = "Code copied. Paste it on GitHub.";
+            feedback.textContent = "Copied";
           } catch {
             feedback.setAttribute("role", "alert");
-            feedback.textContent =
-              "Could not copy. Select the code and copy it manually.";
+            feedback.textContent = "Copy failed";
           } finally {
             copying = false;
             copy.removeAttribute("aria-disabled");
@@ -315,15 +309,14 @@ export function renderGithubAuth(
         device.append(guidance, codeRow, feedback);
         actions.append(device);
       } else {
-        status.textContent =
-          "Requesting a one-time GitHub authorization code. The default browser will open when it is ready.";
+        status.textContent = "Requesting code";
       }
       commandButton(actions, "Cancel", "cancel_github_auth");
     } else if (view.flow.state === "pending_account_confirmation") {
       status.textContent =
         view.flow.confirmation_error === "credentials_unavailable"
-          ? `GitHub credentials could not be saved securely. Confirm ${view.flow.login} (${view.flow.account_id}) again or cancel without connecting it.`
-          : `Confirm ${view.flow.login} (${view.flow.account_id}) for repository access and publication. Credentials are not saved until you confirm.`;
+          ? `Storage failed: ${view.flow.login} (${view.flow.account_id})`
+          : `${view.flow.login} (${view.flow.account_id})`;
       const confirm = commandButton(
         actions,
         "Confirm",
@@ -399,8 +392,7 @@ export function renderGithubAuth(
         card.dataset.flowState = "failed";
         publishAccountStates([]);
         accountsChanged?.(null);
-        status.textContent =
-          "GitHub connection state is unavailable. No connection is assumed.";
+        status.textContent = "Unavailable";
         actions.replaceChildren();
         commandButton(
           actions,
@@ -417,30 +409,22 @@ export function renderGithubAuth(
 export function githubAccountFailureMessage(reason?: GithubAuthFailure) {
   return (
     {
-      disconnect_pending:
-        "Disconnecting. Secure credential deletion is not yet confirmed.",
-      disconnect_failed:
-        "Credential deletion could not be confirmed. Retry disconnect.",
-      expired: "The authorization expired or can no longer be refreshed.",
-      denied: "GitHub authorization was denied.",
-      device_flow_disabled:
-        "The PR Sniper GitHub OAuth App Device Flow registration is unavailable. A maintainer must enable Device Flow before sign-in can work.",
-      network: "The GitHub network request failed.",
-      rate_limited:
-        "GitHub rate limited the verification request. Retry later.",
-      provider: "GitHub rejected or could not validate the connection.",
-      invalid_response: "GitHub returned an invalid authorization response.",
-      browser_open: "PR Sniper could not open the default browser.",
-      cancelled: "GitHub sign-in was cancelled.",
-      timeout: "GitHub sign-in timed out.",
-      wrong_identity:
-        "GitHub returned an already connected or unexpected account.",
-      missing_scope:
-        "The GitHub OAuth authorization no longer grants the required repo scope.",
-      authentication_changed:
-        "Reconnect through the PR Sniper GitHub OAuth App. Superseded GitHub App credentials are not reused.",
-      credentials_unavailable:
-        "The credentials could not be restored or stored safely.",
-    }[reason ?? "provider"] ?? "Reconnect this account."
+      disconnect_pending: "Disconnecting",
+      disconnect_failed: "Disconnect failed",
+      expired: "Reconnect required",
+      denied: "Denied",
+      device_flow_disabled: "Device sign-in disabled",
+      network: "Offline",
+      rate_limited: "Rate limited",
+      provider: "Verification failed",
+      invalid_response: "Invalid response",
+      browser_open: "Browser failed",
+      cancelled: "Cancelled",
+      timeout: "Timed out",
+      wrong_identity: "Wrong account",
+      missing_scope: "Reconnect required",
+      authentication_changed: "Reconnect required",
+      credentials_unavailable: "Storage unavailable",
+    }[reason ?? "provider"] ?? "Reconnect required"
   );
 }

@@ -12,8 +12,11 @@ export interface AutomationSnapshot {
     enqueue_order: number;
     state: "active" | "stopping" | "waiting" | "blocked";
     reason: string | null;
+    failure?: FailureClass | null;
   }[];
 }
+
+export type FailureClass = "credentials" | "permission" | "network" | "other";
 
 export function mountAutomation(
   root: HTMLElement,
@@ -30,16 +33,14 @@ export function mountAutomation(
   } = {},
 ) {
   root.innerHTML = options.compact
-    ? `<button type="button" class="monitoring-toggle" data-toggle-automation disabled aria-label="Monitoring unavailable"><span data-monitoring-label>Unavailable</span><span class="switch-track" aria-hidden="true"></span></button><span class="sr-only" role="status" data-automation-status>Reading automation state...</span><span class="sr-only" role="alert" data-automation-error hidden></span>`
-    : `<h2>Shared AI capacity</h2><p role="status" data-automation-status>Reading automation state...</p>
+    ? `<button type="button" class="monitoring-toggle" data-toggle-automation disabled aria-label="Monitoring unavailable"><span data-monitoring-label>Unavailable</span><span class="switch-track" aria-hidden="true"></span></button><span class="sr-only" role="status" data-automation-status>Loading</span><span class="sr-only" role="alert" data-automation-error hidden></span>`
+    : `<h2>Shared AI capacity</h2><p role="status" data-automation-status>Loading</p>
     <button type="button" data-toggle-automation disabled>Pause automation</button>
-    <p class="hint">Pause stops new polling, AI work and provider writes. Stopping workers keep their slots until teardown. Already-started remote mutations may have succeeded and still require reconciliation. Capacity is saved in Settings > Preferences.</p>
     <p role="alert" data-automation-error hidden></p><ol data-ai-work></ol>`;
   if (options.preferences)
     root.innerHTML = `<fieldset aria-label="Global pause"><legend>Global pause</legend>
-      <p role="status" data-automation-status>Reading automation state...</p>
+      <p role="status" data-automation-status>Loading</p>
       <button type="button" data-toggle-automation disabled>Pause automation</button>
-      <p class="settings-hint">Pause stops new polling, AI work and provider writes immediately. Stopping workers keep their slots until teardown. Already-started remote mutations may have succeeded and still require reconciliation.</p>
       <p role="alert" data-automation-error hidden></p>
       <details id="preferences-capacity-work"><summary>Capacity work details</summary><ol data-ai-work></ol></details></fieldset>`;
   const status = root.querySelector<HTMLElement>("[data-automation-status]")!;
@@ -61,14 +62,14 @@ export function mountAutomation(
       error.textContent = view.actionError ?? "";
       error.hidden = !error.textContent;
       onSnapshot?.(next);
-      status.textContent = `${next.paused ? "Paused" : "Running"}; ${next.active} occupied / ${next.capacity} AI slots (${next.stopping} stopping); ${next.waiting} waiting; ${next.blocked} blocked.`;
+      status.textContent = `${next.paused ? "Paused" : "Running"}; ${next.active} occupied / ${next.capacity} AI slots (${next.stopping} stopping); ${next.waiting} waiting; ${next.blocked} blocked`;
       const label = next.paused ? "Resume automation" : "Pause automation";
       if (options.compact) {
         button.setAttribute("aria-label", label);
         button.setAttribute("aria-pressed", String(!next.paused));
         button.querySelector("[data-monitoring-label]")!.textContent =
           next.paused ? "Paused" : "Monitoring";
-        button.title = `${status.textContent} Pause is separate from repository monitoring settings.`;
+        button.title = status.textContent ?? "";
       } else button.textContent = label;
       button.disabled = false;
       list?.replaceChildren(
@@ -89,12 +90,10 @@ export function mountAutomation(
         button.setAttribute("aria-label", "Monitoring unavailable");
         button.querySelector("[data-monitoring-label]")!.textContent =
           "Unavailable";
-        button.title = "Automation state unavailable; occupancy is unknown.";
+        button.title = "Unavailable";
       }
-      status.textContent =
-        "Automation state unavailable; occupancy is unknown.";
-      const message =
-        typeof cause === "string" ? cause : "Cannot read automation state.";
+      status.textContent = "Unavailable";
+      const message = typeof cause === "string" ? cause : "Unavailable";
       error.textContent = [view.actionError, message]
         .filter(Boolean)
         .join("\n");
@@ -112,10 +111,7 @@ export function mountAutomation(
     try {
       await invoke("set_automation_paused", { paused: !state.paused });
     } catch (cause) {
-      error.textContent =
-        typeof cause === "string"
-          ? cause
-          : "Automation change failed; inspect the current saved state.";
+      error.textContent = typeof cause === "string" ? cause : "Change failed";
       view.actionError = error.textContent;
       error.hidden = false;
       options.onError?.(error.textContent);
@@ -127,9 +123,7 @@ export function mountAutomation(
   view.refresh = refresh;
   error.textContent = view.actionError ?? "";
   error.hidden = !view.actionError;
-  if (view.pending)
-    status.textContent =
-      "Automation change pending; the saved pause state is not yet confirmed.";
+  if (view.pending) status.textContent = "Pending";
   void refresh();
   const timer = window.setInterval(() => {
     if (!root.isConnected) window.clearInterval(timer);

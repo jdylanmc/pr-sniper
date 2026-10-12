@@ -55,40 +55,24 @@ window.addEventListener("pr-sniper:provider-account-state", (event) => {
       observations.delete(id);
 });
 const failures: Record<string, string> = {
-  signed_out:
-    "The PR Sniper GitHub OAuth authorization is missing, expired, or rejected. Reconnect GitHub.",
-  missing_scope:
-    "The GitHub OAuth authorization no longer grants the required repo scope. Reconnect and review the requested public/private repository access.",
-  scope_unverified:
-    "GitHub did not provide the scope evidence needed to verify this read. No missing scope or grant is established. Retry this selected account; if it persists, check this app's authorization in GitHub.",
-  organization_policy_denied:
-    "GitHub organization policy or SAML single sign-on blocks this repository. Authorize the OAuth App for the organization or contact its administrator.",
-  organization_policy_denied_with_missing_scope:
-    "GitHub reported an organization authorization restriction and an authorization missing repo scope. Ask the organization administrator to approve the PR Sniper OAuth App; also reconnect this selected account in Accounts with repository access. Reconnecting alone cannot bypass organization policy.",
-  wrong_identity:
-    "The authenticated GitHub account does not match the expected account ID. No repository action was taken.",
-  missing_read_permission:
-    "GitHub denied repository or pull-request read access, or the repository does not exist. Check repository access and credential permissions.",
-  repository_unavailable:
-    "GitHub could not find this repository or hides it from the selected account. Check the URL, repository access, and the PR Sniper OAuth App's organization approval or single sign-on authorization. A 404 does not prove the repository is absent.",
-  rate_limited:
-    "GitHub rate limited this read. Wait for the provider limit to reset before retrying.",
-  network: "Could not reach GitHub securely. Check your network and try again.",
-  timeout: "GitHub timed out. No complete result was accepted.",
-  provider_failure:
-    "GitHub could not complete this read. Try again after checking provider health.",
-  invalid_response:
-    "GitHub returned an invalid response. No complete result was accepted.",
-  incomplete_read:
-    "GitHub metadata is incomplete or exceeded a provider/resource limit. No partial result was accepted.",
-  revision_changed:
-    "A pull request changed during the read. No mixed-revision result was accepted; read again.",
-  invalid_repository:
-    "The saved repository is invalid. Correct its configuration before connecting.",
-  repository_changed:
-    "The repository changed or was retargeted. Verify its saved identity again.",
-  configuration:
-    "Saved repository settings are unavailable. Reload Settings and check local storage.",
+  signed_out: "Reconnect required",
+  missing_scope: "Reconnect required",
+  scope_unverified: "Scope unverified",
+  organization_policy_denied: "Blocked by organization",
+  organization_policy_denied_with_missing_scope: "Blocked by organization",
+  wrong_identity: "Wrong account",
+  missing_read_permission: "Access denied",
+  repository_unavailable: "Repository unavailable",
+  rate_limited: "Rate limited",
+  network: "Offline",
+  timeout: "Timed out",
+  provider_failure: "Provider failed",
+  invalid_response: "Invalid response",
+  incomplete_read: "Incomplete",
+  revision_changed: "Revision changed",
+  invalid_repository: "Invalid repository",
+  repository_changed: "Repository changed",
+  configuration: "Settings unavailable",
 };
 
 export function describeReadFailureDetails(error: unknown): string | undefined {
@@ -100,7 +84,7 @@ export function describeReadFailureDetails(error: unknown): string | undefined {
     error.provider_rejected_status >= 100 &&
     error.provider_rejected_status <= 599
   )
-    return `GitHub rejected this lookup (HTTP ${error.provider_rejected_status}). Check the current repository URL/input and provider policy, then retry. This response does not establish a missing scope.`;
+    return `Rejected (HTTP ${error.provider_rejected_status})`;
   if (!("rate_limited_with_context" in error)) return;
   const context = error.rate_limited_with_context;
   if (
@@ -119,25 +103,10 @@ export function describeReadFailureDetails(error: unknown): string | undefined {
     value === null ||
     (typeof value === "number" && Number.isSafeInteger(value) && value >= 0);
   if (!validTimestamp(delay) || !validTimestamp(reset)) return;
-  const messages = [
-    "GitHub rate limited this lookup. Wait before trying again.",
-  ];
-  if (typeof delay === "number") messages.push(`Retry after ${delay} seconds.`);
-  if (typeof reset === "number")
-    messages.push(
-      `GitHub reports the rate-limit reset at Unix time ${reset} (UTC seconds).`,
-    );
-  if (context.organization_access_incomplete)
-    messages.push(
-      "Organization access is also restricted or incomplete. Check this app's organization approval or single sign-on authorization after the rate limit clears; discovery is not complete.",
-    );
-  if (context.missing_repo_scope)
-    messages.push(
-      "The selected authorization also lacks repo scope. After waiting, reconnect this selected account with repository access.",
-    );
-  if (context.missing_repo_scope && context.organization_access_incomplete)
-    messages.push("Reconnecting alone cannot bypass organization policy.");
-  return messages.join(" ");
+  const messages = ["Rate limited"];
+  if (typeof delay === "number") messages.push(`${delay}s`);
+  if (context.missing_repo_scope) messages.push("scope missing");
+  return messages.join(" \u00b7 ");
 }
 
 export function readFailureMissingScope(error: unknown): boolean {
@@ -160,13 +129,7 @@ export function readFailureMissingScope(error: unknown): boolean {
 
 function describe(connection: Connection): string {
   const { identity, capabilities } = connection;
-  const comment =
-    capabilities.comment === "available"
-      ? "Comment scope available; item restrictions must be rechecked"
-      : capabilities.comment === "unavailable"
-        ? "Comment permission unavailable"
-        : "Comment permission unverified (this credential exposes no scope evidence)";
-  return `Verified ${identity.login} (${identity.id}). Repository and PR read access verified. ${comment}. This is not publication authorization. No automation was enabled.`;
+  return `Verified ${identity.login} (${identity.id}); comment ${capabilities.comment}`;
 }
 
 export function renderConnection(
@@ -185,7 +148,6 @@ export function renderConnection(
     observation = undefined;
   }
   root.innerHTML = `
-    <p class="settings-hint">${repository.provider === "github" ? `Uses GitHub account ${account.label ?? repository.provider_account_id ?? "not selected"} and the explicitly selected repository.` : "Azure DevOps authentication is not implemented in this build."}</p>
     <form class="connection-form">
       <button type="submit">Verify GitHub connection</button>
       <button type="button" class="read-metadata">Read PR metadata</button>
@@ -227,11 +189,9 @@ export function renderConnection(
   window.addEventListener("pr-sniper:provider-account-state", authChanged);
   status.textContent =
     !account.available && repository.provider_account_id
-      ? `Needs attention. GitHub account ${account.label ?? repository.provider_account_id} must be reconnected or this repository must be explicitly rebound before provider actions are available.`
+      ? "Reconnect required"
       : (observation?.message ??
-        (repository.provider_account_id
-          ? `Not verified. Acting account ${repository.provider_account_id}; no provider changes are performed.`
-          : "Needs attention. Explicitly select a provider account and repository before reading."));
+        (repository.provider_account_id ? "Not verified" : "No account"));
   form.querySelector<HTMLButtonElement>("button")!.disabled =
     !account.available ||
     !repository.provider_account_id ||
@@ -245,7 +205,7 @@ export function renderConnection(
       const summary = document.createElement("summary");
       summary.textContent = `#${pull.number} ${pull.title} - ${pull.state}${pull.draft ? ", draft" : ""} - ${pull.files.length} files`;
       const metadata = document.createElement("p");
-      metadata.textContent = `Head ${pull.head_sha}. Author: ${pull.author ? `${pull.author.login} (${pull.author.id})` : "deleted/unavailable"}. Requested reviewers: ${pull.requested_reviewers.map((reviewer) => `${reviewer.login} (${reviewer.id})`).join(", ") || "none"}.`;
+      metadata.textContent = `Head ${pull.head_sha} \u00b7 ${pull.author ? `${pull.author.login} (${pull.author.id})` : "deleted"} \u00b7 ${pull.requested_reviewers.map((reviewer) => `${reviewer.login} (${reviewer.id})`).join(", ") || "no reviewers"}`;
       const files = document.createElement("ul");
       for (const file of pull.files) {
         const row = document.createElement("li");
@@ -262,9 +222,7 @@ export function renderConnection(
     const pinned = observation?.connection;
     if (metadata && !pinned) return;
     const unlock = lockSettings(root);
-    status.textContent = metadata
-      ? "Reading every PR and changed-file page..."
-      : "Verifying GitHub OAuth identity and repository access...";
+    status.textContent = metadata ? "Reading" : "Verifying";
     details.replaceChildren();
     try {
       if (metadata && pinned) {
@@ -285,7 +243,7 @@ export function renderConnection(
           repository_id: repository.provider_repository_id!,
           connection: result.connection,
           pulls,
-          message: `${describe(result.connection)} Complete metadata: ${pulls.length} PRs, ${pulls.reduce((sum, pull) => sum + pull.files.length, 0)} changed files. Last read ${new Date().toLocaleTimeString()}.`,
+          message: `${describe(result.connection)}; ${pulls.length} PRs, ${pulls.reduce((sum, pull) => sum + pull.files.length, 0)} files; ${new Date().toLocaleTimeString()}`,
         };
         renderPulls(pulls);
       } else {
@@ -300,7 +258,7 @@ export function renderConnection(
           account_id: connection.identity.id,
           repository_id: repository.provider_repository_id!,
           connection,
-          message: `${describe(connection)} Last verified ${new Date().toLocaleTimeString()}.`,
+          message: `${describe(connection)}; ${new Date().toLocaleTimeString()}`,
         };
       }
     } catch (cause) {
@@ -311,7 +269,7 @@ export function renderConnection(
         describeReadFailureDetails(cause) ??
         (typeof cause === "string" && Object.hasOwn(failures, cause)
           ? failures[cause]
-          : "Connection read failed. No raw error details or partial metadata are exposed.");
+          : "Failed");
       if (
         readFailureMissingScope(cause) ||
         (typeof cause === "string" &&

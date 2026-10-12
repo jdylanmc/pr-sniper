@@ -1,0 +1,250 @@
+import { invoke } from "@tauri-apps/api/core";
+import type { MonitoringSnapshot } from "./monitoring";
+import { openDestination, type QueueItem } from "./queue";
+
+export type FixTarget = "ai" | "repository-account";
+
+export interface QueueDetailContext {
+  snapshot: MonitoringSnapshot;
+  showError: (value: string) => void;
+  refresh: () => Promise<void>;
+  fix?: (target: FixTarget) => void;
+}
+
+const stateLabels: Record<QueueItem["state"], string> = {
+  machine_signed_off: "Ready",
+  waiting_for_human: "Your input",
+  waiting_for_author: "Author",
+  confirmation_required: "Confirm",
+  awaiting_publication: "Publishing",
+  queued: "Queued",
+  reviewing: "Reviewing",
+  failed: "Failed",
+  stale: "Stale",
+  stale_after_publication: "Stale",
+  closed: "Closed",
+  merged: "Merged",
+};
+
+// Machine cause -> short label and the corrective route.
+const causes: Record<string, [string, "fix" | "retry"]> = {
+  account_disconnected: ["GitHub account disconnected", "fix"],
+  account_binding_required: ["GitHub account required", "fix"],
+  signed_out: ["Reconnect required", "fix"],
+  wrong_identity: ["Reconnect required", "fix"],
+  missing_scope: ["Reconnect required", "fix"],
+  authentication_changed: ["Reconnect required", "fix"],
+  scope_confirmation_required: ["Reconnect required", "fix"],
+  network: ["Network error", "retry"],
+  rate_limited: ["Rate limited", "retry"],
+  timeout: ["Timed out", "retry"],
+  permission: ["No access", "retry"],
+  forbidden: ["No access", "retry"],
+  provider_unavailable: ["Provider unavailable", "retry"],
+  interrupted: ["Interrupted", "retry"],
+  invalid_schedule: ["Invalid schedule", "retry"],
+  invalid_global_cron: ["Invalid schedule", "retry"],
+  configuration: ["Configuration changed", "retry"],
+  configuration_changed: ["Configuration changed", "retry"],
+  repository_configuration_required: ["Repository setup", "retry"],
+  settings_unavailable: ["Settings unavailable", "retry"],
+  review_failed: ["Review failed", "retry"],
+  publication_unresolved: ["Publication unresolved", "retry"],
+  action_unresolved: ["Action unresolved", "retry"],
+};
+
+const paths = {
+  fail: "M12 3 2 20h20L12 3Zm0 6v5m0 3v.5",
+  fix: "M14.5 5.5a4 4 0 0 0-5 5L3 17l4 4 6.5-6.5a4 4 0 0 0 5-5l-2.5 2.5-2-2 2.5-2.5Z",
+  retry: "M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5",
+  github:
+    "M10 6H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4M14 4h6v6m0-6-9 9",
+  ok: "M5 12.5 10 17.5 19 7",
+};
+
+function icon(path: string) {
+  return `<svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${path}"/></svg>`;
+}
+
+function humanize(code: string) {
+  const text = code.replaceAll("_", " ").trim();
+  return text ? text[0].toUpperCase() + text.slice(1) : "Failed";
+}
+
+export function failedReviews(item: QueueItem, snapshot: MonitoringSnapshot) {
+  return (snapshot.reviews ?? []).filter(
+    (candidate) =>
+      item.review_keys.includes(candidate.key) &&
+      candidate.run &&
+      ["failed", "manual_retry", "interrupted"].includes(
+        candidate.run.operation.state,
+      ),
+  );
+}
+
+export function failureCause(item: QueueItem, snapshot: MonitoringSnapshot) {
+  for (const warning of item.warnings) {
+    const match = /^Monitoring failure: ([a-z0-9_]+)\./.exec(warning);
+    if (match) return match[1];
+  }
+  if (item.job.waiting === "account_disconnected")
+    return "account_disconnected";
+  const health = (snapshot.health ?? []).find(
+    (entry) =>
+      entry.repository_id === item.job.configuration_id &&
+      entry.provider_account_id === item.job.account_id &&
+      entry.last_failure,
+  );
+  if (health?.last_failure) return health.last_failure;
+  if (
+    item.action_status?.effects.some((effect) => effect.state === "uncertain")
+  )
+    return "action_unresolved";
+  if (
+    item.warnings.some((warning) =>
+      /^Publication outcome unresolved/.test(warning),
+    )
+  )
+    return "publication_unresolved";
+  if (failedReviews(item, snapshot).length) return "review_failed";
+  return "";
+}
+
+export function failureLabel(cause: string) {
+  return causes[cause]?.[0] ?? (cause ? humanize(cause) : "Failed");
+}
+
+function fixTarget(cause: string): FixTarget | undefined {
+  if (causes[cause]?.[1] !== "fix") return undefined;
+  return /copilot|^ai_/.test(cause) ? "ai" : "repository-account";
+}
+
+// Picks the existing recovery command for this failure.
+export function retryCommand(
+  item: QueueItem,
+  snapshot: MonitoringSnapshot,
+): [string, Record<string, unknown>] {
+  const effect = item.action_status?.effects.find(
+    (entry) =>
+      entry.state === "uncertain" ||
+      (entry.state === "confirmed" && entry.error),
+  );
+  if (effect) return ["reconcile_provider_action", { id: effect.id }];
+  const review = failedReviews(item, snapshot)[0];
+  if (review) return ["start_review", { candidateKey: review.key }];
+  const operation = (snapshot.health ?? []).find(
+    (entry) =>
+      entry.repository_id === item.job.configuration_id &&
+      entry.provider_account_id === item.job.account_id &&
+      ["manual_retry", "failed"].includes(entry.operation?.state ?? ""),
+  )?.operation;
+  if (operation)
+    return ["retry_monitoring_operation", { operationId: operation.id }];
+  const status = item.action_status;
+  if (
+    status?.blockers.length &&
+    status.provider_observed_at &&
+    status.observation_retry_blocker === null
+  )
+    return ["retry_action_observation", { itemId: status.item_id }];
+  return ["check_now", {}];
+}
+
+function button(label: string, path: string, name: string) {
+  const element = document.createElement("button");
+  element.type = "button";
+  element.setAttribute("aria-label", name);
+  element.innerHTML = `${icon(path)}<span>${label}</span>`;
+  return element;
+}
+
+function githubLink(item: QueueItem, context: QueueDetailContext) {
+  const link = document.createElement("button");
+  link.type = "button";
+  link.className = "job-provider-link";
+  link.setAttribute("aria-label", "Open PR on GitHub");
+  link.title = "Open PR on GitHub";
+  link.innerHTML = icon(paths.github);
+  link.onclick = async () => {
+    link.disabled = true;
+    await openDestination(item.id, null, context.showError);
+    link.disabled = false;
+  };
+  return link;
+}
+
+export function renderQueueStatus(
+  root: HTMLElement,
+  item: QueueItem,
+  context: QueueDetailContext,
+) {
+  const block = document.createElement("section");
+  block.className = "queue-status";
+  block.dataset.queueStatus = item.state;
+  const title = document.createElement("h2");
+  title.className = "queue-status-title";
+  title.textContent = `${item.job.repository_name} #${item.job.number}: ${item.job.title}`;
+  const failed = item.state === "failed";
+  const cause = failed ? failureCause(item, context.snapshot) : "";
+  const label = document.createElement("p");
+  label.className = "queue-status-label";
+  label.setAttribute("role", "status");
+  label.dataset.failureCause = cause;
+  label.innerHTML = icon(failed ? paths.fail : paths.ok);
+  label.append(
+    Object.assign(document.createElement("strong"), {
+      textContent: failed ? failureLabel(cause) : stateLabels[item.state],
+    }),
+  );
+  const actions = document.createElement("div");
+  actions.className = "queue-status-actions";
+  if (failed) {
+    const target = context.fix ? fixTarget(cause) : undefined;
+    const retry = async (control: HTMLButtonElement) => {
+      control.disabled = true;
+      try {
+        const [command, args] = retryCommand(item, context.snapshot);
+        await invoke(command, args);
+      } catch (error) {
+        context.showError(typeof error === "string" ? error : "Failed");
+      } finally {
+        control.disabled = false;
+        await context.refresh();
+      }
+    };
+    const retryButton = button("Retry", paths.retry, "Retry");
+    retryButton.onclick = () => void retry(retryButton);
+    const primary = target ? button("Fix", paths.fix, "Fix") : retryButton;
+    primary.classList.add("queue-primary");
+    primary.dataset.queuePrimary = target ? "fix" : "retry";
+    if (target) {
+      primary.onclick = () => context.fix?.(target);
+      retryButton.classList.add("queue-secondary");
+    }
+    actions.append(primary);
+    if (target) actions.append(retryButton);
+    actions.append(githubLink(item, context));
+  } else {
+    const open = githubLink(item, context);
+    open.classList.add("queue-primary");
+    open.dataset.queuePrimary = "open";
+    open.innerHTML = `${icon(paths.github)}<span>Open</span>`;
+    actions.append(open);
+  }
+  block.append(title, label, actions);
+  root.append(block);
+  if (!failed) {
+    const synopsis = (context.snapshot.reviews ?? [])
+      .filter((candidate) => item.review_keys.includes(candidate.key))
+      .map((candidate) => candidate.run?.result?.output.synopsis)
+      .find(Boolean);
+    if (synopsis) {
+      const body = document.createElement("p");
+      body.className = "queue-synopsis";
+      body.textContent = synopsis;
+      root.append(body);
+    }
+  }
+}
+
+export const detailsIcon = icon("M5 12h.01M12 12h.01M19 12h.01");

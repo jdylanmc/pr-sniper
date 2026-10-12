@@ -333,12 +333,6 @@
   color: var(--panel-muted);
   font-size: 11px;
 }
-.panel-shell .queue-empty .queue-empty-guidance {
-  margin-top: 13px;
-  padding-top: 10px;
-  border-top: 1px solid #edf0f4;
-  font-size: 10px;
-}
 .panel-content {
   overflow: auto;
   flex: 1;
@@ -440,7 +434,6 @@
   font-size: 10px;
   color: var(--panel-muted);
 }
-.panel-shell .queue-summary-text,
 .panel-shell .queue-receipt {
   margin: 8px 0 0;
   font-size: 11px;
@@ -684,9 +677,50 @@
   display: flex;
   color: #576c80;
 }
-.work-row[data-display="failed"] .work-marker,
-.work-row[data-display="failed"] .work-state {
+.work-row:is(
+    [data-display="failed"],
+    [data-display="credentials"],
+    [data-display="permission"],
+    [data-display="network"]
+  )
+  :is(.work-marker, .work-state) {
   color: #b3261e;
+}
+.panel-shell .work-group {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.panel-shell [data-work-group="failures"] {
+  margin-top: 12px;
+}
+.panel-shell [data-work-group="failures"]:first-child {
+  margin-top: 0;
+}
+.panel-shell .work-list article:has(:is(.work-retry, .queue-fix)) {
+  position: relative;
+}
+.panel-shell .work-retry {
+  position: absolute;
+  top: 50%;
+  right: 30px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  transform: translateY(-50%);
+  background: #fff;
+  color: var(--panel-ink);
+}
+.panel-shell .work-retry .panel-icon {
+  width: 16px;
+  height: 16px;
 }
 .work-row[data-display="blocked"] .work-marker,
 .work-row[data-display="blocked"] .work-state,
@@ -1130,7 +1164,6 @@
   margin-bottom: 4px;
 }
 .queue-group .queue-card-top > span:not(.queue-state),
-.queue-group .queue-summary-text,
 .queue-group .queue-card-footer {
   display: none;
 }
@@ -1140,6 +1173,20 @@
 }
 .queue-group .queue-card-open {
   border-radius: 0;
+}
+.panel-shell .queue-fix {
+  position: absolute;
+  top: 50%;
+  right: 30px;
+  z-index: 1;
+  transform: translateY(-50%);
+  padding: 5px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: #c4432b;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
 }
 .queue-group .queue-card-open::after {
   bottom: 50%;
@@ -1213,4 +1260,233 @@ body:has(.panel-shell) {
 .panel-shell {
   border-radius: 8px;
   overflow: hidden;
+}
+
+.panel-shell .queue-status {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 12px;
+  padding: 18px;
+  border: 1px solid #e1e8ed;
+  border-radius: 14px;
+  background: white;
+}
+.panel-shell .queue-status-title {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.3;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.panel-shell .queue-status-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.2;
+  letter-spacing: -0.4px;
+}
+.panel-shell .queue-status-label .panel-icon {
+  width: 26px;
+  height: 26px;
+}
+.panel-shell [data-queue-status="failed"] .queue-status-label {
+  color: #a3331f;
+}
+.panel-shell .queue-status-actions {
+  display: flex;
+  gap: 8px;
+}
+.panel-shell .queue-primary {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  font-size: 15px;
+  font-weight: 650;
+  border-radius: 11px;
+  background: var(--panel-navy);
+  color: white;
+}
+.panel-shell [data-queue-status="failed"] .queue-primary {
+  background: #e8761d;
+}
+.panel-shell .queue-status-actions .job-provider-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  min-height: 44px;
+  padding: 0;
+  flex: none;
+}
+.panel-shell .queue-status-actions .queue-primary.job-provider-link {
+  width: auto;
+  flex: 1;
+}
+.panel-shell .queue-status-actions .job-provider-link::after {
+  content: none;
+}
+.panel-shell .queue-synopsis {
+  margin: 0 0 12px;
+  font-size: 12px;
+}
+.panel-shell [data-queue-details] > summary {
+  display: flex;
+  justify-content: center;
+  padding: 8px;
+  cursor: pointer;
+  color: var(--panel-muted);
+  list-style: none;
+}
+.panel-shell [data-queue-details] > summary::-webkit-details-marker {
+  display: none;
+}
+.panel-shell [data-queue-details].bare > summary {
+  display: none;
+}
+
+.panel-shell[data-detail="true"][data-evidence="item"] .panel-context {
+  padding-bottom: 41px;
+}
+.panel-shell[data-evidence="item"] .queue-status {
+  position: relative;
+  margin-top: -23px;
+}
+.panel-shell .queue-status-actions .queue-secondary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 11px;
+  background: #fff;
+  border: 1px solid #d5dde4;
+  color: var(--panel-navy);
+  font-size: 15px;
+  font-weight: 650;
+  flex: none;
+}
+.panel-shell [data-queue-status="failed"] .queue-secondary.queue-primary {
+  background: #fff;
+}
+
+.queue-group > .queue-item:has(.queue-fix) {
+  padding-right: 100px;
+}
+.panel-shell .queue-fix {
+  right: 34px;
+  padding: 6px 16px;
+  box-shadow: 0 1px 2px rgba(120, 30, 15, 0.25);
+}
+
+/* Failure rows: icon | title + repo #N | class chip | (retry or Fix) | chevron. */
+.work-list [data-display="credentials"],
+.work-list [data-display="permission"],
+.work-list [data-display="network"],
+.work-list .work-row:has(> .work-state) {
+  grid-template-columns: 19px minmax(0, 1fr) auto 12px;
+}
+.work-row > .work-state {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #fdecea;
+  color: #b3261e;
+  font-size: 10px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.work-list article:has(.work-retry) .work-row > .work-state {
+  margin-right: 34px;
+}
+.work-list article:has(.queue-fix) .work-row > .work-state {
+  margin-right: 66px;
+}
+.work-row:has(> .work-state) > .work-copy > strong.work-subject {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.3;
+  color: var(--panel-ink);
+}
+.work-row:has(> .work-state) > .work-copy > .work-reference {
+  display: block;
+  white-space: nowrap;
+}
+.panel-shell .work-list article .queue-fix {
+  right: 30px;
+  padding: 4px 11px;
+  font-size: 11px;
+  box-shadow: none;
+}
+
+.panel-shell .work-retry-all {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 32px 12px 8px auto;
+  padding: 7px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--panel-navy);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+.panel-shell .work-retry-all .panel-icon {
+  width: 16px;
+  height: 16px;
+}
+.panel-shell .work-retry-all:disabled {
+  opacity: 0.5;
+}
+.panel-shell .work-retry-all + .work-list {
+  margin-top: 0;
+}
+
+.panel-shell .queue-item {
+  position: relative;
+}
+.panel-shell .queue-retry {
+  position: absolute;
+  top: 50%;
+  right: 34px;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  transform: translateY(-50%);
+  background: #fff;
+  color: var(--panel-ink);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+.panel-shell .queue-retry .panel-icon {
+  width: 16px;
+  height: 16px;
+}
+.queue-group > .queue-item:has(.queue-retry) {
+  padding-right: 76px;
+}
+.queue-group > .work-retry-all {
+  margin: 4px 12px 8px auto;
+}
+
+.panel-shell .queue-empty > .panel-icon {
+  color: #c3ccd8;
+  stroke: #c3ccd8;
+  stroke-width: 1.4;
+  fill: none;
 }

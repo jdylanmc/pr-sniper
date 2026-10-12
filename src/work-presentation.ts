@@ -135,8 +135,7 @@ export function workPresentation(
     reason = final.execution.error;
     if (final.cancelled) state = "stopped";
     if (job.waiting === "superseded") state = "superseded";
-    trigger =
-      "Current passes and concerns clear; separately permitted provider action";
+    trigger = "Final review";
   } else {
     const candidate = snapshot.follow_ups?.find(
       (f) =>
@@ -157,7 +156,7 @@ export function workPresentation(
           state: "blocked",
           captured: false,
           attempt: null,
-          trigger: pending.blocked ?? "Awaiting durable primary assessment",
+          trigger: pending.blocked ?? "Awaiting assessment",
         };
       const mention =
         kind === "mention" && snapshot.mentions?.find((m) => m.work_id === id);
@@ -171,7 +170,7 @@ export function workPresentation(
         state: "blocked",
         captured: false,
         attempt: null,
-        trigger: `External comment ${mention.comment.id}; ${mention.blocked ?? "Awaiting admission"}`,
+        trigger: `Comment ${mention.comment.id}; ${mention.blocked ?? "Awaiting admission"}`,
       };
     }
     const run = candidate.run;
@@ -187,22 +186,22 @@ export function workPresentation(
     conversation = {
       analysis: run.analysis?.state.replaceAll("_", " ") ?? "Not started",
       publication: run.receipt
-        ? `Confirmed GitHub reply ${run.receipt}${run.error ? "; verification or recovery needs attention" : ""}`
+        ? `Reply ${run.receipt}${run.error ? "; needs attention" : ""}`
         : run.uncertain || run.phase === "unresolved"
-          ? "Outcome unknown; no confirmed reply receipt. Reconcile the original intent."
+          ? "Unknown"
           : run.publication
-            ? `${run.publication.state.replaceAll("_", " ")}; no confirmed reply receipt`
+            ? run.publication.state.replaceAll("_", " ")
             : candidate.captured_local_response
-              ? "Completed local response; no Reply Comment grant was captured. Later permissions do not replay it."
+              ? "Local"
               : run.result?.output.decision === "reply" &&
                   !candidate.automatic_publication
-                ? "Local response; Reply Comment permission is off. No provider write authorized."
+                ? "Local"
                 : run.result && run.result.output.decision !== "reply"
-                  ? "No automated reply"
-                  : "Not started; no confirmed reply receipt",
+                  ? "None"
+                  : "Not started",
       cancelled: run.cancelled,
     };
-    trigger = `Other-user comment ${run.trigger_id}; ${kind === "mention" ? "primary conversation assessment" : "primary thread assessment"}`;
+    trigger = `Comment ${run.trigger_id}`;
     ordinal =
       run.reply_ordinal == null
         ? purposes[kind]
@@ -210,8 +209,8 @@ export function workPresentation(
     count = run.reply_ordinal ?? null;
   }
   return {
-    agent: selection?.agent.name ?? "Agent configuration unavailable",
-    subject: job?.title ?? "PR context unavailable",
+    agent: selection?.agent.name ?? "Unavailable",
+    subject: job?.title ?? "Unavailable",
     reference: job
       ? `${job.repository_name} #${job.number}`
       : "Repository unavailable",
@@ -250,10 +249,6 @@ export function renderIntelligenceDiagnostics(
   const summary = document.createElement("summary");
   summary.textContent = "Recorded job Intelligence";
   details.append(summary);
-  const note = document.createElement("p");
-  note.textContent =
-    "Captured requests and actual session reports, not today's Agent settings. These are execution records, separate from the redacted host log.";
-  details.append(note);
   let count = 0;
   const seen = new Set<string>();
   const append = (
@@ -278,13 +273,13 @@ export function renderIntelligenceDiagnostics(
         selection.agent.intelligence
           ? (selection.agent.intelligence.reasoning_effort ??
             "Provider default")
-          : "Not recorded (legacy evidence)",
+          : "Not recorded",
       ],
       [
         "Requested context window",
         selection.agent.intelligence
           ? (selection.agent.intelligence.context_tier ?? "Provider default")
-          : "Not recorded (legacy evidence)",
+          : "Not recorded",
       ],
       ["Actual model", result?.model ?? "Not recorded"],
       ["Session", result?.session_id ?? "Not recorded"],
@@ -311,7 +306,7 @@ export function renderIntelligenceDiagnostics(
     if (execution)
       append(execution.operation.id, execution.selection, execution.result);
   }
-  if (!count) details.append("No recorded job configuration available.");
+  if (!count) details.append("None");
   root.append(details);
 }
 
@@ -319,8 +314,8 @@ export function renderConfiguration(
   root: HTMLElement,
   label: string,
   selection: ReviewSelection | null | undefined,
-  unavailable = "No saved configuration is available.",
-  options: { open?: boolean; note?: string; job?: QueueItem["job"] } = {},
+  unavailable = "Unavailable",
+  options: { open?: boolean; job?: QueueItem["job"] } = {},
 ) {
   const details = document.createElement("details");
   details.className = "work-configuration";
@@ -337,11 +332,6 @@ export function renderConfiguration(
     body.textContent = value === undefined ? "Not recorded" : value || "None";
     details.append(heading, body);
   };
-  if (options.note) {
-    const note = document.createElement("p");
-    note.textContent = options.note;
-    details.append(note);
-  }
   if (!selection) text("Unavailable", unavailable);
   else {
     const { agent, policy, configuration } = selection;
@@ -364,13 +354,13 @@ export function renderConfiguration(
         "Requested reasoning effort",
         agent.intelligence
           ? (agent.intelligence.reasoning_effort ?? "Provider default")
-          : "Not recorded (legacy snapshot; no chosen override evidence)",
+          : "Not recorded",
       ],
       [
         "Requested context window",
         agent.intelligence
           ? (agent.intelligence.context_tier ?? "Provider default")
-          : "Not recorded (legacy snapshot; no chosen override evidence)",
+          : "Not recorded",
       ],
       [
         "GitHub identity",
@@ -383,7 +373,7 @@ export function renderConfiguration(
         authority
           ? authority.primary
             ? "Primary Agent"
-            : "Assigned Agent (not primary)"
+            : "Secondary"
           : "Not recorded",
       ],
     ]);
@@ -396,7 +386,7 @@ export function renderConfiguration(
         "May reply",
         authority
           ? authority.reply === undefined
-            ? "Not recorded (historical)"
+            ? "Not recorded"
             : on(authority.reply)
           : "Not recorded",
       ],
@@ -406,10 +396,8 @@ export function renderConfiguration(
     if (policy)
       renderFacts(details, [
         [
-          "Retired publication preference (historical only)",
-          policy.automatic_comment_publication
-            ? "Recorded automatic; assignment grants govern current writes"
-            : "Recorded off; assignment grants govern current writes",
+          "Retired publication preference",
+          policy.automatic_comment_publication ? "Automatic" : "Off",
         ],
         [
           "Watched authors",
@@ -421,13 +409,9 @@ export function renderConfiguration(
       ]);
     else {
       const missing = document.createElement("p");
-      missing.textContent = "Repository policy not recorded in this snapshot.";
+      missing.textContent = "Policy not recorded";
       details.append(missing);
     }
-    text(
-      "Authority boundary",
-      "Saved assignment permissions are not a current provider grant. Native gates are rechecked before execution and publication.",
-    );
     text("Agent prompt", agent.prompt);
     text("Policy prompt", policy?.prompt);
     text("Review preset", selection.preset ?? "None selected");
@@ -440,17 +424,14 @@ export function renderConfiguration(
         "Captured doctrine catalog",
         selection.configuration.doctrine_catalog
           ? JSON.stringify(selection.configuration.doctrine_catalog, null, 2)
-          : "Catalog revision not captured. Today's library is not historical evidence.",
+          : "Not captured",
       );
       if (!selection.configuration.doctrines.length)
         details.append("None selected");
       for (const doctrine of selection.configuration.doctrines)
         text(`Doctrine: ${doctrine.title}`, doctrine.body);
     } else {
-      text(
-        "Legacy snapshot",
-        "Full doctrine and assignment configuration was not captured. Today's settings are not historical evidence.",
-      );
+      text("Legacy snapshot", "Not captured");
       if (selection.doctrine)
         text("Retained legacy doctrine text", selection.doctrine);
     }
@@ -498,7 +479,7 @@ export function renderWorkContext(
                   : active?.state === "blocked" ||
                       work.state === "blocked" ||
                       work.reason
-                    ? "Blocked"
+                    ? "Queued"
                     : work.state === "running" && !automation
                       ? "Activity unavailable"
                       : "Waiting"));
@@ -529,8 +510,7 @@ export function renderWorkContext(
     hero.append(link);
   } else {
     const missing = document.createElement("p");
-    missing.textContent =
-      "Parent PR iteration context unavailable. No other iteration was selected; captured conversation follows.";
+    missing.textContent = "Unavailable";
     hero.append(missing);
   }
   const card = document.createElement("section");
@@ -545,7 +525,7 @@ export function renderWorkContext(
     [
       "Pull request",
       work.job
-        ? `#${work.job.number} / ${identity ? `iteration ${identity.iteration}` : "iteration not recorded"}`
+        ? `#${work.job.number} / ${identity ? `iteration ${identity.iteration}` : "no iteration"}`
         : "Unavailable",
     ],
     ["Assigned Agent", work.agent],
@@ -554,8 +534,8 @@ export function renderWorkContext(
       authority
         ? authority.primary
           ? "Primary Agent"
-          : "Assigned Agent (not primary)"
-        : "Not recorded; not inferred from current Settings",
+          : "Secondary"
+        : "Not recorded",
     ],
     ["Triggered by", work.trigger],
     [
@@ -565,16 +545,14 @@ export function renderWorkContext(
           ? "Purpose"
           : "Reply / mention count",
       kind === "primary_final"
-        ? "Primary final review (separate from normal passes)"
+        ? "Primary final review"
         : work.count == null
           ? "Not recorded"
-          : `${work.count} for this Agent on this PR`,
+          : String(work.count),
     ],
     [
       "Retry attempt",
-      work.attempt === 0
-        ? "Not started (0)"
-        : String(work.attempt ?? "Not recorded"),
+      work.attempt === 0 ? "0" : String(work.attempt ?? "Not recorded"),
     ],
     ["Revision head", work.job?.head_sha.slice(0, 7) ?? "Unavailable"],
   ]);
@@ -584,32 +562,18 @@ export function renderWorkContext(
       ["Reply publication", work.conversation.publication],
       ["Cancellation requested", work.conversation.cancelled ? "Yes" : "No"],
     ]);
-  const note = document.createElement("p");
-  note.textContent =
-    kind === "normal"
-      ? "One pass per Agent per iteration. Retries do not increase the review count."
-      : kind === "primary_final"
-        ? "The primary's final review is separate from normal passes, provider actions and personal review."
-        : "Replies and mentions have their own count; they do not repeat the normal pass.";
-  card.append(note);
   section.append(hero, card);
   renderConfiguration(
     section,
     "Assigned Agent configuration",
     work.selection,
-    "No saved configuration is available. Today's settings are not execution evidence.",
-    {
-      open: true,
-      job: work.job,
-      note: work.captured
-        ? "Captured for this execution."
-        : "Planned configuration; revalidated at start. No execution is claimed.",
-    },
+    "Unavailable",
+    { open: true, job: work.job },
   );
   const provenance = document.createElement("details");
   provenance.dataset.disclosure = "provenance";
   const provenanceTitle = document.createElement("summary");
-  provenanceTitle.textContent = "Job identity and provenance";
+  provenanceTitle.textContent = "Job identity";
   provenance.append(provenanceTitle);
   renderFacts(provenance, [
     ["Work ID", id],
@@ -617,7 +581,7 @@ export function renderWorkContext(
       "Iteration identity",
       identity
         ? `Iteration ${identity.iteration} (${identity.iteration_id})`
-        : "Canonical iteration not recorded. A commit is not an iteration identity.",
+        : "Not recorded",
     ],
     ["Item ID", identity?.item_id ?? "Not recorded"],
     ["Full revision head", work.job?.head_sha ?? "Unavailable"],

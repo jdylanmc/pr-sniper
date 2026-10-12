@@ -28,7 +28,7 @@ export interface DoctrineCatalog {
 export const doctrineCatalogLabel = (catalog?: DoctrineCatalog | null) =>
   catalog
     ? `${catalog.count} doctrines / ${catalog.source} / source ${catalog.source_revision.slice(0, 12)} / effective ${catalog.effective_revision.slice(0, 12)}`
-    : "Doctrine catalog revision not captured.";
+    : "Not captured";
 
 export interface GlobalPreferences {
   defaults: Policy;

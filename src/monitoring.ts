@@ -3,6 +3,7 @@ import { actualIntelligence } from "./copilot";
 import { mountAutomation, type AutomationSnapshot } from "./automation";
 import type { PanelDetail } from "./panel";
 import { renderActions } from "./actions";
+import { detailsIcon, renderQueueStatus, type FixTarget } from "./queue-detail";
 import {
   renderFollowUps,
   type FollowUpCandidate,
@@ -196,56 +197,53 @@ const blockingFailures = new Set([
 
 function healthLabel(item: Health) {
   if (!item.enabled) return "Disabled";
-  if (item.operation?.state === "manual_retry") return "Manual retry required";
-  if (item.operation?.state === "failed") return "Failed; correction required";
+  if (item.operation?.state === "manual_retry") return "Manual retry";
+  if (item.operation?.state === "failed") return "Failed";
   if (item.operation?.state === "interrupted") return "Interrupted";
   if (item.operation?.state === "queued") return "Retry queued";
   if (item.in_flight) return "Checking";
-  if (item.conversation_admission_pending)
-    return "Conversation admission pending";
+  if (item.conversation_admission_pending) return "Admission pending";
   if (item.last_failure && blockingFailures.has(item.last_failure))
-    return "Blocked";
+    return "Failed";
   if (!item.schedule_available) return "Unavailable";
-  return item.manual_pending
-    ? "Scheduled; immediate check pending"
-    : "Scheduled";
+  return item.manual_pending ? "Scheduled; check pending" : "Scheduled";
 }
 
 function waitingLabel(waiting: string) {
   switch (waiting) {
     case "trust_confirmation":
-      return "Waiting for review under the saved Agent assignment.";
+      return "Waiting";
     case "human_start":
     case "ai_capacity":
-      return "Queued automatically; waiting for shared AI capacity or automation resume.";
+      return "Queued";
     case "agent_unavailable":
-      return "Waiting for an available assigned Agent.";
+      return "Agent unavailable";
     case "account_disconnected":
-      return "Not actionable: the acting GitHub account is disconnected.";
+      return "Account disconnected";
     case "repository_disabled":
-      return "Not actionable: repository monitoring is disabled.";
+      return "Repository disabled";
     case "repository_removed":
-      return "Not actionable: the repository was removed from Settings.";
+      return "Repository removed";
     case "binding_changed":
-      return "Not actionable: the repository account binding changed.";
+      return "Binding changed";
     case "policy_changed":
-      return "Not actionable: the trigger policy changed.";
+      return "Policy changed";
     case "superseded":
-      return "Not actionable: a newer head revision superseded this detection.";
+      return "Superseded";
     case "ineligible":
-      return "Not actionable: this revision is no longer eligible.";
+      return "Ineligible";
     case "no_longer_current":
-      return "Not seen in the latest open-PR scan; rechecked next scan. This is not a terminal closed or merged state.";
+      return "Not current";
     case "scope_excluded":
-      return "Not actionable: this unchanged existing revision was excluded by the confirmed monitoring scope.";
+      return "Out of scope";
     case "closed":
-      return "GitHub confirmed this PR closed. This iteration is terminal.";
+      return "Closed";
     case "merged":
-      return "GitHub confirmed this PR merged. This iteration is terminal.";
+      return "Merged";
     case "assignment_removed":
-      return "Not actionable: this Agent assignment was removed or replaced.";
+      return "Assignment removed";
     default:
-      return `Not actionable: unrecognized queue state (${waiting}).`;
+      return waiting;
   }
 }
 
@@ -293,17 +291,18 @@ export function renderMonitoring(
     navigate?: (detail: PanelDetail, opener?: HTMLElement) => void;
     onSnapshot?: (snapshot: MonitoringSnapshot | undefined) => void;
     onAutomation?: (snapshot: AutomationSnapshot | undefined) => void;
+    fix?: (target: FixTarget) => void;
   } = {},
 ) {
   root.innerHTML = `<div data-monitor-overview><div class="actions"><button id="check-now" type="button">Check Now</button><button id="queue-settings" type="button">Open Settings</button><button id="queue-diagnostics" type="button">Open Diagnostics</button></div>
     <section id="automation-controls"></section>
-    <h2>Your review inbox</h2><section id="handoff-queue"></section></div>
+    <h2>Inbox</h2><section id="handoff-queue"></section></div>
     <div data-monitor-detail><section data-item-evidence></section>
-    <div data-evidence-guidance><h2 id="evidence-heading" tabindex="-1">Review evidence and actions</h2>
-    <p>Monitoring and assigned reviews run while the ${trayAdjective} app is active. Copilot uses read-only tools. GitHub comments require a separate publication gate; machine sign-off is not approval.</p>
-    <p class="hint">Saved review evidence is tied to the head shown. GitHub links open the live PR or current diff in your browser's signed-in account; check its current revision and requirements before deciding to merge.</p></div>
+    <div data-evidence-guidance><h2 id="evidence-heading" class="sr-only" tabindex="-1">Review evidence and actions</h2></div>
+    
+    <details data-queue-details><summary aria-label="Details" title="Details">${detailsIcon}</summary><section data-item-more></section>
     <h2 data-normal-heading>Agent reviews</h2><section id="agent-reviews"></section>
-    <h2 data-conversation-heading>Thread follow-ups</h2><section id="thread-follow-ups"></section></div>
+    <h2 data-conversation-heading>Thread follow-ups</h2><section id="thread-follow-ups"></section></details></div>
     <div data-monitor-recovery>
     <h2>Notifications</h2><section id="notification-history"></section>
     <h2>Schedule health</h2><section id="schedule-health"></section>
@@ -386,9 +385,7 @@ export function renderMonitoring(
       try {
         await invoke(command);
       } catch {
-        showError(
-          `Could not open the requested application window. Try the ${trayAdjective} menu.`,
-        );
+        showError("Open failed");
       }
     });
   }
@@ -439,10 +436,13 @@ export function renderMonitoring(
                 (job?.kind === "mention" &&
                   current.mentions?.some((m) => m.work_id === job.id));
       const evidence = root.querySelector<HTMLElement>("[data-item-evidence]")!;
+      const details = root.querySelector<HTMLDetailsElement>(
+        "[data-queue-details]",
+      )!;
+      const more = root.querySelector<HTMLElement>("[data-item-more]")!;
+      details.hidden = !found || !!missingDetail;
       if (!found || missingDetail) {
-        evidence.textContent =
-          missingDetail ??
-          "This exact saved PR iteration or job is unavailable. No other item was selected.";
+        evidence.textContent = missingDetail ?? "Unavailable";
         evidence.setAttribute("role", "status");
         reviews.replaceChildren();
         followUps([]);
@@ -498,6 +498,7 @@ export function renderMonitoring(
             : undefined;
         const scroller = evidence.closest<HTMLElement>(".panel-content");
         const scroll = scroller?.scrollTop;
+        const changedTarget = evidenceTarget !== JSON.stringify(target);
         detailSignature = next;
         evidenceTarget = JSON.stringify(target);
         evidence.replaceChildren();
@@ -526,16 +527,18 @@ export function renderMonitoring(
             );
           }
         } else if (item) {
-          const hero = document.createElement("section");
-          hero.className = "detail-hero";
-          const title = document.createElement("h2");
-          title.textContent = `${item.job.repository_name} #${item.job.number}: ${item.job.title}`;
-          const summary = document.createElement("p");
-          summary.textContent = item.summary;
-          hero.append(title, summary);
-          evidence.append(hero);
-          renderItemEvidence(evidence, item, showError, refresh, true);
+          renderQueueStatus(evidence, item, {
+            snapshot: current,
+            showError,
+            refresh,
+            fix: options.fix,
+          });
+          more.replaceChildren();
+          renderItemEvidence(more, item, showError, refresh, true);
         }
+        if (jobDetail || !options.panel) details.open = true;
+        else if (changedTarget) details.open = false;
+        details.classList.toggle("bare", !!jobDetail || !options.panel);
         for (const [id, open] of disclosures) {
           const element = evidence.querySelector<HTMLDetailsElement>(
             `[data-disclosure="${CSS.escape(id)}"]`,
@@ -551,12 +554,11 @@ export function renderMonitoring(
       }
     }
     if (selection === undefined && !options.panel) {
-      reviews.textContent =
-        "Select an available queue item to inspect its saved evidence.";
+      reviews.textContent = "No selection";
       reviewsSignature = "";
       followUps([]);
       root.querySelector<HTMLElement>("#thread-follow-ups")!.textContent =
-        "Select an available queue item to inspect its conversation.";
+        "No selection";
       return;
     }
     const candidates = (snapshot.reviews ?? []).filter((r) =>
@@ -626,11 +628,7 @@ export function renderMonitoring(
         });
       }
     } catch (error) {
-      showError(
-        typeof error === "string"
-          ? error
-          : "Review action failed. Check local diagnostics.",
-      );
+      showError(typeof error === "string" ? error : "Failed");
     } finally {
       pending.delete(candidate.key);
       reviewsSignature = "";
@@ -657,11 +655,7 @@ export function renderMonitoring(
       }
       publishConsent.delete(candidate.run!.operation.id);
     } catch (error) {
-      showError(
-        typeof error === "string"
-          ? error
-          : "Publication action failed. Check the original review before retrying.",
-      );
+      showError(typeof error === "string" ? error : "Failed");
     } finally {
       pending.delete(candidate.key);
       reviewsSignature = "";
@@ -677,16 +671,15 @@ export function renderMonitoring(
     const publication = state.publication;
     if (state.local_only && !publication) {
       const info = document.createElement("p");
-      info.textContent =
-        "Local-only evidence: comment publication is off. The PR author has not been notified; no manual machine-publication task is pending.";
+      info.textContent = "Local only";
       row.append(info);
       return;
     }
     const info = document.createElement("p");
     info.className = "publication-state";
     info.textContent = publication
-      ? `Publication: ${publication.phase.replaceAll("_", " ")}. Operation: ${publication.operation.state}; attempt ${publication.operation.attempt_count}; deadline ${time(publication.operation.retry_deadline)}; prior budgets ${publication.history.length}.`
-      : `Publication: ${state.automatic ? "automatic when eligible" : "waiting for confirmation"}.`;
+      ? `Publication: ${publication.phase.replaceAll("_", " ")}; ${publication.operation.state}; attempt ${publication.operation.attempt_count}; deadline ${time(publication.operation.retry_deadline)}; prior ${publication.history.length}`
+      : `Publication: ${state.automatic ? "automatic" : "unconfirmed"}`;
     row.append(info);
     if (state.blocked || publication?.error) {
       const error = document.createElement("p");
@@ -698,19 +691,18 @@ export function renderMonitoring(
     }
     if (publication?.uncertain) {
       const warning = document.createElement("p");
-      warning.textContent =
-        "GitHub outcome is unresolved. Reconciliation checks the original batch; it does not authorize a replacement.";
+      warning.textContent = "Outcome unresolved";
       row.append(warning);
     }
     const receipt = publication?.receipts.at(-1);
     if (receipt) {
       const remote = document.createElement("p");
-      remote.textContent = `Confirmed GitHub review ${receipt.review_id}: ${receipt.state}. ${receipt.comment_ids.length} inline comment receipt(s). This is not GitHub approval.`;
+      remote.textContent = `Review ${receipt.review_id}: ${receipt.state}; ${receipt.comment_ids.length} comments`;
       row.append(remote);
     }
     if (publication?.batch?.unmappable.length) {
       const warning = document.createElement("p");
-      warning.textContent = `${publication.batch.unmappable.length} finding(s) could not be mapped to the reviewed diff and were not posted. All findings remain visible above.`;
+      warning.textContent = `${publication.batch.unmappable.length} unmapped`;
       row.append(warning);
     }
     const terminal =
@@ -726,7 +718,7 @@ export function renderMonitoring(
     if (working && !publication.cancelled && receipt?.state !== "commented") {
       const cancel = document.createElement("button");
       cancel.type = "button";
-      cancel.textContent = "Withdraw publication confirmation";
+      cancel.textContent = "Withdraw publication";
       cancel.disabled = pending.has(candidate.key);
       cancel.onclick = () => {
         cancel.disabled = true;
@@ -740,7 +732,7 @@ export function renderMonitoring(
       consent.checked = publishConsent.has(candidate.run!.operation.id);
       label.append(
         consent,
-        `Publish or reconcile this exact revision as ${candidate.job.account_login} (${candidate.job.account_id}). This submits comments, not approval.`,
+        `Publish as ${candidate.job.account_login} (${candidate.job.account_id})`,
       );
       const button = document.createElement("button");
       button.type = "button";
@@ -783,8 +775,7 @@ export function renderMonitoring(
   ) {
     reviews.replaceChildren();
     if (!candidates.length) {
-      reviews.textContent =
-        "No assigned reviews. Configure an Agent with a Copilot account and model, assign it to a repository, then detect an eligible revision.";
+      reviews.textContent = "No reviews";
       return;
     }
     for (const candidate of candidates) {
@@ -796,19 +787,18 @@ export function renderMonitoring(
       heading.textContent = `${capturedJob.repository_name} #${capturedJob.number} / ${run?.selection.agent.name ?? candidate.agent_name}`;
       const identity = document.createElement("p");
       identity.className = "hint";
-      identity.textContent = `GitHub: ${capturedJob.account_login} (${capturedJob.account_id}). Head ${capturedJob.head_sha}.`;
+      identity.textContent = `${capturedJob.account_login} (${capturedJob.account_id}) \u00b7 ${capturedJob.head_sha}`;
       row.append(heading, identity);
       if (candidate.job.work) {
         const work = candidate.job.work;
         const provenance = document.createElement("p");
-        provenance.textContent = `Normal pass ${work.pass_ordinal}; iteration ${work.iteration} (${work.iteration_id}); queue order ${work.enqueue_order}; work ID ${work.id}; cause: ${work.trigger.replaceAll("_", " ")}. Retry attempts are separate.`;
+        provenance.textContent = `Normal pass ${work.pass_ordinal}; iteration ${work.iteration} (${work.iteration_id}); queue order ${work.enqueue_order}; work ID ${work.id}; ${work.trigger.replaceAll("_", " ")}`;
         row.append(provenance);
       }
       const state = document.createElement("p");
       state.textContent = run
-        ? `${run.phase}. State: ${run.operation.state}; attempt ${run.operation.attempt_count}; deadline ${run.operation.attempt_count === 0 ? "starts at first execution" : time(run.operation.retry_deadline)}. Copilot account: ${run.selection.agent.ai_account?.account_id ?? "not captured"}; model: ${run.selection.agent.model}.`
-        : (candidate.blocked ??
-          "Queued automatically; waiting for shared AI capacity or automation resume.");
+        ? `${run.phase}; ${run.operation.state}; attempt ${run.operation.attempt_count}; deadline ${run.operation.attempt_count === 0 ? "none" : time(run.operation.retry_deadline)}; ${run.selection.agent.ai_account?.account_id ?? "?"}; ${run.selection.agent.model}`
+        : (candidate.blocked ?? "Queued");
       row.append(state);
       const singleJob = options.panel && panelDetail?.type === "job";
       if (!singleJob && run && run.operation.attempt_count > 0)
@@ -834,7 +824,7 @@ export function renderMonitoring(
       )
         renderConfiguration(
           row,
-          "Planned configuration (revalidated at start; not execution evidence)",
+          "Planned configuration",
           candidate.planned_selection,
         );
       if (run?.error) {
@@ -852,12 +842,11 @@ export function renderMonitoring(
       if (result) {
         if (result.output.feedback_conflict) {
           const conflict = document.createElement("p");
-          conflict.textContent =
-            "New output overlaps a human-closed concern's file. It was not republished; human judgment is required.";
+          conflict.textContent = "Held: human input required";
           row.append(conflict);
           for (const finding of result.output.held_findings ?? []) {
             const held = document.createElement("p");
-            held.textContent = `Held locally: ${finding.path}: ${finding.title}. ${finding.explanation}`;
+            held.textContent = `Held: ${finding.path}: ${finding.title}`;
             row.append(held);
           }
         }
@@ -865,8 +854,8 @@ export function renderMonitoring(
         decision.className = "review-decision";
         decision.textContent =
           result.output.decision === "machine_sign_off"
-            ? "Local result: machine sign-off. Automated analysis completed; publication and handoff status are separate. This is not GitHub approval."
-            : "Human input required by the review. Published findings wait on the PR author; unpublished findings still need your attention.";
+            ? "Machine sign-off"
+            : "Human input required";
         const synopsis = document.createElement("p");
         synopsis.textContent = result.output.synopsis;
         row.append(decision, synopsis);
@@ -901,7 +890,7 @@ export function renderMonitoring(
             const link = document.createElement("a");
             link.href = "#";
             link.textContent = file.path;
-            link.title = "Open this file in the current GitHub PR diff";
+            link.title = "Open file";
             link.onclick = (event) => {
               event.preventDefault();
               void openDestination(queueItem.id, file.path, showError);
@@ -914,7 +903,7 @@ export function renderMonitoring(
         guide.append(summary, list);
         const usage = document.createElement("p");
         usage.className = "hint";
-        usage.textContent = `Session ${result.session_id}; runtime ${result.runtime_version}; model ${result.model}. ${actualIntelligence(result.intelligence)} Tokens: ${result.input_tokens} input, ${result.output_tokens} output. Read-tool calls: ${result.tool_calls}.`;
+        usage.textContent = `Session ${result.session_id}; runtime ${result.runtime_version}; model ${result.model}; ${actualIntelligence(result.intelligence)}; tokens ${result.input_tokens} in / ${result.output_tokens} out; tool calls ${result.tool_calls}`;
         row.append(guide, usage);
         const publication = publications.find(
           (p) => p.review_operation_id === run.operation.id,
@@ -972,16 +961,15 @@ export function renderMonitoring(
           snapshot.global_scan.next_run > 0
             ? time(snapshot.global_scan.next_run)
             : hasInvalidGlobalCron
-              ? "Unavailable; configure a valid global cron schedule in Settings"
+              ? "Unavailable"
               : hasSchedulableRepository
-                ? "Unavailable; choose a global cron schedule in Settings"
-                : "No eligible repositories; no provider scan is scheduled";
-        scan.textContent = `Global scan: ${snapshot.global_scan.schedule_key}. Next scan: ${nextScan}. Pending repositories: ${snapshot.global_scan.pending.length}.`;
+                ? "Unavailable"
+                : "None scheduled";
+        scan.textContent = `Global scan: ${snapshot.global_scan.schedule_key}; next ${nextScan}; pending ${snapshot.global_scan.pending.length}`;
         health.append(scan);
       }
       if (!snapshot.health.length) {
-        health.textContent =
-          "No configured repositories. Add and bind a GitHub repository in Settings.";
+        health.textContent = "No repositories";
       }
       for (const item of snapshot.health) {
         const row = document.createElement("p");
@@ -994,17 +982,15 @@ export function renderMonitoring(
         const account = item.provider_account_id
           ? item.account_login
             ? `${item.account_login} (${item.provider_account_id})`
-            : `stable ID ${item.provider_account_id} (login unavailable)`
-          : "unbound";
+            : item.provider_account_id
+          : "Unbound";
         const assignment = item.assignment_id
-          ? `${item.agent_name ?? "Missing agent"} (${item.agent_id ?? "unknown agent ID"}), assignment ${item.assignment_id}`
-          : snapshot.global_scan
-            ? "repository read; fans out to the scan's assignments"
-            : "legacy repository schedule";
-        row.textContent = `${item.name}: ${state}. Acting account: ${account}. Assignment: ${assignment}. Schedule: ${item.schedule_key || "Unavailable"}. Last attempt: ${time(item.last_attempt)}. Last success: ${time(item.last_success)}. Next run: ${next}. Last failure: ${item.last_failure ?? "None"}.`;
+          ? `${item.agent_name ?? "Missing agent"} (${item.agent_id ?? "?"}), assignment ${item.assignment_id}`
+          : "None";
+        row.textContent = `${item.name}: ${state}; account ${account}; assignment ${assignment}; schedule ${item.schedule_key || "Unavailable"}; last attempt ${time(item.last_attempt)}; last success ${time(item.last_success)}; next ${next}; failure ${item.last_failure ?? "None"}`;
         if (item.operation) {
           row.append(
-            ` Operation: ${item.operation.operation_type}; attempts ${item.operation.attempt_count}; retry deadline ${time(item.operation.retry_deadline)}.`,
+            `; ${item.operation.operation_type}; attempts ${item.operation.attempt_count}; deadline ${time(item.operation.retry_deadline)}`,
           );
         }
         if (
@@ -1014,9 +1000,7 @@ export function renderMonitoring(
           const retry = document.createElement("button");
           retry.type = "button";
           retry.textContent =
-            item.operation.state === "failed"
-              ? "Retry after correction"
-              : "Retry";
+            item.operation.state === "failed" ? "Retry" : "Retry";
           retry.addEventListener("click", async () => {
             retry.disabled = true;
             try {
@@ -1025,9 +1009,7 @@ export function renderMonitoring(
               });
               await refresh();
             } catch {
-              showError(
-                "Could not retry the monitoring operation. Check its current state and local diagnostics.",
-              );
+              showError("Failed");
             } finally {
               retry.disabled = false;
             }
@@ -1038,8 +1020,8 @@ export function renderMonitoring(
       }
       if (!snapshot.jobs.length)
         jobs.textContent = snapshot.tracked?.length
-          ? `${snapshot.tracked.length} pull requests tracked; no Agent jobs yet. Assign an Agent; its first normal pass is created by the next global scan.`
-          : "No eligible revisions detected.";
+          ? `${snapshot.tracked.length} tracked; no jobs`
+          : "None";
       for (const job of snapshot.jobs) {
         const row = document.createElement("article");
         const title = document.createElement("h3");
@@ -1047,7 +1029,7 @@ export function renderMonitoring(
         const author =
           job.author_login && job.author_id
             ? `${job.author_login} (${job.author_id})`
-            : "deleted or unavailable";
+            : "Unknown";
         const admission = job.work?.admission ?? job;
         const reasons = [
           admission.watched_author ? "watched author" : "",
@@ -1057,10 +1039,10 @@ export function renderMonitoring(
           .filter(Boolean)
           .join(" and ");
         const details = document.createElement("p");
-        details.textContent = `Acting account: ${job.account_login} (${job.account_id}). Author: ${author}. Trigger: ${reasons || "historical detection"}. Head ${job.head_sha}. ${waitingLabel(job.waiting)}`;
+        details.textContent = `${job.account_login} (${job.account_id}); ${author}; ${reasons || "historical"}; ${job.head_sha}; ${waitingLabel(job.waiting)}`;
         if (job.work)
           details.append(
-            ` Normal pass ${job.work.pass_ordinal}; iteration ${job.work.iteration}; queue order ${job.work.enqueue_order}; cause ${job.work.trigger.replaceAll("_", " ")}.`,
+            `; pass ${job.work.pass_ordinal}; iteration ${job.work.iteration}; order ${job.work.enqueue_order}; ${job.work.trigger.replaceAll("_", " ")}`,
           );
         row.append(title, details);
         jobs.append(row);
@@ -1071,17 +1053,15 @@ export function renderMonitoring(
       if (options.panel) {
         queue.invalidate();
         root.querySelector<HTMLElement>("#handoff-queue")!.textContent =
-          "Queue unavailable. Use Status or Diagnostics to inspect storage, then retry.";
+          "Unavailable";
         root.querySelector<HTMLElement>("[data-item-evidence]")!.textContent =
-          "Evidence unavailable. Saved state could not be refreshed; no readiness or action is inferred.";
+          "Unavailable";
         reviews.replaceChildren();
         reviewsSignature = "";
         detailSignature = "";
         followUps([]);
       }
-      showError(
-        "Could not read monitoring state. Check local storage and diagnostics; this is not an empty successful check.",
-      );
+      showError("Failed");
     } finally {
       loading = false;
       void refreshAutomation();
@@ -1095,9 +1075,7 @@ export function renderMonitoring(
       await invoke("check_now");
       await refresh();
     } catch {
-      showError(
-        "Could not start an immediate check. Check saved schedules and local storage.",
-      );
+      showError("Failed");
     } finally {
       check.disabled = false;
     }
@@ -1122,7 +1100,7 @@ export function renderMonitoring(
         !target;
       if (target && !snapshot)
         root.querySelector<HTMLElement>("[data-item-evidence]")!.textContent =
-          missing ?? "Loading this exact saved destination...";
+          missing ?? "Loading";
       renderEvidence();
       void refresh();
     },
@@ -1136,4 +1114,3 @@ export function renderMonitoring(
     },
   };
 }
-import { trayAdjective } from "./platform";
