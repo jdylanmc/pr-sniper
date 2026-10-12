@@ -654,6 +654,7 @@ fn future_final_and_mention_adapters_reserve_the_same_pool_as_normal_and_reply_w
             enqueue_order: index,
             state: "waiting",
             reason: None,
+            failure: None,
         };
         let run = coordinator
             .reserve(&store, &work, |_| {
@@ -689,6 +690,7 @@ fn future_final_and_mention_adapters_reserve_the_same_pool_as_normal_and_reply_w
         enqueue_order: 8,
         state: "waiting",
         reason: None,
+        failure: None,
     };
     assert!(coordinator
         .reserve::<()>(&store, &more, |_| panic!("No fifth slot"))

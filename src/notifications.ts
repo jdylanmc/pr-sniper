@@ -31,32 +31,25 @@ interface Snapshot {
 }
 
 const phase: Record<Notice["phase"], string> = {
-  queued: "Queued; not yet submitted to the operating system.",
-  submitting: "Native submission started; delivery is not confirmed.",
-  accepted_unconfirmed:
-    "Accepted by the operating system; banner visibility is unconfirmed. Focus or notification settings may suppress it.",
-  outcome_unknown:
-    "Delivery outcome unknown. This transition will not be resent automatically.",
-  permission_denied:
-    "Not sent: operating system permission or notification settings prevent delivery.",
-  failed: "Notification failed. The review remains available in the queue.",
-  not_sent: "Not sent: the transition changed or notifications were disabled.",
+  queued: "Queued",
+  submitting: "Submitting",
+  accepted_unconfirmed: "Accepted",
+  outcome_unknown: "Unknown",
+  permission_denied: "Permission denied",
+  failed: "Failed",
+  not_sent: "Not sent",
 };
 
 function permissionText(state: Snapshot) {
   const permission = state.permission;
   const os = state.platform === "windows" ? "Windows" : "macOS";
   const channel = (value: boolean | null) =>
-    value === null
-      ? "unknown (not exposed by the OS API)"
-      : value
-        ? "enabled"
-        : "disabled";
-  return `${state.enabled ? "On" : "Off"} in PR Sniper. ${
+    value === null ? "unknown" : value ? "on" : "off";
+  return `${state.enabled ? "On" : "Off"}; ${
     permission
-      ? `${os} permission: ${permission.authorization.replaceAll("_", " ")}; banners ${channel(permission.alerts_enabled)}; Notification Center ${channel(permission.center_enabled)}.`
-      : `${os} permission unavailable; no delivery is assumed.`
-  } Focus may suppress banners. No notification proves that a person saw or acknowledged it.`;
+      ? `${os} ${permission.authorization.replaceAll("_", " ")}; banners ${channel(permission.alerts_enabled)}; center ${channel(permission.center_enabled)}`
+      : `${os} unavailable`
+  }`;
 }
 
 export function mountNotificationSettings(
@@ -69,13 +62,11 @@ export function mountNotificationSettings(
   },
 ) {
   root.innerHTML = `<fieldset aria-label="Notifications"><legend>Notifications</legend>
-    <label class="setting-row"><span>Notify me when my attention is needed<small>Confirmation, human input, ready-for-review and failures. Off until you opt in. Changes immediately, separately from Save preferences.</small></span><input id="notification-enabled" type="checkbox" role="switch" aria-describedby="notification-permission" disabled /></label>
-    <p class="settings-hint">Banners contain no PR titles, repository names or code. Opening an alert only opens its saved destination; it never starts, publishes, approves or merges.</p>
-    <p id="notification-permission" role="status">Reading operating system notification status...</p>
+    <label class="setting-row"><span>Notifications</span><input id="notification-enabled" type="checkbox" role="switch" aria-describedby="notification-permission" disabled /></label>
+    <p id="notification-permission" role="status">Loading</p>
     <p id="notification-error" role="alert" hidden></p>
     <label>Test destination<select id="notification-target"><option value="">Settings</option></select></label>
-    <button id="notification-test" type="button" disabled>Send test notification</button>
-    <p id="notification-guidance" class="settings-hint">Review Queue retains notification history, even when a banner is missed.</p></fieldset>`;
+    <button id="notification-test" type="button" disabled>Send test notification</button></fieldset>`;
   const enabled = root.querySelector<HTMLInputElement>(
     "#notification-enabled",
   )!;
@@ -113,10 +104,6 @@ export function mountNotificationSettings(
       state = next;
       enabled.checked = next.enabled;
       status.textContent = permissionText(next);
-      root.querySelector<HTMLElement>("#notification-guidance")!.textContent =
-        next.platform === "windows"
-          ? "Opting in explicitly creates this profile's Start Menu notification shortcut and current-user COM activation registration for this executable. First use may submit a short-lived, popup-suppressed test notice to initialize Windows status, then remove that exact notice; it can briefly appear in notification center. Windows has no permission prompt here. For blocked alerts, open Windows Settings > System > Notifications > PR Sniper. Separate banner and notification center settings remain unknown to this app. Turning off stops new sends; saved notifications can still navigate."
-          : "For blocked alerts, open System Settings > Notifications > PR Sniper. Review Queue retains notification history, even when a banner is missed.";
       error.textContent = [view.actionError, next.error]
         .filter(Boolean)
         .join("\n");
@@ -128,24 +115,15 @@ export function mountNotificationSettings(
         for (const item of next.targets)
           target.append(new Option(item.label, item.id));
         if (selected && !next.targets.some((t) => t.id === selected)) {
-          target.append(
-            new Option(
-              "Selected queue destination is no longer available",
-              selected,
-            ),
-          );
+          target.append(new Option("Unavailable", selected));
         }
         target.value = selected;
       }
     } catch {
       if (!root.isConnected || captured !== revision) return;
       state = undefined;
-      status.textContent =
-        "Notification state unavailable; saved opt-in and OS permission are unknown. No delivery is assumed.";
-      error.textContent = [
-        view.actionError,
-        "Notification state could not be read. No permission or delivery is assumed.",
-      ]
+      status.textContent = "Unavailable";
+      error.textContent = [view.actionError, "Unavailable"]
         .filter(Boolean)
         .join("\n");
       error.hidden = false;
@@ -166,15 +144,12 @@ export function mountNotificationSettings(
     updateControls();
     status.textContent =
       command === "set_notifications_enabled" && args.enabled
-        ? "Preparing notification identity and checking OS permission. Notification opt-in is not enabled until authorization succeeds."
-        : "Updating notification state...";
+        ? "Checking permission"
+        : "Updating";
     try {
       await invoke(command, args);
     } catch (cause) {
-      view.actionError =
-        typeof cause === "string"
-          ? cause
-          : "Notification action failed. Check its saved state.";
+      view.actionError = typeof cause === "string" ? cause : "Failed";
     } finally {
       view.pending = false;
       await view.refresh?.();
@@ -186,9 +161,7 @@ export function mountNotificationSettings(
     void act("test_notification", { itemId: selected || null });
   view.refresh = refresh;
   updateControls();
-  if (view.pending)
-    status.textContent =
-      "Notification operation pending; saved opt-in and OS permission are not yet confirmed.";
+  if (view.pending) status.textContent = "Pending";
   void refresh();
   const timer = window.setInterval(() => {
     if (!root.isConnected) window.clearInterval(timer);
@@ -215,7 +188,6 @@ export function renderNotificationHistory(
       root.replaceChildren();
       root.removeAttribute("role");
       const status = document.createElement("p");
-      status.className = "hint";
       status.textContent = permissionText(state);
       root.append(status);
       if (state.error) {
@@ -232,12 +204,6 @@ export function renderNotificationHistory(
       const summary = document.createElement("summary");
       summary.textContent = `Notification history (${state.notices.length})`;
       details.append(summary);
-      if (!state.notices.length) {
-        const empty = document.createElement("p");
-        empty.textContent =
-          "No recorded notifications. Opt in under Settings > Preferences. In-app review state remains available with notifications off.";
-        details.append(empty);
-      }
       for (const notice of state.notices) {
         const row = document.createElement("article");
         const title = document.createElement("h3");
@@ -254,7 +220,7 @@ export function renderNotificationHistory(
         }
         if (notice.opened_at !== null) {
           const opened = document.createElement("p");
-          opened.textContent = `Destination opened ${new Date(notice.opened_at * 1000).toLocaleString()}. This is not human acknowledgment, approval or merge.`;
+          opened.textContent = `Opened ${new Date(notice.opened_at * 1000).toLocaleString()}`;
           row.append(opened);
         }
         const button = document.createElement("button");
@@ -265,11 +231,7 @@ export function renderNotificationHistory(
           try {
             await invoke("open_notification", { id: notice.id });
           } catch (cause) {
-            showError(
-              typeof cause === "string"
-                ? cause
-                : "The exact notification destination could not be opened.",
-            );
+            showError(typeof cause === "string" ? cause : "Open failed");
           } finally {
             button.disabled = false;
             signature = "";
@@ -282,8 +244,7 @@ export function renderNotificationHistory(
       root.append(details);
     } catch {
       signature = "";
-      root.textContent =
-        "Notification history is unavailable. This is not evidence that notifications were delivered or acknowledged.";
+      root.textContent = "Unavailable";
     } finally {
       loading = false;
     }

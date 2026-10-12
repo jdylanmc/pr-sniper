@@ -95,8 +95,9 @@ impl Backend for NativeBackend {
     }
 
     async fn clear(&self, key: ProviderAccountId) -> Result<(), String> {
-        self.storage(move |store| store.clear_account_credentials(&key))
-            .await
+        // Forget the account entirely; leaving its registry entry would restore
+        // it as "reconnect required" on every launch.
+        self.storage(move |store| store.remove_account(&key)).await
     }
 
     async fn refresh(&self, pair: &TokenPair) -> Result<TokenPair, GithubAuthFailure> {

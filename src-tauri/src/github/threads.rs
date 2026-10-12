@@ -119,6 +119,19 @@ impl Thread {
             .ok_or(ConnectionError::InvalidResponse)
     }
 
+    /// Root for observation only: the first comment when it is a root, else the
+    /// earliest comment that has no parent. `None` means the thread is malformed.
+    pub fn tolerant_root(&self) -> Option<&Comment> {
+        self.root().ok().or_else(|| {
+            self.comments
+                .iter()
+                .enumerate()
+                .filter(|(_, comment)| comment.reply_to.is_none())
+                .min_by_key(|(index, comment)| (&comment.published_at, *index))
+                .map(|(_, comment)| comment)
+        })
+    }
+
     pub fn latest_external(&self, account: &str) -> Option<&Comment> {
         self.comments
             .iter()

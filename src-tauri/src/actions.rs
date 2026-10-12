@@ -1035,7 +1035,7 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
                             && (e.state == EffectState::Prepared || e.needs_reconciliation())
                     }))
             {
-                item.state = State::Blocked;
+                item.state = State::Failed;
                 item.summary="Fresh provider review/policy evidence is unavailable; no action readiness is asserted.";
             }
         }
@@ -1064,7 +1064,7 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
                     item.state = State::Stale;
                     item.summary="Provider head/base changed; this saved review does not establish current clearance.";
                 } else if observation.draft {
-                    item.state = State::Blocked;
+                    item.state = State::Queued;
                     item.summary = "The PR is draft; automatic approval and merge are blocked.";
                 } else if observation.discussion_blocker().is_some() {
                     item.state = State::WaitingForHuman;

@@ -220,24 +220,7 @@ for (const platform of ["Macintosh", "Windows"]) {
           card.getByRole("button", { name: role.confirmLabel, exact: true }),
         ).toHaveCount(0);
         await expect(card.locator("input, select")).toHaveCount(0);
-        await card.locator("summary").click();
-        await expect(card.locator("details")).toHaveAttribute("open", "");
-        if (provider === "copilot") {
-          await expect(card.locator("details")).toContainText(
-            platform === "Windows"
-              ? "Windows Credential Manager"
-              : "macOS Keychain",
-          );
-          if (platform === "Windows")
-            await expect(card).not.toContainText("macOS");
-          else
-            await expect(card).toContainText(
-              "Model lookup requires macOS 13.5 or later",
-            );
-        } else
-          await expect(card.locator("details")).toContainText(
-            "repo scope grants access to public and private repositories",
-          );
+        await expect(card.locator("summary, details")).toHaveCount(0);
       }
       for (const name of ["Claude", "Codex", "Grok"]) {
         const button = page.getByRole("button", {
@@ -312,7 +295,7 @@ for (const platform of ["Macintosh", "Windows"]) {
         await refresh(page, provider);
         await expect(card.getByRole("status")).toContainText(
           provider === "github"
-            ? "Confirm fixture-github-101 (101)"
+            ? "Storage failed: fixture-github-101 (101)"
             : "Connecting fixture-copilot-101",
         );
         expect(effects(fixture.calls)).toHaveLength(1);
@@ -352,31 +335,19 @@ for (const platform of ["Macintosh", "Windows"]) {
 }
 
 for (const [provider, role] of Object.entries(roles)) {
-  for (const [reason, githubMessage, copilotMessage] of [
-    ["expired", "authorization expired", "credential is missing or expired"],
-    ["timeout", "sign-in timed out", "Sign-in timed out"],
-    [
-      "wrong_identity",
-      "unexpected account",
-      "unexpected or already configured account",
-    ],
-    ["denied", "authorization was denied", "authorization was denied"],
-    ["missing_scope", "required repo scope", "required scope"],
-    ["network", "network request failed", "Cannot reach GitHub"],
-    [
-      "browser_open",
-      "could not open the default browser",
-      "Could not open your default browser",
-    ],
-    [
-      "device_flow_disabled",
-      "maintainer must enable Device Flow",
-      "maintainer must enable it",
-    ],
-    ["cancelled", "sign-in was cancelled", "Sign-in cancelled"],
-    ["provider", "GitHub rejected", "GitHub could not verify"],
-    ["invalid_response", "invalid authorization response", "invalid response"],
-    ["rate_limited", "rate limited", "rate limited"],
+  for (const [reason, message] of [
+    ["expired", "Reconnect required"],
+    ["timeout", "Timed out"],
+    ["wrong_identity", "Wrong account"],
+    ["denied", "Denied"],
+    ["missing_scope", "Reconnect required"],
+    ["network", "Offline"],
+    ["browser_open", "Browser failed"],
+    ["device_flow_disabled", "Device sign-in disabled"],
+    ["cancelled", "Cancelled"],
+    ["provider", "Verification failed"],
+    ["invalid_response", "Invalid response"],
+    ["rate_limited", "Rate limited"],
   ]) {
     test(`${provider}: native ${reason} failure remains visible with explicit retry and cancellation`, async ({
       page,
@@ -393,14 +364,12 @@ for (const [provider, role] of Object.entries(roles)) {
       const before = (await store("snapshot")).settings;
       const card = page.locator(role.card);
       await expect(card).toHaveAttribute("data-flow-state", "failed");
-      const message =
+      const status =
         provider === "github"
           ? card.getByRole("status")
           : card.getByRole("alert");
-      await expect(message).toBeVisible();
-      await expect(message).toContainText(
-        provider === "github" ? githubMessage : copilotMessage,
-      );
+      await expect(status).toBeVisible();
+      await expect(status).toContainText(message);
       await expect(
         card.getByRole("button", { name: role.confirmLabel, exact: true }),
       ).toHaveCount(0);
@@ -442,7 +411,9 @@ for (const [provider, role] of Object.entries(roles)) {
     const before = (await store("snapshot")).settings;
     const card = page.locator(role.card);
     // The automatic confirmation attempt is the rejected one.
-    await expect(card).toContainText("could not be saved securely");
+    await expect(card).toContainText(
+      provider === "github" ? "Storage failed" : "could not be saved securely",
+    );
     await expect(
       card.getByRole("button", { name: role.confirmLabel, exact: true }),
     ).toBeEnabled();
@@ -482,7 +453,7 @@ for (const [provider, role] of Object.entries(roles)) {
     };
     await refresh(page, provider);
     await expect(card).toHaveAttribute("data-flow-state", "failed");
-    await expect(card).toContainText("unexpected");
+    await expect(card).toContainText("Wrong account");
     expect(fixture.states[provider].accounts).toEqual([retained]);
   });
 
@@ -496,7 +467,7 @@ for (const [provider, role] of Object.entries(roles)) {
     );
     await page.goto("/?view=settings");
     const card = page.locator(role.card);
-    await expect(card).toContainText("No connection is assumed");
+    await expect(card).toContainText("Unavailable");
     const retry = card.getByRole("button", {
       name: `Retry reading ${provider === "github" ? "GitHub" : "Copilot"} accounts`,
     });
@@ -565,9 +536,7 @@ for (const [provider, role] of Object.entries(roles)) {
     });
     await page.goto("/?view=settings");
     const card = page.locator(role.card);
-    await expect(card.getByRole("status")).toContainText(
-      "Requesting a one-time",
-    );
+    await expect(card.getByRole("status")).toContainText("Requesting code");
     await expect(card.locator(".github-device-code")).toHaveCount(0);
     await expect(
       card.getByRole("button", { name: role.confirmLabel, exact: true }),
@@ -584,9 +553,7 @@ for (const [provider, role] of Object.entries(roles)) {
     await refresh(page, provider);
     await expect(cancel).toBeFocused();
     await expect(card).toContainText(
-      provider === "github"
-        ? "could not be saved securely"
-        : "Secure storage is unavailable",
+      provider === "github" ? "Storage failed" : "Storage unavailable",
     );
     expect(effects(fixture.calls)).toEqual([]);
     await card
@@ -1002,9 +969,7 @@ test("GitHub failed credential deletion stays visible and retries only the affec
   });
   await page.goto("/?view=settings");
   const card = page.locator(roles.github.card);
-  await expect(card).toContainText(
-    "Credential deletion could not be confirmed. Retry disconnect.",
-  );
+  await expect(card).toContainText("Disconnect failed");
   await card
     .getByRole("button", {
       name: "Retry disconnect fixture-github-101",

@@ -112,7 +112,7 @@ for (const [name, accounts] of [
       dialog.getByRole("button", { name: "Add & configure" }),
     ).toBeDisabled();
     await expect(dialog.getByRole("status")).toContainText(
-      name === "missing scope" ? "Reconnect" : "Connect",
+      name === "missing scope" ? "Reconnect" : "Not connected",
     );
     await dialog
       .getByRole("button", {
@@ -141,15 +141,14 @@ test("unsupported URL never borrows a GitHub identity and PR intake waits for co
   await dialog
     .getByLabel("Repository URL")
     .fill("https://dev.azure.com/org/project/_git/repository");
-  await expect(dialog.getByRole("status")).toContainText("Azure DevOps");
-  await expect(dialog.getByRole("status")).toContainText("coming soon");
+  await expect(dialog.getByRole("status")).toContainText("Coming soon");
   await expect(dialog.getByRole("status")).not.toContainText("fixture");
   await expect(dialog.getByLabel("Acting GitHub account")).toBeHidden();
   await expect(
     dialog.getByRole("button", { name: "Add & configure" }),
   ).toBeDisabled();
   await dialog.getByLabel("Repository URL").fill("https://[broken");
-  await expect(dialog.getByRole("status")).toContainText("valid HTTPS");
+  await expect(dialog.getByRole("status")).toContainText("Invalid URL");
   await expect(dialog.getByRole("status")).not.toContainText("fixture");
   await expect(
     dialog.getByRole("button", { name: "Add & configure" }),
@@ -157,7 +156,7 @@ test("unsupported URL never borrows a GitHub identity and PR intake waits for co
   await dialog
     .getByLabel("Repository URL")
     .fill("https://github.com.example.org/orbit/one");
-  await expect(dialog.getByRole("status")).toContainText("not supported");
+  await expect(dialog.getByRole("status")).toContainText("Unsupported");
   expect(
     fixture.calls.filter((c) => c.command === "resolve_provider_repository"),
   ).toHaveLength(0);
@@ -226,7 +225,7 @@ test("account read failure and recovery keep the URL, focus and original actor",
   await page.evaluate(() =>
     window.dispatchEvent(new Event("pr-sniper:refresh-provider-accounts")),
   );
-  await expect(dialog.getByRole("status")).toContainText("unavailable");
+  await expect(dialog.getByRole("status")).toContainText("Unavailable");
   await expect(input).toHaveValue("https://github.com/orbit/one");
   await expect(input).toBeFocused();
   await expect(
@@ -327,7 +326,7 @@ for (const replacement of [
           await dialog.getByLabel("Acting GitHub account").selectOption("44");
         }
       }
-      await expect(dialog.getByRole("alert")).toContainText("changed");
+      await expect(dialog.getByRole("alert")).toContainText("Changed");
       held.resolve();
       await expect(dialog).toBeVisible();
       expect((await store("snapshot")).settings.repositories).toBeUndefined();
@@ -384,23 +383,17 @@ test("saved binding stays pinned when a neighbor is the only usable account", as
   await page.goto("/?view=settings");
   await section(page, "Repositories");
   await page.locator("[data-repository]").click();
-  let editor = page.getByRole("dialog", { name: "orbit/one", exact: true });
+  const editor = page.getByRole("dialog", { name: "orbit/one", exact: true });
   await expect(editor.locator(".repository-identity")).toContainText("fixture");
   await expect(editor.getByText("Account ID", { exact: true })).toBeHidden();
-  await editor.locator("summary", { hasText: "Repository" }).click();
-  await editor
-    .getByRole("button", { name: "Edit repository", exact: true })
-    .click();
-  editor = page.getByRole("dialog", { name: "Edit repository", exact: true });
-  await expect(editor.getByRole("status")).toContainText("Reconnect fixture");
   await expect(
-    editor.getByRole("button", { name: "Add & configure" }),
-  ).toBeDisabled();
+    editor.getByRole("button", { name: "Edit repository", exact: true }),
+  ).toHaveCount(0);
   fixture.accounts = [actor2];
   await page.evaluate(() =>
     window.dispatchEvent(new Event("pr-sniper:refresh-provider-accounts")),
   );
-  await expect(editor.getByRole("status")).toContainText("Reconnect fixture");
+  await expect(editor.locator(".repository-identity")).toContainText("fixture");
   expect(
     (await store("snapshot")).settings.repositories[0].provider_account_id,
   ).toBe("22");
@@ -416,14 +409,12 @@ test("temporary provider warning keeps the actor, surfaces retry and retains fai
   const { fixture, dialog } = await intake(page, store, [
     { ...actor, warning: "network" },
   ]);
-  await expect(dialog.getByRole("status")).toContainText(
-    "Verification needs retry",
-  );
+  await expect(dialog.getByRole("status")).toContainText("Retry verification");
   fixture.handler = (command) => {
     if (command === "resolve_provider_repository") throw new Error("network");
   };
   await dialog.getByRole("button", { name: "Add & configure" }).click();
-  await expect(dialog.getByRole("alert")).toContainText("network");
+  await expect(dialog.getByRole("alert")).toContainText("Offline");
   await expect(dialog.getByLabel("Repository URL")).toHaveValue(
     "https://github.com/orbit/one",
   );
@@ -454,7 +445,7 @@ test("native connection-generation evidence must match the captured request", as
       };
   };
   await dialog.getByRole("button", { name: "Add & configure" }).click();
-  await expect(dialog.getByRole("alert")).toContainText("connection changed");
+  await expect(dialog.getByRole("alert")).toContainText("Reconnect required");
   expect((await store("snapshot")).settings.repositories).toBeUndefined();
 });
 
@@ -484,7 +475,7 @@ test("recovery reuses repository sign-in and requires its existing identity conf
   });
   await expect(page.locator(".github-auth-card")).toHaveCount(1);
   await recovery.getByRole("button", { name: "Add GitHub account" }).click();
-  await expect(recovery.getByRole("status")).toContainText("Confirm fixture");
+  await expect(recovery.getByRole("status")).toContainText("fixture (22)");
   expect((await store("snapshot")).settings.repositories).toBeUndefined();
   await recovery.getByRole("button", { name: "Confirm", exact: true }).click();
   await recovery.locator(".resource-back").click();
@@ -523,7 +514,7 @@ test("account catalog refresh keeps keyboard focus inside the explicit choice", 
   await page.evaluate(() =>
     window.dispatchEvent(new Event("pr-sniper:refresh-provider-accounts")),
   );
-  await expect(dialog.getByRole("status")).toContainText("unavailable");
+  await expect(dialog.getByRole("status")).toContainText("Unavailable");
   await expect(choice).toBeFocused();
   await expect(dialog.getByLabel("Repository URL")).toHaveValue(
     "https://github.com/orbit/one",
@@ -544,7 +535,7 @@ test("an inferred caption cannot save a different returned provider identity", a
       };
   };
   await dialog.getByRole("button", { name: "Add & configure" }).click();
-  await expect(dialog.getByRole("alert")).toContainText("connection changed");
+  await expect(dialog.getByRole("alert")).toContainText("Reconnect required");
   await expect(dialog.getByRole("status")).toContainText("GitHub / fixture");
   expect((await store("snapshot")).settings.repositories).toBeUndefined();
 });

@@ -8,12 +8,16 @@ import {
   newDoctrine,
   editAgent,
   assignment,
+  assignmentView,
   saveAssignment,
   saveChanges,
   repositorySettings,
   closeDialog,
   backFromEditor,
   seedBoundRepositories,
+  openFilters,
+  setAllPullRequests,
+  openRule,
 } from "./navigation.mjs";
 
 test.use({ timezoneId: "America/New_York" });
@@ -59,13 +63,14 @@ test("Settings separates Accounts and Repositories without prototype or retired 
   await expect(
     page.getByRole("switch", { name: /Open PR Sniper at login/ }),
   ).toBeDisabled();
-  const notifications = page.getByRole("switch", { name: /Notify me/ });
+  const notifications = page.getByRole("switch", {
+    name: "Notifications",
+    exact: true,
+  });
   await expect(notifications).toBeDisabled();
   notificationState.release();
   await page.evaluate(() => window.__settingsIdle());
-  await expect(page.locator("#notification-permission")).toContainText(
-    "Off in PR Sniper.",
-  );
+  await expect(page.locator("#notification-permission")).toContainText(/^Off;/);
   await expect(notifications).toBeEnabled();
   await expect(notifications).not.toBeChecked();
   await expect(
@@ -98,8 +103,12 @@ test("new assignments use the global policy while cancelled drafts never opt int
   );
   expect(zone).toBe("America/New_York");
   let modal = await assignment(page, "fixture/local-time");
+  await assignmentView(page, modal, "permissions");
   await expect(modal.getByLabel("Time zone", { exact: true })).toHaveCount(0);
-  await modal.getByRole("checkbox", { name: /^Publish Comment/ }).uncheck();
+  await modal
+    .getByRole("switch", { name: "Publish Comment", exact: true })
+    .uncheck();
+  await modal.locator(".admission-back:visible").click();
   await closeDialog(page);
   const discard = page.getByRole("dialog", {
     name: "Discard assignment changes?",
@@ -119,14 +128,20 @@ test("new assignments use the global policy while cancelled drafts never opt int
   await expect(repository).toHaveCount(0);
   expect((await store("snapshot")).settings).toEqual(initial);
   modal = await assignment(page, "fixture/local-time");
+  await assignmentView(page, modal, "permissions");
   await expect(
-    modal.getByRole("checkbox", { name: /^Publish Comment/ }),
+    modal.getByRole("switch", { name: "Publish Comment", exact: true }),
   ).not.toBeChecked();
-  await modal.getByRole("checkbox", { name: /^Publish Comment/ }).check();
+  await modal
+    .getByRole("switch", { name: "Publish Comment", exact: true })
+    .check();
   await expect(
-    modal.getByRole("checkbox", { name: /^Publish Comment/ }),
+    modal.getByRole("switch", { name: "Publish Comment", exact: true }),
   ).toBeChecked();
-  await modal.getByRole("checkbox", { name: /^Publish Comment/ }).uncheck();
+  await modal
+    .getByRole("switch", { name: "Publish Comment", exact: true })
+    .uncheck();
+  await modal.locator(".admission-back:visible").click();
   await saveAssignment(page, modal);
   await saveChanges(page);
   const saved = JSON.parse(
@@ -183,56 +198,53 @@ test("repository People resolves stable identity, isolates neighbors and reports
     };
   });
   await page.goto("/?view=settings");
+  const includeUsers = (settings) =>
+    settings.repositories[0].admission?.rules.find(
+      (rule) => rule.kind === "include_users",
+    );
   let parent = await repositorySettings(page, "fixture/one");
-  await expect(
-    parent.getByText(
-      "Optional. A nonempty effective watched-author filter qualifies those authors. An empty effective author filter means all authors. Pull requests requesting the signed-in account also qualify when the reviewer-request trigger is enabled. Exact GitHub login, no wildcards.",
-      { exact: true },
-    ),
-  ).toBeVisible();
-  await parent.getByRole("button", { name: "Add people", exact: true }).click();
+  await setAllPullRequests(parent, false);
+  await openFilters(page, parent);
+  await openRule(page, "include_users");
+  await page.locator(".admission-add").click();
   let picker = page.getByRole("dialog", { name: "Add people", exact: true });
   await picker.getByLabel("GitHub login", { exact: true }).fill("@octocat");
   await picker.getByRole("button", { name: "Add person", exact: true }).click();
-  await expect(parent.getByText("@octocat", { exact: true })).toBeVisible();
+  await expect(page.getByText("@octocat", { exact: true })).toBeVisible();
   expect(calls).toEqual([
     { provider: "github", accountId: "101", login: "octocat" },
   ]);
   await closeDialog(page);
   await saveChanges(page);
-  expect(
-    (await store("snapshot")).settings.repositories[0].watched_authors,
-  ).toEqual([{ id: "42", login: "octocat" }]);
-  expect((await store("snapshot")).settings.repositories[1]).toEqual(
-    initial.repositories[1],
-  );
+  const afterAdd = (await store("snapshot")).settings;
+  expect(includeUsers(afterAdd)).toMatchObject({
+    enabled: true,
+    users: [{ id: "42", login: "octocat" }],
+  });
+  expect(afterAdd.repositories[1]).toEqual(initial.repositories[1]);
   disconnected = true;
   parent = await repositorySettings(page, "fixture/one");
-  await parent.getByRole("button", { name: "Add people", exact: true }).click();
+  await setAllPullRequests(parent, false);
+  await openFilters(page, parent);
+  await openRule(page, "include_users");
+  await page.locator(".admission-add").click();
   picker = page.getByRole("dialog", { name: "Add people", exact: true });
   await picker.getByLabel("GitHub login", { exact: true }).fill("someone");
   await picker.getByRole("button", { name: "Add person", exact: true }).click();
-  await expect(picker.getByRole("alert")).toContainText(
-    "Connect the PR Sniper GitHub OAuth App",
+  await expect(picker.getByRole("alert")).toContainText("Reconnect required");
+  expect(includeUsers((await store("snapshot")).settings).users).toHaveLength(
+    1,
   );
-  expect(
-    (await store("snapshot")).settings.repositories[0].watched_authors,
-  ).toHaveLength(1);
   await closeDialog(page);
-  // The legacy window renders the icon-only remove button with no box.
-  await parent
-    .getByRole("button", { name: "Remove octocat", exact: true })
-    .evaluate((element) => element.click());
-  await expect(
-    parent.getByText(
-      "No people added for this repository. Inherited watched authors still apply; if the effective author filter is empty, all authors qualify under the saved configuration. Reviewer requests qualify when that trigger is enabled.",
-    ),
-  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Remove @octocat", exact: true })
+    .click();
+  await expect(page.locator(".watchlist-row")).toHaveCount(0);
   await closeDialog(page);
   await saveChanges(page);
   await page.reload();
   const saved = (await store("snapshot")).settings;
-  expect(saved.repositories[0].watched_authors ?? []).toEqual([]);
+  expect(includeUsers(saved).users ?? []).toEqual([]);
   expect(saved.repositories[1]).toEqual(initial.repositories[1]);
   expect(saved.defaults).toEqual(initial.defaults);
 });
@@ -383,13 +395,17 @@ test("assignment comment choice stays independent of opt-in Approve and preserve
   await store("seed_settings", initial);
   await page.goto("/?view=settings");
   let modal = await assignment(page, "fixture/project");
-  await modal.getByRole("checkbox", { name: /^Publish Comment/ }).uncheck();
+  await assignmentView(page, modal, "permissions");
+  await modal
+    .getByRole("switch", { name: "Publish Comment", exact: true })
+    .uncheck();
   await expect(
     modal.getByRole("radio", { name: "Approve", exact: true }),
   ).toBeEnabled();
   await expect(
     modal.getByRole("radio", { name: "Approve", exact: true }),
   ).not.toBeChecked();
+  await modal.locator(".admission-back:visible").click();
   await saveAssignment(page, modal);
   await saveChanges(page);
   const saved = (await store("snapshot")).settings;
@@ -400,15 +416,20 @@ test("assignment comment choice stays independent of opt-in Approve and preserve
   });
   await page.reload();
   modal = await assignment(page, "fixture/project", 0);
+  await assignmentView(page, modal, "permissions");
   await expect(
-    modal.getByRole("checkbox", { name: /^Publish Comment/ }),
+    modal.getByRole("switch", { name: "Publish Comment", exact: true }),
   ).not.toBeChecked();
-  await modal.getByRole("checkbox", { name: /^Publish Comment/ }).check();
+  await modal
+    .getByRole("switch", { name: "Publish Comment", exact: true })
+    .check();
+  await modal.locator(".admission-back:visible").click();
   await saveAssignment(page, modal);
   await expect(page.locator("#reset-settings")).toBeDisabled();
   modal = await assignment(page, "fixture/project", 0);
+  await assignmentView(page, modal, "permissions");
   await expect(
-    modal.getByRole("checkbox", { name: /^Publish Comment/ }),
+    modal.getByRole("switch", { name: "Publish Comment", exact: true }),
   ).toBeChecked();
   const updated = (await store("snapshot")).settings;
   const repositoryId = saved.repositories[0].id;

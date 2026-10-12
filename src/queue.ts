@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { renderActions, type ActionStatus } from "./actions";
+import type { FailureClass } from "./automation";
 import { renderFacts } from "./work-presentation";
 
 export interface NormalWork {
@@ -65,11 +66,12 @@ export interface QueueItem {
     | "queued"
     | "reviewing"
     | "failed"
-    | "blocked"
     | "stale"
     | "stale_after_publication"
     | "closed"
     | "merged";
+  failure_class?: FailureClass | null;
+  resume_at?: number | null;
   summary: string;
   warnings: string[];
   review_keys: string[];
@@ -84,23 +86,35 @@ const labels: Record<QueueItem["state"], string> = {
   awaiting_publication: "Awaiting comment publication",
   queued: "Queued",
   reviewing: "Reviewing",
-  failed: "Failed / recovery required",
-  blocked: "Blocked",
+  failed: "Failed",
   stale: "Stale review",
   stale_after_publication: "Stale after publication",
   closed: "Closed on GitHub",
   merged: "Merged on GitHub",
 };
 
-const compactSummaries: Partial<Record<QueueItem["state"], string>> = {
-  machine_signed_off: "",
-  waiting_for_human: "Read the saved findings and conversation.",
-  confirmation_required: "Review the exact work and its permissions.",
-  failed: "Inspect the failed or unresolved operation.",
-  blocked: "Check configuration and account access.",
-  stale: "Check the latest revision before acting.",
-  stale_after_publication: "Check the latest revision before acting.",
+const credentials = (item: QueueItem) =>
+  item.state === "failed" && item.failure_class === "credentials";
+const failureChips: Record<FailureClass, string> = {
+  credentials: "Credentials",
+  permission: "Permission",
+  network: "Network",
+  other: "Failed",
 };
+// Compact duration: 45s, 12m, 3h, 2d.
+export function compactDuration(seconds: number) {
+  const value = Math.max(0, Math.round(seconds));
+  if (value < 60) return `${value}s`;
+  if (value < 3600) return `${Math.round(value / 60)}m`;
+  if (value < 86400) return `${Math.round(value / 3600)}h`;
+  return `${Math.round(value / 86400)}d`;
+}
+
+const clockPath = "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18";
+const retryPath = "M20 12a8 8 0 1 1-2.3-5.7M20 4v4h-4";
+const retryIcon = `<svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${retryPath}"/></svg>`;
+const retryable = (item: QueueItem) =>
+  item.state === "failed" && !credentials(item);
 
 export function humanQueue(items: QueueItem[]): QueueItem[] {
   const current = new Map<string, QueueItem>();
@@ -124,17 +138,19 @@ export function humanQueue(items: QueueItem[]): QueueItem[] {
     )
       current.set(key, item);
   }
-  return [...current.values()].filter(
-    (item) =>
-      ![
-        "queued",
-        "reviewing",
-        "awaiting_publication",
-        "waiting_for_author",
-        "closed",
-        "merged",
-      ].includes(item.state),
-  );
+  return [...current.values()]
+    .filter(
+      (item) =>
+        ![
+          "queued",
+          "reviewing",
+          "awaiting_publication",
+          "waiting_for_author",
+          "closed",
+          "merged",
+        ].includes(item.state),
+    )
+    .sort((a, b) => Number(credentials(b)) - Number(credentials(a)));
 }
 
 export async function openDestination(
@@ -145,11 +161,7 @@ export async function openDestination(
   try {
     await invoke("open_queue_destination", { itemId, file });
   } catch (error) {
-    showError(
-      typeof error === "string"
-        ? error
-        : "Could not open this exact GitHub destination. No alternative PR was selected.",
-    );
+    showError(typeof error === "string" ? error : "Open failed");
   }
 }
 
@@ -179,11 +191,7 @@ export function renderQueue(
       try {
         await invoke("select_queue_item", { itemId: id });
       } catch (error) {
-        showError(
-          typeof error === "string"
-            ? error
-            : "Queue selection could not be saved; it may not survive restart.",
-        );
+        showError(typeof error === "string" ? error : "Not saved");
       }
     });
   }
@@ -205,9 +213,7 @@ export function renderQueue(
         if (selectionRevision) return;
         initialized = true;
         selected = fromUrl() ?? undefined;
-        showError(
-          "Could not restore the queue destination. Select an item explicitly; no substitute was selected.",
-        );
+        showError("Restore failed");
         select(undefined, false);
         draw(false);
       });
@@ -240,19 +246,12 @@ export function renderQueue(
     const matches = (item: QueueItem) =>
       item.id === selected || !!item.aliases?.includes(selected ?? "");
     root.replaceChildren();
-    const intro = document.createElement("p");
-    intro.className = "hint";
-    intro.textContent =
-      "Ready PRs and work that needs your input come first. Published findings wait on the PR author. GitHub approval and merge status are not inferred.";
-    if (!options.compact) root.append(intro);
     if (!items.length) {
       const empty = document.createElement(options.compact ? "div" : "p");
       if (options.compact) {
         empty.className = "queue-empty";
-        empty.innerHTML = `<svg class="panel-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16l2 14H2L4 4Zm-1 9h5l2 3h4l2-3h5M7 8h10"/></svg><h3>You're all caught up</h3><p>The next human handoff will appear here.</p><p class="queue-empty-guidance">Agent work stays in Running. Manage monitoring in Settings.</p>`;
-      } else
-        empty.textContent =
-          "No detected pull requests yet. Configure monitoring in Settings, then Check Now.";
+        empty.innerHTML = `<svg class="panel-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16l2 14H2L4 4Zm-1 9h5l2 3h4l2-3h5M7 8h10"/></svg><span class="sr-only">Empty</span>`;
+      } else empty.textContent = "No pull requests";
       root.append(empty);
     }
     for (const item of items) {
@@ -270,20 +269,20 @@ export function renderQueue(
       state.textContent =
         options.compact && item.state === "machine_signed_off"
           ? "Ready for you"
-          : labels[item.state];
+          : item.state === "failed"
+            ? failureChips[item.failure_class ?? "other"]
+            : labels[item.state];
       const heading = document.createElement("h3");
       heading.textContent = options.compact
         ? item.job.title
         : `${item.job.repository_name} #${item.job.number}: ${item.job.title}`;
       const context = document.createElement("p");
       context.className = "hint";
-      context.textContent = `PR author: ${item.job.author_login ?? "unavailable"}. Acting GitHub account: ${item.job.account_login} (${item.job.account_id}). Reviewed / detected head: ${item.job.head_sha}.`;
+      context.textContent = `${item.job.author_login ?? "Unknown"} \u00b7 ${item.job.account_login} (${item.job.account_id}) \u00b7 ${item.job.head_sha}`;
       if (item.job.work)
         context.append(
-          ` Iteration ${item.job.work.iteration} (${item.job.work.iteration_id}).`,
+          ` \u00b7 Iteration ${item.job.work.iteration} (${item.job.work.iteration_id})`,
         );
-      const summary = document.createElement("p");
-      summary.textContent = item.summary;
       if (options.compact) {
         const top = document.createElement("div");
         top.className = "queue-card-top";
@@ -291,20 +290,30 @@ export function renderQueue(
         iteration.textContent = item.job.work
           ? `Iteration ${item.job.work.iteration}`
           : "Legacy revision";
+        if (
+          item.state === "failed" &&
+          item.failure_class !== "credentials" &&
+          item.resume_at
+        ) {
+          const resume = document.createElement("span");
+          resume.className = "queue-resume";
+          resume.dataset.queueResume = "";
+          resume.title = "Automatic retry";
+          resume.innerHTML = `<svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${clockPath}"/></svg>`;
+          resume.append(compactDuration(item.resume_at - Date.now() / 1000));
+          state.append(resume);
+        }
         top.append(state, iteration);
         const reference = document.createElement("p");
         reference.className = "queue-reference";
         reference.textContent = `${item.job.repository_name} #${item.job.number}`;
-        summary.className = "queue-summary-text";
-        summary.textContent = compactSummaries[item.state] ?? item.summary;
         row.append(top, heading, reference);
-        if (summary.textContent) row.append(summary);
         const receipts =
           item.action_status?.effects.filter((effect) => effect.receipt) ?? [];
         for (const effect of receipts) {
           const receipt = document.createElement("p");
           receipt.className = "queue-receipt";
-          receipt.textContent = `${effect.action === "approve" ? "Approval" : "Merge"} recorded; not personal review`;
+          receipt.textContent = `${effect.action === "approve" ? "Approval" : "Merge"} recorded`;
           row.append(receipt);
         }
         const footer = document.createElement("div");
@@ -314,7 +323,7 @@ export function renderQueue(
         avatar.setAttribute("aria-hidden", "true");
         avatar.textContent = (item.job.author_login ?? "?").slice(0, 2);
         const author = document.createElement("span");
-        author.textContent = item.job.author_login ?? "Author unavailable";
+        author.textContent = item.job.author_login ?? "Unknown";
         const trigger = document.createElement("span");
         trigger.className = "queue-trigger";
         trigger.textContent = item.job.work?.admission.requested_reviewer
@@ -324,7 +333,7 @@ export function renderQueue(
             : "PR evidence";
         footer.append(avatar, author, trigger);
         row.append(footer);
-      } else row.append(state, heading, context, summary);
+      } else row.append(state, heading, context);
       if (!options.compact) renderItemEvidence(row, item, showError, refresh);
       for (const warning of options.compact ? [] : item.warnings) {
         const text = document.createElement("p");
@@ -365,6 +374,37 @@ export function renderQueue(
         github.disabled = false;
       };
       actions.append(evidence);
+      if (credentials(item)) {
+        const fix = document.createElement("button");
+        fix.type = "button";
+        fix.className = "queue-fix";
+        fix.dataset.fixAccount = "";
+        fix.textContent = "Fix";
+        fix.onclick = () =>
+          fix.dispatchEvent(
+            new CustomEvent("pr-sniper:fix-account", { bubbles: true }),
+          );
+        actions.append(fix);
+      }
+      if (retryable(item)) {
+        const retry = document.createElement("button");
+        retry.type = "button";
+        retry.className = "queue-retry";
+        retry.dataset.retryItem = item.id;
+        retry.setAttribute("aria-label", "Retry");
+        retry.title = "Retry";
+        retry.innerHTML = retryIcon;
+        retry.onclick = async () => {
+          retry.disabled = true;
+          retry.dispatchEvent(
+            new CustomEvent("pr-sniper:retry-items", {
+              bubbles: true,
+              detail: { ids: [item.id] },
+            }),
+          );
+        };
+        actions.append(retry);
+      }
       if (!options.compact) actions.append(github);
       row.append(actions);
       if (options.compact) {
@@ -382,6 +422,28 @@ export function renderQueue(
         group.append(row);
       } else root.append(row);
     }
+    const retryIds = items.filter(retryable).map((item) => item.id);
+    const attention = root.querySelector<HTMLElement>(
+      '[data-queue-group="attention"]',
+    );
+    if (options.compact && attention && retryIds.length > 1) {
+      const all = document.createElement("button");
+      all.type = "button";
+      all.className = "work-retry-all";
+      all.setAttribute("aria-label", "Retry all failed");
+      all.title = "Retry all failed";
+      all.innerHTML = `${retryIcon}<span>${retryIds.length}</span>`;
+      all.onclick = () => {
+        all.disabled = true;
+        all.dispatchEvent(
+          new CustomEvent("pr-sniper:retry-items", {
+            bubbles: true,
+            detail: { ids: retryIds },
+          }),
+        );
+      };
+      attention.prepend(all);
+    }
     if (options.compact && items.length) {
       for (const kind of ["ready", "attention"]) {
         if (root.querySelector(`[data-queue-group="${kind}"]`)) continue;
@@ -396,9 +458,7 @@ export function renderQueue(
     if (initialized && selected !== null && !options.externalSelection) {
       const navigation = document.createElement("p");
       navigation.setAttribute("role", "status");
-      navigation.textContent = items.some(matches)
-        ? "Showing evidence and actions for the selected account, repository and revision."
-        : "The exact saved queue destination is no longer available. No different PR or revision was selected.";
+      navigation.textContent = items.some(matches) ? "" : "Unavailable";
       const clear = document.createElement("button");
       clear.textContent = "Show all evidence";
       clear.onclick = () => choose(null, false);
@@ -450,9 +510,6 @@ export function renderItemEvidence(
   if (handoff) {
     const context = document.createElement("section");
     context.className = "detail-section";
-    const title = document.createElement("h3");
-    title.textContent = "This pull request";
-    context.append(title);
     renderFacts(context, [
       ["Repository", item.job.repository_name],
       ["PR author", item.job.author_login ?? "Unavailable"],
@@ -462,7 +519,7 @@ export function renderItemEvidence(
     ]);
     const provenance = document.createElement("details");
     const label = document.createElement("summary");
-    label.textContent = "PR identity and provenance";
+    label.textContent = "IDs";
     provenance.append(label);
     renderFacts(provenance, [
       ["Item ID", item.id],
@@ -472,22 +529,8 @@ export function renderItemEvidence(
       ],
       ["Full revision head", item.job.head_sha],
     ]);
-    const external = document.createElement("button");
-    external.textContent = "Open PR on GitHub";
-    external.className = "job-provider-link";
-    external.onclick = () => void openDestination(item.id, null, showError);
-    const guidance = document.createElement("p");
-    guidance.textContent =
-      "Personal review, comments and approval happen on GitHub. Machine clearance and recorded automation never mean you personally reviewed this PR. No acknowledgment is required to unlock a separately permitted merge.";
-    (root.querySelector(".detail-hero") ?? context).append(external);
-    context.append(guidance, provenance);
+    context.append(provenance);
     root.append(context);
-    for (const warning of item.warnings) {
-      const line = document.createElement("p");
-      line.className = "review-failure";
-      line.textContent = warning;
-      root.append(line);
-    }
   }
   if (item.action_status)
     renderActions(root, item.action_status, showError, refresh);
@@ -498,7 +541,7 @@ export function renderItemEvidence(
     details.append(title);
     for (const feedback of item.feedback) {
       const entry = document.createElement("p");
-      entry.textContent = `${feedback.state.replaceAll("_", " ")}: ${feedback.context.title || feedback.context.root_id}. Owner ${feedback.context.owner_agent_id}; original head ${feedback.context.original_head}. ${feedback.reason ?? ""}${feedback.state === "cleared" ? " Agent reassessment, not provider thread closure." : ""}`;
+      entry.textContent = `${feedback.state.replaceAll("_", " ")}: ${feedback.context.title || feedback.context.root_id}. Owner ${feedback.context.owner_agent_id}; original head ${feedback.context.original_head}. ${feedback.reason ?? ""}`;
       const body = document.createElement("pre");
       body.textContent = feedback.context.body;
       details.append(entry, body);

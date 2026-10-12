@@ -758,6 +758,7 @@ fn live_reservation_fences_cleanup_even_after_a_completed_local_result() {
         enqueue_order: 1,
         state: "waiting",
         reason: None,
+        failure: None,
     };
     let flag = coordinator
         .reserve(&store, &work, |flag| {
@@ -1030,6 +1031,7 @@ fn a_new_local_attempt_cannot_hide_the_old_worker_reservation_from_cleanup() {
         enqueue_order: 2,
         state: "waiting",
         reason: None,
+        failure: None,
     };
     coordinator
         .reserve(&store, &work, |_| Ok((old_operation.clone(), ())))

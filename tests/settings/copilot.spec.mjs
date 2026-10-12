@@ -145,9 +145,7 @@ for (const surface of ["panel", "standalone"]) {
         await expect(card.getByRole("alert")).toHaveText(
           "Synthetic re-entry account read failed.",
         );
-        await expect(card.getByRole("status")).toContainText(
-          "Copilot account state is unavailable. No connection is assumed.",
-        );
+        await expect(card.getByRole("status")).toContainText("Unavailable");
         failStateRead = false;
         await card
           .getByRole("button", {
@@ -156,9 +154,7 @@ for (const surface of ["panel", "standalone"]) {
           })
           .click();
       }
-      await expect(card).toContainText(
-        "The credential is missing or expired. Reconnect this account.",
-      );
+      await expect(card).toContainText("Reconnect required");
       await expect(
         card.getByRole("button", {
           name: "Reconnect Copilot fixture-ai-one",
@@ -193,9 +189,7 @@ test("Copilot UI keeps unverified transient accounts blocked while verified acco
   const verified = card.getByRole("article", {
     name: "Copilot account verified-ai",
   });
-  await expect(unverified).toContainText(
-    "Cannot reach GitHub to verify sign-in",
-  );
+  await expect(unverified).toContainText("Offline");
   await expect(unverified.locator(".copilot-check")).toHaveCount(0);
   await expect(
     unverified.getByRole("button", {
@@ -319,7 +313,7 @@ for (const pendingAction of [
       await expect(card.locator(".copilot-check")).toHaveCount(0);
       if (pendingAction === "disconnect_copilot_account")
         await expect(card.locator(".copilot-accounts")).toContainText(
-          "Retry disconnect",
+          "Disconnect failed",
         );
       await card.getByRole("button", { name: actionName, exact: true }).click();
       await expect.poll(() => attempts).toBe(2);
@@ -327,7 +321,7 @@ for (const pendingAction of [
       await expect(card).not.toContainText("TEST-CODE");
       await expect(card).toContainText(
         pendingAction === "disconnect_copilot_account"
-          ? "No Copilot accounts connected"
+          ? "Not connected"
           : "fixture-ai-one (101)✓Connected",
       );
     });
@@ -500,7 +494,7 @@ test("Copilot connect, cancel, confirm, reconnect and disconnect stay separate f
   const card = page.locator(".copilot-auth-card");
   const accountRow = (login) =>
     card.getByRole("article", { name: `Copilot account ${login}` });
-  await expect(card).toContainText("No Copilot accounts connected");
+  await expect(card).toContainText("Not connected");
   await card
     .getByRole("button", { name: "Connect Copilot account", exact: true })
     .click();
@@ -538,7 +532,6 @@ test("Copilot connect, cancel, confirm, reconnect and disconnect stay separate f
   await expect(accountRow(first.login)).toContainText("Connected");
   await page.reload();
   await expect(accountRow(first.login)).toContainText("Connected");
-  await expect(card).toContainText("not a subscription, seat or model test");
   await expect(page.locator("body")).not.toContainText("access_token");
 });
 
@@ -656,11 +649,11 @@ test("model failures, empty catalogs and policy denial stay honest and retryable
   );
   await dialog.getByRole("button", { name: "Save agent", exact: true }).click();
   await expect(dialog.getByRole("alert")).toContainText(
-    "Choose a verified AI account",
+    "Account and model required",
   );
   await dialog.getByRole("button", { name: "Refresh model list" }).click();
   await expect(dialog.locator("[data-model-status]")).toContainText(
-    "returned no models",
+    "No models",
   );
   await dialog.getByRole("button", { name: "Refresh model list" }).click();
   await expect(dialog.getByLabel("Model", { exact: true })).toBeEnabled();
@@ -735,7 +728,7 @@ test("no-account and secure-storage errors provide a recoverable connection rout
   await card
     .getByRole("button", { name: "Retry reading Copilot accounts" })
     .click();
-  await expect(card).toContainText("No Copilot accounts connected");
+  await expect(card).toContainText("Not connected");
   expect(
     await card.evaluate(
       (element) => element.scrollWidth <= element.clientWidth,
@@ -748,7 +741,7 @@ test("no-account and secure-storage errors provide a recoverable connection rout
     page.getByRole("button", { name: "New agent", exact: true }),
   ).toBeDisabled();
   await expect(page.locator("[data-copilot-status]")).toContainText(
-    "Connect an account in Accounts",
+    "Not connected",
   );
 });
 
@@ -793,7 +786,7 @@ test("unavailable saved models and legacy unconfigured Agents survive unrelated 
     exact: true,
   });
   await expect(dialog.locator("[data-model-status]")).toContainText(
-    "saved model is unavailable",
+    "Model unavailable",
   );
   await expect(dialog.getByLabel("Model", { exact: true })).toHaveValue(
     "retired-model",

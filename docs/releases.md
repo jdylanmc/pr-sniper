@@ -12,7 +12,8 @@ It does not change this macOS workflow, published asset set or tap ownership.
 Windows public signing, publication and Chocolatey moderation are still blocked
 on explicit external prerequisites; an unsigned CI artifact is not a release.
 
-**Published:** [v0.1.1](https://github.com/jdylanmc/pr-sniper/releases/tag/v0.1.1)
+**Published:** the [latest release](https://github.com/jdylanmc/pr-sniper/releases/latest)
+is v0.2.0. The first, [v0.1.1](https://github.com/jdylanmc/pr-sniper/releases/tag/v0.1.1),
 passed real Developer ID signing, notarization/stapling and public-byte
 verification. Its cask is on the dedicated tap's main branch. A disposable hosted
 CI installation passed version/signature/ticket/Gatekeeper verification and

@@ -1,6 +1,7 @@
 use pr_sniper_lib::{
     follow_up::{self, FollowUp},
-    monitoring::{JobOperation, OperationState, QueueJob},
+    github::{metadata::Lifecycle, ConnectionError},
+    monitoring::{AccountAvailability, JobOperation, Monitor, OperationState, QueueJob},
     publication::{self, Batch, Publication, Receipt, RemoteState},
     queue::{self, State},
     review::{self, Decision, ReviewRun, Selection},
@@ -168,7 +169,7 @@ fn local_sign_off_never_hides_uncertain_rejected_or_unverified_publication() {
 }
 
 #[test]
-fn ready_requires_all_current_assignments_and_does_not_survive_configuration_changes() {
+fn ready_requires_all_current_assignments_and_survives_configuration_changes_but_not_a_new_head() {
     let root = tempfile::tempdir().unwrap();
     let store = Store::new(root.path().into());
     let run = review(1);
@@ -205,12 +206,26 @@ fn ready_requires_all_current_assignments_and_does_not_survive_configuration_cha
         "{}",
         serde_json::to_string_pretty(&queue::snapshot(&store, vec![]).unwrap()).unwrap()
     );
+    // Finished work stays finished through configuration drift.
     configuration.agents[0].prompt = "A different lens.".into();
     store.save_settings(&configuration).unwrap();
-    assert_eq!(state(&store), State::Stale);
+    assert_eq!(state(&store), State::MachineSignedOff);
     configuration.repositories[0].provider_account_id = Some("44".into());
     store.save_settings(&configuration).unwrap();
-    assert_ne!(state(&store), State::MachineSignedOff);
+    assert_eq!(state(&store), State::MachineSignedOff);
+    // Only a new head or base revision makes it stale.
+    let mut old = run.job.clone();
+    old.waiting = "superseded".into();
+    let mut old_second = second_run.job.clone();
+    old_second.waiting = "superseded".into();
+    let mut next = run.job.clone();
+    next.head_sha = "d".repeat(40);
+    store.save_queue(&[old, old_second, next]).unwrap();
+    let after = queue::snapshot(&store, vec![]).unwrap();
+    assert!(after
+        .items
+        .iter()
+        .any(|i| i.state == State::StaleAfterPublication || i.state == State::Stale));
 }
 
 #[test]
@@ -456,3 +471,114 @@ fn queue_selection_is_profile_scoped_and_read_write_failures_are_visible() {
 #[allow(dead_code)]
 #[path = "support/windows_permissions.rs"]
 mod windows_permissions;
+
+fn tracked_open(run: &ReviewRun) -> serde_json::Value {
+    json!({
+        "terminal_observed": false, "provider": "github", "configuration_id": REPO,
+        "account_id": "22", "repository_id": "100", "pull_request_id": run.job.pull_request_id,
+        "number": run.job.number, "head_sha": run.job.head_sha, "lifecycle": "open",
+        "iteration_id": "iteration", "item_id": queue::item_id(&run.job), "iteration": 1,
+        "admission": {"watched_author": true, "all_authors": false, "requested_reviewer": false},
+        "admitted_at": 100, "observed_at": 100
+    })
+}
+
+fn disabled_with_tracked_pr() -> (tempfile::TempDir, Store, ReviewRun) {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let run = review(49);
+    seed(&store, std::slice::from_ref(&run), &[published(&run)]);
+    let mut disabled = settings();
+    disabled.repositories[0].enabled = false;
+    store.save_settings(&disabled).unwrap();
+    let mut queue = store.load_queue_state().unwrap();
+    queue.tracked = vec![serde_json::from_value(tracked_open(&run)).unwrap()];
+    store.save_queue_state(&queue).unwrap();
+    (root, store, run)
+}
+
+fn connected() -> std::collections::BTreeMap<String, AccountAvailability> {
+    [(
+        "22".to_string(),
+        AccountAvailability {
+            login: "operator".into(),
+            connected: true,
+        },
+    )]
+    .into()
+}
+
+#[test]
+fn disabled_repository_still_observes_a_merge_and_leaves_ready_for_merged() {
+    let (_root, store, run) = disabled_with_tracked_pr();
+    assert_eq!(state(&store), State::MachineSignedOff);
+    let mut monitor = Monitor::default();
+    let tickets = monitor
+        .lifecycle_tickets(&store, &connected(), 1_000)
+        .unwrap();
+    assert_eq!(tickets.len(), 1);
+    assert_eq!(tickets[0].tracked, vec![("49".to_string(), 49)]);
+    // The sweep is throttled.
+    assert!(monitor
+        .lifecycle_tickets(&store, &connected(), 1_001)
+        .unwrap()
+        .is_empty());
+    monitor
+        .apply_lifecycle(
+            &store,
+            &tickets[0],
+            Ok(vec![(run.job.pull_request_id.clone(), Lifecycle::Merged)]),
+            1_000,
+        )
+        .unwrap();
+    let queue_state = store.load_queue_state().unwrap();
+    assert!(queue_state.tracked[0].terminal_observed);
+    assert_eq!(queue_state.tracked[0].lifecycle, Lifecycle::Merged);
+    assert_eq!(state(&store), State::Merged);
+    // Terminal PRs are not swept again.
+    let mut later = Monitor::default();
+    assert!(later
+        .lifecycle_tickets(&store, &connected(), 5_000)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn disabled_repository_provider_failure_stays_invisible_and_open_stays_open() {
+    let (_root, store, run) = disabled_with_tracked_pr();
+    let before = store.load_queue_state().unwrap();
+    let mut monitor = Monitor::default();
+    let ticket = monitor
+        .lifecycle_tickets(&store, &connected(), 1_000)
+        .unwrap()
+        .remove(0);
+    monitor
+        .apply_lifecycle(&store, &ticket, Err(ConnectionError::Network), 1_000)
+        .unwrap();
+    monitor
+        .apply_lifecycle(
+            &store,
+            &ticket,
+            Ok(vec![(run.job.pull_request_id.clone(), Lifecycle::Open)]),
+            1_000,
+        )
+        .unwrap();
+    assert_eq!(store.load_queue_state().unwrap(), before);
+    assert_eq!(state(&store), State::MachineSignedOff);
+}
+
+#[test]
+fn lifecycle_sweep_skips_monitored_repositories_and_disconnected_accounts() {
+    let (_root, store, _run) = disabled_with_tracked_pr();
+    let mut monitor = Monitor::default();
+    assert!(monitor
+        .lifecycle_tickets(&store, &Default::default(), 1_000)
+        .unwrap()
+        .is_empty());
+    store.save_settings(&settings()).unwrap();
+    let mut monitor = Monitor::default();
+    assert!(monitor
+        .lifecycle_tickets(&store, &connected(), 1_000)
+        .unwrap()
+        .is_empty());
+}

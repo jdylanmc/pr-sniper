@@ -105,18 +105,8 @@ test("browser OAuth confirms two accounts without exposing credentials", async (
   await page.goto("/?view=settings");
 
   const card = page.locator(".github-auth-card");
-  await expect(card.getByRole("status")).toContainText(
-    "No GitHub accounts connected",
-  );
-  await expect(card).toContainText(
-    "repo scope grants access to public and private repositories",
-  );
-  await expect(card).toContainText(
-    "never starts monitoring every accessible repository automatically",
-  );
+  await expect(card.getByRole("status")).toContainText("Not connected");
   await card.getByRole("button", { name: "Add GitHub account" }).click();
-  await expect(card.getByRole("status")).toContainText("default browser");
-  await expect(card).toContainText("one-time code");
   await expect(card).toContainText("ABCD-EFGH");
   await expect(card).toContainText("github.com/login/device");
   await card.getByRole("button", { name: "Copy code" }).click();
@@ -125,24 +115,18 @@ test("browser OAuth confirms two accounts without exposing credentials", async (
     .toBe("ABCD-EFGH");
   // Browser sign-in already proved the identity, so the app confirms it once.
   await expect(card).toContainText("jdylanmc (6954990)");
-  await expect(card.getByRole("status")).toContainText(
-    "1 GitHub account configured",
-  );
+  await expect(card.getByRole("status")).toContainText("1 account");
   expect(confirmed).toEqual(["jdylanmc"]);
 
   await card.getByRole("button", { name: "Add GitHub account" }).click();
-  await expect(card.getByRole("status")).toContainText(
-    "could not be saved securely",
-  );
+  await expect(card.getByRole("status")).toContainText("Storage failed");
   await card.getByRole("button", { name: "Use a different account" }).click();
   await expect.poll(() => starts.at(-1)?.selectAccount).toBe(true);
-  await expect(card.getByRole("status")).toContainText("Confirm hubot (84)");
+  await expect(card.getByRole("status")).toContainText("hubot (84)");
   await card.getByRole("button", { name: "Confirm" }).click();
   await expect(card).toContainText("hubot (84)");
   expect(confirmed).toEqual(["jdylanmc", "hubot"]);
-  await expect(card.getByRole("status")).toContainText(
-    "2 GitHub accounts configured",
-  );
+  await expect(card.getByRole("status")).toContainText("2 accounts");
   await expect(page.locator("body")).not.toContainText("access_token");
   await expect(page.locator("body")).not.toContainText("refresh_token");
 
@@ -182,11 +166,8 @@ test("secure-store confirmation failure stays visible and retryable", async ({
   await page.goto("/?view=settings");
 
   const card = page.locator(".github-auth-card");
-  await expect(card.getByRole("status")).toContainText(
-    "could not be saved securely",
-  );
+  await expect(card.getByRole("status")).toContainText("Storage failed");
   expect(confirmations).toBe(1);
-  await expect(card).toContainText("jdylanmc (6954990)");
   await expect(card).not.toContainText("Connected");
   await card.getByRole("button", { name: "Confirm" }).click();
   await expect(card).toContainText("Connected");
@@ -194,13 +175,10 @@ test("secure-store confirmation failure stays visible and retryable", async ({
 });
 
 for (const [reason, message] of [
-  ["expired", "authorization expired"],
-  ["denied", "authorization was denied"],
-  ["device_flow_disabled", "maintainer must enable Device Flow"],
-  [
-    "authentication_changed",
-    "Superseded GitHub App credentials are not reused",
-  ],
+  ["expired", "Reconnect required"],
+  ["denied", "Denied"],
+  ["device_flow_disabled", "Device sign-in disabled"],
+  ["authentication_changed", "Reconnect required"],
 ]) {
   test(`reconnect-required ${reason} state preserves its account and reason`, async ({
     page,
@@ -241,11 +219,11 @@ for (const [reason, message] of [
 }
 
 for (const [warning, message] of [
-  ["network", "network request failed"],
-  ["rate_limited", "rate limited the verification request"],
-  ["provider", "GitHub rejected"],
-  ["invalid_response", "invalid authorization response"],
-  ["timeout", "sign-in timed out"],
+  ["network", "Offline"],
+  ["rate_limited", "Rate limited"],
+  ["provider", "Verification failed"],
+  ["invalid_response", "Invalid response"],
+  ["timeout", "Timed out"],
 ]) {
   test(`retryable ${warning} verification warning keeps the account usable`, async ({
     page,

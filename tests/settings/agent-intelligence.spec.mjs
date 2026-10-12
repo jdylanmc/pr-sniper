@@ -101,7 +101,7 @@ test("advertised efforts and priced context capacities save through the real Age
   ).toHaveJSProperty("disabled", true);
   await expect(
     modal.locator("[name=context-tier] option[value=future-tier]"),
-  ).toHaveText("future-tier - unsupported by pinned runtime");
+  ).toHaveText("future-tier - unsupported");
   await modal.getByLabel("Reasoning effort").selectOption("high");
   await modal.getByLabel("Context window").selectOption("long_context");
   await page.screenshot({
@@ -135,15 +135,9 @@ test("models without advertised choices explain disabled selectors and save expl
   const modal = await create(page, "plain-model");
   await expect(modal.getByLabel("Reasoning effort")).toBeDisabled();
   await expect(modal.getByLabel("Context window")).toBeDisabled();
-  await expect(modal.locator("[data-intelligence-status]")).toContainText(
-    "No reasoning efforts advertised",
-  );
-  await expect(modal.locator("[data-intelligence-status]")).toContainText(
-    "No supported context tiers advertised",
-  );
   await expect(modal.locator("[name=context-tier] option")).toHaveCount(1);
   await expect(modal.locator("[data-intelligence-status]")).toContainText(
-    "Advertised model maximum: 64,000 tokens.",
+    "Max 64,000 tokens",
   );
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
   expect((await store("snapshot")).settings.agents[0].intelligence).toEqual({
@@ -202,12 +196,10 @@ test("account and model changes retain deliberate choices and require explicit r
   await expect(modal.getByLabel("Reasoning effort")).toHaveValue("high");
   await expect(modal.getByLabel("Context window")).toHaveValue("long_context");
   await expect(modal.locator("[data-intelligence-status]")).toContainText(
-    "Your choice is retained",
+    "Effort unsupported",
   );
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
-  await expect(modal.getByRole("alert")).toContainText(
-    "no setting was discarded",
-  );
+  await expect(modal.getByRole("alert")).toContainText("Effort unsupported");
   expect((await store("snapshot")).settings.agents ?? []).toEqual([]);
   await modal.getByLabel("Model", { exact: true }).selectOption("deep-model");
   await expect(modal.getByLabel("Reasoning effort")).toHaveValue("high");
@@ -216,7 +208,7 @@ test("account and model changes retain deliberate choices and require explicit r
   await modal.getByLabel("Model", { exact: true }).selectOption("plain-model");
   await expect(modal.getByLabel("Context window")).toHaveValue("long_context");
   await expect(modal.locator("[data-intelligence-status]")).toContainText(
-    "before saving",
+    "Effort unsupported",
   );
   await modal.getByLabel("Reasoning effort").selectOption("");
   await modal.getByLabel("Context window").selectOption("");
@@ -258,7 +250,7 @@ test("failed discovery keeps saved choices and validity distinct; retry exposes 
     "Fixture model transport is unavailable",
   );
   await expect(modal.locator("[data-intelligence-status]")).toContainText(
-    "not declared invalid",
+    "Unavailable",
   );
   await expect(modal.getByLabel("Reasoning effort")).toHaveValue("high");
   await modal.getByLabel("Name", { exact: true }).fill("Retained renamed");
@@ -272,21 +264,17 @@ test("failed discovery keeps saved choices and validity distinct; retry exposes 
     .getByRole("button", { name: "Refresh model list", exact: true })
     .click();
   await expect(modal.locator("[data-intelligence-status]")).toContainText(
-    "not advertised",
+    "Effort unsupported",
   );
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
-  await expect(modal.getByRole("alert")).toContainText(
-    "no setting was discarded",
-  );
+  await expect(modal.getByRole("alert")).toContainText("Effort unsupported");
   models = [];
   await modal
     .getByRole("button", { name: "Refresh model list", exact: true })
     .click();
-  await expect(modal.locator("[data-model-status]")).toContainText(
-    "returned no models",
-  );
+  await expect(modal.locator("[data-model-status]")).toContainText("No models");
   await expect(modal.locator("[data-intelligence-status]")).toContainText(
-    "Choose an available model",
+    "Choose a model",
   );
   await modal
     .getByLabel("Name", { exact: true })
@@ -340,7 +328,7 @@ test("job details retain captured requested and actual intelligence after later 
   });
   await page.goto("/");
   await expect(page.getByText(/Session session-9/)).toContainText(
-    "Reasoning effort: high. Context window: long_context.",
+    "Effort: high; context: long_context",
   );
   const captured = page
     .locator(".work-configuration")
@@ -354,7 +342,7 @@ test("job details retain captured requested and actual intelligence after later 
   let diagnostics = page.locator("[data-intelligence-diagnostics]");
   await diagnostics.locator("summary").click();
   await expect(diagnostics).toContainText(
-    "Reasoning effort: high. Context window: long_context.",
+    "Effort: high; context: long_context",
   );
   await expect(diagnostics).not.toContainText("later-model");
   await store("panel_navigate", {
@@ -364,7 +352,7 @@ test("job details retain captured requested and actual intelligence after later 
   diagnostics = page.locator("[data-intelligence-diagnostics]");
   await diagnostics.locator("summary").click();
   await expect(diagnostics).toContainText(
-    "Reasoning effort: high. Context window: long_context.",
+    "Effort: high; context: long_context",
   );
   await expect(diagnostics).not.toContainText("later-model");
   delete review.selection.agent.intelligence;
@@ -383,14 +371,14 @@ test("job details retain captured requested and actual intelligence after later 
   });
   await page.reload();
   await expect(page.getByText(/Session session-9/)).toContainText(
-    "Actual reasoning effort and context window were not recorded",
+    "Not recorded",
   );
   const legacy = page
     .locator(".work-configuration")
-    .filter({ hasText: "legacy snapshot; no chosen override evidence" })
+    .filter({ hasText: "Legacy snapshot" })
     .first();
   await legacy.locator("summary").first().click();
   await expect(legacy).toContainText(
-    "Not recorded (legacy snapshot; no chosen override evidence)",
+    /Requested reasoning effort\s*Not recorded.*Requested context window\s*Not recorded/s,
   );
 });

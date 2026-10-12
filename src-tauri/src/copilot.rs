@@ -510,19 +510,28 @@ impl<B: Backend> Integration<B> {
     }
 }
 
+const WRONG_IDENTITY: &str =
+    "The credential belongs to a different GitHub identity. Reconnect the selected account.";
+const CREDENTIALS_UNAVAILABLE: &str =
+    "Copilot credentials are unavailable in secure storage. Retry or reconnect.";
+const RECONNECT: &str = "This Copilot account needs to be reconnected.";
+
+pub(crate) fn credential_error(message: &str) -> bool {
+    matches!(
+        message,
+        WRONG_IDENTITY | CREDENTIALS_UNAVAILABLE | RECONNECT
+    )
+}
+
 fn verification_error(reason: GithubAuthFailure) -> String {
     match reason {
         GithubAuthFailure::Network => "Cannot reach GitHub to verify this Copilot identity. Retry.",
         GithubAuthFailure::Provider => {
             "GitHub could not verify this Copilot identity. Retry or reconnect."
         }
-        GithubAuthFailure::WrongIdentity => {
-            "The credential belongs to a different GitHub identity. Reconnect the selected account."
-        }
-        GithubAuthFailure::CredentialsUnavailable => {
-            "Copilot credentials are unavailable in secure storage. Retry or reconnect."
-        }
-        _ => "This Copilot account needs to be reconnected.",
+        GithubAuthFailure::WrongIdentity => WRONG_IDENTITY,
+        GithubAuthFailure::CredentialsUnavailable => CREDENTIALS_UNAVAILABLE,
+        _ => RECONNECT,
     }
     .into()
 }

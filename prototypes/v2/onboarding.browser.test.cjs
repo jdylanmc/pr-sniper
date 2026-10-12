@@ -173,9 +173,14 @@ async function check(engine, name) {
       .locator('[data-picker="agents"]')
       .selectOption(current.agents[0].id);
     assert.equal(await page.locator('input[name="agentIds"]').count(), 1);
+    await page.locator('input[name="admissionAll"]').uncheck();
+    await click('[data-action="open-filters"]');
+    await click('[data-rule="include_users"] .admission-open');
     await click('[data-action="add-people"]');
     await page.locator('[data-picker="people"]').selectOption({ index: 1 });
-    assert.equal(await page.locator('input[name="watched"]').count(), 1);
+    assert.equal(await page.locator(".admission-values .assign-row").count(), 1);
+    await click("#back-button");
+    await click("#back-button");
     await page.locator(".schedule-details > summary").click();
     await page.locator('input[name="scope"]').check();
     await page.locator('select[name="schedule"]').selectOption("cron");

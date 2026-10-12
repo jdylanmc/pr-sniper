@@ -338,14 +338,14 @@ for (const kind of ["reply", "mention"]) {
       await expect(conversation).toContainText(fixture.thread.comments[0].body);
       await expect(conversation).toContainText(fixture.thread.comments[1].body);
       await expect(conversation).toContainText(
-        `Original root head ${original.job.head_sha}; publication ${fixture.origin.id}`,
+        ` \u00b7 ${original.job.head_sha} \u00b7 ${fixture.origin.id}`,
       );
     } else {
       await expect(conversation).toContainText(fixture.run.target.comment.body);
-      await expect(conversation).toContainText("Primary conversation");
+      await expect(conversation).toContainText(" \u00b7 Primary \u00b7 ");
     }
     await conversation
-      .getByText("Original target and captured analysis context", {
+      .getByText("Captured context", {
         exact: true,
       })
       .click();
@@ -356,7 +356,7 @@ for (const kind of ["reply", "mention"]) {
       conversation
         .locator("details")
         .filter({
-          has: page.getByText("Original target and captured analysis context", {
+          has: page.getByText("Captured context", {
             exact: true,
           }),
         })
@@ -411,12 +411,12 @@ for (const kind of ["reply", "mention"]) {
     });
     await page.goto("/");
     await expect(page.locator(".job-facts")).toContainText(
-      "Reply / mention count1 for this Agent on this PR",
+      "Reply / mention count1",
     );
     await expect(page.locator(".job-facts")).toContainText("Retry attempt3");
     await expect(page.locator(".job-facts")).toContainText("#1 / iteration 1");
     await expect(page.locator(".job-facts")).not.toContainText(
-      "2 for this Agent",
+      "Reply / mention count2",
     );
     await captureInspector(page, `${kind}-historical`);
     run.reply_ordinal = null;
@@ -670,20 +670,24 @@ for (const kind of ["reply", "mention"]) {
       );
       if (run.receipt)
         await expect(page.locator(".job-facts")).toContainText(
-          `Confirmed GitHub reply ${run.receipt}`,
+          `Reply ${run.receipt}`,
         );
       else {
         await expect(page.locator("[data-monitor-detail]")).not.toContainText(
-          "Confirmed GitHub reply",
+          "confirmed-reply",
         );
-        if (publication)
+        if (publication) {
           await expect(page.locator(".job-facts")).toContainText(
-            "no confirmed reply receipt",
+            "Reply publication",
           );
+          await expect(page.locator(".job-facts")).not.toContainText(
+            "confirmed-reply",
+          );
+        }
       }
       if (run.uncertain) {
         await expect(page.locator("#thread-follow-ups")).toContainText(
-          "Reconciliation checks the original reply and never blindly posts a replacement.",
+          "Reply unresolved",
         );
         await expect(
           page.getByRole("button", { name: "Reconcile / retry reply" }),
@@ -695,7 +699,7 @@ for (const kind of ["reply", "mention"]) {
         ).toHaveCount(0);
       }
       await expect(page.locator(".job-facts")).toContainText(
-        "Reply / mention count1 for this Agent on this PR",
+        "Reply / mention count1",
       );
       if (["running", "failed", "unresolved"].includes(state))
         await captureInspector(page, `${kind}-${state}`);
@@ -876,7 +880,7 @@ test("panel legacy conversation rejects ambiguous same-head iterations without l
   });
   await page.goto("/");
   await expect(page.locator("[data-item-evidence]")).toContainText(
-    "Parent PR iteration context unavailable",
+    "Unavailable",
   );
   for (const item of before.items)
     await expect(page.locator("[data-item-evidence]")).not.toContainText(
@@ -913,7 +917,7 @@ for (const field of ["item_id", "iteration_id", "configuration_id"]) {
     });
     await page.goto("/");
     await expect(page.locator("[data-item-evidence]")).toContainText(
-      "Parent PR iteration context unavailable",
+      "Unavailable",
     );
     await expect(page.locator("#thread-follow-ups article")).toHaveCount(1);
     await page.getByText("Conversation (2 comments)", { exact: true }).click();
@@ -1073,10 +1077,13 @@ test("owned conversation exposes original provenance separately from current ite
   fixture.state.follow_ups = [run];
   await store("seed_queue_state", fixture.state);
   await page.goto("/?view=queue");
+  await page.locator("[data-queue-details]").evaluate((d) => (d.open = true));
   const conversations = page.locator("#thread-follow-ups");
-  await expect(conversations).toContainText(`analysis head ${"c".repeat(40)}`);
   await expect(conversations).toContainText(
-    `Original root head ${"a".repeat(40)}`,
+    ` \u00b7 ${"c".repeat(40)} \u00b7 `,
+  );
+  await expect(conversations).toContainText(
+    ` \u00b7 ${"a".repeat(40)} \u00b7 ${fixture.origin.id}`,
   );
   await expect(conversations).toContainText(fixture.origin.id);
   await conversations
@@ -1131,6 +1138,7 @@ test("retained compact provenance renders its actual conversation without a fabr
   fixture.state.follow_ups = [run];
   await store("seed_queue_state", fixture.state);
   await page.goto("/?view=queue");
+  await page.locator("[data-queue-details]").evaluate((d) => (d.open = true));
   const conversations = page.locator("#thread-follow-ups");
   await expect(conversations).toContainText("Thread thread-1");
   await conversations
@@ -1197,9 +1205,14 @@ test("quiet analysis does not clear feedback without an explicit assessment and 
   );
   await page.getByText("Current owned feedback (1)", { exact: true }).click();
   await expect(page.locator("#handoff-queue")).toContainText(
-    "Agent reassessment, not provider thread closure",
+    "cleared: Wrong value",
   );
   const saved = await store("monitoring_snapshot");
+  expect(
+    Object.values(saved.feedback)
+      .flat()
+      .every((entry) => entry.context.closed === false),
+  ).toBe(true);
   expect(saved.reviews[0].run.result.output.findings).toHaveLength(1);
   expect(saved.publications[0].publication.receipts[0].comment_ids).toEqual([
     "100",
@@ -1227,7 +1240,7 @@ test("provider-closed tombstones remain visible and missing observations cannot 
     "The original root is unavailable; no resolution inferred.";
   await store("seed_queue_state", fixture.state);
   await page.reload();
-  await expect(page.locator("#handoff-queue")).toContainText("Blocked");
+  await expect(page.locator("#handoff-queue")).toContainText("Queued");
   await page.getByText("Current owned feedback (1)", { exact: true }).click();
   await expect(page.locator("#handoff-queue")).toContainText(
     "no resolution inferred",
@@ -1407,9 +1420,7 @@ test("completed second publication permits closure and explicit same-head reasse
   await page.reload();
   await expect(row).toHaveAttribute("data-state", "machine_signed_off");
   await row.getByText("Current owned feedback (1)", { exact: true }).click();
-  await expect(row).toContainText(
-    "Agent reassessment, not provider thread closure",
-  );
+  await expect(row).toContainText("cleared: Wrong value");
   await page.screenshot({
     path: testInfo.outputPath("second-publication-local-clearance.png"),
     fullPage: true,
@@ -1468,7 +1479,7 @@ test("unlinked durable mention blocks a cleared PR across reload before any exec
   await page.goto("/?view=queue");
   await expect(page.locator("#handoff-queue .queue-item")).toHaveAttribute(
     "data-state",
-    "blocked",
+    "queued",
   );
   await expect(page.locator("#thread-follow-ups")).toContainText(
     "execution admission is pending",
@@ -1520,13 +1531,13 @@ test("incomplete observation admission stays visibly blocked after retry clears 
   await page.goto("/?view=queue");
   await expect(page.locator("#handoff-queue .queue-item")).toHaveAttribute(
     "data-state",
-    "blocked",
+    "queued",
   );
   await expect(page.locator("#handoff-queue")).toContainText(
     "Conversation observations are not fully admitted",
   );
   await expect(
-    page.getByText("Conversation admission pending", { exact: false }),
+    page.getByText("Admission pending", { exact: false }),
   ).toBeVisible();
   await page.reload();
   await expect(page.locator("#handoff-queue")).not.toContainText(

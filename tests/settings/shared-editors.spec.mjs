@@ -177,7 +177,7 @@ test("mouse and keyboard reach scrolling doctrines and preserve zero, one and ma
   await page.keyboard.press("Space");
   await filter.fill("no match");
   await expect(modal.locator("[data-no-doctrines]")).toContainText(
-    "No matching doctrines",
+    "No matches",
   );
   await expect(summary).toHaveText("2 selected");
   await expect(shown).toHaveCount(0);
@@ -458,7 +458,7 @@ test("shared-use guards and inline deletion preserve references, confirmation ca
   await modal
     .getByRole("button", { name: "Delete doctrine", exact: true })
     .click();
-  await expect(modal.getByRole("alert")).toContainText("used by an Agent");
+  await expect(modal.getByRole("alert")).toContainText("In use by an Agent");
   await capture(page, testInfo, "doctrine-delete-guard");
   await modal.getByRole("button", { name: "Cancel", exact: true }).click();
   modal = await openAgent(page);
@@ -488,9 +488,7 @@ test("shared-use guards and inline deletion preserve references, confirmation ca
   await page.reload();
   expect((await store("snapshot")).settings.doctrines).toEqual([]);
   modal = await openAgent(page);
-  await expect(modal.locator("[data-no-doctrines]")).toContainText(
-    "No doctrines yet",
-  );
+  await expect(modal.locator("[data-no-doctrines]")).toContainText("None");
   expect((await store("snapshot")).settings.repositories).toEqual(
     settings.repositories,
   );
@@ -540,6 +538,7 @@ test("failed saves retain the draft and valid disk state, retry and tiny viewpor
   expect((await store("snapshot")).settings.agents[0].prompt).toBe(
     "Retry this exact draft.",
   );
+  await tab(page, "Settings").click();
   modal = await openAgent(page);
   await modal
     .getByRole("button", { name: "Delete agent", exact: true })
@@ -560,7 +559,6 @@ test("failed saves retain the draft and valid disk state, retry and tiny viewpor
   expect((await store("snapshot")).settings.agents).toBeUndefined();
   await section(page, "Agents");
   await expect(page.locator(".agent-card")).toHaveCount(0);
-  await expect(page.getByText("No agents yet", { exact: true })).toBeVisible();
 });
 
 test("deleting an assigned Agent confirms, then removes its repository assignments", async ({

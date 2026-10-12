@@ -2,13 +2,16 @@ import { expect, test } from "./fixtures.mjs";
 import {
   section,
   installRepositoryFixture,
-  repositorySettings,
   closeDialog,
   saveChanges,
   seedAgent,
   setAgentPrompt,
   editAgent,
   chooseRepositoryAccount,
+  setAllPullRequests,
+  openFilters,
+  openRule,
+  backOne,
 } from "./navigation.mjs";
 
 for (const api of ["showModal", "close"]) {
@@ -210,7 +213,7 @@ test("R3 a held focus reply preserves newly opened repository text and focus", a
   }
 });
 
-for (const kind of ["add", "rename"]) {
+for (const kind of ["add"]) {
   for (const completion of ["valid", "error"]) {
     test(`R2 stale ${kind} ${completion} reply preserves a replacement editor and later persisted state`, async ({
       page,
@@ -223,19 +226,12 @@ for (const kind of ["add", "rename"]) {
       await page.goto("/?view=settings");
       await installRepositoryFixture(page);
       await section(page, "Repositories");
-      if (kind === "rename") {
-        const repository = await repositorySettings(page, "octo/original");
-        await repository.locator("details.repository-group > summary").click();
-        await repository
-          .getByRole("button", { name: "Edit repository", exact: true })
-          .click();
-      } else
-        await page
-          .getByRole("button", {
-            name: "Add repository by URL",
-            exact: true,
-          })
-          .click();
+      await page
+        .getByRole("button", {
+          name: "Add repository by URL",
+          exact: true,
+        })
+        .click();
       const hold = ipc.holdNext("canonical_repository_name");
       try {
         await page
@@ -243,8 +239,7 @@ for (const kind of ["add", "rename"]) {
           .fill(completion === "valid" ? "octo/dismissed" : "invalid");
         await chooseRepositoryAccount(
           page.getByRole("dialog", {
-            name:
-              kind === "rename" ? "Edit repository" : "Add repository by URL",
+            name: "Add repository by URL",
             exact: true,
           }),
           "22",
@@ -353,12 +348,7 @@ test("R2 repeated submit dispatch cannot start a second repository request", asy
   }
 });
 
-for (const editor of [
-  "edit-repository",
-  "new-doctrine",
-  "edit-doctrine",
-  "edit-agent",
-]) {
+for (const editor of ["new-doctrine", "edit-doctrine", "edit-agent"]) {
   test(`R3 focus reply retains ${editor} text and focus; intentional close permits refresh`, async ({
     page,
     store,
@@ -377,27 +367,13 @@ for (const editor of [
     await page.goto("/?view=settings");
     await installRepositoryFixture(page);
     await section(page, "Repositories");
-    await section(
-      page,
-      editor === "edit-repository"
-        ? "Integrations"
-        : editor === "edit-agent"
-          ? "Agents"
-          : "Doctrines",
-    );
+    await section(page, editor === "edit-agent" ? "Agents" : "Doctrines");
     const hold = ipc.holdNext("snapshot");
     try {
       await page.evaluate(() => window.dispatchEvent(new Event("focus")));
       await hold.arrived;
       let label;
-      if (editor === "edit-repository") {
-        const repository = await repositorySettings(page, "octo/original");
-        await repository.locator("details.repository-group > summary").click();
-        await repository
-          .getByRole("button", { name: "Edit repository", exact: true })
-          .click();
-        label = "Repository URL";
-      } else if (editor === "new-doctrine") {
+      if (editor === "new-doctrine") {
         await page
           .getByRole("button", { name: "New doctrine", exact: true })
           .click();
@@ -415,10 +391,7 @@ for (const editor of [
           : page
               .getByRole("dialog")
               .getByRole("textbox", { name: label, exact: true });
-      const expected =
-        editor === "edit-repository"
-          ? "octo/unsaved-repository"
-          : "Exact unsaved text\nstill editing";
+      const expected = "Exact unsaved text\nstill editing";
       await input.fill(expected);
       hold.release();
       await page.evaluate(() => window.__settingsIdle());
@@ -472,9 +445,10 @@ for (const viewport of [
       name: "octo/project",
       exact: true,
     });
-    await modal
-      .getByRole("button", { name: "Add people", exact: true })
-      .click();
+    await setAllPullRequests(modal, false);
+    await openFilters(page, modal);
+    await openRule(page, "include_users");
+    await page.locator(".admission-add").click();
     const picker = page.getByRole("dialog", {
       name: "Add people",
       exact: true,
@@ -485,12 +459,12 @@ for (const viewport of [
     await expect(modal).toHaveCount(0);
     await page.keyboard.press("Escape");
     await expect(modal).toBeVisible();
-    await expect(
-      modal.getByRole("button", { name: "Add people", exact: true }),
-    ).toBeFocused();
+    await expect(page.locator(".admission-add")).toBeFocused();
+    await backOne(page);
+    await backOne(page);
     await modal.locator("details.repository-group > summary").click();
     await expect(
-      modal.getByRole("button", { name: "Edit repository", exact: true }),
+      modal.getByLabel("Type repository name to confirm", { exact: true }),
     ).toBeVisible();
     const bounds = await modal.boundingBox();
     expect(bounds.y).toBeGreaterThanOrEqual(0);
@@ -498,7 +472,11 @@ for (const viewport of [
     await page.screenshot({
       path: testInfo.outputPath(`fallback-policy-${viewport.width}.png`),
     });
-    await closeDialog(page);
+    // The admission edits above were only for layout; discard the draft.
+    await modal
+      .getByRole("button", { name: "Cancel repository changes", exact: true })
+      .click();
+    await expect(modal).toHaveCount(0);
     await section(page, "Doctrines");
     await page
       .getByRole("button", { name: "New doctrine", exact: true })

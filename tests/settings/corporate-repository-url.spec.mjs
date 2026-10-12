@@ -145,13 +145,13 @@ for (const genie of [false, true]) {
         "provider rejection",
         response(422, { message: "synthetic-secret" }),
         "HTTP 422",
-        "malformed or unsupported",
+        "Invalid response",
       ],
       [
         "policy only",
         response(403, { message: policyMessage }),
-        "organization authorization restriction",
-        "Reconnect this account",
+        "Blocked by organization",
+        "Reconnect required",
       ],
       [
         "policy and scope",
@@ -160,8 +160,8 @@ for (const genie of [false, true]) {
           { message: policyMessage },
           { "x-oauth-scopes": "read:user" },
         ),
-        "authorization missing repo scope",
-        "GitHub denied read access",
+        "Blocked by organization",
+        "Access denied",
       ],
       [
         "partial authorization and rate limit",
@@ -175,8 +175,8 @@ for (const genie of [false, true]) {
             "retry-after": "60",
           },
         ),
-        "Retry after 60 seconds",
-        "Reconnect this account",
+        "Rate limited \u00b7 60s",
+        "Reconnect required",
       ],
     ]) {
       test(`URL ${name} at ${path === endpoint ? "metadata" : "pulls"} (${genie ? "Genie" : "Settings"}) retains safe evidence and retries`, async ({
@@ -194,13 +194,6 @@ for (const genie of [false, true]) {
         await expect(alert).not.toContainText("https://example.invalid");
         if (name.startsWith("policy")) {
           await expect(alert).toContainText("organization");
-          await expect(alert).toContainText(
-            "Reconnecting alone cannot bypass organization policy",
-          );
-        }
-        if (name.startsWith("partial")) {
-          await expect(alert).toContainText("1800000060");
-          await expect(alert).toContainText("restricted or incomplete");
         }
         await expect(dialog.getByLabel("Repository URL")).toHaveValue(url);
         await expect(dialog.getByLabel("Acting GitHub account")).toHaveValue(
@@ -229,9 +222,7 @@ for (const genie of [false, true]) {
     state.responses[account.account_id][endpoint] = response(200, metadata, {});
     const dialog = await open(page, store, genie);
     await submit(dialog);
-    await expect(dialog.getByRole("alert")).toContainText(
-      "No missing scope or grant is established",
-    );
+    await expect(dialog.getByRole("alert")).toContainText("Scope unverified");
     await expect(dialog.getByRole("alert")).not.toContainText("Reconnect");
     expect((await store("snapshot")).settings.repositories).toBeUndefined();
     state.responses[account.account_id][endpoint] = response(200, metadata);
@@ -260,9 +251,7 @@ test("unknown catalog scope retains the selected connected account and retries w
     name: `Browse repositories as ${account.login}`,
     exact: true,
   });
-  await expect(browser.getByRole("alert")).toContainText(
-    "No missing scope or grant is established",
-  );
+  await expect(browser.getByRole("alert")).toContainText("Scope unverified");
   await expect(browser.getByRole("alert")).not.toContainText("Reconnect");
   await expect(browser.locator("[data-pick]")).toHaveCount(0);
   expect((await store("snapshot")).settings.repositories).toBeUndefined();
@@ -277,17 +266,17 @@ for (const [name, failure, message] of [
   [
     "hidden or absent",
     response(404, { message: "synthetic-secret-do-not-publish" }),
-    "A 404 does not prove the repository is absent",
+    "Repository unavailable",
   ],
   [
     "read denial",
     response(403, { message: "synthetic-secret-do-not-publish" }),
-    "GitHub denied read access for this account",
+    "Access denied",
   ],
   [
     "scope",
     response(403, {}, { "x-oauth-scopes": "read:user" }),
-    "Reconnect this account in Accounts",
+    "Reconnect required",
   ],
   [
     "organization SSO",
@@ -296,14 +285,18 @@ for (const [name, failure, message] of [
       {},
       { "x-github-sso": "required; url=https://github.com/sso" },
     ),
-    "Reconnecting alone cannot bypass organization policy",
+    "Blocked by organization",
   ],
-  ["expired", response(401, {}), "GitHub is disconnected"],
-  ["rate limit", response(429, {}, { "retry-after": "60" }), "Retry after 60"],
-  ["provider", response(503, {}), "Check provider health"],
-  ["schema", response(200, { id: null }), "malformed or unsupported data"],
-  ["network", { error: "network" }, "Check your network"],
-  ["timeout", { error: "timeout" }, "GitHub lookup timed out"],
+  ["expired", response(401, {}), "Reconnect required"],
+  [
+    "rate limit",
+    response(429, {}, { "retry-after": "60" }),
+    "Rate limited \u00b7 60s",
+  ],
+  ["provider", response(503, {}), "Provider failed"],
+  ["schema", response(200, { id: null }), "Invalid response"],
+  ["network", { error: "network" }, "Offline"],
+  ["timeout", { error: "timeout" }, "Timed out"],
 ]) {
   test(`URL ${name} failure preserves input/account, blocks persistence and retries through native provider`, async ({
     page,
@@ -351,9 +344,7 @@ test("URL mismatched stable account cannot borrow a neighbor's access", async ({
   });
   const dialog = await open(page, store);
   await submit(dialog);
-  await expect(dialog.getByRole("alert")).toContainText(
-    "GitHub returned a different account",
-  );
+  await expect(dialog.getByRole("alert")).toContainText("Wrong account");
   expect((await store("snapshot")).settings.repositories).toBeUndefined();
   state.responses[account.account_id]["/user"] = response(200, {
     id: 900000002,
@@ -373,7 +364,7 @@ for (const failure of ["configuration", "broken_cli"]) {
     const dialog = await open(page, store);
     await submit(dialog);
     await expect(dialog.getByRole("alert")).toContainText(
-      "The selected GitHub session is unavailable",
+      "Session unavailable",
     );
     await expect(dialog.getByLabel("Repository URL")).toHaveValue(url);
     await expect(dialog.getByLabel("Acting GitHub account")).toHaveValue(

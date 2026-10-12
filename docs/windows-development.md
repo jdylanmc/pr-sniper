@@ -41,6 +41,8 @@ npm run test:settings
 npm run build:windows
 ```
 
+`test:release:windows` runs only `test_release.py`; macOS keeps the full release suite (signing-path tests, hosted native Keychain check). Release tests use fixtures and mocks, not real signing or publication. Node 24.20.0 (`.node-version`) and Python 3.13 on PATH. CI is not interactive native acceptance or a signed release.
+
 `windows.yml` runs frontend/shared checks, full native application checks,
 the offline runtime handshake, browser regressions and the standalone build.
 Tests use disposable profiles and exact owned native fixtures. They never open

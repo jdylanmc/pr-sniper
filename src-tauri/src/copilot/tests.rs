@@ -6,6 +6,32 @@ use crate::github::{
 use std::time::Duration;
 
 #[test]
+fn removed_account_is_not_restored_after_a_native_keychain_restart() {
+    let namespace = format!(
+        "com.jdylanmc.pr-sniper.tests.copilot-{}",
+        uuid::Uuid::new_v4()
+    );
+    let ai = RotationSafeStore::new(NativeCredentialStore::with_service(format!(
+        "{namespace}.ai"
+    )));
+    let account =
+        ActiveAccount::for_provider(ProviderId::copilot(), "101", "fixture-login").unwrap();
+    let pair = TokenPair::new(
+        "fixture-access",
+        "fixture-refresh",
+        Duration::from_secs(60),
+        Duration::from_secs(120),
+    );
+    ai.save_account(&account, &pair, false).unwrap();
+    ai.remove_account(&account.provider_account_id()).unwrap();
+    let restarted = RotationSafeStore::new(NativeCredentialStore::with_service(format!(
+        "{namespace}.ai"
+    )));
+    let state = GithubAuth::restore_accounts(&restarted, ProviderId::copilot()).unwrap();
+    assert!(state.accounts.is_empty());
+}
+
+#[test]
 fn disconnected_identity_survives_native_keychain_restart_without_touching_repository_role() {
     let namespace = format!(
         "com.jdylanmc.pr-sniper.tests.copilot-{}",

@@ -1,9 +1,5 @@
 import { test, expect } from "./fixtures.mjs";
-import {
-  section,
-  repositorySettings,
-  chooseRepositoryAccount,
-} from "./navigation.mjs";
+import { section, repositorySettings } from "./navigation.mjs";
 import {
   providerFixture,
   repositoryPage,
@@ -40,14 +36,10 @@ for (const embedded of [true, false]) {
       });
       await repositoryPage(page, store, embedded);
       await section(page, "Agents");
-      if (state === "empty") {
-        await expect(page.locator(".settings-empty")).toContainText(
-          "repositories in Repositories",
-        );
-        await expect(page.locator(".settings-empty")).not.toContainText(
-          "Integrations",
-        );
-      }
+      if (state === "empty")
+        await expect(
+          page.getByRole("button", { name: "New agent", exact: true }),
+        ).toBeVisible();
       await expect(
         page.getByRole("button", { name: "Manage Copilot accounts" }),
       ).toHaveCount(0);
@@ -83,7 +75,7 @@ for (const embedded of [true, false]) {
 }
 
 for (const accountId of ["22", "44"]) {
-  test(`NB1 editing A cannot silently jump to B's stable binding as ${accountId}`, async ({
+  test(`NB1 re-adding a configured binding reopens it without changing settings or editing identity as ${accountId}`, async ({
     page,
     store,
   }) => {
@@ -98,32 +90,9 @@ for (const accountId of ["22", "44"]) {
       .getByRole("button", { name: "Cancel repository changes" })
       .click();
     const before = (await store("snapshot")).settings;
-    const original = await repositorySettings(page, "fixture/one");
-    await original.locator("details.repository-group > summary").click();
-    await original
-      .getByRole("button", { name: "Edit repository", exact: true })
-      .click();
-    const edit = page.getByRole("dialog", {
-      name: "Edit repository",
-      exact: true,
-    });
-    await edit.getByLabel("Repository URL").fill("fixture/two");
-    await chooseRepositoryAccount(edit, accountId);
-    await edit
-      .getByRole("button", { name: "Add & configure", exact: true })
-      .click();
-    await expect(edit.getByRole("alert")).toContainText(
-      "already configured on another row",
-    );
-    await expect(edit.getByLabel("Repository URL")).toHaveValue("fixture/two");
     await expect(
-      page.getByRole("dialog", {
-        name: "Settings for fixture/two",
-        exact: true,
-      }),
+      page.getByRole("dialog", { name: "Edit repository" }),
     ).toHaveCount(0);
-    expect((await store("snapshot")).settings).toEqual(before);
-    await edit.getByRole("button", { name: "Cancel", exact: true }).click();
     const reused = await addByUrl(page, "fixture/two", accountId);
     await expect(reused).toBeVisible();
     expect((await store("snapshot")).settings).toEqual(before);

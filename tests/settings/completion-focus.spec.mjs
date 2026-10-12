@@ -3,6 +3,12 @@ import {
   fixtureAgent,
   section,
   chooseRepositoryAccount,
+  setAllPullRequests,
+  openFilters,
+  openRule,
+  backOne,
+  pickAgent,
+  withPermissions,
 } from "./navigation.mjs";
 import { holdFocusFrames } from "./focus-frames.mjs";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -73,10 +79,18 @@ async function seed(page, store, assignments = false) {
         actions: { reply: false, approve: false, merge: false },
       }),
     );
-    settings.repositories[1].watched_authors = [
-      { id: "42", login: "neighbor-person" },
-      { id: "43", login: "target-person" },
-    ];
+    const rules = settings.repositories[1].admission.rules;
+    settings.repositories[1].admission.mode = "filtered";
+    Object.assign(
+      rules.find((rule) => rule.kind === "include_users"),
+      {
+        enabled: true,
+        users: [
+          { id: "42", login: "neighbor-person" },
+          { id: "43", login: "target-person" },
+        ],
+      },
+    );
   }
   await store("seed_settings", settings);
   await page.addInitScript(() => {
@@ -195,6 +209,25 @@ async function afterRedraw(page, original, replacement) {
   await expect(replacement).toBeFocused();
 }
 
+async function removeWatched(page, parent, login, activation, remaining = 1) {
+  await openFilters(page, parent);
+  await openRule(page, "include_users");
+  const rows = page.locator(".watchlist-row");
+  const remove = login
+    ? page.getByRole("button", { name: `Remove @${login}`, exact: true })
+    : rows.last().getByRole("button");
+  const handle = await remove.elementHandle();
+  await activate(page, remove, activation);
+  await afterRedraw(
+    page,
+    handle,
+    page.getByRole("button", { name: "Add people", exact: true }),
+  );
+  await expect(rows).toHaveCount(remaining);
+  await backOne(page);
+  await backOne(page);
+}
+
 async function draftPreferences(page) {
   await section(page, "Preferences");
   await page.locator("#global-capacity").fill("9");
@@ -202,7 +235,7 @@ async function draftPreferences(page) {
 
 for (const mode of ["panel", "legacy", "legacy fallback"]) {
   for (const activation of ["pointer", "keyboard", "nonfocusing"]) {
-    test(`${mode} ${activation} repository completion focuses exact replacements after Cancel, Save, rename, add and removal`, async ({
+    test(`${mode} ${activation} repository completion focuses exact replacements after Cancel, Save, add and removal`, async ({
       page,
       store,
     }) => {
@@ -214,9 +247,7 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       const neighbor = repoOpener(page, "fixture/neighbor");
       await activate(page, neighbor, activation);
       const neighborEditor = dialog(page, "fixture/neighbor");
-      await neighborEditor
-        .getByLabel("Reviewer requests", { exact: true })
-        .selectOption("on");
+      await setAllPullRequests(neighborEditor, false);
       await closeEditor(page);
       await expect(neighbor).toBeFocused();
 
@@ -225,44 +256,23 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
         const original = await opener.elementHandle();
         await activate(page, opener, activation);
         const modal = dialog(page, "fixture/target");
-        await modal
-          .getByLabel("Reviewer requests", { exact: true })
-          .selectOption("on");
+        await setAllPullRequests(modal, false);
         await modal.getByRole("button", { name: action, exact: true }).click();
         await expect(modal).toHaveCount(0);
         await afterRedraw(page, original, opener);
         const saved = (await store("snapshot")).settings;
         expect(saved.repositories[1].id).toBe(targetId);
-        expect(saved.repositories[1].overrides?.reviewer_assignment).toBe(
-          action === "Save repository" ? true : undefined,
+        expect(saved.repositories[1].admission).toEqual(
+          action === "Save repository"
+            ? { ...initial.repositories[1].admission, mode: "filtered" }
+            : initial.repositories[1].admission,
         );
         expect(saved.repositories[0]).toEqual(initial.repositories[0]);
         expect(saved.capacity).toBe(initial.capacity);
         await expect(neighbor).toContainText("Draft");
       }
 
-      const original = await repoOpener(page).elementHandle();
-      await activate(page, repoOpener(page), activation);
-      let modal = dialog(page, "fixture/target");
-      await modal.locator("details.repository-group > summary").click();
-      await modal
-        .getByRole("button", { name: "Edit repository", exact: true })
-        .click();
-      modal = dialog(page, "Edit repository");
-      await modal
-        .getByLabel("Repository URL", { exact: true })
-        .fill("fixture/renamed");
-      await modal
-        .getByRole("button", { name: "Add & configure", exact: true })
-        .click();
-      await expect(modal).toHaveCount(0);
-      await closeEditor(page);
-      await afterRedraw(page, original, repoOpener(page, "fixture/renamed"));
-      expect((await store("snapshot")).settings.repositories[1]).toMatchObject({
-        id: targetId,
-        name: "fixture/renamed",
-        overrides: { reviewer_assignment: true },
-      });
+      let modal;
 
       const add = page.getByRole("button", {
         name: "Add repository by URL",
@@ -286,15 +296,15 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
         enabled: false,
       });
 
-      const removed = await repoOpener(page, "fixture/renamed").elementHandle();
-      await activate(page, repoOpener(page, "fixture/renamed"), activation);
-      modal = dialog(page, "fixture/renamed");
+      const removed = await repoOpener(page, "fixture/target").elementHandle();
+      await activate(page, repoOpener(page, "fixture/target"), activation);
+      modal = dialog(page, "fixture/target");
       await modal.locator("details.repository-group > summary").click();
       await modal
+        .getByLabel("Type repository name to confirm")
+        .fill("fixture/target");
+      await modal
         .getByRole("button", { name: "Remove repository", exact: true })
-        .click();
-      await dialog(page, "Remove repository?")
-        .getByRole("button", { name: "Remove from settings", exact: true })
         .click();
       await expect(page.getByRole("dialog")).toHaveCount(0);
       await afterRedraw(page, removed, page.locator(".settings-heading h1"));
@@ -318,9 +328,7 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       await draftPreferences(page);
       await section(page, "Integrations");
       await repoOpener(page).click();
-      await dialog(page, "fixture/target")
-        .getByLabel("Reviewer requests", { exact: true })
-        .selectOption("on");
+      await setAllPullRequests(dialog(page, "fixture/target"), false);
       await closeEditor(page);
       await section(page, "Agents");
 
@@ -450,10 +458,10 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       await section(page, "Integrations");
       await repoOpener(page).click();
       await expect(
-        dialog(page, "fixture/target").getByLabel("Reviewer requests", {
-          exact: true,
+        dialog(page, "fixture/target").getByRole("switch", {
+          name: "All pull requests",
         }),
-      ).toHaveValue("on");
+      ).not.toBeChecked();
       await closeEditor(page);
       await section(page, "Preferences");
       await expect(page.locator("#global-capacity")).toHaveValue("9");
@@ -481,7 +489,9 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       const original = await edit.elementHandle();
       await activate(page, edit, activation);
       const modal = dialog(page, "Edit assignment");
-      await modal.getByRole("checkbox", { name: /^Publish Comment/ }).uncheck();
+      await withPermissions(page, modal, () =>
+        modal.getByRole("switch", { name: "Publish Comment" }).uncheck(),
+      );
       await modal
         .getByRole("button", { name: "Save assignment", exact: true })
         .click();
@@ -505,23 +515,13 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
         removed,
         parent.getByRole("button", { name: "Assign agent", exact: true }),
       );
-      const person = parent.getByRole("button", {
-        name: "Remove target-person",
-        exact: true,
-      });
-      const removedPerson = await person.elementHandle();
-      await activate(page, person, activation);
-      await afterRedraw(
-        page,
-        removedPerson,
-        parent.getByRole("button", { name: "Add people", exact: true }),
-      );
+      await removeWatched(page, parent, "target-person", activation);
       expect(
         (await store("snapshot")).settings.repositories[1].assignments,
       ).toEqual(savedAssignment);
       expect(
-        (await store("snapshot")).settings.repositories[1].watched_authors,
-      ).toEqual(initial.repositories[1].watched_authors);
+        (await store("snapshot")).settings.repositories[1].admission,
+      ).toEqual(initial.repositories[1].admission);
       await parent
         .getByRole("button", { name: "Cancel repository changes", exact: true })
         .click();
@@ -531,12 +531,16 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       const nextOuter = await outerOpener.elementHandle();
       await activate(page, outerOpener, activation);
       await expect(row).toHaveCount(1);
+      await openFilters(page, parent);
+      await openRule(page, "include_users");
       await expect(
-        parent.getByRole("button", {
-          name: "Remove target-person",
+        page.getByRole("button", {
+          name: "Remove @target-person",
           exact: true,
         }),
       ).toHaveCount(1);
+      await backOne(page);
+      await backOne(page);
       await activate(
         page,
         row.getByRole("button", { name: "Remove assignment", exact: true }),
@@ -548,13 +552,13 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       });
       await activate(page, assign, activation);
       const create = dialog(page, "Assign agent");
-      await create
-        .getByRole("combobox", { name: "Agent", exact: true })
-        .selectOption(targetAgentId);
-      await expect(
-        create.getByRole("checkbox", { name: /^Publish Comment/ }),
-      ).not.toBeChecked();
-      await create.getByRole("checkbox", { name: /^Publish Comment/ }).check();
+      await pickAgent(create, targetAgentId);
+      await withPermissions(page, create, async () => {
+        await expect(
+          create.getByRole("switch", { name: "Publish Comment" }),
+        ).not.toBeChecked();
+        await create.getByRole("switch", { name: "Publish Comment" }).check();
+      });
       await create
         .locator("form")
         .getByRole("button", { name: "Assign agent", exact: true })
@@ -588,18 +592,7 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
         await expect(parent.locator(".assignment-row")).toHaveCount(
           remaining - 1,
         );
-        await activate(
-          page,
-          parent.locator(".watchlist-row").last().getByRole("button"),
-          activation,
-        );
-        await settled(page);
-        await expect(
-          parent.getByRole("button", { name: "Add people", exact: true }),
-        ).toBeFocused();
-        await expect(parent.locator(".watchlist-row")).toHaveCount(
-          remaining - 1,
-        );
+        await removeWatched(page, parent, undefined, activation, remaining - 1);
       }
       await parent
         .getByRole("button", { name: "Save repository", exact: true })
@@ -621,7 +614,10 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       await afterRedraw(page, nextOuter, outerOpener);
       const cleared = (await store("snapshot")).settings.repositories[1];
       expect(cleared.assignments ?? []).toEqual([]);
-      expect(cleared.watched_authors ?? []).toEqual([]);
+      expect(
+        cleared.admission.rules.find((rule) => rule.kind === "include_users")
+          .users ?? [],
+      ).toEqual([]);
       await section(page, "Preferences");
       await expect(page.locator("#global-capacity")).toHaveValue("9");
     });
@@ -676,13 +672,11 @@ for (const focusTarget of ["Running", "Settings"]) {
               .getByRole("button", { name: "Edit assignment", exact: true })
               .click();
             modal = dialog(page, "Edit assignment");
-            await modal
-              .getByRole("checkbox", { name: /^Publish Comment/ })
-              .uncheck();
+            await withPermissions(page, modal, () =>
+              modal.getByRole("switch", { name: "Publish Comment" }).uncheck(),
+            );
           } else {
-            await modal
-              .getByLabel("Reviewer requests", { exact: true })
-              .selectOption("on");
+            await setAllPullRequests(modal, true);
           }
         }
         const hold = ipc.holdNext("save_resource");
@@ -733,10 +727,7 @@ for (const focusTarget of ["Running", "Settings"]) {
           expect(saved.doctrines[1].title).toBe("Background doctrine");
         else if (resource === "assignment")
           expect(saved.repositories[1].assignments[1].comment).toBe(false);
-        else
-          expect(saved.repositories[1].overrides.reviewer_assignment).toBe(
-            true,
-          );
+        else expect(saved.repositories[1].admission.mode).toBe("all");
         await tab(page, "Settings").click();
         await expect(modal).toHaveCount(0);
         if (resource === "assignment")

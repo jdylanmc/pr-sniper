@@ -8,6 +8,7 @@ import {
   seedAgent,
   setAgentPrompt,
   assignment,
+  assignmentView,
   saveAssignment,
   closeDialog,
 } from "./navigation.mjs";
@@ -71,17 +72,17 @@ for (const action of ["add", "enable", "remove", "agent", "assignment"]) {
       const modal = await repositorySettings(page, repository.name);
       await modal.getByText("Repository", { exact: true }).click();
       await modal
+        .getByLabel("Type repository name to confirm", { exact: true })
+        .fill(repository.name);
+      await modal
         .getByRole("button", { name: "Remove repository", exact: true })
-        .click();
-      await page
-        .getByRole("dialog", { name: "Remove repository?", exact: true })
-        .getByRole("button", { name: "Remove from settings", exact: true })
         .click();
     } else if (action === "agent")
       await setAgentPrompt(page, "Persist despite diagnostics failure.");
     else {
       const modal = await assignment(page, repository.name);
-      await modal.getByRole("checkbox", { name: /^Publish Comment/ }).uncheck();
+      await assignmentView(page, modal, "permissions");
+      await modal.getByRole("switch", { name: "Publish Comment" }).uncheck();
       await saveAssignment(page, modal);
     }
     await page.evaluate(() => window.__settingsIdle());

@@ -1,3 +1,4 @@
+use crate::admission::AdmissionConfig;
 use crate::github::{
     metadata::{Lifecycle, PullRequest},
     provider::Connection,
@@ -29,7 +30,11 @@ pub const WAITING_MERGED: &str = "merged";
 pub const WAITING_ASSIGNMENT_REMOVED: &str = "assignment_removed";
 pub const CONFIGURATION_SAVE_REQUIRED: &str = "repository_configuration_required";
 const RETRY_WINDOW_SECONDS: i64 = 15 * 60;
-const MAX_RETRIES: u8 = 3;
+// A job iteration parks after this many failed attempts.
+pub(crate) const MAX_FAILED_ATTEMPTS: u8 = 3;
+// A parked failure earns a fresh attempt budget after each cooldown, bounding
+// AI cost: 30m, 1h, 2h, 4h, 8h, then it waits for a human.
+pub const RESUME_COOLDOWNS_SECONDS: [i64; 5] = [1_800, 3_600, 7_200, 14_400, 28_800];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -51,6 +56,45 @@ pub enum OperationFailure {
     Provider,
     Permanent,
     Superseded,
+    Credentials,
+    Permission,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureClass {
+    Credentials,
+    Permission,
+    Network,
+    Other,
+}
+
+impl OperationFailure {
+    pub fn class(&self) -> FailureClass {
+        match self {
+            Self::Credentials => FailureClass::Credentials,
+            Self::Permission => FailureClass::Permission,
+            Self::Timeout | Self::RateLimited | Self::Network => FailureClass::Network,
+            Self::Provider | Self::Permanent | Self::Superseded => FailureClass::Other,
+        }
+    }
+
+    pub fn transient(&self) -> bool {
+        matches!(
+            self,
+            Self::Timeout | Self::RateLimited | Self::Network | Self::Provider
+        )
+    }
+
+    /// Parked failures that may clear on their own after a cooldown; access can
+    /// be granted, credentials resume on reconnect instead.
+    pub fn resumable(&self) -> bool {
+        self.transient() || matches!(self, Self::Permission)
+    }
+}
+
+fn is_zero(value: &u8) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +104,12 @@ pub struct JobOperation {
     pub ai_attempt: Option<AttemptBudget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interruption: Option<crate::capacity::Interruption>,
+    /// Cooldown cycles already spent; an explicit retry starts a new operation.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub resume_cycle: u8,
+    /// When a parked failure earns its next automatic attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_at: Option<i64>,
     pub id: String,
     pub provider: String,
     pub account_id: String,
@@ -121,6 +171,9 @@ pub struct ScheduleHealth {
     pub next_run: i64,
     pub schedule_available: bool,
     pub last_failure: Option<String>,
+    /// Underlying message of the last failed check, shown as the raw error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
     pub in_flight: bool,
     #[serde(default)]
     pub conversation_admission_pending: bool,
@@ -345,6 +398,9 @@ pub struct MonitoringState {
     pub activations: BTreeMap<String, MonitoringActivation>,
     #[serde(default)]
     pub operations: BTreeMap<String, JobOperation>,
+    /// Set once the pre-fix "conversation_admission" poll failures were requeued.
+    #[serde(default)]
+    pub admission_upgrade_done: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -427,6 +483,7 @@ pub struct ActivationContext {
     pub provider_repository_id: String,
     pub policy: Policy,
     pub watched_authors: Vec<WatchedIdentity>,
+    pub admission: Option<AdmissionConfig>,
     pub trigger_policy: String,
 }
 
@@ -488,6 +545,7 @@ pub struct PollTicket {
     pub provider_repository_id: String,
     pub policy: Policy,
     pub watched_authors: Vec<WatchedIdentity>,
+    pub admission: Option<AdmissionConfig>,
     pub trigger_policy: String,
     pub updated_after: Option<String>,
     pub activation_version: String,
@@ -553,6 +611,7 @@ struct ConfiguredSchedule {
     agent_name: Option<String>,
     policy: Policy,
     watched_authors: Vec<WatchedIdentity>,
+    admission: Option<AdmissionConfig>,
     trigger_policy: Option<String>,
     assignments: Vec<ScanAssignment>,
 }
@@ -562,6 +621,8 @@ pub struct Monitor {
     state: MonitoringState,
     leases: BTreeMap<String, String>,
     previews: BTreeMap<String, ActivationPreview>,
+    lifecycle_next: i64,
+    connected_seen: Option<std::collections::BTreeSet<String>>,
 }
 
 impl Monitor {
@@ -569,6 +630,8 @@ impl Monitor {
         Self {
             state,
             leases: Default::default(),
+            lifecycle_next: 0,
+            connected_seen: None,
             previews: Default::default(),
         }
     }
@@ -606,6 +669,8 @@ impl Monitor {
         Ok(Self {
             state,
             leases: BTreeMap::new(),
+            lifecycle_next: 0,
+            connected_seen: None,
             previews: BTreeMap::new(),
         })
     }
@@ -632,8 +697,12 @@ impl Monitor {
             return Err(ConnectionError::Configuration);
         }
         let policy = repository.overrides.effective(&settings.defaults);
-        let watched_authors = effective_watched_authors(repository, &policy);
-        let trigger_policy = trigger_policy(&watched_authors, policy.reviewer_assignment)?;
+        let (watched_authors, admission) = effective_admission(repository, &policy);
+        let trigger_policy = trigger_policy(
+            &watched_authors,
+            policy.reviewer_assignment,
+            admission.as_ref(),
+        )?;
         Ok(ActivationContext {
             repository_id: repository.id.clone(),
             name: repository.name.clone(),
@@ -641,6 +710,7 @@ impl Monitor {
             provider_repository_id: binding.repository.repository_id,
             policy,
             watched_authors,
+            admission,
             trigger_policy,
         })
     }
@@ -733,11 +803,12 @@ impl Monitor {
             }
             let eligibility = eligibility(
                 &current.watched_authors,
+                current.admission.as_ref(),
                 &current.policy,
                 &current.account_id,
                 &pull,
             );
-            if !eligibility.eligible() && !pull.mentioned {
+            if !eligibility.admitted {
                 continue;
             }
             let candidate = ActivationCandidate {
@@ -929,7 +1000,7 @@ impl Monitor {
                 let policy = repository.overrides.effective(&resources.settings.defaults);
                 (
                     repository.id.clone(),
-                    effective_watched_authors(repository, &policy),
+                    effective_admission(repository, &policy).0,
                 )
             })
             .collect();
@@ -1189,6 +1260,7 @@ impl Monitor {
             provider_repository_id: binding.repository.repository_id,
             policy: configuration.policy.clone(),
             watched_authors: configuration.watched_authors.clone(),
+            admission: configuration.admission.clone(),
             trigger_policy: configuration
                 .trigger_policy
                 .clone()
@@ -1599,6 +1671,7 @@ impl Monitor {
                     next_run: 0,
                     schedule_available: false,
                     last_failure: None,
+                    last_error: None,
                     in_flight: false,
                     conversation_admission_pending: false,
                     manual_pending: false,
@@ -1970,6 +2043,7 @@ impl Monitor {
 
             health.last_attempt = Some(now);
             health.last_failure = None;
+            health.last_error = None;
             health.in_flight = true;
             health.manual_pending = false;
             start_poll_operation(health, configuration, now, false);
@@ -1991,6 +2065,7 @@ impl Monitor {
                 provider_repository_id: repository_id.clone(),
                 policy: configuration.policy.clone(),
                 watched_authors: configuration.watched_authors.clone(),
+                admission: configuration.admission.clone(),
                 trigger_policy: policy_key.clone(),
                 updated_after: cursor.and_then(|cursor| cursor.updated_after),
                 activation_version: activation.version.clone(),
@@ -2095,7 +2170,8 @@ impl Monitor {
                         admit(store, &ticket).map_err(|message| MonitoringError::Recoverable {
                             code: "conversation_admission".into(),
                             message,
-                            failure: OperationFailure::Permanent,
+                            // A failed admission may clear on a fresh attempt.
+                            failure: OperationFailure::Provider,
                             retry_after_seconds: None,
                         })?;
                         Ok(login)
@@ -2117,6 +2193,7 @@ impl Monitor {
                         health.account_login = Some(login.clone());
                         health.last_success = Some(now);
                         health.last_failure = None;
+                        health.last_error = None;
                         health.conversation_admission_pending = false;
                         if let Some(operation) = health.operation.as_mut() {
                             operation.state = OperationState::Completed;
@@ -2126,6 +2203,7 @@ impl Monitor {
                     }
                     Err(error) => {
                         health.last_failure = Some(error.health_failure().into());
+                        health.last_error = Some(error.message().into());
                         finish_failed_operation(health, error, now);
                     }
                 }
@@ -2211,7 +2289,10 @@ impl Monitor {
         operation.retry_deadline = now + RETRY_WINDOW_SECONDS;
         operation.next_attempt_at = Some(now);
         operation.failure = None;
+        operation.resume_cycle = 0;
+        operation.resume_at = None;
         health.last_failure = None;
+        health.last_error = None;
         health.next_run = now;
         health.schedule_available = true;
         if let Some(scan) = &mut self.state.global_scan {
@@ -2297,6 +2378,7 @@ impl Monitor {
             let admission_candidate = activation_admission_candidate(&mut activation, &pull);
             let eligibility = eligibility(
                 &ticket.watched_authors,
+                ticket.admission.as_ref(),
                 &ticket.policy,
                 &result.connection.identity.id,
                 &pull,
@@ -2327,10 +2409,10 @@ impl Monitor {
                     && (pull.state != Lifecycle::Open
                         || pull.draft
                         || (explicit_pull_id != Some(pull.id.as_str())
-                            && (!(eligibility.eligible() || pull.mentioned)
+                            && (!eligibility.admitted
                                 || !(admission_candidate
                                     || eligibility.requested_reviewer
-                                    || pull.mentioned))))
+                                    || eligibility.mention_bypass))))
                 {
                     continue;
                 }
@@ -2616,20 +2698,31 @@ struct Eligibility {
     watched_author: bool,
     all_authors: bool,
     requested_reviewer: bool,
-}
-
-impl Eligibility {
-    fn eligible(self) -> bool {
-        self.watched_author || self.all_authors || self.requested_reviewer
-    }
+    /// The final decision, including mentions.
+    admitted: bool,
+    /// An admitting mention also bypasses the activation baseline.
+    mention_bypass: bool,
 }
 
 fn eligibility(
     watched_authors: &[WatchedIdentity],
+    admission: Option<&AdmissionConfig>,
     policy: &Policy,
     account_id: &str,
     pull: &PullRequest,
 ) -> Eligibility {
+    if let Some(admission) = admission {
+        use crate::admission::AdmissionMode;
+        let all_authors = admission.mode == AdmissionMode::All;
+        let requested_reviewer = !all_authors && admission.assigned_matches(account_id, pull);
+        return Eligibility {
+            watched_author: !all_authors && admission.include_users_matches(pull),
+            all_authors,
+            requested_reviewer,
+            admitted: admission.admits(account_id, pull),
+            mention_bypass: !all_authors && pull.mentioned && admission.mentioned_enabled(),
+        };
+    }
     let watched_author = pull.author.as_ref().is_some_and(|author| {
         watched_authors
             .iter()
@@ -2645,18 +2738,29 @@ fn eligibility(
         watched_author,
         all_authors,
         requested_reviewer,
+        admitted: watched_author || all_authors || requested_reviewer || pull.mentioned,
+        mention_bypass: pull.mentioned,
     }
 }
 
 pub(crate) fn scan_admits(ticket: &PollTicket, pull: &PullRequest) -> bool {
     eligibility(
         &ticket.watched_authors,
+        ticket.admission.as_ref(),
         &ticket.policy,
         &ticket.provider_account_id,
         pull,
     )
-    .eligible()
-        || pull.mentioned
+    .admitted
+}
+
+/// True when path rules decide this pull request but its changed files have
+/// not been loaded; the polling listing does not include them.
+pub fn needs_changed_files(ticket: &PollTicket, pull: &PullRequest) -> bool {
+    ticket
+        .admission
+        .as_ref()
+        .is_some_and(|admission| admission.needs_changed_files(&ticket.provider_account_id, pull))
 }
 
 fn activation_admission_candidate(
@@ -2701,7 +2805,19 @@ fn mark_activation_admitted(activation: &mut MonitoringActivation, pull: &PullRe
     }
 }
 
-fn effective_watched_authors(
+/// Legacy effective watched authors, or the enabled include-users list when
+/// admission rules apply (display and legacy-shaped evidence only).
+fn effective_admission(
+    repository: &crate::storage::Repository,
+    policy: &Policy,
+) -> (Vec<WatchedIdentity>, Option<AdmissionConfig>) {
+    match &repository.admission {
+        Some(admission) => (admission.watched_authors(), Some(admission.clone())),
+        None => (effective_watched_authors(repository, policy), None),
+    }
+}
+
+pub(crate) fn effective_watched_authors(
     repository: &crate::storage::Repository,
     policy: &Policy,
 ) -> Vec<WatchedIdentity> {
@@ -2739,8 +2855,13 @@ fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {
     for repository in &settings.repositories {
         let mut policy = repository.overrides.effective(&settings.defaults);
         policy.schedule = settings.defaults.schedule.clone();
-        let watched_authors = effective_watched_authors(repository, &policy);
-        let policy_key = trigger_policy(&watched_authors, policy.reviewer_assignment).ok();
+        let (watched_authors, admission) = effective_admission(repository, &policy);
+        let policy_key = trigger_policy(
+            &watched_authors,
+            policy.reviewer_assignment,
+            admission.as_ref(),
+        )
+        .ok();
         let binding = repository.account_binding();
         let provider_supported = binding.as_ref().is_some_and(|binding| {
             binding.account.provider == ProviderId::Github
@@ -2766,6 +2887,7 @@ fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {
             agent_name: None,
             policy,
             watched_authors,
+            admission,
             trigger_policy: policy_key,
             assignments: repository
                 .assignments
@@ -2827,7 +2949,7 @@ fn start_poll_operation(
             .next_attempt_at
             .is_some_and(|next| manual || now >= next)
             && now < operation.retry_deadline
-            && operation.attempt_count <= MAX_RETRIES
+            && operation.attempt_count < MAX_FAILED_ATTEMPTS
     });
     if retrying {
         if let Some(operation) = health.operation.as_mut() {
@@ -2840,6 +2962,8 @@ fn start_poll_operation(
     health.operation = Some(JobOperation {
         ai_attempt: None,
         interruption: None,
+        resume_cycle: 0,
+        resume_at: None,
         id: uuid::Uuid::new_v4().to_string(),
         provider: "github".into(),
         account_id: configuration
@@ -2903,41 +3027,109 @@ impl JobOperation {
         self.next_attempt_at = Some(now);
     }
 
+    /// Transient failures back off and retry until `MAX_FAILED_ATTEMPTS`, then
+    /// park as `ManualRetry`; terminal, credential and permission failures
+    /// park at once as `Failed`. `failure` keeps the classified cause.
     pub fn fail(&mut self, error: &MonitoringError, now: i64) {
+        self.fail_attempt(error, now);
+        if self.parked() {
+            self.schedule_resume(now);
+        }
+    }
+
+    /// Fresh attempt window with no failure history carried over.
+    fn requeue_fresh(&mut self, now: i64) {
+        self.state = OperationState::Queued;
+        self.attempt_count = 0;
+        self.initial_attempt_at = now;
+        self.retry_deadline = now + RETRY_WINDOW_SECONDS;
+        self.next_attempt_at = Some(now);
+        self.failure = None;
+        self.resume_cycle = 0;
+        self.resume_at = None;
         self.ai_attempt = None;
         self.interruption = None;
-        let operation = self;
+    }
+
+    fn schedule_resume(&mut self, now: i64) {
+        self.resume_at = self
+            .failure
+            .as_ref()
+            .filter(|failure| failure.resumable())
+            .and_then(|_| RESUME_COOLDOWNS_SECONDS.get(usize::from(self.resume_cycle)))
+            .map(|cooldown| now.saturating_add(*cooldown));
+    }
+
+    /// Starts the next automatic attempt window for a parked failure: after its
+    /// cooldown (spending a cycle) or, for credentials, once the account is
+    /// connected again. Returns whether the operation was requeued.
+    pub fn auto_resume(&mut self, reconnected: bool, now: i64) -> bool {
+        if !self.parked() {
+            return false;
+        }
+        let cooled = self.resume_at.is_some_and(|at| now >= at);
+        let credentials = reconnected && self.failure == Some(OperationFailure::Credentials);
+        if !cooled && !credentials {
+            return false;
+        }
+        if cooled {
+            self.resume_cycle = self.resume_cycle.saturating_add(1);
+        }
+        self.state = OperationState::Queued;
+        self.attempt_count = 0;
+        self.initial_attempt_at = now;
+        self.retry_deadline = now + RETRY_WINDOW_SECONDS;
+        self.next_attempt_at = Some(now);
+        self.failure = None;
+        self.resume_at = None;
+        self.ai_attempt = None;
+        self.interruption = None;
+        true
+    }
+
+    fn fail_attempt(&mut self, error: &MonitoringError, now: i64) {
+        self.ai_attempt = None;
+        self.interruption = None;
         let failure = retryable_failure(error);
-        operation.failure = Some(failure.clone());
-        if matches!(
-            failure,
-            OperationFailure::Permanent | OperationFailure::Superseded
-        ) {
-            operation.state = OperationState::Failed;
-            operation.next_attempt_at = None;
+        self.failure = Some(failure.clone());
+        self.next_attempt_at = None;
+        if !failure.transient() {
+            self.state = OperationState::Failed;
             return;
         }
-        if operation.attempt_count > MAX_RETRIES || now >= operation.retry_deadline {
-            operation.state = OperationState::ManualRetry;
-            operation.next_attempt_at = None;
+        if self.attempt_count >= MAX_FAILED_ATTEMPTS || now >= self.retry_deadline {
+            self.state = OperationState::ManualRetry;
             return;
         }
-        let retry_count = operation.attempt_count;
         let delay = match error {
             MonitoringError::Recoverable {
                 retry_after_seconds: Some(delay),
                 ..
             } => *delay,
-            _ => retry_delay_seconds(&operation.id, retry_count),
+            _ => retry_delay_seconds(&self.id, self.attempt_count),
         };
         let next_attempt = now.saturating_add(delay);
-        if next_attempt >= operation.retry_deadline {
-            operation.state = OperationState::ManualRetry;
-            operation.next_attempt_at = None;
+        if next_attempt >= self.retry_deadline {
+            self.state = OperationState::ManualRetry;
             return;
         }
-        operation.state = OperationState::Queued;
-        operation.next_attempt_at = Some(next_attempt);
+        self.state = OperationState::Queued;
+        self.next_attempt_at = Some(next_attempt);
+    }
+
+    pub fn parked(&self) -> bool {
+        matches!(
+            self.state,
+            OperationState::Failed | OperationState::ManualRetry
+        )
+    }
+
+    pub fn failure_class(&self) -> Option<FailureClass> {
+        self.parked().then(|| {
+            self.failure
+                .as_ref()
+                .map_or(FailureClass::Other, OperationFailure::class)
+        })
     }
 
     pub fn begin_attempt(&mut self, now: i64) -> Result<(), String> {
@@ -2956,9 +3148,10 @@ impl JobOperation {
             self.initial_attempt_at = now;
             self.retry_deadline = now + RETRY_WINDOW_SECONDS;
         }
-        if now >= self.retry_deadline || self.attempt_count > MAX_RETRIES {
+        if now >= self.retry_deadline || self.attempt_count >= MAX_FAILED_ATTEMPTS {
             self.state = OperationState::ManualRetry;
             self.next_attempt_at = None;
+            self.schedule_resume(now);
             return Err("Review retry budget exhausted. Manual retry is required.".into());
         }
         if !matches!(
@@ -2978,6 +3171,8 @@ impl JobOperation {
         Self {
             ai_attempt: None,
             interruption: None,
+            resume_cycle: 0,
+            resume_at: None,
             id: uuid::Uuid::new_v4().to_string(),
             provider: job.provider.clone(),
             account_id: job.account_id.clone(),
@@ -3056,6 +3251,20 @@ pub(crate) fn check_error(error: ConnectionError) -> MonitoringError {
         ConnectionError::RateLimitedAfter(retry_after_seconds) => {
             (OperationFailure::RateLimited, Some(retry_after_seconds))
         }
+        ConnectionError::SignedOut
+        | ConnectionError::WrongIdentity
+        | ConnectionError::MissingScope
+        | ConnectionError::ScopeUnverified
+        | ConnectionError::OrganizationPolicyDeniedWithMissingScope
+        | ConnectionError::RateLimitedWithContext {
+            missing_repo_scope: true,
+            ..
+        }
+        | ConnectionError::ProviderRejectedStatus(401) => (OperationFailure::Credentials, None),
+        ConnectionError::MissingReadPermission
+        | ConnectionError::RepositoryUnavailable
+        | ConnectionError::OrganizationPolicyDenied
+        | ConnectionError::ProviderRejectedStatus(403) => (OperationFailure::Permission, None),
         ConnectionError::RateLimitedWithContext {
             retry_after_seconds,
             reset_at,
@@ -3131,14 +3340,19 @@ fn configuration_changed() -> MonitoringError {
 fn trigger_policy(
     watched_authors: &[WatchedIdentity],
     reviewer_assignment: bool,
+    admission: Option<&AdmissionConfig>,
 ) -> Result<String, ConnectionError> {
     let mut authors: Vec<_> = watched_authors
         .iter()
         .map(|author| author.id.as_str())
         .collect();
     authors.sort_unstable();
-    serde_json::to_string(&(authors, reviewer_assignment))
-        .map_err(|_| ConnectionError::Configuration)
+    // Legacy keys keep their exact shape so unchanged repositories stay valid.
+    match admission {
+        None => serde_json::to_string(&(authors, reviewer_assignment)),
+        Some(admission) => serde_json::to_string(&("admission", admission)),
+    }
+    .map_err(|_| ConnectionError::Configuration)
 }
 
 pub fn review_policy(
@@ -3182,11 +3396,12 @@ pub fn review_policy(
             || (job.work.is_none()
                 && !eligibility(
                     &configuration.watched_authors,
+                    configuration.admission.as_ref(),
                     &configuration.policy,
                     &job.account_id,
                     pull,
                 )
-                .eligible())
+                .admitted)
         {
             return Err(
                 "Pull request revision or eligibility changed; wait for the next poll.".into(),
@@ -3253,6 +3468,225 @@ pub fn next_run(schedule: &Schedule, now: i64) -> Result<i64, ConnectionError> {
     }
 }
 
+/// Seconds between lightweight lifecycle sweeps of PRs in unmonitored repositories.
+pub const LIFECYCLE_SWEEP_SECONDS: i64 = 600;
+
+/// One repository whose tracked open PRs still need a state-only refresh.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LifecycleTicket {
+    pub configuration_id: String,
+    pub name: String,
+    pub provider_account_id: String,
+    pub provider_repository_id: String,
+    pub tracked: Vec<(String, u64)>,
+}
+
+impl Monitor {
+    /// Tracked, non-terminal PRs of disabled or unassigned repositories keep a
+    /// state-only refresh (no admission, no new work) while their account is
+    /// connected, so a merge or close still reaches the Queue.
+    pub fn lifecycle_tickets(
+        &mut self,
+        store: &Store,
+        accounts: &BTreeMap<String, AccountAvailability>,
+        now: i64,
+    ) -> Result<Vec<LifecycleTicket>, String> {
+        if now < self.lifecycle_next {
+            return Ok(Vec::new());
+        }
+        let settings = store.load_settings()?;
+        let queue = store.load_queue_state()?;
+        let mut tickets = Vec::new();
+        for configuration in configured_schedules(&settings) {
+            if configuration.enabled && !configuration.assignments.is_empty() {
+                continue;
+            }
+            let (Some(account), Some(repository)) = (
+                configuration.provider_account_id.as_ref(),
+                configuration.provider_repository_id.as_ref(),
+            ) else {
+                continue;
+            };
+            if !configuration.provider_supported
+                || !accounts.get(account).is_some_and(|a| a.connected)
+            {
+                continue;
+            }
+            let tracked: std::collections::BTreeSet<_> = queue
+                .tracked
+                .iter()
+                .filter(|p| {
+                    !p.terminal_observed
+                        && p.configuration_id == configuration.repository_id
+                        && &p.account_id == account
+                        && &p.repository_id == repository
+                })
+                .map(|p| (p.pull_request_id.clone(), p.number))
+                .collect();
+            if tracked.is_empty() {
+                continue;
+            }
+            tickets.push(LifecycleTicket {
+                configuration_id: configuration.repository_id.clone(),
+                name: configuration.name.clone(),
+                provider_account_id: account.clone(),
+                provider_repository_id: repository.clone(),
+                tracked: tracked.into_iter().collect(),
+            });
+        }
+        self.lifecycle_next = now + LIFECYCLE_SWEEP_SECONDS;
+        Ok(tickets)
+    }
+
+    /// Records only terminal observations; provider failures are retried on the
+    /// next sweep and never surface for unmonitored repositories.
+    pub fn apply_lifecycle(
+        &mut self,
+        store: &Store,
+        ticket: &LifecycleTicket,
+        observed: Result<Vec<(String, Lifecycle)>, ConnectionError>,
+        now: i64,
+    ) -> Result<(), String> {
+        let Ok(observed) = observed else {
+            return Ok(());
+        };
+        let mut queue = store.load_queue_state()?;
+        let previous = queue.clone();
+        for (id, state) in observed {
+            if state == Lifecycle::Open {
+                continue;
+            }
+            let Some(tracked) = queue.tracked.iter_mut().find(|p| {
+                p.pull_request_id == id
+                    && p.configuration_id == ticket.configuration_id
+                    && p.account_id == ticket.provider_account_id
+                    && p.repository_id == ticket.provider_repository_id
+            }) else {
+                continue;
+            };
+            tracked.lifecycle = state.clone();
+            tracked.terminal_observed = true;
+            tracked.observed_at = now;
+            let tracked = tracked.clone();
+            for job in queue.jobs.iter_mut().filter(|j| tracked.matches(j)) {
+                if !matches!(job.waiting.as_str(), WAITING_CLOSED | WAITING_MERGED) {
+                    job.waiting = if state == Lifecycle::Merged {
+                        WAITING_MERGED
+                    } else {
+                        WAITING_CLOSED
+                    }
+                    .into();
+                }
+            }
+        }
+        if queue != previous {
+            store.save_queue_state(&queue)?;
+        }
+        Ok(())
+    }
+}
+
+impl Monitor {
+    /// Requeues parked failures that earned another attempt: after their
+    /// cooldown, or (credentials) once a relevant GitHub or Copilot account is
+    /// connected again. Superseded and terminal work is never resumed.
+    pub fn auto_resume(
+        &mut self,
+        store: &Store,
+        accounts: &BTreeMap<String, AccountAvailability>,
+        now: i64,
+    ) -> Result<usize, String> {
+        let connected: std::collections::BTreeSet<String> = accounts
+            .iter()
+            .filter(|(_, account)| account.connected)
+            .map(|(id, _)| id.clone())
+            .collect();
+        // The first tick cannot see a transition, so connected accounts count.
+        let reconnected: std::collections::BTreeSet<String> = match &self.connected_seen {
+            Some(seen) => connected.difference(seen).cloned().collect(),
+            None => connected.clone(),
+        };
+        self.connected_seen = Some(connected);
+        let mut resumed = 0;
+        let mut reviews = store.load_reviews()?;
+        let mut changed = false;
+        let jobs = store.load_queue()?;
+        for run in &mut reviews {
+            let finished = |waiting: &str| {
+                matches!(
+                    waiting,
+                    WAITING_SUPERSEDED | WAITING_CLOSED | WAITING_MERGED
+                )
+            };
+            if finished(&run.job.waiting)
+                || jobs
+                    .iter()
+                    .any(|job| run.matches_job(job) && finished(&job.waiting))
+            {
+                continue;
+            }
+            let account = reconnected.contains(&run.job.account_id)
+                || run
+                    .selection
+                    .agent
+                    .ai_account
+                    .as_ref()
+                    .is_some_and(|ai| reconnected.contains(&ai.account_id));
+            if run.operation.auto_resume(account, now) {
+                run.error = None;
+                run.phase = "Waiting for shared AI capacity".into();
+                resumed += 1;
+                changed = true;
+            }
+        }
+        if changed {
+            store.save_reviews(&reviews)?;
+        }
+        let previous = self.state.clone();
+        let mut health_changed = false;
+        // One-time upgrade: poll failures parked as permanent by the build that
+        // aborted a whole scan on one malformed thread get a fresh budget.
+        if !self.state.admission_upgrade_done {
+            for health in self.state.health.values_mut() {
+                let stale = health.last_failure.as_deref() == Some("conversation_admission");
+                if let Some(operation) = health.operation.as_mut().filter(|operation| {
+                    stale && operation.parked() && operation.operation_type == "repository_poll"
+                }) {
+                    operation.requeue_fresh(now);
+                    health.last_failure = None;
+                    health.last_error = None;
+                    health.next_run = now;
+                    health.schedule_available = true;
+                    resumed += 1;
+                }
+            }
+            self.state.admission_upgrade_done = true;
+            health_changed = true;
+        }
+        for health in self.state.health.values_mut() {
+            let Some(operation) = health.operation.as_mut() else {
+                continue;
+            };
+            let account = reconnected.contains(&operation.account_id);
+            if operation.auto_resume(account, now) {
+                health.last_failure = None;
+                health.last_error = None;
+                health.next_run = now;
+                health.schedule_available = true;
+                resumed += 1;
+                health_changed = true;
+            }
+        }
+        if health_changed {
+            if let Err(error) = store.save_monitoring_state(&self.state) {
+                self.state = previous;
+                return Err(error);
+            }
+        }
+        Ok(resumed)
+    }
+}
+
 #[cfg(test)]
 mod read_diagnostic_tests {
     use super::*;
@@ -3291,5 +3725,236 @@ mod read_diagnostic_tests {
                 ..
             }
         ));
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    use crate::admission::{AdmissionMode, AdmissionRule, AdmissionRuleKind};
+    use crate::github::metadata::ChangedFile;
+    use crate::github::Identity;
+
+    const ACCOUNT: &str = "22";
+    const REPO_ID: &str = "00000000-0000-4000-8000-000000000001";
+
+    fn settings(admission: serde_json::Value) -> Settings {
+        let mut repository = serde_json::json!({
+            "id": REPO_ID, "provider": "github", "name": "o/r", "enabled": true,
+            "provider_account_id": ACCOUNT, "provider_repository_id": "100",
+            "watched_authors": [{"id": "11", "login": "legacy"}]
+        });
+        if !admission.is_null() {
+            repository["admission"] = admission;
+        }
+        let mut settings = Settings::default();
+        settings
+            .repositories
+            .push(serde_json::from_value(repository).unwrap());
+        settings
+    }
+
+    fn pull(author: &str, reviewers: &[&str], mentioned: bool, paths: &[&str]) -> PullRequest {
+        PullRequest {
+            mentioned,
+            id: "1".into(),
+            number: 1,
+            title: "t".into(),
+            author: Some(Identity {
+                id: author.into(),
+                login: "a".into(),
+            }),
+            requested_reviewers: reviewers
+                .iter()
+                .map(|id| Identity {
+                    id: (*id).into(),
+                    login: "r".into(),
+                })
+                .collect(),
+            requested_teams: Vec::new(),
+            state: Lifecycle::Open,
+            draft: false,
+            head_sha: "a".repeat(40),
+            base_sha: "b".repeat(40),
+            head_repository_id: None,
+            base_repository_id: "100".into(),
+            updated_at: "2026-10-01T00:00:00Z".into(),
+            files: paths
+                .iter()
+                .map(|path| ChangedFile {
+                    path: (*path).into(),
+                    previous_path: None,
+                    status: "modified".into(),
+                    additions: 1,
+                    deletions: 0,
+                    changes: 1,
+                    sha: "c".repeat(40),
+                })
+                .collect(),
+        }
+    }
+
+    fn eligible(settings: &Settings, pull: &PullRequest) -> Eligibility {
+        let configuration = configured_schedules(settings).remove(0);
+        eligibility(
+            &configuration.watched_authors,
+            configuration.admission.as_ref(),
+            &configuration.policy,
+            ACCOUNT,
+            pull,
+        )
+    }
+
+    #[test]
+    fn absent_admission_keeps_legacy_behavior_and_trigger_key() {
+        let legacy = settings(serde_json::Value::Null);
+        assert!(eligible(&legacy, &pull("11", &[], false, &[])).admitted);
+        assert!(!eligible(&legacy, &pull("12", &[], false, &[])).admitted);
+        assert!(eligible(&legacy, &pull("12", &[ACCOUNT], false, &[])).admitted);
+        let mentioned = eligible(&legacy, &pull("12", &[], true, &[]));
+        assert!(mentioned.admitted && mentioned.mention_bypass);
+        let configuration = configured_schedules(&legacy).remove(0);
+        assert_eq!(
+            configuration.trigger_policy.as_deref(),
+            Some(r#"[["11"],true]"#)
+        );
+        assert!(configuration.admission.is_none());
+    }
+
+    #[test]
+    fn admission_replaces_legacy_watched_authors_and_reviewer_toggle() {
+        let filtered = settings(serde_json::json!({
+            "mode": "filtered",
+            "rules": [{"kind": "mentioned", "enabled": true}]
+        }));
+        // The legacy watched author no longer admits; only the mention does.
+        assert!(!eligible(&filtered, &pull("11", &[ACCOUNT], false, &[])).admitted);
+        let mention = eligible(&filtered, &pull("12", &[], true, &[]));
+        assert!(mention.admitted && mention.mention_bypass && !mention.requested_reviewer);
+
+        let assigned = settings(serde_json::json!({
+            "mode": "filtered",
+            "rules": [{"kind": "assigned", "enabled": true}]
+        }));
+        let reviewer = eligible(&assigned, &pull("12", &[ACCOUNT], true, &[]));
+        assert!(reviewer.admitted && reviewer.requested_reviewer && !reviewer.mention_bypass);
+        assert!(!eligible(&assigned, &pull("12", &[], true, &[])).admitted);
+
+        let all = settings(serde_json::json!({"mode": "all", "rules": []}));
+        let everyone = eligible(&all, &pull("99", &[], false, &[]));
+        assert!(everyone.admitted && everyone.all_authors && !everyone.watched_author);
+    }
+
+    #[test]
+    fn exclusions_beat_mentions_and_path_rules_use_loaded_files() {
+        let configured = settings(serde_json::json!({"mode": "filtered", "rules": [
+            {"kind": "exclude_paths", "enabled": true, "paths": ["docs/"]},
+            {"kind": "mentioned", "enabled": true},
+            {"kind": "include_paths", "enabled": true, "paths": ["src/"]}
+        ]}));
+        assert!(!eligible(&configured, &pull("12", &[], true, &["docs/a.md"])).admitted);
+        assert!(eligible(&configured, &pull("12", &[], true, &["docs/a.md", "x"])).admitted);
+        assert!(eligible(&configured, &pull("12", &[], false, &["src/a.rs"])).admitted);
+        assert!(!eligible(&configured, &pull("12", &[], false, &["lib/a.rs"])).admitted);
+    }
+
+    fn ticket_for(settings: &Settings) -> PollTicket {
+        let configuration = configured_schedules(settings).remove(0);
+        PollTicket {
+            health_key: configuration.health_key,
+            assignment_id: None,
+            repository_id: configuration.repository_id,
+            name: configuration.name,
+            provider_account_id: ACCOUNT.into(),
+            provider_repository_id: "100".into(),
+            policy: configuration.policy,
+            watched_authors: configuration.watched_authors,
+            admission: configuration.admission,
+            trigger_policy: configuration.trigger_policy.unwrap(),
+            updated_after: None,
+            activation_version: String::new(),
+            account_generation: 0,
+            assignments: Vec::new(),
+            tracked: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn scan_admission_and_file_hydration_follow_the_ticket() {
+        let configured = settings(serde_json::json!({"mode": "filtered", "rules": [
+            {"kind": "assigned", "enabled": true},
+            {"kind": "include_paths", "enabled": true, "paths": ["src/"]}
+        ]}));
+        let ticket = ticket_for(&configured);
+        let reviewed = pull("12", &[ACCOUNT], false, &[]);
+        assert!(scan_admits(&ticket, &reviewed));
+        assert!(!needs_changed_files(&ticket, &reviewed));
+        let unknown = pull("12", &[], false, &[]);
+        assert!(needs_changed_files(&ticket, &unknown));
+        assert!(!scan_admits(&ticket, &unknown));
+        let loaded = pull("12", &[], false, &["src/a.rs"]);
+        assert!(!needs_changed_files(&ticket, &loaded));
+        assert!(scan_admits(&ticket, &loaded));
+        // Legacy tickets never fetch files.
+        assert!(!needs_changed_files(
+            &ticket_for(&settings(serde_json::Value::Null)),
+            &unknown
+        ));
+    }
+
+    #[test]
+    fn changing_admission_changes_the_trigger_key_and_activation_context() {
+        let base = settings(serde_json::json!({"mode": "filtered", "rules": [
+            {"kind": "mentioned", "enabled": true}
+        ]}));
+        let key = |settings: &Settings| {
+            configured_schedules(settings)
+                .remove(0)
+                .trigger_policy
+                .unwrap()
+        };
+        let context = |settings: &Settings| Monitor::activation_context(settings, REPO_ID).unwrap();
+        let mut variants = Vec::new();
+        type Edit = fn(&mut crate::admission::AdmissionConfig);
+        let edits: [Edit; 4] = [
+            |c| c.mode = AdmissionMode::All,
+            |c| c.rules[0].enabled = false,
+            |c| {
+                c.rules
+                    .push(AdmissionRule::default_for_test(AdmissionRuleKind::Assigned))
+            },
+            |c| {
+                c.rules.push(AdmissionRule::default_for_test(
+                    AdmissionRuleKind::ExcludePaths,
+                ));
+                c.rules[1].paths = Some(vec!["docs/".into()]);
+            },
+        ];
+        for edit in edits {
+            let mut changed = base.clone();
+            edit(changed.repositories[0].admission.as_mut().unwrap());
+            assert_ne!(key(&changed), key(&base));
+            assert_ne!(context(&changed), context(&base));
+            assert_ne!(
+                context(&changed).trigger_policy,
+                context(&base).trigger_policy
+            );
+            variants.push(key(&changed));
+        }
+        // Reordering is an admission change too.
+        let mut reordered = settings(serde_json::json!({"mode": "filtered", "rules": [
+            {"kind": "assigned", "enabled": true},
+            {"kind": "mentioned", "enabled": true}
+        ]}));
+        let before = key(&reordered);
+        reordered.repositories[0]
+            .admission
+            .as_mut()
+            .unwrap()
+            .rules
+            .reverse();
+        assert_ne!(key(&reordered), before);
+        // The key is stable for identical configuration.
+        assert_eq!(key(&base), key(&base.clone()));
     }
 }

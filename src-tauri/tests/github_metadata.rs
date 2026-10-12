@@ -210,3 +210,26 @@ fn metadata_exhausts_pull_request_and_file_pages_without_losing_verified_fields(
         ])
     );
 }
+
+#[test]
+fn pull_request_files_loads_all_pages_including_rename_origins() {
+    let client = GithubClient::new(MetadataTransport);
+    let repository = RemoteRepository {
+        id: "1376547672".into(),
+        name: "jdylanmc/pr-sniper".into(),
+    };
+
+    let files = client.pull_request_files(&repository, 31).unwrap();
+
+    let names: Vec<_> = files
+        .iter()
+        .map(|file| (file.path.as_str(), file.previous_path.as_deref()))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("src/identity.rs", None),
+            ("src/provider.rs", Some("src/github.rs"))
+        ]
+    );
+}

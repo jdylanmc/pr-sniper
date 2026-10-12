@@ -158,9 +158,7 @@ for (const [embedded, genie] of [
     await expect(browser.getByRole("alert")).toBeHidden();
     await browser.getByLabel("Repository owner").selectOption("orbit");
     await expect(browser.locator("[data-pick]")).toHaveCount(2);
-    await expect(browser.getByRole("status")).toHaveText(
-      "2 accessible repositories loaded.",
-    );
+    await expect(browser.getByRole("status")).toHaveText("2 repositories");
     await browser.getByLabel("Find a repository").fill("103");
     await expect(browser.locator("[data-pick]")).toHaveCount(1);
     expect(state.reads.every((read) => read.accountId === "22")).toBe(true);
@@ -205,9 +203,7 @@ test("Genie repository browsing waits for the actual delayed Settings bootstrap"
     await held.arrived;
     await clicked.promise;
     await expect(page.locator(".settings-window")).toBeVisible();
-    await expect(page.locator("#save-status")).toHaveText(
-      "Loading settings...",
-    );
+    await expect(page.locator("#save-status")).toHaveText("Loading");
     await expect(page.locator('[data-panel-view="genie"]')).toBeHidden();
     expect(state.reads).toEqual([]);
     expect(order).toEqual(["Settings click completed"]);
@@ -243,20 +239,18 @@ test("partial organization authorization is visible without disabling accessible
   await expect(browser.getByRole("alert")).toContainText(
     "Organization access (page 2)",
   );
-  await expect(browser.getByRole("alert")).toContainText("single sign-on");
+  await expect(browser.getByRole("alert")).toContainText(
+    "Blocked by organization",
+  );
   await browser.getByLabel("Repository owner").selectOption("orbit");
   await expect(browser.locator("[data-pick]")).toHaveCount(2);
-  await expect(browser.getByRole("status")).toContainText(
-    "discovery is incomplete",
-  );
+  await expect(browser.getByRole("status")).toContainText("incomplete");
   await expect(browser.getByRole("alert")).not.toContainText("123,456");
   const count = state.reads.length;
   delete state.responses[22][`${catalog}2`].headers["x-github-sso"];
   await browser.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(browser.getByRole("alert")).toBeHidden();
-  await expect(browser.getByRole("status")).toHaveText(
-    "2 accessible repositories loaded.",
-  );
+  await expect(browser.getByRole("status")).toHaveText("2 repositories");
   expect(state.reads).toHaveLength(count + 1);
 });
 
@@ -286,48 +280,38 @@ test("malformed records and denied later pages retain good owners, not a complet
   );
   await browser.getByLabel("Repository owner").selectOption(corporate.login);
   await expect(browser.locator("[data-pick]")).toHaveCount(1);
-  await expect(browser.getByRole("status")).toContainText(
-    "discovery is incomplete",
-  );
-  await expect(browser.getByRole("status")).not.toContainText("No accessible");
+  await expect(browser.getByRole("status")).toContainText("incomplete");
+  await expect(browser.getByRole("status")).not.toHaveText("None");
   state.responses = responses();
   await browser.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(browser.getByRole("alert")).toBeHidden();
 });
 
 for (const [name, failedResponse, diagnostic] of [
-  [
-    "schema",
-    { ...response([]), rawBody: "not-json" },
-    "malformed or unsupported data",
-  ],
-  ["transport", { error: "network" }, "Cannot reach GitHub"],
-  ["provider", response({}, {}, 503), "GitHub lookup failed"],
-  ["provider-rejection", response({}, {}, 422), "GitHub rejected this lookup"],
+  ["schema", { ...response([]), rawBody: "not-json" }, "Invalid response"],
+  ["transport", { error: "network" }, "Offline"],
+  ["provider", response({}, {}, 503), "Provider failed"],
+  ["provider-rejection", response({}, {}, 422), "Rejected"],
   [
     "rate-limit",
     response({}, { "retry-after": "12" }, 429),
-    "Retry after 12 seconds",
+    "Rate limited · 12s",
   ],
   [
     "provider-delay",
     response({}, { "retry-after": "15" }, 503),
-    "Retry after 15 seconds",
+    "Provider failed · 15s",
   ],
-  [
-    "permission",
-    response({}, {}, 403),
-    "organization authorization with your administrator",
-  ],
+  ["permission", response({}, {}, 403), "Access denied"],
   [
     "scope",
     response([], { "x-oauth-scopes": "read:user" }),
-    "Reconnect this account in Accounts",
+    "Reconnect required",
   ],
   [
     "SSO",
     response({}, { "x-github-sso": "required" }, 403),
-    "Reconnecting alone cannot bypass organization policy",
+    "Blocked by organization",
   ],
 ]) {
   test(`${name} failure remains distinct and failed Retry does not pretend success`, async ({
@@ -343,9 +327,7 @@ for (const [name, failedResponse, diagnostic] of [
     await browser.getByRole("button", { name: "Retry", exact: true }).click();
     await expect.poll(() => state.reads.length).toBe(count + 1);
     await expect(browser.getByRole("alert")).toContainText(diagnostic);
-    await expect(browser.getByRole("status")).toHaveText(
-      "Repository browsing unavailable.",
-    );
+    await expect(browser.getByRole("status")).toHaveText("Unavailable");
     state.responses = responses();
     await browser.getByRole("button", { name: "Retry", exact: true }).click();
     await expect(browser.getByRole("alert")).toBeHidden();
@@ -368,9 +350,7 @@ test("failed refresh retains previous selected-account results visibly; later Re
   await expect(browser.getByRole("status")).toContainText("Lookup failed");
   await expect(browser.locator("[data-pick]")).toHaveCount(2);
   await browser.getByLabel("Find a repository").fill("missing");
-  await expect(browser.getByRole("status")).toContainText(
-    "discovery is incomplete",
-  );
+  await expect(browser.getByRole("status")).toContainText("incomplete");
   state.responses = responses();
   state.responses[22][`${catalog}2`].body = [repository(104, "orbit")];
   await browser.getByRole("button", { name: "Retry", exact: true }).click();
@@ -387,7 +367,7 @@ test("selected identity mismatch never returns another account's repositories", 
   const { state } = await install(page, store);
   state.responses[22]["/user"] = response({ id: 44, login: personal.login });
   const browser = await open(page, store);
-  await expect(browser.getByRole("alert")).toContainText("different account");
+  await expect(browser.getByRole("alert")).toContainText("Wrong account");
   await expect(browser.locator("[data-pick]")).toHaveCount(0);
   await expect(browser.getByLabel("Repository owner")).toBeDisabled();
   expect(state.reads.every((read) => read.accountId === "22")).toBe(true);
@@ -459,9 +439,7 @@ for (const [embedded, genie] of [
     await expect(browser.locator("[data-pick]")).toHaveCount(1);
     await browser.getByLabel("Find a repository").fill("101");
     await browser.getByRole("button", { name: "Retry", exact: true }).click();
-    await expect(browser.getByRole("alert")).toContainText(
-      "Cannot reach GitHub",
-    );
+    await expect(browser.getByRole("alert")).toContainText("Offline");
     await expect(browser.getByLabel("Repository owner")).toHaveValue(
       corporate.login,
     );
@@ -542,9 +520,7 @@ for (const failure of [
     await expect(browser.locator("[data-pick]")).toHaveCount(0);
     await expect(browser.getByLabel("Repository owner")).toBeDisabled();
     await expect(browser.getByLabel("Find a repository")).toBeDisabled();
-    await expect(browser.getByRole("status")).toHaveText(
-      "Repository browsing unavailable.",
-    );
+    await expect(browser.getByRole("status")).toHaveText("Unavailable");
     await expect(
       browser.getByRole("button", { name: "Retry", exact: true }),
     ).toBeVisible();
@@ -577,9 +553,7 @@ test("contradictory or empty pagination retains only verified preceding rows wit
   );
   await browser.getByLabel("Repository owner").selectOption(corporate.login);
   await expect(browser.locator("[data-pick]")).toHaveCount(1);
-  await expect(browser.getByRole("status")).toContainText(
-    "discovery is incomplete",
-  );
+  await expect(browser.getByRole("status")).toContainText("incomplete");
   await expect(
     browser.getByLabel("Repository owner").locator("option"),
   ).not.toContainText(["orbit (organization)"]);
@@ -612,7 +586,7 @@ test("ordinary selection denial preserves authorized rows with a visible failure
     403,
   );
   await browser.locator("[data-pick]").click();
-  await expect(browser.getByRole("alert")).toContainText("denied read access");
+  await expect(browser.getByRole("alert")).toContainText("Access denied");
   await expect(browser.locator("[data-pick]")).toHaveCount(1);
   await expect(browser.getByLabel("Find a repository")).toBeEnabled();
   await expect(
@@ -684,7 +658,7 @@ for (const [failure, message, invalidates] of [
     await expect(browser.getByRole("alert")).toBeVisible();
     if (failure === "unavailable-account")
       await expect(browser.getByRole("alert")).toContainText(
-        "GitHub is disconnected",
+        "Reconnect required",
       );
     if (failure === "resource-conflict")
       await expect(browser.getByRole("alert")).toContainText(message);
@@ -694,15 +668,11 @@ for (const [failure, message, invalidates] of [
     if (invalidates) {
       await expect(browser.getByLabel("Repository owner")).toBeDisabled();
       await expect(browser.getByLabel("Find a repository")).toBeDisabled();
-      await expect(browser.getByRole("status")).toHaveText(
-        "Repository browsing unavailable.",
-      );
+      await expect(browser.getByRole("status")).toHaveText("Unavailable");
     } else {
       await expect(browser.getByLabel("Repository owner")).toBeEnabled();
       await expect(browser.getByLabel("Find a repository")).toBeEnabled();
-      await expect(browser.getByRole("status")).toContainText(
-        "discovery is incomplete",
-      );
+      await expect(browser.getByRole("status")).toContainText("incomplete");
     }
     await expect(
       browser.getByRole("button", { name: "Retry", exact: true }),
@@ -750,9 +720,7 @@ test("200-entry known-final no-Link catalog is complete, while unknown-last full
   await expect(browser.getByRole("alert")).toBeHidden();
   await browser.getByLabel("Repository owner").selectOption(corporate.login);
   await expect(browser.locator("[data-pick]")).toHaveCount(100);
-  await expect(browser.getByRole("status")).toHaveText(
-    "100 accessible repositories loaded.",
-  );
+  await expect(browser.getByRole("status")).toHaveText("100 repositories");
   await browser.getByLabel("Repository owner").selectOption("orbit");
   await expect(browser.locator("[data-pick]")).toHaveCount(100);
   await expect(browser.getByRole("alert")).toBeHidden();
@@ -794,10 +762,10 @@ for (const operation of ["retry", "selection", "credential-header"]) {
     await expect(browser.locator("[data-pick]")).toHaveCount(0);
     await expect(browser.getByLabel("Repository owner")).toBeDisabled();
     await expect(browser.getByLabel("Find a repository")).toBeDisabled();
-    await expect(browser.getByRole("alert")).toContainText("credential access");
-    await expect(browser.getByRole("status")).toHaveText(
-      "Repository browsing unavailable.",
+    await expect(browser.getByRole("alert")).toContainText(
+      "Session unavailable",
     );
+    await expect(browser.getByRole("status")).toHaveText("Unavailable");
     await expect(
       browser.getByRole("button", { name: "Retry", exact: true }),
     ).toBeVisible();
@@ -871,17 +839,19 @@ for (const failure of [
     await browser.getByRole("button", { name: "Retry", exact: true }).click();
     await expect(browser.getByRole("alert")).toContainText(
       failure === "session-network"
-        ? "Cannot reach GitHub"
+        ? "Offline"
         : failure === "session-schema"
-          ? "malformed"
+          ? "Invalid response"
           : failure.endsWith("broken-cli")
             ? "broken_cli"
-            : "lookup configuration",
+            : "Setup unavailable",
     );
     await expect(browser.locator("[data-pick]")).toHaveCount(1);
     await expect(browser.getByLabel("Repository owner")).toBeEnabled();
     await expect(browser.getByLabel("Find a repository")).toBeEnabled();
-    await expect(browser.getByRole("status")).toContainText("incomplete");
+    await expect(browser.getByRole("status")).toContainText(
+      failure.startsWith("partial-") ? "incomplete" : "Lookup failed",
+    );
     expect((await store("snapshot")).settings.repositories).toBeUndefined();
   });
 }
@@ -902,7 +872,7 @@ test("a session failure scoped to another account cannot invalidate this browser
     return result;
   };
   await browser.locator("[data-pick]").click();
-  await expect(browser.getByRole("alert")).toContainText("another account");
+  await expect(browser.getByRole("alert")).toHaveText("Failed");
   await expect(browser.locator("[data-pick]")).toHaveCount(1);
   await expect(browser.getByLabel("Find a repository")).toBeEnabled();
   expect((await store("snapshot")).settings.repositories).toBeUndefined();

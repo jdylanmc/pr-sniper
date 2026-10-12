@@ -42,12 +42,13 @@ for (const failUtility of [false, true]) {
     await page.clock.runFor(5100);
     held.release();
     if (failUtility)
-      await expect(page.locator("[data-panel-error]")).toHaveText(
+      await expect(page.locator("[data-panel-error]")).toHaveAttribute(
+        "title",
         "Synthetic utility read failure",
       );
     else
       await expect(page.locator('[data-panel-view="utility"] pre')).toHaveText(
-        /\n\nNo diagnostic events recorded\.$/,
+        /\n\nNo events$/,
       );
     await tab(page, "Queue").click();
     await page.evaluate(() => window.__settingsIdle());
@@ -116,12 +117,12 @@ for (const delayedReceipt of [false, true]) {
       .getByRole("button", { name: "Evidence and actions" })
       .click();
     const evidence = page.locator("[data-item-evidence]");
-    await expect(evidence).toContainText(
-      "Personal review, comments and approval happen on GitHub",
-    );
+    await expect(evidence).toContainText("Ready");
+    await expect(evidence.locator('[data-queue-primary="open"]')).toBeVisible();
     await expect(evidence.getByRole("textbox")).toHaveCount(0);
     await page.screenshot({ path: join(screenshots, "queue-detail.png") });
-    await evidence.getByRole("button", { name: "Open PR on GitHub" }).click();
+    await evidence.locator('[data-queue-primary="open"]').click();
+    await page.getByLabel("Details", { exact: true }).click();
     const guide = page.locator("#agent-reviews details").filter({
       has: page.getByText("Complete file guide (301 files)", { exact: true }),
     });
@@ -312,7 +313,7 @@ test("seven assigned Agents use four actual reservations and three waiting rows,
   );
   await expect(page.locator("#agent-reviews article")).toHaveCount(1);
   await expect(page.locator("[data-work-context]")).toContainText(
-    "Review count1 for this Agent on this PR",
+    "Review count1",
   );
   await expect(page.locator("[data-work-context]")).toContainText(
     "Retry attempt1",
@@ -408,7 +409,7 @@ test("normal inspector distinguishes waiting, running, stopping, failed, superse
   }
 });
 
-test("completion removes its row, capacity refills immediately and new blocked work appends at the tail", async ({
+test("completion removes its row, capacity refills immediately and failed work leaves Running for the Queue", async ({
   page,
   store,
 }) => {
@@ -453,23 +454,22 @@ test("completion removes its row, capacity refills immediately and new blocked w
   await tab(page, "Queue").click();
   await tab(page, "Running").click();
   const rows = page.locator("[data-running-list] article");
-  await expect(rows).toHaveCount(7);
+  await expect(rows).toHaveCount(6);
   await expect
     .poll(() => rows.evaluateAll((rows) => rows.map((r) => r.dataset.jobId)))
-    .toEqual([
-      ...[2, 3, 4, 5, 6, 7].map((n) => `normal:visual-work-${n}`),
-      "normal:visual-new-work",
-    ]);
+    .toEqual([2, 3, 4, 5, 6, 7].map((n) => `normal:visual-work-${n}`));
+  await expect(page.locator('[data-job-id^="item:"]')).toHaveCount(0);
+  await expect(
+    page.locator('[data-job-id="normal:visual-new-work"]'),
+  ).toHaveCount(0);
   await expect(page.locator(".work-spin")).toHaveCount(4);
-  await expect(rows.last()).toHaveAttribute("data-work-state", "blocked");
-  await expect(rows.last().locator(".work-state")).toHaveText("Failed");
-  await expect(page.locator("[data-summary-detail]")).toHaveText(
-    "2 waiting / 1 blocked",
-  );
+  await expect(rows.last().locator(".work-state")).toHaveText("Queued");
+  await expect(page.locator('.work-row[data-display="failed"]')).toHaveCount(0);
+  await expect(page.locator("[data-summary-detail]")).toHaveText("2 waiting");
   await tab(page, "Queue").click();
   await expect(page.locator("#handoff-queue article")).toHaveCount(1);
-  await expect(page.locator("#handoff-queue article")).toContainText(
-    "example/repo #10",
+  await expect(page.locator("#handoff-queue .queue-state")).toHaveText(
+    "Failed",
   );
   await tab(page, "Running").click();
   await page.evaluate(() => {
@@ -480,7 +480,7 @@ test("completion removes its row, capacity refills immediately and new blocked w
   await expect(page.locator("[data-running-count]")).toHaveText("?");
   await expect(rows).toHaveCount(0);
   await expect(page.locator("[data-running-list]")).toContainText(
-    "Work state unavailable",
+    "Unavailable",
   );
 });
 
@@ -501,7 +501,7 @@ test("captured full configuration survives current Agent and doctrine edits with
   await expect(row).not.toContainText("Today's changed Agent");
   await row.getByRole("button", { name: "Open job" }).click();
   const captured = page.locator("[data-work-context] > .work-configuration");
-  await expect(captured).toContainText("Captured for this execution.");
+  await expect(page.locator(".job-facts")).toContainText("Captured role");
   await expect(captured.locator("details")).not.toHaveAttribute("open");
   await expect(captured).toContainText("Review correctness.");
   await expect(captured).toContainText(
@@ -552,9 +552,7 @@ test("selected historical normal pass keeps its ordinal and retry attempt after 
     },
   });
   await page.goto("/");
-  await expect(page.locator(".job-facts")).toContainText(
-    "Review count1 for this Agent on this PR",
-  );
+  await expect(page.locator(".job-facts")).toContainText("Review count1");
   await expect(page.locator(".job-facts")).toContainText("Retry attempt3");
   await expect(page.locator(".job-facts")).toContainText("#9 / iteration 1");
   await expect(page.locator(".job-facts")).not.toContainText(
@@ -587,33 +585,37 @@ test("failed before first attempt retains readable planned configuration after q
   failed.phase = "Failed before execution";
   failed.error = "Configuration changed before dispatch.";
   await store("seed_queue_state", fixture.state);
-  await page
-    .locator('[data-job-id="normal:visual-work-5"]')
-    .getByRole("button")
-    .click();
+  // A failed job leaves Running; its saved evidence stays reachable by route.
+  await expect(
+    page.locator('[data-job-id="normal:visual-work-5"]'),
+  ).toHaveCount(0);
+  await page.evaluate(() =>
+    window.__TAURI_INTERNALS__.invoke("panel_navigate", {
+      route: {
+        tab: "running",
+        detail: { type: "job", kind: "normal", id: "visual-work-5" },
+      },
+    }),
+  );
   await expect(page.locator(".job-status strong")).toHaveText("Failed");
   const planned = page.locator("[data-work-context] > .work-configuration");
-  await expect(planned).toContainText(
-    "Planned configuration; revalidated at start. No execution is claimed.",
-  );
+  await expect(page.locator(".job-facts")).toContainText("Planned role");
   await expect(planned).toContainText("Changed while waiting; never executed.");
   await expect(planned).toContainText("Updated planned doctrine.");
   await expect(planned).toContainText("changed-model");
   await expect(planned).toContainText("AI account33");
-  await expect(planned).not.toContainText("Captured for this execution");
-  await expect(page.locator(".job-facts")).toContainText(
-    "Retry attemptNot started (0)",
-  );
+  await expect(page.locator(".job-facts")).not.toContainText("Captured role");
+  await expect(page.locator(".job-facts")).toContainText("Retry attempt0");
   await captureInspector(page, "normal-failed-zero");
   await page.getByRole("button", { name: "Back", exact: true }).click();
   await expect(
-    page.locator('[data-job-id="normal:visual-work-5"]').getByRole("button"),
-  ).toBeFocused();
+    page.locator('[data-job-id="normal:visual-work-5"]'),
+  ).toHaveCount(0);
   await page
     .locator('[data-job-id="normal:visual-work-1"]')
     .getByRole("button")
     .click();
-  await expect(planned).toContainText("Captured for this execution.");
+  await expect(page.locator(".job-facts")).toContainText("Captured role");
   await expect(planned).toContainText(
     "Captured doctrine: read every changed file.",
   );
@@ -751,9 +753,12 @@ test("seven failed Agents produce one human PR card; superseded and completed jo
   await page.goto("/");
   await expect(page.locator("#handoff-queue article")).toHaveCount(1);
   await expect(page.locator("[data-summary-main]")).toHaveText("1 for you");
+  await expect(page.locator("#handoff-queue .queue-state")).toHaveText(
+    "Failed",
+  );
   await tab(page, "Running").click();
-  await expect(page.locator("[data-running-list] article")).toHaveCount(7);
-  await expect(page.locator(".work-state")).toHaveText(Array(7).fill("Failed"));
+  await expect(page.locator("[data-running-list] article")).toHaveCount(0);
+  await expect(page.locator('[data-work-group="failures"]')).toHaveCount(0);
   await expect(page.locator(".work-spin")).toHaveCount(0);
   fixture.state.jobs[6].waiting = "superseded";
   fixture.state.reviews[0].operation.state = "completed";
@@ -763,7 +768,7 @@ test("seven failed Agents produce one human PR card; superseded and completed jo
   await store("seed_queue_state", fixture.state);
   await tab(page, "Queue").click();
   await tab(page, "Running").click();
-  await expect(page.locator("[data-running-list] article")).toHaveCount(6);
+  await expect(page.locator("[data-running-list] article")).toHaveCount(1);
   await expect(
     page.locator('[data-job-id="normal:visual-work-7"] .work-state'),
   ).toHaveText("Superseded");
@@ -821,9 +826,7 @@ test("human Queue excludes running and author-wait jobs and recovers an unavaila
     "Queue unavailable",
   );
   await expect(page.locator("#handoff-queue article")).toHaveCount(0);
-  await expect(page.locator("[data-panel-error]")).toContainText(
-    "not an empty successful check",
-  );
+  await expect(page.locator("[data-panel-error]")).toHaveText("Failed");
   await page.evaluate(() => {
     window.__failMonitoring = false;
   });

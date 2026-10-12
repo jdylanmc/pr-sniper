@@ -1,7 +1,12 @@
 import { test, expect } from "./fixtures.mjs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { section, backFromEditor } from "./navigation.mjs";
+import {
+  section,
+  backFromEditor,
+  setAllPullRequests,
+  pickAgent,
+} from "./navigation.mjs";
 import {
   providerFixture,
   repositoryPage,
@@ -72,7 +77,7 @@ test("failed new configuration Save cannot enable a later nested assignment Save
   const modal = await addByUrl(page);
   const monitoring = modal.getByRole("switch", { name: "Monitor fixture/one" });
   await expect(monitoring).toBeChecked();
-  await modal.locator("[data-reviewer-trigger]").selectOption("off");
+  await setAllPullRequests(modal, false);
   const file = join(dataRoot, "config/settings.json");
   const before = await readFile(file);
   const intake = JSON.parse(before);
@@ -87,7 +92,9 @@ test("failed new configuration Save cannot enable a later nested assignment Save
   await expect(modal.locator("[data-repository-monitoring-state]")).toHaveText(
     "Disabled",
   );
-  await expect(modal.locator("[data-reviewer-trigger]")).toHaveValue("off");
+  await expect(
+    modal.getByRole("switch", { name: "All pull requests" }),
+  ).not.toBeChecked();
   await modal
     .getByRole("button", { name: "Assign agent", exact: true })
     .click();
@@ -95,7 +102,7 @@ test("failed new configuration Save cannot enable a later nested assignment Save
     name: "Assign agent",
     exact: true,
   });
-  await assign.getByLabel("Agent", { exact: true }).selectOption(reviewer.id);
+  await pickAgent(assign, reviewer.id);
   await assign
     .getByRole("button", { name: "Assign agent", exact: true })
     .click();
@@ -108,7 +115,7 @@ test("failed new configuration Save cannot enable a later nested assignment Save
     agent_id: reviewer.id,
     comment: false,
   });
-  expect(committed.overrides.reviewer_assignment).toBe(false);
+  expect(committed.admission.mode).toBe("filtered");
   expect(bytes.repository_authorizations[repository.id]).toBeNull();
   expect((await store("snapshot")).settings).toEqual(bytes);
   expect(bytes.repositories.find((r) => r.id === neighborId)).toEqual(
@@ -122,7 +129,7 @@ test("failed new configuration Save cannot enable a later nested assignment Save
   await expect(monitoring).toBeChecked();
   await expect(
     modal.locator("[data-repository-monitoring-detail]"),
-  ).toContainText("Starts after you save valid configuration");
+  ).toContainText("Starts on Save");
   await backFromEditor(page, modal);
   const row = page.locator(`[data-repository="${repository.id}"]`);
   await expect(row.locator("[data-monitoring-state]")).toHaveText("Disabled");
@@ -181,7 +188,7 @@ test("nested assignment Save refreshes the editor and listing from actual saved 
     name: "Assign agent",
     exact: true,
   });
-  await assign.getByLabel("Agent", { exact: true }).selectOption(reviewer.id);
+  await pickAgent(assign, reviewer.id);
   await assign
     .getByRole("button", { name: "Assign agent", exact: true })
     .click();
@@ -251,7 +258,7 @@ for (const width of [280, 320]) {
       const lists = page.locator(".repository-list");
       const open = page.locator(`[data-repository="${repoId}"]`);
       await expect(open).toContainText(
-        failedAccount ? "Reconnect account" : "Global Monitoring paused",
+        failedAccount ? "Reconnect account" : "Paused",
       );
       const originalSize = await toggle(page).evaluate((node) =>
         parseFloat(getComputedStyle(node).fontSize),
@@ -369,9 +376,7 @@ for (const width of [280, 320]) {
       await page.keyboard.press("Space");
       if (failedAccount) {
         const error = page.locator("#error");
-        await expect(error).toContainText(
-          "Connect the PR Sniper GitHub OAuth App",
-        );
+        await expect(error).toContainText("Reconnect required");
         await expect(toggle(page)).toHaveAttribute("aria-checked", "false");
         await error.scrollIntoViewIfNeeded();
         await expect(error).toBeInViewport();
@@ -380,7 +385,7 @@ for (const width of [280, 320]) {
         });
       } else {
         await expect(toggle(page)).toHaveAttribute("aria-checked", "true");
-        await expect(open).toContainText("Global Monitoring paused");
+        await expect(open).toContainText("Paused");
       }
       await enlargeText();
       await fullFocus(failedAccount ? "rejected-enable" : "paused-enable");
@@ -553,7 +558,7 @@ for (const embedded of [true, false]) {
         await expect(toggle(page)).toBeFocused();
         await expect(
           page.locator(`[data-repository="${repoId}"]`),
-        ).toContainText("Global Monitoring paused");
+        ).toContainText("Paused");
         expect((await store("automation_snapshot")).paused).toBe(true);
         await enlargeText();
         for (const row of await contained()) {
@@ -594,7 +599,7 @@ for (const embedded of [true, false]) {
     await expect(toggle(page)).toHaveAttribute("aria-checked", "true");
     await expect(toggle(page)).toBeFocused();
     await expect(page.locator(`[data-repository="${repoId}"]`)).toContainText(
-      "Global Monitoring paused",
+      "Paused",
     );
     let saved = (await store("snapshot")).settings;
     expect(saved.repositories[0].enabled).toBe(true);
@@ -666,14 +671,16 @@ test("quick editor switch commits only saved configuration and retains repositor
   await page.locator("#global-capacity").fill("9");
   await section(page, "Repositories");
   const modal = await openEditor(page);
-  await modal.locator("[data-reviewer-trigger]").selectOption("off");
+  await setAllPullRequests(modal, false);
   await modal.getByRole("switch", { name: "Monitor fixture/one" }).click();
   await expect(modal.locator("[data-repository-monitoring-state]")).toHaveText(
     "Enabled",
   );
-  await expect(modal.locator("[data-reviewer-trigger]")).toHaveValue("off");
+  await expect(
+    modal.getByRole("switch", { name: "All pull requests" }),
+  ).not.toBeChecked();
   let saved = (await store("snapshot")).settings;
-  expect(saved.repositories[0].overrides?.reviewer_assignment).toBeUndefined();
+  expect(saved.repositories[0].admission).toBeUndefined();
   expect(saved.defaults).toEqual(original.defaults);
   expect(saved.capacity).toBe(original.capacity);
   await modal.getByRole("switch", { name: "Monitor fixture/one" }).click();
@@ -686,7 +693,7 @@ test("quick editor switch commits only saved configuration and retains repositor
   await expect(modal).toHaveCount(0);
   saved = (await store("snapshot")).settings;
   expect(saved.repositories[0].enabled).toBe(false);
-  expect(saved.repositories[0].overrides.reviewer_assignment).toBe(false);
+  expect(saved.repositories[0].admission.mode).toBe("filtered");
   expect(saved.repositories[1]).toEqual(original.repositories[1]);
   await section(page, "Preferences");
   await expect(page.locator("#global-cron")).toHaveValue("invalid draft cron");
@@ -730,7 +737,7 @@ test("compare-save conflicts retain the repository draft and never overwrite new
   await providerFixture(page, store);
   await repositoryPage(page, store);
   const modal = await openEditor(page);
-  await modal.locator("[data-reviewer-trigger]").selectOption("off");
+  await setAllPullRequests(modal, false);
   const newer = structuredClone(original.repositories[0]);
   newer.watched_authors = [{ id: "11", login: "newer-author" }];
   await store("save_resource", {
@@ -745,7 +752,9 @@ test("compare-save conflicts retain the repository draft and never overwrite new
   await expect(modal.locator("[data-resource-error]")).toContainText(
     "Resource changed",
   );
-  await expect(modal.locator("[data-reviewer-trigger]")).toHaveValue("off");
+  await expect(
+    modal.getByRole("switch", { name: "All pull requests" }),
+  ).not.toBeChecked();
   await expect(
     modal.getByRole("switch", { name: "Monitor fixture/one" }),
   ).not.toBeChecked();
@@ -794,9 +803,7 @@ test("account loss stays separate from enablement and allows a durable off switc
     false,
   );
   await toggle(page).click();
-  await expect(page.locator("#error")).toContainText(
-    "Connect the PR Sniper GitHub OAuth App",
-  );
+  await expect(page.locator("#error")).toContainText("Reconnect required");
   await expect(toggle(page)).toHaveAttribute("aria-checked", "false");
   expect((await store("snapshot")).settings.repositories[0].enabled).toBe(
     false,
@@ -832,7 +839,7 @@ test("new rows stay disabled until valid Save and an explicit off choice survive
     name: "Assign agent",
     exact: true,
   });
-  await assign.getByLabel("Agent", { exact: true }).selectOption(reviewer.id);
+  await pickAgent(assign, reviewer.id);
   await assign
     .getByRole("button", { name: "Assign agent", exact: true })
     .click();

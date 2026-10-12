@@ -33,9 +33,6 @@ test("pause persists across queue and Settings without saving unrelated preferen
   await expect(page.locator("[data-automation-status]")).toContainText(
     "Paused; 0 occupied / 20",
   );
-  await expect(page.locator("#automation-controls")).toContainText(
-    "Already-started remote mutations may have succeeded",
-  );
   await page
     .getByRole("button", { name: "Resume automation", exact: true })
     .click();
@@ -145,7 +142,7 @@ test("native occupancy and stopping counts stay explicit and FIFO text is inert"
   }, state);
   await page.goto("/?view=queue");
   await expect(page.locator("[data-automation-status]")).toHaveText(
-    "Running; 4 occupied / 4 AI slots (0 stopping); 3 waiting; 1 blocked.",
+    "Running; 4 occupied / 4 AI slots (0 stopping); 3 waiting; 1 blocked",
   );
   await expect(page.locator("[data-ai-work] li")).toHaveCount(8);
   await expect(page.locator("[data-ai-work] li").nth(1)).toContainText(
@@ -157,13 +154,13 @@ test("native occupancy and stopping counts stay explicit and FIFO text is inert"
     .getByRole("button", { name: "Pause automation", exact: true })
     .click();
   await expect(page.locator("[data-automation-status]")).toHaveText(
-    "Paused; 4 occupied / 4 AI slots (4 stopping); 3 waiting; 1 blocked.",
+    "Paused; 4 occupied / 4 AI slots (4 stopping); 3 waiting; 1 blocked",
   );
   await page
     .getByRole("button", { name: "Resume automation", exact: true })
     .click();
   await expect(page.locator("[data-automation-status]")).toHaveText(
-    "Running; 4 occupied / 4 AI slots (4 stopping); 3 waiting; 1 blocked.",
+    "Running; 4 occupied / 4 AI slots (4 stopping); 3 waiting; 1 blocked",
   );
 });
 
@@ -194,8 +191,6 @@ test("running work leaves other admitted work automatic without a Start request"
     .filter({ hasText: "example/repo #9" })
     .getByRole("button", { name: "Start review", exact: true });
   await expect(start).toHaveCount(0);
-  await expect(page.locator("#agent-reviews")).toContainText(
-    "Queued automatically",
-  );
+  await expect(page.locator("#agent-reviews")).toContainText("Queued");
   expect(await page.evaluate(() => window.__starts)).toEqual([]);
 });

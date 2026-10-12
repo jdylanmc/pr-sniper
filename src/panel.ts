@@ -5,7 +5,6 @@ import { mountGenie } from "./genie";
 import {
   type Diagnostic,
   diagnosticLog,
-  diagnosticNotice,
   doctrineDiagnostics,
 } from "./diagnostics";
 import {
@@ -14,10 +13,11 @@ import {
   type Settings,
 } from "./resources";
 import { renderMonitoring, type MonitoringSnapshot } from "./monitoring";
-import type { AutomationSnapshot } from "./automation";
+import type { AutomationSnapshot, FailureClass } from "./automation";
 import crosshair from "./crosshair.svg";
 import sniperArt from "./sniper-mark.png";
 import { humanQueue } from "./queue";
+import { retryCommand } from "./queue-detail";
 import {
   workPresentation,
   purposes,
@@ -26,6 +26,7 @@ import {
 } from "./work-presentation";
 import changelogSource from "../CHANGELOG.md?raw";
 import "./panel.css";
+import { terseError } from "./errors";
 
 export type PanelTab = "queue" | "running" | "reviewed" | "settings";
 export type WorkKind = "normal" | "reply" | "mention" | "primary_final";
@@ -56,13 +57,18 @@ interface Row {
   title: string;
   state: string;
   reason?: string | null;
+  failure?: FailureClass | null;
   work?: WorkPresentation;
+  subject?: string;
+  reference?: string;
 }
 
 const stateIcons: Record<string, string> = {
   Queued: "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
-  Blocked: "M5.6 5.6l12.8 12.8M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
   Failed: "m9 9 6 6m0-6-6 6M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
+  Credentials: "m9 9 6 6m0-6-6 6M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
+  Permission: "m9 9 6 6m0-6-6 6M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
+  Network: "m9 9 6 6m0-6-6 6M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
   Stopping: "M9 9v6m6-6v6M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
   Superseded: "M7 7h10M7 12h10M7 17h6",
 };
@@ -90,13 +96,13 @@ const icon = (path: string) =>
 
 export async function mountPanel(app: HTMLElement) {
   app.className = "panel-shell";
-  app.innerHTML = `<header class="panel-header"><img src="${crosshair}" alt="" /><strong>PR Sniper</strong><span data-setup-needed hidden>Setup needed</span><div data-header-automation></div><button type="button" data-panel-hide aria-label="Hide PR Sniper panel" title="Close hides only; background work continues">${icon("m7 7 10 10M7 17 17 7")}</button></header>
+  app.innerHTML = `<header class="panel-header"><img src="${crosshair}" alt="" /><strong>PR Sniper</strong><span data-setup-needed hidden>Setup needed</span><div data-header-automation></div><button type="button" data-panel-hide aria-label="Hide PR Sniper panel" title="Hide">${icon("m7 7 10 10M7 17 17 7")}</button></header>
     <div class="panel-context"><button type="button" data-panel-back aria-label="Back" hidden>${icon("m14 6-6 6 6 6M8 12h12")}</button><h1 tabindex="-1" data-panel-heading>Your queue</h1><button type="button" class="panel-genie" data-context-genie aria-label="Set up with Genie" title="Set up with Genie">${icon(genieIcon)}</button><img class="panel-art" src="${sniperArt}" alt="" /></div>
     <div class="panel-summary" data-panel-summary>
-      <div data-work-summary><strong data-summary-main>Reading queue...</strong></div>
+      <div data-work-summary><strong data-summary-main>Loading</strong></div>
       <div class="queue-metrics" role="group" aria-label="Human handoffs" data-queue-metrics hidden>
-        <button type="button" class="queue-metric" data-queue-ready-card data-queue-filter="ready" aria-pressed="false"><span class="queue-metric-label">Ready for you${icon(destinations.queue.icon)}</span><span class="queue-metric-value"><strong data-queue-ready>?</strong><span>need your eyes</span></span></button>
-        <button type="button" class="queue-metric" data-queue-attention-card data-queue-filter="attention" aria-pressed="false"><span class="queue-metric-label">Needs attention${icon("M12 8v5m0 3h.01M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18")}</span><span class="queue-metric-value"><strong data-queue-attention>?</strong><span>need your input</span></span></button>
+        <button type="button" class="queue-metric" data-queue-ready-card data-queue-filter="ready" aria-pressed="false"><span class="queue-metric-label">Ready for you${icon(destinations.queue.icon)}</span><span class="queue-metric-value"><strong data-queue-ready>?</strong></span></button>
+        <button type="button" class="queue-metric" data-queue-attention-card data-queue-filter="attention" aria-pressed="false"><span class="queue-metric-label">Needs attention${icon("M12 8v5m0 3h.01M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18")}</span><span class="queue-metric-value"><strong data-queue-attention>?</strong></span></button>
       </div>
       <button type="button" class="queue-work-link" data-queue-work hidden aria-label="View Agent work in Running"><span class="queue-capacity" data-queue-capacity aria-hidden="true">?</span><span><strong>Agent work in Running</strong><span data-queue-work-status>Work state unavailable</span></span>${icon("m9 5 7 7-7 7")}</button>
       <div class="queue-list-heading"><h2 data-queue-heading hidden>Over to you</h2><span data-summary-detail></span></div>
@@ -129,7 +135,10 @@ export async function mountPanel(app: HTMLElement) {
       version.title = `Running PR Sniper ${value.trim()}`;
     } else if (!versionKnown) {
       version.textContent = "Version unavailable";
-      version.title = `${failure === undefined ? "Native application metadata did not include a version." : `Native metadata unavailable: ${String(failure)}`} Open Status to retry.`;
+      version.title =
+        failure === undefined
+          ? "Unavailable"
+          : `Unavailable: ${String(failure)}`;
     }
   };
   void invoke<{ version: unknown }>("snapshot").then(
@@ -211,8 +220,16 @@ export async function mountPanel(app: HTMLElement) {
     setupVisible() ? `${key(route)}:genie` : key(route);
   const setupVisible = () => setupOwner === route.tab && !route.detail;
   const showError = (message: string) => {
-    error.textContent = message;
+    const label = terseError(message);
+    if (label === null) return;
+    error.textContent = label;
+    // The backend sentence stays available to assistive tech and hover.
+    error.title = message;
+    error.setAttribute("aria-description", message);
     error.hidden = false;
+  };
+  error.onclick = () => {
+    error.hidden = true;
   };
   const remember = (opener?: HTMLElement) => {
     if (!opener && navigationOrigin === key(route)) return;
@@ -286,6 +303,17 @@ export async function mountPanel(app: HTMLElement) {
         },
         opener,
       ),
+    fix: (target) => {
+      const origin = route;
+      const task = navigate({ tab: "settings" });
+      const expected = intent;
+      void task.then(async () => {
+        const controller = await ensureSettings();
+        if (intent !== expected || route.tab !== "settings" || route.detail)
+          return;
+        controller.open(target, { back: () => void navigate(origin) });
+      });
+    },
     onSnapshot: (value) => {
       snapshot = value;
       drawSummary();
@@ -300,7 +328,7 @@ export async function mountPanel(app: HTMLElement) {
         '[data-panel-tab="running"]',
       )!.title = value
         ? `${value.active} occupied AI slots, including ${value.stopping} stopping`
-        : "Active work unavailable";
+        : "Unavailable";
       drawSummary();
       drawLists();
       const read = ++setupRead;
@@ -314,11 +342,7 @@ export async function mountPanel(app: HTMLElement) {
         },
         (cause) => {
           if (!current()) return;
-          showError(
-            typeof cause === "string"
-              ? cause
-              : "Monitoring setup status is unavailable.",
-          );
+          showError(typeof cause === "string" ? cause : "Unavailable");
         },
       );
     },
@@ -388,10 +412,7 @@ export async function mountPanel(app: HTMLElement) {
       const navigation = navigate({ tab: "queue" });
       const expected = intent;
       void navigation.then(() => {
-        if (paused && intent === expected)
-          showError(
-            "Monitoring scope confirmed. Global automation remains paused; resume it explicitly in Settings.",
-          );
+        if (paused && intent === expected) showError("Confirmed; paused");
         void monitor.refresh();
       });
     },
@@ -411,6 +432,40 @@ export async function mountPanel(app: HTMLElement) {
         });
       });
     },
+  });
+  app.addEventListener("pr-sniper:retry-items", (event) => {
+    const ids = (event as CustomEvent<{ ids: string[] }>).detail.ids;
+    void (async () => {
+      // Several PRs can share one recovery (a repository's monitoring retry).
+      const done = new Set<string>();
+      for (const id of ids) {
+        const item = snapshot?.items?.find((entry) => entry.id === id);
+        if (!item || !snapshot) continue;
+        const command = retryCommand(item, snapshot);
+        const key = JSON.stringify(command);
+        if (done.has(key)) continue;
+        done.add(key);
+        try {
+          await invoke(...command);
+        } catch (error) {
+          showError(typeof error === "string" ? error : "Failed");
+        }
+      }
+      void monitor.refresh();
+    })();
+  });
+  app.addEventListener("pr-sniper:fix-account", (event) => {
+    remember(event.target instanceof HTMLElement ? event.target : undefined);
+    const task = navigate({ tab: "settings" });
+    const expected = intent;
+    void task.then(async () => {
+      const controller = await ensureSettings();
+      if (intent !== expected || route.tab !== "settings" || route.detail)
+        return;
+      controller.open("accounts", {
+        back: () => void navigate({ tab: "queue" }),
+      });
+    });
   });
   async function showSetup(
     owner: PanelTab,
@@ -448,9 +503,9 @@ export async function mountPanel(app: HTMLElement) {
     if (route.tab === "running") {
       main.textContent = automation
         ? `${automation.active - automation.stopping} / ${automation.capacity} running`
-        : "Work state unavailable";
+        : "Unavailable";
       detail.textContent = automation
-        ? `${automation.waiting} waiting${automation.blocked ? ` / ${automation.blocked} blocked` : ""}${automation.stopping ? ` / ${automation.stopping} stopping` : ""}`
+        ? `${waitingCount()} waiting${automation.stopping ? ` / ${automation.stopping} stopping` : ""}`
         : "Occupancy unknown";
     } else {
       const items = humanQueue(snapshot?.items ?? []);
@@ -483,8 +538,8 @@ export async function mountPanel(app: HTMLElement) {
       summary.querySelector<HTMLElement>(
         "[data-queue-work-status]",
       )!.textContent = automation
-        ? `${automation.active - automation.stopping} running${automation.stopping ? ` / ${automation.stopping} stopping` : ""} / ${automation.waiting} waiting${automation.blocked ? ` / ${automation.blocked} blocked` : ""}${automation.paused ? " / paused" : ""}`
-        : "Work state unavailable";
+        ? `${automation.active - automation.stopping} running${automation.stopping ? ` / ${automation.stopping} stopping` : ""} / ${waitingCount()} waiting${automation.paused ? " / paused" : ""}`
+        : "Unavailable";
     }
   }
   function metadata(
@@ -518,11 +573,9 @@ export async function mountPanel(app: HTMLElement) {
     );
     if (rows.length) root.append(list);
     if (!rows.length) {
-      const empty = document.createElement("p");
-      empty.textContent =
-        tab === "running"
-          ? "No active, waiting or blocked AI jobs."
-          : "No completed evidence is available yet.";
+      const empty = document.createElement("div");
+      empty.className = "queue-empty";
+      empty.innerHTML = `${icon(destinations[tab].icon)}<span class="sr-only">${tab === "running" ? "No jobs" : "None"}</span>`;
       root.append(empty);
     }
     for (const row of rows) {
@@ -558,9 +611,7 @@ export async function mountPanel(app: HTMLElement) {
                   ? "Superseded"
                   : ["failed", "manual_retry"].includes(row.work?.state ?? "")
                     ? "Failed"
-                    : row.state === "blocked"
-                      ? "Blocked"
-                      : "Queued";
+                    : "Queued";
         button.className = "work-row";
         button.dataset.display = displayState.toLowerCase();
         button.setAttribute(
@@ -583,36 +634,47 @@ export async function mountPanel(app: HTMLElement) {
           );
         const copy = document.createElement("span");
         copy.className = "work-copy";
-        const top = document.createElement("span");
-        top.className = "work-heading";
-        const agent = document.createElement("strong");
-        agent.textContent =
-          row.work?.agent ??
-          (row.kind === "item" ? row.title : "Job evidence unavailable");
         const state = document.createElement("span");
         state.className = "work-state";
         state.textContent = displayState;
-        top.append(agent, state);
-        const subject = document.createElement("span");
-        subject.className = "work-subject";
-        subject.textContent =
-          row.work?.subject ?? (row.kind === "item" ? "" : row.title);
-        const reference = document.createElement("span");
-        reference.className = "work-reference";
-        reference.textContent =
-          row.work?.reference ??
-          (row.kind === "item" ? "" : "Repository unavailable");
-        const purpose = document.createElement("span");
-        purpose.textContent =
-          row.work?.ordinal ??
-          (row.kind === "item" ? "PR" : purposes[row.kind]);
-        reference.append(purpose);
-        copy.append(top, subject, reference);
+        if (row.failure) {
+          const subject = document.createElement("strong");
+          subject.className = "work-subject";
+          subject.textContent = row.work?.subject ?? row.subject ?? row.title;
+          const reference = document.createElement("span");
+          reference.className = "work-reference";
+          reference.textContent = row.work?.reference ?? row.reference ?? "";
+          copy.append(subject, reference);
+        } else {
+          const top = document.createElement("span");
+          top.className = "work-heading";
+          const agent = document.createElement("strong");
+          agent.textContent =
+            row.work?.agent ??
+            (row.kind === "item" ? row.title : "Job evidence unavailable");
+          top.append(agent, state);
+          const subject = document.createElement("span");
+          subject.className = "work-subject";
+          subject.textContent =
+            row.work?.subject ?? (row.kind === "item" ? "" : row.title);
+          const reference = document.createElement("span");
+          reference.className = "work-reference";
+          reference.textContent =
+            row.work?.reference ??
+            (row.kind === "item" ? "" : "Repository unavailable");
+          const purpose = document.createElement("span");
+          purpose.textContent =
+            row.work?.ordinal ??
+            (row.kind === "item" ? "PR" : purposes[row.kind]);
+          reference.append(purpose);
+          copy.append(top, subject, reference);
+        }
         if (row.reason) button.title += `. ${row.reason}`;
         const chevron = document.createElement("span");
         chevron.className = "work-chevron";
         chevron.setAttribute("aria-hidden", "true");
-        button.append(marker, copy, chevron);
+        if (row.failure) button.append(marker, copy, state, chevron);
+        else button.append(marker, copy, chevron);
         article.append(button);
         const entry = document.createElement("li");
         entry.append(article);
@@ -629,44 +691,65 @@ export async function mountPanel(app: HTMLElement) {
       }
     }
   }
+  // Waiting work excludes parked failures, which belong to Queue.
+  function waitingCount() {
+    return (automation?.work ?? []).filter(
+      (work) =>
+        ["waiting", "blocked"].includes(work.state) &&
+        !work.failure &&
+        !["failed", "manual_retry"].includes(
+          (snapshot &&
+            workPresentation(snapshot, work.key.kind, work.key.id)?.state) ??
+            "",
+        ),
+    ).length;
+  }
   function drawLists() {
     if (!automation) {
       views.running.querySelector<HTMLElement>(
         "[data-running-list]",
-      )!.textContent =
-        "Work state unavailable. No active or waiting jobs can be confirmed. Retry from Status or inspect Diagnostics.";
+      )!.textContent = "Unavailable";
       listSignatures.delete("running");
-    } else
-      draw(
-        "running",
-        [...automation.work]
-          .sort((a, b) => {
-            const rank = (state: string) =>
-              state === "active" ? 0 : state === "stopping" ? 1 : 2;
-            return (
-              rank(a.state) - rank(b.state) || a.enqueue_order - b.enqueue_order
-            );
-          })
-          .map((work) => ({
+    } else {
+      const rows: Row[] = [...automation.work]
+        .sort((a, b) => {
+          const rank = (state: string) =>
+            state === "active" ? 0 : state === "stopping" ? 1 : 2;
+          return (
+            rank(a.state) - rank(b.state) || a.enqueue_order - b.enqueue_order
+          );
+        })
+        .map((work) => {
+          const presentation =
+            snapshot && workPresentation(snapshot, work.key.kind, work.key.id);
+          return {
             id: work.key.id,
             kind: work.key.kind,
             title:
               metadata(work.key.kind, work.key.id)?.title ??
               `Saved ${work.key.kind} job ${work.key.id}`,
             state: work.state,
+            failure: work.failure,
             reason:
               work.reason ??
               (automation?.paused && work.state === "waiting"
                 ? "Monitoring paused."
                 : null),
-            work:
-              snapshot &&
-              workPresentation(snapshot, work.key.kind, work.key.id),
-          })),
+            work: presentation,
+          };
+        });
+      // Parked failures belong to Queue > Needs attention, never here.
+      const running = rows.filter(
+        (row) =>
+          row.work?.state === "superseded" ||
+          (!row.failure &&
+            !["failed", "manual_retry"].includes(row.work?.state ?? "")),
       );
+      rows.splice(0, rows.length, ...running);
+      draw("running", rows);
+    }
     if (!snapshot) {
-      views.reviewed.textContent =
-        "Saved evidence unavailable; no completed state is inferred.";
+      views.reviewed.textContent = "Unavailable";
       listSignatures.delete("reviewed");
       return;
     }
@@ -731,7 +814,7 @@ export async function mountPanel(app: HTMLElement) {
       showVersion(state.version);
       if (state.error) showError(state.error);
       const info = document.createElement("p");
-      info.textContent = `PR Sniper ${state.version}. ${state.isolated ? "Isolated profile." : "Native host."} Hiding the panel does not stop background work.`;
+      info.textContent = `PR Sniper ${state.version}${state.isolated ? " \u00b7 Isolated" : ""}`;
       views.utility.append(info);
       const refresh = document.createElement("button");
       refresh.textContent = `Refresh ${type}`;
@@ -744,9 +827,6 @@ export async function mountPanel(app: HTMLElement) {
         ]);
         if (request !== utilityRevision) return;
         const pre = document.createElement("pre");
-        const notice = document.createElement("p");
-        notice.textContent = diagnosticNotice;
-        views.utility.append(notice);
         pre.textContent =
           doctrineDiagnostics(
             state.doctrine_catalog,
@@ -762,11 +842,7 @@ export async function mountPanel(app: HTMLElement) {
       }
     } catch (cause) {
       if (request === utilityRevision)
-        showError(
-          typeof cause === "string"
-            ? cause
-            : "Native status/diagnostics could not be read.",
-        );
+        showError(typeof cause === "string" ? cause : "Failed");
     }
   }
   async function apply(state: PanelSnapshot) {
@@ -909,11 +985,7 @@ export async function mountPanel(app: HTMLElement) {
           await invoke<PanelSnapshot>("panel_navigate", { route: next }),
         );
       } catch (cause) {
-        showError(
-          typeof cause === "string"
-            ? cause
-            : "Panel navigation failed; the current view was retained.",
-        );
+        showError(typeof cause === "string" ? cause : "Failed");
       } finally {
         navigationOrigin = undefined;
       }
@@ -958,9 +1030,7 @@ export async function mountPanel(app: HTMLElement) {
     try {
       await invoke("hide_panel");
     } catch (cause) {
-      showError(
-        typeof cause === "string" ? cause : "The panel could not be hidden.",
-      );
+      showError(typeof cause === "string" ? cause : "Failed");
     }
   }
   app.querySelector<HTMLButtonElement>("[data-panel-hide]")!.onclick = () =>
@@ -1008,17 +1078,9 @@ export async function mountPanel(app: HTMLElement) {
       }
     } catch (cause) {
       if (current())
-        showError(
-          typeof cause === "string"
-            ? cause
-            : "Saved setup is unavailable. Open Settings to retry; no configuration was assumed.",
-        );
+        showError(typeof cause === "string" ? cause : "Unavailable");
     }
   } catch (cause) {
-    showError(
-      typeof cause === "string"
-        ? cause
-        : "Native panel routing is unavailable; no destination was substituted.",
-    );
+    showError(typeof cause === "string" ? cause : "Unavailable");
   }
 }

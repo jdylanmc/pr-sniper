@@ -1,3 +1,4 @@
+use crate::admission::AdmissionConfig;
 use crate::policy::{Policy, PolicyOverrides, Schedule, WatchedIdentity};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
@@ -32,6 +33,7 @@ pub enum DiagnosticEvent {
     NotificationFailed,
     NotificationOpened,
     NotificationActivated,
+    ThreadSkipped,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -79,6 +81,16 @@ pub struct Settings {
     pub agents: Vec<Agent>,
     #[serde(default = "default_capacity")]
     pub capacity: u32,
+    /// Always written. Settings files without it predate admission rules and
+    /// get the one-time migration on load; programmatic settings are current.
+    #[serde(default = "admission_migration_version")]
+    pub admission_migration_version: u32,
+}
+
+pub const ADMISSION_MIGRATION_VERSION: u32 = 1;
+
+fn admission_migration_version() -> u32 {
+    ADMISSION_MIGRATION_VERSION
 }
 
 fn default_capacity() -> u32 {
@@ -121,6 +133,7 @@ impl Default for Settings {
             capability_notice: None,
             agents: Vec::new(),
             capacity: default_capacity(),
+            admission_migration_version: admission_migration_version(),
         }
     }
 }
@@ -327,6 +340,10 @@ pub struct Repository {
     /// numeric id, no wildcards. Shared across this repository's assignments.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub watched_authors: Vec<WatchedIdentity>,
+    /// Ordered admission rules. Absent keeps the legacy watched-author,
+    /// reviewer-assignment and mention behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admission: Option<AdmissionConfig>,
     /// Legacy assignment schedules remain readable but have no vNext editor.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assignments: Vec<Assignment>,
@@ -467,6 +484,12 @@ impl Settings {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if self.admission_migration_version != ADMISSION_MIGRATION_VERSION {
+            return Err(
+                "Unsupported admission migration version. Use a compatible application before saving."
+                    .into(),
+            );
+        }
         if self.doctrine_catalog_version != doctrine_catalog_version() {
             return Err(
                 "Unsupported doctrine catalog version. Use a compatible application before saving."
@@ -611,6 +634,9 @@ impl Settings {
                 return Err("Repository bindings must be unique.".into());
             }
             repository.overrides.effective(&self.defaults).validate()?;
+            if let Some(admission) = &repository.admission {
+                admission.validate()?;
+            }
             let mut watched_ids = HashSet::new();
             for identity in &repository.watched_authors {
                 let valid_id = identity
@@ -686,6 +712,36 @@ impl Agent {
             None => self.doctrine.iter().map(String::as_str).collect(),
         }
     }
+}
+
+/// Legacy effective values: defaults plus overrides plus the repository list.
+fn seeded_admission(repository: &Repository, defaults: &Policy) -> AdmissionConfig {
+    let policy = repository.overrides.effective(defaults);
+    AdmissionConfig::from_legacy(
+        &crate::monitoring::effective_watched_authors(repository, &policy),
+        policy.reviewer_assignment,
+    )
+}
+
+/// One-time, idempotent: repositories without `admission` get it materialized
+/// from their effective legacy values and monitoring is turned off (and its
+/// authorization cleared) until a human reviews the result. Repositories that
+/// already have `admission` are untouched and nothing is ever re-enabled.
+fn migrate_admission_rules(settings: &mut Settings) -> bool {
+    let defaults = settings.defaults.clone();
+    let mut migrated = 0;
+    for repository in &mut settings.repositories {
+        if repository.admission.is_some() {
+            continue;
+        }
+        repository.admission = Some(seeded_admission(repository, &defaults));
+        repository.enabled = false;
+        settings
+            .repository_authorizations
+            .insert(repository.id.clone(), None);
+        migrated += 1;
+    }
+    migrated > 0
 }
 
 impl Repository {
@@ -1007,7 +1063,11 @@ impl Store {
                         settings.repositories.remove(index);
                     }
                 } else if let Some(value) = value {
-                    settings.repositories.push(*value);
+                    let mut value = *value;
+                    if value.admission.is_none() {
+                        value.admission = Some(seeded_admission(&value, &settings.defaults));
+                    }
+                    settings.repositories.push(value);
                 }
             }
             ResourceEdit::Preferences { expected, value } => {
@@ -1195,12 +1255,15 @@ impl Store {
         struct SavedCatalogVersion {
             #[serde(default)]
             doctrine_catalog_version: Option<u32>,
+            #[serde(default)]
+            admission_migration_version: Option<u32>,
         }
         // API-created settings default to the current version; only unversioned
         // on-disk pre-alpha settings need the one-time reconciliation.
         let saved_version: SavedCatalogVersion = serde_json::from_slice(&bytes)
             .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.")?;
         let reconcile_doctrines = saved_version.doctrine_catalog_version.is_none();
+        let migrate_admission = saved_version.admission_migration_version.is_none();
         if reconcile_doctrines {
             let canonical = crate::doctrine_seeds::doctrines();
             let mut removed_references = 0;
@@ -1266,10 +1329,13 @@ impl Store {
         if reconciled_permissions {
             settings.capability_notice = Some("Repository permissions reconciled: obsolete secondary Reply/Approve/Merge grants disabled; primary Approve & Merge includes approval. Primary selection grants no capabilities. Existing job history and provider receipts are unchanged.".into());
         }
+        // Files without repositories to migrate are left byte-for-byte alone;
+        // every later save stamps the version.
+        let migrated_admission = migrate_admission && migrate_admission_rules(&mut settings);
         settings
             .validate()
             .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.")?;
-        if migrated || reconcile_doctrines || reconciled_permissions {
+        if migrated || reconcile_doctrines || reconciled_permissions || migrated_admission {
             self.write_settings(&settings)?;
         }
         Ok(settings)
@@ -1312,9 +1378,15 @@ impl Store {
             overrides: PolicyOverrides::default(),
             review_preset: None,
             watched_authors: Vec::new(),
+            admission: None,
             assignments: Vec::new(),
             primary_assignment_id: None,
         });
+        let created = settings
+            .repositories
+            .last_mut()
+            .expect("repository was pushed");
+        created.admission = Some(seeded_admission(created, &settings.defaults));
         self.save_settings(&settings)?;
         Ok(settings)
     }

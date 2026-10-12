@@ -32,7 +32,8 @@ test("notification opt-in is immediate, independent and tests the explicitly sel
   await page.goto("/?view=settings");
   await section(page, "Preferences");
   const enabled = page.getByRole("switch", {
-    name: /^Notify me when my attention/,
+    name: "Notifications",
+    exact: true,
   });
   await expect(enabled).not.toBeChecked();
   await expect(
@@ -116,13 +117,10 @@ test("history distinguishes OS acceptance, uncertainty and saved destinations wi
   await page.goto("/?view=queue");
   const history = page.locator("#notification-history");
   await history.getByText("Notification history (3)", { exact: true }).click();
-  await expect(history).toContainText(
-    "Accepted by the operating system; banner visibility is unconfirmed",
-  );
-  await expect(history).toContainText("Delivery outcome unknown");
-  await expect(history).toContainText(
-    "operating system permission or notification settings prevent delivery",
-  );
+  await expect(history).toContainText(": Accepted");
+  await expect(history).toContainText(": Unknown");
+  await expect(history).toContainText(": Permission denied");
+  await expect(history).not.toContainText(/delivered|acknowledged|seen/i);
   await expect(history.locator("img")).toHaveCount(0);
   await expect(history).not.toContainText("Destination opened");
   await history
@@ -160,21 +158,11 @@ test("Windows aggregate permission never invents banner or center authorization"
   await page.goto("/?view=settings");
   await section(page, "Preferences");
   const status = page.locator("#notification-permission");
-  await expect(status).toContainText(
-    "Windows permission: authorized aggregate",
-  );
-  await expect(status).toContainText(
-    "banners unknown (not exposed by the OS API)",
-  );
-  await expect(status).toContainText(
-    "Notification Center unknown (not exposed by the OS API)",
-  );
-  await expect(status).toContainText("Focus may suppress banners");
-  await expect(page.locator("#notification-guidance")).toContainText(
-    "Windows has no permission prompt here",
+  await expect(status).toHaveText(
+    "Off; Windows authorized aggregate; banners unknown; center unknown",
   );
   await expect(
-    page.getByRole("switch", { name: /^Notify me when my attention/ }),
+    page.getByRole("switch", { name: "Notifications", exact: true }),
   ).not.toBeChecked();
 });
 
@@ -187,7 +175,8 @@ test("a delayed permission refresh cannot overwrite a newly saved opt-in", async
   await page.goto("/?view=settings");
   await section(page, "Preferences");
   const enabled = page.getByRole("switch", {
-    name: /^Notify me when my attention/,
+    name: "Notifications",
+    exact: true,
   });
   await expect(enabled).toBeEnabled();
   await expect(enabled).not.toBeChecked();
@@ -232,7 +221,8 @@ test("denied permission leaves opt-in off and visible rather than claiming succe
   await page.goto("/?view=settings");
   await section(page, "Preferences");
   const enabled = page.getByRole("switch", {
-    name: /^Notify me when my attention/,
+    name: "Notifications",
+    exact: true,
   });
   await enabled.check();
   await expect(page.locator("#notification-error")).toContainText(
@@ -241,7 +231,7 @@ test("denied permission leaves opt-in off and visible rather than claiming succe
   await expect(enabled).not.toBeChecked();
   expect((await store("notification_snapshot")).enabled).toBe(false);
   await expect(page.locator("#notification-permission")).toContainText(
-    "permission: denied",
+    /(macOS|Windows) denied; banners off; center off/,
   );
   await page.evaluate(() => {
     window.__denyNotifications = false;
@@ -286,7 +276,5 @@ test("persisted notification history survives unavailable queue data without an 
     "Review queue is invalid",
   );
   await expect(history.locator("article")).toHaveCount(3);
-  await expect(page.locator("#error")).toContainText(
-    "Could not read monitoring state",
-  );
+  await expect(page.locator("#error")).toHaveText("Failed");
 });

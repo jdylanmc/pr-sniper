@@ -14,6 +14,7 @@ export interface Settings {
   presets?: { id: string; name: string; body: string }[];
   default_review_preset?: string;
   doctrine_catalog_version?: number;
+  admission_migration_version?: number;
   doctrine_reset?: { previous_count: number; removed_references: number };
 }
 
@@ -27,7 +28,7 @@ export interface DoctrineCatalog {
 export const doctrineCatalogLabel = (catalog?: DoctrineCatalog | null) =>
   catalog
     ? `${catalog.count} doctrines / ${catalog.source} / source ${catalog.source_revision.slice(0, 12)} / effective ${catalog.effective_revision.slice(0, 12)}`
-    : "Doctrine catalog revision not captured.";
+    : "Not captured";
 
 export interface GlobalPreferences {
   defaults: Policy;

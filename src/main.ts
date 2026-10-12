@@ -5,12 +5,10 @@ import { renderMonitoring, type MonitoringSnapshot } from "./monitoring";
 import { renderIntelligenceDiagnostics } from "./work-presentation";
 import { mountSettingsWithGenie } from "./genie";
 import { mountPanel } from "./panel";
-import { isWindows, trayAdjective, trayLocation } from "./platform";
 import type { DoctrineCatalog, Settings } from "./resources";
 import {
   type Diagnostic,
   diagnosticLog,
-  diagnosticNotice,
   doctrineDiagnostics,
 } from "./diagnostics";
 
@@ -37,8 +35,7 @@ app.innerHTML = `
     <h1></h1>
   </div></header>
   <p id="error" role="alert" hidden></p>
-  <section id="content"></section>
-  <footer>Final review stays human. Closing this window keeps PR Sniper in the ${trayLocation}.</footer>`;
+  <section id="content"></section>`;
 app.querySelector("h1")!.textContent = titles[view] ?? "Status";
 const content = app.querySelector<HTMLElement>("#content")!;
 const error = app.querySelector<HTMLElement>("#error")!;
@@ -58,7 +55,7 @@ async function load() {
     const messages = [state.error].filter(Boolean);
     if (messages.length) showError(messages.join("\n"));
     if (view === "diagnostics") {
-      content.innerHTML = `<p>${diagnosticNotice}</p><button id="refresh">Refresh</button><pre id="log"></pre>`;
+      content.innerHTML = `<button id="refresh">Refresh</button><pre id="log"></pre>`;
       content
         .querySelector("#refresh")!
         .addEventListener("click", () => void load());
@@ -76,19 +73,13 @@ async function load() {
     } else if (view === "queue") {
       renderMonitoring(content, showError);
     } else {
-      content.innerHTML = `<h2>${isWindows ? "System-tray" : "Menu-bar"} host is running</h2><p>Scheduled GitHub checks, assigned reviews and separately gated comments run while PR Sniper is active. Open Review Queue from the ${trayAdjective} menu for PRs ready for your final review, author follow-ups, confirmation requests and recovery actions.</p><p id="version"></p>`;
+      content.innerHTML = `<p id="version"></p>`;
       content.querySelector("#version")!.textContent =
         `PR Sniper ${state.version}`;
     }
   } catch {
     if (revision !== loadRevision) return;
-    showError(
-      [
-        "Could not read application status or diagnostics. Check local storage permissions; no raw error details are exposed.",
-      ]
-        .filter(Boolean)
-        .join("\n"),
-    );
+    showError("Failed");
   }
 }
 

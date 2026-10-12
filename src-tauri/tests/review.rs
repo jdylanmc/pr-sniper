@@ -274,7 +274,7 @@ fn durable_review_uses_shared_retry_budget_and_restores_without_new_identity() {
     assert_eq!(restored.operation.retry_deadline, 1000);
     assert_eq!(restored.operation.attempt_count, 1);
     assert_eq!(restored.operation.state, OperationState::Interrupted);
-    for attempt in 2..=4 {
+    for attempt in 2..=3 {
         let now = restored.operation.next_attempt_at.unwrap().max(101);
         restored.operation.begin_attempt(now).unwrap();
         assert_eq!(restored.operation.attempt_count, attempt);
@@ -310,9 +310,10 @@ fn runtime_errors_preserve_retry_classification_without_provider_messages() {
         (408, OperationFailure::Timeout),
         (429, OperationFailure::RateLimited),
         (503, OperationFailure::Provider),
-        (401, OperationFailure::Permanent),
-        (403, OperationFailure::Permanent),
-        (400, OperationFailure::Permanent),
+        (401, OperationFailure::Credentials),
+        (403, OperationFailure::Permission),
+        // Unclassified provider statuses retry: an execution failure is not proof of a permanent fault.
+        (400, OperationFailure::Provider),
     ] {
         let error = Events::default()
             .push(

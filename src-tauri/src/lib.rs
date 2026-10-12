@@ -1,4 +1,5 @@
 pub mod actions;
+pub mod admission;
 pub mod capacity;
 mod copilot;
 mod doctrine_seeds;
@@ -1454,12 +1455,81 @@ fn finish_monitored_ticket(
     }
 }
 
+fn auto_resume_parked(app: &tauri::AppHandle) -> Result<(), String> {
+    let host = app.state::<Host>();
+    let mut accounts = host
+        .github_auth
+        .lock()
+        .map_err(|_| "GitHub connection state is unavailable.")?
+        .monitoring_accounts();
+    accounts.extend(
+        host.copilot
+            .auth
+            .lock()
+            .map_err(|_| "Copilot connection state is unavailable.")?
+            .monitoring_accounts(),
+    );
+    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+    host.monitor
+        .lock()
+        .map_err(|_| "Monitoring is unavailable.")?
+        .auto_resume(&store, &accounts, now_seconds()?)?;
+    Ok(())
+}
+
+fn start_lifecycle_refresh(app: &tauri::AppHandle) {
+    let host = app.state::<Host>();
+    let tickets = (|| -> Result<_, String> {
+        let accounts = host
+            .github_auth
+            .lock()
+            .map_err(|_| "GitHub connection state is unavailable.")?
+            .monitoring_accounts();
+        let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+        let mut monitor = host
+            .monitor
+            .lock()
+            .map_err(|_| "Monitoring is unavailable.")?;
+        monitor.lifecycle_tickets(&store, &accounts, now_seconds()?)
+    })()
+    .unwrap_or_default();
+    for ticket in tickets {
+        let app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let host = app.state::<Host>();
+            let observed = (|| {
+                let (_, client) = github_session(&host, &ticket.provider_account_id)?;
+                let connection = client.connect(&ticket.name, Some(&ticket.provider_account_id))?;
+                if connection.repository.id != ticket.provider_repository_id {
+                    return Err(ConnectionError::RepositoryChanged);
+                }
+                let mut seen = Vec::new();
+                for (id, number) in &ticket.tracked {
+                    if let Ok(pull) = client.review_pull(&connection.repository, *number) {
+                        if &pull.id == id {
+                            seen.push((pull.id, pull.state));
+                        }
+                    }
+                }
+                Ok(seen)
+            })();
+            let (Ok(now), Ok(store), Ok(mut monitor)) =
+                (now_seconds(), host.store.lock(), host.monitor.lock())
+            else {
+                return;
+            };
+            let _ = monitor.apply_lifecycle(&store, &ticket, observed, now);
+        });
+    }
+}
+
 fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
     let host = app.state::<Host>();
     if host.quitting.load(Ordering::SeqCst) {
         return Err("PR Sniper is quitting.".into());
     }
     let tickets = prepare_monitoring_checks(&host, now_seconds()?, immediate)?;
+    start_lifecycle_refresh(app);
     for ticket in tickets {
         let app = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
@@ -1480,6 +1550,15 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                 }
                 let mut pull_requests = client
                     .poll_tracked_pull_requests(&connection.repository, &ticket_for_poll.tracked)?;
+                // The polling listing has no changed files; load them only
+                // for pull requests that an enabled path rule must decide.
+                for pull in pull_requests.iter_mut().filter(|pull| {
+                    pull.state == github::metadata::Lifecycle::Open
+                        && !pull.draft
+                        && monitoring::needs_changed_files(&ticket_for_poll, pull)
+                }) {
+                    pull.files = client.pull_request_files(&connection.repository, pull.number)?;
+                }
                 let follow_ups = follow_up::host::scan(
                     &app,
                     &ticket_for_poll,
@@ -4209,6 +4288,9 @@ pub fn run() {
                     if let Err(error) = retention_maintenance(&scheduler_app) {
                         report(&scheduler_app, error);
                     }
+                    if let Err(error) = auto_resume_parked(&scheduler_app) {
+                        report(&scheduler_app, error);
+                    }
                     if let Err(error) = capacity::Coordinator::pump(&scheduler_app) {
                         report(&scheduler_app, error);
                     }
@@ -4532,6 +4614,7 @@ mod github_auth_tests {
                 id: "11".into(),
                 login: "author".into(),
             }],
+            admission: None,
             assignments: Vec::new(),
             primary_assignment_id: None,
         });

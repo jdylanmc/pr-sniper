@@ -103,56 +103,48 @@ export function intelligenceError(
     choice?.reasoning_effort &&
     !reasoningEfforts(model).includes(choice.reasoning_effort)
   )
-    return "The selected reasoning effort is not advertised for this account/model.";
+    return "Effort unsupported";
   if (
     choice?.context_tier &&
     (!contextTiers(model).includes(choice.context_tier) ||
       !runtimeContextTier(choice.context_tier))
   )
-    return "The selected context tier is not supported by this account/model and pinned runtime.";
+    return "Context unsupported";
   return "";
 }
 
 export const actualIntelligence = (value?: AgentIntelligence | null) =>
   value
-    ? `Reasoning effort: ${value.reasoning_effort ?? "Provider default (not reported)"}. Context window: ${value.context_tier ?? "Provider default (not reported)"}.`
-    : "Actual reasoning effort and context window were not recorded. Today's settings are not evidence.";
+    ? `Effort: ${value.reasoning_effort ?? "Default"}; context: ${value.context_tier ?? "Default"}`
+    : "Not recorded";
 
 export const copilotFailure = (reason?: string) =>
   ({
-    disconnect_pending:
-      "Disconnecting. Secure credential deletion is not yet confirmed.",
-    disconnect_failed:
-      "Credential deletion could not be confirmed. Retry disconnect.",
-    expired: "The credential is missing or expired. Reconnect this account.",
-    denied: "GitHub authorization was denied. Try again when ready.",
-    network: "Cannot reach GitHub to verify sign-in. Retry verification.",
-    rate_limited: "GitHub rate limited verification. Retry later.",
-    missing_scope:
-      "GitHub no longer grants the required scope. Reconnect and review consent.",
-    authentication_changed:
-      "Reconnect through the PR Sniper OAuth App. Superseded credentials are not reused.",
-    provider:
-      "GitHub could not verify this identity. Retry verification or reconnect.",
-    invalid_response: "GitHub returned an invalid response. Retry.",
-    browser_open: "Could not open your default browser. Retry sign-in.",
-    cancelled: "Sign-in cancelled.",
-    timeout: "Sign-in timed out. Retry.",
-    wrong_identity:
-      "GitHub returned an unexpected or already configured account. Reconnect the matching account or choose another identity.",
-    credentials_unavailable:
-      "Secure storage is unavailable. Retry or reconnect.",
-    verification_pending: "Verifying saved sign-in...",
-    verification_required: "Verify saved sign-in or reconnect this account.",
-    device_flow_disabled:
-      "Device sign-in is disabled for the PR Sniper OAuth App. A maintainer must enable it.",
-  })[reason ?? "provider"] ?? "Verify or reconnect this account.";
+    disconnect_pending: "Disconnecting",
+    disconnect_failed: "Disconnect failed",
+    expired: "Reconnect required",
+    denied: "Denied",
+    network: "Offline",
+    rate_limited: "Rate limited",
+    missing_scope: "Reconnect required",
+    authentication_changed: "Reconnect required",
+    provider: "Verification failed",
+    invalid_response: "Invalid response",
+    browser_open: "Browser failed",
+    cancelled: "Cancelled",
+    timeout: "Timed out",
+    wrong_identity: "Wrong account",
+    credentials_unavailable: "Storage unavailable",
+    verification_pending: "Verifying",
+    verification_required: "Verify required",
+    device_flow_disabled: "Device sign-in disabled",
+  })[reason ?? "provider"] ?? "Reconnect required";
 
 export function renderCopilotAuth(
   root: HTMLElement,
   accountsChanged: (accounts: CopilotAccount[]) => void,
 ) {
-  root.innerHTML = `<div class="copilot-auth-card account-connection" data-account-role="ai"><header class="account-connection-heading"><h3>GitHub Copilot</h3><p>AI identity for Agent reviews</p></header><p class="account-scope">Supplies AI credentials only. Does not grant repository access or permission to publish.</p><div class="account-connection-state"><p role="status" tabindex="-1">Reading Copilot accounts...</p><p class="copilot-error" role="alert" hidden></p><div class="copilot-flow"></div></div><details class="account-consent"><summary>Copilot access and consent</summary><p>Repository access and gated comment publication use the separate GitHub repository connection. Sign-in requests profile access and refresh, not repository access; GitHub may retain permissions you previously granted this OAuth App.${isWindows ? "" : " Model lookup requires macOS 13.5 or later."}</p><p>Only confirming the returned identity saves this connection in ${secureStoreName}, independently of Save changes. A check means verified sign-in, not a subscription, seat or model test. Disconnect removes this role's local credential, not your GitHub authorization or repository connection.</p></details><div class="copilot-accounts"></div></div>`;
+  root.innerHTML = `<div class="copilot-auth-card account-connection" data-account-role="ai"><header class="account-connection-heading"><h3>GitHub Copilot</h3><p>AI identity for Agent reviews</p></header><div class="account-connection-state"><p role="status" tabindex="-1">Loading</p><p class="copilot-error" role="alert" hidden></p><div class="copilot-flow"></div></div><div class="copilot-accounts"></div></div>`;
   const card = root.querySelector<HTMLElement>(".account-connection")!;
   const status = root.querySelector<HTMLElement>("[role=status]")!;
   const error = root.querySelector<HTMLElement>("[role=alert]")!;
@@ -175,10 +167,7 @@ export function renderCopilotAuth(
           : busy || cancelling;
     });
   const showError = (cause: unknown) => {
-    error.textContent =
-      typeof cause === "string"
-        ? cause
-        : "Copilot connection could not be updated. Retry.";
+    error.textContent = typeof cause === "string" ? cause : "Failed";
     error.hidden = false;
   };
   function button(
@@ -257,9 +246,7 @@ export function renderCopilotAuth(
     accountsChanged(view.accounts);
     accounts.replaceChildren();
     flow.replaceChildren();
-    status.textContent = view.accounts.length
-      ? "Choose an account and a returned model separately for each Agent."
-      : "No Copilot accounts connected. Connect an account to configure an Agent.";
+    status.textContent = view.accounts.length ? "" : "Not connected";
     for (const account of view.accounts) {
       const row = document.createElement("article");
       row.className = "github-account";
@@ -313,14 +300,12 @@ export function renderCopilotAuth(
     }
     const current = view.flow;
     if (current.state === "connecting") {
-      status.textContent = current.user_code
-        ? "Complete sign-in in your default browser, then confirm the returned identity here."
-        : "Requesting a one-time code. Your default browser will open.";
+      status.textContent = current.user_code ? "Waiting" : "Requesting code";
       if (current.user_code) {
         const device = document.createElement("div");
         device.className = "github-device";
         const guidance = document.createElement("p");
-        guidance.textContent = `Paste this one-time code at ${current.verification_uri}`;
+        guidance.textContent = current.verification_uri ?? "";
         const codeRow = document.createElement("div");
         codeRow.className = "github-device-code-row";
         const code = document.createElement("code");
@@ -335,10 +320,9 @@ export function renderCopilotAuth(
         copy.onclick = async () => {
           try {
             await navigator.clipboard.writeText(current.user_code!);
-            feedback.textContent = "Code copied. Paste it on GitHub.";
+            feedback.textContent = "Copied";
           } catch {
-            feedback.textContent =
-              "Could not copy. Select the code and copy it manually.";
+            feedback.textContent = "Copy failed";
           }
         };
         codeRow.append(code, copy);
@@ -347,7 +331,7 @@ export function renderCopilotAuth(
       }
       button(flow, "Cancel Copilot sign-in", "cancel_copilot_auth");
     } else if (current.state === "pending_account_confirmation") {
-      status.textContent = `Connecting ${current.login}...`;
+      status.textContent = `Connecting ${current.login}`;
       if (current.confirmation_error)
         showError(copilotFailure(current.confirmation_error));
       const confirm = button(
@@ -395,8 +379,7 @@ export function renderCopilotAuth(
       lastView = "";
       card.dataset.flowState = "failed";
       if (error.hidden) showError(cause);
-      status.textContent =
-        "Copilot account state is unavailable. No connection is assumed.";
+      status.textContent = "Unavailable";
       accounts.replaceChildren();
       flow.replaceChildren();
       button(flow, "Retry reading Copilot accounts", "copilot_auth_state");

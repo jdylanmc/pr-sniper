@@ -95,6 +95,7 @@ async function setup(page, candidates) {
     };
   }, candidates);
   await page.goto("/?view=queue");
+  await page.locator("[data-queue-details]").evaluate((d) => (d.open = true));
 }
 
 test("follow-up analysis keeps job identity without legacy trust approval", async ({
@@ -103,13 +104,12 @@ test("follow-up analysis keeps job identity without legacy trust approval", asyn
   await setup(page, [{ ...candidate(), trust_required: true }]);
   const root = page.locator("#thread-follow-ups");
   await expect(root.getByRole("checkbox", { name: /trust/i })).toHaveCount(0);
-  await expect(root).toContainText("external comment 101");
-  await expect(root).toContainText("GitHub: repo-owner (22)");
+  await expect(root).toContainText("· 101 ·");
+  await expect(root).toContainText("repo-owner (22) ·");
   expect(await page.evaluate(() => window.__followUpActions)).toEqual([]);
   await expect(
     root.getByRole("button", { name: "Start follow-up", exact: true }),
   ).toHaveCount(0);
-  await expect(root).toContainText("Execution is automatic when eligible");
 });
 
 test("a validated response with Reply Comment off stays local without a manual permission bypass", async ({
@@ -127,9 +127,7 @@ test("a validated response with Reply Comment off stays local without a manual p
   await expect(
     root.getByRole("checkbox", { name: /Publish or reconcile/ }),
   ).toHaveCount(0);
-  await expect(root).toContainText(
-    "Reply Comment: off; analysis continues and qualifying responses remain local",
-  );
+  await expect(root).toContainText("Reply Comment: off");
   expect(await page.evaluate(() => window.__followUpActions)).toEqual([]);
 });
 
@@ -142,11 +140,10 @@ test("quiet and human-judgment outcomes never offer publication", async ({
   quiet.run.id = "quiet-1";
   await setup(page, [human, quiet]);
   const root = page.locator("#thread-follow-ups");
-  await expect(root).toContainText("Human input required. No automated reply.");
   await expect(root).toContainText(
-    "Retry this follow-up only after the human decision",
+    "Human input required: A human must decide or no new facts exist.",
   );
-  await expect(root).toContainText("No reply needed.");
+  await expect(root).toContainText("Quiet: A human must decide");
   await expect(root.getByRole("button")).toHaveCount(0);
 });
 
@@ -158,12 +155,8 @@ test("answered human input remains historical evidence without another decision 
   human.superseded = true;
   await setup(page, [human]);
   const root = page.locator("#thread-follow-ups");
-  await expect(root).toContainText(
-    "Historical human-input outcome; this gate was answered by a later explicit assessment.",
-  );
-  await expect(root).not.toContainText(
-    "Retry this follow-up only after the human decision",
-  );
+  await expect(root).toContainText("Answered: A human must decide");
+  await expect(root).not.toContainText("Human input required:");
   await expect(root.getByRole("button")).toHaveCount(0);
 });
 
@@ -189,8 +182,8 @@ test("uncertain replies require reconciliation while confirmed replies cannot be
   };
   await setup(page, [unresolved, published]);
   const root = page.locator("#thread-follow-ups");
-  await expect(root).toContainText("never blindly posts a replacement");
-  await expect(root).toContainText("Confirmed GitHub reply 200");
+  await expect(root).toContainText("Reply unresolved");
+  await expect(root).toContainText("Reply 200");
   await expect(
     root.getByRole("button", { name: "Cancel follow-up" }),
   ).toHaveCount(0);

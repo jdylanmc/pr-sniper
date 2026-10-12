@@ -104,11 +104,7 @@ export function renderFollowUps(
           publish,
         });
     } catch (error) {
-      showError(
-        typeof error === "string"
-          ? error
-          : "Thread follow-up action failed. Check its persisted state before retrying.",
-      );
+      showError(typeof error === "string" ? error : "Failed");
     } finally {
       pending.delete(id);
       signature = "";
@@ -128,12 +124,11 @@ export function renderFollowUps(
     root.replaceChildren();
     for (const mention of mentions.filter((m) => m.blocked)) {
       const row = document.createElement("article");
-      row.textContent = `${mention.binding.repository_name} #${mention.binding.number}: ${mention.blocked} Mention ${mention.comment.id}: ${mention.comment.body}`;
+      row.textContent = `${mention.binding.repository_name} #${mention.binding.number}: ${mention.blocked} ${mention.comment.id}: ${mention.comment.body}`;
       root.append(row);
     }
     if (!candidates.length && !mentions.some((m) => m.blocked)) {
-      root.textContent =
-        "No new eligible other-user comments on admitted open pull requests.";
+      root.textContent = "None";
       return;
     }
     for (const candidate of candidates) {
@@ -141,8 +136,7 @@ export function renderFollowUps(
       const execution = run.context ?? run.review;
       if (!execution) {
         const error = document.createElement("p");
-        error.textContent =
-          "Conversation execution context unavailable; no action permitted.";
+        error.textContent = "Unavailable";
         root.append(error);
         continue;
       }
@@ -161,13 +155,13 @@ export function renderFollowUps(
       heading.textContent = `${job.repository_name} #${job.number} / ${execution.selection.agent.name}`;
       const identity = document.createElement("p");
       identity.className = "hint";
-      identity.textContent = `GitHub: ${job.account_login} (${job.account_id}); analysis head ${job.head_sha}. ${run.target?.kind === "mention" ? "Primary conversation" : `Thread ${thread?.id ?? "unavailable"}`}; external comment ${run.trigger_id}. Copilot account: ${execution.selection.agent.ai_account?.account_id ?? "unavailable"}; model: ${execution.selection.agent.model}.`;
+      identity.textContent = `${job.account_login} (${job.account_id}) \u00b7 ${job.head_sha} \u00b7 ${run.target?.kind === "mention" ? "Primary" : `Thread ${thread?.id ?? "?"}`} \u00b7 ${run.trigger_id} \u00b7 ${execution.selection.agent.ai_account?.account_id ?? "?"} \u00b7 ${execution.selection.agent.model}`;
       if (run.target?.kind === "owned")
         identity.append(
-          ` Original root head ${run.target.review.job.head_sha}; publication ${run.target.publication_id}.`,
+          ` \u00b7 ${run.target.review.job.head_sha} \u00b7 ${run.target.publication_id}`,
         );
       const state = document.createElement("p");
-      state.textContent = `Follow-up: ${run.phase.replaceAll("_", " ")}. Execution is automatic when eligible; Reply Comment: ${candidate.captured_local_response ? "not granted for this captured response; later permission changes do not replay it" : candidate.automatic_publication ? "permitted after revalidation" : "off; analysis continues and qualifying responses remain local"}. Initial Publish Comment is independent.`;
+      state.textContent = `Follow-up: ${run.phase.replaceAll("_", " ")}; Reply Comment: ${candidate.captured_local_response ? "not granted" : candidate.automatic_publication ? "permitted" : "off"}`;
       row.append(heading, identity, state);
       if (configuration && (run.analysis?.attempt_count || run.result))
         renderConfiguration(
@@ -182,7 +176,7 @@ export function renderFollowUps(
         history.append(title);
         for (const attempt of run.analysis_history) {
           const state = document.createElement("p");
-          state.textContent = `Attempt ${attempt.operation.attempt_count}: ${attempt.operation.state}. ${attempt.context.job.repository_name} #${attempt.context.job.number}, head ${attempt.context.job.head_sha}.`;
+          state.textContent = `Attempt ${attempt.operation.attempt_count}: ${attempt.operation.state} \u00b7 ${attempt.context.job.repository_name} #${attempt.context.job.number} \u00b7 ${attempt.context.job.head_sha}`;
           history.append(state);
           renderConfiguration(
             history,
@@ -200,13 +194,13 @@ export function renderFollowUps(
       )
         renderConfiguration(
           row,
-          "Planned conversation configuration (revalidated at start)",
+          "Planned conversation configuration",
           candidate.planned_selection,
           candidate.blocked ?? undefined,
         );
       if (run.reply_ordinal != null) {
         const order = document.createElement("p");
-        order.textContent = `Reply work ${run.reply_ordinal}; queue order ${run.enqueue_order ?? "not recorded"}. Retry attempts are separate.`;
+        order.textContent = `Reply work ${run.reply_ordinal}; queue order ${run.enqueue_order ?? "none"}`;
         row.append(order);
       }
       for (const [label, operation] of [
@@ -216,13 +210,12 @@ export function renderFollowUps(
         if (!operation) continue;
         const detail = document.createElement("p");
         detail.className = "hint";
-        detail.textContent = `${label}: ${operation.state}; attempt ${operation.attempt_count}; deadline ${label === "Analysis" && operation.attempt_count === 0 ? "starts at first execution" : new Date(operation.retry_deadline * 1000).toLocaleString()}.`;
+        detail.textContent = `${label}: ${operation.state}; attempt ${operation.attempt_count}; deadline ${label === "Analysis" && operation.attempt_count === 0 ? "none" : new Date(operation.retry_deadline * 1000).toLocaleString()}`;
         row.append(detail);
       }
       if (candidate.human_gate) {
         const warning = document.createElement("p");
-        warning.textContent =
-          "A prior comment needs human judgment. Retry this follow-up only after the human decision.";
+        warning.textContent = "Human input required";
         row.append(warning);
       }
       if (candidate.blocked || run.error) {
@@ -236,8 +229,8 @@ export function renderFollowUps(
       if (run.uncertain || run.receipt) {
         const receipt = document.createElement("p");
         receipt.textContent = run.receipt
-          ? `Confirmed GitHub reply ${run.receipt}. This is not approval; cancellation cannot remove it.`
-          : "Reply outcome unresolved. Reconciliation checks the original reply and never blindly posts a replacement.";
+          ? `Reply ${run.receipt}`
+          : "Reply unresolved";
         row.append(receipt);
       }
       const conversation = document.createElement("details");
@@ -251,7 +244,7 @@ export function renderFollowUps(
       const list = document.createElement("ol");
       for (const comment of comments) {
         const item = document.createElement("li");
-        item.textContent = `${comment.author_login ?? "Unavailable author"}: ${comment.body}`;
+        item.textContent = `${comment.author_login ?? "Unknown"}: ${comment.body}`;
         list.append(item);
       }
       conversation.append(title, list);
@@ -259,7 +252,7 @@ export function renderFollowUps(
       if (run.context && run.target) {
         const captured = document.createElement("details");
         const label = document.createElement("summary");
-        label.textContent = "Original target and captured analysis context";
+        label.textContent = "Captured context";
         const body = document.createElement("pre");
         body.textContent = JSON.stringify(
           { target: run.target, context: run.context },
@@ -272,14 +265,14 @@ export function renderFollowUps(
       if (run.result) {
         const session = document.createElement("p");
         session.className = "hint";
-        session.textContent = `Session ${run.result.session_id}; model ${run.result.model}. ${actualIntelligence(run.result.intelligence)}`;
+        session.textContent = `Session ${run.result.session_id}; model ${run.result.model}; ${actualIntelligence(run.result.intelligence)}`;
         row.append(session);
         const decision = document.createElement("p");
         decision.textContent =
           run.result.output.decision === "quiet"
-            ? `No reply needed. ${run.result.output.reason}`
+            ? `Quiet: ${run.result.output.reason}`
             : run.result.output.decision === "human_input_required"
-              ? `${candidate.superseded && !candidate.human_gate ? "Historical human-input outcome; this gate was answered by a later explicit assessment." : "Human input required. No automated reply."} ${run.result.output.reason}`
+              ? `${candidate.superseded && !candidate.human_gate ? "Answered" : "Human input required"}: ${run.result.output.reason}`
               : `${!candidate.automatic_publication && !run.publication && !run.uncertain && !run.receipt ? "Local response" : "Draft reply"}: ${run.result.output.body}`;
         row.append(decision);
         for (const evidence of run.result.output.evidence) {

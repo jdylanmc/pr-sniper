@@ -68,14 +68,18 @@ test("persisted queue prioritizes operator handoffs, not author waits or local-o
   await expect(
     inbox.getByRole("article", { name: "example/repo #9", exact: true }),
   ).toContainText("Ready for your final review");
-  await expect(
-    inbox.getByRole("article", { name: "example/repo #1", exact: true }),
-  ).toContainText("The PR author needs to respond");
+  const waiting = inbox.getByRole("article", {
+    name: "example/repo #1",
+    exact: true,
+  });
+  await expect(waiting).toHaveAttribute("data-state", "waiting_for_author");
+  await expect(waiting).toContainText("Waiting for PR author");
   const failed = inbox.getByRole("article", {
     name: "example/repo #3",
     exact: true,
   });
-  await expect(failed).toContainText("Failed / recovery required");
+  await expect(failed).toHaveAttribute("data-state", "failed");
+  await expect(failed).toContainText("Failed");
   await expect(failed).not.toContainText("Ready for your final review");
   await expect(
     page.getByRole("button", { name: /^(Approve|Merge)/ }),
@@ -114,6 +118,7 @@ test("exact account and revision selection survives reload with complete ordered
   const evidence = page.locator("#agent-reviews");
   await expect(evidence.locator("article")).toHaveCount(1);
   await expect(evidence).toContainText("example/repo #9");
+  await page.locator("[data-queue-details]").evaluate((d) => (d.open = true));
   await evidence
     .getByText("Complete file guide (301 files)", { exact: true })
     .click();
@@ -139,9 +144,6 @@ test("exact account and revision selection survives reload with complete ordered
         url: `https://github.com/example/repo/pull/9/files#diff-${hash}`,
       },
     ]);
-  await expect(page.locator("#content")).toContainText(
-    "GitHub links open the live PR or current diff",
-  );
 });
 
 test("publication recovery and remediation stay findable in selected evidence", async ({
@@ -156,15 +158,16 @@ test("publication recovery and remediation stay findable in selected evidence", 
     .getByRole("article", { name: "example/repo #3", exact: true })
     .getByRole("button", { name: "Evidence and actions" })
     .click();
+  await page.getByLabel("Details", { exact: true }).click();
   const evidence = page.locator("#agent-reviews");
   const reconcile = evidence.getByRole("button", {
     name: "Reconcile / retry publication",
   });
   await expect(reconcile).toBeDisabled();
-  await expect(evidence).toContainText("Local result: machine sign-off");
-  await expect(evidence).toContainText("GitHub outcome is unresolved");
+  await expect(evidence).toContainText("Machine sign-off");
+  await expect(evidence).toContainText("Outcome unresolved");
   await evidence
-    .getByRole("checkbox", { name: /Publish or reconcile this exact revision/ })
+    .getByRole("checkbox", { name: /^Publish as local-operator \(22\)$/ })
     .check();
   await reconcile.click();
   await expect
@@ -212,9 +215,10 @@ test("cold deep links select only their exact item and missing destinations neve
     .poll(() => page.evaluate(() => window.__destinations.map((d) => d.url)))
     .toEqual(["https://github.com/example/repo/pull/1"]);
   await page.goto("/?view=queue#item=unavailable");
-  await expect(page.locator("#handoff-queue")).toContainText(
-    "No different PR or revision was selected",
-  );
+  await expect(page.locator("#handoff-queue")).toContainText("Unavailable");
+  await expect(
+    page.locator("#handoff-queue article[data-selected=true]"),
+  ).toHaveCount(0);
   await expect(page.locator("#agent-reviews article")).toHaveCount(0);
   await page.getByRole("button", { name: "Show all evidence" }).click();
   await expect(page.locator("#agent-reviews article")).toHaveCount(4);
@@ -244,9 +248,7 @@ test("new heads preserve old publication warnings instead of carrying forward re
   await expect(
     rows.filter({ hasText: "Ready for your final review" }),
   ).toHaveCount(0);
-  await expect(page.locator("#agent-reviews")).toContainText(
-    "Head " + "a".repeat(40),
-  );
+  await expect(page.locator("#agent-reviews")).toContainText("a".repeat(40));
   await expect(
     page.getByRole("button", { name: "Start review", exact: true }),
   ).toHaveCount(0);

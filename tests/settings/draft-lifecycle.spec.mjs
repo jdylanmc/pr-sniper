@@ -4,6 +4,8 @@ import { join } from "node:path";
 import {
   addRepository,
   assignment,
+  assignmentView,
+  assignmentBack,
   saveAssignment,
   closeDialog,
   saveChanges,
@@ -68,22 +70,24 @@ for (const other of ["agent", "neighbor"]) {
   }) => {
     const before = (await store("snapshot")).settings;
     let modal = await assignment(page, "octo/hello-world");
-    await modal.getByRole("checkbox", { name: /^Publish Comment/ }).uncheck();
+    await setComment(page, modal, false);
     await saveAssignment(page, modal);
     if (other === "agent")
       await setAgentPrompt(page, "Updated reusable Agent.");
     else {
       modal = await assignment(page, "neighbor/keep-me");
-      await modal.getByRole("checkbox", { name: /^Publish Comment/ }).check();
+      await setComment(page, modal, true);
       await saveAssignment(page, modal);
     }
     expect(
       (await store("snapshot")).settings.repositories[0].assignments[0].comment,
     ).toBe(false);
     modal = await assignment(page, "octo/hello-world", 0);
+    await assignmentView(page, modal, "permissions");
     await expect(
-      modal.getByRole("checkbox", { name: /^Publish Comment/ }),
+      modal.getByRole("switch", { name: "Publish Comment" }),
     ).not.toBeChecked();
+    await assignmentBack(page, modal);
     await closeDialog(page);
     await closeDialog(page);
     await saveChanges(page);
@@ -141,7 +145,6 @@ for (const target of ["agent", "assignment"]) {
     const hold = ipc.holdNext("save_resource");
     try {
       await modal
-        .locator("form")
         .getByRole("button", {
           name: target === "agent" ? "Save agent" : "Assign agent",
           exact: true,
@@ -153,7 +156,7 @@ for (const target of ["agent", "assignment"]) {
           ".settings-window input,.settings-window textarea,.settings-window select,.settings-window button",
         )
         .all();
-      await expect(page.locator("#save-status")).toHaveText("Working...");
+      await expect(page.locator("#save-status")).toHaveText("Working");
       expect(controls.length).toBeGreaterThan(0);
       for (const control of controls) await expect(control).toBeDisabled();
       hold.release();
@@ -180,23 +183,21 @@ test("failed assignment save restores the draft and independent opt-in controls"
 }) => {
   const before = await readFile(join(dataRoot, "config/settings.json"));
   const modal = await assignment(page, "octo/hello-world");
-  await modal.getByRole("checkbox", { name: /^Publish Comment/ }).uncheck();
+  await setComment(page, modal, false);
   await mkdir(join(dataRoot, "config/settings.json.tmp"));
   await modal
-    .locator("form")
     .getByRole("button", { name: "Assign agent", exact: true })
     .click();
   await expect(modal.getByRole("alert")).toBeVisible();
   await expect(
-    modal
-      .locator("form")
-      .getByRole("button", { name: "Assign agent", exact: true }),
+    modal.getByRole("button", { name: "Assign agent", exact: true }),
   ).toBeEnabled();
   await expect(
-    modal.getByRole("combobox", { name: "Agent", exact: true }),
+    modal.getByRole("button", { name: "Choose Agent" }),
   ).toBeEnabled();
+  await assignmentView(page, modal, "permissions");
   await expect(
-    modal.getByRole("checkbox", { name: /^Publish Comment/ }),
+    modal.getByRole("switch", { name: "Publish Comment" }),
   ).not.toBeChecked();
   await expect(
     modal.getByRole("radio", { name: "Approve", exact: true }),
@@ -205,3 +206,11 @@ test("failed assignment save restores the draft and independent opt-in controls"
     before,
   );
 });
+
+async function setComment(page, modal, checked) {
+  await assignmentView(page, modal, "permissions");
+  await modal
+    .getByRole("switch", { name: "Publish Comment" })
+    .setChecked(checked);
+  await assignmentBack(page, modal);
+}

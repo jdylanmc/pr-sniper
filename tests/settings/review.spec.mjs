@@ -40,9 +40,7 @@ test("retained job inspector restores a legacy trust wait without a consent cont
   await expect(
     page.getByRole("button", { name: "Start review", exact: true }),
   ).toHaveCount(0);
-  await expect(page.locator("[data-monitor-detail]")).toContainText(
-    "Queued automatically",
-  );
+  await expect(page.locator("[data-monitor-detail]")).toContainText("Queued");
   await page.screenshot({
     path: testInfo.outputPath("job-without-trust-prompt.png"),
   });
@@ -65,9 +63,6 @@ test("Settings removes legacy start controls without changing disablement or pub
     name: /^Start eligible reviews automatically/,
   });
   await expect(automatic).toHaveCount(0);
-  await expect(
-    page.getByText(/Eligible reviews run automatically/),
-  ).toBeVisible();
   await page.locator("#global-capacity").fill("5");
   await saveChanges(page);
   let settings = (await store("snapshot")).settings;
@@ -81,7 +76,7 @@ test("Settings removes legacy start controls without changing disablement or pub
   await expect(modal.getByLabel("Review start", { exact: true })).toHaveCount(
     0,
   );
-  await expect(modal).toContainText("Eligible reviews start automatically");
+  await expect(modal.getByRole("switch", { name: /start/i })).toHaveCount(0);
   await closeDialog(page);
   await saveChanges(page);
   settings = (await store("snapshot")).settings;
@@ -98,6 +93,10 @@ test("Settings removes legacy start controls without changing disablement or pub
   expect(settings.defaults.automatic_agent_start).toBe(false);
   expect(settings.repositories[0].enabled).toBe(false);
 });
+
+async function openDetails(page) {
+  await page.locator("[data-queue-details]").evaluate((d) => (d.open = true));
+}
 
 function candidate() {
   return {
@@ -204,6 +203,7 @@ for (const mode of ["planned", "captured", "legacy", "queued", "failed-zero"]) {
           : original(command, args);
     }, review);
     await page.goto("/?view=queue");
+    await openDetails(page);
     const panel = page.locator("#agent-reviews");
     if (mode !== "planned" && mode !== "failed-zero") {
       await panel
@@ -214,12 +214,7 @@ for (const mode of ["planned", "captured", "legacy", "queued", "failed-zero"]) {
       await expect(panel.locator("script")).toHaveCount(0);
     }
     if (mode === "planned" || mode === "queued" || mode === "failed-zero") {
-      await panel
-        .getByText(
-          "Planned configuration (revalidated at start; not execution evidence)",
-          { exact: true },
-        )
-        .click();
+      await panel.getByText("Planned configuration", { exact: true }).click();
       await expect(panel).toContainText("Today's planned prompt.");
       await expect(panel).toContainText("Today's doctrine body.");
       if (mode === "failed-zero") {
@@ -234,14 +229,7 @@ for (const mode of ["planned", "captured", "legacy", "queued", "failed-zero"]) {
       await expect(panel).not.toContainText("Today's planned prompt.");
       await expect(panel).not.toContainText("Today's doctrine body.");
     }
-    if (mode === "legacy")
-      await expect(panel).toContainText(
-        "Today's settings are not historical evidence",
-      );
-    if (mode === "captured")
-      await expect(panel).toContainText(
-        "Saved assignment permissions are not a current provider grant.",
-      );
+    if (mode === "legacy") await expect(panel).toContainText("Not captured");
   });
 }
 
@@ -265,6 +253,7 @@ test("review retry uses the exact failed candidate without an extra trust prompt
     { ...candidate(), run: run("failed") },
   );
   await page.goto("/?view=queue");
+  await openDetails(page);
   const start = page.getByRole("button", { name: "Retry review", exact: true });
   await expect(page.getByRole("checkbox")).toHaveCount(0);
   await expect(start).toBeEnabled();
@@ -301,14 +290,15 @@ test("running review exposes cancellation and safe visible failures", async ({
     };
   }, review);
   await page.goto("/?view=queue");
+  await openDetails(page);
   await expect(page.locator("#agent-reviews")).toContainText(
-    "Copilot account: 33; model: configured-model",
+    "; 33; configured-model",
   );
   await page
     .getByText("Captured execution configuration", { exact: true })
     .click();
   await expect(page.locator("#agent-reviews")).toContainText(
-    "Repository policy not recorded in this snapshot.",
+    "Policy not recorded",
   );
   await page
     .getByRole("button", { name: "Cancel review", exact: true })
@@ -369,6 +359,7 @@ test("completed review renders every file safely without inventing publication s
         : original(command, args);
   }, review);
   await page.goto("/?view=queue");
+  await openDetails(page);
   const root = page.locator("#agent-reviews");
   await expect(root).toContainText("Human input required");
   await root

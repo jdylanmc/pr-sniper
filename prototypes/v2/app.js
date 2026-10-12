@@ -155,7 +155,8 @@ function tell(message) {
 
 try {
   savedRaw = localStorage.getItem(storageKey);
-  if (savedRaw !== null) state = Demo.validate(JSON.parse(savedRaw));
+  if (savedRaw !== null)
+    state = Demo.validate(Demo.migrate(JSON.parse(savedRaw)));
 } catch (error) {
   storageBlocked = true;
   showError(
@@ -257,6 +258,13 @@ function goBack() {
   );
   if (picker) {
     setAgentView(picker, "");
+    return;
+  }
+  const repoForm = stage.lastElementChild?.querySelector(
+    '[data-form="repo"][data-view="admission"]',
+  );
+  if (repoForm) {
+    popAdmission(repoForm);
     return;
   }
   if (stacks[tab].length === 1 || !mayLeave()) return;
@@ -463,7 +471,7 @@ function setupReviewPage() {
     ${state.repos
       .map((repo) => {
         const ready = status.repos.some((item) => item.id === repo.id);
-        return `<section class="detail-section setup-repository"><h3>${esc(repo.name)}</h3>${!ready ? '<p class="inline-warning">Not ready: disabled, disconnected, unconfirmed scope, or no available assigned agent. This repository will not run.</p>' : ""}<dl class="context-list"><dt>GitHub identity</dt><dd>${esc(state.accounts.find((account) => account.id === repo.accountId)?.name)}</dd><dt>Detection</dt><dd>${repo.schedule === "interval" ? `Every ${repo.minutes} minutes` : `${esc(repo.cron)} / ${esc(repo.zone)}`}</dd><dt>Scope</dt><dd>${repo.scope ? "New PRs only (demo)" : "Not confirmed"}</dd><dt>Authors</dt><dd>${repo.watched.length ? `${repo.watched.length} watched people` : "All authors; untrusted revisions still need confirmation"}</dd><dt>Review start</dt><dd>${Demo.effective(state, repo, "start") ? "Automatic when eligible" : "Manual start required"}</dd><dt>Comments</dt><dd>${Demo.effective(state, repo, "comments") ? "Automatic if agent permits" : "Manual publication gate"}</dd></dl>
+        return `<section class="detail-section setup-repository"><h3>${esc(repo.name)}</h3>${!ready ? '<p class="inline-warning">Not ready: disabled, disconnected, unconfirmed scope, or no available assigned agent. This repository will not run.</p>' : ""}<dl class="context-list"><dt>GitHub identity</dt><dd>${esc(state.accounts.find((account) => account.id === repo.accountId)?.name)}</dd><dt>Detection</dt><dd>${repo.schedule === "interval" ? `Every ${repo.minutes} minutes` : `${esc(repo.cron)} / ${esc(repo.zone)}`}</dd><dt>Scope</dt><dd>${repo.scope ? "New PRs only (demo)" : "Not confirmed"}</dd><dt>Pull requests</dt><dd>${repo.admission.mode === "all" ? "All pull requests; untrusted revisions still need confirmation" : `Filtered (${repo.admission.rules.filter((rule) => rule.enabled).length} rules on)`}</dd><dt>Review start</dt><dd>${Demo.effective(state, repo, "start") ? "Automatic when eligible" : "Manual start required"}</dd><dt>Comments</dt><dd>${Demo.effective(state, repo, "comments") ? "Automatic if agent permits" : "Manual publication gate"}</dd></dl>
       ${repo.agentIds
         .map((id) => state.agents.find((agent) => agent.id === id))
         .filter(Boolean)
@@ -933,7 +941,7 @@ function repoEditor(id) {
     enabled: true,
     scope: false,
     agentIds: [],
-    watched: [],
+    admission: Demo.defaultAdmission(),
     schedule: "interval",
     minutes: 5,
     cron: "*/15 * * * *",
@@ -941,22 +949,16 @@ function repoEditor(id) {
     start: "inherit",
     comments: "inherit",
   };
-  const repo = {
-    reviewerRequests: "inherit",
-    ...base,
-    ...route().draft?.values,
-  };
+  const repo = { ...base, ...route().draft?.values };
   const row = (label, control) =>
     `<label class="kv-row"><span>${label}</span>${control}</label>`;
   const plain = (action, label, extra = "") =>
     `<button type="button" class="plain-row ${extra}" data-action="${action}" data-id="${esc(id ?? "")}" ${extra.includes("danger") && !id ? "hidden" : ""}>${label}</button>`;
   return `<div class="page-scroll" data-scroll="repo-editor"><form data-form="repo" data-id="${esc(id ?? "")}" class="editor-form repo-form">
     <section class="group-card">${row("Monitor", `<input type="checkbox" class="switch" name="enabled" aria-label="Monitor this repository" ${checked(repo.enabled)} />`)}</section>
-    <section class="group-card"><h2 class="card-title">Pull requests to watch</h2>${row("Reviewer requests", `<select name="reviewerRequests">${option("inherit", "Use default", repo.reviewerRequests)}${option("on", "Include requested PRs", repo.reviewerRequests)}${option("off", "Do not include", repo.reviewerRequests)}</select>`)}</section>
+    <section class="group-card admission-group">${row("All pull requests", `<input type="checkbox" class="switch" name="admissionAll" aria-label="All pull requests" ${checked(repo.admission.mode === "all")} />`)}<button type="button" class="kv-row kv-link" data-action="open-filters"><span>Filtered pull requests</span><span class="kv-value" data-filter-summary></span>${icon("chevron")}</button></section>
     <section class="group-card"><div class="card-title"><h2>Agents on this repository</h2><button type="button" class="pill-small" data-action="assign-agent">${icon("plus")}Assign agent</button></div>
       <select class="picker" data-picker="agents" aria-label="Assign agent" hidden></select><div data-list="agents"></div></section>
-    <section class="group-card"><div class="card-title"><h2>People you watch</h2><button type="button" class="pill-small" data-action="add-people">${icon("plus")}Add people</button></div>
-      <select class="picker" data-picker="people" aria-label="Add people" hidden></select><div data-list="people"></div></section>
     <details class="group-card repo-disclosure"><summary>Repository</summary>
       <div class="repo-fields" hidden>${row("Name", input("name", repo.name))}${row("Account", accountSelect("github", repo.accountId, "accountId", false))}</div>
       ${plain("edit-repo-fields", "Edit repository")}
@@ -972,6 +974,7 @@ function repoEditor(id) {
       <div data-schedule="cron">${row("Cron", input("cron", repo.cron))}${row("Time zone", input("zone", repo.zone))}</div>
       ${["start", "comments"].map((key) => row(key === "start" ? "Start reviews" : "Publish comments", `<select name="${key}">${option("inherit", `Default (${state.preferences[key === "start" ? "automaticStart" : "automaticComments"] ? "on" : "off"})`, repo[key])}${option("on", "On", repo[key])}${option("off", "Off", repo[key])}</select>`)).join("")}
     </details>
+    <div class="admission-view" data-admission-view hidden></div>
     ${editorFooter("repo", id, "Save repository")}</form></div>`;
 }
 
@@ -988,12 +991,6 @@ function renderRepoLists(form) {
     .map(
       (agent) =>
         `<div class="assign-row"><button type="button" class="assign-open" data-action="edit-assigned-agent" data-id="${esc(agent.id)}"><strong>${esc(agent.name)}</strong><small>${agentPermissions(agent)}</small></button><button type="button" class="row-trash" data-action="unassign-agent" data-id="${esc(agent.id)}" aria-label="Remove ${esc(agent.name)} from this repository" title="Remove">${icon("trash")}</button><input type="hidden" name="agentIds" value="${esc(agent.id)}" /></div>`,
-    )
-    .join("");
-  form.querySelector('[data-list="people"]').innerHTML = form._watched
-    .map(
-      (person) =>
-        `<div class="assign-row"><span class="person-handle" title="${esc(person)}">@${esc(person.toLowerCase().replaceAll(" ", "-"))}</span><button type="button" class="row-trash" data-action="remove-person" data-name="${esc(person)}" aria-label="Remove ${esc(person)}" title="Remove">${icon("trash")}</button><input type="hidden" name="watched" value="${esc(person)}" /></div>`,
     )
     .join("");
   const fill = (name, label, entries) => {
@@ -1015,26 +1012,121 @@ function renderRepoLists(form) {
       .filter((agent) => !form._agents.includes(agent.id))
       .map((agent) => [agent.id, agent.name]),
   );
-  fill(
-    "people",
-    "Choose a person",
-    Demo.people
-      .filter((person) => !form._watched.includes(person))
-      .map((person) => [person, person]),
-  );
   form.querySelector('[data-action="assign-agent"]').disabled =
     form.querySelector('[data-picker="agents"]').options.length < 2;
-  form.querySelector('[data-action="add-people"]').disabled =
-    form.querySelector('[data-picker="people"]').options.length < 2;
 }
 
 function initRepoForm(form) {
   const saved = state.repos.find((repo) => repo.id === form.dataset.id);
   const values = route().draft?.values;
   form._agents = [...(values?.agentIds ?? saved?.agentIds ?? [])];
-  form._watched = [...(values?.watched ?? saved?.watched ?? [])];
+  form._admission = Demo.copy(
+    values?.admission ?? saved?.admission ?? Demo.defaultAdmission(),
+  );
+  form._route = [...(route().draft?.admissionRoute ?? [])];
   renderRepoLists(form);
+  syncAdmission(form);
   syncSchedule(form);
+}
+
+const ruleLabels = {
+  assigned: "Assigned to me for review",
+  mentioned: "Mentioning me in comments",
+  include_users: "Include users",
+  exclude_users: "Exclude users",
+  include_paths: "Include paths",
+  exclude_paths: "Exclude paths",
+};
+const valueRule = (rule) =>
+  rule.kind.endsWith("_users") || rule.kind.endsWith("_paths");
+const handle = (person) => `@${person.toLowerCase().replaceAll(" ", "-")}`;
+
+function syncAdmission(form) {
+  const admission = form._admission;
+  const all = admission.mode === "all";
+  form.elements.namedItem("admissionAll").checked = all;
+  const open = form.querySelector('[data-action="open-filters"]');
+  open.disabled = all;
+  form.querySelector("[data-filter-summary]").textContent = all
+    ? ""
+    : `${admission.rules.filter((rule) => rule.enabled).length} on`;
+  renderAdmission(form);
+}
+
+function currentRule(form) {
+  const kind = form._route.at(-1)?.replace("rule:", "");
+  return form._admission.rules.find((rule) => rule.kind === kind);
+}
+
+function renderAdmission(form) {
+  const view = form.querySelector("[data-admission-view]");
+  const name = form._route.at(-1);
+  form.dataset.view = name ? "admission" : "";
+  view.hidden = !name;
+  if (!name) {
+    view.replaceChildren();
+    if (form._baseTitle) pageTitle.textContent = form._baseTitle;
+    return;
+  }
+  form._baseTitle ??= pageTitle.textContent;
+  if (name === "filters") {
+    pageTitle.textContent = "Filtered pull requests";
+    const rules = form._admission.rules;
+    view.innerHTML = `<section class="group-card admission-rules">${rules
+      .map((rule, index) => {
+        const label = ruleLabels[rule.kind];
+        const values = valueRule(rule);
+        const count = (rule.users ?? rule.paths ?? []).length;
+        return `<div class="admission-rule" data-rule="${rule.kind}"><button type="button" class="admission-open" data-action="open-rule" data-kind="${rule.kind}" ${disabled(!values)} aria-label="${esc(label)}${values ? ": edit values" : ""}"><span class="admission-label">${esc(label)}</span><span class="kv-value">${values ? count : ""}</span>${values ? icon("chevron") : ""}</button><button type="button" class="admission-move" data-action="move-rule" data-kind="${rule.kind}" data-dir="-1" aria-label="Move ${esc(label)} up" title="Move up" ${disabled(index === 0)}>${icon("up")}</button><button type="button" class="admission-move" data-action="move-rule" data-kind="${rule.kind}" data-dir="1" aria-label="Move ${esc(label)} down" title="Move down" ${disabled(index === rules.length - 1)}>${icon("down")}</button><input type="checkbox" class="switch" data-rule-switch="${rule.kind}" aria-label="${esc(label)}" ${checked(rule.enabled)} /></div>`;
+      })
+      .join("")}</section>`;
+    return;
+  }
+  const rule = currentRule(form);
+  pageTitle.textContent = ruleLabels[rule.kind];
+  const users = rule.kind.endsWith("_users");
+  const values = users ? rule.users : rule.paths;
+  const list = `<section class="group-card admission-values">${values
+    .map(
+      (value, index) =>
+        `<div class="assign-row"><span class="person-handle" title="${esc(value)}">${users ? esc(handle(value)) : `<code>${esc(value)}</code>`}</span><button type="button" class="row-trash" data-action="remove-value" data-index="${index}" aria-label="Remove ${esc(users ? handle(value) : value)}" title="Remove">${icon("trash")}</button></div>`,
+    )
+    .join("")}</section>`;
+  if (users) {
+    const choices = Demo.people.filter((person) => !values.includes(person));
+    view.innerHTML = `${list}<select class="picker" data-picker="people" aria-label="Add people" hidden><option value="">Choose a person</option>${choices.map((person) => `<option value="${esc(person)}">${esc(person)}</option>`).join("")}</select><button type="button" class="floating-pill" data-action="add-people" ${disabled(!choices.length)}>${icon("plus")}Add people</button>`;
+  } else
+    view.innerHTML = `${list}<div class="admission-path-form"><input data-path-input aria-label="Path pattern" placeholder="docs/ or src/**/*.ts" autocomplete="off" /><button type="button" class="primary-action" data-action="add-path">Add</button><p role="alert" class="inline-warning" hidden></p></div>`;
+}
+
+function pushAdmission(form, name) {
+  form._route.push(name);
+  renderAdmission(form);
+  form
+    .querySelector(
+      "[data-admission-view] button:not(:disabled), [data-path-input]",
+    )
+    ?.focus({ preventScroll: true });
+}
+
+function popAdmission(form) {
+  const left = form._route.pop();
+  syncAdmission(form);
+  const target = form._route.length
+    ? form.querySelector(
+        `[data-action="open-rule"][data-kind="${left.replace("rule:", "")}"]`,
+      )
+    : form.querySelector('[data-action="open-filters"]');
+  target?.focus({ preventScroll: true });
+}
+
+function addAdmissionValue(form, value) {
+  const rule = currentRule(form);
+  const users = rule.kind.endsWith("_users");
+  (users ? rule.users : rule.paths).push(value);
+  rule.enabled = true;
+  dirty = true;
+  renderAdmission(form);
 }
 
 function setAgentView(form, view) {
@@ -1109,17 +1201,17 @@ function captureDraft() {
           enabled: get("enabled").checked,
           scope: get("scope").checked,
           agentIds: [...form._agents],
-          watched: [...form._watched],
+          admission: Demo.copy(form._admission),
           schedule: text("schedule"),
           minutes: Number(text("minutes")),
           cron: text("cron"),
           zone: text("zone"),
           start: text("start"),
           comments: text("comments"),
-          reviewerRequests: text("reviewerRequests"),
         };
   route().draft = {
     values,
+    admissionRoute: form._route ? [...form._route] : undefined,
     view: form.dataset.view ?? "",
     lastSignature: form.dataset.lastSignature,
   };
@@ -1480,6 +1572,13 @@ function render(direction = 0, focus = false) {
   growPrompt(next);
   if (current.page === "agent" && current.draft?.view === "doctrines")
     pageTitle.textContent = "Doctrines";
+  if (current.page === "repo") {
+    const repoForm = next.querySelector('[data-form="repo"]');
+    if (repoForm._route.length) {
+      repoForm._baseTitle = pageTitle.textContent;
+      renderAdmission(repoForm);
+    }
+  }
   syncChrome();
   for (const [key, scrollTop] of current.scrolls ?? []) {
     const element = [...next.querySelectorAll("[data-scroll]")].find(
@@ -1565,7 +1664,7 @@ function readForm(form) {
             enabled: bool("enabled"),
             scope: bool("scope"),
             agentIds: all("agentIds"),
-            watched: all("watched"),
+            admission: Demo.copy(form._admission),
             schedule,
             minutes:
               schedule === "interval"
@@ -1575,7 +1674,6 @@ function readForm(form) {
             zone: schedule === "cron" ? value("zone") : saved.zone,
             start: value("start"),
             comments: value("comments"),
-            reviewerRequests: value("reviewerRequests"),
           },
         },
       ];
@@ -1735,14 +1833,42 @@ stage.addEventListener("change", (event) => {
     const form = event.target.closest("form");
     const value = event.target.value;
     if (value) {
-      if (event.target.dataset.picker === "agents") form._agents.push(value);
-      else form._watched.push(value);
-      dirty = true;
-      renderRepoLists(form);
+      if (event.target.dataset.picker === "agents") {
+        form._agents.push(value);
+        dirty = true;
+        renderRepoLists(form);
+      } else {
+        addAdmissionValue(form, value);
+        form
+          .querySelector('[data-action="add-people"]')
+          ?.focus({ preventScroll: true });
+      }
     }
   }
   if (event.target.name === "schedule")
     syncSchedule(event.target.closest("form"));
+  if (event.target.name === "admissionAll") {
+    const form = event.target.closest("form");
+    form._admission.mode = event.target.checked ? "all" : "filtered";
+    dirty = true;
+    syncAdmission(form);
+  }
+  if (event.target.dataset.ruleSwitch) {
+    const form = event.target.closest("form");
+    form._admission.rules.find(
+      (rule) => rule.kind === event.target.dataset.ruleSwitch,
+    ).enabled = event.target.checked;
+    dirty = true;
+  }
+});
+stage.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && event.target.matches("[data-path-input]")) {
+    event.preventDefault();
+    event.target
+      .closest("form")
+      .querySelector('[data-action="add-path"]')
+      .click();
+  }
 });
 
 popover.addEventListener("click", (event) => {
@@ -1900,15 +2026,46 @@ popover.addEventListener("click", (event) => {
       picker.hidden = !picker.hidden;
       if (!picker.hidden) picker.focus();
     },
+    "open-filters": () => pushAdmission(form, "filters"),
+    "open-rule": () => pushAdmission(form, `rule:${button.dataset.kind}`),
+    "move-rule": () => {
+      const rules = form._admission.rules;
+      const index = rules.findIndex(
+        (rule) => rule.kind === button.dataset.kind,
+      );
+      const target = index + Number(button.dataset.dir);
+      [rules[index], rules[target]] = [rules[target], rules[index]];
+      dirty = true;
+      renderAdmission(form);
+      form
+        .querySelector(
+          `[data-rule="${button.dataset.kind}"] [data-dir="${button.dataset.dir}"]`,
+        )
+        ?.focus({ preventScroll: true });
+    },
+    "remove-value": () => {
+      const rule = currentRule(form);
+      const values = rule.users ?? rule.paths;
+      values.splice(Number(button.dataset.index), 1);
+      dirty = true;
+      renderAdmission(form);
+    },
+    "add-path": () => {
+      const input = form.querySelector("[data-path-input]");
+      const alert = form.querySelector('[data-admission-view] [role="alert"]');
+      const value = input.value.trim();
+      const problem = Demo.pathProblem(value, currentRule(form).paths);
+      if (problem) {
+        alert.textContent = problem;
+        alert.hidden = false;
+        input.focus();
+        return;
+      }
+      addAdmissionValue(form, value);
+      form.querySelector("[data-path-input]").focus();
+    },
     "unassign-agent": () => {
       form._agents = form._agents.filter((item) => item !== id);
-      dirty = true;
-      renderRepoLists(form);
-    },
-    "remove-person": () => {
-      form._watched = form._watched.filter(
-        (item) => item !== button.dataset.name,
-      );
       dirty = true;
       renderRepoLists(form);
     },

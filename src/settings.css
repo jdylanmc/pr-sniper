@@ -414,10 +414,6 @@
   padding: 24px 32px 17px;
   flex: none;
 }
-.settings-heading p {
-  margin-top: 7px;
-  color: #5b6b5f;
-}
 .settings-window #content {
   margin: 0;
   padding: 0 32px 16px;
@@ -680,31 +676,11 @@
   padding: 5px 6px;
   font-size: 12px;
 }
-.settings-window .settings-hint {
-  font-size: 12px;
-  color: #5b6b5f;
-  margin: 12px 0;
-}
 .settings-actions {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
   margin-top: 14px;
-}
-.settings-window .settings-empty {
-  padding: 28px 18px;
-  text-align: center;
-  color: #5b6b5f;
-}
-.settings-empty strong {
-  display: block;
-  color: #1e2a22;
-  margin-bottom: 5px;
-  font:
-    400 19px/1.3 ui-serif,
-    "New York",
-    Georgia,
-    serif;
 }
 .settings-window .settings-notice {
   border: 1px solid #dce3d9;
@@ -994,9 +970,6 @@
   .settings-window h1 {
     font-size: 23px;
   }
-  .settings-heading p {
-    font-size: 13px;
-  }
   .settings-window #content {
     padding: 0 16px 21px;
   }
@@ -1273,21 +1246,6 @@
   outline: 3px solid #096d7c;
   outline-offset: 2px;
 }
-.account-consent {
-  color: #52647b;
-  font-size: 11px;
-}
-.account-consent summary {
-  scroll-margin-block: 6px;
-  width: fit-content;
-  max-width: 100%;
-  cursor: pointer;
-  padding: 3px 0;
-  color: #243247;
-}
-.settings-window .account-consent p {
-  margin-top: 6px;
-}
 .account-connection :is(.github-auth-accounts, .copilot-accounts) {
   display: grid;
   gap: 8px;
@@ -1360,11 +1318,6 @@
     margin: 2px 0;
     border-color: #dce3eb;
   }
-  .panel-shell .settings-window:has(.account-connection) .settings-heading p {
-    margin-top: 3px;
-    font-size: 11px;
-    color: #52647b;
-  }
   .panel-shell
     .settings-window:has(.account-connection)
     .settings-savebar
@@ -1392,9 +1345,6 @@
   }
   .panel-shell .settings-window:has(.account-connection) .settings-heading h1 {
     font-size: 12px;
-  }
-  .panel-shell .settings-window:has(.account-connection) .settings-heading p {
-    display: none;
   }
   .panel-shell .settings-window:has(.account-connection) .settings-savebar {
     padding: 4px 8px;
@@ -1466,10 +1416,7 @@
   background: var(--resource-mist);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
-.settings-window[data-resource-library]:not([data-resource-library=""]) h1,
-.settings-window[data-resource-library]:not([data-resource-library=""])
-  .settings-empty
-  strong {
+.settings-window[data-resource-library]:not([data-resource-library=""]) h1 {
   font-family: inherit;
   font-weight: 650;
 }
@@ -1594,11 +1541,6 @@
 .settings-window .resource-account-notice {
   margin: 0 0 12px;
 }
-.settings-window .resource-account-notice .settings-hint {
-  margin: 0 0 5px;
-  color: var(--resource-muted);
-  font-size: 11px;
-}
 .settings-window .resource-account-notice button {
   padding: 3px 0;
   font-size: 11px;
@@ -1660,7 +1602,6 @@
   opacity: 0.6;
   cursor: not-allowed;
 }
-.settings-window .shared-resource-editor .settings-hint,
 .settings-window .shared-resource-editor .word-count {
   color: var(--resource-muted);
   font-size: 11px;
@@ -1787,8 +1728,7 @@
   font-size: 12px;
 }
 .settings-window .repository-library .repository-info p,
-.settings-window .repository-library .clone-paths,
-.settings-window .repository-library .settings-hint {
+.settings-window .repository-library .clone-paths {
   color: var(--resource-muted);
   font-size: 10px;
   line-height: 1.5;
@@ -1977,11 +1917,6 @@
   background: #f0f6f7;
   font-size: 11px;
 }
-.settings-window .repository-editor .settings-empty {
-  padding: 12px 0;
-  text-align: left;
-  font-size: 11px;
-}
 .panel-shell .shared-resource-host.dialog-fallback {
   padding: 12px;
   background: var(--panel-mist);
@@ -2052,7 +1987,6 @@
   font-family: inherit;
   font-weight: 650;
 }
-.settings-window[data-preferences] .settings-heading p,
 .settings-window[data-preferences] #save-status {
   color: #52647b;
 }
@@ -2128,7 +2062,6 @@
   font-size: 12px;
   color: #243247;
 }
-.preferences-view .settings-hint,
 .preferences-view .setting-row small {
   color: #52647b;
   font-size: 11px;
@@ -2143,10 +2076,6 @@
 }
 .preferences-view .preferences-saved fieldset + fieldset {
   border-top: 1px solid #e1e8ed;
-}
-.preferences-view .preferences-permissions {
-  margin: 0;
-  padding: 0 14px 12px;
 }
 .preferences-view .preferences-capacity {
   display: flex;
@@ -2165,14 +2094,6 @@
   color: #243247;
   background: #e7f3f1;
   border-color: #64b8be;
-}
-.preferences-view .preferences-warning {
-  padding: 8px 10px;
-  margin: 10px 0;
-  border-left: 3px solid #f68743;
-  background: #fff4eb;
-  color: #7b421f;
-  font-size: 11px;
 }
 .preferences-view .preferences-schedule {
   display: grid;
@@ -2238,10 +2159,6 @@
     margin: 2px 0;
     border-color: #cdd8e2;
   }
-  .panel-shell .settings-window[data-preferences] .settings-heading p {
-    font-size: 11px;
-    margin-top: 3px;
-  }
   .panel-shell .settings-window[data-preferences] .settings-savebar button {
     font-size: 11px;
     min-height: 30px;
@@ -2262,9 +2179,6 @@
   }
   .panel-shell .settings-window[data-preferences] .settings-heading h1 {
     font-size: 12px;
-  }
-  .panel-shell .settings-window[data-preferences] .settings-heading p {
-    display: none;
   }
   .panel-shell .settings-window[data-preferences] .settings-savebar {
     padding: 4px 8px;
@@ -2296,8 +2210,6 @@
 .panel-shell
   :is(.copilot-auth-card, .github-auth-card)
   .account-connection-heading,
-.panel-shell :is(.copilot-auth-card, .github-auth-card) .account-scope,
-.panel-shell :is(.copilot-auth-card, .github-auth-card) .account-consent,
 .panel-shell
   :is(.copilot-auth-card, .github-auth-card):has(.github-account)
   .account-connection-state
@@ -2502,11 +2414,8 @@
   width: 18px;
   height: 18px;
   stroke-width: 1.5;
-}
-
-/* Repositories: no prose, floating add, switch toggles. */
+} /* Repositories: no prose, floating add, switch toggles. */
 .panel-shell .settings-window .repository-library h2,
-.panel-shell .settings-window .repository-library .settings-hint,
 .panel-shell
   .settings-window
   .repository-library
@@ -2590,13 +2499,7 @@
   .settings-window
   .repository-monitoring-toggle[aria-checked="true"]::after {
   transform: translateX(16px);
-}
-.panel-shell .settings-window [data-repository-accounts] .settings-empty {
-  display: none;
-}
-
-/* Agent editor: no prose; account separate from Intelligence. */
-.panel-shell .shared-resource-editor .settings-hint,
+} /* Agent editor: no prose; account separate from Intelligence. */
 .panel-shell .shared-resource-editor .resource-impact {
   display: none;
 }
@@ -2872,11 +2775,6 @@
 .panel-shell .shared-resource-editor .agent-section textarea {
   min-height: 112px;
   max-width: none;
-}
-.panel-shell .shared-resource-editor .tip-body .tip-note {
-  display: block;
-  margin: 2px 0 6px;
-  opacity: 0.7;
 }
 .panel-shell .shared-resource-editor .token-list {
   display: grid;
@@ -3162,11 +3060,7 @@
 }
 .panel-shell .repository-editor .repository-group select {
   width: 100%;
-}
-
-/* Repository editor: rows, icons, no helper text. */
-.panel-shell .repository-editor .settings-hint:not(#repository-actor-status),
-.panel-shell .repository-editor .settings-empty,
+} /* Repository editor: rows, icons, no helper text. */
 .panel-shell .repository-editor .assignment-row p:nth-of-type(2),
 .panel-shell .repository-editor .watchlist-row small,
 .panel-shell .repository-editor [role="status"]:empty {
@@ -3303,8 +3197,39 @@
   font-weight: 400;
   text-align: left;
 }
-.panel-shell .repository-editor details.repository-group #remove-repository {
+.panel-shell .repository-editor details.repository-group .repository-remove {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 14px;
+  border-top: 1px solid #edf1f4;
+}
+.panel-shell
+  .repository-editor
+  details.repository-group
+  .repository-remove
+  input {
+  flex: 1;
+  min-width: 0;
+}
+.panel-shell
+  .repository-editor
+  details.repository-group
+  .repository-remove
+  button {
+  width: auto;
+  padding: 8px;
+  border: 0;
+  border-radius: 8px;
   color: #8b3021;
+}
+.panel-shell
+  .repository-editor
+  details.repository-group
+  .repository-remove
+  svg {
+  width: 20px;
+  height: 20px;
 }
 .panel-shell .repository-editor details.repository-group button:disabled {
   opacity: 0.4;
@@ -3347,32 +3272,7 @@
   height: 18px;
 }
 
-/* Repository editor: Reviewer requests drills in like Doctrines. */
-.panel-shell .repository-editor .reviewer-picker {
-  display: none;
-}
-.panel-shell .repository-editor[data-view="reviewers"] .dialog-body > * {
-  display: none;
-}
-.panel-shell
-  .repository-editor[data-view="reviewers"]
-  .dialog-body
-  > .reviewer-picker {
-  display: block;
-}
-.panel-shell .repository-editor [data-reviewer-choice] {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px;
-  font-size: 13px;
-}
-.panel-shell
-  .repository-editor
-  [data-reviewer-choice]
-  + [data-reviewer-choice] {
-  border-top: 1px solid #edf1f4;
-}
+/* Repository editor: admission (All / Filtered) drill-ins. */
 .panel-shell .repository-editor .repository-group .doctrine-row {
   display: flex;
   align-items: center;
@@ -3407,6 +3307,437 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.panel-shell .repository-editor [data-watch-group] > h2 {
+
+.panel-shell
+  .repository-editor[data-view="admission"]
+  .dialog-body
+  > :not(.admission-view) {
+  display: none;
+}
+.panel-shell .repository-editor .admission-view[hidden] {
+  display: none;
+}
+.panel-shell .repository-editor .admission-group > * + * {
+  border-top: 1px solid #edf1f4;
+}
+.panel-shell .repository-editor .admission-group .repository-check {
+  padding: 12px 14px;
+}
+.panel-shell .repository-editor .doctrine-row:disabled {
+  opacity: 0.4;
+}
+.panel-shell .repository-editor .admission-rule {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px 0 0;
+}
+.panel-shell .repository-editor .admission-rule + .admission-rule {
+  border-top: 1px solid #edf1f4;
+}
+.panel-shell .repository-editor .admission-open {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 52px;
+  padding: 10px 6px 10px 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #202b3b;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+}
+.panel-shell .repository-editor .admission-open:disabled {
+  opacity: 1;
+  cursor: default;
+}
+.panel-shell .repository-editor .admission-open .doctrine-summary {
+  margin-left: auto;
+  color: #526274;
+  font-weight: 400;
+}
+.panel-shell .repository-editor .admission-open svg {
+  width: 14px;
+  height: 14px;
+  color: #6e8192;
+}
+.panel-shell .repository-editor .admission-move {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #8a96a6;
+}
+.panel-shell .repository-editor .admission-move:disabled {
+  opacity: 0.25;
+}
+.panel-shell .repository-editor .admission-move svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.6;
+}
+.panel-shell .repository-editor .admission-group .repository-check {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-direction: row-reverse;
+}
+.panel-shell .repository-editor .admission-add {
+  position: fixed;
+  right: 18px;
+  bottom: 104px;
+  z-index: 5;
+  padding: 12px 18px;
+  border: 0;
+  border-radius: 999px;
+  background: #f68743;
+  color: #243247;
+  box-shadow: 0 6px 18px rgb(36 50 71 / 35%);
+}
+.panel-shell .repository-editor .admission-path-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.panel-shell .repository-editor .admission-path-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+}
+.panel-shell .repository-editor .admission-path-form [role="alert"] {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 12px;
+}
+.panel-shell .repository-editor .admission-values code {
+  font-size: 12px;
+}
+
+.repository-editor .admission-view[hidden] {
+  display: none;
+}
+.repository-editor .admission-back {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 6px 10px 6px 6px;
+  border: 0;
+  background: transparent;
+  color: #202b3b;
+  font-weight: 600;
+}
+.repository-editor .admission-back svg {
+  width: 18px;
+  height: 18px;
+}
+.panel-shell .repository-editor .admission-back {
+  display: none;
+}
+
+/* Repository editor switches reuse the app switch (::before knob), sized to 40x24. */
+.panel-shell .repository-editor input[role="switch"] {
+  box-sizing: border-box;
+  flex: none;
+  width: 40px;
+  min-width: 40px;
+  height: 24px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: #c3ccd8;
+  box-shadow: none;
+}
+.panel-shell .repository-editor input[role="switch"]::before {
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+}
+.panel-shell .repository-editor input[role="switch"]:checked {
+  background: #328b94;
+}
+.panel-shell .repository-editor input[role="switch"]:checked::before {
+  left: 19px;
+}
+
+/* Labels left, controls right, everywhere in the repository editor. */
+.panel-shell .repository-editor .repository-check {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  margin: 0;
+  padding: 12px 14px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.panel-shell .repository-editor .repository-check > input[role="switch"] {
+  order: 2;
+  margin-left: auto;
+}
+.panel-shell .repository-editor .repository-check > span {
+  order: 1;
+}
+.panel-shell .repository-editor .admission-group .repository-check {
+  flex-direction: row;
+}
+
+/* State lines under the Monitor switch duplicate the switch. */
+.panel-shell .repository-editor [data-repository-monitoring-state],
+.panel-shell .repository-editor [data-repository-monitoring-detail] {
+  display: none;
+}
+
+/* Assignment editor: drill-in rows, switches right, sub-views swap in. */
+.assignment-editor [hidden] {
+  display: none !important;
+}
+.panel-shell .assignment-editor .repository-group > * + *,
+.panel-shell .assignment-editor [data-primary-permissions] > * {
+  border-top: 1px solid #edf1f4;
+}
+.panel-shell .assignment-editor .repository-group > .admission-back {
+  border-top: 0;
+}
+.panel-shell .assignment-editor input[type="radio"] {
+  flex: none;
+  order: 2;
+  width: 20px;
+  height: 20px;
+  min-height: 20px;
+  margin: 0 0 0 auto;
+  accent-color: #327e84;
+}
+.panel-shell .assignment-editor .agent-choice {
+  display: flex;
+  align-items: center;
+  border-top: 1px solid #edf1f4;
+}
+.panel-shell .assignment-editor .agent-choice:first-child {
+  border-top: 0;
+}
+.panel-shell .assignment-editor .agent-choice > label {
+  flex: 1;
+  min-width: 0;
+}
+.panel-shell .assignment-editor .agent-choice .doctrine-summary {
+  order: 1;
+  margin-left: auto;
+  color: #526274;
+  font-weight: 400;
+}
+.panel-shell .assignment-editor .agent-choice > button {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  margin-right: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #6e8192;
+}
+.panel-shell .assignment-editor .agent-choice > button svg {
+  width: 16px;
+  height: 16px;
+}
+.panel-shell .assignment-editor [data-primary-permissions],
+.panel-shell .assignment-editor .permission-choices {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.panel-shell .assignment-editor .permission-choices {
+  display: block;
+}
+
+.panel-shell .assignment-editor .permission-row-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.panel-shell .assignment-editor .permission-choices {
+  display: inline-flex;
+  padding: 3px;
+  gap: 0;
+  border-radius: 999px;
+  background: #d6dde6;
+}
+.panel-shell .assignment-editor .segment {
+  position: relative;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: 5px 12px;
+  border-radius: 999px;
+  color: #526274;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.panel-shell .assignment-editor .segment input[type="radio"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.panel-shell .assignment-editor .segment:has(input:focus-visible) {
+  outline: 2px solid #327e84;
+  outline-offset: 1px;
+}
+.panel-shell .assignment-editor [data-value="none"] .segment:nth-child(1) {
+  background: #fff;
+  color: #202b3b;
+}
+.panel-shell .assignment-editor [data-value="approve"] .segment:nth-child(2),
+.panel-shell .assignment-editor [data-value="merge"] .segment:nth-child(2),
+.panel-shell .assignment-editor [data-value="merge"] .segment:nth-child(3) {
+  background: #327e84;
+  color: #fff;
+}
+.panel-shell .assignment-editor [data-value="merge"] .segment:nth-child(2) {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.panel-shell .assignment-editor [data-value="merge"] .segment:nth-child(3) {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+/* Agent editor status lines: errors surface under the account; loading is the spinner. */
+.panel-shell .shared-resource-editor [data-model-status],
+.panel-shell .shared-resource-editor [data-intelligence-status],
+.panel-shell .shared-resource-editor [data-editor-accounts] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 14px;
+  border-top: 1px solid #edf1f4;
+  color: #526274;
+  font-size: 12px;
+  font-weight: 600;
+}
+.panel-shell .shared-resource-editor [data-state="error"] {
+  background: #fdf0ed;
+  color: #8b3021;
+}
+.panel-shell
+  .shared-resource-editor
+  [data-model-status][data-state="error"]::before,
+.panel-shell
+  .shared-resource-editor
+  [data-editor-accounts][data-state="error"]::before {
+  content: "";
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #c4432b;
+}
+.panel-shell .shared-resource-editor [data-state="loading"] {
+  display: none;
+}
+.panel-shell
+  .shared-resource-editor
+  [data-intelligence-status][data-state="error"] {
+  background: transparent;
+  color: #526274;
+}
+.panel-shell .shared-resource-editor [data-model-status]:empty,
+.panel-shell .shared-resource-editor [data-intelligence-status]:empty {
+  display: none;
+}
+
+/* Approve & Merge: one joined, glowing pill with the labels drawn together. */
+.panel-shell .assignment-editor .segment {
+  z-index: 0;
+  transition:
+    padding 0.22s ease,
+    background-color 0.22s ease,
+    color 0.22s ease,
+    box-shadow 0.22s ease,
+    border-radius 0.22s ease;
+}
+.panel-shell .assignment-editor [data-value="merge"] .segment:nth-child(2) {
+  z-index: 1;
+  padding-right: 4px;
+}
+.panel-shell .assignment-editor [data-value="merge"] .segment:nth-child(3) {
+  padding-left: 4px;
+}
+.panel-shell .assignment-editor [data-value="merge"] .segment:nth-child(2),
+.panel-shell .assignment-editor [data-value="merge"] .segment:nth-child(3) {
+  box-shadow:
+    0 0 10px 1px rgba(50, 126, 132, 0.55),
+    0 0 22px 3px rgba(50, 126, 132, 0.3);
+}
+@media (prefers-reduced-motion: reduce) {
+  .panel-shell .assignment-editor .segment {
+    transition: none;
+  }
+}
+.panel-shell
+  .shared-resource-editor
+  [data-editor-accounts]:not([data-state="error"]),
+.panel-shell
+  .shared-resource-editor
+  [data-editor-accounts]:not([data-state="error"])
+  + [data-retry-accounts] {
+  display: none;
+}
+
+.panel-shell .shared-resource-editor .status-row {
+  display: flex;
+  align-items: stretch;
+}
+.panel-shell .shared-resource-editor .status-row:has([data-state="error"]) {
+  background: #fdf0ed;
+}
+.panel-shell .shared-resource-editor .status-row > [data-model-status] {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+}
+.panel-shell .shared-resource-editor .status-row > [data-model-status]:empty {
+  display: none;
+}
+.panel-shell .shared-resource-editor .fix-cta {
+  align-self: center;
+  flex: none;
+  margin: 6px 12px 6px 0;
+  padding: 7px 18px;
+  border: 0;
+  border-radius: 999px;
+  background: #c4432b;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+.panel-shell .shared-resource-editor .fix-cta[hidden] {
   display: none;
 }

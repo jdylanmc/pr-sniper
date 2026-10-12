@@ -270,21 +270,58 @@ export async function assignment(page, repository, index) {
     exact: true,
   });
   if (index === undefined) {
-    await expect(editor.getByLabel("Agent", { exact: true })).toHaveValue("");
-    await editor
-      .getByLabel("Agent", { exact: true })
-      .selectOption(fixtureAgent.id);
+    await expect(editor.locator("input[name=agent]")).toHaveValue("");
+    await editor.getByRole("button", { name: "Choose Agent" }).click();
+    await editor.getByRole("radio", { name: fixtureAgent.name }).click();
+    await expect(editor.locator("input[name=agent]")).toHaveValue(
+      fixtureAgent.id,
+    );
   }
   return editor;
 }
 
-export async function saveAssignment(page, modal) {
-  await modal
-    .locator("form")
-    .getByRole("button", {
-      name: /^(Assign agent|Save assignment)$/,
-    })
+export async function assignmentView(page, editor, view) {
+  await editor
+    .locator(view === "agent" ? "[data-open-agent]" : "[data-open-permissions]")
     .click();
+  return editor;
+}
+
+export async function assignmentBack(page, editor) {
+  const back = page.locator("[data-panel-back]");
+  if (await back.isVisible()) await back.click();
+  else await editor.locator(".admission-back:visible").click();
+}
+
+export async function pickAgent(editor, agentId) {
+  await editor.locator("[data-open-agent]").click();
+  const radio = editor.locator(`input[name=agent-choice][value="${agentId}"]`);
+  const alreadyChecked = await radio.isChecked();
+  await radio.check();
+  if (alreadyChecked) await assignmentBack(editor.page(), editor);
+  await expect(editor.locator("input[name=agent]")).toHaveValue(agentId);
+}
+
+export async function openPermissions(editor) {
+  await editor.locator("[data-open-permissions]").click();
+  return editor;
+}
+
+export async function withPermissions(page, editor, action) {
+  await openPermissions(editor);
+  await action(editor);
+  await assignmentBack(page, editor);
+}
+
+export async function saveAssignment(page, modal) {
+  const save = modal.getByRole("button", {
+    name: /^(Assign agent|Save assignment)$/,
+  });
+  if (!(await save.isVisible())) {
+    await assignmentBack(page, modal);
+    await expect(save).toBeVisible();
+  }
+  await save.click();
   await page.evaluate(() => window.__settingsIdle());
   await expect(modal.getByRole("alert")).toBeHidden();
   await expect(modal).toHaveCount(0);
@@ -298,4 +335,67 @@ export async function backFromEditor(page, dialog) {
     await dialog
       .getByRole("button", { name: "Close dialog", exact: true })
       .click();
+}
+
+export async function setAllPullRequests(editor, enabled) {
+  const toggle = editor.getByRole("switch", { name: "All pull requests" });
+  if ((await toggle.isChecked()) !== enabled) await toggle.setChecked(enabled);
+  return toggle;
+}
+
+export async function openFilters(page, editor) {
+  await editor.locator("[data-open-filters]").click();
+  const heading = page.locator("[data-panel-heading]");
+  if (await heading.count())
+    await expect(heading).toContainText("Filtered pull requests");
+  await expect(
+    page.locator(".admission-rule[data-rule=assigned]"),
+  ).toBeVisible();
+}
+
+export const ruleLabels = {
+  assigned: "Assigned to me for review",
+  mentioned: "Mentioning me in comments",
+  include_users: "Include users",
+  exclude_users: "Exclude users",
+  include_paths: "Include paths",
+  exclude_paths: "Exclude paths",
+};
+
+export async function setRule(page, kind, enabled) {
+  const toggle = page
+    .locator(`.admission-rule[data-rule=${kind}]`)
+    .locator(".admission-switch");
+  if ((await toggle.isChecked()) !== enabled) await toggle.setChecked(enabled);
+}
+
+export async function openRule(page, kind) {
+  await page
+    .locator(`.admission-rule[data-rule=${kind}] .admission-open`)
+    .click();
+}
+
+export async function addPath(page, kind, pattern) {
+  await openRule(page, kind);
+  await page.getByLabel("Path pattern", { exact: true }).fill(pattern);
+  await page
+    .locator(".admission-path-form")
+    .getByRole("button", { name: "Add", exact: true })
+    .click();
+}
+
+export async function addUser(page, kind, login) {
+  await openRule(page, kind);
+  await page.locator(".admission-add").click();
+  const lookup = page.getByRole("dialog", { name: "Add people", exact: true });
+  await lookup.getByLabel("GitHub login", { exact: true }).fill(login);
+  await lookup.getByRole("button", { name: "Add person", exact: true }).click();
+  await page.evaluate(() => window.__settingsIdle());
+  return lookup;
+}
+
+export async function backOne(page) {
+  const back = page.locator("[data-panel-back]");
+  if (await back.isVisible()) await back.click();
+  else await page.locator(".admission-back").last().click();
 }

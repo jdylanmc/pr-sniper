@@ -156,10 +156,6 @@ test("compact saved controls persist exact cron, timezone and full u32 capacity 
   await expect(
     preferences(page).getByRole("switch", { name: /^Merge/ }),
   ).toHaveCount(0);
-  await expect(preferences(page)).toContainText(
-    "normal passes, final primary reviews, replies and mentions",
-  );
-  await expect(preferences(page)).toContainText("independently of polling");
   await capture(page, browserName, "saved-preferences");
   await page.locator("#cron-helper").selectOption("0 9 * * MON-FRI");
   await page.locator("#global-timezone").fill("America/New_York");
@@ -224,8 +220,8 @@ test("legacy interval stays explicit and the helper follows exact custom draft e
   };
   await store("seed_settings", settings);
   await ready(page, store);
-  await expect(preferences(page)).toContainText(
-    "Saved legacy interval: 7 minutes",
+  await expect(page.locator("[data-readiness]")).toContainText(
+    "saved legacy interval is retained",
   );
   await expect(page.locator("#global-cron")).toHaveValue("");
   await expect(page.locator("#cron-helper")).toHaveValue("");
@@ -309,15 +305,13 @@ test("startup, notification and pause commit independently while newer keyboard 
   await page.locator("#login").click();
   await held.arrived;
   await expect(page.locator("#login")).toBeDisabled();
-  await expect(page.locator("#login-status")).toContainText(
-    "Updating startup request",
-  );
+  await expect(page.locator("#login-status")).toHaveText("Updating");
   await page.locator("#global-timezone").focus();
   await page.locator("#global-timezone").fill("Europe/Paris");
   held.release();
   await page.evaluate(() => window.__settingsIdle());
   await expect(page.locator("#login-status")).toContainText(
-    "Saved request: On. Registration: registered.",
+    "On; registration registered",
   );
   await expect(page.locator("#global-timezone")).toBeFocused();
   expect((await store("snapshot")).settings).toEqual({
@@ -327,7 +321,7 @@ test("startup, notification and pause commit independently while newer keyboard 
   await page.locator("#notification-enabled").check();
   await page.evaluate(() => window.__settingsIdle());
   await expect(page.locator("#notification-permission")).toContainText(
-    "banners unknown (not exposed by the OS API)",
+    /On; (macOS|Windows) authorized; banners unknown; center unknown/,
   );
   expect((await store("notification_snapshot")).enabled).toBe(true);
   await preferences(page)
@@ -399,7 +393,7 @@ for (const { os, userAgent, startupSettings } of [
         await ready(page, store);
         await expect(page.locator("#login")).toBeChecked();
         await expect(page.locator("#login-status")).toHaveText(
-          `Saved request: On. Registration: ${registration ?? "unavailable"}. Registration is not effective ${os} launch state; ${startupSettings} can disable a registered entry.`,
+          `On; registration ${registration ?? "unavailable"}`,
         );
         if (registration === null)
           await expect(page.locator("#login")).toBeDisabled();
@@ -431,8 +425,8 @@ for (const startupRead of ["available", "missing", "rejected"]) {
     await expect(page.locator("#save-status")).toHaveText("Unsaved changes");
     await expect(page.locator("#login-status")).toContainText(
       startupRead === "available"
-        ? "Registration: absent."
-        : "Registration: unavailable.",
+        ? "Off; registration absent"
+        : "Off; registration unavailable",
     );
     if (startupRead !== "available")
       await expect(page.locator("#login")).toBeDisabled();
@@ -468,7 +462,7 @@ test("denied and unreadable native notifications stay explicit without saving pr
     "Synthetic OS permission denied",
   );
   await expect(page.locator("#notification-permission")).toContainText(
-    "permission: denied; banners disabled; Notification Center disabled",
+    /Off; (macOS|Windows) denied; banners off; center off/,
   );
   await page.locator("#notification-settings").scrollIntoViewIfNeeded();
   await capture(page, browserName, "permission-denied");
@@ -478,12 +472,12 @@ test("denied and unreadable native notifications stay explicit without saving pr
   await page.clock.fastForward(5000);
   await page.evaluate(() => window.__settingsIdle());
   await expect(page.locator("#notification-error")).toContainText(
-    "Notification state could not be read. No permission or delivery is assumed.",
+    "Unavailable",
   );
   await expect(page.locator("#notification-enabled")).toBeDisabled();
   await expect(page.locator("#notification-test")).toBeDisabled();
-  await expect(page.locator("#notification-permission")).toContainText(
-    "saved opt-in and OS permission are unknown",
+  await expect(page.locator("#notification-permission")).toHaveText(
+    "Unavailable",
   );
   await expect(page.locator("#global-capacity")).toHaveValue("21");
   expect((await store("notification_snapshot")).enabled).toBe(false);
@@ -513,7 +507,7 @@ test("an immediate notification operation and its rejection survive an unrelated
   await savePreferences(page);
   await expect(page.locator("#notification-enabled")).toBeDisabled();
   await expect(page.locator("#notification-permission")).toContainText(
-    "Notification operation pending",
+    "Pending",
   );
   await page.evaluate(() => window.__rejectNotification());
   await expect(page.locator("#notification-error")).toContainText(
@@ -555,7 +549,7 @@ test("a pending pause and its rejection survive an unrelated preference save wit
   ).toBeDisabled();
   await expect(
     preferences(page).locator("[data-automation-status]"),
-  ).toContainText("Automation change pending");
+  ).toContainText("Pending");
   await page.evaluate(() => window.__rejectPause());
   await expect(
     preferences(page).locator("[data-automation-error]"),
@@ -589,7 +583,7 @@ for (const recovery of ["refresh", "remount"]) {
     await page.clock.fastForward(5000);
     await page.evaluate(() => window.__settingsIdle());
     await expect(root.locator("[data-automation-status]")).toHaveText(
-      "Automation state unavailable; occupancy is unknown.",
+      "Unavailable",
     );
     await expect(button).toBeDisabled();
     await expect(error).toBeVisible();
@@ -601,7 +595,7 @@ for (const recovery of ["refresh", "remount"]) {
     } else await page.clock.fastForward(5000);
     await page.evaluate(() => window.__settingsIdle());
     await expect(root.locator("[data-automation-status]")).toHaveText(
-      "Running; 0 occupied / 4 AI slots (0 stopping); 0 waiting; 0 blocked.",
+      "Running; 0 occupied / 4 AI slots (0 stopping); 0 waiting; 0 blocked",
     );
     await expect(button).toBeEnabled();
     await expect(button).toHaveText("Pause automation");
@@ -638,7 +632,7 @@ test("automation read recovery retains a rejected pause until another pause acti
   await button.click();
   await page.evaluate(() => window.__settingsIdle());
   await expect(root.locator("[data-automation-status]")).toHaveText(
-    "Automation state unavailable; occupancy is unknown.",
+    "Unavailable",
   );
   await expect(button).toBeDisabled();
   await expect(error).toBeVisible();
@@ -692,7 +686,7 @@ test("automation read recovery preserves pending pause and rejection across unre
   await section(page, "Preferences");
   await expect(button).toBeDisabled();
   await expect(root.locator("[data-automation-status]")).toContainText(
-    "Automation change pending",
+    "Pending",
   );
   await page.evaluate(() => window.__automationFailures.reject());
   await expect(error).toHaveText(automationActionError);
@@ -752,7 +746,7 @@ for (const staleRead of ["success", "failure"]) {
     older.release();
     await page.evaluate(() => window.__settingsIdle());
     await expect(root.locator("[data-automation-status]")).toHaveText(
-      "Automation state unavailable; occupancy is unknown.",
+      "Unavailable",
     );
     await expect(button).toBeDisabled();
     await expect(error).toHaveText(
@@ -803,7 +797,7 @@ test("automation read recovery restores compact header status without a pause ac
     "Unavailable",
   );
   await expect(root.locator("[data-automation-status]")).toHaveText(
-    "Automation state unavailable; occupancy is unknown.",
+    "Unavailable",
   );
   await expect(error).toHaveText(automationReadError);
   await page.evaluate(() => {
@@ -930,6 +924,9 @@ test("Status retains notification destinations, pending recovery and exact Back 
     type: "item",
     item_id: destination.item_id,
   });
+  await page
+    .locator("[data-queue-details]")
+    .evaluate((details) => (details.open = true));
   await expect(
     page.getByRole("button", { name: "Reconcile / retry publication" }),
   ).toBeVisible();

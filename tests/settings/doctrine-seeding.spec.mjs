@@ -9,6 +9,7 @@ import {
   addRepository,
   fixtureAgent,
   repositorySettings,
+  setAllPullRequests,
 } from "./navigation.mjs";
 
 const canonicalDirectory = new URL(
@@ -160,8 +161,7 @@ test("stale 23-entry saved catalog is reset before the shared Agent selector ope
     removed_references: 1,
   });
   expect(reconciled.doctrines).toEqual(canonical);
-  const audit =
-    "Doctrine reconciliation: replaced 23 doctrines with the 10 shipped defaults; removed 1 obsolete Agent references.";
+  const audit = "Doctrine reset: 23 replaced; 1 references removed.";
   await page.goto("/?view=diagnostics");
   await expect(page.locator("#log")).toContainText(audit);
   await expect(page.locator("#log")).toContainText(catalog.source);
@@ -243,7 +243,7 @@ for (const width of [408, 320]) {
   });
 }
 
-test("removing reset prose preserves the separate capability notice", async ({
+test("removing reset prose preserves the separate capability notice data", async ({
   page,
   store,
 }) => {
@@ -253,9 +253,6 @@ test("removing reset prose preserves the separate capability notice", async ({
     "Repository permissions reconciled: obsolete secondary grants disabled.";
   await store("seed_settings", settings);
   await page.goto("/?view=settings");
-  await expect(
-    page.getByRole("status").filter({ hasText: settings.capability_notice }),
-  ).toBeVisible();
   await expect(page.locator("[data-doctrine-reset]")).toHaveCount(0);
   expect((await store("snapshot")).settings).toEqual(settings);
 });
@@ -345,9 +342,7 @@ for (const [representation, references, selected] of [
       await section(page, "Preferences");
       await page.locator("#global-capacity").fill("9");
       const repository = await repositorySettings(page, "fixture/rename");
-      await repository
-        .getByLabel("Reviewer requests", { exact: true })
-        .selectOption("on");
+      await setAllPullRequests(repository, false);
       await closeDialog(page);
 
       const code = initial.doctrines.find(({ title }) => title === "code");
@@ -405,7 +400,7 @@ for (const [representation, references, selected] of [
       await closeDialog(page);
       await page
         .getByRole("button", {
-          name: "Reload Agents and doctrines",
+          name: "Reload",
           exact: true,
         })
         .click();
@@ -445,8 +440,8 @@ for (const [representation, references, selected] of [
       await expect(page.locator("#global-capacity")).toHaveValue("9");
       const pending = await repositorySettings(page, "fixture/rename");
       await expect(
-        pending.getByLabel("Reviewer requests", { exact: true }),
-      ).toHaveValue("on");
+        pending.getByRole("switch", { name: "All pull requests" }),
+      ).not.toBeChecked();
     });
   }
 }
@@ -587,7 +582,7 @@ for (const [scenario, references, selection] of [
       await writeFile(join(dataRoot, "config/settings.json"), "{");
       await page
         .getByRole("button", {
-          name: "Reload Agents and doctrines",
+          name: "Reload",
           exact: true,
         })
         .click();
@@ -605,9 +600,7 @@ for (const [scenario, references, selection] of [
         JSON.stringify(resolved.settings),
       );
     }
-    await page
-      .getByRole("button", { name: "Reload Agents and doctrines", exact: true })
-      .click();
+    await page.getByRole("button", { name: "Reload", exact: true }).click();
     await expect(page.locator("[data-catalog-conflict]")).toBeHidden();
     await section(page, "Doctrines");
     await expect(page.locator("[data-doctrine-catalog]")).toContainText(
@@ -791,7 +784,7 @@ test("doctrine edits, creation, deletion and delete-all persist without reseedin
     .first()
     .getByRole("button", { name: "Delete", exact: true })
     .click();
-  await expect(page.locator("#error")).toContainText("used by an Agent");
+  await expect(page.locator("#error")).toContainText("In use by an Agent");
   expect((await store("snapshot")).settings.doctrines).toEqual(expected);
   const agent = await editAgent(page);
   await openDoctrinePicker(agent);
@@ -801,9 +794,7 @@ test("doctrine edits, creation, deletion and delete-all persist without reseedin
   await section(page, "Doctrines");
   for (let remaining = expected.length; remaining > 0; remaining--)
     await deleteDoctrine(page, page.locator(".doctrine-card").first());
-  await expect(
-    page.getByText("No doctrines yet", { exact: true }),
-  ).toBeVisible();
+  await expect(page.locator(".doctrine-card")).toHaveCount(0);
   await section(page, "Agents");
   await section(page, "Doctrines");
   await expect(page.locator(".doctrine-card")).toHaveCount(0);

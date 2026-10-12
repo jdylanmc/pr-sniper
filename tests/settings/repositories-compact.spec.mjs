@@ -1,5 +1,15 @@
 import { test, expect } from "./fixtures.mjs";
-import { fixtureAgent, section, repositorySettings } from "./navigation.mjs";
+import {
+  fixtureAgent,
+  section,
+  repositorySettings,
+  openFilters,
+  openRule,
+  backOne,
+  pickAgent,
+  openPermissions,
+  assignmentBack,
+} from "./navigation.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -20,6 +30,14 @@ const accounts = [
     state: "connected",
   },
 ];
+const allPullRequests = (editor) =>
+  editor.getByRole("switch", { name: "All pull requests" });
+const flipAll = async (editor) => {
+  const toggle = allPullRequests(editor);
+  const next = !(await toggle.isChecked());
+  await toggle.setChecked(next);
+  return next;
+};
 const modal = (page, name) => page.getByRole("dialog", { name, exact: true });
 const tab = (page, name) =>
   page
@@ -172,9 +190,7 @@ test("repository saves leave unsaved Preferences and the saved global schedule i
     editor.locator("[name=cron],[name=minutes],[name=timezone],#global-cron"),
   ).toHaveCount(0);
   await capture(page, testInfo, "saved-global-schedule");
-  await editor
-    .getByLabel("Reviewer requests", { exact: true })
-    .selectOption("off");
+  await flipAll(editor);
   await expect(
     editor.getByRole("button", { name: "Configure scope", exact: true }),
   ).toHaveCount(0);
@@ -219,11 +235,12 @@ test("all Publish Reply and approval modes remain explicit on the automatic sole
     await parent.locator(".assignment-row [data-edit]").click({ force: true });
     const editor = modal(page, "Edit assignment");
     await expect(
-      editor.getByRole("checkbox", { name: /^Primary/ }),
+      editor.getByRole("switch", { name: "Primary", exact: true }),
     ).toBeChecked();
     await expect(
-      editor.getByRole("checkbox", { name: /^Primary/ }),
+      editor.getByRole("switch", { name: "Primary", exact: true }),
     ).toBeDisabled();
+    await openPermissions(editor);
     if (!mask)
       await expect(
         editor.getByRole("radio", { name: "Neither", exact: true }),
@@ -238,6 +255,7 @@ test("all Publish Reply and approval modes remain explicit on the automatic sole
     await editor.locator("[name=comment]").setChecked(permissions.comment);
     await editor.locator("[name=reply]").setChecked(permissions.reply);
     await editor.locator(`[name=action][value=${action}]`).check();
+    await assignmentBack(page, editor);
     await editor.getByRole("button", { name: "Save assignment" }).click();
     await expect(editor).toHaveCount(0);
     const saved = await store("saved_resources");
@@ -275,12 +293,12 @@ test("seven UI assignments stay distinct and explicit multiple-primary selection
       body: await editor.ariaSnapshot(),
       contentType: "text/plain",
     });
-    await editor
-      .getByRole("combobox", { name: "Agent", exact: true })
-      .selectOption(id(100 + index));
+    await pickAgent(editor, id(100 + index));
+    await openPermissions(editor);
     await editor.locator("[name=comment]").uncheck();
     await expect(editor.locator("[name=action][value=none]")).toBeChecked();
     await expect(editor.locator("[name=reply]")).not.toBeChecked();
+    await assignmentBack(page, editor);
     await editor
       .getByRole("button", { name: "Assign agent", exact: true })
       .click();
@@ -302,13 +320,17 @@ test("seven UI assignments stay distinct and explicit multiple-primary selection
       .locator("[data-edit]")
       .dispatchEvent("click");
     const editor = modal(page, "Edit assignment");
+    await openPermissions(editor);
     await expect(editor.locator("[data-primary-permissions]")).toBeHidden();
+    await assignmentBack(page, editor);
     await editor.locator("[name=primary]").check();
+    await openPermissions(editor);
     await expect(editor.locator("[data-primary-permissions]")).toBeVisible();
     await expect(editor.locator("[name=action][value=none]")).toBeChecked();
     await expect(editor.locator("[name=reply]")).not.toBeChecked();
     await expect(editor.locator("[name=comment]")).not.toBeChecked();
     await capture(page, testInfo, `independent-permissions-${index}`);
+    await assignmentBack(page, editor);
     await editor
       .getByRole("button", { name: "Save assignment", exact: true })
       .click();
@@ -418,9 +440,7 @@ for (const failure of ["write", "conflict"]) {
     await provider(page);
     await start(page, store);
     const editor = await repositorySettings(page, "fixture/compact");
-    await editor
-      .getByLabel("Reviewer requests", { exact: true })
-      .selectOption("off");
+    const flipped = await flipAll(editor);
     const temporary = join(dataRoot, "config/settings.json.tmp");
     if (failure === "write") await mkdir(temporary);
     else {
@@ -436,12 +456,11 @@ for (const failure of ["write", "conflict"]) {
     const rejection = await editor
       .locator("[data-resource-error]")
       .textContent();
-    await editor.getByLabel("Reviewer requests", { exact: true }).focus();
+    await allPullRequests(editor).focus();
     await page.evaluate(() => window.__settingsIdle());
     await expect(editor.locator("[data-resource-error]")).toHaveText(rejection);
-    await expect(
-      editor.getByLabel("Reviewer requests", { exact: true }),
-    ).toHaveValue("off");
+    if (flipped) await expect(allPullRequests(editor)).toBeChecked();
+    else await expect(allPullRequests(editor)).not.toBeChecked();
     expect(await readFile(join(dataRoot, "config/settings.json"))).toEqual(
       before,
     );
@@ -451,16 +470,13 @@ for (const failure of ["write", "conflict"]) {
       await rm(temporary, { recursive: true });
       await save(editor);
       expect(
-        (await store("snapshot")).settings.repositories[0].overrides
-          .reviewer_assignment,
-      ).toBe(false);
+        (await store("snapshot")).settings.repositories[0].admission.mode,
+      ).toBe(flipped ? "all" : "filtered");
     } else {
       await editor
         .getByRole("button", { name: "Cancel repository changes" })
         .click();
-      await page
-        .getByRole("button", { name: "Discard draft and reload" })
-        .click();
+      await page.getByRole("button", { name: "Reload", exact: true }).click();
       await expect(page.locator("#save-status")).toHaveText(
         "All changes saved",
       );
@@ -530,7 +546,7 @@ test("unbind cancellation, write rejection and retry retain permissions, neighbo
   await page.evaluate(() => window.__settingsIdle());
   parent = await repositorySettings(page, "fixture/compact");
   await expect(parent.locator(".repository-identity")).toContainText(
-    "No account selected",
+    "No account",
   );
   await expect(
     parent.getByRole("button", { name: "Configure scope" }),
@@ -539,11 +555,9 @@ test("unbind cancellation, write rejection and retry retain permissions, neighbo
   await expect(
     parent.locator(".connection-form button[type=submit]"),
   ).toBeDisabled();
-  await parent
-    .getByRole("button", { name: "Remove repository", exact: true })
-    .click();
-  confirmation = modal(page, "Remove repository?");
-  await close(confirmation);
+  await expect(
+    parent.getByRole("button", { name: "Remove repository", exact: true }),
+  ).toBeDisabled();
   expect((await store("snapshot")).settings).toEqual(expected);
 });
 
@@ -554,7 +568,7 @@ test("unavailable bound accounts remain identified and cannot silently rebind du
   const initial = await seed(store);
   // The default boundary returns no connected accounts, not a replacement actor.
   await start(page, store);
-  await expect(row(page)).toContainText("GitHub / Account unavailable");
+  await expect(row(page)).toContainText("GitHub / Unavailable");
   await expect(row(page)).toContainText("Reconnect account");
   const parent = await repositorySettings(page, "fixture/compact");
   await parent.locator("details.repository-group > summary").click();
@@ -562,27 +576,10 @@ test("unavailable bound accounts remain identified and cannot silently rebind du
     parent.locator(".connection-form button[type=submit]"),
   ).toBeDisabled();
   await expect(parent.locator(".connection-status")).toContainText(
-    "must be reconnected",
+    "Reconnect required",
   );
-  await parent
-    .getByRole("button", { name: "Edit repository", exact: true })
-    .click();
-  const editor = modal(page, "Edit repository");
-  await expect(editor.getByLabel("Acting GitHub account")).toHaveValue("22");
-  await expect(editor.locator("[name=account] option:checked")).toHaveText(
-    "Saved account - reconnect required",
-  );
-  await expect(
-    editor.getByRole("button", { name: "Add & configure", exact: true }),
-  ).toBeDisabled();
-  await expect(editor.locator("[role=status]")).toContainText("Reconnect");
-  await expect(
-    editor.getByRole("button", { name: "Reconnect GitHub account" }),
-  ).toBeVisible();
   await capture(page, testInfo, "unavailable-acting-account");
   expect((await store("snapshot")).settings).toEqual(initial);
-  await editor.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(row(page)).toBeFocused();
 });
 
 test("verified watched people, draft cancellation and keyboard controls remain usable at 320x300", async ({
@@ -597,14 +594,21 @@ test("verified watched people, draft cancellation and keyboard controls remain u
   });
   await start(page, store);
   let parent = await repositorySettings(page, "fixture/compact");
-  await parent.getByRole("button", { name: "Add people" }).click();
+  await openFilters(page, parent);
+  await openRule(page, "include_users");
+  await page.locator(".admission-add").click();
   const picker = modal(page, "Add people");
   await expect(picker.getByLabel("Acting GitHub account")).toHaveValue("22");
   await picker.getByLabel("GitHub login").fill("@verified-person");
   await picker.getByRole("button", { name: "Add person", exact: true }).click();
   await expect(picker).toHaveCount(0);
-  await expect(parent.locator(".watchlist")).toContainText("GitHub ID 77");
-  await parent.locator(".watchlist").scrollIntoViewIfNeeded();
+  await expect(
+    page.locator(".watchlist-row").filter({ hasText: "@verified-person" }),
+  ).toContainText("@verified-person");
+  await page
+    .locator(".watchlist-row")
+    .filter({ hasText: "@verified-person" })
+    .scrollIntoViewIfNeeded();
   await capture(page, testInfo, "watched-people");
   expect(calls).toEqual([
     {
@@ -613,20 +617,29 @@ test("verified watched people, draft cancellation and keyboard controls remain u
     },
   ]);
   expect((await store("snapshot")).settings).toEqual(initial);
+  await backOne(page);
+  await backOne(page);
   await save(parent);
   const saved = (await store("snapshot")).settings;
-  expect(saved.repositories[0].watched_authors).toEqual([
+  const includeUsers = saved.repositories[0].admission.rules.find(
+    (rule) => rule.kind === "include_users",
+  );
+  expect(includeUsers.enabled).toBe(true);
+  expect(includeUsers.users).toEqual([
     { id: "11", login: "watched-person" },
     { id: "77", login: "verified-person" },
   ]);
   parent = await repositorySettings(page, "fixture/compact");
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.setViewportSize({ width: 320, height: 300 });
-  await parent.getByRole("button", { name: "Remove verified-person" }).focus();
-  await expect(
-    parent.getByRole("button", { name: "Remove verified-person" }),
-  ).toBeInViewport();
+  await openFilters(page, parent);
+  await openRule(page, "include_users");
+  const remove = page.getByRole("button", { name: "Remove @verified-person" });
+  await remove.focus();
+  await expect(remove).toBeInViewport();
   await page.keyboard.press("Enter");
+  await backOne(page);
+  await backOne(page);
   await parent
     .getByRole("button", { name: "Cancel repository changes" })
     .focus();
@@ -645,7 +658,11 @@ test("verified watched people, draft cancellation and keyboard controls remain u
   await page.reload();
   await page.evaluate(() => window.__settingsIdle());
   parent = await repositorySettings(page, "fixture/compact");
-  await expect(parent.locator(".watchlist")).toContainText("GitHub ID 77");
+  await openFilters(page, parent);
+  await openRule(page, "include_users");
+  await expect(
+    page.locator(".watchlist-row").filter({ hasText: "@verified-person" }),
+  ).toContainText("@verified-person");
 });
 
 for (const resolution of ["Save", "Cancel"]) {
@@ -678,9 +695,7 @@ for (const resolution of ["Save", "Cancel"]) {
       .locator(".assignment-row")
       .getByRole("button", { name: "Remove assignment" })
       .click();
-    await editor
-      .getByLabel("Reviewer requests", { exact: true })
-      .selectOption("off");
+    const flipped = await flipAll(editor);
     await expect(
       editor.getByRole("switch", { name: "Monitor fixture/compact" }),
     ).not.toBeChecked();
@@ -692,14 +707,10 @@ for (const resolution of ["Save", "Cancel"]) {
     await unbind.focus();
     await unbind.press("Enter");
     await expect(modal(page, "Unbind repository account?")).toHaveCount(0);
-    await expect(editor.getByRole("alert")).toContainText(
-      "Save or Cancel repository changes before unbinding",
-    );
+    await expect(editor.getByRole("alert")).toContainText("Unsaved changes");
     await expect(unbind).toBeFocused();
     await expect(editor.locator(".assignment-row")).toHaveCount(0);
-    await expect(
-      editor.getByLabel("Reviewer requests", { exact: true }),
-    ).toHaveValue("off");
+    expect(await allPullRequests(editor).isChecked()).toBe(flipped);
     await expect(
       editor.getByRole("switch", { name: "Monitor fixture/compact" }),
     ).not.toBeChecked();
@@ -711,9 +722,7 @@ for (const resolution of ["Save", "Cancel"]) {
     await close(editor);
     editor = await repositorySettings(page, "fixture/compact");
     await expect(editor.locator(".assignment-row")).toHaveCount(0);
-    await expect(
-      editor.getByLabel("Reviewer requests", { exact: true }),
-    ).toHaveValue("off");
+    expect(await allPullRequests(editor).isChecked()).toBe(flipped);
     await expect(
       editor.getByRole("switch", { name: "Monitor fixture/compact" }),
     ).not.toBeChecked();
@@ -728,9 +737,9 @@ for (const resolution of ["Save", "Cancel"]) {
       expect(await readFile(settingsPath)).toEqual(before);
     } else {
       expect(explicitlySaved.repositories[0].assignments ?? []).toEqual([]);
-      expect(explicitlySaved.repositories[0].overrides).toEqual({
-        reviewer_assignment: false,
-      });
+      expect(explicitlySaved.repositories[0].admission.mode).toBe(
+        flipped ? "all" : "filtered",
+      );
       expect(explicitlySaved.repositories[0].enabled).toBe(false);
     }
     expect(explicitlySaved.defaults).toEqual(initial.defaults);
@@ -741,9 +750,6 @@ for (const resolution of ["Save", "Cancel"]) {
       .getByRole("button", { name: "Unbind account", exact: true })
       .click();
     const confirmation = modal(page, "Unbind repository account?");
-    await expect(confirmation).toContainText(
-      "Assignments, permissions and completed evidence are retained",
-    );
     await confirmation
       .getByRole("button", { name: "Unbind account", exact: true })
       .click();
@@ -822,9 +828,6 @@ test("R2 correction: saved legacy interval and timezone remain visible but expli
   const schedule = editor.locator("[data-global-schedule]");
   await expect(schedule).toContainText("Every 7 minutes");
   await expect(schedule).toContainText("America/New_York");
-  await expect(schedule).toContainText(
-    "Polling is blocked until you choose a global five-field cron schedule in Preferences",
-  );
   await expect(
     editor.locator("[name=cron],[name=minutes],[name=timezone],#global-cron"),
   ).toHaveCount(0);

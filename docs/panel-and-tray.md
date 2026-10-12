@@ -1,0 +1,62 @@
+# Panel and tray
+
+Reference for the tray icon, the retained panel, navigation rules and the Running/Queue/Reviewed tab behavior.
+
+## Tray
+
+- No main window at startup. Left-click the crosshair: one retained panel. Tabs: **Queue**, **Running**, **Reviewed**, **Settings**.
+- Right-click menu (`src-tauri/src/lib.rs`): **Status**, **Review Queue**, **Check Now**, **Settings**, **Diagnostics**, **Close Panel**, **Quit PR Sniper** (`CmdOrCtrl+Q`).
+- Status and Diagnostics are routes inside the panel. No new webview.
+- Hide the panel: outside click, `Escape`, panel Close, tray **Close Panel**. Native window close is intercepted; webview kept ([ADR-0018](adr/0018-retained-hidden-panel.md)). Background work continues.
+- **Quit PR Sniper** ends the process.
+- Launching the app again (Finder, Spotlight, Dock) opens the panel.
+- Placement: work area of the clicked tray monitor. Size 408×744 logical points, clamped to small or mixed-scale screens (`src-tauri/src/panel.rs`). Set `PR_SNIPER_PANEL_DEBUG=1` to log placement.
+- Windows: see [windows-development.md](windows-development.md) and [ADR-0006](adr/0006-windows-tray-startup.md).
+
+## Navigation state
+
+- Route, drafts, scroll, focus survive panel dismissal and destination change.
+- Back returns to the originating list and row.
+- Opening another PR or job replaces the single detail layer.
+- Route focus restored on commit, not on animation frame.
+- Deferred positioning and the initial Settings load yield to newer focus, routes, dismissal.
+- Native notification, legacy Settings entry and Diagnostics entry use retained routes. No webview reload.
+- Unavailable exact PR, iteration or job: missing-destination view. Never another item.
+- Profile-scoped PR selection survives restart (`state/queue-selection.json`). Unsaved drafts live in-process only.
+- Back and Settings-dialog close restore the activating control. Saves keep the logical opener through redraw by stable resource ID. Removed resources: section heading. Removed assignment: Add control. Background completion never steals focus.
+- External browser sign-in may hide the panel. Reopen keeps flow and draft.
+
+## Chrome
+
+- Navy header band, artwork, bottom nav. Cards overlap the band. 8px corners. Page title and back arrow in the band.
+- Monitoring control = machine-wide pause gate. Unknown automation state: control disabled, active-work badge cleared.
+- Version comes from native app metadata, shown beside Status/Diagnostics. Unavailable metadata is labelled; opening Status retries. Footer version opens the in-app Changelog.
+- Repository intake has no local-folder selection.
+
+## Queue tab
+
+- Two toggle cards: **Ready for you**, **Needs attention**. Active card orange.
+- **Ready for you**: human handoffs. One current handoff per account/repo PR. Completed reviews stay Ready despite config drift or disabled repo. Stale only on new head/base.
+- **Needs attention**: every parked failure. Cause chip: Credentials, Permission, Network, Failed. Row action **Fix** (credentials, opens Accounts) or **Retry**. **Retry all** pill.
+- Queue item detail: status block (PR title, short state label, Fix / Retry / Open) plus collapsed **Details**.
+- Merged or closed PRs move to Reviewed.
+- States, evidence, links: [review-queue.md](review-queue.md).
+
+## Running tab
+
+- Native shared-capacity jobs: active, queued, stopping. Counts jobs, not triggers. Assigned Agents beyond capacity wait.
+- Active rows first, then waiting in arrival order with reason. Only active rows animate; static under reduced motion.
+- Row opens the exact job. No second PR drill-in.
+- Job inspector: purpose (normal, primary-final, reply, mention); immutable execution config vs current planned config; canonical iteration; per-Agent work ordinals; retry attempts. Missing legacy evidence shows "unavailable"; never rebuilt from Settings.
+- Job detail shows its own capacity/execution state above facts. Never a sibling's or PR-wide state. Never-started failures keep planned config, no execution claim.
+- Full config and IDs sit in collapsed evidence.
+- Conversation inspectors keep analysis, cancellation and reply publication separate. Failed/backoff analysis is not a user stop. Completed analysis is not reply confirmation. Unknown publication outcome keeps reconciliation controls; never shows Done.
+- Unrelated-job polls keep the open inspector. Own updates keep focus and disclosures.
+
+## Reviewed tab
+
+- Finished and merged/closed PR results. Paging: [active-results.md](active-results.md).
+
+## Status and Diagnostics
+
+- Status: schedule health, notification history, recovery. Diagnostics: redacted. Both keep refreshing evidence while open. See [diagnostics.md](diagnostics.md).

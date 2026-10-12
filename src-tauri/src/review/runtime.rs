@@ -475,7 +475,8 @@ fn output_schema() -> Value {
 
 fn prompt(selection: &Selection, context: &ReviewContext) -> String {
     json!({
-        "task":"Review this exact revision. Call read_changes for every listed file in manageable batches. Use source reads and path search for context. Do not omit binary, renamed or deleted files.",
+        "task":"Review this exact revision. You must call read_changes for every one of the changed_files (all of them, in manageable batches) before giving your final answer; a review that skips any listed file is rejected. Use source reads and path search for context. Do not omit binary, renamed or deleted files.",
+        "changed_file_count":context.files.len(),
         "head":context.pull.head_sha, "base":context.base_revision, "target":context.pull.base_sha,
         "title":context.pull.title,
         "review_lens":{"agent_prompt":crate::prompt_tokens::expand(&selection.agent.prompt,&selection.agent.name,context),"repository_prompt":crate::prompt_tokens::expand(&selection.policy.prompt,&selection.agent.name,context),"preset":selection.preset,"doctrine":selection.doctrine},
@@ -733,7 +734,7 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
                 if let Some(trace) = &diagnostics {
                     trace.fail(FailureKind::IncompleteCoverage);
                 }
-                return Err(Failure::permanent(
+                return Err(Failure::provider(
                     "Copilot did not read every changed file; no review result was accepted.",
                 ));
             }

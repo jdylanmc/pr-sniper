@@ -23,6 +23,9 @@ import {
 } from "./copilot";
 import type { Agent, Doctrine, Assignment, WatchedIdentity } from "./policy";
 import {
+  type Admission,
+  type AdmissionKind,
+  type AdmissionRule,
   type Repository,
   primaryAssignmentId,
   repositoryProviderContext,
@@ -92,6 +95,7 @@ type Section =
   | "preferences";
 
 export type SetupTarget =
+  | "accounts"
   | "ai"
   | "repository-account"
   | "agents"
@@ -110,30 +114,18 @@ const modelProviders: { id: string; label: string; available: boolean }[] = [
   { id: "grok", label: "Grok", available: false },
 ];
 
-const sections: Record<Section, [string, string]> = {
-  home: ["Settings", ""],
-  accounts: ["Accounts", "GitHub and Copilot, kept separate."],
-  "ai-tooling": ["AI Tooling", "Subscriptions used by your review agents."],
-  "git-repository": [
-    "Git Repository",
-    "Repository access and publication identities.",
-  ],
-  copilot: ["GitHub Copilot", ""],
-  github: ["GitHub", "Repository access and publication identity."],
-  repositories: ["Repositories", "Acting accounts and review assignments."],
-  capacity: [
-    "Concurrent reviews",
-    "A limit on running work, not saved agents.",
-  ],
-  doctrines: [
-    "Doctrines",
-    "Principles your agents review by. Plain text, yours to edit.",
-  ],
-  agents: [
-    "Agents",
-    "A model, shared doctrines, a prompt and a signature, ready to assign.",
-  ],
-  preferences: ["Preferences", "Schedule, AI capacity and native controls."],
+const sections: Record<Section, string> = {
+  home: "Settings",
+  accounts: "Accounts",
+  "ai-tooling": "AI Tooling",
+  "git-repository": "Git Repository",
+  copilot: "GitHub Copilot",
+  github: "GitHub",
+  repositories: "Repositories",
+  capacity: "Concurrent reviews",
+  doctrines: "Doctrines",
+  agents: "Agents",
+  preferences: "Preferences",
 };
 // Bespoke reticle/scope marks, not a generic icon-kit -- each nods at the
 // tab's job rather than a stock glyph.
@@ -156,6 +148,8 @@ const iconPaths = {
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
   pencil: '<path d="M4 20h4L19 9l-4-4L4 16zM14 6l4 4"/>',
   reset: '<path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5"/>',
+  up: '<path d="m6 14 6-6 6 6"/>',
+  down: '<path d="m6 10 6 6 6-6"/>',
   trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5"/>',
   home: '<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="10" cy="18" r="2"/>',
   accounts:
@@ -220,49 +214,32 @@ const reason = (error: unknown): string => {
   const session = repositorySessionFailure(error);
   if (session) {
     return session.error === "configuration" || session.error === "broken_cli"
-      ? "The selected GitHub session is unavailable. Check secure credential access or reconnect this account, then retry."
+      ? "Session unavailable"
       : reason(session.error);
   }
   const details = describeReadFailureDetails(error);
   if (details) return details;
   const errors: Record<string, string> = {
-    invalid_repository:
-      "Enter owner/repository, an HTTPS github.com repository URL, or a pull request URL with a positive PR number. Other providers and embedded credentials are not supported.",
-    revision_changed:
-      "The pull request revision changed during this lookup. Retry to verify its current revision.",
-    signed_out:
-      "GitHub is disconnected. Connect the PR Sniper GitHub OAuth App, then try again.",
-    missing_read_permission:
-      "GitHub denied read access for this account. Verify repository access and this app's organization authorization with your administrator, then retry.",
-    repository_unavailable:
-      "GitHub could not find this repository or hides it from the selected account. Check the URL and this account's repository access; for a private organization, check the PR Sniper OAuth App's organization approval and single sign-on authorization with its administrator, then retry. A 404 does not prove the repository is absent.",
-    rate_limited: "GitHub rate limited this lookup. Wait before trying again.",
-    network: "Cannot reach GitHub. Check your network and try again.",
-    timeout: "GitHub lookup timed out. Try again.",
-    invalid_response:
-      "GitHub returned malformed or unsupported data. Retry; if it persists, report this lookup failure.",
-    incomplete_read:
-      "GitHub did not return a complete repository list. More repositories may be unavailable; retry.",
-    missing_scope:
-      "The selected GitHub authorization does not grant the required repo scope. Reconnect this account in Accounts and review the PR Sniper OAuth App's public/private repository access request, then retry.",
-    scope_unverified:
-      "GitHub did not provide the scope evidence needed to verify this read. No missing scope or grant is established. Retry this selected account; if it persists, check this app's authorization in GitHub. No repository was accepted from this unverified read.",
-    organization_policy_denied:
-      "GitHub reported an organization authorization restriction. Check the PR Sniper OAuth App's organization approval and single sign-on authorization in GitHub; if restricted, ask the organization administrator for access, then retry. Reconnecting alone cannot bypass organization policy.",
-    organization_policy_denied_with_missing_scope:
-      "GitHub reported an organization authorization restriction and an authorization missing repo scope. Ask the organization administrator to approve the PR Sniper OAuth App; also reconnect this selected account in Accounts with repository access. Reconnecting alone cannot bypass organization policy.",
-    repository_changed:
-      "The repository identity changed. Refresh the owner or check the URL, then retry.",
-    authentication_changed:
-      "The GitHub connection changed during this request. Retry with the current connected account.",
-    provider_failure:
-      "GitHub lookup failed. Check provider health and try again.",
-    provider_rejected:
-      "GitHub rejected this lookup. Check the current repository URL/input and provider policy before retrying; this does not establish a missing scope.",
-    wrong_identity:
-      "GitHub returned a different account. Reconnect the selected account; no other account will be used.",
-    configuration:
-      "Repository lookup configuration is unavailable. Check local/provider setup and retry.",
+    invalid_repository: "Invalid repository",
+    revision_changed: "Revision changed",
+    signed_out: "Reconnect required",
+    missing_read_permission: "Access denied",
+    repository_unavailable: "Repository unavailable",
+    rate_limited: "Rate limited",
+    network: "Offline",
+    timeout: "Timed out",
+    invalid_response: "Invalid response",
+    incomplete_read: "Incomplete",
+    missing_scope: "Reconnect required",
+    scope_unverified: "Scope unverified",
+    organization_policy_denied: "Blocked by organization",
+    organization_policy_denied_with_missing_scope: "Blocked by organization",
+    repository_changed: "Repository changed",
+    authentication_changed: "Reconnect required",
+    provider_failure: "Provider failed",
+    provider_rejected: "Rejected",
+    wrong_identity: "Wrong account",
+    configuration: "Setup unavailable",
   };
   if (error && typeof error === "object") {
     if (
@@ -270,17 +247,15 @@ const reason = (error: unknown): string => {
       typeof error.rate_limited_after === "number" &&
       error.rate_limited_after >= 0
     )
-      return `${errors.rate_limited} Retry after ${error.rate_limited_after} seconds.`;
+      return `${errors.rate_limited} \u00b7 ${error.rate_limited_after}s`;
     if (
       "provider_failure_after" in error &&
       typeof error.provider_failure_after === "number" &&
       error.provider_failure_after >= 0
     )
-      return `${errors.provider_failure} Retry after ${error.provider_failure_after} seconds.`;
+      return `${errors.provider_failure} \u00b7 ${error.provider_failure_after}s`;
   }
-  return typeof error === "string"
-    ? (errors[error] ?? error)
-    : "This action failed. Check local access and try again.";
+  return typeof error === "string" ? (errors[error] ?? error) : "Failed";
 };
 
 export async function mountSettings(
@@ -307,17 +282,17 @@ export async function mountSettings(
       : `<aside class="settings-sidebar"><div class="settings-brand"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><circle cx="16" cy="16" r="9" stroke="currentColor" stroke-width="1.7"/><path d="M16 2v8m0 12v8M2 16h8m12 0h8" stroke="currentColor" stroke-width="1.7"/><circle cx="16" cy="16" r="2.5" fill="currentColor"/></svg>PR Sniper</div><p class="settings-caption">Preferences</p>
     <nav aria-label="Settings sections">${legacySections
       .map(
-        ([key, [title]]) =>
+        ([key, title]) =>
           `<button type="button" data-section="${key}">${icon(key as keyof typeof iconPaths)}${title}</button>`,
       )
       .join("")}</nav>
     <label class="mobile-section">Section<select aria-label="Settings section">${legacySections
-      .map(([key, [title]]) => option(key, title, "accounts"))
+      .map(([key, title]) => option(key, title, "accounts"))
       .join("")}</select></label></aside>`
   }
-    <div class="settings-main"><div class="settings-genie-entry"><button type="button" data-open-genie hidden>Set up with Genie</button><button type="button" data-return-genie hidden>Back to Genie</button><p data-genie-save-note hidden>Each save is applied immediately. Close hides this editor; Back and Cancel follow the unsaved-field guidance below. Repository Save is authorization; no further scope confirmation is needed.</p></div><header class="settings-heading"><h1 tabindex="-1">Settings</h1><p>Sign in to an AI subscription, then connect the repositories it should watch.</p></header>
-    <p id="error" role="alert" hidden></p><div data-catalog-conflict hidden><p role="alert">Resource saved. Agents changed in another window. The previous doctrine catalog and Agent selections are retained until you reload. Close open editors first; unrelated preference and repository drafts stay intact.</p><button type="button" data-reload-catalog>Reload Agents and doctrines</button></div><section id="content"></section>
-    <footer class="settings-savebar"><span role="status" id="save-status">Loading settings...</span><button id="reload-settings" hidden>Discard draft and reload</button><button id="reset-settings" disabled>Reset changes</button><button class="primary" id="save-settings" disabled>Save preferences</button></footer></div>`;
+    <div class="settings-main"><div class="settings-genie-entry"><button type="button" data-open-genie hidden>Set up with Genie</button><button type="button" data-return-genie hidden>Back to Genie</button></div><header class="settings-heading"><h1 tabindex="-1">Settings</h1></header>
+    <p id="error" role="alert" hidden></p><div data-catalog-conflict hidden><p role="alert">Catalog changed</p><button type="button" data-reload-catalog>Reload</button></div><section id="content"></section>
+    <footer class="settings-savebar"><span role="status" id="save-status">Loading</span><button id="reload-settings" hidden>Discard draft and reload</button><button id="reset-settings" disabled>Reset changes</button><button class="primary" id="save-settings" disabled>Save preferences</button></footer></div>`;
   const content = app.querySelector<HTMLElement>("#content")!;
   const legacyGenie =
     app.querySelector<HTMLButtonElement>("[data-open-genie]")!;
@@ -344,7 +319,7 @@ export async function mountSettings(
   settingsBack.type = "button";
   settingsBack.className = "settings-home-back";
   settingsBack.setAttribute("aria-label", "Back to Settings");
-  settingsBack.title = "Back to Settings; retain unsaved changes";
+  settingsBack.title = "Back";
   settingsBack.innerHTML = icon("back");
   settingsBack.hidden = true;
   app.querySelector(".settings-heading")!.prepend(settingsBack);
@@ -398,8 +373,6 @@ export async function mountSettings(
   const returnGenie = app.querySelector<HTMLButtonElement>(
     "[data-return-genie]",
   )!;
-  const genieNote = app.querySelector<HTMLElement>("[data-genie-save-note]")!;
-  genieNote.className = "settings-hint";
   const settingsHeading = app.querySelector<HTMLElement>(".settings-heading")!;
   if (options.embedded) {
     settingsHeading.hidden = true;
@@ -413,7 +386,6 @@ export async function mountSettings(
   const leaveGuidance = () => {
     guidance = undefined;
     returnGenie.hidden = true;
-    app.querySelector<HTMLElement>("[data-genie-save-note]")!.hidden = true;
     settingsBack.hidden = !options.embedded || section === "home";
   };
   const dialogs = createDialogs(
@@ -430,7 +402,11 @@ export async function mountSettings(
     !sameResource(globalPreferences(draft), globalPreferences(saved));
   let errorTimer: ReturnType<typeof setTimeout> | undefined;
   const showError = (message: string) => {
-    error.textContent = message;
+    const label = terseError(message, true);
+    if (label === null) return;
+    error.textContent = label;
+    error.title = message;
+    error.setAttribute("aria-description", message);
     error.hidden = false;
     clearTimeout(errorTimer);
     errorTimer = setTimeout(() => (error.hidden = true), 8000);
@@ -481,9 +457,9 @@ export async function mountSettings(
   function changed() {
     revision++;
     status.textContent = busy
-      ? "Working..."
+      ? "Working"
       : catalogConflict
-        ? "Resource saved; reload Agents and doctrines. Drafts retained."
+        ? "Reload required"
         : dirty()
           ? "Unsaved changes"
           : "All changes saved";
@@ -501,9 +477,9 @@ export async function mountSettings(
     accountGeneration?: number,
     retainRepositoryDraft = false,
   ) {
-    if (busy) throw "Another resource save is in progress. Try again.";
+    if (busy) throw "Busy";
     if (catalogConflict && (edit.kind === "agent" || edit.kind === "doctrine"))
-      throw "Resource changed in another window. Your draft has not been written. Close this editor and reload Agents and doctrines before saving.";
+      throw "Resource changed in another window";
     busy = true;
     const currentDraft =
       retainRepositoryDraft && edit.kind === "repository"
@@ -590,15 +566,14 @@ export async function mountSettings(
     )
       return repository.enabled
         ? "Reconnect account"
-        : "No new scans or reviews / Reconnect account";
-    if (!repository.enabled) return "No new scans or reviews";
+        : "Disabled / Reconnect account";
+    if (!repository.enabled) return "Disabled";
     if (!repository.assignments?.length) return "Needs setup";
-    if (!repositoryAutomation)
-      return "Global Monitoring state unavailable; check Status and reopen Repositories to retry";
-    if (repositoryAutomation.paused) return "Global Monitoring paused";
+    if (!repositoryAutomation) return "Unavailable";
+    if (repositoryAutomation.paused) return "Paused";
     if (repositoryAutomation.active >= repositoryAutomation.capacity)
-      return "Waiting for AI capacity";
-    return "Global Monitoring, access and execution checks still apply";
+      return "Waiting for capacity";
+    return "Active";
   }
 
   async function refreshRepositoryAutomation(update: () => void) {
@@ -620,7 +595,7 @@ export async function mountSettings(
     modal?: HTMLDialogElement,
   ) {
     const current = saved.repositories?.find((r) => r.id === id);
-    if (!current) throw "Save this repository configuration first.";
+    if (!current) throw "Unsaved";
     await commitResource(
       repositoryEdit(current, { ...clone(current), enabled }),
       modal,
@@ -677,7 +652,7 @@ export async function mountSettings(
     refreshAgentAccounts = undefined;
     refreshRepositoryRows = undefined;
     if (accountContent) accountParking.append(accountContent);
-    app.querySelector("h1")!.textContent = sections[section][0];
+    app.querySelector("h1")!.textContent = sections[section];
     app.dataset.settingsSection = section;
     app.toggleAttribute("data-settings-home", section === "home");
     const accountOverview = [
@@ -688,8 +663,8 @@ export async function mountSettings(
     app.toggleAttribute("data-account-overview", accountOverview);
     settingsBack.hidden = !options.embedded || section === "home" || !!guidance;
     const parent = accountParents[section] ?? "home";
-    settingsBack.setAttribute("aria-label", `Back to ${sections[parent][0]}`);
-    settingsBack.title = `Back to ${sections[parent][0]}; retain unsaved changes`;
+    settingsBack.setAttribute("aria-label", `Back to ${sections[parent]}`);
+    settingsBack.title = "Back";
     app.querySelector<HTMLElement>(".settings-savebar")!.hidden =
       section === "repositories" ||
       (!!options.embedded &&
@@ -701,7 +676,7 @@ export async function mountSettings(
       app.dispatchEvent(
         new CustomEvent("pr-sniper:settings-section", {
           detail: {
-            title: section === "home" ? "" : sections[section][0],
+            title: section === "home" ? "" : sections[section],
             back: !settingsBack.hidden,
           },
         }),
@@ -716,8 +691,6 @@ export async function mountSettings(
       "data-preferences",
       section === "preferences" || section === "capacity",
     );
-    app.querySelector(".settings-heading p")!.textContent =
-      sections[section][1];
     app
       .querySelectorAll<HTMLButtonElement>("[data-section]")
       .forEach((button) => {
@@ -745,14 +718,6 @@ export async function mountSettings(
       });
     if (section === "preferences" || section === "capacity")
       renderPreferences();
-    content.prepend(genieNote);
-    if (saved.capability_notice) {
-      const notice = document.createElement("p");
-      notice.className = "settings-hint";
-      notice.setAttribute("role", "status");
-      notice.textContent = saved.capability_notice;
-      content.prepend(notice);
-    }
     changed();
     content.scrollTop = scroll;
     restoreFocus();
@@ -802,11 +767,10 @@ export async function mountSettings(
 
   function overviewRow(
     key: Section,
-    description: string,
     value = "",
     symbol: keyof typeof iconPaths = "integrations",
   ) {
-    return `<button type="button" class="settings-home-row" data-settings-destination="${key}" data-focus-key="settings:${key}" aria-label="${sections[key][0]}" aria-describedby="settings-${key}-description settings-${key}-count"><span class="settings-row-symbol">${icon(symbol)}</span><span class="settings-row-copy"><strong>${sections[key][0]}</strong><small id="settings-${key}-description">${description}</small></span><span class="settings-row-value" id="settings-${key}-count" data-settings-count="${key}">${value}</span><svg class="settings-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button>`;
+    return `<button type="button" class="settings-home-row" data-settings-destination="${key}" data-focus-key="settings:${key}" aria-label="${sections[key]}" aria-describedby="settings-${key}-count"><span class="settings-row-symbol">${icon(symbol)}</span><span class="settings-row-copy"><strong>${sections[key]}</strong></span><span class="settings-row-value" id="settings-${key}-count" data-settings-count="${key}">${value}</span><svg class="settings-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button>`;
   }
   function renderHome() {
     const row = (
@@ -817,25 +781,18 @@ export async function mountSettings(
         | "doctrines"
         | "capacity"
         | "preferences",
-      description: string,
       value = "",
-    ) =>
-      overviewRow(
-        key,
-        description,
-        value,
-        key === "preferences" ? "home" : key,
-      );
+    ) => overviewRow(key, value, key === "preferences" ? "home" : key);
     content.innerHTML = `<div class="settings-overview">
       <nav aria-label="Review setup" class="settings-home-group">
-        ${row("accounts", "GitHub and Copilot, kept separate", "Reading...")}
-        ${row("agents", "Reusable review configurations", String(saved.agents?.length ?? 0))}
-        ${row("repositories", "Assignments, people, and monitoring", String(saved.repositories?.length ?? 0))}
-        ${row("doctrines", "The principles behind each review", String(saved.doctrines?.length ?? 0))}
+        ${row("accounts", "Reading...")}
+        ${row("agents", String(saved.agents?.length ?? 0))}
+        ${row("repositories", String(saved.repositories?.length ?? 0))}
+        ${row("doctrines", String(saved.doctrines?.length ?? 0))}
       </nav>
       <nav aria-label="Application preferences" class="settings-home-group">
-        ${row("capacity", "A limit on running work, not saved agents", String(saved.capacity))}
-        ${row("preferences", "Automation, notifications, startup")}
+        ${row("capacity", String(saved.capacity))}
+        ${row("preferences")}
       </nav>
       ${options.openGenie ? `<button type="button" data-home-genie data-focus-key="settings:genie" aria-label="Set up with Genie" title="Set up with Genie">${icon("genie")}</button>` : ""}
     </div>`;
@@ -855,39 +812,19 @@ export async function mountSettings(
       `<div class="settings-home-row settings-provider-planned" aria-disabled="true"><span class="settings-row-symbol">${icon(symbol)}</span><span class="settings-row-copy"><strong>${escape(label)}</strong></span><span class="settings-row-value">Coming soon</span></div>`;
     const rows =
       section === "accounts"
-        ? overviewRow(
-            "ai-tooling",
-            sections["ai-tooling"][1],
-            "Reading...",
-            "agents",
-          ) +
-          overviewRow(
-            "git-repository",
-            sections["git-repository"][1],
-            "Reading...",
-            "repositories",
-          )
+        ? overviewRow("ai-tooling", "Reading...", "agents") +
+          overviewRow("git-repository", "Reading...", "repositories")
         : section === "ai-tooling"
-          ? overviewRow(
-              "copilot",
-              "Connect your Copilot subscription",
-              "Reading...",
-              "agents",
-            ) +
+          ? overviewRow("copilot", "Reading...", "agents") +
             modelProviders
               .filter((provider) => !provider.available)
               .map((provider) => comingSoon(provider.label, "agents"))
               .join("")
-          : overviewRow(
-              "github",
-              "Repository access and publication",
-              "Reading...",
-              "repositories",
-            ) +
+          : overviewRow("github", "Reading...", "repositories") +
             ["Azure DevOps", "Bitbucket"]
               .map((label) => comingSoon(label, "repositories"))
               .join("");
-    content.innerHTML = `<div class="settings-overview"><nav class="settings-home-group" aria-label="${sections[section][0]}">${rows}</nav></div>`;
+    content.innerHTML = `<div class="settings-overview"><nav class="settings-home-group" aria-label="${sections[section]}">${rows}</nav></div>`;
     content
       .querySelectorAll<HTMLButtonElement>("[data-settings-destination]")
       .forEach((button) => {
@@ -929,9 +866,7 @@ export async function mountSettings(
         const failure = states.find((state) => state.status === "rejected");
         if (failure?.status === "rejected") {
           summary.textContent = "Unavailable";
-          showError(
-            `Account summary unavailable: ${reason(failure.reason)} Open the provider to retry.`,
-          );
+          showError(reason(failure.reason));
           continue;
         }
         const accounts = states.flatMap<GithubAccount | CopilotAccount>(
@@ -980,7 +915,7 @@ export async function mountSettings(
   const assignedNote = (agent: Agent) => {
     const names = agentRepositories(agent).map((r) => escape(r.name));
     return names.length
-      ? ` It is assigned to ${names.length} ${names.length === 1 ? "repository" : "repositories"} (${names.join(", ")}); it will be removed from ${names.length === 1 ? "it" : "them"} first.`
+      ? ` Assigned to ${names.length}: ${names.join(", ")}.`
       : "";
   };
 
@@ -988,6 +923,7 @@ export async function mountSettings(
     modal: HTMLDialogElement;
     title: string;
     back: () => void;
+    admission?: boolean;
   }[] = [];
   function announceEditor() {
     const top = editorStack[editorStack.length - 1];
@@ -1063,10 +999,10 @@ export async function mountSettings(
       const focused = document.activeElement;
       const confirm = dialog(
         `Discard ${resource} changes?`,
-        `<p>Unsaved ${resource} fields will be discarded. Earlier saves and other drafts stay applied or retained.</p><div class="resource-actions"><button type="button" data-keep>Keep editing</button><button type="button" data-discard>Discard changes</button></div>`,
+        `<div class="resource-actions"><button type="button" data-keep>Keep editing</button><button type="button" data-discard>Discard changes</button></div>`,
         focused instanceof HTMLElement ? focused : modal,
       );
-      compactEditor(confirm, `Back to ${resource}; keep editing`);
+      compactEditor(confirm, "Back");
       confirm.querySelector<HTMLButtonElement>("[data-keep]")!.onclick = () =>
         confirm.close();
       confirm.querySelector<HTMLButtonElement>("[data-discard]")!.onclick =
@@ -1091,7 +1027,7 @@ export async function mountSettings(
     },
     onDeleted?: () => void,
   ) {
-    compactEditor(modal, "Back to library; discard unsaved fields");
+    compactEditor(modal, "Back");
     modal.querySelector<HTMLButtonElement>("[data-cancel-resource]")!.onclick =
       () => modal.close();
     if (!deletion) return;
@@ -1137,16 +1073,12 @@ export async function mountSettings(
     };
   }
   const resourceActions = (kind: "agent" | "doctrine", existing: boolean) =>
-    `<p class="settings-hint">Save applies this shared ${kind} immediately. Back or Cancel discards only this editor's unsaved fields; earlier saves stay applied.</p>
-    <p role="alert" hidden></p><div class="resource-actions"><button class="primary">Save ${kind}</button><button type="button" data-cancel-resource>Cancel</button></div>
-    ${existing ? `<button type="button" class="resource-delete" data-delete-resource>Delete ${kind}</button><div data-delete-confirmation hidden><p>Delete this saved ${kind} and discard these unsaved fields? Completed review evidence is retained.</p><div class="resource-actions"><button type="button" data-confirm-delete>Confirm deletion</button><button type="button" data-keep-resource>Keep ${kind}</button></div></div>` : ""}`;
+    `<p role="alert" hidden></p><div class="resource-actions"><button class="primary">Save ${kind}</button><button type="button" data-cancel-resource>Cancel</button></div>
+    ${existing ? `<button type="button" class="resource-delete" data-delete-resource>Delete ${kind}</button><div data-delete-confirmation hidden><div class="resource-actions"><button type="button" data-confirm-delete>Confirm deletion</button><button type="button" data-keep-resource>Keep ${kind}</button></div></div>` : ""}`;
 
   function renderDoctrines() {
-    content.innerHTML = `<p class="settings-hint doctrine-catalog-note" data-doctrine-catalog>${escape(doctrineCatalogLabel(snapshot.doctrine_catalog))}</p><div class="section-actions resource-toolbar doctrine-toolbar"><button class="primary" id="new-doctrine">New doctrine</button></div><div class="doctrine-list resource-library"></div>`;
+    content.innerHTML = `<p class="doctrine-catalog-note" data-doctrine-catalog>${escape(doctrineCatalogLabel(snapshot.doctrine_catalog))}</p><div class="section-actions resource-toolbar doctrine-toolbar"><button class="primary" id="new-doctrine">New doctrine</button></div><div class="doctrine-list resource-library"></div>`;
     const list = content.querySelector(".doctrine-list")!;
-    if (!doctrines().length)
-      list.innerHTML =
-        '<div class="settings-empty"><strong>No doctrines yet</strong><p>Create a doctrine to add your own review principles.</p></div>';
     for (const doctrine of doctrines()) {
       const row = document.createElement("article");
       row.className = "doctrine-card resource-card";
@@ -1162,15 +1094,13 @@ export async function mountSettings(
         const opener = event.currentTarget as HTMLButtonElement;
         const usedBy = doctrineUsers(doctrine);
         if (usedBy.length) {
-          showError(
-            "This doctrine is used by an Agent. Remove or replace its references and save the Agent before deleting it.",
-          );
+          showError("In use by an Agent");
           return;
         }
         if (
           !(await confirmDialog(
             "Delete this doctrine?",
-            `Delete "${escape(doctrine.title)}" from the saved library? Completed review evidence is retained.`,
+            `Delete "${escape(doctrine.title)}"?`,
             "Delete doctrine",
             opener,
           ))
@@ -1204,8 +1134,8 @@ export async function mountSettings(
     const users = existing ? doctrineUsers(existing) : [];
     const modal = dialog(
       existing ? `Editing ${existing.title}` : "New doctrine",
-      `<form><label>Title<input name="title" required maxlength="100" value="${escape(existing?.title ?? "")}" placeholder="e.g. bounded-context" /></label><label>Principles<textarea name="body" rows="10" required>${escape(existing?.body ?? "")}</textarea></label><p class="word-count" data-count>${words(existing?.body ?? "")} words</p><p class="settings-hint">Title doubles as this doctrine's slug -- keep it short and unique. Plain text only, never commands or credentials. Around 500 words is a friendly length, not a limit.</p>
-      <p class="resource-impact">${users.length ? `Shared by ${users.length} Agents: ${escape(users.map((agent) => agent.name).join(", "))}. Saving updates their shared principles; renaming preserves references. Remove these references and save the Agents before deleting.` : "Not used by any Agent. Select this doctrine from an Agent editor to share it."} Completed review evidence keeps its captured text.</p>${resourceActions("doctrine", !!existing)}</form>`,
+      `<form><label>Title<input name="title" required maxlength="100" value="${escape(existing?.title ?? "")}" placeholder="e.g. bounded-context" /></label><label>Principles<textarea name="body" rows="10" required>${escape(existing?.body ?? "")}</textarea></label><p class="word-count" data-count>${words(existing?.body ?? "")} words</p>
+      <p class="resource-impact">${users.length ? `Shared by ${users.length} Agents: ${escape(users.map((agent) => agent.name).join(", "))}` : "Unused"}</p>${resourceActions("doctrine", !!existing)}</form>`,
       opener,
     );
     resourceEditor(
@@ -1220,9 +1150,7 @@ export async function mountSettings(
                 null,
               value: null,
             },
-            blocked: users.length
-              ? "This doctrine is used by an Agent. Remove or replace its references and save the Agent before deleting it."
-              : "",
+            blocked: users.length ? "In use by an Agent" : "",
           }
         : undefined,
     );
@@ -1238,15 +1166,14 @@ export async function mountSettings(
         .querySelector<HTMLInputElement>("[name=title]")!
         .value.trim();
       try {
-        if (!title || !body.value.trim())
-          throw "Give this doctrine a title and some principles.";
+        if (!title || !body.value.trim()) throw "Title and principles required";
         if (
           doctrines().some(
             (d) =>
               d !== existing && d.title.toLowerCase() === title.toLowerCase(),
           )
         )
-          throw "Choose a unique doctrine title.";
+          throw "Title already used";
         await commitResource(
           {
             kind: "doctrine",
@@ -1271,10 +1198,8 @@ export async function mountSettings(
   // -------------------------------------------------------------------- Agents
 
   function renderAgents(onReady: () => void) {
-    content.innerHTML = `<div class="agent-list resource-library"></div><div class="section-actions resource-toolbar agent-footer"><button class="primary" id="new-agent" disabled>New agent</button><p class="settings-hint sr-only" data-copilot-status>Reading Copilot accounts...</p></div>`;
+    content.innerHTML = `<div class="agent-list resource-library"></div><div class="section-actions resource-toolbar agent-footer"><button class="primary" id="new-agent" disabled>New agent</button><p class="sr-only" data-copilot-status>Loading</p></div>`;
     const list = content.querySelector(".agent-list")!;
-    if (!agents().length)
-      list.innerHTML = `<div class="settings-empty"><strong>No agents yet</strong><p>Create one to start assigning it to repositories in Repositories.</p></div>`;
     for (const agent of agents()) {
       const account = copilotAccounts.find(
         (a) => a.account_id === agent.ai_account?.account_id,
@@ -1296,7 +1221,7 @@ export async function mountSettings(
         if (
           !(await confirmDialog(
             "Delete this agent?",
-            `Delete "${escape(agent.name)}" from saved Agents?${assignedNote(agent)} Completed review evidence is retained.`,
+            `Delete "${escape(agent.name)}"?${assignedNote(agent)}`,
             assigned.length
               ? "Remove from repositories and delete"
               : "Delete agent",
@@ -1334,9 +1259,7 @@ export async function mountSettings(
           const connected = copilotAccounts.some(
             (a) => a.state === "connected",
           );
-          notice.textContent = connected
-            ? "Copilot sign-in is separate from model access. Edit an Agent to load this account's current models."
-            : `No verified Copilot connection. Connect an account in ${accountSection}; existing Agents and assignments are retained.`;
+          notice.textContent = connected ? "Connected" : "Not connected";
           content.querySelector<HTMLButtonElement>("#new-agent")!.disabled =
             !connected;
           onReady();
@@ -1356,8 +1279,7 @@ export async function mountSettings(
         },
         () => {
           if (notice.isConnected && request === accountRequest)
-            notice.textContent =
-              "Copilot account state is unavailable. Retry from Manage Copilot accounts. Existing Agents are retained.";
+            notice.textContent = "Unavailable";
         },
       );
     };
@@ -1388,13 +1310,12 @@ export async function mountSettings(
       existing ? `Editing ${existing.name}` : "New agent",
       `<form><section class="agent-section"><label>Name<input name="name" required maxlength="80" value="${escape(existing?.name ?? "")}" placeholder="e.g. The Nitpicker" /></label>
         <label>AI account<select name="ai-account" aria-label="AI account"><option value="">Choose a Copilot account</option>${copilotAccounts.map((a) => `<option value="${escape(a.account_id)}" ${a.account_id === existing?.ai_account?.account_id ? "selected" : ""} ${a.state === "connected" ? "" : "disabled"}>${escape(a.login)} (${escape(a.account_id)})${a.state === "connected" ? "" : " - reconnect required"}</option>`).join("")}${existing?.ai_account && !copilotAccounts.some((a) => a.account_id === existing.ai_account?.account_id) ? `<option selected disabled value="${escape(existing.ai_account.account_id)}">Copilot ${escape(existing.ai_account.account_id)} - reconnect required</option>` : ""}</select></label>
-        ${onSaved ? '<p class="settings-hint" data-editor-accounts role="status">Reading Copilot accounts...</p><button type="button" data-retry-accounts>Retry Copilot accounts</button>' : ""}</section>
+        <div class="status-row"><p data-model-status role="status"></p><button type="button" class="fix-cta" data-fix-account hidden>Fix</button></div>${onSaved ? '<p data-editor-accounts role="status">Loading</p><button type="button" data-retry-accounts>Retry Copilot accounts</button>' : ""}</section>
         <section class="agent-section resource-intelligence">
         <label><span class="model-label">Model<button type="button" data-retry-models aria-label="Refresh model list" title="Refresh model list">${icon("refresh")}</button><button type="button" data-cancel-models aria-label="Cancel model lookup" title="Cancel model lookup" hidden><span class="spinner" aria-hidden="true"></span></button></span><select name="model" aria-label="Model" disabled><option value="${escape(existing?.model ?? "")}">${escape(existing?.model ?? "Choose an account first")}</option></select></label>
         <label>Context window<select name="context-tier" aria-label="Context window" disabled></select></label>
         <label>Reasoning effort<select name="reasoning-effort" aria-label="Reasoning effort" disabled></select></label>
-        <p class="settings-hint" data-intelligence-status aria-live="polite"></p>
-        <p class="settings-hint" data-model-status role="status"></p></section>
+        <p data-intelligence-status aria-live="polite"></p></section>
         <section class="agent-section"><button type="button" class="doctrine-row" data-open-doctrines aria-label="Choose doctrines"><span>Doctrines</span><span class="doctrine-summary" data-doctrine-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button><fieldset class="resource-doctrines"><legend class="sr-only">Doctrines</legend><label>Filter doctrines<input type="search" data-doctrine-filter placeholder="Find principles..." /></label><div class="doctrine-choices" role="group" aria-label="Available doctrines">${doctrines()
           .map((d) =>
             doctrineChoice(
@@ -1406,14 +1327,10 @@ export async function mountSettings(
                 ),
             ),
           )
-          .join(
-            "",
-          )}</div><p class="settings-hint" data-no-doctrines hidden></p></fieldset>
-        <label><span class="prompt-label">Prompt<button type="button" class="info-tip" aria-label="Prompt tips" aria-expanded="false" aria-controls="prompt-tips">${icon("info")}</button><span class="tip-body" id="prompt-tips" role="group" aria-label="Prompt tokens and tips"><strong>Tokens</strong><span class="tip-note">Click to insert. Replaced when the review runs.</span><span class="token-list">${promptTokens.map(([token, hint]) => `<button type="button" data-token="${token}"><code>{{${token}}}</code><span>${escape(hint)}</span></button>`).join("")}</span><strong>Tips</strong><ul><li>Open with a role and goal.</li><li>Say what to flag, what to ignore, and the severity bar.</li><li>Ask for file, line and a suggested fix.</li></ul></span></span><textarea name="prompt" aria-label="Prompt" rows="4" required>${escape(existing?.prompt ?? "Review this pull request for correctness, risk, and readability.")}</textarea></label>
+          .join("")}</div><p data-no-doctrines hidden></p></fieldset>
+        <label><span class="prompt-label">Prompt<button type="button" class="info-tip" aria-label="Prompt tips" aria-expanded="false" aria-controls="prompt-tips">${icon("info")}</button><span class="tip-body" id="prompt-tips" role="group" aria-label="Prompt tokens and tips"><strong>Tokens</strong><span class="token-list">${promptTokens.map(([token, hint]) => `<button type="button" data-token="${token}"><code>{{${token}}}</code><span>${escape(hint)}</span></button>`).join("")}</span></span></span><textarea name="prompt" aria-label="Prompt" rows="4" required>${escape(existing?.prompt ?? "Review this pull request for correctness, risk, and readability.")}</textarea></label>
         <label><span class="model-label">Signature<button type="button" data-reset-signature aria-label="Reset signature to default" title="Reset to default">${icon("reset")}</button></span><input name="signature" aria-label="Signature" required maxlength="200" value="${escape(existing?.signature ?? defaultSignature(existing?.name ?? "", existing?.model ?? ""))}" /></label></section>
-        <p class="settings-hint">Custom signature is saved for the signature-customization follow-up. Current publication uses the canonical PR Sniper signature.</p>
-        <p class="settings-hint">No review or test prompt runs here. Saving an existing unconfigured Agent preserves its selection until you explicitly replace it.</p>
-        <p class="resource-impact">${assigned.length ? `Shared by ${assigned.length} repositories: ${escape(assigned.map((repository) => repository.name).join(", "))}. Remove or replace those assignments and save the repositories before deleting.` : "Not assigned to any repository."} Publish Comment, Reply Comment, Approve &amp; Merge and primary designation belong to repository assignments, never this shared Agent. Completed evidence keeps its captured configuration.</p>${resourceActions("agent", !!existing)}</form>`,
+        <p class="resource-impact">${assigned.length ? `Shared by ${assigned.length} repositories: ${escape(assigned.map((repository) => repository.name).join(", "))}` : "Unassigned"}</p>${resourceActions("agent", !!existing)}</form>`,
       opener,
     );
     const promptField = modal.querySelector<HTMLTextAreaElement>(
@@ -1468,11 +1385,7 @@ export async function mountSettings(
         : undefined,
       () => finish(),
     );
-    if (onSaved)
-      compactEditor(
-        modal,
-        "Back to assignment; confirm discarding unsaved Agent fields",
-      );
+    if (onSaved) compactEditor(modal, "Back");
     const filter = modal.querySelector<HTMLInputElement>(
       "[data-doctrine-filter]",
     )!;
@@ -1499,9 +1412,7 @@ export async function mountSettings(
         `${selected} selected`;
       const empty = modal.querySelector<HTMLElement>("[data-no-doctrines]")!;
       empty.hidden = visible > 0;
-      empty.textContent = choices.length
-        ? "No matching doctrines. Clear the filter to see the library."
-        : "No doctrines yet. Save or cancel this Agent, then add principles in Doctrines.";
+      empty.textContent = choices.length ? "No matches" : "None";
     };
     filter.oninput = updateChoices;
     filter.onkeydown = (event) => {
@@ -1574,6 +1485,48 @@ export async function mountSettings(
     const modelStatus = modal.querySelector<HTMLElement>(
       "[data-model-status]",
     )!;
+    const statusLines = [
+      modelStatus,
+      ...modal.querySelectorAll<HTMLElement>(
+        "[data-intelligence-status], [data-editor-accounts]",
+      ),
+    ];
+    const markStatus = () => {
+      for (const line of statusLines) {
+        const text = line.textContent ?? "";
+        line.dataset.state =
+          text === "Loading"
+            ? "loading"
+            : /^(Unavailable|Reconnect required|Not connected|Lookup failed|Cancel failed)$/.test(
+                  text,
+                ) || /fail|error|denied|invalid/i.test(text)
+              ? "error"
+              : "info";
+      }
+    };
+    const fix = modal.querySelector<HTMLButtonElement>("[data-fix-account]")!;
+    const markFix = () => {
+      markStatus();
+      fix.hidden = !statusLines.some(
+        (line) =>
+          line.dataset.state === "error" &&
+          /^(Reconnect required|Not connected)$/.test(line.textContent ?? ""),
+      );
+    };
+    fix.onclick = () => {
+      modal.querySelector<HTMLButtonElement>(".dialog-head button")?.click();
+      requestAnimationFrame(() => {
+        if (!modal.open) openFromHome("copilot");
+      });
+    };
+    const statusObserver = new MutationObserver(markFix);
+    for (const line of statusLines)
+      statusObserver.observe(line, {
+        childList: true,
+        characterData: true,
+        subtree: true,
+      });
+    markFix();
     const retryModels = modal.querySelector<HTMLButtonElement>(
       "[data-retry-models]",
     )!;
@@ -1612,12 +1565,12 @@ export async function mountSettings(
         select.innerHTML =
           option("", defaultLabel, selected) +
           (selected && !values.includes(selected)
-            ? `<option selected disabled value="${escape(selected)}">${escape(selected)} - ${catalogLoaded ? "unsupported; retained" : "retained; discovery unavailable"}</option>`
+            ? `<option selected disabled value="${escape(selected)}">${escape(selected)} - ${catalogLoaded ? "unsupported" : "retained"}</option>`
             : "") +
           values
             .map(
               (value) =>
-                `<option value="${escape(value)}" ${selected === value ? "selected" : ""} ${supported(value) ? "" : "disabled"}>${escape(label(value))}${supported(value) ? "" : " - unsupported by pinned runtime"}</option>`,
+                `<option value="${escape(value)}" ${selected === value ? "selected" : ""} ${supported(value) ? "" : "disabled"}>${escape(label(value))}${supported(value) ? "" : " - unsupported"}</option>`,
             )
             .join("");
         select.disabled = !ready || (!values.some(supported) && !selected);
@@ -1640,26 +1593,14 @@ export async function mountSettings(
         runtimeContextTier,
       );
       intelligenceStatus.textContent = !catalogLoaded
-        ? "Capabilities are unavailable until model discovery succeeds. Deliberate choices are retained, not declared invalid."
+        ? "Unavailable"
         : !ready
-          ? "Choose an available model to check Intelligence. Deliberate choices are retained."
-          : intelligenceError(model, intelligence())
-            ? `${intelligenceError(model, intelligence())} Your choice is retained. Select a supported value or explicitly choose Provider default before saving.`
-            : [
-                reasoningEfforts(model).length
-                  ? ""
-                  : "No reasoning efforts advertised; Provider default only.",
-                contextTiers(model).some(runtimeContextTier)
-                  ? ""
-                  : "No supported context tiers advertised; Provider default only.",
-                model?.capabilities?.limits?.max_context_window_tokens !==
-                undefined
-                  ? `Advertised model maximum: ${model.capabilities.limits.max_context_window_tokens.toLocaleString("en-US")} tokens.`
-                  : "",
-                "Provider defaults are resolved by the runtime. Actual settings are checked before inference and captured with each result.",
-              ]
-                .filter(Boolean)
-                .join(" ");
+          ? "Choose a model"
+          : intelligenceError(model, intelligence()) ||
+            (model?.capabilities?.limits?.max_context_window_tokens !==
+            undefined
+              ? `Max ${model.capabilities.limits.max_context_window_tokens.toLocaleString("en-US")} tokens`
+              : "");
     }
     effortSelect.onchange = () => {
       effort = effortSelect.value;
@@ -1679,9 +1620,7 @@ export async function mountSettings(
         const lookup = pendingLookup;
         pendingLookup = undefined;
         void invoke("cancel_copilot_models", lookup).catch(() => {
-          if (modal.isConnected)
-            modelStatus.textContent =
-              "Cancellation could not be confirmed. The native lookup remains time-bounded.";
+          if (modal.isConnected) modelStatus.textContent = "Cancel failed";
         });
       }
       cancelModels.hidden = true;
@@ -1708,14 +1647,14 @@ export async function mountSettings(
         )
       ) {
         modelStatus.textContent = existing
-          ? `Connect or reconnect this account in ${accountSection}. The saved model is retained, but this Agent is unconfigured.`
-          : "Choose a verified Copilot account, then load its models.";
+          ? "Reconnect required"
+          : "Choose an account";
         return;
       }
       const lookup = { accountId, requestId: newIdentity() };
       pendingLookup = lookup;
       cancelModels.hidden = false;
-      modelStatus.textContent = "Loading models from this Copilot account...";
+      modelStatus.textContent = "Loading";
       try {
         const models = await invoke<CopilotModel[]>(
           "list_copilot_models",
@@ -1732,12 +1671,12 @@ export async function mountSettings(
         modelSelect.innerHTML =
           option("", "Choose a model", selected) +
           (selected && !models.some((m) => m.id === selected)
-            ? `<option selected disabled value="${escape(selected)}">${escape(selected)} - unavailable; retained</option>`
+            ? `<option selected disabled value="${escape(selected)}">${escape(selected)} - unavailable</option>`
             : "") +
           models
             .map(
               (m) =>
-                `<option value="${escape(m.id)}" ${m.id === selected ? "selected" : ""} ${modelSelectable(m) ? "" : "disabled"}>${escape(m.name)} (${escape(m.id)})${modelSelectable(m) ? "" : " - unavailable by policy"}</option>`,
+                `<option value="${escape(m.id)}" ${m.id === selected ? "selected" : ""} ${modelSelectable(m) ? "" : "disabled"}>${escape(m.name)} (${escape(m.id)})${modelSelectable(m) ? "" : " - unavailable"}</option>`,
             )
             .join("");
         modelSelect.disabled = !models.some(modelSelectable);
@@ -1745,7 +1684,7 @@ export async function mountSettings(
         describeModel();
       } catch (cause) {
         if (modal.isConnected && current === request)
-          modelStatus.textContent = `${reason(cause)} No replacement model selected. Retry when ready.`;
+          modelStatus.textContent = reason(cause);
       } finally {
         if (current === request) {
           pendingLookup = undefined;
@@ -1755,16 +1694,11 @@ export async function mountSettings(
     }
     function describeModel() {
       const model = catalog.find((m) => m.id === modelSelect.value);
-      const notices = [
-        model?.policy?.terms,
-        model?.warningText?.dataRetention,
-        ...(model?.infoMessages?.map((m) => m.message) ?? []),
-      ].filter(Boolean);
       modelStatus.textContent = !catalog.length
-        ? "Copilot returned no models for this account. Sign-in remains verified; check access or policy and retry."
+        ? "No models"
         : modelSelect.value && (!model || !modelSelectable(model))
-          ? "The saved model is unavailable. It is retained, not replaced. Choose an available model or retry."
-          : `${catalog.length} models returned by Copilot. This is not an inference test. ${notices.join(" ")}`;
+          ? "Model unavailable"
+          : `${catalog.length} model${catalog.length === 1 ? "" : "s"}`;
       describeIntelligence();
     }
     accountSelect.onchange = () => {
@@ -1778,7 +1712,7 @@ export async function mountSettings(
     retryModels.onclick = () => void loadModels();
     cancelModels.onclick = () => {
       cancelLookup();
-      modelStatus.textContent = "Model lookup cancelled. Retry when ready.";
+      modelStatus.textContent = "Cancelled";
     };
     let selectedWasConnected = copilotAccounts.some(
       (a) => a.account_id === accountSelect.value && a.state === "connected",
@@ -1807,8 +1741,8 @@ export async function mountSettings(
         describeIntelligence();
         modelSelect.disabled = true;
         modelStatus.textContent = selected
-          ? `Reconnect this account in ${accountSection}. Your model and draft are retained.`
-          : "Choose a verified Copilot account, then load its models.";
+          ? "Reconnect required"
+          : "Choose an account";
       } else if (!selectedWasConnected) {
         void loadModels();
       }
@@ -1824,7 +1758,7 @@ export async function mountSettings(
       const refreshAccounts = () => {
         if (!modal.isConnected) return;
         const request = ++accountRequest;
-        status.textContent = "Reading Copilot accounts...";
+        status.textContent = "Loading";
         void invoke<CopilotAuth>("copilot_auth_state").then(
           (view) => {
             if (!modal.isConnected || request !== accountRequest) return;
@@ -1833,15 +1767,14 @@ export async function mountSettings(
             status.textContent = copilotAccounts.some(
               (account) => account.state === "connected",
             )
-              ? "Choose an AI account and a model explicitly. Repository permissions are unchanged."
-              : `No verified Copilot connection. Connect or reconnect in ${accountSection}; cancel returns to your assignment draft.`;
+              ? "Connected"
+              : "Not connected";
           },
           () => {
             if (!modal.isConnected || request !== accountRequest) return;
             copilotAccounts = [];
             updateAccounts();
-            status.textContent =
-              "Copilot account state is unavailable. Retry Copilot accounts; your drafts are retained.";
+            status.textContent = "Unavailable";
           },
         );
       };
@@ -1891,14 +1824,14 @@ export async function mountSettings(
         .value.trim();
       try {
         if (!name || !prompt.trim() || !signature)
-          throw "Give this agent a name, a prompt, and a signature.";
+          throw "Name, prompt and signature required";
         if (
           agents().some(
             (a) =>
               a !== existing && a.name.toLowerCase() === name.toLowerCase(),
           )
         )
-          throw "Choose a unique agent name.";
+          throw "Name already used";
         const accountId = accountSelect.value;
         const unchanged =
           !!existing &&
@@ -1911,13 +1844,12 @@ export async function mountSettings(
         const modelAvailable =
           catalogLoaded && selectedModel && modelSelectable(selectedModel);
         if (!unchanged && (!accountId || !modelAvailable))
-          throw "Choose a verified AI account and a model returned for that account. Retry the model list if unavailable.";
+          throw "Account and model required";
         if (!modelAvailable && !sameIntelligence)
-          throw "Model capabilities are unavailable. Retry discovery before changing Intelligence; saved choices are retained.";
+          throw "Capabilities unavailable";
         if (modelAvailable) {
           const invalid = intelligenceError(selectedModel, intelligence());
-          if (invalid)
-            throw `${invalid} Choose a supported value or Provider default; no setting was discarded.`;
+          if (invalid) throw invalid;
         }
         const values: Agent = {
           id: existing?.id ?? newIdentity(),
@@ -2019,10 +1951,8 @@ export async function mountSettings(
       <div class="section-actions"><h2>Your repositories</h2><button class="primary" id="add-repository" aria-label="Add repository by URL">+ URL</button></div>
       <div class="repository-list native-repository-list"></div>
       <div class="repository-list native-repository-list repository-disconnected" data-repository-disconnected hidden></div>
-      ${conflict ? '<p role="alert">Saved settings changed in another window. Your unsaved draft is retained.</p><button data-repository-reload>Discard draft and reload</button>' : ""}
-      <h2>Browse from an account</h2><div data-repository-accounts class="native-repository-list"></div>
-      <p class="settings-hint">Choose a personal or organization owner. Saving repository configuration authorizes current and future matching pull requests.</p>
-      <p class="settings-hint">Azure DevOps organization browsing is coming soon.</p></section>`;
+      ${conflict ? '<p role="alert">Settings changed</p><button data-repository-reload>Reload</button>' : ""}
+      <h2>Browse from an account</h2><div data-repository-accounts class="native-repository-list"></div></section>`;
     const rows = () => {
       const list = content.querySelector<HTMLElement>(".repository-list");
       const accounts = content.querySelector<HTMLElement>(
@@ -2055,13 +1985,13 @@ export async function mountSettings(
             const label =
               repositories().filter((r) => r.name === repository.name).length >
               1
-                ? `${repository.name} as ${account?.login ?? "Account unavailable"}`
+                ? `${repository.name} as ${account?.login ?? "Unavailable"}`
                 : repository.name;
             return `<div class="native-repository-row repository-monitoring-row"><button type="button" class="repository-open" aria-label="${escape(label)}" data-dirty="${!sameResource(
               repository,
               saved.repositories?.find((r) => r.id === repository.id),
             )}" data-repository="${escape(repository.id)}" data-focus-key="repository:${escape(repository.id)}:settings">
-          <span class="settings-row-copy"><strong>${escape(repository.name)}</strong><small>${repository.provider === "github" ? "GitHub" : "Azure DevOps"} / ${escape(account?.login ?? "Account unavailable")}</small><small data-repository-monitoring-detail="${escape(repository.id)}">${escape(repositoryMonitoringDetail(committed))}</small></span>
+          <span class="settings-row-copy"><strong>${escape(repository.name)}</strong><small>${repository.provider === "github" ? "GitHub" : "Azure DevOps"} / ${escape(account?.login ?? "Unavailable")}</small><small data-repository-monitoring-detail="${escape(repository.id)}">${escape(repositoryMonitoringDetail(committed))}</small></span>
           <span class="settings-row-value" data-monitoring-state="${state.toLowerCase()}">${state}${
             sameResource(
               repository,
@@ -2074,24 +2004,19 @@ export async function mountSettings(
           .join("");
       disconnected.innerHTML = rowsFor(true);
       disconnected.hidden = !disconnected.innerHTML;
-      list.innerHTML =
-        rowsFor(false) ||
-        (disconnected.hidden
-          ? '<p class="settings-empty">No repositories yet. Browse an account below or add a GitHub URL.</p>'
-          : "");
+      list.innerHTML = rowsFor(false);
       list.hidden = !list.innerHTML;
       accounts.innerHTML =
         repositoryAccountsState === "unavailable"
-          ? '<p role="alert">GitHub accounts are unavailable. No connection is assumed.</p><button data-retry-accounts>Retry reading accounts</button>'
+          ? '<p role="alert">Unavailable</p><button data-retry-accounts>Retry</button>'
           : repositoryAccountsState === "loading"
-            ? '<p role="status">Reading GitHub accounts...</p>'
+            ? '<p role="status">Loading</p>'
             : githubAccounts
                 .map(
                   (account) =>
-                    `<div class="native-repository-row"><span class="settings-row-copy"><strong>${escape(account.login)}</strong><small>GitHub repository access${account.state === "connected" ? "" : " / Reconnect in Accounts"}</small></span><button type="button" data-browse-account="${escape(account.account_id)}" aria-label="Browse repositories as ${escape(account.login)}" ${account.state === "connected" ? "" : "disabled"}><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/></svg></button></div>`,
+                    `<div class="native-repository-row"><span class="settings-row-copy"><strong>${escape(account.login)}</strong><small>GitHub${account.state === "connected" ? "" : " / Reconnect required"}</small></span><button type="button" data-browse-account="${escape(account.account_id)}" aria-label="Browse repositories as ${escape(account.login)}" ${account.state === "connected" ? "" : "disabled"}><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/></svg></button></div>`,
                 )
-                .join("") ||
-              '<p class="settings-empty">Connect a GitHub account in Accounts to browse repositories.</p>';
+                .join("");
       accounts
         .querySelector<HTMLButtonElement>("[data-retry-accounts]")
         ?.addEventListener("click", () =>
@@ -2176,7 +2101,6 @@ export async function mountSettings(
     resolved: ResolvedRepository,
     modal: HTMLDialogElement,
     opener: HTMLElement,
-    previous?: ConfiguredRepository,
   ) {
     const requestedRoute = routeGeneration;
     if (
@@ -2188,25 +2112,18 @@ export async function mountSettings(
           a.state === "connected",
       )
     )
-      throw "The acting account changed or disconnected. Reconnect and try again.";
+      throw "Reconnect required";
     let repository = repositories().find(
       (r) =>
         r.provider === "github" &&
         r.provider_account_id === accountId &&
         r.provider_repository_id === resolved.repository.id,
     );
-    if (previous && repository && previous.id !== repository.id)
-      throw `${resolved.repository.name} is already configured on another row under this account. Choose a different repository or cancel this edit.`;
-    if (
-      !repository ||
-      (previous?.id === repository.id &&
-        previous.name !== resolved.repository.name)
-    ) {
+    if (!repository) {
       const value: ConfiguredRepository = {
-        ...(previous ?? {}),
-        id: previous?.id ?? newIdentity(),
+        id: newIdentity(),
         name: resolved.repository.name,
-        enabled: previous?.enabled ?? false,
+        enabled: false,
         provider: "github",
         provider_account_id: accountId,
         provider_repository_id: resolved.repository.id,
@@ -2216,7 +2133,7 @@ export async function mountSettings(
         modal,
         resolved.account_generation,
       );
-      if (!previous) pendingSetup.add(value.id);
+      pendingSetup.add(value.id);
       repository = repositories().find((r) => r.id === value.id)!;
     }
     if (resolved.pull_request) {
@@ -2240,17 +2157,13 @@ export async function mountSettings(
     );
   }
 
-  function editRepository(
-    opener: HTMLElement,
-    repository?: ConfiguredRepository,
-  ) {
+  function editRepository(opener: HTMLElement) {
     const modal = dialog(
-      repository ? "Edit repository" : "Add repository by URL",
-      `<form><label>Repository URL<input name="repository" required value="${escape(repository?.name ?? "")}" placeholder="https://github.com/owner/repository" autocomplete="off" /></label>
-      <div class="repository-actor"><p class="settings-hint" role="status" id="repository-actor-status"></p><button type="button" data-change-account hidden>Change</button></div>
+      "Add repository by URL",
+      `<form><label>Repository URL<input name="repository" required placeholder="https://github.com/owner/repository" autocomplete="off" /></label>
+      <div class="repository-actor"><p role="status" id="repository-actor-status"></p><button type="button" data-change-account hidden>Change</button></div>
       <label data-account-choice hidden>Acting GitHub account<select name="account" aria-describedby="repository-actor-status"></select></label>
       <div class="settings-actions"><button type="button" data-recover-account hidden>Connect GitHub account</button><button type="button" data-retry-account hidden>Retry reading accounts</button></div>
-      <p class="settings-hint">GitHub repository or pull request URL, or owner/repository. Uses Git Repository access, not your Copilot AI connection. Adding opens configuration; Save queues a requested PR regardless of watch filters, without granting action permissions.</p>
       <p role="alert" hidden></p><div class="resource-actions"><button type="button" data-cancel-resource>Cancel</button><button type="submit" class="primary">Add &amp; configure</button></div></form>`,
       opener,
     );
@@ -2276,12 +2189,12 @@ export async function mountSettings(
     const alert = modal.querySelector<HTMLElement>("[role=alert]")!;
     // Once selected, the actor is pinned even when discovery fails or another
     // account appears. Only the operator's Change choice can replace it.
-    let selectedId = repository?.provider_account_id ?? "";
+    let selectedId = "";
     let selectedLogin = githubAccounts.find(
       (a) => a.account_id === selectedId,
     )?.login;
     let choosing = false;
-    let choiceRequired = !!repository;
+    let choiceRequired = false;
     let generation = 0;
     let submitting = false;
     let selectedSnapshot = "";
@@ -2296,8 +2209,7 @@ export async function mountSettings(
       generation++;
       if (submitting) {
         submitting = false;
-        alert.textContent =
-          "The URL or account connection changed. Your input is retained; add and configure again to verify current access.";
+        alert.textContent = "Changed";
         alert.hidden = false;
       }
     };
@@ -2352,23 +2264,23 @@ export async function mountSettings(
       submit.disabled = !github || !ready || !actor || submitting || busy;
       status.textContent = !github
         ? provider === "azure_devops"
-          ? "Azure DevOps repository connections are coming soon. This URL cannot use a GitHub account."
+          ? "Coming soon"
           : provider === "invalid"
-            ? "Enter a valid HTTPS repository URL or owner/repository."
-            : "This repository provider is not supported. Use a GitHub repository URL."
+            ? "Invalid URL"
+            : "Unsupported"
         : repositoryAccountsState === "unavailable"
-          ? "GitHub repository accounts are unavailable. Retry reading accounts; your URL and selected identity are retained."
+          ? "Unavailable"
           : !ready
-            ? "Reading GitHub repository accounts..."
+            ? "Loading"
             : actor
-              ? `GitHub / ${actor.login}${actor.warning ? " / Verification needs retry; current access will be checked before saving." : ""}`
+              ? `GitHub / ${actor.login}${actor.warning ? " / Retry verification" : ""}`
               : selectedId
-                ? `Reconnect ${selectedLogin ?? "the saved GitHub account"} for repository access, or explicitly Change the account. ${unavailable?.reason ? githubAccountFailureMessage(unavailable.reason) : "No other identity was selected."}`
+                ? `${selectedLogin ?? "Saved account"}: ${unavailable?.reason ? githubAccountFailureMessage(unavailable.reason) : "Reconnect required"}`
                 : available.length
-                  ? "Choose a GitHub repository account before validating this URL. No account is selected."
+                  ? "Choose an account"
                   : reconnect
-                    ? "Reconnect a GitHub repository account in Accounts. Its authorization is unavailable; Copilot AI access is separate."
-                    : "Connect a GitHub repository account to continue. Copilot AI access is separate; confirm the returned identity before using it.";
+                    ? "Reconnect required"
+                    : "Not connected";
     };
     input.oninput = () => {
       invalidate();
@@ -2398,8 +2310,7 @@ export async function mountSettings(
       const auth = accountContent?.querySelector<HTMLElement>(".github-auth");
       const parent = auth?.parentElement;
       if (!auth || !parent) {
-        alert.textContent =
-          "GitHub account controls are unavailable. Close this editor and retry Accounts.";
+        alert.textContent = "Unavailable";
         alert.hidden = false;
         return;
       }
@@ -2408,10 +2319,7 @@ export async function mountSettings(
         "<div data-repository-auth></div>",
         recover,
       );
-      compactEditor(
-        recovery,
-        "Back to repository URL; retain input and account",
-      );
+      compactEditor(recovery, "Back");
       recovery.querySelector("[data-repository-auth]")!.append(auth);
       recovery.addEventListener(
         "pr-sniper:dialog-closed",
@@ -2444,9 +2352,9 @@ export async function mountSettings(
       update();
       try {
         if (repositoryProviderContext(repositoryInput) !== "github")
-          throw "This repository provider is not supported. Use a GitHub repository URL.";
+          throw "Unsupported";
         if (repositoryAccountsState !== "ready" || !actor)
-          throw "Choose a connected GitHub account in Accounts, then retry.";
+          throw "Not connected";
         const resolved = await invoke<ResolvedRepository>(
           "resolve_provider_repository",
           {
@@ -2468,12 +2376,12 @@ export async function mountSettings(
           (actor.connection_generation !== undefined &&
             actor.connection_generation !== resolved.account_generation)
         )
-          throw "The selected GitHub connection changed. Retry to verify its current access; no repository was saved.";
-        await addAndConfigure(accountId, resolved, modal, opener, repository);
+          throw "Reconnect required";
+        await addAndConfigure(accountId, resolved, modal, opener);
       } catch (cause) {
         if (modal.open && read === generation) {
           submitting = false;
-          alert.textContent = `Cannot resolve this repository or pull request using the selected GitHub account. ${reason(cause)}`;
+          alert.textContent = reason(cause);
           alert.hidden = false;
           if (repositorySessionFailure(cause))
             window.dispatchEvent(
@@ -2492,15 +2400,13 @@ export async function mountSettings(
   function browseRepositories(account: GithubAccount, opener: HTMLElement) {
     const modal = dialog(
       `Browse repositories as ${account.login}`,
-      `<p class="settings-hint">Acting GitHub account: ${escape(account.login)}.</p>
-      <label>Repository owner<select data-owner aria-label="Repository owner" disabled><option value="">Choose an owner</option></select></label>
-      <label>Find a repository<input type="search" data-owner-search placeholder="Search this owner..." disabled /></label>
-      <p role="status">Loading available owners...</p><p role="alert" hidden></p><button data-retry hidden>Retry</button>
-      <div data-owner-results class="native-repository-list"></div>
-      <p class="settings-hint">Only repositories accessible to this account are listed. Selecting adds a disabled row and opens configuration.</p>`,
+      `<label>Repository owner<select data-owner aria-label="Repository owner" disabled><option value="">Choose an owner</option></select></label>
+      <label>Find a repository<input type="search" data-owner-search placeholder="Search" disabled /></label>
+      <p role="status">Loading</p><p role="alert" hidden></p><button data-retry hidden>Retry</button>
+      <div data-owner-results class="native-repository-list"></div>`,
       opener,
     );
-    compactEditor(modal, "Back to repositories");
+    compactEditor(modal, "Back");
     modal.classList.add("repository-editor");
     const owner = modal.querySelector<HTMLSelectElement>("[data-owner]")!;
     const search = modal.querySelector<HTMLInputElement>(
@@ -2539,12 +2445,12 @@ export async function mountSettings(
         .join("");
       if (loaded && owner.value)
         status.textContent = incomplete
-          ? `${results.length} accessible repositories shown. Repository discovery is incomplete; more may be unavailable.`
+          ? `${results.length} repositories; incomplete`
           : !results.length
-            ? "No accessible repositories for this owner."
+            ? "None"
             : !filtered.length
-              ? "No matching repositories. Try another name."
-              : `${results.length} accessible repositories loaded.`;
+              ? "No matches"
+              : `${results.length} repositories`;
       list
         .querySelectorAll<HTMLButtonElement>("[data-pick]")
         .forEach((button) => {
@@ -2558,8 +2464,7 @@ export async function mountSettings(
               .forEach((b) => (b.disabled = true));
             const selected = results.find((r) => r.id === button.dataset.pick)!;
             try {
-              if (!connected())
-                throw "Account disconnected. Reconnect in Accounts.";
+              if (!connected()) throw "Reconnect required";
               const resolved = await invoke<ResolvedRepository>(
                 "resolve_provider_repository",
                 {
@@ -2577,7 +2482,7 @@ export async function mountSettings(
               if (resolved.identity.id !== account.account_id)
                 throw "wrong_identity";
               if (resolved.repository.id !== selected.id)
-                throw "Repository identity changed. Refresh this owner and try again.";
+                throw "Repository changed";
               await addAndConfigure(
                 account.account_id,
                 resolved,
@@ -2651,12 +2556,8 @@ export async function mountSettings(
         list.replaceChildren();
       }
       incomplete = true;
-      status.textContent = loaded
-        ? "Lookup failed. Previously loaded results remain visible; discovery is incomplete."
-        : "Repository browsing unavailable.";
-      alert.textContent = sameBinding
-        ? reason(cause)
-        : "The lookup returned a failure for another account. Retry this selected account.";
+      status.textContent = loaded ? "Lookup failed" : "Unavailable";
+      alert.textContent = sameBinding ? reason(cause) : "Failed";
       alert.hidden = false;
       retry.hidden = false;
     };
@@ -2674,11 +2575,11 @@ export async function mountSettings(
       retry.hidden = true;
       status.textContent = ownerLogin
         ? retaining
-          ? "Refreshing repositories; previously loaded results remain visible..."
-          : "Loading all accessible repositories for this owner..."
-        : "Loading available owners...";
+          ? "Refreshing"
+          : "Loading"
+        : "Loading";
       try {
-        if (!connected()) throw "Account disconnected. Reconnect in Accounts.";
+        if (!connected()) throw "Reconnect required";
         if (!ownerLogin) {
           const result = await invoke<{
             identity: { id: string };
@@ -2693,9 +2594,7 @@ export async function mountSettings(
           if (!connected()) throw "signed_out";
           showWarnings(result.warnings);
           reconcileOwners(result.owners, "");
-          status.textContent = incomplete
-            ? "Some owners may be unavailable. Choose a loaded owner or retry discovery."
-            : "Choose the personal account or an available organization.";
+          status.textContent = incomplete ? "Incomplete" : "Choose an owner";
         } else {
           const result = await invoke<{
             identity: { id: string };
@@ -2746,46 +2645,20 @@ export async function mountSettings(
     const pendingPull = pendingPullRequests.get(repository.id);
     const modal = dialog(
       repository.name,
-      `<section class="repository-identity"><h3>${escape(repository.name)}</h3><p class="settings-hint">${escape(repository.provider === "github" ? `GitHub acting account: ${githubAccounts.find((account) => account.account_id === repository.provider_account_id)?.login ?? (repository.provider_account_id ? "Saved account unavailable" : "No account selected")}.` : "Azure DevOps account binding is not available in this build.")}</p></section>
-        <section class="repository-group"><label class="repository-check"><input type="checkbox" role="switch" aria-label="Monitor ${escape(repository.name)}" data-repository-enabled ${repository.enabled || (pendingSetup.has(repository.id) && !setupMonitoringOff.has(repository.id)) ? "checked" : ""} /><span>Monitor this repository</span></label><p data-repository-monitoring-state role="status"></p><p class="settings-hint" data-repository-monitoring-detail></p></section>
-        <section class="repository-group" data-watch-group>
-        <p class="settings-hint">Save authorizes all currently open and future matching pull requests. Eligible reviews start automatically; global monitoring off, pause and repository disablement still apply. Adding this row alone does not start monitoring.</p>
-        <button type="button" class="doctrine-row" data-open-reviewers><span>Reviewer requests</span><span class="doctrine-summary" data-reviewer-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button><select id="repository-reviewer-trigger" class="sr-only" data-reviewer-trigger aria-label="Reviewer requests"><option value="inherit">Use default (${saved.defaults.reviewer_assignment ? "on" : "off"})</option><option value="on">Include PRs explicitly requesting the acting account</option><option value="off">Do not admit through reviewer requests</option></select>
-        <p class="settings-hint">Reviewer requests independently admit older or unwatched PRs. Once admitted, work stays tracked until verified closure or merge. Disablement and execution permissions still apply.</p></section>
-        <section class="repository-group reviewer-picker" role="radiogroup" aria-label="Reviewer request options">${(
-          [
-            [
-              "inherit",
-              `Use default (${saved.defaults.reviewer_assignment ? "on" : "off"})`,
-            ],
-            ["on", "Include PRs requesting this account"],
-            ["off", "Do not admit through reviewer requests"],
-          ] as const
-        )
-          .map(
-            ([value, label]) =>
-              `<label data-reviewer-choice><input type="radio" name="reviewer-choice" value="${value}" /><span>${escape(label)}</span></label>`,
-          )
-          .join("")}</section>
+      `<section class="repository-identity"><h3>${escape(repository.name)}</h3><p>${escape(repository.provider === "github" ? `GitHub / ${githubAccounts.find((account) => account.account_id === repository.provider_account_id)?.login ?? (repository.provider_account_id ? "Unavailable" : "No account")}` : "Azure DevOps")}</p></section>
+        <section class="repository-group"><label class="repository-check"><input type="checkbox" role="switch" aria-label="Monitor ${escape(repository.name)}" data-repository-enabled ${repository.enabled || (pendingSetup.has(repository.id) && !setupMonitoringOff.has(repository.id)) ? "checked" : ""} /><span>Monitor this repository</span></label><p data-repository-monitoring-state role="status"></p><p data-repository-monitoring-detail></p></section>
+        <section class="repository-group admission-group"><label class="repository-check" data-admission-all><input type="checkbox" role="switch" aria-label="All pull requests" data-admission-all-input /><span>All pull requests</span></label><button type="button" class="doctrine-row" data-open-filters><span>Filtered pull requests</span><span class="doctrine-summary" data-filter-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button></section>
+        <div class="admission-view" data-admission-view hidden></div>
         <section class="repository-group"><div class="section-actions"><h2>Agents on this repository</h2><button class="primary" data-assign-agent>Assign agent</button></div>
         <div class="assignment-list"></div>
-        ${agents().length ? "" : '<p class="settings-hint">Create a shared Agent from Assign agent, then choose its repository permissions.</p>'}
-        <p class="settings-hint">Each assignment receives its own normal pass. Permissions belong here, not to the reusable Agent. Only the primary assesses eligible conversations on admitted open PRs. Primary selection grants no permissions; without a primary, reviews and permitted initial comments continue but replies, approval and merge are unavailable.</p>
-        </section><section class="repository-group"><div class="section-actions"><h2>People you watch</h2><button data-add-people>Add people</button></div>
-        <div class="watchlist"></div>
-        <p class="settings-hint">Optional. A nonempty effective watched-author filter qualifies those authors. An empty effective author filter means all authors. Pull requests requesting the signed-in account also qualify when the reviewer-request trigger is enabled. Exact GitHub login, no wildcards.</p>
-        </section><section class="repository-group" data-global-schedule><h2>Saved global schedule</h2><p>${schedule.kind === "cron" ? `<code>${escape(schedule.expression)}</code>` : `Every ${schedule.minutes} minutes (saved legacy schedule)`} / ${escape(schedule.timezone)}</p><p class="settings-hint">${schedule.kind === "cron" ? "One schedule scans enabled repositories. Change it in Preferences;" : "Polling is blocked until you choose a global five-field cron schedule in Preferences. The saved legacy interval is retained;"} repository and Agent assignments have no separate polling controls.</p></section>
-        <details class="repository-group"><summary>Repository</summary><dl class="repository-binding-details"><dt>Account ID</dt><dd>${escape(repository.provider_account_id ?? "Unbound")}</dd><dt>Repository ID</dt><dd>${escape(repository.provider_repository_id ?? "Not verified")}</dd></dl><div class="settings-actions"><button id="rename-repository">Edit repository</button><button data-unbind-repository ${repository.provider_account_id ? "" : "disabled"}>Unbind account</button><button id="remove-repository">Remove repository</button></div><div class="connection"></div></details>
-        <p class="settings-hint">Save applies only this repository. Back retains its draft for this session; Cancel discards it. Earlier assignment saves stay applied.</p>
-        <p class="settings-hint" role="status" data-explicit-pr-status ${pendingPull ? "" : "hidden"}>${pendingPull ? `PR #${pendingPull.number} will be queued after valid Save, even outside watch filters. Pause, repository disablement, account/Agent availability and capacity still apply.` : ""}</p>
+        </section><section class="repository-group" data-global-schedule><h2>Saved global schedule</h2><p>${schedule.kind === "cron" ? `<code>${escape(schedule.expression)}</code>` : `Every ${schedule.minutes} minutes`} / ${escape(schedule.timezone)}</p></section>
+        <details class="repository-group"><summary>Repository</summary><dl class="repository-binding-details"><dt>Account ID</dt><dd>${escape(repository.provider_account_id ?? "Unbound")}</dd><dt>Repository ID</dt><dd>${escape(repository.provider_repository_id ?? "Not verified")}</dd></dl><div class="settings-actions"><button data-unbind-repository ${repository.provider_account_id ? "" : "disabled"}>Unbind account</button></div><div class="repository-remove"><input type="text" data-remove-confirm aria-label="Type repository name to confirm" placeholder="${escape(repository.name)}" autocomplete="off" /><button type="button" id="remove-repository" aria-label="Remove repository" title="Remove repository" disabled>${icon("trash")}</button></div><div class="connection"></div></details>
+        <p role="status" data-explicit-pr-status ${pendingPull ? "" : "hidden"}>${pendingPull ? `PR #${pendingPull.number} queued on Save` : ""}</p>
         <p role="alert" data-earlier-intake-error hidden></p>
         <p role="alert" data-resource-error ${pendingPull?.failure ? "" : "hidden"}>${escape(pendingPull?.failure ?? "")}</p><div class="resource-actions"><button class="primary" data-save-repository>Save repository</button><button data-cancel-repository aria-label="Cancel repository changes">Cancel</button></div>`,
       opener,
     );
-    compactEditor(
-      modal,
-      "Back to repositories; retain unsaved repository changes",
-    );
+    compactEditor(modal, "Back");
     modal.classList.add("repository-editor");
     const currentEditor = () =>
       modal.open &&
@@ -2860,9 +2733,9 @@ export async function mountSettings(
         : "disabled";
       monitoringDetail.textContent = pendingSetup.has(repository.id)
         ? monitoring.checked
-          ? "Starts after you save valid configuration. Turn this off to keep the repository disabled."
-          : "Stays disabled when you save configuration."
-        : `${repositoryMonitoringDetail(committed)}. This control saves monitoring immediately using saved configuration; other fields stay in your draft. Global Monitoring is separate.`;
+          ? "Starts on Save"
+          : "Disabled"
+        : repositoryMonitoringDetail(committed);
     };
     const refreshSavedMonitoring = () => {
       updateMonitoring();
@@ -2897,67 +2770,6 @@ export async function mountSettings(
         updateMonitoring();
       }
     };
-    const reviewerTrigger = modal.querySelector<HTMLSelectElement>(
-      "[data-reviewer-trigger]",
-    )!;
-    reviewerTrigger.value =
-      repository.overrides?.reviewer_assignment === undefined
-        ? "inherit"
-        : repository.overrides.reviewer_assignment
-          ? "on"
-          : "off";
-    reviewerTrigger.onchange = () => {
-      repository.overrides ??= {};
-      if (reviewerTrigger.value === "inherit")
-        delete repository.overrides.reviewer_assignment;
-      else
-        repository.overrides.reviewer_assignment =
-          reviewerTrigger.value === "on";
-      changed();
-    };
-    const reviewerLabels: Record<string, string> = {
-      inherit: `Default (${saved.defaults.reviewer_assignment ? "on" : "off"})`,
-      on: "On",
-      off: "Off",
-    };
-    const syncReviewerRow = () => {
-      modal.querySelector("[data-reviewer-summary]")!.textContent =
-        reviewerLabels[reviewerTrigger.value];
-      for (const radio of modal.querySelectorAll<HTMLInputElement>(
-        "[data-reviewer-choice] input",
-      ))
-        radio.checked = radio.value === reviewerTrigger.value;
-    };
-    reviewerTrigger.addEventListener("change", syncReviewerRow);
-    syncReviewerRow();
-    const closeReviewers = () => {
-      delete modal.dataset.view;
-      dropEditor((e) => e.modal === modal && e.title === "Reviewer requests");
-      modal
-        .querySelector<HTMLElement>("[data-open-reviewers]")
-        ?.focus({ preventScroll: true });
-    };
-    modal.querySelector<HTMLButtonElement>("[data-open-reviewers]")!.onclick =
-      () => {
-        modal.dataset.view = "reviewers";
-        if (options.embedded) {
-          editorStack.push({
-            modal,
-            title: "Reviewer requests",
-            back: closeReviewers,
-          });
-          announceEditor();
-        }
-      };
-    modal
-      .querySelector<HTMLElement>(".reviewer-picker")!
-      .addEventListener("change", (event) => {
-        const radio = event.target as HTMLInputElement;
-        if (!radio.matches("input[type=radio]")) return;
-        reviewerTrigger.value = radio.value;
-        reviewerTrigger.dispatchEvent(new Event("change"));
-        closeReviewers();
-      });
     modal.querySelector<HTMLButtonElement>("[data-save-repository]")!.onclick =
       async () => {
         const requestedPull = pendingPullRequests.get(repository.id);
@@ -2971,7 +2783,7 @@ export async function mountSettings(
           refreshSavedMonitoring();
           if (requestedPull) {
             if (pendingPullRequests.get(repository.id) !== requestedPull)
-              throw `Configuration saved, but the earlier PR #${requestedPull.number} request was replaced or canceled. Save the current request's configuration to queue it.`;
+              throw `PR #${requestedPull.number} replaced`;
             const committed = saved.repositories?.find(
               (r) => r.id === repository.id,
             );
@@ -2980,7 +2792,7 @@ export async function mountSettings(
               committed.provider_account_id !== requestedPull.accountId ||
               committed.provider_repository_id !== requestedPull.repositoryId
             )
-              throw "Configuration saved, but the requested PR's repository account changed. Enter its URL again under the saved account.";
+              throw "Account changed";
             const saveButton = modal.querySelector<HTMLButtonElement>(
               "[data-save-repository]",
             )!;
@@ -3004,7 +2816,9 @@ export async function mountSettings(
                 updateRepositoryIntake?.(
                   repository.id,
                   requestedPull,
-                  admission.message,
+                  admission.queued
+                    ? `PR #${requestedPull.number} queued`
+                    : `PR #${requestedPull.number} pending`,
                   false,
                 );
                 if (admission.queued) pendingPullRequests.delete(repository.id);
@@ -3012,7 +2826,7 @@ export async function mountSettings(
             } catch (cause) {
               const ownsIntent =
                 pendingPullRequests.get(repository.id) === requestedPull;
-              const message = `Configuration saved. PR #${requestedPull.number} intake for ${repository.name} needs attention; ${ownsIntent ? "retry Save to reuse any existing work" : "the current request is unchanged; enter the earlier PR URL again to retry"}. ${reason(cause)}`;
+              const message = `PR #${requestedPull.number}: ${reason(cause)}`;
               if (ownsIntent) requestedPull.failure = message;
               if (
                 !updateRepositoryIntake?.(
@@ -3060,7 +2874,6 @@ export async function mountSettings(
       render();
     };
     renderAssignments();
-    renderWatchlist();
     if (
       saved.repositories?.some(
         (r) => r.id === repository.id && r.name === repository.name,
@@ -3076,9 +2889,7 @@ export async function mountSettings(
             (account) => account.account_id === repository.provider_account_id,
           )?.login ?? repository.provider_account_id,
       });
-    else
-      modal.querySelector(".connection")!.textContent =
-        "Save this repository before verifying its GitHub connection.";
+    else modal.querySelector(".connection")!.textContent = "Unsaved";
     modal.querySelector<HTMLButtonElement>("[data-assign-agent]")!.onclick = (
       event,
     ) =>
@@ -3090,45 +2901,28 @@ export async function mountSettings(
           refreshSavedMonitoring();
         },
       );
-    modal.querySelector<HTMLButtonElement>("[data-add-people]")!.onclick = (
-      event,
-    ) =>
-      addPersonDialog(
-        event.currentTarget as HTMLButtonElement,
-        repository,
-        () => {
-          renderWatchlist();
-          refreshSavedMonitoring();
-        },
-      );
-    modal.querySelector<HTMLButtonElement>("#rename-repository")!.onclick =
-      () => {
+    const removeButton =
+      modal.querySelector<HTMLButtonElement>("#remove-repository")!;
+    const removeConfirm = modal.querySelector<HTMLInputElement>(
+      "[data-remove-confirm]",
+    )!;
+    removeConfirm.oninput = () => {
+      removeButton.disabled = removeConfirm.value.trim() !== repository.name;
+    };
+    removeButton.onclick = async () => {
+      if (removeConfirm.value.trim() !== repository.name) return;
+      try {
+        await commitResource(repositoryEdit(repository, null), modal);
+        pendingPullRequests.delete(repository.id);
         modal.close();
-        editRepository(opener, repository);
-      };
-    modal.querySelector<HTMLButtonElement>("#remove-repository")!.onclick = (
-      event,
-    ) => {
-      const confirm = dialog(
-        "Remove repository?",
-        `<p>Remove ${escape(repository.name)} and its assignments from saved settings? Completed evidence is retained.</p><p role="alert" hidden></p><button class="primary" id="confirm-remove">Remove from settings</button>`,
-        event.currentTarget as HTMLButtonElement,
-      );
-      compactEditor(confirm, "Back to repository; keep saved configuration");
-      confirm.querySelector<HTMLButtonElement>("#confirm-remove")!.onclick =
-        async () => {
-          try {
-            await commitResource(repositoryEdit(repository, null), confirm);
-            pendingPullRequests.delete(repository.id);
-            confirm.close();
-            modal.close();
-            render();
-          } catch (cause) {
-            const alert = confirm.querySelector<HTMLElement>("[role=alert]")!;
-            alert.textContent = reason(cause);
-            alert.hidden = false;
-          }
-        };
+        render();
+      } catch (cause) {
+        const alert = modal.querySelector<HTMLElement>(
+          "[data-resource-error]",
+        )!;
+        alert.textContent = reason(cause);
+        alert.hidden = false;
+      }
     };
     modal.querySelector<HTMLButtonElement>(
       "[data-unbind-repository]",
@@ -3138,17 +2932,16 @@ export async function mountSettings(
         const alert = modal.querySelector<HTMLElement>(
           "[data-resource-error]",
         )!;
-        alert.textContent =
-          "Save or Cancel repository changes before unbinding. Your draft and saved repository have not been changed.";
+        alert.textContent = "Unsaved changes";
         alert.hidden = false;
         return;
       }
       const confirm = dialog(
         "Unbind repository account?",
-        `<p>Unbind ${escape(repository.name)} from its acting account? Provider reads and actions require an explicit binding again. Assignments, permissions and completed evidence are retained.</p><p role="alert" hidden></p><button class="primary" data-confirm-unbind>Unbind account</button>`,
+        `<p>Unbind ${escape(repository.name)}?</p><p role="alert" hidden></p><button class="primary" data-confirm-unbind>Unbind account</button>`,
         event.currentTarget as HTMLButtonElement,
       );
-      compactEditor(confirm, "Back to repository; keep the acting account");
+      compactEditor(confirm, "Back");
       confirm.querySelector<HTMLButtonElement>(
         "[data-confirm-unbind]",
       )!.onclick = async () => {
@@ -3178,8 +2971,7 @@ export async function mountSettings(
       );
       const assignments = repository.assignments ?? [];
       if (!assignments.length) {
-        list.innerHTML =
-          '<p class="settings-empty">No agents assigned. This repository is watched but nothing reviews it yet.</p>';
+        list.innerHTML = "";
         restoreFocus();
         return;
       }
@@ -3189,7 +2981,7 @@ export async function mountSettings(
         const row = document.createElement("div");
         row.className = "assignment-row";
         const primary = primaryAssignmentId(repository) === assignment.id;
-        row.innerHTML = `<div><strong>${escape(agent?.name ?? "Deleted agent")}</strong><p>${primary ? `Primary${assignments.length === 1 ? " (automatic)" : ""} \u00b7 ` : "Secondary \u00b7 "}${assignment.comment ? "Publish Comment" : "Initial findings local"}${primary && assignment.actions?.reply ? " \u00b7 Reply Comment" : ""}${primary && assignment.actions?.merge ? " \u00b7 Approve & Merge" : primary && assignment.actions?.approve ? " \u00b7 Approve" : ""}</p><p>${escape(agent?.model ?? "Repair the shared Agent reference")} / one normal pass</p></div><button data-edit aria-label="Edit assignment">Edit</button><button data-remove aria-label="Remove assignment" title="Remove">${icon("trash")}</button>`;
+        row.innerHTML = `<div><strong>${escape(agent?.name ?? "Deleted agent")}</strong><p>${primary ? `Primary${assignments.length === 1 ? " (automatic)" : ""} \u00b7 ` : "Secondary \u00b7 "}${assignment.comment ? "Publish Comment" : "Initial findings local"}${primary && assignment.actions?.reply ? " \u00b7 Reply Comment" : ""}${primary && assignment.actions?.merge ? " \u00b7 Approve & Merge" : primary && assignment.actions?.approve ? " \u00b7 Approve" : ""}</p><p>${escape(agent?.model ?? "Unavailable")}</p></div><button data-edit aria-label="Edit assignment">Edit</button><button data-remove aria-label="Remove assignment" title="Remove">${icon("trash")}</button>`;
         for (const action of ["edit", "remove"])
           row.querySelector<HTMLElement>(`[data-${action}]`)!.dataset.focusKey =
             `assignment:${assignment.id}:${action}`;
@@ -3218,38 +3010,251 @@ export async function mountSettings(
       }
       restoreFocus();
     }
-    function renderWatchlist(opener = document.activeElement) {
-      const list = modal.querySelector<HTMLElement>(".watchlist")!;
-      const restoreFocus = rememberControl(
-        list,
-        modal.querySelector<HTMLElement>("[data-add-people]")!,
-        opener,
-      );
-      const people = repository.watched_authors ?? [];
-      if (!people.length) {
-        list.innerHTML =
-          '<p class="settings-empty">No people added for this repository. Inherited watched authors still apply; if the effective author filter is empty, all authors qualify under the saved configuration. Reviewer requests qualify when that trigger is enabled.</p>';
-        restoreFocus();
-        return;
+    const defaultAdmission = (): Admission => {
+      const authors = repository.watched_authors ?? [];
+      const rule = (
+        kind: AdmissionKind,
+        enabled: boolean,
+        extra: Partial<AdmissionRule> = {},
+      ): AdmissionRule => ({ kind, enabled, ...extra });
+      return {
+        mode: authors.length ? "filtered" : "all",
+        rules: [
+          rule("assigned", true),
+          rule("mentioned", true),
+          rule("include_users", authors.length > 0, { users: [...authors] }),
+          rule("exclude_users", false, { users: [] }),
+          rule("include_paths", false, { paths: [] }),
+          rule("exclude_paths", false, { paths: [] }),
+        ],
+      };
+    };
+    // Reads never mutate the draft; the first edit materializes the default.
+    let shown: Admission | undefined;
+    const admission = (): Admission =>
+      repository.admission ?? (shown ??= defaultAdmission());
+    const editAdmission = (): Admission =>
+      (repository.admission ??= shown ?? defaultAdmission());
+    const kindLabels: Record<AdmissionKind, string> = {
+      assigned: "Assigned to me for review",
+      mentioned: "Mentioning me in comments",
+      include_users: "Include users",
+      exclude_users: "Exclude users",
+      include_paths: "Include paths",
+      exclude_paths: "Exclude paths",
+    };
+    const valueKind = (kind: AdmissionKind) =>
+      kind.endsWith("_users") || kind.endsWith("_paths");
+    const ruleCount = (rule: AdmissionRule) =>
+      rule.users?.length ?? rule.paths?.length ?? 0;
+    const chevron =
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>';
+
+    function setupAdmission() {
+      const allInput = modal.querySelector<HTMLInputElement>(
+        "[data-admission-all-input]",
+      )!;
+      const openFilters = modal.querySelector<HTMLButtonElement>(
+        "[data-open-filters]",
+      )!;
+      const view = modal.querySelector<HTMLElement>("[data-admission-view]")!;
+      const route: string[] = [];
+      const sync = () => {
+        const a = admission();
+        allInput.checked = a.mode === "all";
+        openFilters.disabled = a.mode === "all";
+        const on = a.rules.filter((r) => r.enabled).length;
+        modal.querySelector("[data-filter-summary]")!.textContent =
+          a.mode === "all" ? "" : `${on} on`;
+      };
+      const dropTop = () => {
+        for (let i = editorStack.length - 1; i >= 0; i--)
+          if (editorStack[i].modal === modal && editorStack[i].admission) {
+            editorStack.splice(i, 1);
+            break;
+          }
+        announceEditor();
+      };
+      const pop = () => {
+        route.pop();
+        if (options.embedded) dropTop();
+        const next = route[route.length - 1];
+        if (!next) {
+          view.hidden = true;
+          view.replaceChildren();
+          delete modal.dataset.view;
+          sync();
+          openFilters.focus({ preventScroll: true });
+        } else if (next === "filters") {
+          renderFilters();
+          if (!options.embedded) {
+            const back = document.createElement("button");
+            back.type = "button";
+            back.className = "admission-back";
+            back.setAttribute("aria-label", "Back from Filtered pull requests");
+            back.innerHTML = `${icon("back")}<span>Filtered pull requests</span>`;
+            back.onclick = () => pop();
+            view.prepend(back);
+          }
+        }
+      };
+      const push = (title: string, name: string, render: () => void) => {
+        route.push(name);
+        view.hidden = false;
+        modal.dataset.view = "admission";
+        render();
+        if (!options.embedded) {
+          const back = document.createElement("button");
+          back.type = "button";
+          back.className = "admission-back";
+          back.setAttribute("aria-label", `Back from ${title}`);
+          back.innerHTML = `${icon("back")}<span>${escape(title)}</span>`;
+          back.onclick = () => pop();
+          view.prepend(back);
+        }
+        if (options.embedded) {
+          editorStack.push({ modal, title, back: pop, admission: true });
+          announceEditor();
+        }
+      };
+      allInput.onchange = () => {
+        editAdmission().mode = allInput.checked ? "all" : "filtered";
+        changed();
+        sync();
+      };
+
+      function renderFilters() {
+        const a = admission();
+        view.replaceChildren();
+        const group = document.createElement("section");
+        group.className = "repository-group";
+        a.rules.forEach((rule, index) => {
+          const label = kindLabels[rule.kind];
+          const row = document.createElement("div");
+          row.className = "admission-rule";
+          row.dataset.rule = rule.kind;
+          row.innerHTML = `<button type="button" class="admission-open" ${valueKind(rule.kind) ? "" : "disabled"} aria-label="${escape(label)}${valueKind(rule.kind) ? ": edit values" : ""}"><span class="admission-label">${escape(label)}</span><span class="doctrine-summary">${valueKind(rule.kind) ? String(ruleCount(rule)) : ""}</span>${valueKind(rule.kind) ? chevron : ""}</button><button type="button" class="admission-move" data-up aria-label="Move ${escape(label)} up" title="Move up" ${index === 0 ? "disabled" : ""}>${icon("up")}</button><button type="button" class="admission-move" data-down aria-label="Move ${escape(label)} down" title="Move down" ${index === a.rules.length - 1 ? "disabled" : ""}>${icon("down")}</button><input type="checkbox" role="switch" class="admission-switch" aria-label="${escape(label)}" ${rule.enabled ? "checked" : ""} />`;
+          row.querySelector<HTMLInputElement>(".admission-switch")!.onchange = (
+            event,
+          ) => {
+            editAdmission();
+            rule.enabled = (event.target as HTMLInputElement).checked;
+            changed();
+          };
+          const move = (delta: number) => {
+            editAdmission();
+            const target = index + delta;
+            [a.rules[index], a.rules[target]] = [
+              a.rules[target],
+              a.rules[index],
+            ];
+            changed();
+            renderFilters();
+            view
+              .querySelector<HTMLElement>(
+                `[data-rule="${rule.kind}"] ${delta < 0 ? "[data-up]" : "[data-down]"}`,
+              )
+              ?.focus({ preventScroll: true });
+          };
+          row.querySelector<HTMLElement>("[data-up]")!.onclick = () => move(-1);
+          row.querySelector<HTMLElement>("[data-down]")!.onclick = () =>
+            move(1);
+          if (valueKind(rule.kind))
+            row.querySelector<HTMLElement>(".admission-open")!.onclick = () =>
+              push(label, `rule:${rule.kind}`, () => renderRule(rule));
+          group.append(row);
+        });
+        view.append(group);
       }
-      list.innerHTML = "";
-      for (const person of people) {
-        const row = document.createElement("div");
-        row.className = "watchlist-row";
-        row.innerHTML = `<span><span>@${escape(person.login)}</span><small>GitHub ID ${escape(person.id)}</small></span><button data-remove aria-label="Remove ${escape(person.login)}" title="Remove">${icon("trash")}</button>`;
-        row.querySelector<HTMLElement>("[data-remove]")!.dataset.focusKey =
-          `person:${person.id}:remove`;
-        row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick = (
-          event,
-        ) => {
-          repository.watched_authors = people.filter((p) => p !== person);
-          changed();
-          renderWatchlist(event.currentTarget as HTMLButtonElement);
+
+      function renderRule(rule: AdmissionRule) {
+        view.replaceChildren();
+        const group = document.createElement("section");
+        group.className = "repository-group";
+        const list = document.createElement("div");
+        list.className = "admission-values";
+        const users = rule.kind.endsWith("_users");
+        const draw = () => {
+          list.replaceChildren();
+          const values: string[] = users
+            ? (rule.users ?? []).map((u) => `@${u.login}`)
+            : (rule.paths ?? []);
+          values.forEach((value, index) => {
+            const row = document.createElement("div");
+            row.className = "watchlist-row";
+            row.innerHTML = `<span>${users ? escape(value) : `<code>${escape(value)}</code>`}</span><button type="button" data-remove aria-label="Remove ${escape(value)}" title="Remove">${icon("trash")}</button>`;
+            row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick =
+              () => {
+                editAdmission();
+                if (users)
+                  rule.users = (rule.users ?? []).filter((_, i) => i !== index);
+                else
+                  rule.paths = (rule.paths ?? []).filter((_, i) => i !== index);
+                changed();
+                draw();
+                // The removed row's trash button is gone: land on the add control.
+                view
+                  .querySelector<HTMLElement>(
+                    ".admission-add, .admission-path-form input",
+                  )
+                  ?.focus({ preventScroll: true });
+              };
+            list.append(row);
+          });
         };
-        list.append(row);
+        group.append(list);
+        if (users) {
+          const add = document.createElement("button");
+          add.type = "button";
+          add.className = "primary admission-add";
+          add.textContent = "Add people";
+          add.onclick = () =>
+            addPersonDialog(add, repository, rule.users ?? [], (identity) => {
+              editAdmission();
+              rule.users = [...(rule.users ?? []), identity];
+              rule.enabled = true;
+              changed();
+              draw();
+            });
+          view.append(group, add);
+        } else {
+          const form = document.createElement("form");
+          form.className = "admission-path-form";
+          form.innerHTML = `<input name="path" aria-label="Path pattern" placeholder="docs/ or src/**/*.ts" autocomplete="off" /><button type="submit" class="primary">Add</button><p role="alert" hidden></p>`;
+          form.onsubmit = (event) => {
+            event.preventDefault();
+            const input = form.querySelector<HTMLInputElement>("[name=path]")!;
+            const alert = form.querySelector<HTMLElement>("[role=alert]")!;
+            const value = input.value.trim();
+            const problem = !value
+              ? "Path required"
+              : value.length > 256 ||
+                  value.startsWith("/") ||
+                  value.split("/").includes("..")
+                ? "Invalid path"
+                : (rule.paths ?? []).includes(value)
+                  ? "Already added"
+                  : "";
+            alert.hidden = !problem;
+            alert.textContent = problem;
+            if (problem) return;
+            editAdmission();
+            rule.paths = [...(rule.paths ?? []), value];
+            rule.enabled = true;
+            changed();
+            input.value = "";
+            draw();
+          };
+          view.append(group, form);
+        }
+        draw();
       }
-      restoreFocus();
+
+      openFilters.onclick = () =>
+        push("Filtered pull requests", "filters", renderFilters);
+      sync();
     }
+    setupAdmission();
   }
 
   function assignAgentDialog(
@@ -3258,73 +3263,151 @@ export async function mountSettings(
     onSaved: () => void,
     existing?: Assignment,
   ) {
+    const chevron =
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>';
     const assignmentId = existing?.id ?? newIdentity();
     const sole =
       (repository.assignments?.length ?? 0) + (existing ? 0 : 1) === 1;
     const isPrimary = sole || primaryAssignmentId(repository) === assignmentId;
     const modal = dialog(
       existing ? "Edit assignment" : "Assign agent",
-      `<form><label>Agent<select name="agent" aria-label="Agent" required>${option("", "Choose an Agent", existing?.agent_id ?? "")}${agents()
-        .map((a) => option(a.id, a.name, existing?.agent_id ?? ""))
-        .join("")}</select></label>
-        <div class="resource-actions"><button type="button" data-edit-agent>Edit Agent</button><button type="button" data-create-agent>Create new Agent</button></div>
-        <p class="settings-hint" data-agent-selection role="status"></p>
-        <label class="repository-check"><input type="checkbox" name="primary" ${isPrimary ? "checked" : ""} ${sole ? "disabled" : ""} /><span>Primary<small>${sole ? "The sole assignment is primary automatically." : "At most one explicit primary per repository. Uncheck to leave none."}</small></span></label>
-        <fieldset class="permission-row"><legend>Permissions</legend><label><input type="checkbox" name="comment" ${existing?.comment ? "checked" : ""} /><span>Publish Comment<small>Automatically publish revalidated initial findings. Off keeps initial findings local; it does not disable Reply Comment.</small></span></label>
-        <div data-primary-permissions ${isPrimary ? "" : "hidden"}><label><input type="checkbox" name="reply" ${isPrimary && existing?.actions?.reply ? "checked" : ""} /><span>Reply Comment<small>Publish meaningful responses to eligible other-user comments on admitted open PRs. Off keeps responses local; analysis still runs.</small></span></label>
-        <fieldset><legend>Approval and merge</legend><label><input type="radio" name="action" value="none" ${!isPrimary || (!existing?.actions?.approve && !existing?.actions?.merge) ? "checked" : ""} />Neither</label><label><input type="radio" name="action" value="approve" ${isPrimary && existing?.actions?.approve && !existing?.actions?.merge ? "checked" : ""} />Approve</label><label><input type="radio" name="action" value="merge" ${isPrimary && existing?.actions?.merge ? "checked" : ""} />Approve &amp; Merge</label><p class="settings-hint">Merge includes approval and follows its confirmed receipt. Final full review, current revision, non-draft state, green CI and provider policies remain required. Approve alone never merges.</p></fieldset></div></fieldset>
-        <p class="settings-hint" data-role-limitation>${isPrimary ? "Choosing primary grants no capability. Watch settings grant no permissions." : "Secondary Agents can only Publish Comment. Reply, approval and merge are primary-only."}</p>
-        <p class="settings-hint">Saving authorizes automatic read-only review of matching PRs and later revisions, not provider actions without their permissions. Uses the repository's GitHub identity, never the Copilot identity. Polling is configured globally. Saving commits this repository, not unrelated drafts.</p><p role="alert" hidden></p><div class="resource-actions"><button class="primary">${existing ? "Save assignment" : "Assign agent"}</button><button type="button" data-cancel-resource>Cancel</button></div></form>`,
+      `<form><input type="hidden" name="agent" value="${escape(existing?.agent_id ?? "")}" />
+        <section class="repository-group" data-assign-main><button type="button" class="doctrine-row" data-open-agent aria-label="Choose Agent"><span>Agent</span><span class="doctrine-summary" data-agent-summary></span>${chevron}</button>
+        <label class="repository-check"><input type="checkbox" role="switch" name="primary" aria-label="Primary" ${isPrimary ? "checked" : ""} ${sole ? "disabled" : ""} /><span>Primary</span></label>
+        <button type="button" class="doctrine-row" data-open-permissions aria-label="Permissions"><span>Permissions</span><span class="doctrine-summary" data-permission-summary></span>${chevron}</button></section>
+        <section class="repository-group" data-assign-agents hidden><div data-agent-choices role="radiogroup" aria-label="Agent"></div><div class="resource-actions"><button type="button" data-create-agent>Create new Agent</button></div></section>
+        <section class="repository-group" data-assign-permissions hidden>
+        <label class="repository-check"><input type="checkbox" role="switch" name="comment" aria-label="Publish Comment" ${existing?.comment ? "checked" : ""} /><span>Publish Comment</span></label>
+        <div data-primary-permissions ${isPrimary ? "" : "hidden"}><label class="repository-check"><input type="checkbox" role="switch" name="reply" aria-label="Reply Comment" ${isPrimary && existing?.actions?.reply ? "checked" : ""} /><span>Reply Comment</span></label>
+        <div class="permission-row-line"><span>Approval</span><div class="permission-choices" role="radiogroup" aria-label="Approval and merge" data-value="${isPrimary && existing?.actions?.merge ? "merge" : isPrimary && existing?.actions?.approve ? "approve" : "none"}"><label class="segment"><input type="radio" name="action" value="none" aria-label="Neither" ${!isPrimary || (!existing?.actions?.approve && !existing?.actions?.merge) ? "checked" : ""} /><span>off</span></label><label class="segment"><input type="radio" name="action" value="approve" aria-label="Approve" ${isPrimary && existing?.actions?.approve && !existing?.actions?.merge ? "checked" : ""} /><span>Approve</span></label><label class="segment"><input type="radio" name="action" value="merge" aria-label="Approve &amp; Merge" ${isPrimary && existing?.actions?.merge ? "checked" : ""} /><span>&amp; Merge</span></label></div></div></div></section>
+        <p role="alert" hidden></p><div class="resource-actions" data-assign-actions><button class="primary">${existing ? "Save assignment" : "Assign agent"}</button><button type="button" data-cancel-resource>Cancel</button></div></form>`,
       opener,
     );
     resourceEditor(modal);
-    compactEditor(
-      modal,
-      "Back to repository; confirm discarding unsaved assignment fields",
-    );
+    compactEditor(modal, "Back");
     modal.classList.add("repository-editor", "assignment-editor");
-    const agentSelect = modal.querySelector<HTMLSelectElement>("[name=agent]")!;
-    const editSelected =
-      modal.querySelector<HTMLButtonElement>("[data-edit-agent]")!;
-    const selectionStatus = modal.querySelector<HTMLElement>(
-      "[data-agent-selection]",
+    const form = modal.querySelector<HTMLFormElement>("form")!;
+    const agentInput = modal.querySelector<HTMLInputElement>("[name=agent]")!;
+    const openAgent =
+      modal.querySelector<HTMLButtonElement>("[data-open-agent]")!;
+    const openPermissions = modal.querySelector<HTMLButtonElement>(
+      "[data-open-permissions]",
     )!;
-    const refreshSelection = (selected = agentSelect.value) => {
+    const choices = modal.querySelector<HTMLElement>("[data-agent-choices]")!;
+    const sections = {
+      agent: modal.querySelector<HTMLElement>("[data-assign-agents]")!,
+      permissions: modal.querySelector<HTMLElement>(
+        "[data-assign-permissions]",
+      )!,
+    };
+    const permissionCount = () =>
+      modal.querySelectorAll(
+        "[name=comment]:checked, [name=reply]:checked, [name=action]:checked:not([value=none])",
+      ).length;
+    const refreshSelection = (selected = agentInput.value) => {
+      agentInput.value = selected;
       const agent = agents().find((agent) => agent.id === selected);
-      agentSelect.innerHTML =
-        option("", "Choose an Agent", selected) +
-        agents()
-          .map((agent) => option(agent.id, agent.name, selected))
-          .join("") +
-        (selected && !agent
-          ? `<option selected disabled value="${escape(selected)}">Unavailable Agent - choose a replacement</option>`
-          : "");
-      editSelected.disabled = !agent;
-      selectionStatus.textContent =
-        selected && !agent
-          ? "The selected Agent is unavailable. Choose an existing Agent or create a replacement; role and permission choices are retained."
-          : !agents().length
-            ? "No Agents yet. Create a shared Agent to continue."
-            : agent
-              ? `${agent.model}. Shared Agent saves apply immediately; this assignment stays unsaved until Save.`
-              : "Choose an Agent to edit, or create a new shared Agent.";
+      const rows = new Map(
+        [...choices.querySelectorAll<HTMLElement>("[data-agent-id]")].map(
+          (row) => [row.dataset.agentId!, row],
+        ),
+      );
+      choices.querySelector("[data-agent-missing]")?.remove();
+      for (const a of agents()) {
+        let row = rows.get(a.id);
+        if (!row) {
+          const holder = document.createElement("div");
+          holder.innerHTML = `<div class="agent-choice" data-agent-choice data-agent-id="${escape(a.id)}"><label class="repository-check"><span></span><input type="radio" name="agent-choice" value="${escape(a.id)}" /></label><button type="button" data-edit-agent="${escape(a.id)}" title="Edit Agent">${icon("pencil")}</button></div>`;
+          row = holder.firstElementChild as HTMLElement;
+          choices.append(row);
+        }
+        rows.delete(a.id);
+        row.querySelector("span")!.textContent = a.name;
+        const radio = row.querySelector<HTMLInputElement>("input")!;
+        radio.setAttribute("aria-label", a.name);
+        radio.checked = a.id === selected;
+        row
+          .querySelector("[data-edit-agent]")!
+          .setAttribute("aria-label", `Edit Agent ${a.name}`);
+      }
+      for (const stale of rows.values()) stale.remove();
+      if (selected && !agent)
+        choices.insertAdjacentHTML(
+          "beforeend",
+          `<div class="agent-choice" data-agent-missing><label class="repository-check"><span>Unavailable</span><input type="radio" name="agent-choice" checked disabled /></label></div>`,
+        );
+      openAgent.querySelector("[data-agent-summary]")!.textContent =
+        selected && !agent ? "Unavailable" : (agent?.name ?? "");
+      const checkedAction = modal.querySelector<HTMLInputElement>(
+        "[name=action]:checked",
+      );
+      if (checkedAction)
+        modal.querySelector<HTMLElement>(".permission-choices")!.dataset.value =
+          checkedAction.value;
+      openPermissions.querySelector("[data-permission-summary]")!.textContent =
+        String(permissionCount());
     };
     refreshSelection(existing?.agent_id ?? "");
-    agentSelect.onchange = () => refreshSelection();
+    const closeView = () => {
+      const view = form.dataset.view as keyof typeof sections | undefined;
+      if (!view) return;
+      delete form.dataset.view;
+      for (const section of Object.values(sections)) section.hidden = true;
+      modal.querySelector<HTMLElement>("[data-assign-main]")!.hidden = false;
+      modal.querySelector<HTMLElement>("[data-assign-actions]")!.hidden = false;
+      dropEditor(
+        (e) =>
+          e.modal === modal &&
+          e.title === (view === "agent" ? "Agent" : "Permissions"),
+      );
+      refreshSelection();
+      (view === "agent" ? openAgent : openPermissions).focus({
+        preventScroll: true,
+      });
+    };
+    const openView = (view: keyof typeof sections, title: string) => {
+      form.dataset.view = view;
+      modal.querySelector<HTMLElement>("[data-assign-main]")!.hidden = true;
+      modal.querySelector<HTMLElement>("[data-assign-actions]")!.hidden = true;
+      sections[view].hidden = false;
+      sections[view].querySelector<HTMLElement>("[data-back]")?.remove();
+      if (options.embedded) {
+        editorStack.push({ modal, title, back: closeView });
+        announceEditor();
+      } else {
+        const back = document.createElement("button");
+        back.type = "button";
+        back.className = "admission-back";
+        back.dataset.back = "";
+        back.setAttribute("aria-label", `Back from ${title}`);
+        back.innerHTML = `${icon("back")}<span>${escape(title)}</span>`;
+        back.onclick = closeView;
+        sections[view].prepend(back);
+      }
+      (
+        sections[view].querySelector<HTMLElement>("input:checked") ??
+        sections[view].querySelector<HTMLElement>("input, button")
+      )?.focus({ preventScroll: true });
+    };
+    openAgent.onclick = () => openView("agent", "Agent");
+    openPermissions.onclick = () => openView("permissions", "Permissions");
     const agentSaved = (agent?: Agent) => {
       if (!modal.isConnected) return;
-      refreshSelection(agent?.id ?? agentSelect.value);
+      refreshSelection(agent?.id ?? agentInput.value);
       onSaved();
-      if (document.activeElement === editSelected && editSelected.disabled)
-        agentSelect.focus({ preventScroll: true });
     };
-    editSelected.onclick = () => {
-      const selected = agents().find((agent) => agent.id === agentSelect.value);
-      if (!selected) {
-        refreshSelection();
-        return;
-      }
-      editAgent(editSelected, selected, agentSaved);
+    choices.onchange = (event) => {
+      const input = event.target as HTMLInputElement;
+      if (input.name !== "agent-choice") return;
+      refreshSelection(input.value);
+      closeView();
+    };
+    choices.onclick = (event) => {
+      const pencil = (event.target as Element).closest<HTMLButtonElement>(
+        "[data-edit-agent]",
+      );
+      const selected = agents().find((a) => a.id === pencil?.dataset.editAgent);
+      if (pencil && selected) editAgent(pencil, selected, agentSaved);
     };
     modal.querySelector<HTMLButtonElement>("[data-create-agent]")!.onclick = (
       event,
@@ -3332,9 +3415,13 @@ export async function mountSettings(
       editAgent(
         event.currentTarget as HTMLButtonElement,
         undefined,
-        agentSaved,
+        (agent) => {
+          agentSaved(agent);
+          if (agent) closeView();
+        },
       );
     const primary = modal.querySelector<HTMLInputElement>("[name=primary]")!;
+    modal.addEventListener("change", () => refreshSelection());
     primary.onchange = () => {
       modal.querySelector<HTMLElement>("[data-primary-permissions]")!.hidden =
         !primary.checked;
@@ -3344,21 +3431,16 @@ export async function mountSettings(
           "[name=action][value=none]",
         )!.checked = true;
       }
-      modal.querySelector<HTMLElement>("[data-role-limitation]")!.textContent =
-        primary.checked
-          ? "Choosing primary grants no capability. Watch settings grant no permissions."
-          : "Secondary Agents can only Publish Comment. Reply, approval and merge are primary-only.";
     };
     const releaseDiscardGuard = warnBeforeDiscard(modal, "assignment");
     modal.querySelector("form")!.onsubmit = async (event) => {
       event.preventDefault();
       const alert = modal.querySelector<HTMLElement>("[role=alert]")!;
       try {
-        const agentId =
-          modal.querySelector<HTMLSelectElement>("[name=agent]")!.value;
-        if (!agentId) throw "Choose an agent.";
+        const agentId = agentInput.value;
+        if (!agentId) throw "Agent required";
         if (!agents().some((agent) => agent.id === agentId))
-          throw "The selected Agent is unavailable. Choose an existing Agent or create a replacement.";
+          throw "Agent unavailable";
         const action = modal.querySelector<HTMLInputElement>(
           "[name=action]:checked",
         )!.value;
@@ -3405,7 +3487,8 @@ export async function mountSettings(
   function addPersonDialog(
     opener: HTMLElement,
     repository: ConfiguredRepository,
-    onSaved: () => void,
+    people: WatchedIdentity[],
+    onAdd: (identity: WatchedIdentity) => void,
   ) {
     const availableAccounts = githubAccounts.filter(
       (account) =>
@@ -3413,10 +3496,9 @@ export async function mountSettings(
         (!repository.provider_account_id ||
           account.account_id === repository.provider_account_id),
     );
-    const people = repository.watched_authors ?? [];
     const picker = dialog(
       "Add people",
-      `<form class="person-lookup"><label>Acting GitHub account<select name="account" required>${option("", "Choose a GitHub account", repository.provider_account_id ?? "")}${availableAccounts.map((account) => option(account.account_id, `${account.login} (${account.account_id})`, repository.provider_account_id ?? "")).join("")}</select></label><label>GitHub login<input name="login" placeholder="octocat" autocomplete="off" required /></label><p class="settings-hint">${availableAccounts.length ? "Looks up the exact login through the selected GitHub account and stores its stable identity. No wildcards." : `No connected GitHub account is available. Connect one in ${accountSection}.`}</p><p role="alert" hidden></p><div class="resource-actions"><button type="submit" class="primary" ${availableAccounts.length ? "" : "disabled"}>Add person</button><button type="button" data-cancel-resource>Cancel</button></div></form>`,
+      `<form class="person-lookup"><label>Acting GitHub account<select name="account" required>${option("", "Choose a GitHub account", repository.provider_account_id ?? "")}${availableAccounts.map((account) => option(account.account_id, `${account.login} (${account.account_id})`, repository.provider_account_id ?? "")).join("")}</select></label><label>GitHub login<input name="login" placeholder="octocat" autocomplete="off" required /></label><p role="alert" hidden></p><div class="resource-actions"><button type="submit" class="primary" ${availableAccounts.length ? "" : "disabled"}>Add person</button><button type="button" data-cancel-resource>Cancel</button></div></form>`,
       opener,
     );
     resourceEditor(picker);
@@ -3441,13 +3523,10 @@ export async function mountSettings(
           },
         );
         if (!picker.open || lookupRevision !== revision)
-          throw "Settings changed during lookup. Add this person again.";
-        if (people.some((p) => p.id === identity.id))
-          throw "This person is already in this watchlist.";
-        repository.watched_authors = [...people, identity];
-        changed();
+          throw "Settings changed";
+        if (people.some((p) => p.id === identity.id)) throw "Already added";
         picker.close();
-        onSaved();
+        onAdd(identity);
       } catch (cause) {
         alert.textContent = reason(cause);
         alert.hidden = false;
@@ -3488,38 +3567,28 @@ export async function mountSettings(
       snapshot.isolated ||
       snapshot.login_registration === null;
     status.textContent = startupPending
-      ? "Updating startup request and reading native registration..."
-      : `Saved request: ${saved.launch_at_login ? "On" : "Off"}. Registration: ${snapshot.login_registration ?? "unavailable"}. ${
-          snapshot.isolated
-            ? `Isolated development run: changing ${isWindows ? "Windows startup apps" : "macOS login items"} is disabled.`
-            : `Registration is not effective ${platformName} launch state; ${startupSettingsName} can disable a registered entry.`
-        }`;
+      ? "Updating"
+      : `${saved.launch_at_login ? "On" : "Off"}; registration ${snapshot.login_registration ?? "unavailable"}${snapshot.isolated ? "; isolated" : ""}`;
   }
 
   function renderPreferences() {
     const schedule = draft.defaults.schedule;
     content.innerHTML = `<div class="preferences-view">
-      <div class="preferences-boundary"><h2>Saved preferences</h2><span>Save to apply</span></div>
+      <div class="preferences-boundary"><h2>Saved preferences</h2></div>
       <div class="settings-group preferences-saved"><fieldset aria-label="Global polling and capacity"><legend>Global polling and capacity</legend>
-      <label class="preferences-capacity">AI capacity<input id="global-capacity" type="number" min="1" max="4294967295" step="1" value="${draft.capacity}" aria-describedby="capacity-guidance" /></label>
-      <p id="capacity-guidance" class="settings-hint">Simultaneous jobs on this computer: normal passes, final primary reviews, replies and mentions. Default 4; any whole number from 1 to 4294967295. Saved Agents and queued PRs are not limited.</p>
-      <p class="preferences-warning">Lowering capacity stops surplus AI work and queues fresh attempts. Completed evidence and provider receipts remain.</p>
+      <label class="preferences-capacity">AI capacity<input id="global-capacity" type="number" min="1" max="4294967295" step="1" value="${draft.capacity}" /></label>
       <div class="preferences-schedule">
       <label>Cron expression<input id="global-cron" value="${escape(schedule.kind === "cron" ? schedule.expression : "")}" placeholder="*/15 * * * *" /></label>
-      <label>Schedule helper<select id="cron-helper"><option value="">Custom five-field expression</option><option value="*/15 * * * *">Every 15 minutes</option><option value="0 * * * *">Every hour</option><option value="0 9 * * MON-FRI">Weekdays at 09:00</option></select></label>
+      <label>Schedule helper<select id="cron-helper"><option value="">Custom</option><option value="*/15 * * * *">Every 15 minutes</option><option value="0 * * * *">Every hour</option><option value="0 9 * * MON-FRI">Weekdays at 09:00</option></select></label>
       <label>Time zone<input id="global-timezone" value="${escape(schedule.timezone)}" /></label>
-      </div><p class="settings-hint">Five fields: minute, hour, day, month, weekday. Evaluated in this IANA time zone, including its daylight-saving rules. One global scan covers enabled, configured repositories. Shared AI capacity drains admitted work independently of polling.${schedule.kind === "interval" ? ` Saved legacy interval: ${schedule.minutes} minutes. Polling is blocked until you explicitly choose a cron expression; no automatic conversion.` : ""}</p></fieldset>
-      <fieldset aria-label="Review execution"><legend>Review execution</legend><p class="settings-hint">Eligible reviews run automatically through shared AI capacity. Pause automation or disable a repository to stop new work. Publication, approval and merge have separate permissions.</p></fieldset>
-      <p class="settings-hint">Publication permissions are set on each repository's Agent assignments. Publish Comment and primary Reply Comment are independent; choosing primary grants neither.</p>
-      <p class="settings-hint preferences-permissions">Approve and Merge remain separate repository-assignment permissions, never global grants.</p></div>
-      <div class="preferences-boundary"><h2>Immediate controls</h2><span>Applied separately</span></div>
-      <p class="settings-hint">Pause, notification opt-in and startup commit immediately. Save preferences and Reset changes do not apply or undo them.</p>
+      </div></fieldset></div>
+      <div class="preferences-boundary"><h2>Immediate controls</h2></div>
       <div class="settings-group" id="automation-settings"></div>
       <div class="settings-group" id="notification-settings"></div>
-      <div class="settings-group"><fieldset aria-label="Startup"><legend>Startup</legend><label class="setting-row"><span>Open PR Sniper at login<small>Changes the saved request and native registration immediately, not through Save preferences.</small></span><input id="login" type="checkbox" role="switch" aria-describedby="login-status" disabled /></label><p id="login-status" class="settings-hint" role="status"></p><p id="login-error" role="alert" hidden></p></fieldset></div>
-      <div class="settings-group"><fieldset aria-label="Status and recovery"><legend>Status and recovery</legend><p class="settings-hint">Status keeps notification history, schedule health and pending-operation recovery reachable. Uncertain provider writes still need reconciliation.</p><button id="preferences-status" type="button">Open status and recovery</button>
-      <p class="settings-hint">Settings and logs live in your ${isWindows ? "Windows local application-data" : "macOS app-support"} folder. Diagnostics shows redacted host events, not tokens.</p><button id="diagnostics" type="button">Open redacted diagnostics</button>
-      <details id="preferences-readiness" class="preferences-readiness"><summary>Saved setup readiness</summary><p class="settings-hint" data-readiness role="status">Reading saved-resource readiness...</p></details></fieldset></div></div>`;
+      <div class="settings-group"><fieldset aria-label="Startup"><legend>Startup</legend><label class="setting-row"><span>Open PR Sniper at login</span><input id="login" type="checkbox" role="switch" aria-describedby="login-status" disabled /></label><p id="login-status" role="status"></p><p id="login-error" role="alert" hidden></p></fieldset></div>
+      <div class="settings-group"><fieldset aria-label="Status and recovery"><legend>Status and recovery</legend><button id="preferences-status" type="button">Open status and recovery</button>
+      <button id="diagnostics" type="button">Open redacted diagnostics</button>
+      <details id="preferences-readiness" class="preferences-readiness"><summary>Saved setup readiness</summary><p data-readiness role="status">Loading</p></details></fieldset></div></div>`;
     updateStartup();
     const cron = content.querySelector<HTMLInputElement>("#global-cron")!;
     const helper = content.querySelector<HTMLSelectElement>("#cron-helper")!;
@@ -3570,11 +3639,12 @@ export async function mountSettings(
           ...state.issues,
           ...state.repositories.flatMap((r) => r.issues),
         ];
-        readiness.textContent = `${state.configuration_ready ? "Saved configuration is complete." : `Saved setup incomplete: ${issues.join(" ")}`} Account verification and model access remain separate requirements. Repository Save authorizes monitoring. Unsaved fields do not affect readiness.`;
+        readiness.textContent = state.configuration_ready
+          ? "Complete"
+          : `Incomplete: ${issues.join("; ")}`;
       },
       (cause) => {
-        if (readiness.isConnected)
-          readiness.textContent = `Saved-resource readiness unavailable: ${reason(cause)}`;
+        if (readiness.isConnected) readiness.textContent = reason(cause);
       },
     );
     mountNotificationSettings(
@@ -3610,9 +3680,7 @@ export async function mountSettings(
         await invoke("save_login", { enabled });
       } catch (cause) {
         errors.push(
-          typeof cause === "string"
-            ? cause
-            : `Startup preference change could not complete. Check ${startupSettingsName} and the saved request.`,
+          typeof cause === "string" ? cause : "Startup change failed",
         );
       } finally {
         try {
@@ -3624,15 +3692,10 @@ export async function mountSettings(
           snapshot = { ...fresh, doctrine_catalog: snapshot.doctrine_catalog };
           if (!fresh.settings) snapshot.login_registration = null;
           if (fresh.error) errors.push(fresh.error);
-          else if (!fresh.settings)
-            errors.push(
-              "Startup settings unavailable; the saved request is unconfirmed.",
-            );
+          else if (!fresh.settings) errors.push("Unavailable");
         } catch {
           snapshot.login_registration = null;
-          errors.push(
-            `Could not reload startup registration. Check ${startupSettingsName}.`,
-          );
+          errors.push("Registration unavailable");
         }
         startupPending = false;
         startupError = errors.join("\n");
@@ -3651,11 +3714,7 @@ export async function mountSettings(
             route: { tab: "settings", detail: { type: "status" } },
           });
         } catch (cause) {
-          showError(
-            typeof cause === "string"
-              ? cause
-              : "Could not open status and recovery.",
-          );
+          showError(typeof cause === "string" ? cause : "Failed");
         }
       };
     content.querySelector<HTMLButtonElement>("#diagnostics")!.onclick = async (
@@ -3665,7 +3724,7 @@ export async function mountSettings(
       try {
         await invoke("open_diagnostics");
       } catch {
-        showError("Could not open diagnostics.");
+        showError("Failed");
       }
     };
   }
@@ -3685,9 +3744,7 @@ export async function mountSettings(
       const message = reason(cause);
       if (message.startsWith("Resource changed in another window")) {
         conflict = true;
-        showError(
-          `${message} Your unsaved changes are still here. Discard the draft and reload only when you are ready to replace them with the latest saved settings.`,
-        );
+        showError("Changed elsewhere");
       } else {
         showError(message);
       }
@@ -3700,9 +3757,7 @@ export async function mountSettings(
   async function reloadSettings(catalogOnly: boolean) {
     if (busy || !(catalogOnly ? catalogConflict : conflict)) return;
     if (catalogOnly && dialogs.hasOpen()) {
-      showError(
-        "Close open editors before reloading Agents and doctrines. Your drafts are still available.",
-      );
+      showError("Close editors first");
       return;
     }
     if (!catalogOnly) dialogs.closeAll();
@@ -3723,10 +3778,7 @@ export async function mountSettings(
     try {
       const state = await invoke<Snapshot>("snapshot");
       if (!state.settings) {
-        showError(
-          state.error ??
-            "Settings unavailable. Repair local configuration before reloading.",
-        );
+        showError(state.error ?? "Unavailable");
         return;
       }
       snapshot = state;
@@ -3749,9 +3801,7 @@ export async function mountSettings(
       catalogConflict = false;
       if (state.error) showError(state.error);
     } catch {
-      showError(
-        "Could not reload Settings. Your draft is still available; check local storage access and try again.",
-      );
+      showError("Reload failed");
     } finally {
       controls.forEach(({ control, disabled }) => {
         control.disabled = disabled;
@@ -3783,10 +3833,7 @@ export async function mountSettings(
         return;
       snapshot = state;
       if (!state.settings) {
-        showError(
-          state.error ??
-            "Settings unavailable. Repair local configuration before saving.",
-        );
+        showError(state.error ?? "Unavailable");
         return;
       }
       const retainAccounts =
@@ -3815,9 +3862,7 @@ export async function mountSettings(
         dialogs.hasOpen()
       )
         return;
-      showError(
-        "Could not read Settings. Open the native application and check local storage access.",
-      );
+      showError("Unavailable");
     }
   }
   window.addEventListener("focus", () => {
@@ -3830,20 +3875,15 @@ export async function mountSettings(
     leaveGuidance,
     open(target: SetupTarget, origin: GuidedReturn) {
       if (!draft || busy) {
-        showError(
-          "Settings is not ready to navigate. Finish the current save or retry loading Settings.",
-        );
+        showError("Not ready");
         return false;
       }
       if (dialogs.hasOpen()) {
-        showError(
-          "An editor is already open. Its unsaved fields are intact; finish or cancel it before choosing another setup step.",
-        );
+        showError("Editor open");
         return false;
       }
       guidance = origin;
       returnGenie.hidden = false;
-      app.querySelector<HTMLElement>("[data-genie-save-note]")!.hidden = false;
       const next: Section =
         target === "ai" || target === "repository-account"
           ? target === "ai"
@@ -3880,9 +3920,5 @@ export async function mountSettings(
     },
   };
 }
-import {
-  isWindows,
-  platformName,
-  startupSettingsName,
-  trayAdjective,
-} from "./platform";
+import { isWindows } from "./platform";
+import { terseError } from "./errors";

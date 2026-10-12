@@ -1,48 +1,21 @@
 import { expect, test } from "./fixtures.mjs";
 
 const waitingStates = [
-  [
-    "trust_confirmation",
-    "Waiting for review under the saved Agent assignment.",
-  ],
-  [
-    "human_start",
-    "Queued automatically; waiting for shared AI capacity or automation resume.",
-  ],
-  ["agent_unavailable", "Waiting for an available assigned Agent."],
-  [
-    "account_disconnected",
-    "Not actionable: the acting GitHub account is disconnected.",
-  ],
-  ["repository_disabled", "Not actionable: repository monitoring is disabled."],
-  [
-    "repository_removed",
-    "Not actionable: the repository was removed from Settings.",
-  ],
-  [
-    "binding_changed",
-    "Not actionable: the repository account binding changed.",
-  ],
-  ["policy_changed", "Not actionable: the trigger policy changed."],
-  [
-    "superseded",
-    "Not actionable: a newer head revision superseded this detection.",
-  ],
-  ["ineligible", "Not actionable: this revision is no longer eligible."],
-  [
-    "no_longer_current",
-    "Not seen in the latest open-PR scan; rechecked next scan. This is not a terminal closed or merged state.",
-  ],
-  [
-    "scope_excluded",
-    "Not actionable: this unchanged existing revision was excluded by the confirmed monitoring scope.",
-  ],
-  ["closed", "GitHub confirmed this PR closed. This iteration is terminal."],
-  ["merged", "GitHub confirmed this PR merged. This iteration is terminal."],
-  [
-    "assignment_removed",
-    "Not actionable: this Agent assignment was removed or replaced.",
-  ],
+  ["trust_confirmation", "Waiting"],
+  ["human_start", "Queued"],
+  ["agent_unavailable", "Agent unavailable"],
+  ["account_disconnected", "Account disconnected"],
+  ["repository_disabled", "Repository disabled"],
+  ["repository_removed", "Repository removed"],
+  ["binding_changed", "Binding changed"],
+  ["policy_changed", "Policy changed"],
+  ["superseded", "Superseded"],
+  ["ineligible", "Ineligible"],
+  ["no_longer_current", "Not current"],
+  ["scope_excluded", "Out of scope"],
+  ["closed", "Closed"],
+  ["merged", "Merged"],
+  ["assignment_removed", "Assignment removed"],
 ];
 
 test("Review Queue renders acting schedule identity and every persisted detection state", async ({
@@ -247,25 +220,25 @@ test("Review Queue renders acting schedule identity and every persisted detectio
   const health = page.locator("#schedule-health");
   await expect(
     health.locator("p").filter({ hasText: "scheduled/repo" }),
-  ).toContainText("scheduled/repo: Scheduled; immediate check pending.");
+  ).toContainText("scheduled/repo: Scheduled; check pending");
   await expect(
     health.locator("p").filter({ hasText: "checking/repo" }),
-  ).toContainText("checking/repo: Checking.");
+  ).toContainText("checking/repo: Checking;");
   const blocked = health.locator("p").filter({ hasText: "unbound/repo" });
-  await expect(blocked).toContainText("unbound/repo: Blocked.");
-  await expect(blocked).toContainText("Acting account: unbound");
-  await expect(blocked).toContainText("Next run: Unavailable");
+  await expect(blocked).toContainText("unbound/repo: Failed;");
+  await expect(blocked).toContainText("account Unbound;");
+  await expect(blocked).toContainText("next Unavailable;");
   await expect(
     health.locator("p").filter({ hasText: "unavailable/repo" }),
-  ).toContainText("unavailable/repo: Unavailable.");
+  ).toContainText("unavailable/repo: Unavailable;");
   await expect(
     health.locator("p").filter({ hasText: "disabled/repo" }),
-  ).toContainText("disabled/repo: Disabled.");
+  ).toContainText("disabled/repo: Disabled;");
   await expect(
     health.locator("p").filter({ hasText: "scope-required/repo" }),
-  ).toContainText("scope-required/repo: Blocked.");
+  ).toContainText("scope-required/repo: Failed;");
   const retry = health.locator("p").filter({ hasText: "retry/repo" });
-  await expect(retry).toContainText("retry/repo: Manual retry required.");
+  await expect(retry).toContainText("retry/repo: Manual retry;");
   await retry.getByRole("button", { name: "Retry", exact: true }).click();
   await expect
     .poll(() => page.evaluate(() => window.__monitoringRetries))
@@ -275,17 +248,17 @@ test("Review Queue renders acting schedule identity and every persisted detectio
     "Security reviewer (agent-1), assignment assignment-1",
   );
   await expect(health).toContainText("interval:5:America/New_York");
-  await expect(health).toContainText("stable ID 23 (login unavailable)");
+  await expect(health).toContainText("account 23;");
 
   for (const [, label] of waitingStates)
     await expect(page.locator("#review-jobs")).toContainText(label);
   await expect(
     page.locator("#review-jobs article").filter({
-      hasText: "Waiting for an available assigned Agent.",
+      hasText: "Agent unavailable",
     }),
   ).toHaveCount(1);
   await expect(page.locator("#review-jobs")).toContainText(
-    "Trigger: all-author monitoring scope",
+    "all-author monitoring scope",
   );
 
   await page.getByRole("button", { name: "Check Now", exact: true }).click();
@@ -309,9 +282,7 @@ test("Review Queue renders acting schedule identity and every persisted detectio
   await page.getByRole("button", { name: "Check Now", exact: true }).click();
   await expect(
     health.locator("p").filter({ hasText: "Global scan:" }),
-  ).toContainText(
-    "Unavailable; configure a valid global cron schedule in Settings.",
-  );
+  ).toContainText("next Unavailable");
   await page.evaluate(() => {
     const invalidCron = window.__monitoringSnapshot.health.find(
       (repository) => repository.repository_id === "disabled",
@@ -321,7 +292,7 @@ test("Review Queue renders acting schedule identity and every persisted detectio
   await page.getByRole("button", { name: "Check Now", exact: true }).click();
   await expect(
     health.locator("p").filter({ hasText: "Global scan:" }),
-  ).toContainText("No eligible repositories; no provider scan is scheduled.");
+  ).toContainText("next None scheduled");
   await expect
     .poll(() => page.evaluate(() => window.__monitoringChecks))
     .toBe(3);

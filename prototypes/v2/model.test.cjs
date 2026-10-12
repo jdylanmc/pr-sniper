@@ -271,7 +271,7 @@ test("manual start remains distinct from monitoring and automatic comment public
 test("untrusted detection requires explicit revision confirmation", () => {
   let state = M.seed();
   state.repos.forEach((repo) => {
-    repo.watched = [];
+    repo.admission = plain(M.defaultAdmission());
   });
   state = M.update(state, "detect");
   const untrusted = state.reviews.filter((review) => review.number >= 500);
@@ -420,10 +420,20 @@ test("invalid saved state is rejected, not silently treated as success", () => {
   assert.throws(() => M.validate(state), /Duplicate saved reviews/);
 });
 
-test("watch-filter changes stop mismatched work before it starts or publishes", () => {
+const only = (...users) => {
+  const admission = plain(M.defaultAdmission(users));
+  admission.mode = "filtered";
+  admission.rules.forEach((rule) => {
+    if (rule.kind === "assigned" || rule.kind === "mentioned")
+      rule.enabled = false;
+  });
+  return admission;
+};
+
+test("filter changes stop mismatched work before it starts or publishes", () => {
   let state = M.seed();
   state = M.update(state, "save-repo", {
-    repo: { ...plain(state.repos[0]), watched: ["Robin Bell"] },
+    repo: { ...plain(state.repos[0]), admission: only("Robin Bell") },
   });
   assert.equal(
     state.reviews.filter(
@@ -436,10 +446,10 @@ test("watch-filter changes stop mismatched work before it starts or publishes", 
       state,
       state.reviews.find((review) => review.repoId === "repo-0"),
     ),
-    /watch filter/,
+    /pull request filters/,
   );
   state.repos.forEach((repo) => {
-    repo.watched = ["Robin Bell"];
+    repo.admission = only("Robin Bell");
   });
   assert.throws(() => M.update(state, "detect"), /No sample PRs match/);
 });
@@ -839,14 +849,278 @@ test("agents carry context window, reasoning effort and a default signature that
   M.validate(legacy);
 });
 
-test("repositories may be unbound and keep a reviewer-request setting", () => {
+test("repositories may be unbound and keep their pull request filters", () => {
   let state = M.seed();
+  const admission = plain(state.repos[0].admission);
+  admission.rules[0].enabled = false;
   state = M.update(state, "save-repo", {
-    repo: { ...plain(state.repos[0]), accountId: "", reviewerRequests: "on" },
+    repo: { ...plain(state.repos[0]), accountId: "", admission },
   });
+  assert.equal(state.repos[0].admission.rules[0].enabled, false);
   assert.equal(state.repos[0].accountId, "");
   assert.match(M.blockReason(state, state.reviews[0]) || "x", /./);
   const invalid = M.seed();
-  invalid.repos[0].reviewerRequests = "maybe";
-  assert.throws(() => M.validate(invalid), /reviewer-request/);
+  invalid.repos[0].admission.mode = "maybe";
+  assert.throws(() => M.validate(invalid), /pull request filters/);
+});
+
+const rule = (admission, kind) => admission.rules.find((r) => r.kind === kind);
+const order = (admission, kinds) => {
+  admission.rules = kinds.map((kind) => rule(admission, kind));
+  return admission;
+};
+const pr = (over = {}) => ({
+  author: "Casey Lee",
+  reviewRequested: false,
+  mentioned: false,
+  files: [{ path: "src/a.ts" }, { path: "docs/readme.md" }],
+  ...over,
+});
+const filtered = (setup) => {
+  const admission = plain(M.defaultAdmission());
+  admission.mode = "filtered";
+  admission.rules.forEach((r) => {
+    r.enabled = false;
+  });
+  setup(admission);
+  return { admission };
+};
+
+test("mode all admits every pull request regardless of rules", () => {
+  const repo = { admission: plain(M.defaultAdmission()) };
+  rule(repo.admission, "exclude_users").users = ["Casey Lee"];
+  rule(repo.admission, "exclude_users").enabled = true;
+  assert.equal(repo.admission.mode, "all");
+  assert.equal(M.admits(repo, pr()), true);
+});
+
+test("filtered mode rejects when no enabled rule matches", () => {
+  assert.equal(
+    M.admits(
+      filtered(() => {}),
+      pr(),
+    ),
+    false,
+  );
+  const repo = filtered((a) => {
+    rule(a, "assigned").enabled = true;
+    rule(a, "mentioned").enabled = true;
+  });
+  assert.equal(M.admits(repo, pr()), false);
+  assert.equal(M.admits(repo, pr({ reviewRequested: true })), true);
+  assert.equal(M.admits(repo, pr({ mentioned: true })), true);
+});
+
+test("disabled rules never decide", () => {
+  const repo = filtered((a) => {
+    rule(a, "include_users").users = ["Casey Lee"];
+    rule(a, "exclude_users").users = ["Casey Lee"];
+    rule(a, "exclude_users").enabled = true;
+  });
+  assert.equal(M.admits(repo, pr()), false);
+  rule(repo.admission, "include_users").enabled = true;
+  assert.equal(M.admits(repo, pr()), true);
+});
+
+test("the first matching rule wins in every ordering of include and exclude users", () => {
+  const base = (kinds) =>
+    filtered((a) => {
+      rule(a, "include_users").users = ["Casey Lee"];
+      rule(a, "exclude_users").users = ["Casey Lee"];
+      rule(a, "include_users").enabled = rule(a, "exclude_users").enabled =
+        true;
+      order(a, [...kinds, ...M.ruleKinds.filter((k) => !kinds.includes(k))]);
+    });
+  assert.equal(M.admits(base(["include_users", "exclude_users"]), pr()), true);
+  assert.equal(M.admits(base(["exclude_users", "include_users"]), pr()), false);
+});
+
+test("precedence permutations across assigned, include users and exclude paths", () => {
+  const kinds = ["assigned", "include_users", "exclude_paths"];
+  const permutations = (items) =>
+    items.length < 2
+      ? [items]
+      : items.flatMap((item, i) =>
+          permutations([...items.slice(0, i), ...items.slice(i + 1)]).map(
+            (rest) => [item, ...rest],
+          ),
+        );
+  assert.equal(permutations(kinds).length, 6);
+  for (const permutation of permutations(kinds)) {
+    const repo = filtered((a) => {
+      rule(a, "assigned").enabled = true;
+      rule(a, "include_users").enabled = true;
+      rule(a, "include_users").users = ["Casey Lee"];
+      rule(a, "exclude_paths").enabled = true;
+      rule(a, "exclude_paths").paths = ["src/", "docs/"];
+      order(a, [
+        ...permutation,
+        ...M.ruleKinds.filter((k) => !kinds.includes(k)),
+      ]);
+    });
+    // Every changed file is excluded, so the outcome depends on what comes first.
+    const expected =
+      permutation.indexOf("exclude_paths") >
+      Math.min(
+        permutation.indexOf("assigned"),
+        permutation.indexOf("include_users"),
+      );
+    assert.equal(
+      M.admits(repo, pr({ reviewRequested: true })),
+      expected,
+      permutation.join(">"),
+    );
+  }
+});
+
+test("exclude paths rejects only when every changed file matches", () => {
+  const repo = filtered((a) => {
+    rule(a, "exclude_paths").enabled = true;
+    rule(a, "exclude_paths").paths = ["docs/", "**/*.md"];
+    rule(a, "include_users").enabled = true;
+    rule(a, "include_users").users = ["Casey Lee"];
+  });
+  rule(repo.admission, "include_users").enabled = true;
+  order(repo.admission, [
+    "exclude_paths",
+    ...M.ruleKinds.filter((k) => k !== "exclude_paths"),
+  ]);
+  assert.equal(
+    M.admits(repo, pr({ files: [{ path: "docs/a.md" }, { path: "x.md" }] })),
+    false,
+  );
+  assert.equal(M.admits(repo, pr()), true);
+  assert.equal(M.admits(repo, pr({ files: [] })), true);
+});
+
+test("include paths admits when any changed file matches", () => {
+  const repo = filtered((a) => {
+    rule(a, "include_paths").enabled = true;
+    rule(a, "include_paths").paths = ["tests/", "src/**/*.ts"];
+  });
+  assert.equal(M.admits(repo, pr({ files: [{ path: "src/x/y.ts" }] })), true);
+  assert.equal(M.admits(repo, pr({ files: [{ path: "tests/a.js" }] })), true);
+  assert.equal(M.admits(repo, pr({ files: [{ path: "lib/a.ts" }] })), false);
+  rule(repo.admission, "include_paths").paths = [];
+  assert.equal(M.admits(repo, pr()), false);
+});
+
+test("path globs: directory prefix, star, double star and question mark", () => {
+  const cases = [
+    ["docs/", "docs/a/b.md", true],
+    ["docs/", "mydocs/a.md", false],
+    ["docs", "docs/a.md", false],
+    ["docs", "docs", true],
+    ["src/*.ts", "src/a.ts", true],
+    ["src/*.ts", "src/a/b.ts", false],
+    ["src/**/*.ts", "src/a.ts", true],
+    ["src/**/*.ts", "src/a/b/c.ts", true],
+    ["**/*.md", "a/b/c.md", true],
+    ["a?c.txt", "abc.txt", true],
+    ["a?c.txt", "a/c.txt", false],
+    ["a.b", "axb", false],
+  ];
+  for (const [pattern, file, expected] of cases)
+    assert.equal(M.globMatches(pattern, file), expected, `${pattern} ${file}`);
+});
+
+test("path patterns are validated", () => {
+  assert.match(M.pathProblem(""), /Enter a path/);
+  assert.match(M.pathProblem("   "), /Enter a path/);
+  assert.match(M.pathProblem("a".repeat(257)), /repository-relative/);
+  assert.equal(M.pathProblem("a".repeat(256)), "");
+  assert.match(M.pathProblem("/src"), /repository-relative/);
+  assert.match(M.pathProblem("src/../x"), /repository-relative/);
+  assert.match(M.pathProblem("..", []), /repository-relative/);
+  assert.match(M.pathProblem("docs/", ["docs/"]), /Already added/);
+  assert.equal(M.pathProblem("docs/"), "");
+});
+
+test("old repository data migrates deterministically to admission", () => {
+  const legacy = (extra) => {
+    const state = M.seed();
+    state.repos = state.repos.map((repo) => {
+      const { admission, ...rest } = plain(repo);
+      return { ...rest, ...extra };
+    });
+    return state;
+  };
+  const watched = M.migrate(
+    legacy({ watched: ["Robin Bell", "Casey Lee"], reviewerRequests: "on" }),
+  );
+  const a = watched.repos[0].admission;
+  assert.equal(a.mode, "filtered");
+  assert.deepEqual(plain(rule(a, "include_users")), {
+    kind: "include_users",
+    enabled: true,
+    users: ["Robin Bell", "Casey Lee"],
+  });
+  assert.equal(rule(a, "assigned").enabled, true);
+  assert.equal(rule(a, "mentioned").enabled, false);
+  assert.equal("watched" in watched.repos[0], false);
+  assert.equal("reviewerRequests" in watched.repos[0], false);
+  M.validate(
+    M.migrate(legacy({ watched: [...M.people], reviewerRequests: "on" })),
+  );
+
+  const none = M.migrate(legacy({ watched: [], reviewerRequests: "off" }));
+  assert.equal(none.repos[0].admission.mode, "all");
+  assert.equal(rule(none.repos[0].admission, "assigned").enabled, false);
+  assert.equal(rule(none.repos[0].admission, "include_users").enabled, false);
+  assert.equal(
+    rule(M.migrate(legacy({ watched: [] })).repos[0].admission, "assigned")
+      .enabled,
+    true,
+  );
+  const again = M.migrate(plain(watched));
+  assert.deepEqual(plain(again), plain(watched));
+  assert.throws(() => M.validate(legacy({ watched: [] })), /outdated|filters/);
+});
+
+test("admission validation is strict", () => {
+  const mutate = (change) => {
+    const state = M.seed();
+    change(state.repos[0].admission);
+    return state;
+  };
+  for (const change of [
+    (a) => (a.mode = "some"),
+    (a) => a.rules.pop(),
+    (a) => (a.rules[1].kind = "assigned"),
+    (a) => (a.rules[0].enabled = "yes"),
+    (a) => (rule(a, "include_users").users = [""]),
+    (a) => (rule(a, "include_users").users = ["A", "A"]),
+    (a) => delete rule(a, "exclude_users").users,
+    (a) => (rule(a, "include_paths").paths = ["/abs"]),
+    (a) => (rule(a, "include_paths").paths = ["x/../y"]),
+    (a) => (rule(a, "include_paths").paths = ["a", "a"]),
+    (a) => (rule(a, "exclude_paths").paths = ["a".repeat(257)]),
+    (a) => (rule(a, "assigned").users = []),
+  ])
+    assert.throws(() => M.validate(mutate(change)), /pull request filters/);
+  // Rules may be reordered freely.
+  M.validate(mutate((a) => a.rules.reverse()));
+});
+
+test("detection and trust honor admission rules", () => {
+  let state = M.seed();
+  state.repos.forEach((repo) => {
+    repo.admission = filtered((a) => {
+      rule(a, "exclude_paths").enabled = true;
+      rule(a, "exclude_paths").paths = ["src/", "tests/"];
+      rule(a, "include_users").enabled = true;
+      rule(a, "include_users").users = [];
+    }).admission;
+  });
+  assert.throws(() => M.update(state, "detect"), /No sample PRs match/);
+  state.repos.forEach((repo) => {
+    rule(repo.admission, "include_paths").enabled = true;
+    rule(repo.admission, "include_paths").paths = ["src/"];
+    order(repo.admission, [
+      "include_paths",
+      ...M.ruleKinds.filter((k) => k !== "include_paths"),
+    ]);
+  });
+  state = M.update(state, "detect");
+  assert(state.reviews.some((review) => review.number >= 500));
 });

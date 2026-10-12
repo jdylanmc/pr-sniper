@@ -10,7 +10,13 @@ import {
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { section } from "./navigation.mjs";
+import {
+  section,
+  setAllPullRequests,
+  pickAgent,
+  withPermissions,
+  assignmentBack,
+} from "./navigation.mjs";
 
 const tab = (page, name) =>
   page
@@ -457,22 +463,22 @@ test("fresh Genie uses shared account choices and authorizes at repository Save,
     .click();
   const assignment = modal(page, "Assign agent");
   const saved = (await store("snapshot")).settings;
-  await assignment
-    .getByLabel("Agent", { exact: true })
-    .selectOption(saved.agents[0].id);
-  for (const permission of ["Publish Comment", "Reply Comment"])
+  await pickAgent(assignment, saved.agents[0].id);
+  await withPermissions(page, assignment, async () => {
+    for (const permission of ["Publish Comment", "Reply Comment"])
+      await expect(
+        assignment.getByRole("switch", { name: permission, exact: true }),
+      ).not.toBeChecked();
     await expect(
-      assignment.getByRole("checkbox", { name: new RegExp(`^${permission}`) }),
+      assignment.getByRole("radio", { name: "Neither", exact: true }),
+    ).toBeChecked();
+    await expect(
+      assignment.getByRole("radio", { name: "Approve", exact: true }),
     ).not.toBeChecked();
-  await expect(
-    assignment.getByRole("radio", { name: "Neither", exact: true }),
-  ).toBeChecked();
-  await expect(
-    assignment.getByRole("radio", { name: "Approve", exact: true }),
-  ).not.toBeChecked();
-  await expect(
-    assignment.getByRole("radio", { name: "Approve & Merge", exact: true }),
-  ).not.toBeChecked();
+    await expect(
+      assignment.getByRole("radio", { name: "Approve & Merge", exact: true }),
+    ).not.toBeChecked();
+  });
   await assignment
     .getByRole("button", { name: "Assign agent", exact: true })
     .click();
@@ -498,9 +504,14 @@ test("fresh Genie uses shared account choices and authorizes at repository Save,
   );
   await page.locator("[data-genie-next]").click();
   await expect(page.locator("[data-genie-confirm]")).toHaveCount(0);
-  await expect(page.locator(".genie-repository")).toContainText(
-    "Automatic when eligible",
-  );
+  await expect(
+    page.locator(".genie-repository dt", { hasText: "Monitoring" }),
+  ).toHaveCount(1);
+  await expect(
+    page
+      .locator(".genie-repository dt", { hasText: "Monitoring" })
+      .locator("+ dd"),
+  ).toHaveText("Authorized");
   await expect(page.locator(".genie-repository")).not.toContainText(
     "Manual start",
   );
@@ -618,9 +629,9 @@ test("existing authorized re-entry leaves scope bytes and global pause unchanged
   }
   await page.getByRole("button", { name: "Review setup", exact: true }).click();
   await expect(activate(page)).toBeEnabled();
-  await expect(page.locator(".genie-page")).toContainText(
-    "Authorized by saved configuration",
-  );
+  await expect(
+    page.locator(".genie-page dt", { hasText: "Monitoring" }).locator("+ dd"),
+  ).toHaveText("Authorized");
   await expect(activate(page)).toHaveText("Finish setup");
   await activate(page).click();
   await expect(page.locator("[data-panel-heading]")).toHaveText("Your queue");
@@ -713,26 +724,35 @@ test("Genie assignment edits use shared Agents and retain repository and capabil
     .filter({ hasText: "fixture/genie" })
     .click();
   const repository = modal(page, "fixture/genie");
-  await repository.locator("[data-reviewer-trigger]").selectOption("off");
+  await setAllPullRequests(repository, false);
   await repository
     .locator(".assignment-row")
     .getByRole("button", { name: "Edit assignment", exact: true })
     .click();
   const assignment = modal(page, "Edit assignment");
-  await assignment.getByRole("checkbox", { name: /^Reply Comment/ }).check();
+  await withPermissions(page, assignment, () =>
+    assignment.getByRole("switch", { name: "Reply Comment" }).check(),
+  );
+  await assignment.locator("[data-open-agent]").click();
   await assignment
-    .getByRole("button", { name: "Edit Agent", exact: true })
+    .getByRole("button", { name: "Edit Agent My reviewer", exact: true })
     .click();
   const agent = modal(page, "Editing My reviewer");
   await agent.getByLabel("Name", { exact: true }).fill("Shared through Genie");
   await agent.getByRole("button", { name: "Save agent", exact: true }).click();
   await expect(agent).toHaveCount(0);
-  await expect(assignment.locator("[name=agent] option:checked")).toHaveText(
+  await expect(
+    assignment.getByRole("radio", { name: "Shared through Genie" }),
+  ).toBeChecked();
+  await assignmentBack(page, assignment);
+  await expect(assignment.locator("[data-agent-summary]")).toHaveText(
     "Shared through Genie",
   );
-  await expect(
-    assignment.getByRole("checkbox", { name: /^Reply Comment/ }),
-  ).toBeChecked();
+  await withPermissions(page, assignment, () =>
+    expect(
+      assignment.getByRole("switch", { name: "Reply Comment" }),
+    ).toBeChecked(),
+  );
   expect((await store("snapshot")).settings.repositories).toEqual(
     initial.repositories,
   );
@@ -740,9 +760,9 @@ test("Genie assignment edits use shared Agents and retain repository and capabil
     .getByRole("button", { name: "Save assignment", exact: true })
     .click();
   await expect(assignment).toHaveCount(0);
-  await expect(repository.locator("[data-reviewer-trigger]")).toHaveValue(
-    "off",
-  );
+  await expect(
+    repository.getByRole("switch", { name: "All pull requests" }),
+  ).not.toBeChecked();
   await close(repository);
   await back(page);
   await expect(page.locator('[data-genie-edit="repositories"]')).toBeFocused();
@@ -919,7 +939,7 @@ test("GEN3 reconnect of completed account A while B catalog waits requires new e
     state.beforeModels = undefined;
     await page.locator("[data-genie-refresh]").click();
     await expect(page.locator(".genie-error")).toContainText(
-      "model is unavailable",
+      "Model unavailable",
     );
     await expect(activate(page)).toBeDisabled();
     expect(
@@ -1039,8 +1059,10 @@ test("GEN4 failed saved setup read is explicit, never guessed fresh", async ({
     throw "Synthetic saved setup unavailable.";
   };
   await page.goto("/");
-  await expect(page.locator("[data-panel-error]")).toContainText(
-    "Synthetic saved setup unavailable",
+  await expect(page.locator("[data-panel-error]")).toHaveText("Failed");
+  await expect(page.locator("[data-panel-error]")).toHaveAttribute(
+    "title",
+    /Synthetic saved setup unavailable/,
   );
   await expect(page.locator('[data-panel-view="genie"]')).toBeHidden();
   await tab(page, "Settings").click();
