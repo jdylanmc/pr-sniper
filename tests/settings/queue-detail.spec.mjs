@@ -470,3 +470,124 @@ test("action errors are terse, dismissible toasts that never cover the header", 
   await toast.click();
   await expect(toast).toBeHidden();
 });
+
+async function parkedPublication(page, store, patch) {
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__commands = [];
+    window.__TAURI_INTERNALS__.invoke = (command, args) => {
+      window.__commands.push([command, args]);
+      return original(command, args);
+    };
+  });
+  const fixture = await queueFixture(store);
+  const batch = fixture.state.publications.find(
+    (p) => p.review.job.number === 3,
+  );
+  Object.assign(batch, patch.publication);
+  Object.assign(batch.operation, patch.operation);
+  await store("seed_queue_state", fixture.state);
+  const item = (await store("monitoring_snapshot")).items.find(
+    (entry) => entry.job.number === 3,
+  );
+  expect(item.state).toBe("failed");
+  await store("panel_navigate", {
+    route: { tab: "queue", detail: { type: "item", item_id: item.id } },
+  });
+  await page.goto("/");
+  return item;
+}
+
+test("Retry on an unverified publication reconciles it, never a plain check", async ({
+  page,
+  store,
+}) => {
+  const now = Math.floor(Date.now() / 1000);
+  const item = await parkedPublication(page, store, {
+    publication: {},
+    operation: {
+      failure: null,
+      attempt_count: 4,
+      initial_attempt_at: now - 600,
+      resume_cycle: 1,
+      resume_at: now + 3600,
+    },
+  });
+  expect(item.failure_cause).toBe("publication_unresolved");
+  await expect(page.locator(".queue-status-label strong")).toHaveText(
+    "Unverified",
+  );
+  await expect(page.locator("[data-queue-error]")).toContainText(
+    "Provider response was lost.",
+  );
+  await expect(
+    page.locator('.queue-facts dt:text-is("Attempts") + dd'),
+  ).toHaveText("4 of 3 \u00b7 cycle 1 of 5");
+  await page.locator('[data-queue-primary="retry"]').click();
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__commands.map(([command]) => command)),
+    )
+    .toContain("publish_review");
+  const commands = await page.evaluate(() => window.__commands);
+  expect(commands).toContainEqual([
+    "publish_review",
+    { reviewOperationId: "review-3" },
+  ]);
+  const names = commands.map(([command]) => command);
+  expect(names).not.toContain("check_now");
+  expect(names).not.toContain("start_review");
+});
+
+test("a failed publication shows Publish failed, its error line and retries by publishing", async ({
+  page,
+  store,
+}) => {
+  await parkedPublication(page, store, {
+    publication: {
+      phase: "pending",
+      uncertain: false,
+      error: "GitHub rejected this review batch.",
+      receipts: [{ review_id: "7", state: "pending", comment_ids: [] }],
+    },
+    operation: { state: "failed", failure: "permanent", attempt_count: 1 },
+  });
+  await expect(page.locator(".queue-status-label strong")).toHaveText(
+    "Publish failed",
+  );
+  await expect(page.locator("[data-queue-error]")).toHaveText(
+    "GitHub rejected this review batch.",
+  );
+  await expect(
+    page.locator(".queue-facts dt:text-is('Next retry') + dd"),
+  ).toHaveText("Manual");
+  await page.locator('[data-queue-primary="retry"]').click();
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__commands.map(([command]) => command)),
+    )
+    .toContain("publish_review");
+  const names = await page.evaluate(() =>
+    window.__commands.map(([command]) => command),
+  );
+  expect(names).not.toContain("check_now");
+});
+
+test("a discarded publication leaves Needs attention", async ({ store }) => {
+  const fixture = await queueFixture(store);
+  const batch = fixture.state.publications.find(
+    (p) => p.review.job.number === 3,
+  );
+  Object.assign(batch, {
+    phase: "discarded",
+    uncertain: false,
+    error: null,
+    receipts: [{ review_id: "7", state: "deleted", comment_ids: [] }],
+  });
+  batch.operation.state = "completed";
+  await store("seed_queue_state", fixture.state);
+  const items = (await store("monitoring_snapshot")).items;
+  const item = items.find((entry) => entry.job.number === 3);
+  expect(item.state).toBe("machine_signed_off");
+  expect(item.failure_cause ?? null).toBeNull();
+});
