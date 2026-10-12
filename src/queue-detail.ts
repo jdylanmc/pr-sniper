@@ -142,16 +142,34 @@ export function retryCommand(
       (entry.state === "confirmed" && entry.error),
   );
   if (effect) return ["reconcile_provider_action", { id: effect.id }];
-  const review = failedReviews(item, snapshot)[0];
-  if (review) return ["start_review", { candidateKey: review.key }];
+  const cause = failureCause(item, snapshot);
   const operation = (snapshot.health ?? []).find(
     (entry) =>
       entry.repository_id === item.job.configuration_id &&
       entry.provider_account_id === item.job.account_id &&
       ["manual_retry", "failed"].includes(entry.operation?.state ?? ""),
   )?.operation;
+  // Repository-level poll failures retry the poll, never the review.
+  const monitoring = !["review_failed", "publication_unresolved", ""].includes(
+    cause,
+  );
+  if (monitoring && operation)
+    return ["retry_monitoring_operation", { operationId: operation.id }];
+  // A revision is reviewed once: only a run that itself failed, with nothing
+  // published or pending for it, may be started again.
+  const review = failedReviews(item, snapshot).find(
+    (candidate) =>
+      !candidate.run?.result &&
+      !(snapshot.publications ?? []).some(
+        (publication) =>
+          publication.publication &&
+          publication.review_operation_id === candidate.run?.operation.id,
+      ),
+  );
+  if (review) return ["start_review", { candidateKey: review.key }];
   if (operation)
     return ["retry_monitoring_operation", { operationId: operation.id }];
+  if (monitoring) return ["check_now", {}];
   const status = item.action_status;
   if (
     status?.blockers.length &&

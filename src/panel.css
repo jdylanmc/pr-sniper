@@ -892,14 +892,32 @@
   font-size: 9px;
   overflow-wrap: anywhere;
 }
-.panel-error {
-  flex: none;
+/* Errors float as a dismissible toast (tap to close), never over the header. */
+.panel-error:not([hidden]) {
+  position: fixed;
+  left: 18px;
+  right: 18px;
+  bottom: 96px;
+  z-index: 30;
   margin: 0;
-  padding: 8px 12px;
-  max-height: 90px;
-  overflow: auto;
+  padding: 9px 34px 9px 14px;
+  border-left: 3px solid #a03134;
+  border-radius: 10px;
   color: #7d1e12;
-  background: #ffeae5;
+  background: #fff0f0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  box-shadow: 0 6px 18px rgb(36 50 71 / 25%);
+  cursor: pointer;
+}
+.panel-error:not([hidden])::after {
+  content: "\00d7";
+  position: absolute;
+  top: 5px;
+  right: 12px;
+  font-size: 16px;
+  opacity: 0.6;
 }
 .panel-shell .settings-window {
   width: 100%;

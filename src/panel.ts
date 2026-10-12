@@ -26,6 +26,7 @@ import {
 } from "./work-presentation";
 import changelogSource from "../CHANGELOG.md?raw";
 import "./panel.css";
+import { terseError } from "./errors";
 
 export type PanelTab = "queue" | "running" | "reviewed" | "settings";
 export type WorkKind = "normal" | "reply" | "mention" | "primary_final";
@@ -219,8 +220,16 @@ export async function mountPanel(app: HTMLElement) {
     setupVisible() ? `${key(route)}:genie` : key(route);
   const setupVisible = () => setupOwner === route.tab && !route.detail;
   const showError = (message: string) => {
-    error.textContent = message;
+    const label = terseError(message);
+    if (label === null) return;
+    error.textContent = label;
+    // The backend sentence stays available to assistive tech and hover.
+    error.title = message;
+    error.setAttribute("aria-description", message);
     error.hidden = false;
+  };
+  error.onclick = () => {
+    error.hidden = true;
   };
   const remember = (opener?: HTMLElement) => {
     if (!opener && navigationOrigin === key(route)) return;
@@ -439,8 +448,7 @@ export async function mountPanel(app: HTMLElement) {
         try {
           await invoke(...command);
         } catch (error) {
-          if (error !== "This operation is not waiting for manual retry.")
-            showError(typeof error === "string" ? error : "Failed");
+          showError(typeof error === "string" ? error : "Failed");
         }
       }
       void monitor.refresh();

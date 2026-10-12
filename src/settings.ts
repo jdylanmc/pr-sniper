@@ -402,7 +402,11 @@ export async function mountSettings(
     !sameResource(globalPreferences(draft), globalPreferences(saved));
   let errorTimer: ReturnType<typeof setTimeout> | undefined;
   const showError = (message: string) => {
-    error.textContent = message;
+    const label = terseError(message, true);
+    if (label === null) return;
+    error.textContent = label;
+    error.title = message;
+    error.setAttribute("aria-description", message);
     error.hidden = false;
     clearTimeout(errorTimer);
     errorTimer = setTimeout(() => (error.hidden = true), 8000);
@@ -3917,3 +3921,4 @@ export async function mountSettings(
   };
 }
 import { isWindows } from "./platform";
+import { terseError } from "./errors";
