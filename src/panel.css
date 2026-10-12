@@ -1490,3 +1490,52 @@ body:has(.panel-shell) {
   stroke-width: 1.4;
   fill: none;
 }
+
+.panel-shell .queue-facts {
+  grid-template-columns: auto 1fr;
+  padding: 10px 0 0;
+  border-top: 1px solid #e1e8ed;
+}
+.panel-shell .queue-facts dd {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.panel-shell .queue-fact-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.panel-shell .queue-fact-time .panel-icon {
+  width: 12px;
+  height: 12px;
+}
+.panel-shell .queue-error {
+  display: block;
+  overflow: hidden;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #f4f6f8;
+  color: var(--panel-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: all;
+}
+.panel-shell [data-queue-details] > summary .panel-icon {
+  width: 18px;
+  height: 18px;
+}
+.panel-shell .queue-resume {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 6px;
+  color: var(--panel-muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+.panel-shell .queue-resume .panel-icon {
+  width: 11px;
+  height: 11px;
+}

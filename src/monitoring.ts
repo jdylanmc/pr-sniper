@@ -53,9 +53,12 @@ interface Health {
       | "failed"
       | "manual_retry";
     attempt_count: number;
+    initial_attempt_at?: number;
     retry_deadline: number;
     next_attempt_at: number | null;
     failure: string | null;
+    resume_cycle?: number;
+    resume_at?: number | null;
   } | null;
 }
 

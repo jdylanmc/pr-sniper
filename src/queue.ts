@@ -71,6 +71,7 @@ export interface QueueItem {
     | "closed"
     | "merged";
   failure_class?: FailureClass | null;
+  resume_at?: number | null;
   summary: string;
   warnings: string[];
   review_keys: string[];
@@ -100,6 +101,16 @@ const failureChips: Record<FailureClass, string> = {
   network: "Network",
   other: "Failed",
 };
+// Compact duration: 45s, 12m, 3h, 2d.
+export function compactDuration(seconds: number) {
+  const value = Math.max(0, Math.round(seconds));
+  if (value < 60) return `${value}s`;
+  if (value < 3600) return `${Math.round(value / 60)}m`;
+  if (value < 86400) return `${Math.round(value / 3600)}h`;
+  return `${Math.round(value / 86400)}d`;
+}
+
+const clockPath = "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18";
 const retryPath = "M20 12a8 8 0 1 1-2.3-5.7M20 4v4h-4";
 const retryIcon = `<svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${retryPath}"/></svg>`;
 const retryable = (item: QueueItem) =>
@@ -279,6 +290,19 @@ export function renderQueue(
         iteration.textContent = item.job.work
           ? `Iteration ${item.job.work.iteration}`
           : "Legacy revision";
+        if (
+          item.state === "failed" &&
+          item.failure_class !== "credentials" &&
+          item.resume_at
+        ) {
+          const resume = document.createElement("span");
+          resume.className = "queue-resume";
+          resume.dataset.queueResume = "";
+          resume.title = "Automatic retry";
+          resume.innerHTML = `<svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${clockPath}"/></svg>`;
+          resume.append(compactDuration(item.resume_at - Date.now() / 1000));
+          state.append(resume);
+        }
         top.append(state, iteration);
         const reference = document.createElement("p");
         reference.className = "queue-reference";

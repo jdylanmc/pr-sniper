@@ -1694,7 +1694,7 @@ export async function mountSettings(
         ? "No models"
         : modelSelect.value && (!model || !modelSelectable(model))
           ? "Model unavailable"
-          : `${catalog.length} models`;
+          : `${catalog.length} model${catalog.length === 1 ? "" : "s"}`;
       describeIntelligence();
     }
     accountSelect.onchange = () => {

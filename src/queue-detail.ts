@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { MonitoringSnapshot } from "./monitoring";
-import { openDestination, type QueueItem } from "./queue";
+import { compactDuration, openDestination, type QueueItem } from "./queue";
 
 export type FixTarget = "ai" | "repository-account";
 
@@ -49,9 +49,21 @@ const causes: Record<string, [string, "fix" | "retry"]> = {
   repository_configuration_required: ["Repository setup", "retry"],
   settings_unavailable: ["Settings unavailable", "retry"],
   review_failed: ["Review failed", "retry"],
+  conversation_admission: ["Reply admission failed", "retry"],
+  provider: ["Provider error", "retry"],
   publication_unresolved: ["Publication unresolved", "retry"],
   action_unresolved: ["Action unresolved", "retry"],
 };
+
+const classLabels = {
+  credentials: "Credentials",
+  permission: "Permission",
+  network: "Network",
+  other: "Failed",
+};
+const clockPath = "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18";
+const MAX_ATTEMPTS = 3;
+const MAX_CYCLES = 5;
 
 const paths = {
   fail: "M12 3 2 20h20L12 3Zm0 6v5m0 3v.5",
@@ -231,7 +243,9 @@ export function renderQueueStatus(
     open.innerHTML = `${icon(paths.github)}<span>Open</span>`;
     actions.append(open);
   }
-  block.append(title, label, actions);
+  block.append(title, label);
+  if (failed) renderFailureFacts(block, item, cause, context);
+  block.append(actions);
   root.append(block);
   if (!failed) {
     const synopsis = (context.snapshot.reviews ?? [])
@@ -247,4 +261,84 @@ export function renderQueueStatus(
   }
 }
 
-export const detailsIcon = icon("M5 12h.01M12 12h.01M19 12h.01");
+function renderFailureFacts(
+  block: HTMLElement,
+  item: QueueItem,
+  cause: string,
+  context: QueueDetailContext,
+) {
+  const now = Date.now() / 1000;
+  const review = failedReviews(item, context.snapshot)[0];
+  const operation =
+    review?.run?.operation ??
+    (context.snapshot.health ?? []).find(
+      (entry) =>
+        entry.repository_id === item.job.configuration_id &&
+        entry.provider_account_id === item.job.account_id &&
+        entry.operation,
+    )?.operation ??
+    null;
+  const health = (context.snapshot.health ?? []).find(
+    (entry) =>
+      entry.repository_id === item.job.configuration_id &&
+      entry.provider_account_id === item.job.account_id,
+  );
+  const code = operation?.failure ?? cause;
+  const klass = classLabels[item.failure_class ?? "other"];
+  const rows: [string, string | HTMLElement][] = [
+    ["Cause", code ? `${klass} / ${code}` : klass],
+  ];
+  if (operation) {
+    const cycle = operation.resume_cycle ?? 0;
+    rows.push([
+      "Attempts",
+      `${operation.attempt_count} of ${MAX_ATTEMPTS}${
+        cycle > 0 || operation.resume_at != null
+          ? ` \u00b7 cycle ${cycle} of ${MAX_CYCLES}`
+          : ""
+      }`,
+    ]);
+  }
+  const last = review
+    ? operation?.initial_attempt_at
+    : (health?.last_attempt ?? operation?.initial_attempt_at);
+  if (last) rows.push(["Last attempt", `${compactDuration(now - last)} ago`]);
+  const next = document.createElement("span");
+  const resume = item.resume_at ?? operation?.resume_at ?? null;
+  if (resume != null && item.failure_class !== "credentials") {
+    next.innerHTML = `${icon(clockPath)}`;
+    next.className = "queue-fact-time";
+    next.append(compactDuration(resume - now));
+  } else {
+    next.textContent =
+      item.failure_class === "credentials" ? "On reconnect" : "Manual";
+  }
+  rows.push(["Next retry", next]);
+  if (review) rows.push(["Agent", review.run?.selection.agent.name ?? ""]);
+  rows.push(["Revision", item.job.head_sha.slice(0, 7)]);
+  rows.push(["Account", item.job.account_login]);
+  const list = document.createElement("dl");
+  list.className = "context-list queue-facts";
+  for (const [label, value] of rows) {
+    if (value === "") continue;
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const description = document.createElement("dd");
+    if (typeof value === "string") description.textContent = value;
+    else description.append(value);
+    list.append(term, description);
+  }
+  block.append(list);
+  const detail = review?.run?.error;
+  if (detail) {
+    const line = document.createElement("code");
+    line.className = "queue-error";
+    line.dataset.queueError = "";
+    line.title = detail;
+    line.tabIndex = 0;
+    line.textContent = detail;
+    block.append(line);
+  }
+}
+
+export const detailsIcon = icon("m6 9 6 6 6-6");
