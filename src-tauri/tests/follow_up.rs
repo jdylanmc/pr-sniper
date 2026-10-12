@@ -142,6 +142,7 @@ fn prepared(origin: &Publication) -> FollowUp {
         input_tokens: 1,
         output_tokens: 1,
         tool_calls: 1,
+        byte_coverage: false,
     });
     run.analysis = Some(run.operation("thread_analysis", 100));
     run.analysis.as_mut().unwrap().state = OperationState::Completed;

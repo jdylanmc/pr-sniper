@@ -327,6 +327,9 @@ pub struct ReviewResult<O = ReviewOutput> {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub tool_calls: u64,
+    /// The host served every byte of every changed file before accepting this result.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub byte_coverage: bool,
 }
 
 pub(crate) fn json_body(text: &str) -> &str {
@@ -629,6 +632,7 @@ impl Events {
             input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
             tool_calls: self.tool_calls,
+            byte_coverage: false,
         })
     }
 }
