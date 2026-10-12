@@ -7,6 +7,43 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- Queue item detail leads with an **Activity** list: one icon row per agent action on the current head (Reviewed, Findings, Commented, Replied, Final, Retried, Approved, Merged), tap for key/value facts. Evidence sentences and the visible **Retry provider evidence** button are gone; Details groups Agent, Result and Provider rows (refresh is an icon in Provider).
+
+### Fixed
+
+- Review tools no longer truncate. The Copilot runtime cut tool results over
+  ~50 KB, so large files and lockfiles reached the Agent partial and reviews
+  ended as **Your input**. `read_changes`, `read_source` and `search_paths`
+  now page in byte chunks (`offset`, `next_offset`, `complete`), and a review
+  is accepted only after every byte of every changed file was served. Limit
+  hits fail the review as retryable. Failed-error detail wraps instead of
+  ellipsizing. Reviews already published are not redone.
+
+### Changed
+
+- PRs PR Sniper approved (confirmed receipt for the current head) leave the
+  Queue and show **Approved** in Reviewed instead of **Ready for you**. Ready
+  now means signed off without approval; a new head voids the approval.
+- A discarded, unpublished batch (review lens edited, or remote comments
+  diverged), or a finished unpublished review whose lens changed, is
+  re-reviewed automatically, once per head and lens, under the
+  current configuration, then published normally; existing discarded batches
+  are picked up on upgrade. Published, moved-head and closed PRs are left
+  alone. **Review again** no longer appears for these.
+- Publications recover on their own. A pending batch whose inline comments
+  differ from the frozen batch (edited, deleted, empty), or whose review lens
+  changed, or that was withdrawn, is deleted when it is the exact owned
+  pending review, then marked **discarded**; the item leaves Needs attention
+  and the review result decides Ready / Your input. Submitted reviews and
+  foreign pending reviews are never touched; nothing is re-created. Transient
+  publication failures auto-resume on the review cooldown table. Retry and
+  Retry all run `publish_review` (reconcile the original) for parked
+  publications and queue it when another publication is running. Chips:
+  **Publish failed**, **Unverified**, Network. Failed rows show the error
+  line. Startup re-observes publications parked by older builds once.
+- Retry and Retry all restart the repository poll and every failed review
+  of the selected PRs, once per command, so all of them enqueue (capacity
+  decides how many run at once).
 - Retry on a repository poll failure retries the poll, never the published review; errors are terse toasts; stale `conversation_admission` poll failures requeue once.
 - Repository admission is now **All pull requests** or an ordered, sortable
   list of **Filtered pull requests** rules (assigned to me, mentioning me,

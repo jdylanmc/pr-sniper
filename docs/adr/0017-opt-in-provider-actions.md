@@ -20,3 +20,4 @@ Agents are reused across repos. Permissions must not travel with them. Approve a
 - No primary => no reply/approve/merge.
 - GitHub lacks an expected-base merge condition. Base move caught by pre/post observation. Confirmed effects retained, not falsely undone.
 - Obsolete grants are not promoted.
+- A confirmed approval of the current head is `Approved`: out of the Queue, into Reviewed. Ready for you means signed off and not approved.

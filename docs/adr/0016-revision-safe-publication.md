@@ -17,6 +17,7 @@ PR heads move. Publishing a stale review, or touching someone else's pending rev
 
 ## Consequences
 
+- Stale or unusable batches are discarded automatically (diverged inline comments, changed lens, withdrawal): only the exact owned, still-pending review is deleted; submitted reviews are immutable receipts; the item leaves Needs attention. No batch is re-created; an unpublished head gets one fresh review per lens (ADR 0008) and publishes from that.
 - Stale head blocks publish. Needs a new revision (ADR 0008).
 - History stable under later library edits.
 - Foreign pending reviews untouched.

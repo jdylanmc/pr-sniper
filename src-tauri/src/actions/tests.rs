@@ -1259,7 +1259,17 @@ fn actual_action_pipeline_freezes_intent_approves_once_and_reuses_final_for_expe
     assert_eq!(approved.state, EffectState::Confirmed);
     assert_eq!(approved.receipt.unwrap().actor_id, "22");
     let snapshot = queue::snapshot(&store, vec![]).unwrap();
-    assert_eq!(snapshot.items[0].state, State::MachineSignedOff);
+    assert_eq!(snapshot.items[0].state, State::Approved);
+    let mut stale = store.load_actions().unwrap();
+    stale.effects[0].receipt.as_mut().unwrap().head = "0".repeat(40);
+    let restored = store.load_actions().unwrap();
+    store.save_actions(&stale).unwrap();
+    assert_eq!(
+        queue::snapshot(&store, vec![]).unwrap().items[0].state,
+        State::MachineSignedOff,
+        "an approval of another head does not retire this one"
+    );
+    store.save_actions(&restored).unwrap();
     assert!(snapshot.items[0]
         .action_status
         .as_ref()

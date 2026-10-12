@@ -214,6 +214,7 @@ fn clear_current_passes(store: &Store, now: i64) {
                 input_tokens: 1,
                 output_tokens: 1,
                 tool_calls: 1,
+                byte_coverage: false,
             }),
             now + 1,
         )

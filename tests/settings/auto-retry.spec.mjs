@@ -65,7 +65,7 @@ test("every parked failure is one Needs attention row with a cause chip, Retry a
         network: "Network",
         permission: "Permission",
         timeout: "Network",
-        permanent: "Failed",
+        permanent: "Unverified",
       }[failure],
     );
     await expect(failed.locator("[data-fix-account]")).toHaveCount(0);

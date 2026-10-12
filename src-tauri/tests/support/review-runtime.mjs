@@ -163,7 +163,7 @@ process.stdin.on("data", (chunk) => {
             toolName,
             arguments: scenario === "read-source-only"
               ? { path: "source.rs", side: "head" }
-              : { paths: [scenario === "tool-invalid-path" ? "missing.rs" : "source.rs"] },
+              : { path: scenario === "tool-invalid-path" ? "missing.rs" : "source.rs", part: "before" },
           });
           break;
         }
@@ -219,8 +219,22 @@ process.stdin.on("data", (chunk) => {
           break;
         }
         if (
+          scenario === "final-full-review" &&
+          request.params.requestId === "final-read" &&
+          JSON.stringify(request.params.result ?? null).includes("answer")
+        ) {
+          event("external_tool.requested", {
+            sessionId,
+            requestId: "final-read-after",
+            toolCallId: "final-read-after",
+            toolName: "read_changes",
+            arguments: { path: "source.rs", part: "after" },
+          });
+          break;
+        }
+        if (
           scenario !== "final-full-review" ||
-          request.params.requestId !== "final-read" ||
+          request.params.requestId !== "final-read-after" ||
           !JSON.stringify(request.params.result ?? null).includes("answer")
         ) {
           event("session.error", { statusCode: 500 });

@@ -17,5 +17,6 @@ Pushes, polls, restarts, and comment activity all re-detect the same PR. Re-revi
 
 - Cheap, deterministic. Duplicate detection is a no-op.
 - Force-push with identical tree still costs one review.
+- A discarded, never-published batch (changed lens, diverged comments), or a completed review of a commenting assignment whose lens changed before any batch existed, earns one automatic re-review of that head per lens: `JobOperation::rereview_lens` holds the lens hash. A published receipt, a moved head or a closed PR never re-reviews. Replaces the old result in the Queue.
 - Stale only on new head/base. Config drift or disabled repo does not stale a completed review.
 - Merged/closed PRs move to Reviewed. Tracked PRs of disabled repos keep light lifecycle refresh.

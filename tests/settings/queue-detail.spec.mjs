@@ -1,5 +1,5 @@
 import { expect, test } from "./fixtures.mjs";
-import { queueFixture, showQueueGroup } from "./queue-fixture.mjs";
+import { queueFixture } from "./queue-fixture.mjs";
 
 test("queue item detail leads with status and one primary action; prose is gone", async ({
   page,
@@ -140,7 +140,14 @@ test("Needs attention rows show a compact retry clock for parked failures", asyn
 }) => {
   await parkedReview(store, {});
   await page.goto("/");
-  await showQueueGroup(page, "attention");
+  await expect(async () => {
+    await page
+      .locator("[data-queue-filter=attention]")
+      .evaluate((element) => element.click());
+    await expect(page.locator('[data-queue-group="attention"]')).toBeVisible({
+      timeout: 1000,
+    });
+  }).toPass();
   const hint = page.locator("[data-queue-resume]");
   await expect(hint).toHaveCount(1);
   await expect(hint).toHaveText(/^2[45]m$/);
@@ -293,6 +300,96 @@ test("Retry on a repository poll failure retries the poll, never the published r
   await expect(page.locator("[data-panel-error]")).toBeHidden();
 });
 
+test("Retry restarts the poll and each failed review, once per command", async ({
+  page,
+  store,
+}) => {
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__commands = [];
+    window.__TAURI_INTERNALS__.invoke = (command, args) => {
+      window.__commands.push(command);
+      return original(command, args);
+    };
+  });
+  const fixture = await queueFixture(store);
+  const run = fixture.state.reviews.find((r) => r.job.number === 1);
+  const now = Math.floor(Date.now() / 1000);
+  Object.assign(run.operation, {
+    state: "manual_retry",
+    failure: "network",
+    attempt_count: 3,
+    initial_attempt_at: now - 12 * 60,
+    next_attempt_at: null,
+  });
+  run.result = null;
+  run.error = "Review retry budget exhausted. Manual retry is required.";
+  fixture.state.publications = fixture.state.publications.filter(
+    (p) => p.review.job.number !== 1,
+  );
+  fixture.state.monitoring = {
+    health: {
+      [run.job.configuration_id]: {
+        repository_id: run.job.configuration_id,
+        name: "example/repo",
+        schedule_key: "fixture",
+        provider_account_id: "22",
+        account_login: "local-operator",
+        provider_repository_id: "100",
+        enabled: true,
+        last_attempt: now - 5 * 60,
+        last_success: null,
+        next_run: 0,
+        schedule_available: true,
+        last_failure: "network",
+        in_flight: false,
+        operation: {
+          id: "health-op",
+          provider: "github",
+          account_id: "22",
+          configuration_id: run.job.configuration_id,
+          repository_id: "100",
+          pull_request_id: null,
+          head_sha: null,
+          trigger_policy: "fixture",
+          operation_type: "repository_poll",
+          state: "manual_retry",
+          attempt_count: 3,
+          initial_attempt_at: now - 20 * 60,
+          retry_deadline: now - 5 * 60,
+          next_attempt_at: null,
+          failure: "network",
+          attempted_mutation: null,
+          pending_review_id: null,
+          owned_thread_id: null,
+          triggering_external_comment_id: null,
+          confirmed_receipt: null,
+        },
+      },
+    },
+  };
+  await store("seed_queue_state", fixture.state);
+  const item = (await store("monitoring_snapshot")).items.find(
+    (entry) => entry.job.number === 1,
+  );
+  expect(item.state).toBe("failed");
+  await store("panel_navigate", {
+    route: { tab: "queue", detail: { type: "item", item_id: item.id } },
+  });
+  await page.goto("/");
+  await page.locator('[data-queue-primary="retry"]').click();
+  await expect
+    .poll(() => page.evaluate(() => window.__commands))
+    .toContain("start_review");
+  const commands = await page.evaluate(() => window.__commands);
+  expect(
+    commands.filter((c) => c === "retry_monitoring_operation"),
+  ).toHaveLength(1);
+  expect(commands.indexOf("retry_monitoring_operation")).toBeLessThan(
+    commands.indexOf("start_review"),
+  );
+});
+
 test("action errors are terse, dismissible toasts that never cover the header", async ({
   page,
   store,
@@ -372,4 +469,125 @@ test("action errors are terse, dismissible toasts that never cover the header", 
   expect(box.y).toBeGreaterThan(viewport.height / 2);
   await toast.click();
   await expect(toast).toBeHidden();
+});
+
+async function parkedPublication(page, store, patch) {
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__commands = [];
+    window.__TAURI_INTERNALS__.invoke = (command, args) => {
+      window.__commands.push([command, args]);
+      return original(command, args);
+    };
+  });
+  const fixture = await queueFixture(store);
+  const batch = fixture.state.publications.find(
+    (p) => p.review.job.number === 3,
+  );
+  Object.assign(batch, patch.publication);
+  Object.assign(batch.operation, patch.operation);
+  await store("seed_queue_state", fixture.state);
+  const item = (await store("monitoring_snapshot")).items.find(
+    (entry) => entry.job.number === 3,
+  );
+  expect(item.state).toBe("failed");
+  await store("panel_navigate", {
+    route: { tab: "queue", detail: { type: "item", item_id: item.id } },
+  });
+  await page.goto("/");
+  return item;
+}
+
+test("Retry on an unverified publication reconciles it, never a plain check", async ({
+  page,
+  store,
+}) => {
+  const now = Math.floor(Date.now() / 1000);
+  const item = await parkedPublication(page, store, {
+    publication: {},
+    operation: {
+      failure: null,
+      attempt_count: 4,
+      initial_attempt_at: now - 600,
+      resume_cycle: 1,
+      resume_at: now + 3600,
+    },
+  });
+  expect(item.failure_cause).toBe("publication_unresolved");
+  await expect(page.locator(".queue-status-label strong")).toHaveText(
+    "Unverified",
+  );
+  await expect(page.locator("[data-queue-error]")).toContainText(
+    "Provider response was lost.",
+  );
+  await expect(
+    page.locator('.queue-facts dt:text-is("Attempts") + dd'),
+  ).toHaveText("4 of 3 \u00b7 cycle 1 of 5");
+  await page.locator('[data-queue-primary="retry"]').click();
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__commands.map(([command]) => command)),
+    )
+    .toContain("publish_review");
+  const commands = await page.evaluate(() => window.__commands);
+  expect(commands).toContainEqual([
+    "publish_review",
+    { reviewOperationId: "review-3" },
+  ]);
+  const names = commands.map(([command]) => command);
+  expect(names).not.toContain("check_now");
+  expect(names).not.toContain("start_review");
+});
+
+test("a failed publication shows Publish failed, its error line and retries by publishing", async ({
+  page,
+  store,
+}) => {
+  await parkedPublication(page, store, {
+    publication: {
+      phase: "pending",
+      uncertain: false,
+      error: "GitHub rejected this review batch.",
+      receipts: [{ review_id: "7", state: "pending", comment_ids: [] }],
+    },
+    operation: { state: "failed", failure: "permanent", attempt_count: 1 },
+  });
+  await expect(page.locator(".queue-status-label strong")).toHaveText(
+    "Publish failed",
+  );
+  await expect(page.locator("[data-queue-error]")).toHaveText(
+    "GitHub rejected this review batch.",
+  );
+  await expect(
+    page.locator(".queue-facts dt:text-is('Next retry') + dd"),
+  ).toHaveText("Manual");
+  await page.locator('[data-queue-primary="retry"]').click();
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__commands.map(([command]) => command)),
+    )
+    .toContain("publish_review");
+  const names = await page.evaluate(() =>
+    window.__commands.map(([command]) => command),
+  );
+  expect(names).not.toContain("check_now");
+});
+
+test("a discarded publication leaves Needs attention", async ({ store }) => {
+  const fixture = await queueFixture(store);
+  const batch = fixture.state.publications.find(
+    (p) => p.review.job.number === 3,
+  );
+  Object.assign(batch, {
+    phase: "discarded",
+    uncertain: false,
+    error: null,
+    receipts: [{ review_id: "7", state: "deleted", comment_ids: [] }],
+  });
+  batch.operation.state = "completed";
+  await store("seed_queue_state", fixture.state);
+  const items = (await store("monitoring_snapshot")).items;
+  const item = items.find((entry) => entry.job.number === 3);
+  expect(item.state).toBe("machine_signed_off");
+  expect(item.failure_cause ?? null).toBeNull();
 });

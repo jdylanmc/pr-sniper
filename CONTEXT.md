@@ -160,7 +160,7 @@ One Review Queue entry bound to account, repository, PR, revision and trigger po
 _Avoid_: Row, list position
 
 **Ready for you**:
-Queue group of **Handoffs** awaiting a human. Holds handoffs and **Needs Attention** items only: no Agent lane. Active and waiting jobs belong in Running (active plus queued only). Completed reviews stay Ready despite config drift or a disabled repository; they go **Stale** only on a new head or base.
+Queue group of PRs where the Agents reviewed the latest head, have nothing to add (no findings, held findings or open concerns) and did **not** approve, because they lack Approve permission: the human decides. A PR the acting account approved (confirmed receipt for the current head) is not Ready: it leaves the Queue and shows **Approved** in Reviewed (**Merged** once merged). A new head voids that approval. No Agent lane. Active and waiting jobs belong in Running (active plus queued only). Completed reviews stay Ready despite config drift or a disabled repository; they go **Stale** only on a new head or base.
 _Avoid_: Agent lane
 
 **Handoff**:

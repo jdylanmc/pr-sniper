@@ -1529,15 +1529,14 @@ body:has(.panel-shell) {
 }
 .panel-shell .queue-error {
   display: block;
-  overflow: hidden;
   padding: 6px 8px;
   border-radius: 6px;
   background: #f4f6f8;
   color: var(--panel-muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
   user-select: all;
 }
 .panel-shell [data-queue-details] > summary .panel-icon {
@@ -1556,4 +1555,135 @@ body:has(.panel-shell) {
 .panel-shell .queue-resume .panel-icon {
   width: 11px;
   height: 11px;
+}
+
+.panel-shell .queue-activity {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+.panel-shell .queue-activity li {
+  border-bottom: 1px solid #e1e8ed;
+}
+.panel-shell .activity-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.panel-shell .activity-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.panel-shell .activity-toggle .panel-icon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--panel-muted);
+}
+.panel-shell .activity-verb {
+  font-weight: 600;
+}
+.panel-shell .activity-agent {
+  color: var(--panel-muted);
+  font-size: 11px;
+}
+.panel-shell .activity-value {
+  flex: 1;
+  font-variant-numeric: tabular-nums;
+}
+.panel-shell .activity-time {
+  color: var(--panel-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.panel-shell .activity-open {
+  display: inline-flex;
+  padding: 4px;
+  border: 0;
+  background: none;
+  color: var(--panel-muted);
+  cursor: pointer;
+}
+.panel-shell .activity-open .panel-icon {
+  width: 14px;
+  height: 14px;
+}
+.panel-shell .activity-facts {
+  padding: 0 0 8px 22px;
+}
+.panel-shell .activity-facts .queue-facts {
+  border-top: 0;
+  padding-top: 0;
+}
+.panel-shell .context-list .copy-value {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  min-height: 0;
+  box-shadow: none;
+  text-align: right;
+  overflow-wrap: anywhere;
+  cursor: copy;
+}
+.panel-shell .context-list .copy-value[data-copied] {
+  color: var(--panel-muted);
+}
+.panel-shell .action-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.panel-shell .action-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f4f6f8;
+  font-size: 11px;
+}
+.panel-shell .action-chip[data-ok="false"] {
+  color: var(--panel-muted);
+}
+.panel-shell .action-chip .panel-icon {
+  width: 12px;
+  height: 12px;
+}
+.panel-shell .action-group-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 10px 0 2px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--panel-muted);
+}
+.panel-shell .action-refresh {
+  display: inline-flex;
+  padding: 2px;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+.panel-shell .action-refresh .panel-icon {
+  width: 14px;
+  height: 14px;
 }

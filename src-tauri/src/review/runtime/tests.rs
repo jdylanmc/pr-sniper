@@ -165,7 +165,9 @@ async fn incomplete_attempt_is_reconstructable_from_diagnostics() {
     )
     .await
     .unwrap_err();
-    assert!(error.message.contains("did not read every changed file"));
+    assert!(error
+        .message
+        .contains("did not read every byte of every changed file"));
     stopped(root.path());
     let records = serde_json::to_string(&store.diagnostics().unwrap()).unwrap();
     assert!(records.contains("incomplete_coverage"), "{records}");
@@ -341,41 +343,242 @@ async fn runtime_truncation_is_not_app_response_limit_rejection() {
         .any(|r| r["event"]["rejected_by_limit"] == true));
 }
 
-#[test]
-fn rejected_large_batch_returns_no_coverage_and_logs_no_source() {
-    struct Large;
-    impl Transport for Large {
-        fn get(&self, path: &str) -> Result<Response, ConnectionError> {
-            let text = "PRIVATE_SOURCE_SENTINEL".repeat(30_000);
-            Ok(Response {
-                status: 200,
-                headers: BTreeMap::new(),
-                body: serde_json::to_vec(&json!({
-                    "sha": path.rsplit('/').next().unwrap(), "size": text.len(),
-                    "encoding": "base64", "content": STANDARD.encode(text),
-                }))
-                .unwrap(),
-            })
+struct Text(String);
+impl Transport for Text {
+    fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+        Ok(Response {
+            status: 200,
+            headers: BTreeMap::new(),
+            body: serde_json::to_vec(&json!({
+                "sha": path.rsplit('/').next().unwrap(), "size": self.0.len(),
+                "encoding": "base64", "content": STANDARD.encode(&self.0),
+            }))
+            .unwrap(),
+        })
+    }
+}
+
+fn text_tools(text: String, patch: Option<String>) -> ReadTools<Text> {
+    let mut context = context(true);
+    context.files[0].patch = patch;
+    ReadTools::new(
+        None,
+        context,
+        Arc::new(GithubClient::new(Text(text))),
+        "example/repo".into(),
+        Arc::new(|| Ok(())),
+    )
+}
+
+fn page(tools: &ReadTools<Text>, tool: &str, args: Value, max_bytes: Option<usize>) -> String {
+    let mut out = String::new();
+    let mut offset = 0;
+    loop {
+        let mut call = args.clone();
+        call["offset"] = json!(offset);
+        if let Some(max) = max_bytes {
+            call["max_bytes"] = json!(max);
+        }
+        let value = tools.execute(tool, call).unwrap();
+        assert!(value.to_string().len() <= MAX_TOOL_BYTES);
+        assert_eq!(value["offset"], offset);
+        out.push_str(value["content"].as_str().unwrap());
+        match value["next_offset"].as_u64() {
+            Some(next) => {
+                assert_eq!(value["complete"], false);
+                assert!(next as usize > offset);
+                offset = next as usize;
+            }
+            None => {
+                assert_eq!(value["complete"], true);
+                assert_eq!(value["total_bytes"], out.len());
+                return out;
+            }
         }
     }
-    let root = tempfile::tempdir().unwrap();
-    let tools = ReadTools {
-        diagnostics: Some(diagnostic_trace(root.path().join("profile"))),
-        calls: AtomicU64::new(0),
-        context: context(true),
-        client: Arc::new(GithubClient::new(Large)),
-        name: "example/repo".into(),
-        read: Mutex::new(BTreeSet::new()),
-        gate: Arc::new(|| Ok(())),
-        source_failure: Mutex::new(None),
-    };
+}
+
+#[test]
+fn chunked_reads_reassemble_big_and_multibyte_content_byte_identically() {
+    // Quotes, control characters and 2/3/4-byte characters stress escaping and boundaries.
+    let unit = "{\"é\":\"日本語𝄞\\n\"}\u{1}\n";
+    let text = unit.repeat(40_000);
+    assert!(text.len() > 1_000_000);
+    let tools = text_tools(text.clone(), Some(text.clone()));
+    for max in [
+        None,
+        Some(1),
+        Some(3),
+        Some(5),
+        Some(7_777),
+        Some(usize::MAX / 2),
+    ] {
+        // Tiny windows would need millions of calls; the small sample covers boundaries.
+        let sample = if matches!(max, Some(1 | 3 | 5)) {
+            let small = unit.repeat(20);
+            let tools = text_tools(small.clone(), None);
+            assert_eq!(
+                page(
+                    &tools,
+                    "read_changes",
+                    json!({"path":"source.rs","part":"after"}),
+                    max
+                ),
+                small
+            );
+            continue;
+        } else {
+            &text
+        };
+        for part in ["after", "before", "patch"] {
+            assert_eq!(
+                page(
+                    &tools,
+                    "read_changes",
+                    json!({"path":"source.rs","part":part}),
+                    max
+                ),
+                *sample
+            );
+        }
+        assert_eq!(
+            page(
+                &tools,
+                "read_source",
+                json!({"side":"head","path":"source.rs"}),
+                max
+            ),
+            *sample
+        );
+    }
+}
+
+#[test]
+fn bad_offsets_are_rejected_and_search_is_paged_losslessly() {
+    let tools = text_tools("é".repeat(10), None);
+    let args = |offset: u64| json!({"path":"source.rs","part":"after","offset":offset});
+    assert!(tools.execute("read_changes", args(1)).is_err());
+    assert!(tools.execute("read_changes", args(21)).is_err());
+    assert_eq!(
+        tools.execute("read_changes", args(20)).unwrap()["complete"],
+        true
+    );
     assert!(tools
-        .execute(
-            "read_changes",
-            json!({"paths":["source.rs"],"prompt":"PRIVATE_PROMPT"})
-        )
+        .execute("read_changes", json!({"path":"source.rs","part":"patch"}))
         .is_err());
+    let mut context = context(true);
+    for i in 0..3_000 {
+        context.head.insert(
+            format!("dir/file-{i:05}-{}", "x".repeat(60)),
+            context.head["source.rs"].clone(),
+        );
+    }
+    let tools = ReadTools::new(
+        None,
+        context,
+        Arc::new(GithubClient::new(Synthetic)),
+        "example/repo".into(),
+        Arc::new(|| Ok(())),
+    );
+    let mut seen = vec![];
+    let mut offset = 0;
+    loop {
+        let value = tools
+            .execute("search_paths", json!({"query":"dir/","offset":offset}))
+            .unwrap();
+        assert!(value.to_string().len() <= MAX_TOOL_BYTES);
+        seen.extend(
+            value["paths"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| p.as_str().unwrap().to_string()),
+        );
+        match value["next_offset"].as_u64() {
+            Some(next) => offset = next as usize,
+            None => break,
+        }
+    }
+    assert_eq!(seen.len(), 3_000);
+    assert!(seen.windows(2).all(|w| w[0] < w[1]));
+}
+
+#[test]
+fn coverage_requires_every_byte_of_every_part() {
+    let text = "line of source\n".repeat(5_000);
+    let tools = text_tools(text.clone(), Some("@@ patch @@\n".repeat(100)));
+    let read = |part: &str, offset: usize, max: usize| {
+        tools
+            .execute(
+                "read_changes",
+                json!({"path":"source.rs","part":part,"offset":offset,"max_bytes":max}),
+            )
+            .unwrap()
+    };
+    let first = read("after", 0, 1_000);
+    assert_eq!(first["other_parts_unread"], json!(["patch", "before"]));
+    // Skipping a gap, repeating a range and reading read_source never complete a file.
+    read("after", 2_000, 1_000);
+    read("after", 2_000, 1_000);
+    tools
+        .execute("read_source", json!({"side":"head","path":"source.rs"}))
+        .unwrap();
     assert!(tools.read.lock().unwrap().is_empty());
+    page(
+        &tools,
+        "read_changes",
+        json!({"path":"source.rs","part":"after"}),
+        None,
+    );
+    page(
+        &tools,
+        "read_changes",
+        json!({"path":"source.rs","part":"before"}),
+        None,
+    );
+    assert!(tools.read.lock().unwrap().is_empty());
+    page(
+        &tools,
+        "read_changes",
+        json!({"path":"source.rs","part":"patch"}),
+        None,
+    );
+    assert_eq!(tools.read.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn partial_reads_do_not_cover_even_when_every_part_was_started() {
+    let tools = text_tools("x".repeat(100_000), Some("p".repeat(100)));
+    for part in ["patch", "before", "after"] {
+        let value = tools
+            .execute("read_changes", json!({"path":"source.rs","part":part}))
+            .unwrap();
+        assert!(value["next_offset"].is_null() == (part == "patch"));
+    }
+    assert!(tools.read.lock().unwrap().is_empty());
+}
+
+#[test]
+fn limit_hits_are_retryable_failures_never_review_decisions() {
+    let root = tempfile::tempdir().unwrap();
+    let mut context = context(true);
+    let long = format!("dir/{}", "x".repeat(MAX_TOOL_BYTES));
+    context.head.insert(long, context.head["source.rs"].clone());
+    let tools = ReadTools::new(
+        Some(diagnostic_trace(root.path().join("profile"))),
+        context,
+        Arc::new(GithubClient::new(Synthetic)),
+        "example/repo".into(),
+        Arc::new(|| Ok(())),
+    );
+    assert!(tools
+        .execute("search_paths", json!({"query":"dir/"}))
+        .is_err());
+    let failure = tools.limit_failure.lock().unwrap().take().unwrap();
+    assert!(matches!(
+        failure.kind,
+        crate::monitoring::OperationFailure::Provider
+    ));
     let records = diagnostic_records(root.path());
     let tool = records
         .iter()
@@ -383,12 +586,9 @@ fn rejected_large_batch_returns_no_coverage_and_logs_no_source() {
         .unwrap();
     assert_eq!(tool["event"]["failure"], "response_limit");
     assert_eq!(tool["event"]["rejected_by_limit"], true);
-    assert_eq!(tool["event"]["response_limit_bytes"], 1_048_576);
+    assert_eq!(tool["event"]["response_limit_bytes"], MAX_TOOL_BYTES);
     assert_eq!(tool["event"]["returned"]["count"], 0);
     assert_eq!(tool["event"]["covered"]["count"], 0);
-    let text = serde_json::to_string(&records).unwrap();
-    assert!(!text.contains("PRIVATE_SOURCE_SENTINEL"));
-    assert!(!text.contains("PRIVATE_PROMPT"));
 }
 
 #[tokio::test]
@@ -499,16 +699,13 @@ async fn bundled_runtime_intelligence_offline() {
                 (Some("low"), Some("long_context")),
             ] {
                 let request = request(false);
-                let tools = Arc::new(ReadTools {
-                    diagnostics: None,
-                    calls: AtomicU64::new(0),
-                    context: request.context,
-                    client: request.client,
-                    name: request.repository_name,
-                    read: Mutex::new(BTreeSet::new()),
-                    source_failure: Mutex::new(None),
-                    gate: request.local_gate,
-                });
+                let tools = Arc::new(ReadTools::new(
+                    None,
+                    request.context,
+                    request.client,
+                    request.repository_name,
+                    request.local_gate,
+                ));
                 let mut selection = selection();
                 selection.agent.model = "gpt-5".into();
                 selection.agent.intelligence = Some(crate::storage::AgentIntelligence {
@@ -550,23 +747,22 @@ async fn bundled_runtime_intelligence_offline() {
 #[test]
 fn tools_read_immutable_content_and_reject_arbitrary_paths_or_execution() {
     let request = request(true);
-    let tools = Arc::new(ReadTools {
-        diagnostics: None,
-        calls: AtomicU64::new(0),
-        context: request.context,
-        client: request.client,
-        name: request.repository_name,
-        read: Mutex::new(BTreeSet::new()),
-        gate: Arc::new(|| Ok(())),
-        source_failure: Mutex::new(None),
-    });
+    let tools = Arc::new(ReadTools::new(
+        None,
+        request.context,
+        request.client,
+        request.repository_name,
+        Arc::new(|| Ok(())),
+    ));
     let result = tools
-        .execute("read_changes", json!({"paths":["source.rs"]}))
+        .execute("read_changes", json!({"path":"source.rs","part":"after"}))
         .unwrap();
-    assert_eq!(
-        result[0]["after"]["text"],
-        "pub fn answer() -> u32 { 42 }\n"
-    );
+    assert_eq!(result["content"], "pub fn answer() -> u32 { 42 }\n");
+    assert_eq!(result["complete"], true);
+    assert!(tools.read.lock().unwrap().is_empty());
+    tools
+        .execute("read_changes", json!({"path":"source.rs","part":"before"}))
+        .unwrap();
     assert_eq!(tools.read.lock().unwrap().len(), 1);
     assert!(tools
         .execute(

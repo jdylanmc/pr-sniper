@@ -104,7 +104,7 @@ export interface MonitoringSnapshot {
   follow_ups?: FollowUpCandidate[];
 }
 
-interface PublicationCandidate {
+export interface PublicationCandidate {
   local_only?: boolean;
   review_operation_id: string;
   automatic: boolean;
@@ -118,6 +118,7 @@ interface PublicationCandidate {
       | "stale"
       | "stale_after_publication"
       | "stopped"
+      | "discarded"
       | "unresolved";
     operation: NonNullable<Health["operation"]>;
     error: string | null;
@@ -520,7 +521,7 @@ export function renderMonitoring(
           );
           if (jobDetail.kind === "primary_final" && item?.action_status) {
             const context = document.createElement("h2");
-            context.textContent = "PR-level provider evidence and recovery";
+            context.textContent = "Provider";
             evidence.append(context);
             renderActions(
               evidence,
@@ -685,10 +686,12 @@ export function renderMonitoring(
       ? `Publication: ${publication.phase.replaceAll("_", " ")}; ${publication.operation.state}; attempt ${publication.operation.attempt_count}; deadline ${time(publication.operation.retry_deadline)}; prior ${publication.history.length}`
       : `Publication: ${state.automatic ? "automatic" : "unconfirmed"}`;
     row.append(info);
-    if (state.blocked || publication?.error) {
+    // A discarded batch is replaced by a fresh review; its refusal is history.
+    const refusal = publication?.phase === "discarded" ? null : state.blocked;
+    if (refusal || publication?.error) {
       const error = document.createElement("p");
       error.className = "review-failure";
-      error.textContent = [state.blocked, publication?.error]
+      error.textContent = [refusal, publication?.error]
         .filter(Boolean)
         .join(" ");
       row.append(error);
@@ -711,6 +714,7 @@ export function renderMonitoring(
     }
     const terminal =
       publication?.phase === "stale" ||
+      publication?.phase === "discarded" ||
       (publication?.operation.state === "completed" &&
         ["published", "stale_after_publication"].includes(publication.phase)) ||
       receipt?.state === "deleted";
@@ -757,7 +761,6 @@ export function renderMonitoring(
     }
     if (
       (!candidate.run?.result?.reviewed_base_sha ||
-        state.blocked ||
         publication?.phase === "stale") &&
       !candidate.blocked
     ) {

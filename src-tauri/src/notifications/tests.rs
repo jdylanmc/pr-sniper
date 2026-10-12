@@ -417,6 +417,7 @@ fn only_operator_attention_maps_to_alerts_and_routine_author_waits_do_not() {
                 job: job(),
                 state,
                 failure_class: None,
+                failure_cause: None,
                 resume_at: None,
                 summary: "",
                 review_keys: vec![],

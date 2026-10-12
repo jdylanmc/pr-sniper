@@ -24,6 +24,7 @@ pub enum State {
     AwaitingPublication,
     WaitingForAuthor,
     MachineSignedOff,
+    Approved,
     Closed,
     Merged,
 }
@@ -37,13 +38,14 @@ impl State {
             Self::Reviewing | Self::Queued | Self::AwaitingPublication => 3,
             Self::WaitingForAuthor => 4,
             Self::Stale => 5,
-            Self::Closed | Self::Merged => 6,
+            Self::Approved | Self::Closed | Self::Merged => 6,
         }
     }
 
-    fn summary(self) -> &'static str {
+    pub(crate) fn summary(self) -> &'static str {
         match self {
             Self::MachineSignedOff => "Automated review completed. Ready for your final review and merge decision on GitHub; this is not human approval or a merge.",
+            Self::Approved => "PR Sniper approved the current revision on GitHub. Nothing is waiting on you in the Queue.",
             Self::WaitingForAuthor => "Findings or questions were published. The PR author needs to respond or update the change; it is not machine-cleared.",
             Self::WaitingForHuman => "Your attention is needed. Inspect the local findings or conversation; do not assume the PR author has been notified.",
             Self::ConfirmationRequired => "Your confirmation is required before review or publication can proceed. Open evidence and actions.",
@@ -69,6 +71,8 @@ pub struct Item {
     pub state: State,
     // Set only for failed items; the Queue shows credential failures only.
     pub failure_class: Option<monitoring::FailureClass>,
+    // Typed publication cause of a failed item: `publication_failed` or `publication_unresolved`.
+    pub failure_cause: Option<&'static str>,
     // Earliest automatic resume of a parked failure; absent once it waits for a human.
     pub resume_at: Option<i64>,
     pub summary: &'static str,
@@ -162,6 +166,29 @@ fn obsolete(job: &QueueJob) -> bool {
     )
 }
 
+fn publication_cause<'a>(
+    publications: &'a [publication::host::Candidate],
+    id: &str,
+    current: impl Fn(&'a QueueJob) -> &'a QueueJob,
+) -> Option<&'static str> {
+    let own: Vec<_> = publications
+        .iter()
+        .filter_map(|p| p.publication.as_ref())
+        .filter(|p| p.phase != publication::Phase::Discarded)
+        .filter(|p| item_id(current(&p.review.job)) == id)
+        .collect();
+    if own.iter().any(|p| p.uncertain) {
+        Some("publication_unresolved")
+    } else if own
+        .iter()
+        .any(|p| failed(&p.operation) || p.error.is_some())
+    {
+        Some("publication_failed")
+    } else {
+        None
+    }
+}
+
 fn failed(operation: &monitoring::JobOperation) -> bool {
     matches!(
         operation.state,
@@ -180,7 +207,13 @@ fn review_state(
             .iter()
             .find(|p| p.review_operation_id == run.operation.id)
     });
-    let publication = batch.and_then(|p| p.publication.as_ref());
+    // A discarded batch leaves no obligation: the review result decides alone.
+    let discarded = batch
+        .and_then(|p| p.publication.as_ref())
+        .is_some_and(|p| p.phase == publication::Phase::Discarded);
+    let publication = batch
+        .and_then(|p| p.publication.as_ref())
+        .filter(|p| p.phase != publication::Phase::Discarded);
     let published = publication.is_some_and(|p| {
         p.receipts
             .last()
@@ -254,6 +287,7 @@ fn review_state(
                 .find(|a| a.id == candidate.assignment_id)
         });
     if assignment.is_some()
+        && !discarded
         && publication.is_none()
         && batch
             .and_then(|p| p.blocked.as_deref())
@@ -262,7 +296,7 @@ fn review_state(
         return State::Failed;
     }
     let comments = assignment.is_some_and(|a| a.comment);
-    if comments || publication.is_some() {
+    if !discarded && (comments || publication.is_some()) {
         // A recorded publication outlives later configuration edits.
         if publication.is_none() && batch.is_some_and(|p| p.blocked.is_some()) {
             return State::Failed;
@@ -425,8 +459,17 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
         let resume_at = reviews
             .iter()
             .filter_map(|r| r.run.as_ref())
-            .filter(|r| r.operation.parked())
-            .filter_map(|r| r.operation.resume_at)
+            .map(|r| &r.operation)
+            .chain(
+                snapshot
+                    .publications
+                    .iter()
+                    .filter_map(|p| p.publication.as_ref())
+                    .filter(|p| item_id(current(&p.review.job)) == id)
+                    .map(|p| &p.operation),
+            )
+            .filter(|operation| operation.parked())
+            .filter_map(|operation| operation.resume_at)
             .min();
         failures.extend(
             snapshot
@@ -652,6 +695,11 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             monitoring::WAITING_MERGED => State::Merged,
             _ => states.into_iter().min().unwrap_or(State::Queued),
         };
+        let failure_cause = if state == State::Failed {
+            publication_cause(&snapshot.publications, &id, current)
+        } else {
+            None
+        };
         items.push(Item {
             action_status: None,
             feedback,
@@ -669,6 +717,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             } else {
                 None
             },
+            failure_cause,
             failure_class: (state == State::Failed).then(|| {
                 failures
                     .into_iter()

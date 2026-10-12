@@ -79,7 +79,7 @@ test("persisted queue prioritizes operator handoffs, not author waits or local-o
     exact: true,
   });
   await expect(failed).toHaveAttribute("data-state", "failed");
-  await expect(failed).toContainText("Failed");
+  await expect(failed).toContainText("Unverified");
   await expect(failed).not.toContainText("Ready for your final review");
   await expect(
     page.getByRole("button", { name: /^(Approve|Merge)/ }),

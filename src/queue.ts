@@ -68,9 +68,11 @@ export interface QueueItem {
     | "failed"
     | "stale"
     | "stale_after_publication"
+    | "approved"
     | "closed"
     | "merged";
   failure_class?: FailureClass | null;
+  failure_cause?: "publication_failed" | "publication_unresolved" | null;
   resume_at?: number | null;
   summary: string;
   warnings: string[];
@@ -89,6 +91,7 @@ const labels: Record<QueueItem["state"], string> = {
   failed: "Failed",
   stale: "Stale review",
   stale_after_publication: "Stale after publication",
+  approved: "Approved",
   closed: "Closed on GitHub",
   merged: "Merged on GitHub",
 };
@@ -101,6 +104,15 @@ const failureChips: Record<FailureClass, string> = {
   network: "Network",
   other: "Failed",
 };
+// Access and network classes keep their chip; otherwise the publication cause.
+export function failureChip(item: QueueItem) {
+  const failureClass = item.failure_class ?? "other";
+  if (failureClass === "other") {
+    if (item.failure_cause === "publication_unresolved") return "Unverified";
+    if (item.failure_cause === "publication_failed") return "Publish failed";
+  }
+  return failureChips[failureClass];
+}
 // Compact duration: 45s, 12m, 3h, 2d.
 export function compactDuration(seconds: number) {
   const value = Math.max(0, Math.round(seconds));
@@ -146,6 +158,7 @@ export function humanQueue(items: QueueItem[]): QueueItem[] {
           "reviewing",
           "awaiting_publication",
           "waiting_for_author",
+          "approved",
           "closed",
           "merged",
         ].includes(item.state),
@@ -270,7 +283,7 @@ export function renderQueue(
         options.compact && item.state === "machine_signed_off"
           ? "Ready for you"
           : item.state === "failed"
-            ? failureChips[item.failure_class ?? "other"]
+            ? failureChip(item)
             : labels[item.state];
       const heading = document.createElement("h3");
       heading.textContent = options.compact

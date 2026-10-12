@@ -116,14 +116,7 @@ pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
         if item.state == queue::State::Merged && item.action_status.is_some() {
             category = Some(Category::Merged);
         }
-        if item.state == queue::State::MachineSignedOff
-            && item.action_status.as_ref().is_some_and(|s| {
-                s.effects.iter().any(|e| {
-                    e.action == crate::github::actions::Action::Approve
-                        && e.state == crate::actions::EffectState::Confirmed
-                })
-            })
-        {
+        if item.state == queue::State::Approved {
             category = Some(Category::Approved);
         }
         if item.state != queue::State::Merged

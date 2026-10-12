@@ -23,11 +23,30 @@ pub trait MutationTransport: Transport {
 
 impl<T: Transport> GithubClient<T> {
     pub fn reconcile_publication(&self, run: &Publication) -> Result<Option<Receipt>, Failure> {
+        let Some(receipt) = self.find_review(run)? else {
+            return Ok(None);
+        };
+        match self.verify_comments(run, receipt) {
+            Ok(receipt) => Ok(Some(receipt)),
+            Err(Verify::Mismatch(_, failure) | Verify::Failed(failure)) => Err(failure),
+        }
+    }
+
+    /// The owned review whose inline comments differ from the frozen batch, if
+    /// that is the only reason it cannot be reconciled. Typed, never message-based.
+    pub fn divergent_publication(&self, run: &Publication) -> Result<Option<Receipt>, Failure> {
+        let Some(receipt) = self.find_review(run)? else {
+            return Ok(None);
+        };
+        match self.verify_comments(run, receipt) {
+            Err(Verify::Mismatch(receipt, _)) => Ok(Some(receipt)),
+            Ok(_) => Ok(None),
+            Err(Verify::Failed(failure)) => Err(failure),
+        }
+    }
+
+    fn find_review(&self, run: &Publication) -> Result<Option<Receipt>, Failure> {
         let path = review_path(run)?;
-        let batch = run
-            .batch
-            .as_ref()
-            .ok_or_else(|| Failure::permanent("Publication has no frozen batch."))?;
         let reviews = self.pages(&format!("{path}?per_page=100&page=1"))?;
         let mut matched = None;
         let mut ids = BTreeSet::new();
@@ -55,18 +74,27 @@ impl<T: Transport> GithubClient<T> {
                 foreign_pending = true;
             }
         }
-        let Some(mut receipt) = matched else {
-            if foreign_pending {
-                return Err(Failure::permanent("This GitHub account already has another pending review. Finish or discard it on GitHub; PR Sniper will not alter it."));
-            }
-            return Ok(None);
-        };
+        if matched.is_none() && foreign_pending {
+            return Err(Failure::permanent("This GitHub account already has another pending review. Finish or discard it on GitHub; PR Sniper will not alter it."));
+        }
+        Ok(matched)
+    }
+
+    fn verify_comments(&self, run: &Publication, mut receipt: Receipt) -> Result<Receipt, Verify> {
+        let path = review_path(run)?;
+        let batch = run
+            .batch
+            .as_ref()
+            .ok_or_else(|| Failure::permanent("Publication has no frozen batch."))?;
         let comments = self.pages(&format!(
             "{path}/{}/comments?per_page=100&page=1",
             receipt.review_id
         ))?;
+        let mismatch = |receipt: &Receipt, field| {
+            Verify::Mismatch(receipt.clone(), comment_mismatch(&receipt.state, field))
+        };
         if comments.len() != batch.comments.len() {
-            return Err(comment_mismatch(&receipt.state, "count"));
+            return Err(mismatch(&receipt, "count"));
         }
         let positions = if receipt.state == RemoteState::Pending
             && batch.comments.iter().any(|c| c.diff_position.is_none())
@@ -95,23 +123,24 @@ impl<T: Transport> GithubClient<T> {
                 ),
             ] {
                 if !matches {
-                    return Err(comment_mismatch(&receipt.state, field));
+                    return Err(mismatch(&receipt, field));
                 }
             }
             // Finding markers make bodies unique even at the same diff location.
             let index = unmatched
                 .iter()
                 .position(|expected| comment["body"].as_str() == Some(&expected.body))
-                .ok_or_else(|| comment_mismatch(&receipt.state, "body"))?;
+                .ok_or_else(|| mismatch(&receipt, "body"))?;
             let expected = &unmatched[index];
             if comment["path"].as_str() != Some(&expected.path) {
-                return Err(comment_mismatch(&receipt.state, "path"));
+                return Err(mismatch(&receipt, "path"));
             }
-            verify_location(&comment, expected, &receipt.state, &positions)?;
+            verify_location(&comment, expected, &receipt.state, &positions)
+                .map_err(|failure| Verify::Mismatch(receipt.clone(), failure))?;
             unmatched.remove(index);
         }
         receipt.comment_ids = comment_ids.into_iter().collect();
-        Ok(Some(receipt))
+        Ok(receipt)
     }
 
     fn pending_positions(
@@ -174,6 +203,18 @@ impl<T: Transport> GithubClient<T> {
             }
         }
         Ok(positions)
+    }
+}
+
+// Inline comments that provably differ, apart from reads that merely failed.
+enum Verify {
+    Mismatch(Receipt, Failure),
+    Failed(Failure),
+}
+
+impl<E: Into<Failure>> From<E> for Verify {
+    fn from(error: E) -> Self {
+        Self::Failed(error.into())
     }
 }
 

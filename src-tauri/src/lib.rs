@@ -1474,6 +1474,7 @@ fn auto_resume_parked(app: &tauri::AppHandle) -> Result<(), String> {
         .lock()
         .map_err(|_| "Monitoring is unavailable.")?
         .auto_resume(&store, &accounts, now_seconds()?)?;
+    review::rereview::enqueue_discarded(&store, now_seconds()?)?;
     Ok(())
 }
 

@@ -1,5 +1,6 @@
 pub(crate) mod diagnostics;
 pub(crate) mod host;
+pub(crate) mod rereview;
 pub(crate) mod runtime;
 
 use crate::{
@@ -73,6 +74,23 @@ impl Selection {
                 (None, None) => true,
                 _ => false,
             }
+    }
+
+    /// Stable id of the review lens (the fields a lens change discards a batch for).
+    pub fn lens_hash(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let lens = serde_json::json!([
+            self.agent,
+            self.doctrine,
+            self.preset,
+            self.policy.prompt,
+            self.policy.adapter
+        ]);
+        Sha256::digest(lens.to_string().as_bytes())
+            .iter()
+            .take(8)
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
     }
 
     pub fn resolve(
@@ -327,6 +345,9 @@ pub struct ReviewResult<O = ReviewOutput> {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub tool_calls: u64,
+    /// The host served every byte of every changed file before accepting this result.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub byte_coverage: bool,
 }
 
 pub(crate) fn json_body(text: &str) -> &str {
@@ -629,6 +650,7 @@ impl Events {
             input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
             tool_calls: self.tool_calls,
+            byte_coverage: false,
         })
     }
 }

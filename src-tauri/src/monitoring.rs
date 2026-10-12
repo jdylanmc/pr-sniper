@@ -130,6 +130,9 @@ pub struct JobOperation {
     pub owned_thread_id: Option<String>,
     pub triggering_external_comment_id: Option<String>,
     pub confirmed_receipt: Option<String>,
+    /// Lens hash an automatic re-review of a discarded batch ran under; the once-per-lens marker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rereview_lens: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2990,6 +2993,7 @@ fn start_poll_operation(
         owned_thread_id: None,
         triggering_external_comment_id: None,
         confirmed_receipt: None,
+        rereview_lens: None,
     });
 }
 
@@ -3038,7 +3042,7 @@ impl JobOperation {
     }
 
     /// Fresh attempt window with no failure history carried over.
-    fn requeue_fresh(&mut self, now: i64) {
+    pub(crate) fn requeue_fresh(&mut self, now: i64) {
         self.state = OperationState::Queued;
         self.attempt_count = 0;
         self.initial_attempt_at = now;
@@ -3193,6 +3197,7 @@ impl JobOperation {
             owned_thread_id: None,
             triggering_external_comment_id: None,
             confirmed_receipt: None,
+            rereview_lens: None,
         }
     }
 }
@@ -3641,6 +3646,21 @@ impl Monitor {
         }
         if changed {
             store.save_reviews(&reviews)?;
+        }
+        // Publications resume through the same reconcile path as a manual
+        // retry: the original batch is observed, never replaced.
+        let mut publications = store.load_publications()?;
+        let mut publications_changed = false;
+        for publication in &mut publications {
+            let account = reconnected.contains(&publication.review.job.account_id);
+            if publication.operation.auto_resume(account, now) {
+                publication.error = None;
+                resumed += 1;
+                publications_changed = true;
+            }
+        }
+        if publications_changed {
+            store.save_publications(&publications)?;
         }
         let previous = self.state.clone();
         let mut health_changed = false;

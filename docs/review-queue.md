@@ -6,9 +6,9 @@ Reference for Queue states, evidence, local Agent reviews, retry/parking and not
 
 - Handoff states: **Ready for your final review**, **Waiting for PR author**, **Needs your input**.
 - Distinct, never merged: queued/reviewing, pending publication, failed, stale. No user-facing Blocked state ([ADR-0007](adr/0007-retry-then-park-single-inbox.md)).
-- Machine sign-off is not approval. Human decides approve and merge.
+- Machine sign-off is not approval. Ready for you = signed off and not approved by PR Sniper. A confirmed approval of the current head (`State::Approved`) leaves the Queue for Reviewed (**Approved**); a new head voids it. Unsettled or failed approval stays in Needs attention.
 - Retry: transient failures retry with backoff, 3 failed attempts, then **park** (`MAX_FAILED_ATTEMPTS`, `RETRY_WINDOW_SECONDS` = 15 min in `src-tauri/src/monitoring.rs`). Credential, permission and permanent failures park immediately.
-- Auto-resume: a parked Network/Provider/Timeout/RateLimited/Permission failure gets a fresh 3-attempt budget after a cooldown of 30m, 1h, 2h, 4h, 8h (`RESUME_COOLDOWNS_SECONDS`; `resume_cycle`, `resume_at` on the operation). After five cycles it waits for a human. Credential failures resume when the GitHub or Copilot account connects again. Explicit Retry starts a new operation (cycle 0): a poll failure retries the repository poll; a review restarts only if its own run failed with nothing published for that revision. Permanent failures never resume. Superseded, closed and merged work is never resumed.
+- Auto-resume: a parked Network/Provider/Timeout/RateLimited/Permission failure gets a fresh 3-attempt budget after a cooldown of 30m, 1h, 2h, 4h, 8h (`RESUME_COOLDOWNS_SECONDS`; `resume_cycle`, `resume_at` on the operation). After five cycles it waits for a human. Credential failures resume when the GitHub or Copilot account connects again. Explicit Retry starts a new operation (cycle 0): a poll failure retries the repository poll; a review restarts only if its own run failed with nothing published for that revision. Publication operations resume the same way (reconcile the original). Permanent failures never resume. Superseded, closed and merged work is never resumed.
 - Parked failures live in Queue > **Needs attention**: cause chip, **Fix** (credentials → Accounts) or **Retry**, **Retry all** pill. A clock + time shows the next automatic retry. Failed detail lists Cause, Attempts, Last attempt, Next retry, Agent, Revision, Account and the raw error. Running holds active + queued only.
 - Stale only on new head or base. Completed reviews stay Ready despite config drift or a disabled repo. Merged/closed PRs move to Reviewed; tracked PRs of disabled repos keep a light lifecycle refresh.
 - Queue identity is derived from stored tracking, not position.
@@ -16,6 +16,7 @@ Reference for Queue states, evidence, local Agent reviews, retry/parking and not
 ## Evidence and actions
 
 - Evidence: ordered changed-file guide, findings, conversations, acting account, receipts, mutation recovery. Human comments and reviews stay on GitHub.
+- Item detail: **Activity** rows under the status block (Reviewed · files, Findings, Commented · inline, Replied, Final, Retried · Nx, Approved · head, Merged); tap expands key/value facts (IDs copy on tap), GitHub arrow opens the PR. Collapsed Details: Agent / Result / Provider key/value groups. CI is not in the snapshot, so no CI row.
 - Gated start, confirm and retry controls. **Open Settings**, **Open Diagnostics**, schedule recovery stay available.
 - Selection persists in private `state/queue-selection.json` (isolated profiles too). Unavailable identity: missing-destination message.
 - Open-PR and file links resolve from saved native queue identity. File links open the anchor in the current PR diff (deleted/renamed ok). They are not the immutable saved review: compare the displayed reviewed head with GitHub's current revision, browser account and merge requirements.
@@ -25,13 +26,14 @@ Reference for Queue states, evidence, local Agent reviews, retry/parking and not
 
 - Agent = Copilot account + returned model + prompt + ordered 0..many Doctrines, assigned per repo. **Agent reviews** lists detected revisions. Pre-review detections stay as history until the next scan.
 - ONE review per head SHA ([ADR-0008](adr/0008-one-review-per-head-sha.md)). A new revision permits another review. Same revision: Agent only replies to new comments. Agent context = description + changed files + all comments + prior feedback.
+- Discarded unpublished batch (changed lens or diverged comments), or a completed unbatched review on a commenting assignment whose lens changed: `review::rereview::enqueue_discarded` queues one fresh review of the same head under the current lens on the 5s tick (also after upgrade). Item shows Queued/Reviewing; the old result is superseded. Once per head + lens hash; never when a receipt exists, the head moved or the PR closed.
 - Requests persist before capacity wait. Unexecuted initial requests may wait over 15 min and still get a first budget.
 - **Cancel review** stops inference; **Retry review** is explicit. Changing account, Agent, prompt, Doctrine, repo or effective inputs invalidates affected in-flight work.
 - Pause: **Pause automation** (Queue or Settings) halts polling, AI and writes. `automation_snapshot` returns saved pause/capacity plus occupied, stopping, waiting work. `set_automation_paused` persists the gate and signals workers. State: `state/automation.json`.
 - Reserve path: `capacity::Coordinator::reserve` (`src-tauri/src/capacity.rs`).
 - Keychain: GitHub and Copilot tokens in separate account-addressed services. Never in config, state or diagnostics. See [ADR-0001](adr/0001-macos-foundation.md).
 - Green Copilot check = sign-in only. No seat, subscription or inference proof.
-- Review tools: three host-owned read-only tools, not an OS sandbox.
+- Review tools: three host-owned read-only tools, not an OS sandbox. Reads are paged in byte chunks and never truncated; a review is accepted only after every byte of every changed file was served ([ADR-0020](adr/0020-constrained-host-owned-review-tools.md)). Results stored before this carry no `byte_coverage` flag; published ones are not redone (one review per head SHA).
 
 ## Notifications
 

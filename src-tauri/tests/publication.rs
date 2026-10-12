@@ -293,6 +293,7 @@ enum Change {
     Scope,
     Permission,
     HeadIneligible,
+    Lens,
 }
 
 struct Fixture {
@@ -409,6 +410,7 @@ impl Environment for Fixture {
                     Change::Cancel => self.cancelled = true,
                     Change::Scope => self.active = false,
                     Change::Permission => self.can_comment = false,
+                    Change::Lens => self.settings.agents[0].prompt = "Another lens.".into(),
                     Change::HeadIneligible => {
                         self.pull.head_sha = "c".repeat(40);
                         self.pull.draft = true;
@@ -439,6 +441,9 @@ impl Environment for Fixture {
     }
     fn reconcile(&mut self, run: &Publication) -> Result<Option<Receipt>, Failure> {
         GithubClient::new(self.wire.clone()).reconcile_publication(run)
+    }
+    fn divergent(&mut self, run: &Publication) -> Result<Option<Receipt>, Failure> {
+        GithubClient::new(self.wire.clone()).divergent_publication(run)
     }
     fn mutate(&mut self, run: &Publication, mutation: Mutation) -> Result<Receipt, WriteFailure> {
         pr_sniper_lib::capacity::publication_gate(&self.store).map_err(|error| WriteFailure {
@@ -751,17 +756,13 @@ fn pending_comment_tampering_is_rejected_before_submission() {
             .unwrap();
         run = fixture.resume();
         run.retry(false, fixture.now).unwrap();
-        let error = fixture.run(&mut run).unwrap_err();
-        assert!(
-            error.message.contains("verify_pending"),
-            "{field}: {error:?}"
-        );
+        // A diverged owned pending batch is removed, never submitted or replaced.
+        fixture.run(&mut run).unwrap();
+        assert_eq!(run.phase, Phase::Discarded, "{field}");
         assert_eq!(fixture.visible(), 0, "{field}");
-        assert_eq!(fixture.writes(), 1, "{field}");
-        assert_eq!(
-            fixture.store.load_publications().unwrap()[0].error,
-            Some(error.message)
-        );
+        assert!(fixture.wire.0.lock().unwrap().reviews.is_empty(), "{field}");
+        assert_eq!(fixture.writes(), 2, "{field}");
+        assert_eq!(fixture.store.load_publications().unwrap()[0].error, None);
     }
 }
 
@@ -1028,9 +1029,15 @@ fn remote_batch_tampering_or_foreign_pending_review_never_gets_submitted() {
             }
         }
         run = fixture.resume();
-        assert!(fixture.run(&mut run).is_err());
+        if tamper == "comment" {
+            fixture.run(&mut run).unwrap();
+            assert_eq!(run.phase, Phase::Discarded);
+            assert_eq!(fixture.writes(), 2);
+        } else {
+            assert!(fixture.run(&mut run).is_err());
+            assert_eq!(fixture.writes(), 1);
+        }
         assert_eq!(fixture.visible(), 0);
-        assert_eq!(fixture.writes(), 1);
     }
 }
 
@@ -1148,6 +1155,166 @@ fn reviewer_only_eligibility_and_binding_loss_stop_publication_without_requeue()
         fixture.run(&mut run).unwrap();
         assert_eq!(fixture.writes(), 0, "{change}");
         assert_eq!(fixture.requeues, 0, "{change}");
-        assert_eq!(run.phase, Phase::Stopped, "{change}");
+        let expected = if change == "prompt" {
+            Phase::Discarded
+        } else {
+            Phase::Stopped
+        };
+        assert_eq!(run.phase, expected, "{change}");
+    }
+}
+
+fn unpause(fixture: &Fixture) {
+    fixture
+        .store
+        .save_automation(&pr_sniper_lib::capacity::Automation { paused: false })
+        .unwrap();
+}
+
+#[test]
+fn a_pending_batch_whose_comments_differ_is_deleted_and_never_replaced() {
+    let mut fixture = Fixture::new();
+    fixture.pause_after_mutation = Some(Mutation::Create);
+    let mut run = publication();
+    fixture.run(&mut run).unwrap();
+    // The remote pending review lost its inline comments.
+    fixture.wire.0.lock().unwrap().comments.clear();
+    unpause(&fixture);
+    run.retry(false, 101).unwrap();
+    fixture.now = 101;
+    fixture.run(&mut run).unwrap();
+    assert_eq!(run.phase, Phase::Discarded);
+    assert_eq!(run.operation.state, OperationState::Completed);
+    assert_eq!(run.error, None);
+    assert_eq!(run.receipts.last().unwrap().state, RemoteState::Deleted);
+    assert!(fixture.wire.0.lock().unwrap().reviews.is_empty());
+    assert_eq!(
+        fixture.writes(),
+        2,
+        "one create, one delete, no replacement"
+    );
+    assert!(!run.reserves_revision());
+    assert!(run.retry(true, 102).is_err());
+}
+
+#[test]
+fn a_submitted_review_with_edited_comments_is_kept_as_the_receipt_and_never_touched() {
+    let mut fixture = Fixture::new();
+    fixture.wire.0.lock().unwrap().fault = Some((Mutation::Submit, Fault::After));
+    let mut run = publication();
+    assert!(fixture.run(&mut run).is_err());
+    assert!(run.uncertain);
+    for comments in fixture.wire.0.lock().unwrap().comments.values_mut() {
+        comments[0]["body"] = json!("edited by someone");
+    }
+    let writes = fixture.writes();
+    let mut restored = fixture.resume();
+    restored.retry(false, fixture.now).unwrap();
+    fixture.run(&mut restored).unwrap();
+    assert_eq!(restored.phase, Phase::Published);
+    assert_eq!(restored.operation.state, OperationState::Completed);
+    assert!(!restored.uncertain);
+    assert_eq!(fixture.writes(), writes);
+    assert_eq!(fixture.visible(), 1);
+}
+
+#[test]
+fn a_changed_lens_discards_the_unpublished_batch_without_a_new_review() {
+    let mut fixture = Fixture::new();
+    fixture.change = Some((1, Change::Lens));
+    let mut run = publication();
+    fixture.run(&mut run).unwrap();
+    assert_eq!(run.phase, Phase::Discarded);
+    assert_eq!(run.operation.state, OperationState::Completed);
+    assert_eq!(run.error, None);
+    assert_eq!(fixture.writes(), 0);
+    assert!(run.retry(true, 101).is_err());
+}
+
+#[test]
+fn a_withdrawn_pending_batch_is_discarded_and_leaves_no_failure() {
+    let mut fixture = Fixture::new();
+    fixture.pause_after_mutation = Some(Mutation::Create);
+    let mut run = publication();
+    fixture.run(&mut run).unwrap();
+    unpause(&fixture);
+    fixture.cancelled = true;
+    run.retry(false, 101).unwrap();
+    fixture.now = 101;
+    fixture.run(&mut run).unwrap();
+    assert_eq!(run.phase, Phase::Discarded);
+    assert_eq!(run.error, None);
+    assert!(fixture.wire.0.lock().unwrap().reviews.is_empty());
+}
+
+#[test]
+fn restart_reobserves_legacy_parked_publications_once_and_leaves_the_rest() {
+    let fixture = Fixture::new();
+    let parked = |failure, phase, receipt: Option<RemoteState>, resume_at| {
+        let mut run = publication();
+        run.operation.state = if matches!(failure, OperationFailure::Permanent) {
+            OperationState::Failed
+        } else {
+            OperationState::ManualRetry
+        };
+        run.operation.failure = Some(failure);
+        run.operation.attempt_count = 3;
+        run.operation.resume_at = resume_at;
+        run.phase = phase;
+        run.error = Some("parked".into());
+        if let Some(state) = receipt {
+            run.receipts.push(Receipt {
+                review_id: "1".into(),
+                state,
+                comment_ids: vec![],
+            });
+        }
+        run
+    };
+    let permanent = parked(
+        OperationFailure::Permanent,
+        Phase::Pending,
+        Some(RemoteState::Pending),
+        None,
+    );
+    let rejected = parked(OperationFailure::Permanent, Phase::Preparing, None, None);
+    let legacy_transient = parked(OperationFailure::Network, Phase::Preparing, None, None);
+    let scheduled = parked(
+        OperationFailure::Network,
+        Phase::Preparing,
+        None,
+        Some(9_999),
+    );
+    let credentials = parked(OperationFailure::Credentials, Phase::Preparing, None, None);
+    let ids = [
+        permanent.id.clone(),
+        rejected.id.clone(),
+        legacy_transient.id.clone(),
+        scheduled.id.clone(),
+        credentials.id.clone(),
+    ];
+    fixture
+        .store
+        .save_publications(&[
+            permanent,
+            rejected,
+            legacy_transient,
+            scheduled,
+            credentials,
+        ])
+        .unwrap();
+    publication::restore_at(&fixture.store, 500).unwrap();
+    let saved = fixture.store.load_publications().unwrap();
+    let get = |id: &String| saved.iter().find(|p| &p.id == id).unwrap();
+    for id in [&ids[0], &ids[2]] {
+        let run = get(id);
+        assert_eq!(run.operation.state, OperationState::Queued, "{id}");
+        assert_eq!(run.operation.attempt_count, 0);
+        assert_eq!(run.operation.next_attempt_at, Some(500));
+        assert_eq!(run.error, None);
+    }
+    for id in [&ids[1], &ids[3], &ids[4]] {
+        assert!(get(id).operation.parked(), "{id}");
+        assert!(get(id).error.is_some());
     }
 }
