@@ -39,6 +39,7 @@ interface Health {
   next_run: number;
   schedule_available: boolean;
   last_failure: string | null;
+  last_error?: string | null;
   in_flight: boolean;
   conversation_admission_pending?: boolean;
   manual_pending: boolean;

@@ -146,3 +146,73 @@ test("Needs attention rows show a compact retry clock for parked failures", asyn
   await expect(hint).toHaveText(/^2[45]m$/);
   await expect(hint.locator("svg")).toHaveCount(1);
 });
+
+test("monitoring failures show the stored error line and a readable cause", async ({
+  page,
+  store,
+}) => {
+  const fixture = await queueFixture(store);
+  const run = fixture.state.reviews.find((r) => r.job.number === 1);
+  const now = Math.floor(Date.now() / 1000);
+  fixture.state.monitoring = {
+    health: {
+      [run.job.configuration_id]: {
+        repository_id: run.job.configuration_id,
+        name: "example/repo",
+        schedule_key: "fixture",
+        provider_account_id: "22",
+        account_login: "local-operator",
+        provider_repository_id: "100",
+        enabled: true,
+        last_attempt: now - 5 * 60,
+        last_success: null,
+        next_run: 0,
+        schedule_available: true,
+        last_failure: "conversation_admission",
+        last_error: "Could not write conversation state; retry the check.",
+        in_flight: false,
+        operation: {
+          id: "health-op",
+          provider: "github",
+          account_id: "22",
+          configuration_id: run.job.configuration_id,
+          repository_id: "100",
+          pull_request_id: null,
+          head_sha: null,
+          trigger_policy: "fixture",
+          operation_type: "repository_poll",
+          state: "manual_retry",
+          attempt_count: 3,
+          initial_attempt_at: now - 20 * 60,
+          retry_deadline: now - 5 * 60,
+          next_attempt_at: null,
+          failure: "provider",
+          attempted_mutation: null,
+          pending_review_id: null,
+          owned_thread_id: null,
+          triggering_external_comment_id: null,
+          confirmed_receipt: null,
+          resume_at: now + 30 * 60,
+        },
+      },
+    },
+  };
+  await store("seed_queue_state", fixture.state);
+  const item = (await store("monitoring_snapshot")).items.find(
+    (entry) => entry.job.number === 1,
+  );
+  expect(item.state).toBe("failed");
+  await store("panel_navigate", {
+    route: { tab: "queue", detail: { type: "item", item_id: item.id } },
+  });
+  await page.goto("/");
+  await expect(page.locator(".queue-status-label strong")).toHaveText(
+    "Reply admission failed",
+  );
+  await expect(page.locator("[data-queue-error]")).toHaveText(
+    "Could not write conversation state; retry the check.",
+  );
+  await expect(
+    page.locator('.queue-facts dt:text-is("Last attempt") + dd'),
+  ).toHaveText("5m ago");
+});

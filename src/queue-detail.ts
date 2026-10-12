@@ -329,7 +329,7 @@ function renderFailureFacts(
     list.append(term, description);
   }
   block.append(list);
-  const detail = review?.run?.error;
+  const detail = review?.run?.error ?? health?.last_error;
   if (detail) {
     const line = document.createElement("code");
     line.className = "queue-error";
