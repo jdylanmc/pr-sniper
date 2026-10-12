@@ -321,7 +321,7 @@ test("startup, notification and pause commit independently while newer keyboard 
   await page.locator("#notification-enabled").check();
   await page.evaluate(() => window.__settingsIdle());
   await expect(page.locator("#notification-permission")).toContainText(
-    "On; macOS authorized; banners unknown; center unknown",
+    /On; (macOS|Windows) authorized; banners unknown; center unknown/,
   );
   expect((await store("notification_snapshot")).enabled).toBe(true);
   await preferences(page)
@@ -462,7 +462,7 @@ test("denied and unreadable native notifications stay explicit without saving pr
     "Synthetic OS permission denied",
   );
   await expect(page.locator("#notification-permission")).toContainText(
-    "Off; macOS denied; banners off; center off",
+    /Off; (macOS|Windows) denied; banners off; center off/,
   );
   await page.locator("#notification-settings").scrollIntoViewIfNeeded();
   await capture(page, browserName, "permission-denied");

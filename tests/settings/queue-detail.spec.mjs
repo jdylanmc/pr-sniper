@@ -48,3 +48,101 @@ test("details disclosure is collapsed by default in the panel", async ({
   await expect(details).toHaveCount(1);
   await expect(details).not.toHaveAttribute("open");
 });
+
+async function parkedReview(store, patch) {
+  const fixture = await queueFixture(store);
+  const run = fixture.state.reviews.find((r) => r.job.number === 1);
+  const now = Math.floor(Date.now() / 1000);
+  Object.assign(run.operation, {
+    state: "manual_retry",
+    failure: "provider",
+    attempt_count: 3,
+    initial_attempt_at: now - 12 * 60,
+    next_attempt_at: null,
+    resume_cycle: 2,
+    resume_at: now + 25 * 60,
+    ...patch,
+  });
+  run.result = null;
+  run.error =
+    "Copilot did not read every changed file; no review result was accepted.";
+  fixture.state.publications = fixture.state.publications.filter(
+    (p) => p.review.job.number !== 1,
+  );
+  await store("seed_queue_state", fixture.state);
+  const item = (await store("monitoring_snapshot")).items.find(
+    (entry) => entry.job.number === 1,
+  );
+  await store("panel_navigate", {
+    route: { tab: "queue", detail: { type: "item", item_id: item.id } },
+  });
+  return item;
+}
+
+test("failed detail lists terse facts, the raw error and the retry hint", async ({
+  page,
+  store,
+}) => {
+  const item = await parkedReview(store, {});
+  expect(item.state).toBe("failed");
+  expect(item.resume_at).toBeGreaterThan(Date.now() / 1000);
+  await page.goto("/");
+  const facts = page.locator("[data-queue-status] .queue-facts");
+  await expect(facts).toBeVisible();
+  const row = (label) => facts.locator(`dt:text-is("${label}") + dd`);
+  await expect(row("Cause")).toHaveText("Failed / provider");
+  await expect(row("Attempts")).toHaveText("3 of 3 \u00b7 cycle 2 of 5");
+  await expect(row("Last attempt")).toHaveText(/^1[12]m ago$/);
+  await expect(row("Next retry")).toHaveText(/^2[45]m$/);
+  await expect(row("Next retry").locator("svg")).toHaveCount(1);
+  await expect(row("Agent")).not.toHaveText("");
+  await expect(row("Revision")).toHaveText(/^[0-9a-f]{7}$/);
+  await expect(row("Account")).not.toHaveText("");
+  const error = page.locator("[data-queue-error]");
+  await expect(error).toContainText("did not read every changed file");
+  await expect(error).toHaveAttribute(
+    "title",
+    /did not read every changed file/,
+  );
+  await expect(page.locator("[data-queue-details]")).not.toHaveAttribute(
+    "open",
+  );
+  await expect(
+    page.locator("[data-queue-details] > summary[aria-label=Details] svg"),
+  ).toHaveCount(1);
+  await expect(page.locator("[data-queue-primary]")).toHaveText("Retry");
+});
+
+test("failed detail shows Manual when no automatic retry is scheduled", async ({
+  page,
+  store,
+}) => {
+  await parkedReview(store, {
+    failure: "permanent",
+    state: "failed",
+    resume_cycle: 0,
+    resume_at: null,
+    attempt_count: 1,
+  });
+  await page.goto("/");
+  const facts = page.locator("[data-queue-status] .queue-facts");
+  await expect(facts.locator('dt:text-is("Next retry") + dd')).toHaveText(
+    "Manual",
+  );
+  await expect(facts.locator('dt:text-is("Attempts") + dd')).toHaveText(
+    "1 of 3",
+  );
+});
+
+test("Needs attention rows show a compact retry clock for parked failures", async ({
+  page,
+  store,
+}) => {
+  await parkedReview(store, {});
+  await page.goto("/");
+  await page.locator("[data-queue-filter=attention]").click();
+  const hint = page.locator("[data-queue-resume]");
+  await expect(hint).toHaveCount(1);
+  await expect(hint).toHaveText(/^2[45]m$/);
+  await expect(hint.locator("svg")).toHaveCount(1);
+});

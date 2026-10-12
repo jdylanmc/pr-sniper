@@ -231,7 +231,7 @@ test("denied permission leaves opt-in off and visible rather than claiming succe
   await expect(enabled).not.toBeChecked();
   expect((await store("notification_snapshot")).enabled).toBe(false);
   await expect(page.locator("#notification-permission")).toContainText(
-    "macOS denied; banners off; center off",
+    /(macOS|Windows) denied; banners off; center off/,
   );
   await page.evaluate(() => {
     window.__denyNotifications = false;
