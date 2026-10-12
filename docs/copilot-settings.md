@@ -1,7 +1,8 @@
 # Copilot accounts and Agent models
 
-Settings has four tabs: **Integrations**, **Doctrines**, **Agents**, and
-**Preferences**. There are two independent connection roles:
+Settings is a drill-in list (see [settings.md](settings.md)): **Accounts**
+(**AI Tooling**, **Git Repository**), **Agents**, **Repositories**,
+**Doctrines** and **Preferences**. There are two independent connection roles:
 
 | Connection                | Purpose                                                                 |
 | ------------------------- | ----------------------------------------------------------------------- |
@@ -16,11 +17,11 @@ account access; no manual-start preference or per-PR Start click is required.
 The Copilot adapter
 never publishes comments or submits approvals; a separate host operation
 publishes validated results through the current publication gate using the
-repository account. See [local review execution](../README.md#local-copilot-reviews)
-and [comment publication](../README.md#revision-safe-comment-publication).
+repository account. See [local review execution](review-queue.md#local-agent-reviews)
+and [comment publication](provider-writes.md#comment-publication).
 Owned-thread follow-up analysis uses that same constrained account/model
 runtime; its reply, quiet or human-input result goes through a separate
-publication gate. See [owned-thread follow-ups](../README.md#owned-thread-follow-ups).
+publication gate. See [owned-thread follow-ups](provider-writes.md#conversation-follow-ups).
 
 ## Connect and configure
 
@@ -161,9 +162,9 @@ the existing review/publication guards.
 
 Resource saves refresh the shared library only when the submitted edit explains
 the returned Agent state. External Agent changes, including doctrine renames,
-retain the previous coherent library, selections and revision with an explicit
-reload notice. The resource save is still persisted; Agent/doctrine saves are
-blocked until you close open editors and choose **Reload Agents and doctrines**.
+retain the previous coherent library, selections and revision with a
+**Catalog changed** alert. The resource save is still persisted; Agent/doctrine
+saves are blocked until open editors close and **Reload** is chosen.
 That explicit refresh adopts the current Agents and library together, preserving
 unrelated preference and repository drafts. It never guesses whether changed
 selection order or reused doctrine titles were merely mechanical renames.

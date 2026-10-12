@@ -13,6 +13,20 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   rule decides. Path rules use prefix or glob patterns. Existing repositories
   migrate once and have monitoring switched off until reviewed. The repository
   editor replaces Reviewer requests and People you watch with these controls.
+- Failed jobs retry automatically (backoff, 3 attempts) then park. Credential,
+  permission and permanent failures park at once. Queue **Needs attention**
+  lists every parked failure with a cause chip: **Fix** for credentials,
+  **Retry** for the rest, plus **Retry all**. Running shows only active and
+  queued work.
+- Remove the **Blocked** state. A completed review stays Ready after config
+  drift or a disabled repository; it goes Stale only on a new head or base.
+- Queue item detail leads with the failure or state and one action
+  (**Fix**, **Retry** or **Open**); all other evidence sits in a collapsed
+  **Details** disclosure.
+- Assignment editor uses Agent and Permissions drill-ins; Approval is a
+  three-way off / Approve / & Merge pill.
+- Agent editor shows **Reconnect required** with a **Fix** shortcut.
+- Remove prose from the app UI.
 
 ## 0.2.1 - 2026-10-11
 

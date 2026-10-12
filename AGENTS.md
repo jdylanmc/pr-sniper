@@ -18,7 +18,7 @@ The human-authorized 2026-09-29 Windows follow-up under #12 extends the
 platform scope to existing-app system-tray parity, Windows CI and Chocolatey
 distribution (#57-#65). Merge the honest CI bootstrap (#65) before native
 port deliveries; extend it to native checks as those paths become runnable.
-Preserve macOS behavior and all existing review/account/publication boundaries.
+Preserve macOS behavior and all review/account/publication boundaries.
 This does not authorize vNext features or imply Windows/release acceptance.
 
 ## Agent skills
@@ -34,8 +34,7 @@ Use the five default role mappings in `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
-Use a single-context layout: root `CONTEXT.md` and `docs/adr/`, created lazily
-through authorized domain work. See `docs/agents/domain.md`.
+Single context: `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.
 
 ### Commit messages
 
@@ -52,42 +51,112 @@ if one exists. Ship, Patch, Refactor, Shepherd and `create-pull-request`
 publication use that body; do not hand-write a different format. The skill
 grants no approval, ready, or merge authority.
 
+### Docs map
+
+- Domain terms and invariants: [`CONTEXT.md`](CONTEXT.md). Read before domain work.
+- Decisions: [`docs/adr/`](docs/adr/). Reference: [`docs/`](docs/) (`releases.md`, `windows-*.md`, `copilot-settings.md`).
+- Specs: `docs/agent/`. Agent workflow: `docs/agents/`.
+- Test notes: [`tests/settings/README.md`](tests/settings/README.md), `tests/macos-acceptance.md`, `tests/macos-notifications.md`.
+
+### Layout
+
+- `src/`: web UI (Vite, `safari15` target). `src-tauri/`: Rust (`capacity.rs`, `monitoring.rs`, `storage::diagnostics`).
+- `src-tauri/doctrines`: app doctrine catalog, independent of `.agents/skills/doctrine`.
+- `tests/settings/`: Playwright. `tests/release/`: release/packaging tests. `scripts/`: sign, release, icons, Windows.
+
 ### Local development
 
+- Prereqs: macOS 13.5+, Xcode CLT, Node 24.20.0, Rust 1.98.1 via rustup. Pins:
+  `.node-version`, `rust-toolchain.toml`, `package-lock.json`, `src-tauri/Cargo.lock`.
+  Commands install no globals.
 - Rust needs `export PATH="$(dirname $(rustup which cargo)):$PATH"` in each shell.
-- Run the app with `npm run dev:signed` (stable macOS signing identity, so
-  keychain "Always Allow" survives rebuilds). Plain `tauri dev` is ad-hoc signed
-  and re-prompts on every rebuild. `tauri dev` also rebuilds and relaunches on
-  every Rust edit: stop it before agents edit Rust, restart it after. Web-only
-  edits hot-reload without a rebuild.
+- `npm ci`, then `npm run dev:signed`: stable macOS signing identity, so
+  keychain "Always Allow" survives rebuilds. Override with
+  `PR_SNIPER_DEV_SIGN_IDENTITY`. Plain `npm run tauri -- dev` is ad-hoc signed
+  and re-prompts on every rebuild. Dev rebuilds and relaunches on every Rust
+  edit: stop it before agents edit Rust, restart it after. Web-only edits
+  hot-reload. Stop dev command and its frontend server when done.
+- Isolated run (absolute data dir; never touches login items):
+
+  ```sh
+  PR_SNIPER_DATA_DIR="$(mktemp -d)" \
+  PR_SNIPER_KEYCHAIN_SERVICE="com.jdylanmc.pr-sniper.tests.dev-$(uuidgen)" \
+  npm run tauri -- dev
+  ```
+
 - The app is tray-only. The panel opens from the menu-bar icon or by launching
   the app again. `PR_SNIPER_PANEL_DEBUG=1` logs screen and placement geometry.
 - This repository belongs to `jdylanmc`; `gh` may default to another account.
   Use `GH_TOKEN="$(gh auth token --user jdylanmc)"` for `gh` and a one-shot
   credential helper for `git push`; never change the global active account.
-- Never use `pkill`; stop only your own processes by PID.
+- Never use `pkill`; stop own processes by PID.
+- Icons: `swift scripts/generate-icons.swift`. Source `src/crosshair.svg`; tray uses a transparent template PNG.
+- Never put credentials in doctrines, prompts or config. Never log provider bodies, tokens or subprocess output.
+
+### Commands
+
+| Command                                          | Does                                                      |
+| ------------------------------------------------ | --------------------------------------------------------- |
+| `npm run dev`                                    | Vite only, 127.0.0.1                                      |
+| `npm run build`                                  | `tsc --noEmit` + Vite build                               |
+| `npm run lint`                                   | `tsc --noEmit` + clippy `-D warnings`                     |
+| `npm run format` / `format:check`                | Prettier + `cargo fmt` (owned files only)                 |
+| `npm test`                                       | `cargo test --locked`                                     |
+| `npm run test:settings`                          | Playwright vs real Rust storage                           |
+| `npm run test:skills`                            | Skill package/link + repo-policy contracts (checks links) |
+| `npm run test:release`                           | Release script + workflow tests                           |
+| `npm run bundle`                                 | `.app` with required local ad-hoc signature               |
+| `npm run build:windows` / `test:release:windows` | Windows exe / release tests (PowerShell, Python 3.13)     |
+
+Legacy CLI credential diagnostic, only when the user authorizes it (read-only;
+prints identity, capability, counts; use your own account ID):
+`cargo run --manifest-path src-tauri/Cargo.toml --locked --example github_read -- jdylanmc/pr-sniper 6954990 --metadata`.
 
 ### UI conventions
 
+**No prose.** Never add helper text, notices, banners, hints, empty-state
+sentences, tooltips-as-paragraphs or explanatory strings to the app, and never
+write status sentences from the backend for the UI to show. State is shown by
+controls, icons and values. README and docs stay short: tables and lists, no
+narrative. If something needs explaining, the design is wrong.
+
 Icon-first, minimal prose: no helper paragraphs, empty-state text or hints.
-Page title and back arrow live in the navy band; cards overlap it by 23px.
-Primary add actions are floating orange pills; destructive row actions are icon
-buttons; lists drill in (Doctrines, Reviewer requests) rather than use selects.
-Keep `prototypes/v2/` in step with UI changes. Text hidden with CSS stays in the
-DOM; do not assert visibility on it.
+Page title and back arrow live in the navy band; cards overlap it by 23px;
+window corners 8px. Primary add actions are floating orange pills; destructive
+row actions are icon buttons; lists drill in (Doctrines, Admission filters)
+rather than use selects. Keep `prototypes/v2/` (visual POC, open `index.html`) in step with UI.
+
+Focus: Back and dialog close restore the activating control; retain the logical
+opener across redraws via stable resource IDs (removed resource: section
+heading; removed assignment: its Add control). Background completion never
+steals focus. Keep Vite target `safari15`; add no polyfills; keep
+viewport/dialog fallbacks through minification.
 
 ### Testing
 
 - `npm run test:settings` (Playwright, ~800 tests) takes ~11 minutes serially.
-  Shard it for speed: separate `SETTINGS_TEST_PORT` and `--output` per shard.
+  Shard 4 ways (`--shard=N/4`) with a separate `SETTINGS_TEST_PORT` and a
+  separate `--output` dir per shard. Never `pkill` leftover servers.
 - CI also runs it on WebKit (`--browser=webkit --workers=2`); run it before
   pushing UI changes that touch focus or layout.
+- Text hidden with CSS stays in the DOM; do not assert visibility on it.
 - When the UI changes on purpose, update the spec to the new intent. Never
   delete, skip or loosen a test to pass it.
+- Browser tests simulate dialog/viewport APIs. Not native acceptance. Native
+  proof: `tests/macos-acceptance.md` + `tests/macos-native-smoke.swift`; a bundle
+  compile is not acceptance.
+- Notification tests need the packaged `.app` (`npm run bundle`); the dev server
+  is no native host. Per-app macOS authorization still applies:
+  `tests/macos-notifications.md`.
+- Live mutation (approve, merge, publish) only on an explicitly authorized
+  disposable PR, with cleanup. Fixtures never claim a live pass. Never mutate to
+  probe permissions.
+- Never infer failure origin from message text; carry typed provenance.
+- No user-facing `Blocked`; parked failures live in Queue > Needs attention.
 
 ### Releases
 
-Follow `docs/releases.md`. Merge the version PR, wait for the main-push **macOS
+Follow [`docs/releases.md`](docs/releases.md). Merge the version PR, wait for the main-push **macOS
 foundation** run on that exact commit, then push the annotated tag. Never move a
 published tag.
 
@@ -131,7 +200,9 @@ Feature lanes reserve two slots; fixes, hardening and refactors reserve one.
 Count every writing descendant within that cap. Support roles do not become
 extra implementers. Start Discovery when no actionable work is available.
 
-The repository ships core Joe-mode and the session-bound
+Joe-mode skills (`.agents/skills/joe-mode*`) are repo delivery agents, not app
+review Agents. They, plus adapted Doctrine/Setup/Ship/Shepherd/Squadron, are
+repo-owned: no `skills-lock.json` entries, no upstream restore. The repository ships core Joe-mode and the session-bound
 [CMUX adapter](.agents/skills/joe-mode-cmux/SKILL.md). Paseo and Orca adapters
 are retired; reconcile any surviving legacy owners/jobs before activation.
 There is no CMUX heartbeat or unattended scheduler. Pause/stop prevents new assignments while
@@ -139,7 +210,9 @@ existing workers finish their bounded tasks and preserve their results. PM
 accepts results and retires owned agents only after duties end or transfer;
 questions and unresolved decisions return to the primary human chat.
 
-Activation still requires the Joe-mode CMUX capability and ownership gates.
+Reconcile surviving legacy controllers/jobs before switching runtime; deleting
+files stops nothing and authorizes no state deletion. `npm run test:skills` is
+not proof of a live CMUX cockpit. Activation is human-only and still requires the Joe-mode CMUX capability and ownership gates.
 Installing skills or granting merge permission does not activate Joe-mode,
 start workers, configure app assignments or change live runtime permissions.
 Keep runtime IDs, grants and receipts private, never in committed files.
