@@ -14,8 +14,7 @@ for (const surface of ["panel", "standalone"]) {
     const log = page.locator(
       surface === "panel" ? '[data-panel-view="utility"] pre' : "#log",
     );
-    await expect(log).toHaveText(/\n\nNo diagnostic events recorded\.$/);
-    await expect(page.getByText(/four 1 MiB files/)).toBeVisible();
+    await expect(log).toHaveText(/\n\nNo events$/);
     await page.evaluate(() => {
       const original = window.__TAURI_INTERNALS__.invoke;
       window.__TAURI_INTERNALS__.invoke = (command, args) =>
@@ -34,7 +33,7 @@ for (const surface of ["panel", "standalone"]) {
     ).toHaveText(
       surface === "panel"
         ? "Synthetic diagnostic journal read failure"
-        : "Could not read application status or diagnostics. Check local storage permissions; no raw error details are exposed.",
+        : "Failed",
     );
     if (surface === "panel") await expect(log).toHaveCount(0);
     else await expect(log).toHaveText("");
@@ -105,8 +104,7 @@ for (const surface of ["panel", "standalone"]) {
     await expect(log).toContainText("not_exposed");
     await expect(log).toContainText("1234");
     await expect(log).toContainText(paths.paths[0]);
-    await expect(log).not.toContainText("No diagnostic events recorded.");
+    await expect(log).not.toContainText("No events");
     await expect(log.locator("img")).toHaveCount(0);
-    await expect(page.getByText(/four 1 MiB files/)).toBeVisible();
   });
 }

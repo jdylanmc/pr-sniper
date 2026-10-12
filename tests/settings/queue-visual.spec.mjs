@@ -22,6 +22,10 @@ const tab = (page, name) =>
 
 async function scenario(store, name) {
   const fixture = await queueFixture(store);
+  // Only credential-class failures stay in the human Queue (others park in Running).
+  fixture.state.publications.find(
+    (entry) => entry.review.job.number === 3,
+  ).operation.failure = "credentials";
   if (name === "empty") {
     fixture.state = {
       jobs: [],
@@ -141,7 +145,9 @@ async function visualMeasurements(page, image) {
           ? (({ x, y, width, height }) => ({ x, y, width, height }))(
               card.getBoundingClientRect(),
             )
-          : box(".queue-group:not([hidden]) .queue-empty, .queue-empty"),
+          : box(
+              ".queue-group:not([hidden]) .queue-empty, #handoff-queue .queue-empty",
+            ),
         cardStyle: card
           ? {
               radius: getComputedStyle(card.closest(".queue-group"))
@@ -243,9 +249,6 @@ for (const name of ["empty", "populated", "attention"]) {
     await expect(
       page.locator("[data-queue-filter] .queue-metric-label"),
     ).toHaveText(["Ready for you", "Needs attention"]);
-    await expect(
-      page.locator("[data-queue-filter] .queue-metric-value span"),
-    ).toHaveText(["need your eyes", "need your input"]);
     const view = ready > 0 ? "ready" : "attention";
     await expect(page.locator("[data-queue-filter=ready]")).toHaveAttribute(
       "aria-pressed",
@@ -262,9 +265,9 @@ for (const name of ["empty", "populated", "attention"]) {
       page.getByRole("button", { name: /Start review|Simulate/ }),
     ).toHaveCount(0);
     if (name === "empty") {
-      await expect(page.locator(".queue-empty")).toBeVisible();
-      await expect(page.locator(".queue-empty h3")).toHaveText(
-        "You're all caught up",
+      await expect(page.locator("#handoff-queue .queue-empty")).toBeVisible();
+      await expect(page.locator("#handoff-queue .queue-empty")).toHaveText(
+        "Empty",
       );
     }
     const measurements = await visualMeasurements(page, image);
@@ -351,9 +354,11 @@ test("Queue keeps exact handoff, stale destination, keyboard and scroll focus ac
   await expect(page.locator("[data-item-evidence]")).toContainText(
     "example/repo",
   );
-  await expect(page.locator("[data-item-evidence]")).toContainText(
-    "Personal review, comments and approval happen on GitHub",
+  await expect(page.locator("[data-queue-status]")).toHaveAttribute(
+    "data-queue-status",
+    "failed",
   );
+  await expect(page.locator("[data-queue-primary]")).toHaveCount(1);
   await expect(page.locator("[data-item-evidence] textarea")).toHaveCount(0);
   await page.getByRole("button", { name: "Back", exact: true }).click();
   await expect(button).toBeFocused();
@@ -369,7 +374,7 @@ test("Queue keeps exact handoff, stale destination, keyboard and scroll focus ac
   await store("seed_queue_state", fixture.state);
   await page.clock.runFor(5100);
   await expect(page.locator("[data-item-evidence]")).toContainText(
-    "unavailable",
+    "Unavailable",
   );
   await expect(page.locator("#agent-reviews article")).toHaveCount(0);
 });
@@ -441,10 +446,10 @@ test("unavailable Queue and capacity reads never claim zero handoffs or zero Age
     "Handoffs unavailable",
   );
   await expect(page.locator("[data-queue-work-status]")).toHaveText(
-    "Work state unavailable",
+    "Unavailable",
   );
   await expect(page.locator("[data-panel-error]")).toBeVisible();
-  await expect(page.locator(".queue-empty")).toHaveCount(0);
+  await expect(page.locator("#handoff-queue .queue-empty")).toHaveCount(0);
   await capture(page, testInfo, "queue-unavailable");
 });
 
@@ -496,7 +501,11 @@ for (const scenario of [
     page,
     store,
   }, testInfo) => {
-    await queueFixture(store);
+    const fixture = await queueFixture(store);
+    fixture.state.publications.find(
+      (entry) => entry.review.job.number === 3,
+    ).operation.failure = "network";
+    await store("seed_queue_state", fixture.state);
     const nextKey =
       page.context().browser().browserType().name() === "webkit" &&
       process.platform === "darwin"
@@ -534,6 +543,7 @@ for (const scenario of [
         ]
           .map((selector) => {
             const element = document.querySelector(selector);
+            if (!element) return "";
             return `.panel-shell ${selector} { font-size: ${parseFloat(getComputedStyle(element).fontSize) * 2}px; }`;
           })
           .join("\n"),

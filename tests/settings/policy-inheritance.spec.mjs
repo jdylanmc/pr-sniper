@@ -9,6 +9,8 @@ import {
   closeDialog,
   section,
   seedBoundRepositories,
+  pickAgent,
+  withPermissions,
 } from "./navigation.mjs";
 
 test("reusable Agents keep independent repository assignments and preserve legacy policy exactly", async ({
@@ -63,28 +65,28 @@ test("reusable Agents keep independent repository assignments and preserve legac
     "neighbor/keep-me",
   ].entries()) {
     const modal = await assignment(page, repository);
-    await modal
-      .getByRole("combobox", { name: "Agent", exact: true })
-      .selectOption(initial.agents[index === 1 ? 1 : 0].id);
+    await pickAgent(modal, initial.agents[index === 1 ? 1 : 0].id);
     await expect(
       modal.locator("[name=frequency],[name=cron],[name=timezone]"),
     ).toHaveCount(0);
-    await modal
-      .getByRole("checkbox", { name: /^Publish Comment/ })
-      .setChecked(index === 1);
-    if (index === 1) {
-      await expect(
-        modal.getByRole("radio", { name: "Approve", exact: true }),
-      ).toHaveCount(0);
-      await expect(modal.locator("[data-primary-permissions]")).toBeHidden();
-    } else {
-      await expect(
-        modal.getByRole("radio", { name: "Approve", exact: true }),
-      ).toBeEnabled();
-      await expect(
-        modal.getByRole("radio", { name: "Neither", exact: true }),
-      ).toBeChecked();
-    }
+    await withPermissions(page, modal, async () => {
+      await modal
+        .getByRole("switch", { name: "Publish Comment" })
+        .setChecked(index === 1);
+      if (index === 1) {
+        await expect(
+          modal.getByRole("radio", { name: "Approve", exact: true }),
+        ).toHaveCount(0);
+        await expect(modal.locator("[data-primary-permissions]")).toBeHidden();
+      } else {
+        await expect(
+          modal.getByRole("radio", { name: "Approve", exact: true }),
+        ).toBeEnabled();
+        await expect(
+          modal.getByRole("radio", { name: "Neither", exact: true }),
+        ).toBeChecked();
+      }
+    });
     await saveAssignment(page, modal);
   }
   expect(

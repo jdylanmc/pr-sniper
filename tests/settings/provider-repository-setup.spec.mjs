@@ -6,7 +6,7 @@ import {
   addByUrl,
   reviewer,
 } from "./repository-provider-fixture.mjs";
-import { section } from "./navigation.mjs";
+import { section, pickAgent } from "./navigation.mjs";
 
 for (const embedded of [true, false]) {
   for (const size of [
@@ -61,9 +61,7 @@ for (const embedded of [true, false]) {
         name: "Assign agent",
         exact: true,
       });
-      await assignment
-        .getByLabel("Agent", { exact: true })
-        .selectOption(reviewer.id);
+      await pickAgent(assignment, reviewer.id);
       await assignment
         .getByRole("button", { name: "Assign agent", exact: true })
         .click();
@@ -135,7 +133,7 @@ test("owner browsing isolates results, retries errors, searches and reopens stab
   );
   await page.screenshot({ path: info.outputPath("organization-browser.png") });
   await browser.getByLabel("Find a repository").fill("absent");
-  await expect(browser.getByRole("status")).toContainText("No matching");
+  await expect(browser.getByRole("status")).toContainText("No matches");
   await browser.getByLabel("Find a repository").fill("one");
   await browser.locator("[data-pick]").click();
   const editor = page.getByRole("dialog", {
@@ -183,7 +181,7 @@ test("URL requires explicit choice across accounts, rejects unsupported provider
   await form
     .getByLabel("Repository URL")
     .fill("https://dev.azure.com/org/project/repo");
-  await expect(form.locator("[role=status]")).toContainText("Azure DevOps");
+  await expect(form.locator("[role=status]")).toContainText("Coming soon");
   await expect(
     form.getByRole("button", { name: "Add & configure" }),
   ).toBeDisabled();
@@ -246,11 +244,11 @@ test("late owner and account results cannot add a stale repository", async ({
     await page.evaluate(() =>
       window.dispatchEvent(new Event("pr-sniper:refresh-provider-accounts")),
     );
-    await expect(page.locator("[data-repository-accounts]")).toContainText(
-      "Connect a GitHub",
-    );
+    await expect(page.locator("[data-browse-account]")).toHaveCount(0);
     await browser.locator("[data-pick]").first().click();
-    await expect(browser.getByRole("alert")).toContainText("disconnected");
+    await expect(browser.getByRole("alert")).toContainText(
+      "Reconnect required",
+    );
     expect((await store("snapshot")).settings.repositories).toBeUndefined();
   } finally {
     held.resolve();
@@ -326,12 +324,13 @@ test("repository account read failure is explicit and retry does not imply an em
     .click();
   await section(page, "Repositories");
   await expect(page.locator("[data-repository-accounts]")).toContainText(
-    "GitHub accounts are unavailable",
+    "Unavailable",
   );
   await expect(page.locator("[data-browse-account]")).toHaveCount(0);
   fail = false;
   await page
-    .getByRole("button", { name: "Retry reading accounts", exact: true })
+    .locator("[data-repository-accounts]")
+    .getByRole("button", { name: "Retry", exact: true })
     .click();
   await expect(
     page.getByRole("button", {

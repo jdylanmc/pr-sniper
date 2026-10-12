@@ -4,7 +4,7 @@ import {
   providerFixture,
   reviewer,
 } from "./repository-provider-fixture.mjs";
-import { section } from "./navigation.mjs";
+import { section, pickAgent, withPermissions } from "./navigation.mjs";
 
 const response = (body, status = 200) => ({
   status,
@@ -132,9 +132,7 @@ async function assign(page, editor) {
     name: "Assign agent",
     exact: true,
   });
-  await assignment
-    .getByLabel("Agent", { exact: true })
-    .selectOption(reviewer.id);
+  await pickAgent(assignment, reviewer.id);
   await assignment
     .getByRole("button", { name: "Assign agent", exact: true })
     .click();
@@ -142,28 +140,8 @@ async function assign(page, editor) {
 }
 
 async function replaceUrl(page, editor, number) {
-  await editor.locator("summary").filter({ hasText: "Repository" }).click();
-  await editor
-    .getByRole("button", { name: "Edit repository", exact: true })
-    .click();
-  const intake = page.getByRole("dialog", {
-    name: "Edit repository",
-    exact: true,
-  });
-  await intake
-    .getByLabel("Repository URL")
-    .fill(`https://github.com/orbit/one/pull/${number}`);
-  await intake
-    .getByRole("button", { name: "Add & configure", exact: true })
-    .click();
-  const replacement = page.getByRole("dialog", {
-    name: "orbit/one",
-    exact: true,
-  });
-  await expect(replacement.locator("[data-explicit-pr-status]")).toContainText(
-    `PR #${number}`,
-  );
-  return replacement;
+  await goBack(page, editor);
+  return enter(page, `https://github.com/orbit/one/pull/${number}`);
 }
 
 function holdOldAdmission(state, store) {
@@ -206,9 +184,13 @@ test("held explicit PR Save preserves assignment capabilities across replacement
     name: "Edit assignment",
     exact: true,
   });
-  await assignment.getByRole("checkbox", { name: /^Publish Comment/ }).check();
-  await assignment.getByRole("checkbox", { name: /^Reply Comment/ }).check();
-  await assignment.getByRole("radio", { name: "Approve", exact: true }).check();
+  await withPermissions(page, assignment, async () => {
+    await assignment.getByRole("switch", { name: "Publish Comment" }).check();
+    await assignment.getByRole("switch", { name: "Reply Comment" }).check();
+    await assignment
+      .getByRole("radio", { name: "Approve", exact: true })
+      .check();
+  });
   await assignment
     .getByRole("button", { name: "Save assignment", exact: true })
     .click();
@@ -232,8 +214,8 @@ test("held explicit PR Save preserves assignment capabilities across replacement
     await editor
       .getByRole("button", { name: "Save repository", exact: true })
       .click();
-    await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
-      "PR #303 is admitted",
+    await expect(editor.locator("[data-explicit-pr-status]")).toHaveText(
+      "PR #303 queued",
     );
     const saved = await store("saved_resources");
     expect(saved.settings.repositories[0].assignments).toEqual(
@@ -318,8 +300,8 @@ for (const genie of [false, true]) {
     await editor
       .getByRole("button", { name: "Save repository", exact: true })
       .click();
-    await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
-      "admitted",
+    await expect(editor.locator("[data-explicit-pr-status]")).toHaveText(
+      /^PR #\d+ queued$/,
     );
     expect(
       fixture.calls
@@ -368,8 +350,8 @@ for (const genie of [false, true]) {
       await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
         "PR #303",
       );
-      await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
-        "admitted",
+      await expect(editor.locator("[data-explicit-pr-status]")).toHaveText(
+        /^PR #\d+ queued$/,
       );
     } finally {
       held.release();
@@ -393,12 +375,7 @@ for (const genie of [false, true]) {
       editor = await replaceUrl(page, editor, 303);
       held.release();
       await page.evaluate(() => window.__settingsIdle());
-      await expect(editor.locator("[data-earlier-intake-error]")).toContainText(
-        "PR #302",
-      );
-      await expect(editor.locator("[data-earlier-intake-error]")).toContainText(
-        "current request is unchanged",
-      );
+      await expect(page.locator("#error")).toContainText("PR #302");
       await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
         "PR #303",
       );
@@ -406,8 +383,8 @@ for (const genie of [false, true]) {
       await editor
         .getByRole("button", { name: "Save repository", exact: true })
         .click();
-      await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
-        "PR #303 is admitted",
+      await expect(editor.locator("[data-explicit-pr-status]")).toHaveText(
+        "PR #303 queued",
       );
       expect(
         fixture.calls
@@ -443,8 +420,8 @@ for (const genie of [false, true]) {
       });
       held.release();
       await page.evaluate(() => window.__settingsIdle());
-      await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
-        "PR #302 is admitted",
+      await expect(editor.locator("[data-explicit-pr-status]")).toHaveText(
+        "PR #302 queued",
       );
       await editor
         .getByRole("button", { name: "Save repository", exact: true })
@@ -480,10 +457,7 @@ for (const genie of [false, true]) {
       await goBack(page, editor);
       held.release();
       await expect(page.locator("#error")).toContainText(
-        "PR #302 intake for orbit/one",
-      );
-      await expect(page.locator("#error")).toContainText(
-        "GitHub is disconnected",
+        "PR #302: Reconnect required",
       );
       expect((await store("snapshot")).settings.repositories[0].enabled).toBe(
         true,
@@ -498,14 +472,14 @@ for (const genie of [false, true]) {
         "PR #302",
       );
       await expect(editor.locator("[data-resource-error]")).toContainText(
-        "GitHub is disconnected",
+        "PR #302: Reconnect required",
       );
       state.responses = responses();
       await editor
         .getByRole("button", { name: "Save repository", exact: true })
         .click();
-      await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
-        "admitted",
+      await expect(editor.locator("[data-explicit-pr-status]")).toHaveText(
+        /^PR #\d+ queued$/,
       );
       await expect(editor.locator("[data-resource-error]")).toBeHidden();
       await expect(page.locator("#error")).toBeHidden();
@@ -550,8 +524,8 @@ for (const genie of [false, true]) {
       await editor
         .getByRole("button", { name: "Save repository", exact: true })
         .click();
-      await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
-        "PR #303 is admitted",
+      await expect(editor.locator("[data-explicit-pr-status]")).toHaveText(
+        "PR #303 queued",
       );
       const jobs = (await store("monitoring_snapshot")).jobs;
       expect(jobs.map((job) => job.number)).toEqual([302, 303]);
@@ -594,27 +568,22 @@ for (const genie of [false, true]) {
       name: "Assign agent",
       exact: true,
     });
-    await assignment
-      .getByLabel("Agent", { exact: true })
-      .selectOption(reviewer.id);
+    await pickAgent(assignment, reviewer.id);
     await assignment
       .getByRole("button", { name: "Assign agent", exact: true })
       .click();
     await editor
       .getByRole("button", { name: "Save repository", exact: true })
       .click();
-    await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
-      "admitted",
-    );
-    await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
-      "paused",
+    await expect(editor.locator("[data-explicit-pr-status]")).toHaveText(
+      /^PR #\d+ queued$/,
     );
     await expect(
       editor.locator("[data-repository-monitoring-state]"),
     ).toHaveText("Enabled");
     await expect(
       editor.locator("[data-repository-monitoring-detail]"),
-    ).toContainText("Global Monitoring paused");
+    ).toContainText("Paused");
     const work = await store("monitoring_snapshot");
     expect(work.jobs).toHaveLength(1);
     expect(work.jobs[0].number).toBe(302);
@@ -627,8 +596,8 @@ for (const genie of [false, true]) {
     await editor
       .getByRole("button", { name: "Save repository", exact: true })
       .click();
-    await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
-      "Existing work",
+    await expect(editor.locator("[data-explicit-pr-status]")).toHaveText(
+      "PR #302 queued",
     );
     const repeated = await store("monitoring_snapshot");
     expect(repeated.jobs).toHaveLength(1);
@@ -653,8 +622,7 @@ test("exact PR provider failure is visible and fresh retry resolves through save
     name: "Add repository by URL",
     exact: true,
   });
-  await expect(intake.getByRole("alert")).toContainText("pull request");
-  await expect(intake.getByRole("alert")).toContainText("read access");
+  await expect(intake.getByRole("alert")).toContainText("Access denied");
   expect((await store("snapshot")).settings.repositories).toBeUndefined();
   state.responses = responses();
   await intake
@@ -679,10 +647,10 @@ test("ordinary repository URL never admits a PR and disabled explicit Save stays
     .getByRole("button", { name: "Save repository", exact: true })
     .click();
   await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
-    "not queued",
+    "pending",
   );
-  await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
-    "disabled",
+  await expect(editor.locator("[data-repository-monitoring-state]")).toHaveText(
+    "Disabled",
   );
   expect((await store("monitoring_snapshot")).jobs).toEqual([]);
   expect(
@@ -703,9 +671,7 @@ test("failed post-Save PR read retains committed configuration and retry queues 
     name: "Assign agent",
     exact: true,
   });
-  await assignment
-    .getByLabel("Agent", { exact: true })
-    .selectOption(reviewer.id);
+  await pickAgent(assignment, reviewer.id);
   await assignment
     .getByRole("button", { name: "Assign agent", exact: true })
     .click();
@@ -716,16 +682,17 @@ test("failed post-Save PR read retains committed configuration and retry queues 
   await editor
     .getByRole("button", { name: "Save repository", exact: true })
     .click();
-  await expect(editor.getByRole("alert")).toContainText("Configuration saved");
-  await expect(editor.getByRole("alert")).toContainText("read access");
+  await expect(editor.getByRole("alert")).toContainText(
+    "PR #302: Access denied",
+  );
   expect((await store("snapshot")).settings.repositories[0].enabled).toBe(true);
   expect((await store("monitoring_snapshot")).jobs).toEqual([]);
   state.responses = responses();
   await editor
     .getByRole("button", { name: "Save repository", exact: true })
     .click();
-  await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
-    "admitted",
+  await expect(editor.locator("[data-explicit-pr-status]")).toHaveText(
+    /^PR #\d+ queued$/,
   );
   await expect(editor.getByRole("alert")).toBeHidden();
   expect((await store("monitoring_snapshot")).jobs).toHaveLength(1);

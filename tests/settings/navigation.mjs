@@ -270,21 +270,58 @@ export async function assignment(page, repository, index) {
     exact: true,
   });
   if (index === undefined) {
-    await expect(editor.getByLabel("Agent", { exact: true })).toHaveValue("");
-    await editor
-      .getByLabel("Agent", { exact: true })
-      .selectOption(fixtureAgent.id);
+    await expect(editor.locator("input[name=agent]")).toHaveValue("");
+    await editor.getByRole("button", { name: "Choose Agent" }).click();
+    await editor.getByRole("radio", { name: fixtureAgent.name }).click();
+    await expect(editor.locator("input[name=agent]")).toHaveValue(
+      fixtureAgent.id,
+    );
   }
   return editor;
 }
 
-export async function saveAssignment(page, modal) {
-  await modal
-    .locator("form")
-    .getByRole("button", {
-      name: /^(Assign agent|Save assignment)$/,
-    })
+export async function assignmentView(page, editor, view) {
+  await editor
+    .locator(view === "agent" ? "[data-open-agent]" : "[data-open-permissions]")
     .click();
+  return editor;
+}
+
+export async function assignmentBack(page, editor) {
+  const back = page.locator("[data-panel-back]");
+  if (await back.isVisible()) await back.click();
+  else await editor.locator(".admission-back:visible").click();
+}
+
+export async function pickAgent(editor, agentId) {
+  await editor.locator("[data-open-agent]").click();
+  const radio = editor.locator(`input[name=agent-choice][value="${agentId}"]`);
+  const alreadyChecked = await radio.isChecked();
+  await radio.check();
+  if (alreadyChecked) await assignmentBack(editor.page(), editor);
+  await expect(editor.locator("input[name=agent]")).toHaveValue(agentId);
+}
+
+export async function openPermissions(editor) {
+  await editor.locator("[data-open-permissions]").click();
+  return editor;
+}
+
+export async function withPermissions(page, editor, action) {
+  await openPermissions(editor);
+  await action(editor);
+  await assignmentBack(page, editor);
+}
+
+export async function saveAssignment(page, modal) {
+  const save = modal.getByRole("button", {
+    name: /^(Assign agent|Save assignment)$/,
+  });
+  if (!(await save.isVisible())) {
+    await assignmentBack(page, modal);
+    await expect(save).toBeVisible();
+  }
+  await save.click();
   await page.evaluate(() => window.__settingsIdle());
   await expect(modal.getByRole("alert")).toBeHidden();
   await expect(modal).toHaveCount(0);

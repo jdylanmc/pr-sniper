@@ -162,9 +162,7 @@ test("provider summaries isolate failed reads and retain an available retry rout
     "Unavailable",
   );
   await row(page, "GitHub").click();
-  await expect(page.locator(".github-auth-card")).toContainText(
-    "GitHub connection state is unavailable. No connection is assumed.",
-  );
+  await expect(page.locator(".github-auth-card")).toContainText("Unavailable");
   await page.evaluate(() => {
     window.__githubReadFailure = false;
   });
@@ -519,7 +517,7 @@ for (const metadata of ["native", "missing", "rejected"]) {
       "Diagnostics",
     );
     await expect(page.locator('[data-panel-view="utility"] pre')).toHaveText(
-      /\n\nNo diagnostic events recorded\.$/,
+      /\nNo events$/,
     );
     await expect(version).toHaveText(`v${nativeVersion}`);
     await expect(version).toBeVisible();

@@ -18,6 +18,7 @@ test("publication failure stays on its PR with cause and action, not Settings", 
   publication.phase = "pending";
   publication.error =
     "Publication verify_pending: remote comment body does not match the frozen batch. Open this PR on GitHub and inspect the review before retrying; no automatic submission or replacement is allowed.";
+  publication.operation.failure = "credentials";
   await store("seed_queue_state", fixture.state);
   await page.goto("/");
   const navigation = page.getByRole("navigation", {
@@ -41,6 +42,7 @@ test("publication failure stays on its PR with cause and action, not Settings", 
     })
     .getByRole("button", { name: "Evidence and actions" })
     .click();
+  await page.getByLabel("Details", { exact: true }).click();
   const evidence = page.locator("#agent-reviews");
   await expect(evidence).toContainText("example/repo #3");
   await expect(evidence).toContainText(publication.error);
@@ -64,11 +66,6 @@ test("retired publication defaults and repository overrides are not permission c
   await page.goto("/?view=settings");
   await section(page, "Preferences");
   await expect(page.locator("#automatic-publication")).toHaveCount(0);
-  await expect(
-    page.getByText(
-      "Publication permissions are set on each repository's Agent assignments.",
-    ),
-  ).toBeVisible();
   await section(page, "Integrations");
   let modal = await repositorySettings(page, "fixture/publication-policy");
   await expect(
@@ -218,6 +215,7 @@ async function setup(page, state) {
     };
   }, state);
   await page.goto("/?view=queue");
+  await page.locator("[data-queue-details]").evaluate((d) => (d.open = true));
 }
 
 test("publication-off normal output is local-only with no invented manual-publication task", async ({
@@ -233,12 +231,10 @@ test("publication-off normal output is local-only with no invented manual-public
     }),
   ).toHaveCount(0);
   await expect(page.locator("#agent-reviews")).toContainText("repo-owner (22)");
-  await expect(page.locator("#agent-reviews")).toContainText(
-    "Local-only evidence",
-  );
+  await expect(page.locator("#agent-reviews")).toContainText("Local only");
   await expect(
     page.getByRole("checkbox", {
-      name: /Publish or reconcile this exact revision/,
+      name: /^Publish as /,
     }),
   ).toHaveCount(0);
   await expect
@@ -251,9 +247,7 @@ test("pending publication exposes withdrawal without claiming it can undo publis
   page,
 }) => {
   await setup(page, snapshot("pending"));
-  await page
-    .getByRole("button", { name: "Withdraw publication confirmation" })
-    .click();
+  await page.getByRole("button", { name: "Withdraw publication" }).click();
   await expect
     .poll(() => page.evaluate(() => window.__publicationActions))
     .toEqual([
@@ -263,7 +257,7 @@ test("pending publication exposes withdrawal without claiming it can undo publis
       },
     ]);
   await expect(page.locator("#agent-reviews")).toContainText(
-    "Confirmed GitHub review 42: pending",
+    "Review 42: pending",
   );
 });
 
@@ -272,8 +266,8 @@ test("uncertain publication exposes reconciliation and retains unmappable findin
 }) => {
   await setup(page, snapshot("unresolved"));
   const root = page.locator("#agent-reviews");
-  await expect(root).toContainText("GitHub outcome is unresolved");
-  await expect(root).toContainText("1 finding(s) could not be mapped");
+  await expect(root).toContainText("Outcome unresolved");
+  await expect(root).toContainText("1 unmapped");
   await expect(root).toContainText("Defect (source.rs");
   const retry = page.getByRole("button", {
     name: "Reconcile / retry publication",
@@ -297,8 +291,7 @@ test("stale-after-publication preserves its receipt and offers no second batch",
   await setup(page, state);
   const root = page.locator("#agent-reviews");
   await expect(root).toContainText("stale after publication");
-  await expect(root).toContainText("Confirmed GitHub review 42: commented");
-  await expect(root).toContainText("This is not GitHub approval.");
+  await expect(root).toContainText("Review 42: commented");
   await expect(root.locator("img")).toHaveCount(0);
   await expect(root.getByRole("button")).toHaveCount(0);
 });
@@ -312,10 +305,10 @@ test("confirmed publication with failed final checks offers reconciliation, neve
     "Post-publication verification timed out.";
   await setup(page, state);
   await expect(page.locator("#agent-reviews")).toContainText(
-    "Confirmed GitHub review 42: commented",
+    "Review 42: commented",
   );
   await expect(
-    page.getByRole("button", { name: "Withdraw publication confirmation" }),
+    page.getByRole("button", { name: "Withdraw publication" }),
   ).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "Reconcile / retry publication" }),

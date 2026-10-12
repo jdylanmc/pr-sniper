@@ -7,6 +7,8 @@ import {
   openFilters,
   openRule,
   backOne,
+  pickAgent,
+  withPermissions,
 } from "./navigation.mjs";
 import { holdFocusFrames } from "./focus-frames.mjs";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -233,7 +235,7 @@ async function draftPreferences(page) {
 
 for (const mode of ["panel", "legacy", "legacy fallback"]) {
   for (const activation of ["pointer", "keyboard", "nonfocusing"]) {
-    test(`${mode} ${activation} repository completion focuses exact replacements after Cancel, Save, rename, add and removal`, async ({
+    test(`${mode} ${activation} repository completion focuses exact replacements after Cancel, Save, add and removal`, async ({
       page,
       store,
     }) => {
@@ -270,28 +272,7 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
         await expect(neighbor).toContainText("Draft");
       }
 
-      const original = await repoOpener(page).elementHandle();
-      await activate(page, repoOpener(page), activation);
-      let modal = dialog(page, "fixture/target");
-      await modal.locator("details.repository-group > summary").click();
-      await modal
-        .getByRole("button", { name: "Edit repository", exact: true })
-        .click();
-      modal = dialog(page, "Edit repository");
-      await modal
-        .getByLabel("Repository URL", { exact: true })
-        .fill("fixture/renamed");
-      await modal
-        .getByRole("button", { name: "Add & configure", exact: true })
-        .click();
-      await expect(modal).toHaveCount(0);
-      await closeEditor(page);
-      await afterRedraw(page, original, repoOpener(page, "fixture/renamed"));
-      expect((await store("snapshot")).settings.repositories[1]).toMatchObject({
-        id: targetId,
-        name: "fixture/renamed",
-        admission: { mode: "filtered" },
-      });
+      let modal;
 
       const add = page.getByRole("button", {
         name: "Add repository by URL",
@@ -315,15 +296,15 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
         enabled: false,
       });
 
-      const removed = await repoOpener(page, "fixture/renamed").elementHandle();
-      await activate(page, repoOpener(page, "fixture/renamed"), activation);
-      modal = dialog(page, "fixture/renamed");
+      const removed = await repoOpener(page, "fixture/target").elementHandle();
+      await activate(page, repoOpener(page, "fixture/target"), activation);
+      modal = dialog(page, "fixture/target");
       await modal.locator("details.repository-group > summary").click();
       await modal
+        .getByLabel("Type repository name to confirm")
+        .fill("fixture/target");
+      await modal
         .getByRole("button", { name: "Remove repository", exact: true })
-        .click();
-      await dialog(page, "Remove repository?")
-        .getByRole("button", { name: "Remove from settings", exact: true })
         .click();
       await expect(page.getByRole("dialog")).toHaveCount(0);
       await afterRedraw(page, removed, page.locator(".settings-heading h1"));
@@ -508,7 +489,9 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       const original = await edit.elementHandle();
       await activate(page, edit, activation);
       const modal = dialog(page, "Edit assignment");
-      await modal.getByRole("checkbox", { name: /^Publish Comment/ }).uncheck();
+      await withPermissions(page, modal, () =>
+        modal.getByRole("switch", { name: "Publish Comment" }).uncheck(),
+      );
       await modal
         .getByRole("button", { name: "Save assignment", exact: true })
         .click();
@@ -569,13 +552,13 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
       });
       await activate(page, assign, activation);
       const create = dialog(page, "Assign agent");
-      await create
-        .getByRole("combobox", { name: "Agent", exact: true })
-        .selectOption(targetAgentId);
-      await expect(
-        create.getByRole("checkbox", { name: /^Publish Comment/ }),
-      ).not.toBeChecked();
-      await create.getByRole("checkbox", { name: /^Publish Comment/ }).check();
+      await pickAgent(create, targetAgentId);
+      await withPermissions(page, create, async () => {
+        await expect(
+          create.getByRole("switch", { name: "Publish Comment" }),
+        ).not.toBeChecked();
+        await create.getByRole("switch", { name: "Publish Comment" }).check();
+      });
       await create
         .locator("form")
         .getByRole("button", { name: "Assign agent", exact: true })
@@ -689,9 +672,9 @@ for (const focusTarget of ["Running", "Settings"]) {
               .getByRole("button", { name: "Edit assignment", exact: true })
               .click();
             modal = dialog(page, "Edit assignment");
-            await modal
-              .getByRole("checkbox", { name: /^Publish Comment/ })
-              .uncheck();
+            await withPermissions(page, modal, () =>
+              modal.getByRole("switch", { name: "Publish Comment" }).uncheck(),
+            );
           } else {
             await setAllPullRequests(modal, true);
           }

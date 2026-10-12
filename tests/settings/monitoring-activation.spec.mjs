@@ -190,7 +190,7 @@ for (const embedded of [true, false]) {
     ).toBeEnabled();
     await expect(page.locator("[data-genie-confirm]")).toHaveCount(0);
     await expect(
-      page.getByText("All currently open and future matching PRs", {
+      page.getByText("All open and future", {
         exact: true,
       }),
     ).toBeVisible();

@@ -5,7 +5,7 @@ import {
   addByUrl,
   reviewer,
 } from "./repository-provider-fixture.mjs";
-import { repositorySettings, section } from "./navigation.mjs";
+import { repositorySettings, section, pickAgent } from "./navigation.mjs";
 
 test("adding, reopening, configuring, pausing and removing preserves identities and neighbors", async ({
   page,
@@ -39,9 +39,7 @@ test("adding, reopening, configuring, pausing and removing preserves identities 
     name: "Assign agent",
     exact: true,
   });
-  await assignment
-    .getByLabel("Agent", { exact: true })
-    .selectOption(reviewer.id);
+  await pickAgent(assignment, reviewer.id);
   await assignment
     .getByRole("button", { name: "Assign agent", exact: true })
     .click();
@@ -70,18 +68,19 @@ test("adding, reopening, configuring, pausing and removing preserves identities 
   }
   const editor = await repositorySettings(page, "fixture/one");
   await editor.locator(".repository-group > summary").click();
-  await editor
-    .getByRole("button", { name: "Remove repository", exact: true })
-    .click();
-  const confirm = page.getByRole("dialog", {
-    name: "Remove repository?",
+  const remove = editor.getByRole("button", {
+    name: "Remove repository",
     exact: true,
   });
+  const confirmName = editor.getByLabel("Type repository name to confirm");
+  await expect(remove).toBeDisabled();
+  await confirmName.fill("Fixture/One");
+  await expect(remove).toBeDisabled();
+  await confirmName.fill(" fixture/one ");
+  await expect(remove).toBeEnabled();
   expect((await store("snapshot")).settings.repositories).toHaveLength(2);
-  await confirm
-    .getByRole("button", { name: "Remove from settings", exact: true })
-    .click();
-  await expect(confirm).toHaveCount(0);
+  await remove.click();
+  await expect(editor).toHaveCount(0);
   expect((await store("snapshot")).settings.repositories).toEqual([neighbor]);
   expect((await store("snapshot")).settings.launch_at_login).toBe(true);
   await page.reload();
@@ -94,7 +93,7 @@ test("adding, reopening, configuring, pausing and removing preserves identities 
   ).toBeVisible();
 });
 
-test("editing a binding cannot reset an already configured stable repository", async ({
+test("re-adding a repository by URL cannot reset an already configured stable repository", async ({
   page,
   store,
 }) => {
@@ -105,21 +104,24 @@ test("editing a binding cannot reset an already configured stable repository", a
     .getByRole("button", { name: "Cancel repository changes" })
     .click();
   const before = (await store("snapshot")).settings;
-  const editor = await repositorySettings(page, "fixture/one");
-  await editor.locator(".repository-group > summary").click();
-  await editor
-    .getByRole("button", { name: "Edit repository", exact: true })
+  await page
+    .getByRole("button", { name: "Add repository by URL", exact: true })
     .click();
   const binding = page.getByRole("dialog", {
-    name: "Edit repository",
+    name: "Add repository by URL",
     exact: true,
   });
   await binding
-    .getByLabel("Repository URL")
+    .getByLabel("Repository URL", { exact: true })
     .fill("https://github.com/FIXTURE/ONE.git");
+  await binding
+    .getByLabel("Acting GitHub account", { exact: true })
+    .selectOption("22");
   await binding
     .getByRole("button", { name: "Add & configure", exact: true })
     .click();
-  await expect(editor).toBeVisible();
+  await expect(
+    page.getByRole("dialog", { name: "fixture/one", exact: true }),
+  ).toBeVisible();
   expect((await store("snapshot")).settings).toEqual(before);
 });

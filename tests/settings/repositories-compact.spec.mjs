@@ -6,6 +6,9 @@ import {
   openFilters,
   openRule,
   backOne,
+  pickAgent,
+  openPermissions,
+  assignmentBack,
 } from "./navigation.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -232,11 +235,12 @@ test("all Publish Reply and approval modes remain explicit on the automatic sole
     await parent.locator(".assignment-row [data-edit]").click({ force: true });
     const editor = modal(page, "Edit assignment");
     await expect(
-      editor.getByRole("checkbox", { name: /^Primary/ }),
+      editor.getByRole("switch", { name: "Primary", exact: true }),
     ).toBeChecked();
     await expect(
-      editor.getByRole("checkbox", { name: /^Primary/ }),
+      editor.getByRole("switch", { name: "Primary", exact: true }),
     ).toBeDisabled();
+    await openPermissions(editor);
     if (!mask)
       await expect(
         editor.getByRole("radio", { name: "Neither", exact: true }),
@@ -251,6 +255,7 @@ test("all Publish Reply and approval modes remain explicit on the automatic sole
     await editor.locator("[name=comment]").setChecked(permissions.comment);
     await editor.locator("[name=reply]").setChecked(permissions.reply);
     await editor.locator(`[name=action][value=${action}]`).check();
+    await assignmentBack(page, editor);
     await editor.getByRole("button", { name: "Save assignment" }).click();
     await expect(editor).toHaveCount(0);
     const saved = await store("saved_resources");
@@ -288,12 +293,12 @@ test("seven UI assignments stay distinct and explicit multiple-primary selection
       body: await editor.ariaSnapshot(),
       contentType: "text/plain",
     });
-    await editor
-      .getByRole("combobox", { name: "Agent", exact: true })
-      .selectOption(id(100 + index));
+    await pickAgent(editor, id(100 + index));
+    await openPermissions(editor);
     await editor.locator("[name=comment]").uncheck();
     await expect(editor.locator("[name=action][value=none]")).toBeChecked();
     await expect(editor.locator("[name=reply]")).not.toBeChecked();
+    await assignmentBack(page, editor);
     await editor
       .getByRole("button", { name: "Assign agent", exact: true })
       .click();
@@ -315,13 +320,17 @@ test("seven UI assignments stay distinct and explicit multiple-primary selection
       .locator("[data-edit]")
       .dispatchEvent("click");
     const editor = modal(page, "Edit assignment");
+    await openPermissions(editor);
     await expect(editor.locator("[data-primary-permissions]")).toBeHidden();
+    await assignmentBack(page, editor);
     await editor.locator("[name=primary]").check();
+    await openPermissions(editor);
     await expect(editor.locator("[data-primary-permissions]")).toBeVisible();
     await expect(editor.locator("[name=action][value=none]")).toBeChecked();
     await expect(editor.locator("[name=reply]")).not.toBeChecked();
     await expect(editor.locator("[name=comment]")).not.toBeChecked();
     await capture(page, testInfo, `independent-permissions-${index}`);
+    await assignmentBack(page, editor);
     await editor
       .getByRole("button", { name: "Save assignment", exact: true })
       .click();
@@ -467,9 +476,7 @@ for (const failure of ["write", "conflict"]) {
       await editor
         .getByRole("button", { name: "Cancel repository changes" })
         .click();
-      await page
-        .getByRole("button", { name: "Discard draft and reload" })
-        .click();
+      await page.getByRole("button", { name: "Reload", exact: true }).click();
       await expect(page.locator("#save-status")).toHaveText(
         "All changes saved",
       );
@@ -539,7 +546,7 @@ test("unbind cancellation, write rejection and retry retain permissions, neighbo
   await page.evaluate(() => window.__settingsIdle());
   parent = await repositorySettings(page, "fixture/compact");
   await expect(parent.locator(".repository-identity")).toContainText(
-    "No account selected",
+    "No account",
   );
   await expect(
     parent.getByRole("button", { name: "Configure scope" }),
@@ -548,11 +555,9 @@ test("unbind cancellation, write rejection and retry retain permissions, neighbo
   await expect(
     parent.locator(".connection-form button[type=submit]"),
   ).toBeDisabled();
-  await parent
-    .getByRole("button", { name: "Remove repository", exact: true })
-    .click();
-  confirmation = modal(page, "Remove repository?");
-  await close(confirmation);
+  await expect(
+    parent.getByRole("button", { name: "Remove repository", exact: true }),
+  ).toBeDisabled();
   expect((await store("snapshot")).settings).toEqual(expected);
 });
 
@@ -563,7 +568,7 @@ test("unavailable bound accounts remain identified and cannot silently rebind du
   const initial = await seed(store);
   // The default boundary returns no connected accounts, not a replacement actor.
   await start(page, store);
-  await expect(row(page)).toContainText("GitHub / Account unavailable");
+  await expect(row(page)).toContainText("GitHub / Unavailable");
   await expect(row(page)).toContainText("Reconnect account");
   const parent = await repositorySettings(page, "fixture/compact");
   await parent.locator("details.repository-group > summary").click();
@@ -571,27 +576,10 @@ test("unavailable bound accounts remain identified and cannot silently rebind du
     parent.locator(".connection-form button[type=submit]"),
   ).toBeDisabled();
   await expect(parent.locator(".connection-status")).toContainText(
-    "must be reconnected",
+    "Reconnect required",
   );
-  await parent
-    .getByRole("button", { name: "Edit repository", exact: true })
-    .click();
-  const editor = modal(page, "Edit repository");
-  await expect(editor.getByLabel("Acting GitHub account")).toHaveValue("22");
-  await expect(editor.locator("[name=account] option:checked")).toHaveText(
-    "Saved account - reconnect required",
-  );
-  await expect(
-    editor.getByRole("button", { name: "Add & configure", exact: true }),
-  ).toBeDisabled();
-  await expect(editor.locator("[role=status]")).toContainText("Reconnect");
-  await expect(
-    editor.getByRole("button", { name: "Reconnect GitHub account" }),
-  ).toBeVisible();
   await capture(page, testInfo, "unavailable-acting-account");
   expect((await store("snapshot")).settings).toEqual(initial);
-  await editor.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(row(page)).toBeFocused();
 });
 
 test("verified watched people, draft cancellation and keyboard controls remain usable at 320x300", async ({
@@ -719,9 +707,7 @@ for (const resolution of ["Save", "Cancel"]) {
     await unbind.focus();
     await unbind.press("Enter");
     await expect(modal(page, "Unbind repository account?")).toHaveCount(0);
-    await expect(editor.getByRole("alert")).toContainText(
-      "Save or Cancel repository changes before unbinding",
-    );
+    await expect(editor.getByRole("alert")).toContainText("Unsaved changes");
     await expect(unbind).toBeFocused();
     await expect(editor.locator(".assignment-row")).toHaveCount(0);
     expect(await allPullRequests(editor).isChecked()).toBe(flipped);
@@ -764,9 +750,6 @@ for (const resolution of ["Save", "Cancel"]) {
       .getByRole("button", { name: "Unbind account", exact: true })
       .click();
     const confirmation = modal(page, "Unbind repository account?");
-    await expect(confirmation).toContainText(
-      "Assignments, permissions and completed evidence are retained",
-    );
     await confirmation
       .getByRole("button", { name: "Unbind account", exact: true })
       .click();
@@ -845,9 +828,6 @@ test("R2 correction: saved legacy interval and timezone remain visible but expli
   const schedule = editor.locator("[data-global-schedule]");
   await expect(schedule).toContainText("Every 7 minutes");
   await expect(schedule).toContainText("America/New_York");
-  await expect(schedule).toContainText(
-    "Polling is blocked until you choose a global five-field cron schedule in Preferences",
-  );
   await expect(
     editor.locator("[name=cron],[name=minutes],[name=timezone],#global-cron"),
   ).toHaveCount(0);

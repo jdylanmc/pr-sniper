@@ -11,6 +11,9 @@ import {
   saveAssignment,
   seedBoundRepositories,
   setAllPullRequests,
+  withPermissions,
+  openPermissions,
+  assignmentBack,
 } from "./navigation.mjs";
 
 for (const [scenario, expression, timezone] of [
@@ -52,7 +55,9 @@ for (const [scenario, expression, timezone] of [
       settings.defaults.schedule,
     );
     const modal = await assignment(page, "fixture/schedules", 0);
-    await modal.getByRole("checkbox", { name: /^Publish Comment/ }).check();
+    await withPermissions(page, modal, () =>
+      modal.getByRole("switch", { name: "Publish Comment" }).check(),
+    );
     await saveAssignment(page, modal);
     saved = (await store("saved_resources")).settings;
     expect(saved.repositories[0].assignments[0]).toMatchObject({
@@ -241,7 +246,7 @@ test("legacy single doctrines become ordered selections, rename preserves refere
     .first()
     .getByRole("button", { name: "Delete", exact: true })
     .click();
-  await expect(page.locator("#error")).toContainText("used by an Agent");
+  await expect(page.locator("#error")).toContainText("In use by an Agent");
   expect((await store("snapshot")).settings.doctrines).toHaveLength(2);
   modal = await editAgent(page);
   await modal.locator("[data-open-doctrines]").click();
@@ -279,9 +284,10 @@ test("primary and independent opt-ins are reachable without scoped polling or le
     name: "Edit assignment",
     exact: true,
   });
-  const primary = modal.getByRole("checkbox", { name: /^Primary/ });
+  const primary = modal.getByRole("switch", { name: "Primary", exact: true });
   await expect(primary).toBeChecked();
   await expect(primary).toBeDisabled();
+  await openPermissions(modal);
   await expect(
     modal.getByRole("radio", { name: "Approve", exact: true }),
   ).not.toBeChecked();
@@ -296,6 +302,7 @@ test("primary and independent opt-ins are reachable without scoped polling or le
   await modal
     .getByRole("radio", { name: "Approve & Merge", exact: true })
     .check();
+  await assignmentBack(page, modal);
   await modal
     .getByRole("button", { name: "Save assignment", exact: true })
     .click();
@@ -328,13 +335,15 @@ test("primary and independent opt-ins are reachable without scoped polling or le
     .getByRole("button", { name: "Edit assignment", exact: true })
     .click();
   modal = page.getByRole("dialog", { name: "Edit assignment", exact: true });
-  await modal.getByRole("checkbox", { name: /^Primary/ }).check();
+  await modal.getByRole("switch", { name: "Primary", exact: true }).check();
+  await openPermissions(modal);
   await expect(
     modal.getByRole("radio", { name: "Approve", exact: true }),
   ).not.toBeChecked();
   await expect(
     modal.getByRole("radio", { name: "Approve & Merge", exact: true }),
   ).not.toBeChecked();
+  await assignmentBack(page, modal);
   await modal
     .getByRole("button", { name: "Save assignment", exact: true })
     .click();
@@ -370,9 +379,7 @@ test("global cron helper and capacity save through the shared readiness surface 
   expect(resources.settings.capacity).toBe(6);
   expect(resources.settings.defaults.automatic_agent_start).toBe(false);
   expect(resources.readiness.configuration_ready).toBe(false);
-  await expect(page.locator("[data-readiness]")).toContainText(
-    "Saved setup incomplete",
-  );
+  await expect(page.locator("[data-readiness]")).toContainText("Incomplete:");
   await page.locator("#global-cron").fill("invalid");
   await page
     .getByRole("button", { name: "Save preferences", exact: true })

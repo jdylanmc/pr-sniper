@@ -1,6 +1,10 @@
 import { expect, test, captureInspector, nativeCapacity } from "./fixtures.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
-import { closeDialog, repositorySettings } from "./navigation.mjs";
+import {
+  closeDialog,
+  repositorySettings,
+  withPermissions,
+} from "./navigation.mjs";
 import { createHash } from "node:crypto";
 
 async function actionFixture(store, observe = true, intelligence) {
@@ -142,10 +146,7 @@ test("confirmed peer approval is shown without fabricating a merging author's vo
   });
   await page.goto("/?view=queue");
   await expect(page.locator("#handoff-queue")).toContainText(
-    "Confirmed provider approval 144 by reviewer 44",
-  );
-  await expect(page.locator("#handoff-queue")).toContainText(
-    "not an inferred PR Sniper approval receipt",
+    "Provider approval 144 by 44",
   );
   const snapshot = await store("monitoring_snapshot");
   expect(snapshot.items[0].action_status.provider_approval).toMatchObject({
@@ -183,11 +184,11 @@ test("retired global and repository publication flags cannot change assignment r
         await page.goto("/?view=queue");
         if (publish)
           await expect(page.locator("#agent-reviews")).toContainText(
-            "Publication: automatic when eligible",
+            "Publication: automatic",
           );
         else
           await expect(page.locator("#agent-reviews")).toContainText(
-            "Local-only evidence",
+            "Local only",
           );
       }
     }
@@ -275,15 +276,11 @@ for (const surface of ["standalone", "panel"]) {
       await diagnostics.locator("summary").click();
       await expect(diagnostics).not.toContainText("later-final-model");
       if (state === "absent") {
-        await expect(diagnostics).toContainText(
-          "No recorded job configuration available.",
-        );
+        await expect(diagnostics).toHaveText("Recorded job IntelligenceNone");
         await expect(diagnostics.locator("h4")).toHaveCount(0);
         return;
       }
-      await expect(diagnostics).not.toContainText(
-        "No recorded job configuration available.",
-      );
+      await expect(diagnostics).not.toHaveText("Recorded job IntelligenceNone");
       await expect(diagnostics.locator("h4")).toHaveText([
         "Job final-operation-128",
       ]);
@@ -292,10 +289,13 @@ for (const surface of ["standalone", "panel"]) {
       );
       if (state === "legacy") {
         await expect(diagnostics).toContainText(
-          "Requested reasoning effortNot recorded (legacy evidence)",
+          "Requested reasoning effortNot recorded",
         );
         await expect(diagnostics).toContainText(
-          "Actual reasoning effort and context window were not recorded.",
+          "Requested context windowNot recorded",
+        );
+        await expect(diagnostics).toContainText(
+          "Actual IntelligenceNot recorded",
         );
       } else {
         await expect(diagnostics).toContainText(
@@ -312,13 +312,13 @@ for (const surface of ["standalone", "panel"]) {
         await expect(diagnostics).toContainText("Actual modelconfigured-model");
         if (state === "completed")
           await expect(diagnostics).toContainText(
-            "Reasoning effort: high. Context window: long_context.",
+            "Actual IntelligenceEffort: high; context: long_context",
           );
       } else {
         await expect(diagnostics).toContainText("Actual modelNot recorded");
         await expect(diagnostics).toContainText("SessionNot recorded");
         await expect(diagnostics).toContainText(
-          "Actual reasoning effort and context window were not recorded.",
+          "Actual IntelligenceNot recorded",
         );
       }
       if (state === "completed") {
@@ -332,13 +332,9 @@ for (const surface of ["standalone", "panel"]) {
         const captured = page.locator(".work-configuration").filter({
           hasText: "Assigned Agent configuration",
         });
-        await expect(captured).toContainText("Captured for this execution.");
         await expect(captured).toContainText("long_context");
         await expect(captured).not.toContainText("later-final-model");
-        const raw = page.getByText(
-          "Final review, peer and human context, complete guide",
-          { exact: true },
-        );
+        const raw = page.getByText("Final review context", { exact: true });
         await raw.click();
         const finalEvidence = raw.locator("..");
         await expect(finalEvidence).toContainText("actual-final-session-128");
@@ -421,7 +417,9 @@ async function optOutInSettings(page) {
     name: "Edit assignment",
     exact: true,
   });
-  await modal.getByRole("radio", { name: "Neither", exact: true }).check();
+  await withPermissions(page, modal, () =>
+    modal.getByRole("radio", { name: "Neither", exact: true }).check(),
+  );
   await modal
     .getByRole("button", { name: "Save assignment", exact: true })
     .click();
@@ -450,7 +448,7 @@ for (const destination of ["panel", "legacy queue"]) {
     fixture.state.actions = fixture.actions;
     await store("seed_queue_state", fixture.state);
     await page.goto("/");
-    await expect(page.locator("#handoff-queue")).toContainText("Blocked");
+    await expect(page.locator("#handoff-queue")).toContainText("Failed");
     await optOutInSettings(page);
     const settings = (await store("snapshot")).settings;
     expect(settings.repositories[0].assignments[0].actions).toEqual({
@@ -469,15 +467,20 @@ for (const destination of ["panel", "legacy queue"]) {
     await expect(page.locator("#handoff-queue")).toContainText(
       destination === "panel" ? "Ready for you" : "Ready for your final review",
     );
-    if (destination === "panel")
+    if (destination === "panel") {
       await page
         .getByRole("button", { name: "Evidence and actions", exact: true })
         .click();
+      await expect(page.locator("[data-item-more]")).not.toBeEmpty();
+      await page
+        .locator("[data-queue-details]")
+        .evaluate((details) => (details.open = true));
+    }
     const evidence =
       destination === "panel"
-        ? page.locator("[data-item-evidence]")
+        ? page.locator("[data-queue-details]")
         : page.locator("#handoff-queue");
-    await expect(evidence).toContainText("Personal review: Required");
+    await expect(evidence).toContainText("personal review Required");
     await expect(evidence).toContainText(
       "Optional action evidence unavailable.",
     );
@@ -486,7 +489,7 @@ for (const destination of ["panel", "legacy queue"]) {
     );
     await expect(
       evidence.getByRole("button", {
-        name: "Refresh / retry provider evidence",
+        name: "Retry provider evidence",
       }),
     ).toBeDisabled();
     await expect(
@@ -538,9 +541,13 @@ test("retained panel detail reports refresh failure and allows a real native ret
   await page
     .getByRole("button", { name: "Evidence and actions", exact: true })
     .click();
-  const evidence = page.locator("[data-item-evidence]");
+  await expect(page.locator("[data-item-more]")).not.toBeEmpty();
+  await page
+    .locator("[data-queue-details]")
+    .evaluate((details) => (details.open = true));
+  const evidence = page.locator("[data-queue-details]");
   const retry = evidence.getByRole("button", {
-    name: "Refresh / retry provider evidence",
+    name: "Retry provider evidence",
   });
   await expect(retry).toBeEnabled();
   await retry.click();
@@ -559,7 +566,7 @@ test("retained panel detail reports refresh failure and allows a real native ret
   await expect(retry).toBeDisabled();
   await expect(evidence).toContainText("Optional action evidence unavailable.");
   const snapshot = await store("monitoring_snapshot");
-  expect(snapshot.items[0].state).toBe("blocked");
+  expect(snapshot.items[0].state).toBe("failed");
   expect(snapshot.items[0].action_status.effects).toEqual([]);
   expect(snapshot.items[0].action_status.final_review).toBeNull();
 });
@@ -615,10 +622,7 @@ test("panel primary-final route exposes only that final and returns to its exact
     "Captured rolePrimary Agent",
   );
   await expect(page.locator("[data-work-context]")).toContainText(
-    "Primary final review (separate from normal passes)",
-  );
-  await expect(page.locator(".work-configuration")).toContainText(
-    "Captured for this execution.",
+    "Primary final review",
   );
   await expect(page.locator(".work-configuration")).toContainText(
     "Review correctness.",
@@ -701,7 +705,7 @@ test("primary final inspector distinguishes waiting, active, stopping, failed an
       state === "running" ? 1 : 0,
     );
     await expect(page.locator(".job-facts")).toContainText(
-      "Primary final review (separate from normal passes)",
+      "Primary final review",
     );
     await expect(page.locator(".job-facts")).not.toContainText("Review count");
     await expect(page.locator("#agent-reviews article")).toHaveCount(0);
@@ -722,7 +726,7 @@ test("current normal clearance hands off personally and exposes a distinct durab
     "Ready for your final review",
   );
   await expect(page.locator("#handoff-queue")).toContainText(
-    "Personal review: Required",
+    "personal review Required",
   );
   await expect(page.locator("#handoff-queue")).toContainText(
     "Primary final full review",
@@ -800,11 +804,9 @@ test("approval receipt retains personal handoff, whereas confirmed merge is term
   await expect(page.locator("#handoff-queue")).toContainText(
     "GitHub approval: confirmed",
   );
+  await expect(page.locator("#handoff-queue")).toContainText("receipt 401; 22");
   await expect(page.locator("#handoff-queue")).toContainText(
-    "Confirmed receipt 401; acting account 22",
-  );
-  await expect(page.locator("#handoff-queue")).toContainText(
-    "Personal review: Required",
+    "personal review Required",
   );
   await store("set_notifications_enabled", { enabled: true });
   const ledger = await store("observe_notifications");
@@ -834,7 +836,7 @@ test("approval receipt retains personal handoff, whereas confirmed merge is term
     "Merged on GitHub",
   );
   await expect(page.locator("#handoff-queue")).toContainText(
-    "Personal human review is not inferred",
+    "personal review Not inferred",
   );
   await expect(page.locator("#handoff-queue")).not.toContainText(
     "Ready for your final review",
@@ -878,30 +880,48 @@ test("unknown effects expose original reconciliation rather than another approve
   await page.goto("/");
   await optOutInSettings(page);
   await page.reload();
-  await page
-    .getByRole("navigation", { name: "Application destinations" })
-    .getByRole("button", { name: "Queue", exact: true })
-    .click();
-  await expect(page.locator("#handoff-queue")).toContainText(
-    "Failed / recovery required",
-  );
+  // Every parked failure is one human Needs-attention row with Retry; Running
+  // never lists it.
+  await expect(page.locator("#handoff-queue article")).toHaveCount(1);
+  await expect(
+    page.locator('#handoff-queue [data-queue-group="attention"] article'),
+  ).toHaveCount(1);
   await expect(page.locator("#handoff-queue")).not.toContainText(
     "Ready for you",
   );
   await page
-    .getByRole("button", { name: "Evidence and actions", exact: true })
+    .getByRole("navigation", { name: "Application destinations" })
+    .getByRole("button", { name: "Running", exact: true })
     .click();
-  await expect(page.locator("[data-item-evidence]")).toContainText(
-    "No action receipt",
+  await expect(page.locator('[data-work-group="failures"]')).toHaveCount(0);
+  await expect(page.locator("[data-running-list] article")).toHaveCount(0);
+  await store("panel_navigate", {
+    route: {
+      tab: "queue",
+      detail: { type: "item", item_id: "action-iteration" },
+    },
+  });
+  await page.reload();
+  await expect(page.locator("[data-queue-status]")).toHaveAttribute(
+    "data-queue-status",
+    "failed",
   );
+  await expect(page.locator("[data-item-more]")).not.toBeEmpty();
+  await page
+    .locator("[data-queue-details]")
+    .evaluate((details) => (details.open = true));
   await expect(page.locator("[data-item-evidence]")).toContainText(
-    "Personal review: Not inferred.",
+    "Action unresolved",
+  );
+  await expect(page.locator("[data-queue-details]")).toContainText(
+    "no receipt",
+  );
+  await expect(page.locator("[data-queue-details]")).toContainText(
+    "personal review Not inferred",
   );
   const before = (await store("monitoring_snapshot")).items[0].action_status
     .effects[0];
-  await page
-    .getByRole("button", { name: "Reconcile original action (no resend)" })
-    .click();
+  await page.getByRole("button", { name: "Reconcile original action" }).click();
   await expect
     .poll(
       async () =>
@@ -920,9 +940,7 @@ test("publication off shows local-only evidence while an existing pending batch 
 }) => {
   const fixture = await actionFixture(store);
   await page.goto("/?view=queue");
-  await expect(page.locator("#agent-reviews")).toContainText(
-    "Local-only evidence",
-  );
+  await expect(page.locator("#agent-reviews")).toContainText("Local only");
   await expect(
     page.getByRole("button", { name: "Publish review", exact: true }),
   ).toHaveCount(0);
@@ -936,6 +954,11 @@ test("publication off shows local-only evidence while an existing pending batch 
   await store("seed_queue_state", fixture.state);
   await page.reload();
   await expect(page.locator("#agent-reviews")).toContainText("original batch");
+  await page
+    .locator("#handoff-queue")
+    .getByRole("button", { name: "Evidence and actions" })
+    .click();
+  await page.locator("[data-queue-details]").evaluate((d) => (d.open = true));
   await expect(
     page.getByRole("button", {
       name: "Reconcile / retry publication",

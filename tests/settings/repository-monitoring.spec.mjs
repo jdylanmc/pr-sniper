@@ -1,7 +1,12 @@
 import { test, expect } from "./fixtures.mjs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { section, backFromEditor, setAllPullRequests } from "./navigation.mjs";
+import {
+  section,
+  backFromEditor,
+  setAllPullRequests,
+  pickAgent,
+} from "./navigation.mjs";
 import {
   providerFixture,
   repositoryPage,
@@ -97,7 +102,7 @@ test("failed new configuration Save cannot enable a later nested assignment Save
     name: "Assign agent",
     exact: true,
   });
-  await assign.getByLabel("Agent", { exact: true }).selectOption(reviewer.id);
+  await pickAgent(assign, reviewer.id);
   await assign
     .getByRole("button", { name: "Assign agent", exact: true })
     .click();
@@ -124,7 +129,7 @@ test("failed new configuration Save cannot enable a later nested assignment Save
   await expect(monitoring).toBeChecked();
   await expect(
     modal.locator("[data-repository-monitoring-detail]"),
-  ).toContainText("Starts after you save valid configuration");
+  ).toContainText("Starts on Save");
   await backFromEditor(page, modal);
   const row = page.locator(`[data-repository="${repository.id}"]`);
   await expect(row.locator("[data-monitoring-state]")).toHaveText("Disabled");
@@ -183,7 +188,7 @@ test("nested assignment Save refreshes the editor and listing from actual saved 
     name: "Assign agent",
     exact: true,
   });
-  await assign.getByLabel("Agent", { exact: true }).selectOption(reviewer.id);
+  await pickAgent(assign, reviewer.id);
   await assign
     .getByRole("button", { name: "Assign agent", exact: true })
     .click();
@@ -253,7 +258,7 @@ for (const width of [280, 320]) {
       const lists = page.locator(".repository-list");
       const open = page.locator(`[data-repository="${repoId}"]`);
       await expect(open).toContainText(
-        failedAccount ? "Reconnect account" : "Global Monitoring paused",
+        failedAccount ? "Reconnect account" : "Paused",
       );
       const originalSize = await toggle(page).evaluate((node) =>
         parseFloat(getComputedStyle(node).fontSize),
@@ -371,9 +376,7 @@ for (const width of [280, 320]) {
       await page.keyboard.press("Space");
       if (failedAccount) {
         const error = page.locator("#error");
-        await expect(error).toContainText(
-          "Connect the PR Sniper GitHub OAuth App",
-        );
+        await expect(error).toContainText("Reconnect required");
         await expect(toggle(page)).toHaveAttribute("aria-checked", "false");
         await error.scrollIntoViewIfNeeded();
         await expect(error).toBeInViewport();
@@ -382,7 +385,7 @@ for (const width of [280, 320]) {
         });
       } else {
         await expect(toggle(page)).toHaveAttribute("aria-checked", "true");
-        await expect(open).toContainText("Global Monitoring paused");
+        await expect(open).toContainText("Paused");
       }
       await enlargeText();
       await fullFocus(failedAccount ? "rejected-enable" : "paused-enable");
@@ -555,7 +558,7 @@ for (const embedded of [true, false]) {
         await expect(toggle(page)).toBeFocused();
         await expect(
           page.locator(`[data-repository="${repoId}"]`),
-        ).toContainText("Global Monitoring paused");
+        ).toContainText("Paused");
         expect((await store("automation_snapshot")).paused).toBe(true);
         await enlargeText();
         for (const row of await contained()) {
@@ -596,7 +599,7 @@ for (const embedded of [true, false]) {
     await expect(toggle(page)).toHaveAttribute("aria-checked", "true");
     await expect(toggle(page)).toBeFocused();
     await expect(page.locator(`[data-repository="${repoId}"]`)).toContainText(
-      "Global Monitoring paused",
+      "Paused",
     );
     let saved = (await store("snapshot")).settings;
     expect(saved.repositories[0].enabled).toBe(true);
@@ -800,9 +803,7 @@ test("account loss stays separate from enablement and allows a durable off switc
     false,
   );
   await toggle(page).click();
-  await expect(page.locator("#error")).toContainText(
-    "Connect the PR Sniper GitHub OAuth App",
-  );
+  await expect(page.locator("#error")).toContainText("Reconnect required");
   await expect(toggle(page)).toHaveAttribute("aria-checked", "false");
   expect((await store("snapshot")).settings.repositories[0].enabled).toBe(
     false,
@@ -838,7 +839,7 @@ test("new rows stay disabled until valid Save and an explicit off choice survive
     name: "Assign agent",
     exact: true,
   });
-  await assign.getByLabel("Agent", { exact: true }).selectOption(reviewer.id);
+  await pickAgent(assign, reviewer.id);
   await assign
     .getByRole("button", { name: "Assign agent", exact: true })
     .click();

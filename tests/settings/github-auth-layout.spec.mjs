@@ -106,7 +106,7 @@ for (const viewport of [
     await mockAuth(page, { state: "idle" });
     await page.goto("/?view=settings");
     const card = page.locator(".github-auth-card");
-    await expect(card).toContainText("2 GitHub accounts");
+    await expect(card).toContainText("2 accounts");
     await expectContained(page);
     await expect(
       card.getByRole("button", { name: /Load repositories/ }),
@@ -154,7 +154,7 @@ test("copy feedback and keyboard focus survive unchanged auth polling", async ({
   await expect
     .poll(() => page.evaluate(() => window.__authReads))
     .toBeGreaterThan(reads + 3);
-  await expect(card).toContainText("Code copied");
+  await expect(card).toContainText("Copied");
   await expect(copy).toBeFocused();
   await expect(copy).toHaveText("Copy code");
 
@@ -165,14 +165,14 @@ test("copy feedback and keyboard focus survive unchanged auth polling", async ({
     };
   });
   await expect(card).toContainText("JKLM-NOPQ");
-  await expect(card).not.toContainText("Code copied");
+  await expect(card).not.toContainText("Copied");
   await copy.click();
   await expect
     .poll(() => page.evaluate(() => window.__copiedCodes))
     .toEqual(["ABCD-EFGH", "JKLM-NOPQ"]);
   await card.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(card).not.toContainText("JKLM-NOPQ");
-  await expect(card).not.toContainText("Code copied");
+  await expect(card).not.toContainText("Copied");
   await expect(copy).toHaveCount(0);
 });
 
@@ -188,9 +188,7 @@ test("clipboard denial leaves the code selectable and explains manual copying", 
   await expect
     .poll(() => page.evaluate(() => window.__authReads))
     .toBeGreaterThan(reads + 3);
-  await expect(card.getByRole("alert")).toContainText(
-    "Could not copy. Select the code and copy it manually.",
-  );
+  await expect(card.getByRole("alert")).toContainText("Copy failed");
   const code = card.locator("code").filter({ hasText: "ABCD-EFGH" });
   await expect(code).toBeVisible();
   expect(
@@ -200,7 +198,7 @@ test("clipboard denial leaves the code selectable and explains manual copying", 
   await page.evaluate(() => (window.__clipboardFailure = false));
   await copy.click();
   await expect(card.getByRole("alert")).toHaveCount(0);
-  await expect(card).toContainText("Code copied");
+  await expect(card).toContainText("Copied");
 });
 
 for (const clipboardFailure of [false, true]) {
@@ -224,7 +222,7 @@ for (const clipboardFailure of [false, true]) {
 
     await page.evaluate(() => window.__clipboardGate.resolve());
     await expect(card).toContainText(
-      clipboardFailure ? "Could not copy" : "Code copied",
+      clipboardFailure ? "Copy failed" : "Copied",
     );
     await expect(copy).toBeFocused();
     await expect(copy).not.toHaveAttribute("aria-disabled", "true");
@@ -247,6 +245,6 @@ test("a late clipboard reply cannot restore cancelled code or steal focus", asyn
     .poll(() => page.evaluate(() => window.__copiedCodes))
     .toEqual(["ABCD-EFGH"]);
   await expect(add).toBeFocused();
-  await expect(card).not.toContainText("Code copied");
+  await expect(card).not.toContainText("Copied");
   await expect(card).not.toContainText("ABCD-EFGH");
 });

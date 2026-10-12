@@ -136,11 +136,11 @@ test("one global repository read exposes seven ordered independent jobs and immu
     "Global scan: cron:*/15 * * * *:UTC",
   );
   await expect(page.locator("#schedule-health")).toContainText(
-    "repository read; fans out to the scan's assignments",
+    "assignment None",
   );
   await expect(page.locator("#review-jobs article")).toHaveCount(7);
   await expect(page.locator("#review-jobs article").first()).toContainText(
-    "Trigger: watched author and requested reviewer",
+    "watched author and requested reviewer",
   );
   await page.reload();
   await expect(page.locator("#agent-reviews article")).toHaveCount(7);
@@ -196,9 +196,7 @@ for (const terminal of ["closed", "merged"]) {
     await expect(page.locator("#agent-reviews")).toContainText(
       "Normal pass 2; iteration 2 (second); queue order 2",
     );
-    await expect(page.locator("#agent-reviews")).toContainText(
-      "cause: reopened",
-    );
+    await expect(page.locator("#agent-reviews")).toContainText("; reopened");
     expect((await store("monitoring_snapshot")).jobs[0].head_sha).toBe(
       next.head_sha,
     );
@@ -215,9 +213,6 @@ test("a retained legacy destination alias selects its adopted iteration without 
   await store("select_queue_item", { itemId: "legacy-exact-destination" });
   await page.goto("/?view=queue");
   await expect(page.locator("#agent-reviews article")).toHaveCount(1);
-  await expect(page.locator("#handoff-queue")).toContainText(
-    "Showing evidence and actions for the selected account, repository and revision.",
-  );
   await expect(
     page.locator('#handoff-queue article[data-selected="true"]'),
   ).toHaveCount(1);
@@ -233,7 +228,7 @@ test("sticky tracking without assignments is visible without fabricating Agent j
   await iterationFixture(store, 0);
   await page.goto("/?view=queue");
   await expect(page.locator("#review-jobs")).toContainText(
-    "tracked; no Agent jobs yet",
+    "1 tracked; no jobs",
   );
   await expect(page.locator("#agent-reviews article")).toHaveCount(0);
   expect((await store("monitoring_snapshot")).tracked).toHaveLength(1);

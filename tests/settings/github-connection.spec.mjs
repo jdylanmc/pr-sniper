@@ -139,9 +139,6 @@ test("verifying GitHub preserves drafts and does not enable automation", async (
   await expect(repositoryConnectionStatus(card)).toContainText(
     "jdylanmc (6954990)",
   );
-  await expect(repositoryConnectionStatus(card)).toContainText(
-    "not publication authorization",
-  );
   await closeDialog(page);
   const modal = await editAgent(page);
   const prompt = modal.locator("textarea[name=prompt]");
@@ -164,17 +161,14 @@ test("verifying GitHub preserves drafts and does not enable automation", async (
 });
 
 for (const [error, expected] of [
-  ["signed_out", "OAuth authorization is missing, expired, or rejected"],
-  ["wrong_identity", "does not match"],
-  ["missing_read_permission", "denied repository or pull-request read"],
-  ["repository_unavailable", "A 404 does not prove the repository is absent"],
-  ["missing_scope", "no longer grants the required repo scope"],
-  ["scope_unverified", "No missing scope or grant is established"],
-  ["organization_policy_denied", "organization policy or SAML single sign-on"],
-  [
-    "organization_policy_denied_with_missing_scope",
-    "Reconnecting alone cannot bypass organization policy",
-  ],
+  ["signed_out", "Reconnect required"],
+  ["wrong_identity", "Wrong account"],
+  ["missing_read_permission", "Access denied"],
+  ["repository_unavailable", "Repository unavailable"],
+  ["missing_scope", "Reconnect required"],
+  ["scope_unverified", "Scope unverified"],
+  ["organization_policy_denied", "Blocked by organization"],
+  ["organization_policy_denied_with_missing_scope", "Blocked by organization"],
   [{ provider_rejected_status: 422 }, "HTTP 422"],
   [
     {
@@ -185,13 +179,13 @@ for (const [error, expected] of [
         missing_repo_scope: false,
       },
     },
-    "Retry after 60 seconds",
+    "Rate limited · 60s",
   ],
-  ["rate_limited", "rate limited"],
-  ["network", "Could not reach GitHub securely"],
-  ["provider_failure", "could not complete this read"],
-  ["incomplete_read", "No partial result was accepted"],
-  ["gho_untrusted_secret_error_body", "No raw error details"],
+  ["rate_limited", "Rate limited"],
+  ["network", "Offline"],
+  ["provider_failure", "Provider failed"],
+  ["incomplete_read", "Incomplete"],
+  ["gho_untrusted_secret_error_body", "Failed"],
 ]) {
   test(`connection reports ${typeof error === "string" ? error : Object.keys(error)[0]} without enabling metadata or leaking errors`, async ({
     page,
@@ -212,8 +206,8 @@ for (const [error, expected] of [
 }
 
 for (const [comment, message] of [
-  ["unknown", "Comment permission unverified"],
-  ["unavailable", "Comment permission unavailable"],
+  ["unknown", "comment unknown"],
+  ["unavailable", "comment unavailable"],
 ]) {
   test(`read access does not fabricate ${comment} comment permission`, async ({
     page,
@@ -226,9 +220,6 @@ for (const [comment, message] of [
       .getByRole("button", { name: "Verify GitHub connection", exact: true })
       .click();
     await expect(repositoryConnectionStatus(card)).toContainText(message);
-    await expect(repositoryConnectionStatus(card)).toContainText(
-      "not publication authorization",
-    );
   });
 }
 
@@ -270,7 +261,7 @@ test("metadata pins verified identities, renders all files safely and clears fai
     .getByRole("button", { name: "Read PR metadata", exact: true })
     .click();
   await expect(repositoryConnectionStatus(card)).toContainText(
-    "1 PRs, 2 changed files",
+    "1 PRs, 2 files",
   );
   await card.locator(".connection summary").click();
   await expect(card.locator("li")).toHaveText([
@@ -284,66 +275,11 @@ test("metadata pins verified identities, renders all files safely and clears fai
     .getByRole("button", { name: "Read PR metadata", exact: true })
     .click();
   await expect(repositoryConnectionStatus(card)).toContainText(
-    "changed during the read",
+    "Revision changed",
   );
   await expect(card.locator(".connection summary")).toHaveCount(0);
   await expect(
     card.getByRole("button", { name: "Read PR metadata", exact: true }),
-  ).toBeDisabled();
-});
-
-test("retargeting a repository revalidates its stable binding", async ({
-  page,
-  store,
-}) => {
-  await page.addInitScript(() => {
-    const original = window.__TAURI_INTERNALS__.invoke;
-    window.__TAURI_INTERNALS__.invoke = (command, args) =>
-      command === "resolve_provider_repository"
-        ? Promise.resolve({
-            identity: { id: args.accountId, login: "jdylanmc" },
-            repository: { id: "900", name: "other/target" },
-          })
-        : original(command, args);
-  });
-  const card = await githubFixture(page, store, () => ({ ok: verified }));
-  await card
-    .getByRole("button", { name: "Verify GitHub connection", exact: true })
-    .click();
-  await expect(repositoryConnectionStatus(card)).toContainText(
-    "jdylanmc (6954990)",
-  );
-  await card
-    .getByRole("button", { name: "Edit repository", exact: true })
-    .click();
-  const editor = page.getByRole("dialog", {
-    name: "Edit repository",
-    exact: true,
-  });
-  await editor
-    .getByLabel("Repository URL", { exact: true })
-    .fill("other/target");
-  await editor
-    .getByRole("button", { name: "Add & configure", exact: true })
-    .click();
-  await expect(
-    page.getByRole("dialog", { name: "other/target", exact: true }),
-  ).toBeVisible();
-  await closeDialog(page);
-  await saveChanges(page);
-  expect((await store("snapshot")).settings.repositories).toEqual([
-    expect.objectContaining({
-      name: "other/target",
-      provider_account_id: "6954990",
-      provider_repository_id: "900",
-    }),
-  ]);
-  const target = await connection(page, "other/target");
-  await expect(repositoryConnectionStatus(target)).toContainText(
-    "Not verified. Acting account 6954990",
-  );
-  await expect(
-    target.getByRole("button", { name: "Read PR metadata", exact: true }),
   ).toBeDisabled();
 });
 
@@ -369,19 +305,19 @@ test("metadata replaces stale capability evidence for the same account and repos
     .getByRole("button", { name: "Verify GitHub connection", exact: true })
     .click();
   await expect(repositoryConnectionStatus(card)).toContainText(
-    "Comment scope available",
+    "comment available",
   );
   for (const message of [
-    "Comment permission unavailable",
-    "Comment permission unverified",
-    "Comment scope available",
+    "comment unavailable",
+    "comment unknown",
+    "comment available",
   ]) {
     await card
       .getByRole("button", { name: "Read PR metadata", exact: true })
       .click();
     await expect(repositoryConnectionStatus(card)).toContainText(message);
     await expect(repositoryConnectionStatus(card)).toContainText(
-      "Complete metadata: 0 PRs",
+      "0 PRs, 0 files",
     );
   }
 });
@@ -503,7 +439,7 @@ test("disconnecting one account clears only its repository evidence", async ({
     "account-a (101)",
   );
   await expect(repositoryConnectionStatus(first)).toContainText(
-    "Complete metadata",
+    /\d+ PRs, \d+ files/,
   );
   await expect(first.locator(".connection summary")).toHaveText(
     "#31 Account A evidence - open - 1 files",
@@ -529,7 +465,7 @@ test("disconnecting one account clears only its repository evidence", async ({
     "account-b (202)",
   );
   await expect(repositoryConnectionStatus(second)).toContainText(
-    "Complete metadata",
+    /\d+ PRs, \d+ files/,
   );
   await expect(second.locator(".connection summary")).toHaveText(
     "#32 Account B evidence - open - 1 files",
@@ -546,13 +482,9 @@ test("disconnecting one account clears only its repository evidence", async ({
   await expect(auth).not.toContainText("account-a (101)");
   await expect(auth).toContainText("account-b (202)");
 
-  first = await boundConnection(
-    page,
-    settings.repositories[0],
-    "Account unavailable",
-  );
+  first = await boundConnection(page, settings.repositories[0], "Unavailable");
   await expect(repositoryConnectionStatus(first)).toContainText(
-    "Needs attention",
+    "Reconnect required",
   );
   await expect(first.locator(".connection summary")).toHaveCount(0);
   await expect(
@@ -571,7 +503,7 @@ test("disconnecting one account clears only its repository evidence", async ({
     "account-b (202)",
   );
   await expect(repositoryConnectionStatus(second)).toContainText(
-    "Complete metadata",
+    /\d+ PRs, \d+ files/,
   );
   await expect(second.locator(".connection summary")).toHaveText(
     "#32 Account B evidence - open - 1 files",
@@ -639,17 +571,16 @@ test("disconnecting one account clears only its repository evidence", async ({
   const unavailable = await boundConnection(
     page,
     settings.repositories[0],
-    "Account unavailable",
+    "Unavailable",
   );
   await expect(repositoryConnectionStatus(unavailable)).toContainText(
-    "Needs attention",
+    "Reconnect required",
   );
   await unavailable
+    .getByLabel("Type repository name to confirm")
+    .fill(settings.repositories[0].name);
+  await unavailable
     .getByRole("button", { name: "Remove repository", exact: true })
-    .click();
-  await page
-    .getByRole("dialog", { name: "Remove repository?", exact: true })
-    .getByRole("button", { name: "Remove from settings", exact: true })
     .click();
   await saveChanges(page);
   expect((await store("snapshot")).settings.repositories).toEqual([
@@ -739,10 +670,10 @@ test("missing repo scope disables every binding for one account only", async ({
     .getByRole("button", { name: "Verify GitHub connection", exact: true })
     .click();
   await expect(repositoryConnectionStatus(first)).toContainText(
-    "Needs attention",
+    "Reconnect required",
   );
   await expect(page.locator(".github-auth-card")).toContainText(
-    "no longer grants the required repo scope",
+    "Reconnect required",
   );
   await closeDialog(page);
 
@@ -866,7 +797,7 @@ for (const [commandError, stateReason] of [
         .getByRole("button", { name: "Read PR metadata", exact: true })
         .click();
       await expect(repositoryConnectionStatus(card)).toContainText(
-        "Complete metadata",
+        /\d+ PRs, \d+ files/,
       );
       await closeDialog(page);
     }
@@ -877,19 +808,17 @@ for (const [commandError, stateReason] of [
       .getByRole("button", { name: "Read PR metadata", exact: true })
       .click();
     await expect(page.locator(".github-auth-card")).toContainText(
-      stateReason === "expired"
-        ? "authorization expired"
-        : stateReason === "credentials_unavailable"
-          ? "could not be restored or stored safely"
-          : stateReason === "missing_scope"
-            ? "no longer grants the required repo scope"
-            : "unexpected account",
+      stateReason === "credentials_unavailable"
+        ? "Storage unavailable"
+        : stateReason === "wrong_identity"
+          ? "Wrong account"
+          : "Reconnect required",
     );
     await closeDialog(page);
 
     card = await connection(page, "octo/two");
     await expect(repositoryConnectionStatus(card)).toContainText(
-      "Needs attention",
+      "Reconnect required",
     );
     await expect(card.locator(".connection summary")).toHaveCount(0);
     await expect(
@@ -908,9 +837,9 @@ for (const [commandError, stateReason] of [
 }
 
 for (const [commandError, warning, message] of [
-  ["network", "network", "network request failed"],
-  ["rate_limited", "rate_limited", "rate limited the verification request"],
-  ["provider_failure", "provider", "GitHub rejected"],
+  ["network", "network", "Offline"],
+  ["rate_limited", "rate_limited", "Rate limited"],
+  ["provider_failure", "provider", "Verification failed"],
 ]) {
   test(`mid-session ${commandError} keeps the verified account available for retry`, async ({
     page,
@@ -978,7 +907,7 @@ for (const [commandError, warning, message] of [
         .getByRole("button", { name: "Read PR metadata", exact: true })
         .click();
       await expect(repositoryConnectionStatus(card)).toContainText(
-        "Complete metadata",
+        /\d+ PRs, \d+ files/,
       );
       await closeDialog(page);
     }

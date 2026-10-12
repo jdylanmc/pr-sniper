@@ -151,9 +151,9 @@ test("Back restores exact row, list scroll and focus and switching detail replac
 }) => {
   await queueFixture(store);
   await page.goto("/");
-  await page.setViewportSize({ width: 400, height: 250 });
+  await page.setViewportSize({ width: 400, height: 170 });
   await showQueueGroup(page, "attention");
-  const button = queueRow(page, 3).getByRole("button", {
+  const button = queueRow(page, 2).getByRole("button", {
     name: "Evidence and actions",
   });
   await button.focus();
@@ -164,7 +164,7 @@ test("Back restores exact row, list scroll and focus and switching detail replac
   expect(scroll).toBeGreaterThan(0);
   await button.click();
   await expect(page.locator("#agent-reviews article")).toHaveCount(1);
-  await expect(page.locator("#agent-reviews")).toContainText("example/repo #3");
+  await expect(page.locator("#agent-reviews")).toContainText("example/repo #2");
   const other = (await store("monitoring_snapshot")).items.find(
     (i) => i.job.number === 9,
   );
@@ -210,20 +210,19 @@ test("Back reacquires the exact accessible row action group after redraw with sa
       },
     };
   });
+  const reviews = jobs.map((job) => ({
+    ...fixture.review(job.number, "human_input_required"),
+    key: job.work.id,
+    job,
+  }));
   await store("seed_queue_state", {
     jobs,
-    reviews: jobs.map((job) => ({
-      ...fixture.review(job.number),
-      key: job.work.id,
-      job,
-      operation: {
-        ...fixture.review(job.number).operation,
-        state: "failed",
-      },
-      result: null,
-      error: "Review failed; explicit retry required.",
-    })),
-    publications: [],
+    reviews,
+    publications: reviews.map((review) => {
+      const publication = fixture.published(review);
+      publication.batch.unmappable = [0];
+      return publication;
+    }),
     follow_ups: [],
   });
   const before = await store("monitoring_snapshot");
@@ -280,7 +279,7 @@ test("native notification identity, legacy entry commands and missing routes nev
   await invoke(page, "open_diagnostics");
   await expect(heading(page)).toHaveText("Diagnostics");
   await expect(page.locator('[data-panel-view="utility"] pre')).toHaveText(
-    /\n\nNo diagnostic events recorded\.$/,
+    /\n\nNo events$/,
   );
   await store("set_notifications_enabled", { enabled: true });
   const id = await store("test_notification", { itemId: item.id });
@@ -527,9 +526,7 @@ test("approved shell keeps bottom destinations, authoritative pause and unavaila
   await expect(toggle).toBeDisabled();
   await expect(toggle).toHaveAttribute("aria-label", "Monitoring unavailable");
   await expect(page.locator("[data-running-count]")).toHaveText("?");
-  await expect(page.locator("[data-summary-main]")).toHaveText(
-    "Work state unavailable",
-  );
+  await expect(page.locator("[data-summary-main]")).toHaveText("Unavailable");
   await expect(page.locator("[data-panel-error]")).toContainText(
     "Synthetic automation read failure",
   );
@@ -672,20 +669,10 @@ for (const embedded of [true, false]) {
         repository.getByRole("switch", { name: "All pull requests" }),
       ).not.toBeChecked();
       await repository.getByText("Repository", { exact: true }).click();
-      await activate(
-        repository.getByRole("button", {
-          name: "Edit repository",
-          exact: true,
-        }),
-      );
-      const editor = page.getByRole("dialog", {
-        name: "Edit repository",
-        exact: true,
-      });
-      await editor
-        .getByLabel("Repository URL", { exact: true })
+      await repository
+        .getByLabel("Type repository name to confirm", { exact: true })
         .fill("example/unsaved");
-      await backFromEditor(page, editor);
+      await backFromEditor(page, repository);
       await expect(opener).toBeFocused();
       expect((await store("snapshot")).settings.repositories[0].name).toBe(
         "example/focus",

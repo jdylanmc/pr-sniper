@@ -7,6 +7,9 @@ import {
   section,
   seedBoundRepositories,
   setAllPullRequests,
+  pickAgent,
+  openPermissions,
+  assignmentBack,
 } from "./navigation.mjs";
 
 const secondId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -19,6 +22,29 @@ const retryAccounts = (scope) =>
   scope.locator("[data-retry-accounts]").evaluate((element) => element.click());
 const button = (scope, name) =>
   scope.getByRole("button", { name, exact: true });
+const agentId = (assignment) => assignment.locator("input[name=agent]");
+const primarySwitch = (assignment) =>
+  assignment.getByRole("switch", { name: "Primary", exact: true });
+const permissionSwitch = (assignment, name) =>
+  assignment.getByRole("switch", { name, exact: true });
+const approval = (assignment, name) =>
+  assignment.getByRole("radio", { name, exact: true });
+const openChoices = (assignment) =>
+  assignment.locator("[data-open-agent]").click();
+const pencil = (assignment, id) =>
+  assignment.locator(`[data-edit-agent="${id}"]`);
+const editSelected = async (assignment) => {
+  const id = await agentId(assignment).inputValue();
+  if (!(await assignment.locator("[data-create-agent]").isVisible()))
+    await openChoices(assignment);
+  await pencil(assignment, id).click();
+  return id;
+};
+const withPermissions = async (page, assignment, action) => {
+  await openPermissions(assignment);
+  await action();
+  await assignmentBack(page, assignment);
+};
 
 async function seed(page, store, { empty = false, standalone = false } = {}) {
   const settings = await seedBoundRepositories(store, [
@@ -121,11 +147,13 @@ test("assignment opens the exact selected shared Agent without losing either dra
 }) => {
   const initial = await seed(page, store);
   const assignment = await openAssignment(page);
-  await assignment.getByRole("checkbox", { name: /^Primary/ }).check();
-  await assignment.getByRole("checkbox", { name: /^Publish Comment/ }).check();
-  await assignment.getByRole("checkbox", { name: /^Reply Comment/ }).check();
-  await assignment.getByRole("radio", { name: "Approve", exact: true }).check();
-  await button(assignment, "Edit Agent").click();
+  await primarySwitch(assignment).check();
+  await withPermissions(page, assignment, async () => {
+    await permissionSwitch(assignment, "Publish Comment").check();
+    await permissionSwitch(assignment, "Reply Comment").check();
+    await approval(assignment, "Approve").check();
+  });
+  await editSelected(assignment);
   const agent = dialog(page, /^Editing /);
   await expect(agent.getByLabel("Name", { exact: true })).toHaveValue(
     "Selected reviewer",
@@ -135,22 +163,20 @@ test("assignment opens the exact selected shared Agent without losing either dra
     .fill("Edited selected reviewer");
   await button(agent, "Save agent").click();
   await expect(agent).toHaveCount(0);
-  await expect(assignment.getByLabel("Agent", { exact: true })).toHaveValue(
-    secondId,
-  );
-  await expect(assignment.locator("[name=agent] option:checked")).toHaveText(
+  await expect(agentId(assignment)).toHaveValue(secondId);
+  await expect(
+    assignment.getByRole("radio", { name: "Edited selected reviewer" }),
+  ).toBeChecked();
+  await expect(pencil(assignment, secondId)).toBeFocused();
+  await assignmentBack(page, assignment);
+  await expect(assignment.locator("[data-agent-summary]")).toHaveText(
     "Edited selected reviewer",
   );
-  await expect(button(assignment, "Edit Agent")).toBeFocused();
-  await expect(
-    assignment.getByRole("checkbox", { name: /^Primary/ }),
-  ).toBeChecked();
-  await expect(
-    assignment.getByRole("checkbox", { name: /^Reply Comment/ }),
-  ).toBeChecked();
-  await expect(
-    assignment.getByRole("radio", { name: "Approve", exact: true }),
-  ).toBeChecked();
+  await expect(primarySwitch(assignment)).toBeChecked();
+  await withPermissions(page, assignment, async () => {
+    await expect(permissionSwitch(assignment, "Reply Comment")).toBeChecked();
+    await expect(approval(assignment, "Approve")).toBeChecked();
+  });
   const saved = (await store("snapshot")).settings;
   expect(saved.repositories).toEqual(initial.repositories);
   expect(saved.capacity).toBe(initial.capacity);
@@ -166,18 +192,12 @@ test("assignment opens the exact selected shared Agent without losing either dra
   await button(replacement, "Save agent").click();
   await expect(replacement).toHaveCount(0);
   const replacementId = (await store("snapshot")).settings.agents.at(-1).id;
-  await expect(assignment.getByLabel("Agent", { exact: true })).toHaveValue(
-    replacementId,
-  );
-  await expect(
-    assignment.getByRole("checkbox", { name: /^Primary/ }),
-  ).toBeChecked();
-  await expect(
-    assignment.getByRole("checkbox", { name: /^Reply Comment/ }),
-  ).toBeChecked();
-  await expect(
-    assignment.getByRole("radio", { name: "Approve", exact: true }),
-  ).toBeChecked();
+  await expect(agentId(assignment)).toHaveValue(replacementId);
+  await expect(primarySwitch(assignment)).toBeChecked();
+  await withPermissions(page, assignment, async () => {
+    await expect(permissionSwitch(assignment, "Reply Comment")).toBeChecked();
+    await expect(approval(assignment, "Approve")).toBeChecked();
+  });
   await button(assignment, "Save assignment").click();
   await expect(assignment).toHaveCount(0);
   const repository = dialog(page, "fixture/assignment");
@@ -202,6 +222,8 @@ test("assignment opens the exact selected shared Agent without losing either dra
 });
 
 async function createAgent(page, assignment, name = "New shared reviewer") {
+  if (!(await assignment.locator("[data-create-agent]").isVisible()))
+    await openChoices(assignment);
   await button(assignment, "Create new Agent").click();
   const agent = dialog(page, "New agent");
   await expect(agent.getByLabel("AI account", { exact: true })).toHaveValue("");
@@ -228,11 +250,18 @@ for (const empty of [false, true]) {
   }) => {
     const initial = await seed(page, store, { empty });
     const assignment = await openAssignment(page, false);
-    await expect(button(assignment, "Edit Agent")).toBeDisabled();
+    await expect(agentId(assignment)).toHaveValue("");
+    await openChoices(assignment);
+    await expect(assignment.locator("[data-edit-agent]")).toHaveCount(
+      empty ? 0 : 2,
+    );
+    await expect(assignment.locator("[name=agent-choice]:checked")).toHaveCount(
+      0,
+    );
     const agent = await createAgent(page, assignment);
     await button(agent, "Save agent").click();
     await expect(agent).toHaveCount(0);
-    await expect(button(assignment, "Create new Agent")).toBeFocused();
+    await expect(assignment.locator("[data-open-agent]")).toBeFocused();
     const saved = (await store("snapshot")).settings;
     const created = saved.agents.at(-1);
     expect(saved.repositories).toEqual(initial.repositories);
@@ -240,16 +269,14 @@ for (const empty of [false, true]) {
       provider: "copilot",
       account_id: "33",
     });
-    await expect(assignment.getByLabel("Agent", { exact: true })).toHaveValue(
-      created.id,
-    );
-    await expect(
-      assignment.getByRole("checkbox", { name: /^Primary/ }),
-    ).toBeChecked({ checked: empty });
-    await expect(
-      assignment.getByRole("checkbox", { name: /^Publish Comment/ }),
-    ).not.toBeChecked();
-    await button(assignment, "Edit Agent").click();
+    await expect(agentId(assignment)).toHaveValue(created.id);
+    await expect(primarySwitch(assignment)).toBeChecked({ checked: empty });
+    await withPermissions(page, assignment, async () => {
+      await expect(
+        permissionSwitch(assignment, "Publish Comment"),
+      ).not.toBeChecked();
+    });
+    await editSelected(assignment);
     const edit = dialog(page, /^Editing /);
     await expect(edit.getByLabel("Name", { exact: true })).toHaveValue(
       created.name,
@@ -259,9 +286,10 @@ for (const empty of [false, true]) {
       .fill("Immediately edited new Agent");
     await button(edit, "Save agent").click();
     await expect(edit).toHaveCount(0);
-    await expect(assignment.locator("[name=agent] option:checked")).toHaveText(
-      "Immediately edited new Agent",
-    );
+    await expect(
+      assignment.getByRole("radio", { name: "Immediately edited new Agent" }),
+    ).toBeChecked();
+    await assignmentBack(page, assignment);
     await button(assignment, "Assign agent").click();
     await expect(assignment).toHaveCount(0);
     const committed = (await store("snapshot")).settings;
@@ -287,10 +315,10 @@ for (const standalone of [false, true]) {
     }) => {
       const initial = await seed(page, store, { standalone });
       const assignment = await openAssignment(page);
-      await assignment
-        .getByRole("checkbox", { name: /^Publish Comment/ })
-        .check();
-      await button(assignment, "Edit Agent").click();
+      await withPermissions(page, assignment, () =>
+        permissionSwitch(assignment, "Publish Comment").check(),
+      );
+      const editedId = await editSelected(assignment);
       const agent = dialog(page, /^Editing /);
       const prompt = agent.locator("textarea[name=prompt]");
       await prompt.fill("Retain until explicitly discarded.");
@@ -313,16 +341,17 @@ for (const standalone of [false, true]) {
       await expect(agent).toHaveCount(0);
       // Closing through the panel Back control currently drops opener focus.
       if (action === "Cancel" || standalone)
-        await expect(button(assignment, "Edit Agent")).toBeFocused();
-      await expect(
-        assignment.getByRole("checkbox", { name: /^Publish Comment/ }),
-      ).toBeChecked();
+        await expect(pencil(assignment, editedId)).toBeFocused();
+      await assignmentBack(page, assignment);
+      await withPermissions(page, assignment, async () => {
+        await expect(
+          permissionSwitch(assignment, "Publish Comment"),
+        ).toBeChecked();
+      });
       await close(assignment);
       confirm = dialog(page, "Discard assignment changes?");
       await button(confirm, "Keep editing").click();
-      await expect(assignment.getByLabel("Agent", { exact: true })).toHaveValue(
-        secondId,
-      );
+      await expect(agentId(assignment)).toHaveValue(secondId);
       await close(assignment);
       await discard(page, "assignment");
       await expect(assignment).toHaveCount(0);
@@ -353,25 +382,21 @@ test("clean cancel, new cancel and switching selection retain exact focus and pr
 }) => {
   const initial = await seed(page, store);
   const assignment = await openAssignment(page);
-  await assignment
-    .getByLabel("Agent", { exact: true })
-    .selectOption(fixtureAgent.id);
-  await button(assignment, "Edit Agent").click();
+  await pickAgent(assignment, fixtureAgent.id);
+  await editSelected(assignment);
   let agent = dialog(page, /^Editing /);
   await expect(agent.getByLabel("Name", { exact: true })).toHaveValue(
     fixtureAgent.name,
   );
   await button(agent, "Cancel").click();
   await expect(agent).toHaveCount(0);
-  await expect(button(assignment, "Edit Agent")).toBeFocused();
+  await expect(pencil(assignment, fixtureAgent.id)).toBeFocused();
   await button(assignment, "Create new Agent").click();
   agent = dialog(page, "New agent");
   await button(agent, "Cancel").click();
   await expect(agent).toHaveCount(0);
   await expect(button(assignment, "Create new Agent")).toBeFocused();
-  await expect(assignment.getByLabel("Agent", { exact: true })).toHaveValue(
-    fixtureAgent.id,
-  );
+  await expect(agentId(assignment)).toHaveValue(fixtureAgent.id);
   agent = await createAgent(page, assignment);
   await button(agent, "Save agent").click();
   await expect(agent).toHaveCount(0);
@@ -391,8 +416,10 @@ test("Agent write failure retains nested fields and both parent drafts for retry
 }) => {
   const initial = await seed(page, store);
   const assignment = await openAssignment(page);
-  await assignment.getByRole("checkbox", { name: /^Publish Comment/ }).check();
-  await button(assignment, "Edit Agent").click();
+  await withPermissions(page, assignment, () =>
+    permissionSwitch(assignment, "Publish Comment").check(),
+  );
+  await editSelected(assignment);
   const agent = dialog(page, /^Editing /);
   await agent
     .getByLabel("Name", { exact: true })
@@ -415,9 +442,10 @@ test("Agent write failure retains nested fields and both parent drafts for retry
   }
   await button(agent, "Save agent").click();
   await expect(agent).toHaveCount(0);
-  await expect(
-    assignment.getByRole("checkbox", { name: /^Publish Comment/ }),
-  ).toBeChecked();
+  await assignmentBack(page, assignment);
+  await withPermissions(page, assignment, async () => {
+    await expect(permissionSwitch(assignment, "Publish Comment")).toBeChecked();
+  });
   expect((await store("snapshot")).settings.repositories).toEqual(
     initial.repositories,
   );
@@ -430,8 +458,10 @@ test("nested pending Save locks dismissal and returns without a confirmation or 
 }) => {
   await seed(page, store);
   const assignment = await openAssignment(page);
-  await assignment.getByRole("checkbox", { name: /^Publish Comment/ }).check();
-  await button(assignment, "Edit Agent").click();
+  await withPermissions(page, assignment, () =>
+    permissionSwitch(assignment, "Publish Comment").check(),
+  );
+  const editedId = await editSelected(assignment);
   const agent = dialog(page, /^Editing /);
   await agent.getByLabel("Name", { exact: true }).fill("Held save");
   const hold = ipc.holdNext("save_resource");
@@ -443,10 +473,13 @@ test("nested pending Save locks dismissal and returns without a confirmation or 
     await expect(agent).toBeVisible();
     hold.release();
     await expect(agent).toHaveCount(0);
-    await expect(button(assignment, "Edit Agent")).toBeFocused();
-    await expect(
-      assignment.getByRole("checkbox", { name: /^Publish Comment/ }),
-    ).toBeChecked();
+    await expect(pencil(assignment, editedId)).toBeFocused();
+    await assignmentBack(page, assignment);
+    await withPermissions(page, assignment, async () => {
+      await expect(
+        permissionSwitch(assignment, "Publish Comment"),
+      ).toBeChecked();
+    });
     await expect(dialog(page, "Discard Agent changes?")).toHaveCount(0);
   } finally {
     hold.release();
@@ -462,26 +495,27 @@ test("deleting an unassigned selected Agent retains an explicit stale reference 
   const agent = await createAgent(page, assignment);
   await button(agent, "Save agent").click();
   await expect(agent).toHaveCount(0);
-  const selected = await assignment
-    .getByLabel("Agent", { exact: true })
-    .inputValue();
-  await assignment.getByRole("checkbox", { name: /^Publish Comment/ }).check();
-  await button(assignment, "Edit Agent").click();
+  const selected = await agentId(assignment).inputValue();
+  await withPermissions(page, assignment, () =>
+    permissionSwitch(assignment, "Publish Comment").check(),
+  );
+  await editSelected(assignment);
   const edit = dialog(page, /^Editing /);
   await button(edit, "Delete agent").click();
   await button(edit, "Confirm deletion").click();
   await expect(edit).toHaveCount(0);
-  await expect(assignment.getByLabel("Agent", { exact: true })).toHaveValue(
-    selected,
-  );
-  await expect(assignment.getByLabel("Agent", { exact: true })).toBeFocused();
-  await expect(button(assignment, "Edit Agent")).toBeDisabled();
-  await expect(assignment.locator("[data-agent-selection]")).toContainText(
-    "unavailable",
-  );
+  await expect(agentId(assignment)).toHaveValue(selected);
+  await expect(assignment.locator("[data-edit-agent]")).toHaveCount(0);
   await expect(
-    assignment.getByRole("checkbox", { name: /^Publish Comment/ }),
-  ).toBeChecked();
+    assignment.getByRole("radio", { name: "Unavailable" }),
+  ).toBeDisabled();
+  await assignmentBack(page, assignment);
+  await expect(assignment.locator("[data-agent-summary]")).toHaveText(
+    "Unavailable",
+  );
+  await withPermissions(page, assignment, async () => {
+    await expect(permissionSwitch(assignment, "Publish Comment")).toBeChecked();
+  });
   await button(assignment, "Assign agent").click();
   await expect(assignment.getByRole("alert")).toContainText("unavailable");
   expect((await store("snapshot")).settings.agents ?? []).toEqual([]);
@@ -496,7 +530,7 @@ test("concurrent Agent changes fail compare-and-save without replacing either ve
 }) => {
   const initial = await seed(page, store);
   const assignment = await openAssignment(page);
-  await button(assignment, "Edit Agent").click();
+  await editSelected(assignment);
   const agent = dialog(page, /^Editing /);
   await agent.getByLabel("Name", { exact: true }).fill("Local unfinished name");
   const concurrent = {
@@ -531,10 +565,11 @@ test("account and model failures stay explicit, retryable and never grant an imp
   await page.evaluate(() => {
     window.__assignmentAccounts = "error";
   });
+  await openChoices(assignment);
   await button(assignment, "Create new Agent").click();
   const agent = dialog(page, "New agent");
   await expect(agent.locator("[data-editor-accounts]")).toContainText(
-    "unavailable",
+    "Unavailable",
   );
   await expect(agent.getByLabel("AI account", { exact: true })).toHaveValue("");
   await page.evaluate(() => {
@@ -542,7 +577,7 @@ test("account and model failures stay explicit, retryable and never grant an imp
   });
   await retryAccounts(agent);
   await expect(agent.locator("[data-editor-accounts]")).toContainText(
-    "No verified Copilot connection",
+    "Not connected",
   );
   await page.evaluate(() => {
     window.__assignmentAccounts = "connected";
@@ -559,7 +594,7 @@ test("account and model failures stay explicit, retryable and never grant an imp
     .fill("Must not save with no model");
   await button(agent, "Save agent").click();
   await expect(agent.getByRole("alert")).toContainText(
-    "Choose a verified AI account",
+    "Account and model required",
   );
   expect((await store("snapshot")).settings).toEqual(initial);
   await page.evaluate(() => {
@@ -592,11 +627,14 @@ test("assignment keyboard navigation and discard confirmation fit the compact hi
   await page.setViewportSize({ width: 320, height: 300 });
   await page.emulateMedia({ reducedMotion: "reduce", forcedColors: "active" });
   const assignment = await openAssignment(page);
-  const select = assignment.getByLabel("Agent", { exact: true });
-  await select.focus();
+  const choose = assignment.locator("[data-open-agent]");
+  await choose.focus();
+  await page.keyboard.press("Enter");
+  const selectedId = await agentId(assignment).inputValue();
+  await expect(assignment.locator("[name=agent-choice]:checked")).toBeFocused();
   await page.keyboard.press(nextKey);
-  await expect(button(assignment, "Edit Agent")).toBeFocused();
-  await expect(button(assignment, "Edit Agent")).toBeInViewport();
+  await expect(pencil(assignment, selectedId)).toBeFocused();
+  await expect(pencil(assignment, selectedId)).toBeInViewport();
   await page.keyboard.press("Enter");
   const agent = dialog(page, /^Editing /);
   // Opening the editor currently leaves focus on body, so focus the first field explicitly.
@@ -618,7 +656,7 @@ test("assignment keyboard navigation and discard confirmation fit the compact hi
   await expect(button(agent, "Cancel")).toBeFocused();
   await page.keyboard.press("Enter");
   await discard(page, "Agent");
-  await expect(button(assignment, "Edit Agent")).toBeFocused();
+  await expect(pencil(assignment, selectedId)).toBeFocused();
   await page.keyboard.press(nextKey);
   await expect(button(assignment, "Create new Agent")).toBeFocused();
   await expect(button(assignment, "Create new Agent")).toBeInViewport();
@@ -652,16 +690,17 @@ test("late account responses cannot change another editor or steal focus after B
       return invoke(command, args);
     };
   });
+  await openChoices(assignment);
   await button(assignment, "Create new Agent").click();
   const abandoned = dialog(page, "New agent");
   await expect(abandoned.locator("[data-editor-accounts]")).toHaveText(
-    "Reading Copilot accounts...",
+    "Loading",
   );
   await panelBack(page).click();
-  await button(assignment, "Edit Agent").click();
+  await editSelected(assignment);
   const agent = dialog(page, /^Editing /);
   await expect(agent.locator("[data-editor-accounts]")).toContainText(
-    "Choose an AI account",
+    "Connected",
   );
   await agent.getByLabel("Name", { exact: true }).fill("Keep current focus");
   await page.evaluate(() => window.__releaseOldAccounts());
@@ -670,7 +709,7 @@ test("late account responses cannot change another editor or steal focus after B
     "Keep current focus",
   );
   await expect(agent.locator("[data-editor-accounts]")).toContainText(
-    "Choose an AI account",
+    "Connected",
   );
   await expect(agent.locator("[name=ai-account] option")).toHaveCount(2);
 });
