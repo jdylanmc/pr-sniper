@@ -7,6 +7,17 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- Publications recover on their own. A pending batch whose inline comments
+  differ from the frozen batch (edited, deleted, empty), or whose review lens
+  changed, or that was withdrawn, is deleted when it is the exact owned
+  pending review, then marked **discarded**; the item leaves Needs attention
+  and the review result decides Ready / Your input. Submitted reviews and
+  foreign pending reviews are never touched; nothing is re-created. Transient
+  publication failures auto-resume on the review cooldown table. Retry and
+  Retry all run `publish_review` (reconcile the original) for parked
+  publications and queue it when another publication is running. Chips:
+  **Publish failed**, **Unverified**, Network. Failed rows show the error
+  line. Startup re-observes publications parked by older builds once.
 - Retry and Retry all restart the repository poll and every failed review
   of the selected PRs, once per command, so all of them enqueue (capacity
   decides how many run at once).

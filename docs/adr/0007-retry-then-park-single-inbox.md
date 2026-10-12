@@ -22,7 +22,7 @@ Provider and AI failures are transient or permanent. Unbounded retry hides fault
 - Restart-safe. No silent retry loops.
 - AI cost is bounded: at most 3 attempts x 6 windows per failing work item before a human is needed.
 - Cooldown state persists (serde-default `resume_cycle`, `resume_at`); old data loads.
-- Auto-resume covers review runs and repository poll operations. Follow-up/primary-final/publication operations still wait for a human.
+- Auto-resume covers review runs, repository poll operations and publication operations (same cooldowns; resume reconciles the original batch, never reposts). Follow-up/primary-final operations still wait for a human.
 - Completed reviews stay Ready despite config drift or disabled repo.
 - Rust-internal `blocked` reason may linger in `capacity`. Not surfaced.
 - Code = 3 attempts total. Old prose said "three retries".
