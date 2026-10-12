@@ -30,11 +30,12 @@ for (const surface of ["panel", "standalone"]) {
       .click();
     await expect(
       page.locator(surface === "panel" ? "[data-panel-error]" : "#error"),
-    ).toHaveText(
-      surface === "panel"
-        ? "Synthetic diagnostic journal read failure"
-        : "Failed",
-    );
+    ).toHaveText("Failed");
+    if (surface === "panel")
+      await expect(page.locator("[data-panel-error]")).toHaveAttribute(
+        "title",
+        "Synthetic diagnostic journal read failure",
+      );
     if (surface === "panel") await expect(log).toHaveCount(0);
     else await expect(log).toHaveText("");
   });

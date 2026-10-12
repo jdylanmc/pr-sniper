@@ -566,8 +566,10 @@ for (const scenario of [
       await page.clock.runFor(5100);
       await page.evaluate(() => window.__settingsIdle());
       await expect(page.locator("[data-queue-ready]")).toHaveText("?");
-      await expect(page.locator("[data-panel-error]")).toContainText(
-        "Could not read monitoring state",
+      await expect(page.locator("[data-panel-error]")).toHaveText("Failed");
+      await expect(page.locator("[data-panel-error]")).toHaveAttribute(
+        "title",
+        /Could not read monitoring state/,
       );
     }
     const geometry = await page.evaluate(() => {
@@ -624,9 +626,14 @@ for (const scenario of [
       path: testInfo.outputPath(`${scenario.name}.png`),
     });
     expect(geometry.content.clientHeight).toBeGreaterThanOrEqual(64);
-    expect(geometry.content.scrollHeight).toBeGreaterThan(
-      geometry.content.clientHeight,
-    );
+    if (scenario.error) {
+      // The error is a floating toast that stays inside the viewport.
+      expect(geometry.error.y).toBeGreaterThanOrEqual(0);
+      expect(geometry.error.bottom).toBeLessThanOrEqual(scenario.height);
+    } else
+      expect(geometry.content.scrollHeight).toBeGreaterThan(
+        geometry.content.clientHeight,
+      );
     for (const bounds of [geometry.navigation, geometry.footer]) {
       expect(bounds.y).toBeGreaterThanOrEqual(0);
       expect(bounds.bottom).toBeLessThanOrEqual(scenario.height);

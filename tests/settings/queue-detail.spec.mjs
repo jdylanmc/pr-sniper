@@ -216,3 +216,160 @@ test("monitoring failures show the stored error line and a readable cause", asyn
     page.locator('.queue-facts dt:text-is("Last attempt") + dd'),
   ).toHaveText("5m ago");
 });
+
+test("Retry on a repository poll failure retries the poll, never the published review", async ({
+  page,
+  store,
+}) => {
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__commands = [];
+    window.__TAURI_INTERNALS__.invoke = (command, args) => {
+      window.__commands.push(command);
+      return original(command, args);
+    };
+  });
+  const fixture = await queueFixture(store);
+  const run = fixture.state.reviews.find((r) => r.job.number === 1);
+  const now = Math.floor(Date.now() / 1000);
+  fixture.state.monitoring = {
+    health: {
+      [run.job.configuration_id]: {
+        repository_id: run.job.configuration_id,
+        name: "example/repo",
+        schedule_key: "fixture",
+        provider_account_id: "22",
+        account_login: "local-operator",
+        provider_repository_id: "100",
+        enabled: true,
+        last_attempt: now - 5 * 60,
+        last_success: null,
+        next_run: 0,
+        schedule_available: true,
+        last_failure: "conversation_admission",
+        last_error: "Could not write conversation state; retry the check.",
+        in_flight: false,
+        operation: {
+          id: "health-op",
+          provider: "github",
+          account_id: "22",
+          configuration_id: run.job.configuration_id,
+          repository_id: "100",
+          pull_request_id: null,
+          head_sha: null,
+          trigger_policy: "fixture",
+          operation_type: "repository_poll",
+          state: "manual_retry",
+          attempt_count: 3,
+          initial_attempt_at: now - 20 * 60,
+          retry_deadline: now - 5 * 60,
+          next_attempt_at: null,
+          failure: "provider",
+          attempted_mutation: null,
+          pending_review_id: null,
+          owned_thread_id: null,
+          triggering_external_comment_id: null,
+          confirmed_receipt: null,
+          resume_at: now + 30 * 60,
+        },
+      },
+    },
+  };
+  await store("seed_queue_state", fixture.state);
+  const item = (await store("monitoring_snapshot")).items.find(
+    (entry) => entry.job.number === 1,
+  );
+  expect(item.state).toBe("failed");
+  await store("panel_navigate", {
+    route: { tab: "queue", detail: { type: "item", item_id: item.id } },
+  });
+  await page.goto("/");
+  await page.locator('[data-queue-primary="retry"]').click();
+  await expect
+    .poll(() => page.evaluate(() => window.__commands))
+    .toContain("retry_monitoring_operation");
+  const commands = await page.evaluate(() => window.__commands);
+  expect(commands).not.toContain("start_review");
+  await expect(page.locator("[data-panel-error]")).toBeHidden();
+});
+
+test("action errors are terse, dismissible toasts that never cover the header", async ({
+  page,
+  store,
+}) => {
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__commands = [];
+    window.__TAURI_INTERNALS__.invoke = (command, args) => {
+      if (command === "retry_monitoring_operation")
+        return Promise.reject(
+          "Reconcile the original publication before reviewing this revision again; a confirmed published batch cannot be replaced.",
+        );
+      return original(command, args);
+    };
+  });
+  const fixture = await queueFixture(store);
+  const run = fixture.state.reviews.find((r) => r.job.number === 1);
+  const now = Math.floor(Date.now() / 1000);
+  fixture.state.monitoring = {
+    health: {
+      [run.job.configuration_id]: {
+        repository_id: run.job.configuration_id,
+        name: "example/repo",
+        schedule_key: "fixture",
+        provider_account_id: "22",
+        account_login: "local-operator",
+        provider_repository_id: "100",
+        enabled: true,
+        last_attempt: now - 5 * 60,
+        last_success: null,
+        next_run: 0,
+        schedule_available: true,
+        last_failure: "conversation_admission",
+        last_error: "Could not write conversation state; retry the check.",
+        in_flight: false,
+        operation: {
+          id: "health-op",
+          provider: "github",
+          account_id: "22",
+          configuration_id: run.job.configuration_id,
+          repository_id: "100",
+          pull_request_id: null,
+          head_sha: null,
+          trigger_policy: "fixture",
+          operation_type: "repository_poll",
+          state: "manual_retry",
+          attempt_count: 3,
+          initial_attempt_at: now - 20 * 60,
+          retry_deadline: now - 5 * 60,
+          next_attempt_at: null,
+          failure: "provider",
+          attempted_mutation: null,
+          pending_review_id: null,
+          owned_thread_id: null,
+          triggering_external_comment_id: null,
+          confirmed_receipt: null,
+          resume_at: now + 30 * 60,
+        },
+      },
+    },
+  };
+  await store("seed_queue_state", fixture.state);
+  const item = (await store("monitoring_snapshot")).items.find(
+    (entry) => entry.job.number === 1,
+  );
+  expect(item.state).toBe("failed");
+  await store("panel_navigate", {
+    route: { tab: "queue", detail: { type: "item", item_id: item.id } },
+  });
+  await page.goto("/");
+  await page.locator('[data-queue-primary="retry"]').click();
+  const toast = page.locator("[data-panel-error]");
+  await expect(toast).toHaveText("Already reviewed");
+  await expect(toast).toHaveAttribute("title", /Reconcile the original/);
+  const box = await toast.boundingBox();
+  const viewport = page.viewportSize();
+  expect(box.y).toBeGreaterThan(viewport.height / 2);
+  await toast.click();
+  await expect(toast).toBeHidden();
+});

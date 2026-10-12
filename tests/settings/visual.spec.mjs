@@ -42,7 +42,8 @@ for (const failUtility of [false, true]) {
     await page.clock.runFor(5100);
     held.release();
     if (failUtility)
-      await expect(page.locator("[data-panel-error]")).toHaveText(
+      await expect(page.locator("[data-panel-error]")).toHaveAttribute(
+        "title",
         "Synthetic utility read failure",
       );
     else

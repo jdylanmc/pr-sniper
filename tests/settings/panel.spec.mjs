@@ -527,7 +527,8 @@ test("approved shell keeps bottom destinations, authoritative pause and unavaila
   await expect(toggle).toHaveAttribute("aria-label", "Monitoring unavailable");
   await expect(page.locator("[data-running-count]")).toHaveText("?");
   await expect(page.locator("[data-summary-main]")).toHaveText("Unavailable");
-  await expect(page.locator("[data-panel-error]")).toContainText(
+  await expect(page.locator("[data-panel-error]")).toHaveAttribute(
+    "title",
     "Synthetic automation read failure",
   );
 });

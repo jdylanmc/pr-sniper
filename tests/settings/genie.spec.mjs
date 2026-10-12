@@ -1059,8 +1059,10 @@ test("GEN4 failed saved setup read is explicit, never guessed fresh", async ({
     throw "Synthetic saved setup unavailable.";
   };
   await page.goto("/");
-  await expect(page.locator("[data-panel-error]")).toContainText(
-    "Synthetic saved setup unavailable",
+  await expect(page.locator("[data-panel-error]")).toHaveText("Failed");
+  await expect(page.locator("[data-panel-error]")).toHaveAttribute(
+    "title",
+    /Synthetic saved setup unavailable/,
   );
   await expect(page.locator('[data-panel-view="genie"]')).toBeHidden();
   await tab(page, "Settings").click();

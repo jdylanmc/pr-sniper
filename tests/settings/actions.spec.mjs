@@ -551,7 +551,9 @@ test("retained panel detail reports refresh failure and allows a real native ret
   });
   await expect(retry).toBeEnabled();
   await retry.click();
-  await expect(page.locator("[data-panel-error]")).toHaveText(
+  await expect(page.locator("[data-panel-error]")).toHaveText("Failed");
+  await expect(page.locator("[data-panel-error]")).toHaveAttribute(
+    "title",
     "Fixture transport interrupted before native retry.",
   );
   await expect(retry).toBeEnabled();
