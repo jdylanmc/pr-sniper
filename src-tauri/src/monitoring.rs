@@ -398,6 +398,9 @@ pub struct MonitoringState {
     pub activations: BTreeMap<String, MonitoringActivation>,
     #[serde(default)]
     pub operations: BTreeMap<String, JobOperation>,
+    /// Set once the pre-fix "conversation_admission" poll failures were requeued.
+    #[serde(default)]
+    pub admission_upgrade_done: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3034,6 +3037,20 @@ impl JobOperation {
         }
     }
 
+    /// Fresh attempt window with no failure history carried over.
+    fn requeue_fresh(&mut self, now: i64) {
+        self.state = OperationState::Queued;
+        self.attempt_count = 0;
+        self.initial_attempt_at = now;
+        self.retry_deadline = now + RETRY_WINDOW_SECONDS;
+        self.next_attempt_at = Some(now);
+        self.failure = None;
+        self.resume_cycle = 0;
+        self.resume_at = None;
+        self.ai_attempt = None;
+        self.interruption = None;
+    }
+
     fn schedule_resume(&mut self, now: i64) {
         self.resume_at = self
             .failure
@@ -3627,6 +3644,25 @@ impl Monitor {
         }
         let previous = self.state.clone();
         let mut health_changed = false;
+        // One-time upgrade: poll failures parked as permanent by the build that
+        // aborted a whole scan on one malformed thread get a fresh budget.
+        if !self.state.admission_upgrade_done {
+            for health in self.state.health.values_mut() {
+                let stale = health.last_failure.as_deref() == Some("conversation_admission");
+                if let Some(operation) = health.operation.as_mut().filter(|operation| {
+                    stale && operation.parked() && operation.operation_type == "repository_poll"
+                }) {
+                    operation.requeue_fresh(now);
+                    health.last_failure = None;
+                    health.last_error = None;
+                    health.next_run = now;
+                    health.schedule_available = true;
+                    resumed += 1;
+                }
+            }
+            self.state.admission_upgrade_done = true;
+            health_changed = true;
+        }
         for health in self.state.health.values_mut() {
             let Some(operation) = health.operation.as_mut() else {
                 continue;

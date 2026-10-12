@@ -515,3 +515,53 @@ fn conversation_admission_errors_retry_park_with_a_cooldown_and_resume() {
     assert_eq!(operation.state, OperationState::Queued);
     assert_eq!(operation.resume_cycle, 1);
 }
+
+fn stale_admission_state() -> serde_json::Value {
+    let mut operation = serde_json::to_value(JobOperation::review(&job(), 100)).unwrap();
+    operation["operation_type"] = json!("repository_poll");
+    operation["state"] = json!("failed");
+    operation["failure"] = json!("permanent");
+    operation["attempt_count"] = json!(1);
+    operation["next_attempt_at"] = json!(null);
+    json!({"health": {REPO: {
+        "repository_id": REPO, "name": "example/repo", "schedule_key": "fixture",
+        "provider_account_id": "22", "enabled": true, "last_attempt": 100,
+        "last_success": null, "next_run": 0, "schedule_available": false,
+        "last_failure": "conversation_admission", "in_flight": false,
+        "operation": operation
+    }}})
+}
+
+#[test]
+fn parked_permanent_admission_failures_from_the_old_build_are_requeued_once() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    store.save_settings(&settings()).unwrap();
+    store
+        .save_monitoring_state(&serde_json::from_value(stale_admission_state()).unwrap())
+        .unwrap();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    assert_eq!(
+        monitor.auto_resume(&store, &accounts(true), 1_000).unwrap(),
+        1
+    );
+    let health = Monitor::restore(&store).unwrap().snapshot().remove(0);
+    let operation = health.operation.unwrap();
+    assert_eq!(operation.state, OperationState::Queued);
+    assert_eq!(operation.failure, None);
+    assert_eq!(operation.attempt_count, 0);
+    assert_eq!(health.last_failure, None);
+    assert!(health.schedule_available);
+    // The marker is persisted: a later identical failure is not requeued again.
+    let mut state: pr_sniper_lib::monitoring::MonitoringState =
+        serde_json::from_value(stale_admission_state()).unwrap();
+    state.admission_upgrade_done = true;
+    store.save_monitoring_state(&state).unwrap();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    assert_eq!(
+        monitor.auto_resume(&store, &accounts(true), 2_000).unwrap(),
+        0
+    );
+    let kept = Monitor::restore(&store).unwrap().snapshot().remove(0);
+    assert_eq!(kept.operation.unwrap().state, OperationState::Failed);
+}
