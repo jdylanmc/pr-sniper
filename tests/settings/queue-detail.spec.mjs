@@ -1,5 +1,5 @@
 import { expect, test } from "./fixtures.mjs";
-import { queueFixture } from "./queue-fixture.mjs";
+import { queueFixture, showQueueGroup } from "./queue-fixture.mjs";
 
 test("queue item detail leads with status and one primary action; prose is gone", async ({
   page,
@@ -140,7 +140,7 @@ test("Needs attention rows show a compact retry clock for parked failures", asyn
 }) => {
   await parkedReview(store, {});
   await page.goto("/");
-  await page.locator("[data-queue-filter=attention]").click();
+  await showQueueGroup(page, "attention");
   const hint = page.locator("[data-queue-resume]");
   await expect(hint).toHaveCount(1);
   await expect(hint).toHaveText(/^2[45]m$/);
