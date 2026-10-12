@@ -686,10 +686,12 @@ export function renderMonitoring(
       ? `Publication: ${publication.phase.replaceAll("_", " ")}; ${publication.operation.state}; attempt ${publication.operation.attempt_count}; deadline ${time(publication.operation.retry_deadline)}; prior ${publication.history.length}`
       : `Publication: ${state.automatic ? "automatic" : "unconfirmed"}`;
     row.append(info);
-    if (state.blocked || publication?.error) {
+    // A discarded batch is replaced by a fresh review; its refusal is history.
+    const refusal = publication?.phase === "discarded" ? null : state.blocked;
+    if (refusal || publication?.error) {
       const error = document.createElement("p");
       error.className = "review-failure";
-      error.textContent = [state.blocked, publication?.error]
+      error.textContent = [refusal, publication?.error]
         .filter(Boolean)
         .join(" ");
       row.append(error);
@@ -759,7 +761,6 @@ export function renderMonitoring(
     }
     if (
       (!candidate.run?.result?.reviewed_base_sha ||
-        state.blocked ||
         publication?.phase === "stale") &&
       !candidate.blocked
     ) {

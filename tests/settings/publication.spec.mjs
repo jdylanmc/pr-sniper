@@ -282,6 +282,22 @@ test("uncertain publication exposes reconciliation and retains unmappable findin
     ]);
 });
 
+test("discarded batch shows no refusal sentence and no Review again control", async ({
+  page,
+}) => {
+  const state = snapshot("discarded");
+  state.publications[0].blocked =
+    "The review lens changed; run a new review before publishing.";
+  state.publications[0].publication.receipts[0].state = "deleted";
+  await setup(page, state);
+  const root = page.locator("#agent-reviews");
+  await expect(root).toContainText("Review 42: deleted");
+  await expect(root).not.toContainText("lens changed");
+  await expect(root.getByRole("button", { name: "Review again" })).toHaveCount(
+    0,
+  );
+});
+
 test("stale-after-publication preserves its receipt and offers no second batch", async ({
   page,
 }) => {
