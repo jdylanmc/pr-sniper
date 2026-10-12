@@ -1149,6 +1149,17 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
             blockers.push("An action on this PR has an unresolved provider outcome, possibly from an earlier iteration.".into());
         }
         let machine_clear = item.state == State::MachineSignedOff;
+        // A confirmed approval of the current head ends the handoff; a new head or
+        // any unsettled effect (Failed above) keeps or returns the PR to normal flow.
+        let approved = machine_clear
+            && effects.iter().any(|e| {
+                e.action == Action::Approve
+                    && e.state == EffectState::Confirmed
+                    && !e.needs_reconciliation()
+                    && e.receipt
+                        .as_ref()
+                        .is_some_and(|r| r.head == item.job.head_sha)
+            });
         item.action_status = Some(Status {
             item_id: item.id.clone(),
             final_valid,
@@ -1172,6 +1183,10 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
             effects,
             blockers,
         });
+        if approved {
+            item.state = State::Approved;
+            item.summary = State::Approved.summary();
+        }
     }
     Ok(())
 }

@@ -24,6 +24,7 @@ pub enum State {
     AwaitingPublication,
     WaitingForAuthor,
     MachineSignedOff,
+    Approved,
     Closed,
     Merged,
 }
@@ -37,13 +38,14 @@ impl State {
             Self::Reviewing | Self::Queued | Self::AwaitingPublication => 3,
             Self::WaitingForAuthor => 4,
             Self::Stale => 5,
-            Self::Closed | Self::Merged => 6,
+            Self::Approved | Self::Closed | Self::Merged => 6,
         }
     }
 
-    fn summary(self) -> &'static str {
+    pub(crate) fn summary(self) -> &'static str {
         match self {
             Self::MachineSignedOff => "Automated review completed. Ready for your final review and merge decision on GitHub; this is not human approval or a merge.",
+            Self::Approved => "PR Sniper approved the current revision on GitHub. Nothing is waiting on you in the Queue.",
             Self::WaitingForAuthor => "Findings or questions were published. The PR author needs to respond or update the change; it is not machine-cleared.",
             Self::WaitingForHuman => "Your attention is needed. Inspect the local findings or conversation; do not assume the PR author has been notified.",
             Self::ConfirmationRequired => "Your confirmation is required before review or publication can proceed. Open evidence and actions.",
