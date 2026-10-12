@@ -139,6 +139,8 @@ test("Needs attention rows show a compact retry clock for parked failures", asyn
   store,
 }) => {
   await parkedReview(store, {});
+  // parkedReview opens the item detail; this test needs the Queue list.
+  await store("panel_navigate", { route: { tab: "queue" } });
   await page.goto("/");
   await expect(async () => {
     await page
