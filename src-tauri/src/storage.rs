@@ -227,11 +227,12 @@ pub fn default_tools(authority: &AssignmentAuthority) -> Vec<String> {
 }
 
 /// Investigation tools, then exits. Mirrored by `PACKET_TOOLS` in `src/settings.ts`.
-pub const PACKET_TOOLS: [&str; 12] = [
+pub const PACKET_TOOLS: [&str; 13] = [
     "read_changes",
     "read_source",
     "get_thread",
     "get_checks",
+    "read_check_log",
     "list_tree",
     "search_code",
     "leave_comments",

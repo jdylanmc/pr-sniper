@@ -127,7 +127,7 @@ fn assignment(id: &str, agent: &str, primary: bool) -> Value {
     if primary {
         json!({"id":id,"agent_id":agent,"schedule":schedule,"comment":true,"approve":false,
             "actions":{"reply":true,"approve":true,"merge":false},
-            "tools":["read_changes","read_source","get_thread","get_checks","search_code",
+            "tools":["read_changes","read_source","get_thread","get_checks","read_check_log","search_code",
                 "leave_comments","ready_for_human","approve_pull_request","panic_exit"]})
     } else {
         json!({"id":id,"agent_id":agent,"schedule":schedule,"comment":false,"approve":false,
@@ -1003,6 +1003,12 @@ fn live_pr3_ci_red_denies_approve() {
     let (_, seq, _) = live.heartbeat(number, true);
     let keys = live.enqueue(number, seq, &[(PRIMARY, PRIMARY_AGENT)]);
     let report = execute(&live, live.dispatch(&keys[0]), "c-primary-pr3");
+    let read_logs = report
+        .tools
+        .iter()
+        .filter(|tool| *tool == "read_check_log")
+        .count();
+    println!("LIVE pr3 read_check_log calls={read_logs}");
     assert!(
         report
             .exits_denied

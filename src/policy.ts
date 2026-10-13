@@ -70,6 +70,7 @@ export const PACKET_TOOLS = [
   "read_source",
   "get_thread",
   "get_checks",
+  "read_check_log",
   "list_tree",
   "search_code",
   "leave_comments",
@@ -86,7 +87,9 @@ export function defaultTools(
   primary: boolean,
   grants: { comment: boolean; approve: boolean; merge: boolean },
 ): PacketTool[] {
-  const tools: PacketTool[] = [...PACKET_TOOLS.slice(0, 6)];
+  const tools: PacketTool[] = [
+    ...PACKET_TOOLS.slice(0, PACKET_TOOLS.indexOf("leave_comments")),
+  ];
   if (primary) {
     if (grants.comment) tools.push("leave_comments");
     tools.push("ready_for_human");

@@ -899,6 +899,17 @@
   border-radius: 6px;
   overflow-wrap: anywhere;
 }
+/* Editor save/validation errors lead the page (see `errorsFirst`). */
+.panel-shell .settings-window .editor-error:not([hidden]) {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border-left: 3px solid #a03134;
+  border-radius: 12px;
+}
+.panel-shell .settings-window .editor-error:focus-visible {
+  outline: 2px solid #a03134;
+  outline-offset: 2px;
+}
 .settings-window .mobile-section {
   display: none;
 }
@@ -2353,6 +2364,75 @@
     center / contain no-repeat;
 }
 
+/* Account cards are lists: every block (sign-in state, account rows) shares the
+   settings row inset (12px 14px) and hairline separators. */
+.panel-shell .settings-window :is(.copilot-auth-card, .github-auth-card) {
+  padding: 0;
+}
+.panel-shell
+  .settings-window
+  :is(.copilot-auth-card, .github-auth-card):is(
+    [data-flow-state="connecting"],
+    [data-flow-state="pending_account_confirmation"],
+    [data-flow-state="failed"]
+  )
+  .account-connection-state {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 11px 11px 0 0;
+}
+.panel-shell
+  .settings-window
+  :is(.copilot-auth-card, .github-auth-card):not(:has(.github-account))
+  .account-connection-state {
+  border-radius: 11px;
+}
+.panel-shell
+  .settings-window
+  :is(.copilot-auth-card, .github-auth-card)[data-flow-state="failed"]
+  .account-connection-state {
+  background: #fff1e9;
+}
+.panel-shell
+  .settings-window
+  :is(.copilot-auth-card, .github-auth-card)
+  .account-connection-state
+  [role="alert"]:not([hidden]) {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+}
+.panel-shell
+  .settings-window
+  :is(.copilot-auth-card, .github-auth-card)[data-flow-state="failed"]
+  :is(.copilot-flow, .github-auth-flow)
+  > button:not(.primary) {
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #327c84;
+  font-weight: 650;
+}
+.panel-shell
+  .settings-window
+  :is(.copilot-auth-card, .github-auth-card)
+  .github-account {
+  padding: 12px 14px;
+  border-top: 1px solid #edf1f4;
+}
+.panel-shell
+  .settings-window
+  :is(.copilot-auth-card, .github-auth-card):not(
+    [data-flow-state="connecting"],
+    [data-flow-state="pending_account_confirmation"],
+    [data-flow-state="failed"]
+  )
+  :is(.copilot-accounts, .github-auth-accounts)
+  > .github-account:first-child {
+  border-top: 0;
+}
+
 .panel-shell .settings-window .agent-card .resource-preview,
 .panel-shell .settings-window .agent-card [data-account-state]:empty {
   display: none;
@@ -2926,12 +3006,13 @@
   padding-top: 36px;
 }
 
-/* Errors float as a dismissible toast instead of pushing or covering layout. */
+/* Errors float as a dismissible toast at the top, overlapping the title band like a
+   card, so no action bar or floating pill can hide them. */
 .panel-shell .settings-window #error:not([hidden]) {
   position: fixed;
   left: 18px;
   right: 18px;
-  bottom: 104px;
+  top: 112px;
   z-index: 20;
   margin: 0;
   padding: 10px 36px 10px 14px;
@@ -3743,12 +3824,35 @@
 }
 
 .repository-editor .tool-row > span {
-  display: inline-flex;
+  display: flex;
+  flex: 1;
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 .repository-editor .tool-row svg {
   width: 18px;
   height: 18px;
   flex: none;
+}
+/* Owner-approved exception to no-prose: one muted line per tool. */
+.panel-shell .repository-editor .tool-row {
+  padding-top: 9px;
+  padding-bottom: 9px;
+}
+.repository-editor .tool-row .tool-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.repository-editor .tool-row .tool-detail {
+  display: block;
+  margin-top: 2px;
+  overflow: hidden;
+  color: #526274;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

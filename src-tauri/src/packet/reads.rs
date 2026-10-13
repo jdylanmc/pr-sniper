@@ -113,12 +113,20 @@ pub fn checks(observation: &Observation) -> Vec<CheckFact> {
                 name: str_of(&c["context"]),
                 status: "COMPLETED".into(),
                 conclusion: str_of(&c["state"]),
+                id: None,
+                log: false,
             },
-            _ => CheckFact {
-                name: str_of(&c["name"]),
-                status: str_of(&c["status"]),
-                conclusion: str_of(&c["conclusion"]),
-            },
+            _ => {
+                let id = c["databaseId"].as_u64().map(|id| id.to_string());
+                CheckFact {
+                    name: str_of(&c["name"]),
+                    status: str_of(&c["status"]),
+                    conclusion: str_of(&c["conclusion"]),
+                    log: id.is_some()
+                        && c["checkSuite"]["app"]["slug"].as_str() == Some("github-actions"),
+                    id,
+                }
+            }
         })
         .collect()
 }

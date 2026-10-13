@@ -73,6 +73,7 @@ pub enum ToolName {
     SearchPaths,
     GetThread,
     GetChecks,
+    ReadCheckLog,
     ListTree,
     SearchCode,
     Exit,
@@ -87,6 +88,7 @@ impl ToolName {
             "search_paths" => Self::SearchPaths,
             "get_thread" => Self::GetThread,
             "get_checks" => Self::GetChecks,
+            "read_check_log" => Self::ReadCheckLog,
             "list_tree" => Self::ListTree,
             "search_code" => Self::SearchCode,
             "leave_comments"

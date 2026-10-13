@@ -31,6 +31,8 @@ interface Row {
   open?: boolean;
   exit?: ExitName;
   facts: KeyValue[];
+  /** Teammate findings, stacked: `path:line` above its nano text. */
+  findings?: { place: string; nano: string }[];
 }
 
 const exitIds: Record<ExitOutcome["exit"], ExitName> = {
@@ -160,10 +162,11 @@ export function activityRows(
           value: `${report.findings.length} findings`,
           agent,
           exit: "submit_report",
-          facts: report.findings.map((finding): KeyValue => [
-            `${finding.file}:${finding.line}`,
-            finding.nano,
-          ]),
+          facts: [],
+          findings: report.findings.map((finding) => ({
+            place: `${finding.file}:${finding.line}`,
+            nano: finding.nano,
+          })),
         });
     } else if (result) {
       const findings = result.output.findings;
@@ -454,7 +457,29 @@ export function renderActivity(
     const facts = document.createElement("div");
     facts.className = "activity-facts";
     facts.hidden = true;
-    keyValues(facts, row.facts);
+    if (row.facts.length) keyValues(facts, row.facts);
+    if (row.findings?.length) {
+      const findings = document.createElement("ul");
+      findings.className = "activity-findings";
+      for (const finding of row.findings) {
+        const entry = document.createElement("li");
+        entry.className = "activity-finding";
+        entry.dataset.finding = finding.place;
+        // Start-ellipsis keeps the file name and line visible; the full path stays named.
+        const place = document.createElement("span");
+        place.className = "activity-finding-place";
+        place.title = finding.place;
+        const text = document.createElement("bdi");
+        text.textContent = finding.place;
+        place.append(text);
+        const nano = document.createElement("p");
+        nano.className = "activity-finding-nano";
+        nano.textContent = finding.nano;
+        entry.append(place, nano);
+        findings.append(entry);
+      }
+      facts.append(findings);
+    }
     toggle.onclick = () => {
       const open = facts.hidden;
       facts.hidden = !open;

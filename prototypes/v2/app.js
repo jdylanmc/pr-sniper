@@ -17,6 +17,8 @@ let storageBlocked = false;
 let tab = "queue";
 let queueFilter;
 let historyFilter = "all";
+// Reviewed rows drawn; grows by 50 per Show more.
+let reviewedLimit = 50;
 let dirty = false;
 let toastTimer;
 let noticeTimer;
@@ -632,7 +634,14 @@ function reviewedPage() {
       .join("")}</div>
     ${
       items.length
-        ? `<ol class="work-list" aria-label="Reviewed work">${items.map((review) => workRow(review, "reviewed")).join("")}</ol>`
+        ? `<ol class="work-list" aria-label="Reviewed work">${items
+            .slice(0, reviewedLimit)
+            .map((review) => workRow(review, "reviewed"))
+            .join("")}</ol>${
+            items.length > reviewedLimit
+              ? `<button class="quiet-action work-more" data-action="reviewed-more" aria-label="Show ${Math.min(50, items.length - reviewedLimit)} more">+${items.length - reviewedLimit}</button>`
+              : ""
+          }`
         : quietEmpty("reviewed", "Nothing in this view")
     }
   </div>`;
@@ -1906,6 +1915,11 @@ popover.addEventListener("click", (event) => {
   const action = button.dataset.action;
   const id = button.dataset.id;
   if (!action) return;
+  if (action === "reviewed-more") {
+    reviewedLimit += 50;
+    render();
+    return;
+  }
   if (action === "pick-repo") {
     addRepository(button.dataset.name, id);
     return;

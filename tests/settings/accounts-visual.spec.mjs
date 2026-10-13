@@ -729,6 +729,24 @@ for (const [provider, role] of Object.entries(roles)) {
       await page.screenshot({
         path: testInfo.outputPath(`${provider}-disconnected.png`),
       });
+      // The sign-in state and the account row share one row inset.
+      const insets = await card.evaluate((element) =>
+        [".account-connection-state", ".github-account"].map((selector) => {
+          const block = element.querySelector(selector);
+          return (
+            block.getBoundingClientRect().left +
+            parseFloat(getComputedStyle(block).paddingLeft)
+          );
+        }),
+      );
+      expect(Math.abs(insets[0] - insets[1])).toBeLessThanOrEqual(1);
+      const retryButton = card.locator(
+        ".account-connection-state button:not(.primary):visible",
+      );
+      for (const button of await retryButton.all()) {
+        const box = await button.boundingBox();
+        expect(Math.abs(box.x - insets[1])).toBeLessThanOrEqual(1);
+      }
     });
   }
 }

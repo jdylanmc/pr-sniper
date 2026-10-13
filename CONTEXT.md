@@ -159,7 +159,7 @@ _Avoid_: Review run
 Every try at a review, including retries. Fixed-schema bounded local **Diagnostic Attempt Record** excludes prompts, bodies, transcripts and credentials; logging failure never changes outcome.
 
 **Host-owned tools**:
-The only tools Copilot gets in a review: the run's investigation tools (changed-file reads, source reads, threads, checks, tree, code search) and its offered exits, over immutable base/head trees. No checkout, commands, builds, tests, hooks, installs or provider mutations. Runtime tool catalog must exactly equal the allowlist before inference or the review is blocked. Constrained current-user process, not an OS sandbox.
+The only tools Copilot gets in a review: the run's investigation tools (changed-file reads, source reads, threads, checks, CI job logs, tree, code search) and its offered exits, over immutable base/head trees. No checkout, commands, builds, tests, hooks, installs or provider mutations. Runtime tool catalog must exactly equal the allowlist before inference or the review is blocked. Constrained current-user process, not an OS sandbox.
 _Avoid_: Sandbox, agent tools
 
 **Validated review result**:

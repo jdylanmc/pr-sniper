@@ -242,7 +242,7 @@ impl<T: QueryTransport> GithubClient<T> {
               }}
               commits(last:1) { nodes { commit { oid statusCheckRollup { state contexts(first:100) {
                 totalCount pageInfo { hasNextPage } nodes { __typename
-                  ... on CheckRun { name status conclusion }
+                  ... on CheckRun { name status conclusion databaseId checkSuite { app { slug } } }
                   ... on StatusContext { context state }
                 }
               }}}}}

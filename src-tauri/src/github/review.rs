@@ -23,6 +23,16 @@ impl<T: Transport> Transport for GuardedTransport<T> {
         (self.guard)()?;
         Ok(result)
     }
+    fn get_unauthenticated_tail(
+        &self,
+        url: &str,
+        tail: usize,
+    ) -> Result<(super::provider::Response, bool), ConnectionError> {
+        (self.guard)()?;
+        let result = self.transport.get_unauthenticated_tail(url, tail)?;
+        (self.guard)()?;
+        Ok(result)
+    }
 }
 
 impl<T: super::threads::QueryTransport> super::threads::QueryTransport for GuardedTransport<T> {
@@ -253,4 +263,62 @@ impl<T: Transport> GithubClient<T> {
             _ => Ok(json!({"kind":"binary","size":size,"mode":entry.mode,"sha":entry.sha})),
         }
     }
+
+    /// One GitHub Actions job log, at most the last `tail` bytes. `None`: there is no log to
+    /// read (absent, expired or not permitted). The API answers with a redirect to a signed
+    /// blob URL, fetched without credentials.
+    pub fn job_log(
+        &self,
+        name: &str,
+        job_id: u64,
+        tail: usize,
+    ) -> Result<Option<JobLog>, ConnectionError> {
+        let name = crate::storage::canonical_repository(name)
+            .map_err(|_| ConnectionError::InvalidRepository)?;
+        let response = self
+            .transport
+            .get(&format!("/repos/{name}/actions/jobs/{job_id}/logs"))?;
+        let keep = |mut bytes: Vec<u8>, mut truncated_head: bool| {
+            if bytes.len() > tail {
+                bytes.drain(..bytes.len() - tail);
+                truncated_head = true;
+            }
+            Some(JobLog {
+                bytes,
+                truncated_head,
+            })
+        };
+        match response.status {
+            301 | 302 | 303 | 307 | 308 => {
+                let location = response
+                    .headers
+                    .get("location")
+                    .ok_or(ConnectionError::InvalidResponse)?;
+                let (blob, dropped) = self.transport.get_unauthenticated_tail(location, tail)?;
+                match blob.status {
+                    200 => Ok(keep(blob.body, dropped)),
+                    403 | 404 | 410 => Ok(None),
+                    500..=599 => Err(ConnectionError::ProviderFailure),
+                    status => Err(ConnectionError::ProviderRejectedStatus(status)),
+                }
+            }
+            200 => Ok(keep(response.body, false)),
+            404 | 410 => Ok(None),
+            _ => match super::provider::parse_response(response) {
+                Err(
+                    ConnectionError::MissingReadPermission
+                    | ConnectionError::OrganizationPolicyDenied,
+                ) => Ok(None),
+                Err(error) => Err(error),
+                Ok(_) => Err(ConnectionError::InvalidResponse),
+            },
+        }
+    }
+}
+
+/// Raw job log bytes; `truncated_head` when only the tail was kept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobLog {
+    pub bytes: Vec<u8>,
+    pub truncated_head: bool,
 }

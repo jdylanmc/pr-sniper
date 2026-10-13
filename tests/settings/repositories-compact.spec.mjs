@@ -453,6 +453,21 @@ for (const failure of ["write", "conflict"]) {
       .getByRole("button", { name: "Save repository", exact: true })
       .click();
     await expect(editor.locator("[data-resource-error]")).toBeVisible();
+    // Errors lead the page: above the first card, clear of the actions, focused.
+    const error = editor.locator("[data-resource-error]");
+    await expect(error).toBeFocused();
+    const errorBox = await error.boundingBox();
+    const firstCard = await editor
+      .locator(".repository-group:visible")
+      .first()
+      .boundingBox();
+    const actions = await editor.locator(".resource-actions").boundingBox();
+    expect(errorBox.y + errorBox.height).toBeLessThanOrEqual(firstCard.y);
+    expect(
+      errorBox.y + errorBox.height <= actions.y ||
+        errorBox.y >= actions.y + actions.height,
+    ).toBe(true);
+    await capture(page, testInfo, `repository-${failure}-top`);
     const rejection = await editor
       .locator("[data-resource-error]")
       .textContent();

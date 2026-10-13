@@ -119,6 +119,7 @@ sentences, tooltips-as-paragraphs or explanatory strings to the app, and never
 write status sentences from the backend for the UI to show. State is shown by
 controls, icons and values. README and docs stay short: tables and lists, no
 narrative. If something needs explaining, the design is wrong.
+Exception: the Tools list shows a one-line description per tool (owner-approved).
 
 Icon-first, minimal prose: no helper paragraphs, empty-state text or hints.
 Page title and back arrow live in the navy band; cards overlap it by 23px;
