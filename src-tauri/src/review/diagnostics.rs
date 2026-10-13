@@ -230,6 +230,7 @@ fn operation_failure(failure: &OperationFailure) -> FailureKind {
         OperationFailure::Network => FailureKind::Network,
         OperationFailure::RateLimited => FailureKind::RateLimited,
         OperationFailure::Provider => FailureKind::Provider,
+        OperationFailure::Panic => FailureKind::Panic,
         OperationFailure::Superseded => FailureKind::Superseded,
         OperationFailure::Permanent
         | OperationFailure::Credentials

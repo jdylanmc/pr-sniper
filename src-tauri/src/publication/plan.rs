@@ -1,5 +1,6 @@
 use super::Publication;
 use crate::{
+    exits::{ExitOutcome, NewComment},
     github::review::ReviewContext,
     review::{Decision, Failure, Severity},
 };
@@ -27,6 +28,83 @@ pub struct Batch {
 }
 
 impl Batch {
+    /// Batch from a Packet-mode `leave_comments` exit. All or nothing: one unmappable
+    /// line fails the whole batch (a toss), so nothing partial is ever posted.
+    pub fn prepare_exit(
+        run: &Publication,
+        context: &ReviewContext,
+        new_comments: &[NewComment],
+    ) -> Result<Self, Failure> {
+        let result = run
+            .review
+            .result
+            .as_ref()
+            .ok_or_else(|| Failure::permanent("A complete local review is required."))?;
+        if context.pull.head_sha != run.review.job.head_sha
+            || result.reviewed_base_sha.as_deref() != Some(&context.pull.base_sha)
+        {
+            return Err(Failure::permanent(
+                "The reviewed diff is stale. Run a new review.",
+            ));
+        }
+        if new_comments.is_empty() {
+            return Err(Failure::permanent(
+                "The exit has no new comments to publish.",
+            ));
+        }
+        let locations: BTreeMap<_, _> = context
+            .files
+            .iter()
+            .map(|file| {
+                (
+                    file.path.as_str(),
+                    file.patch
+                        .as_deref()
+                        .and_then(diff_positions)
+                        .unwrap_or_default(),
+                )
+            })
+            .collect();
+        let mut comments = Vec::new();
+        for (index, comment) in new_comments.iter().enumerate() {
+            let side = comment.side.as_deref().unwrap_or("head");
+            let position = locations
+                .get(comment.path.as_str())
+                .and_then(|lines| lines.get(&(side.to_string(), comment.line)))
+                .copied()
+                .ok_or_else(|| {
+                    Failure::provider(
+                        "A comment line is not in the diff; the whole batch was tossed. Retry.",
+                    )
+                })?;
+            let body = format!(
+                "{}\n\n<!-- pr-sniper:comment:{}:{index} -->",
+                comment.body.trim_end(),
+                run.id
+            );
+            check_body(&body)?;
+            comments.push(InlineComment {
+                path: comment.path.clone(),
+                line: comment.line,
+                side: if side == "base" { "LEFT" } else { "RIGHT" }.into(),
+                body,
+                diff_position: Some(position),
+            });
+        }
+        let body = format!(
+            "Automated review by PR Sniper.\n\n{} inline comment(s).\n\n{}\n\n\u{f05b} PR Sniper",
+            comments.len(),
+            run.marker(),
+        );
+        check_body(&body)?;
+        Ok(Self {
+            commit_id: run.review.job.head_sha.clone(),
+            body,
+            comments,
+            unmappable: vec![],
+        })
+    }
+
     pub fn prepare(run: &Publication, context: &ReviewContext) -> Result<Self, Failure> {
         let result = run
             .review
@@ -39,6 +117,15 @@ impl Batch {
             return Err(Failure::permanent(
                 "The reviewed diff is stale. Run a new review.",
             ));
+        }
+        if let Some(exit) = &result.output.exit {
+            // Packet-mode run: the batch is built from the exit's comments, never findings.
+            return match exit {
+                ExitOutcome::Comments { new_comments, .. } => {
+                    Self::prepare_exit(run, context, new_comments)
+                }
+                _ => Err(Failure::permanent("This exit writes no review comments.")),
+            };
         }
         let paths: Vec<_> = context.files.iter().map(|f| f.path.clone()).collect();
         crate::review::validate_output(
@@ -115,6 +202,16 @@ impl Batch {
             comments,
             unmappable,
         })
+    }
+}
+
+/// Whether a completed review has provider comments to publish. Legacy runs always do;
+/// Packet-mode runs only on a `leave_comments` exit with new comments.
+pub fn writes_comments(result: &crate::review::ReviewResult) -> bool {
+    match &result.output.exit {
+        None => true,
+        Some(ExitOutcome::Comments { new_comments, .. }) => !new_comments.is_empty(),
+        Some(_) => false,
     }
 }
 

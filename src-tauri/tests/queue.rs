@@ -35,6 +35,8 @@ fn review(number: u64) -> ReviewRun {
     let mut operation = JobOperation::review(&job, 100);
     operation.state = OperationState::Completed;
     ReviewRun {
+        mode: Default::default(),
+        packet: None,
         feedback_context: None,
         key: review::key(&job, ASSIGNMENT),
         selection: Selection::resolve(&settings(), &job, ASSIGNMENT).unwrap(),
@@ -79,6 +81,99 @@ fn seed(store: &Store, reviews: &[ReviewRun], publications: &[Publication]) {
 
 fn state(store: &Store) -> State {
     queue::snapshot(store, vec![]).unwrap().items[0].state
+}
+
+fn with_exit(exit: pr_sniper_lib::exits::ExitOutcome) -> ReviewRun {
+    let mut run = review(1);
+    let output = &mut run.result.as_mut().unwrap().output;
+    output.decision = Decision::HumanInputRequired;
+    output.exit = Some(exit);
+    run
+}
+
+#[test]
+fn packet_exits_decide_queue_state_without_a_publication_unless_they_write_comments() {
+    use pr_sniper_lib::exits::{ExitOutcome, NewComment};
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let ready = with_exit(ExitOutcome::ReadyForHuman {
+        summary: "Looks fine.".into(),
+    });
+    seed(&store, &[ready], &[]);
+    assert_eq!(state(&store), State::MachineSignedOff);
+    let snapshot = serde_json::to_value(queue::snapshot(&store, vec![]).unwrap()).unwrap();
+    assert_eq!(snapshot["publications"][0]["local_only"], true);
+
+    let comments = with_exit(ExitOutcome::Comments {
+        new_comments: vec![NewComment {
+            path: "a.rs".into(),
+            line: 1,
+            side: None,
+            body: "Fix.".into(),
+        }],
+        reply_comments: vec![],
+        resolve_own_threads: vec![],
+    });
+    seed(&store, &[comments], &[]);
+    assert_eq!(state(&store), State::AwaitingPublication);
+
+    let replies_only = with_exit(ExitOutcome::Comments {
+        new_comments: vec![],
+        reply_comments: vec![pr_sniper_lib::exits::ReplyComment {
+            thread_id: "T".into(),
+            body: "Agreed.".into(),
+        }],
+        resolve_own_threads: vec![],
+    });
+    seed(&store, &[replies_only], &[]);
+    assert_eq!(state(&store), State::WaitingForHuman);
+
+    for exit in [
+        ExitOutcome::Approve {
+            comment: "LGTM".into(),
+        },
+        ExitOutcome::ApproveAndMerge {
+            comment: "LGTM".into(),
+        },
+    ] {
+        seed(&store, &[with_exit(exit)], &[]);
+        assert_eq!(state(&store), State::WaitingForHuman);
+    }
+}
+
+#[test]
+fn a_panic_exit_parks_at_once_typed_and_resumes_on_the_cooldown_schedule() {
+    let mut run = review(1);
+    run.result = None;
+    run.operation.state = OperationState::Running;
+    run.operation
+        .fail(&review::Failure::panic("tool broken").monitoring(), 1_000);
+    assert_eq!(run.operation.state, OperationState::Failed);
+    assert_eq!(
+        run.operation.failure,
+        Some(pr_sniper_lib::monitoring::OperationFailure::Panic)
+    );
+    assert!(run.operation.resume_at.is_some());
+    run.error = Some("Agent panic exit: tool broken".into());
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    seed(&store, &[run], &[]);
+    assert_eq!(state(&store), State::Failed);
+}
+
+#[test]
+fn legacy_run_records_load_as_legacy_with_no_packet_and_round_trip() {
+    let run = review(1);
+    let mut value = serde_json::to_value(&run).unwrap();
+    value.as_object_mut().unwrap().remove("mode");
+    value.as_object_mut().unwrap().remove("packet");
+    let loaded: ReviewRun = serde_json::from_value(value).unwrap();
+    assert_eq!(loaded.mode, review::RunMode::Legacy);
+    assert!(loaded.packet.is_none());
+    assert!(serde_json::to_value(&loaded)
+        .unwrap()
+        .get("packet")
+        .is_none());
 }
 
 #[test]

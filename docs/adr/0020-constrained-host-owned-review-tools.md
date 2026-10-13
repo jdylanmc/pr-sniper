@@ -20,6 +20,6 @@ Review reads untrusted PR content. Letting the model clone or execute repo code 
 - Process is current-user constrained. Explicitly not an OS sandbox.
 - Reviews cannot run tests or build.
 
-## Proposed change ([ADR 0021](0021-review-packet.md))
+## Amended ([ADR 0021](0021-review-packet.md))
 
-The fixed three-tool allowlist becomes a per-assignment tool set plus grant-gated exits (the primary's only; a teammate has `submit_report`). Allowlist drift still blocks a run. Paging stays. The byte-coverage rule above is now informational (implemented). The rules tell the agent to say what it did not read. A response that cannot fit the limit is still a failure, never a partial answer.
+The fixed three-tool allowlist is now a per-run tool set: the assignment's granted investigation tools plus the exits the gates offer (the primary's; a teammate has `submit_report`). Registry: `src-tauri/src/review/tools.rs`; the three original definitions are byte-compatible. The runtime catalog must equal the run's tool set (`with_available_tools` plus `get_current_metadata` equality; the PreToolUse hook is a backstop), or the run is blocked. Legacy runs keep exactly the three tools. Paging stays. The byte-coverage rule above is informational. A response that cannot fit the limit is still a failure, never a partial answer.

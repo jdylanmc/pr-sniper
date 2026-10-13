@@ -1714,6 +1714,7 @@ async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure>
         let before_native = native.clone();
         let before_run = run.clone();
         let request = runtime::Request {
+            exits: None,
             diagnostics: Some(diagnostics.clone()),
             task: ReplyTask {
                 conversation: run.input(),

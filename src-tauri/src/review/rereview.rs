@@ -94,6 +94,8 @@ pub(crate) fn enqueue_discarded(store: &Store, now: i64) -> Result<usize, String
             phase: "Waiting for shared AI capacity".into(),
             error: None,
             result: None,
+            mode: crate::review::RunMode::Legacy,
+            packet: None,
         });
         queued += 1;
     }

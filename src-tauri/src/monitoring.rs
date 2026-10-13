@@ -60,6 +60,8 @@ pub enum OperationFailure {
     Superseded,
     Credentials,
     Permission,
+    /// The agent called `panic_exit`: parks at once, resumes on the cooldown schedule.
+    Panic,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -77,7 +79,9 @@ impl OperationFailure {
             Self::Credentials => FailureClass::Credentials,
             Self::Permission => FailureClass::Permission,
             Self::Timeout | Self::RateLimited | Self::Network => FailureClass::Network,
-            Self::Provider | Self::Permanent | Self::Superseded => FailureClass::Other,
+            Self::Provider | Self::Permanent | Self::Superseded | Self::Panic => {
+                FailureClass::Other
+            }
         }
     }
 
@@ -91,7 +95,7 @@ impl OperationFailure {
     /// Parked failures that may clear on their own after a cooldown; access can
     /// be granted, credentials resume on reconnect instead.
     pub fn resumable(&self) -> bool {
-        self.transient() || matches!(self, Self::Permission)
+        self.transient() || matches!(self, Self::Permission | Self::Panic)
     }
 }
 

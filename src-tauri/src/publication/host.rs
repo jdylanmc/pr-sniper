@@ -67,7 +67,8 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
             }
             Candidate {
                 local_only: publication.is_none() && (
-                    !settings.repositories.iter().find(|r|r.id==review.job.configuration_id)
+                    review.result.as_ref().is_some_and(|r| !crate::publication::writes_comments(r))
+                    || !settings.repositories.iter().find(|r|r.id==review.job.configuration_id)
                         .is_some_and(|r|r.assignments.iter().any(|a|a.id==review.assignment_id&&a.comment))),
                 automatic: policy.as_ref().copied().unwrap_or(false),
                 blocked: policy.err(),
@@ -93,7 +94,7 @@ fn next_candidate(store: &Store, now: i64) -> Result<Option<Candidate>, String> 
                     .next_attempt_at
                     .is_some_and(|next| now >= next)
             }
-            None => candidate.blocked.is_none() && candidate.automatic,
+            None => candidate.blocked.is_none() && candidate.automatic && !candidate.local_only,
         }))
 }
 

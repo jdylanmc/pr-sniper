@@ -45,6 +45,15 @@ Reference for every GitHub write PR Sniper can make: comment publication, thread
 - Admission write order: feedback observation → mention identity + FIFO intent → follow-up execution → execution link. Success recorded after all. A failure leaves a durable blocker. Unlinked intents recover; committed linked ones are not replaced.
 - No primary, unavailable model or no iteration: work stays queued with its reason, FIFO.
 
+## Packet exits
+
+- Packet-mode runs write only through their exit; the host applies it. Gates (`exits::gates::offered`) decide what is offered; the exit-time check re-reads the PR.
+- `leave_comments.new_comments`: one auto-created publication via `Batch::prepare_exit` (same ledger, pending review, reconcile as above). Every line must map to the diff; one unmappable line tosses the whole batch, nothing is posted. Needs Publish Comment.
+- `leave_comments.reply_comments`, `resolve_own_threads`: validated and stored; execution not wired yet.
+- `ready_for_human`: no GitHub write. Local summary, queue shows Ready for you.
+- `approve_pull_request`, `approve_and_merge`: payload, gate and stored outcome only; effects not wired yet. Approval comment required. GitHub refuses self-approval; merge on own PRs needs Include self. Approve ignores others' threads and changes requested; merge does not.
+- `panic_exit`: no write. Typed failure, parks at once, cooldown auto-resume.
+
 ## Approve and Merge
 
 - Primary only. **Approval** pill `off | Approve | & Merge`. State `state/actions.json`. Uses shared AI capacity, execution gates, pause accounting, worker teardown.

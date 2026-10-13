@@ -7,7 +7,7 @@ use crate::{
     review::{Failure, ReviewRun, Selection},
     storage::{Settings, Store},
 };
-pub use plan::{Batch, InlineComment};
+pub use plan::{writes_comments, Batch, InlineComment};
 use serde::{Deserialize, Serialize};
 
 pub(crate) enum GateError {

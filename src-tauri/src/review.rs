@@ -1,7 +1,9 @@
 pub(crate) mod diagnostics;
 pub(crate) mod host;
+pub(crate) mod packet_run;
 pub(crate) mod rereview;
 pub(crate) mod runtime;
+pub(crate) mod tools;
 
 use crate::{
     github::ConnectionError,
@@ -218,6 +220,11 @@ pub struct ReviewRun {
     pub phase: String,
     pub error: Option<String>,
     pub result: Option<ReviewResult>,
+    #[serde(default)]
+    pub mode: RunMode,
+    /// Content-free record of the packet this run was given (Packet mode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub packet: Option<crate::packet::PacketRecord>,
 }
 
 impl ReviewRun {
@@ -285,10 +292,11 @@ pub struct FileGuide {
     pub order: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Decision {
     MachineSignOff,
+    #[default]
     HumanInputRequired,
 }
 
@@ -324,10 +332,62 @@ pub struct ReviewOutput {
     pub held_findings: Vec<Finding>,
     #[serde(default)]
     pub feedback_assessments: Vec<crate::feedback::Assessment>,
+    // Exit-mode runs leave the legacy fields empty; legacy validation still requires them.
+    #[serde(default)]
     pub synopsis: String,
+    #[serde(default)]
     pub files: Vec<FileGuide>,
+    #[serde(default)]
     pub findings: Vec<Finding>,
+    #[serde(default)]
     pub decision: Decision,
+    /// The one exit a Packet-mode run ended on. Host-owned, never model output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<crate::exits::ExitOutcome>,
+    /// A teammate's stored report (`submit_report`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<crate::exits::TeammateReport>,
+}
+
+impl ReviewOutput {
+    /// Output of a Packet-mode run: legacy fields stay empty, the exit decides.
+    pub fn from_exit(
+        outcome: crate::exits::ExitOutcome,
+        report: Option<crate::exits::TeammateReport>,
+    ) -> Self {
+        Self {
+            feedback_conflict: false,
+            held_findings: vec![],
+            feedback_assessments: vec![],
+            synopsis: String::new(),
+            files: vec![],
+            findings: vec![],
+            // Never MachineSignOff: legacy clearance and action paths must not read an exit run.
+            decision: Decision::HumanInputRequired,
+            exit: Some(outcome),
+            report,
+        }
+    }
+}
+
+/// How a run reviews: the legacy JSON decision, or the packet with terminal exits.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunMode {
+    #[default]
+    Legacy,
+    Packet,
+}
+
+impl RunMode {
+    /// Packet mode is selected by the assignment having a tool set.
+    pub fn for_assignment(assignment: &crate::storage::Assignment) -> Self {
+        if assignment.tools.is_some() {
+            Self::Packet
+        } else {
+            Self::Legacy
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -369,12 +429,25 @@ pub(crate) fn json_body(text: &str) -> &str {
 }
 
 pub fn validate_output(text: &str, paths: &[String]) -> Result<ReviewOutput, Failure> {
-    let mut output: ReviewOutput = serde_json::from_str(json_body(text)).map_err(|_| {
+    let schema_error = || {
         Failure::permanent(
             "Copilot's final response does not match the required review JSON schema.",
         )
-    })?;
-    if output.feedback_conflict || !output.held_findings.is_empty() {
+    };
+    // The output fields default for exit-mode runs; the model must still send the legacy four.
+    let raw: Value = serde_json::from_str(json_body(text)).map_err(|_| schema_error())?;
+    if ["synopsis", "files", "findings", "decision"]
+        .iter()
+        .any(|key| raw.get(key).is_none())
+    {
+        return Err(schema_error());
+    }
+    let mut output: ReviewOutput = serde_json::from_value(raw).map_err(|_| schema_error())?;
+    if output.feedback_conflict
+        || !output.held_findings.is_empty()
+        || output.exit.is_some()
+        || output.report.is_some()
+    {
         return Err(Failure::permanent(
             "Model output cannot set host-owned feedback dispositions.",
         ));
@@ -484,6 +557,25 @@ impl Failure {
     }
     pub fn schema() -> Self {
         Self::permanent("Copilot returned invalid or incomplete review output.")
+    }
+    /// The agent chose `panic_exit`. Typed, parks at once, resumes on cooldown.
+    pub fn panic(reason: &str) -> Self {
+        Self {
+            kind: OperationFailure::Panic,
+            origin: crate::backpressure::Origin::Copilot,
+            ..Self::permanent(format!("Agent panic exit: {reason}"))
+        }
+    }
+    /// Repeated malformed or over-limit exit calls. Permanent, human needed.
+    pub fn contract(message: impl Into<String>) -> Self {
+        Self::permanent(message)
+    }
+    /// The PR state moved under the run: tossed, not a failure of the agent.
+    pub fn superseded(message: &str) -> Self {
+        Self {
+            kind: OperationFailure::Superseded,
+            ..Self::permanent(message)
+        }
     }
     pub fn operation(message: String) -> Self {
         if message == "Copilot operation cancelled." {
@@ -665,6 +757,39 @@ impl Events {
     ) -> Result<ReviewResult, Failure> {
         self.finish_with(session_id, model, runtime_version, |text| {
             validate_output(text, paths)
+        })
+    }
+
+    /// Packet-mode completion: the host-held exit slot decides; any final message is ignored.
+    /// Idle without an exit is agent-quality (retryable), never a schema failure.
+    pub fn finish_exit<O>(
+        self,
+        exit: Option<crate::exits::ExitCall>,
+        session_id: String,
+        model: String,
+        runtime_version: String,
+        build: impl FnOnce(crate::exits::ExitCall) -> Result<O, Failure>,
+    ) -> Result<ReviewResult<O>, Failure> {
+        if !self.idle || !self.usage_seen {
+            return Err(Failure::permanent(
+                "Copilot ended without completion and usage evidence.",
+            ));
+        }
+        let exit = exit.ok_or_else(|| {
+            Failure::provider("Agent ended without calling an exit. No review result was accepted.")
+        })?;
+        Ok(ReviewResult {
+            reviewed_base_sha: None,
+            output: build(exit)?,
+            session_id,
+            model,
+            runtime_version,
+            intelligence: None,
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+            tool_calls: self.tool_calls,
+            byte_coverage: false,
+            coverage: None,
         })
     }
 

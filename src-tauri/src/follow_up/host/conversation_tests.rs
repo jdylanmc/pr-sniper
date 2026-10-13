@@ -165,6 +165,8 @@ fn fixture(count: usize) -> (tempfile::TempDir, Store, Publication, Thread) {
     let reviews=jobs.iter().enumerate().map(|(i,job)| {
         let mut operation=JobOperation::review(job,NOW+2);operation.state=OperationState::Completed;
         ReviewRun {
+            mode: Default::default(),
+            packet: None,
             feedback_context:None,key:crate::review::key(job,job.assignment_id.as_ref().unwrap()),
             assignment_id:job.assignment_id.clone().unwrap(),job:job.clone(),
             selection:Selection::resolve(&settings,job,job.assignment_id.as_ref().unwrap()).unwrap(),

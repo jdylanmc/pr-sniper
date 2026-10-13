@@ -36,6 +36,8 @@ fn fixture() -> (tempfile::TempDir, Store, ReviewRun) {
     let mut operation = JobOperation::review(&job, 100);
     operation.state = OperationState::Completed;
     let review = ReviewRun {
+        mode: Default::default(),
+        packet: None,
         feedback_context: None,
         key: super::super::key(&job, &assignment_id),
         selection: Selection::resolve(&settings, &job, &assignment_id).unwrap(),
