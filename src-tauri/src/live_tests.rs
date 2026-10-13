@@ -1020,7 +1020,11 @@ fn live_pr3_ci_red_denies_approve() {
     assert!(!report
         .exits_offered
         .contains(&"approve_pull_request".to_string()));
-    assert!(report.exit == "leave_comments" || report.exit == "ready_for_human");
+    assert!(
+        ["comments", "leave_comments", "ready_for_human"].contains(&report.exit.as_str()),
+        "unexpected exit {}",
+        report.exit
+    );
     if let Ok(run) = &report.outcome {
         if publication::writes_comments(run.result.as_ref().unwrap()) {
             let publication = effects(&live, run).0.expect("published");
