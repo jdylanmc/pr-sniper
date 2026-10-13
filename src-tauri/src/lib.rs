@@ -25,6 +25,9 @@ pub mod startup;
 pub mod storage;
 mod storage_state;
 
+#[cfg(test)]
+mod live_tests;
+
 // Some helpers are consumed only by separate integration-test crates.
 #[cfg(all(test, windows))]
 #[allow(dead_code)]

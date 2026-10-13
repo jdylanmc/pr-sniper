@@ -190,3 +190,37 @@ fn pr_state_survives_a_restart() {
     let restored = Store::new(dir.path().into()).load_pr_states().unwrap();
     assert_eq!(restored, states);
 }
+
+#[test]
+fn consuming_records_when_and_a_new_head_keeps_it() {
+    let parent = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/pr-state/fixtures");
+    std::fs::create_dir_all(&parent).unwrap();
+    let dir = tempfile::tempdir_in(parent).unwrap();
+    let store = Store::new(dir.path().into());
+    let mut states = PrStates::default();
+    observe(&mut states, &snapshot(), false);
+    store.save_pr_states(&states).unwrap();
+    let before = chrono::Utc::now().timestamp();
+    assert_eq!(
+        consume(&store, &binding(), 1, "x").unwrap(),
+        Consumed::Consumed
+    );
+    let mut states = store.load_pr_states().unwrap();
+    let at = states.get(&binding()).unwrap().consumed_at.unwrap();
+    assert!(at >= before);
+    assert_eq!(
+        consume(&store, &binding(), 9, "y").unwrap(),
+        Consumed::Moved
+    );
+    states.observe(
+        &binding(),
+        Observation {
+            iteration_id: "i2",
+            new_iteration: true,
+            snapshot: None,
+            already_reviewed: false,
+            now: 11,
+        },
+    );
+    assert_eq!(states.get(&binding()).unwrap().consumed_at, Some(at));
+}

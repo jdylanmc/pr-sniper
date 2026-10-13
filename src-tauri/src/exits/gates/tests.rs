@@ -172,6 +172,34 @@ fn denials_carry_a_short_directive_reason() {
 }
 
 #[test]
+fn self_authorship_never_masks_an_actionable_pr_state_reason() {
+    // Live on the sandbox: a self-authored red PR showed only the self-approval reason,
+    // so the agent never learned CI was red and handed off instead of commenting.
+    for (fact, approve, merge) in [
+        (
+            (|f: &mut Facts| f.ci = Ci::Red) as fn(&mut Facts),
+            "CI is red",
+            "CI is red",
+        ),
+        (|f| f.conflicts = true, "Merge conflicts", "Merge conflicts"),
+        (|_| {}, "self-approval", "Include self is off"),
+    ] {
+        let mut input = base();
+        input.facts.author_is_acting = true;
+        fact(&mut input.facts);
+        for (exit, expected) in [
+            (Exit::ApprovePullRequest, approve),
+            (Exit::ApproveAndMerge, merge),
+        ] {
+            match offer(&input, exit).unwrap() {
+                Offer::Denied(reason) => assert!(reason.contains(expected), "{reason}"),
+                Offer::Offered => panic!("{exit:?} offered"),
+            }
+        }
+    }
+}
+
+#[test]
 fn provider_blockers_outside_the_table_still_deny() {
     let mut input = base();
     input.facts.merge_blocker = Some("Provider merge queue.".into());

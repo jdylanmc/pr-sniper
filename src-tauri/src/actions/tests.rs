@@ -238,6 +238,11 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
         .to_vec(),
     );
     settings.repositories[0].assignments[0].comment = true;
+    settings.repositories[0].assignments[0]
+        .actions
+        .as_mut()
+        .unwrap()
+        .reply = true;
     store.save_settings(&settings).unwrap();
     let job = store.load_queue().unwrap().remove(0);
     let assignment = settings.repositories[0].assignments[0].id.clone();
@@ -317,6 +322,7 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
             write_capability: true,
             teammates: vec![],
             iterations: &[],
+            last_consumed_at: None,
         },
     )
     .unwrap();
@@ -364,18 +370,25 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
         .contains("src/lib.rs"));
     {
         use crate::github::actions::HumanThread;
-        let thread = |id: &str, commit: &str| HumanThread {
+        // Location from the root (line, else originalLine when outdated); edits dated.
+        let thread = |id: &str, commit: &str, line: Value, updated: &str| HumanThread {
             id: id.into(),
             resolved: false,
             outdated: false,
             resolved_by: None,
             comments: vec![
-                json!({"fullDatabaseId":1,"body":"c","author":{"login":"x"},"originalCommit":{"oid":commit}}),
+                json!({"fullDatabaseId":1,"body":"c","author":{"login":"x"},"originalCommit":{"oid":commit},
+                    "path":"src/lib.rs","line":line,"originalLine":7,"updatedAt":updated}),
             ],
         };
         env.wire.0.lock().unwrap().observation.threads = vec![
-            thread("mapped", &"a".repeat(40)),
-            thread("elsewhere", &"c".repeat(40)),
+            thread("mapped", &"a".repeat(40), json!(3), "2026-01-01T00:00:00Z"),
+            thread(
+                "elsewhere",
+                &"c".repeat(40),
+                Value::Null,
+                "2026-06-01T00:00:00Z",
+            ),
         ];
         let known = vec![("a".repeat(40), 2)];
         let stamped = packet_run::prepare(
@@ -389,6 +402,11 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
                 write_capability: true,
                 teammates: vec![],
                 iterations: &known,
+                last_consumed_at: Some(
+                    chrono::DateTime::parse_from_rfc3339("2026-03-01T00:00:00Z")
+                        .unwrap()
+                        .timestamp(),
+                ),
             },
         )
         .unwrap();
@@ -401,6 +419,24 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
         };
         assert!(line("mapped").contains("targeted_revision=2"));
         assert!(line("elsewhere").contains("targeted_revision=unknown"));
+        assert!(line("mapped").contains(" at src/lib.rs:3 "));
+        assert!(line("elsewhere").contains(" at src/lib.rs:7 "));
+        assert!(line("mapped").contains("new_since_last_review=false"));
+        assert!(line("elsewhere").contains("new_since_last_review=true"));
+        // Live: the model mangled one thread id; the gate now refuses it in the loop.
+        let reply = |thread: &str| ExitCall::LeaveComments {
+            new_comments: vec![],
+            reply_comments: vec![crate::exits::ReplyComment {
+                thread_id: thread.into(),
+                body: "b".into(),
+            }],
+            resolve_own_threads: vec![],
+        };
+        assert_eq!((stamped.setup.gate)(&reply("mapped")), Ok(()));
+        assert!(matches!(
+            (stamped.setup.gate)(&reply("mapped-typo")),
+            Err(Refusal::Denied(reason)) if reason.contains("unknown thread")
+        ));
         env.wire.0.lock().unwrap().observation.threads.clear();
     }
     let approve = ExitCall::ApprovePullRequest {
@@ -436,7 +472,8 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
                 acting_login: "actor",
                 write_capability: true,
                 teammates: vec![],
-                iterations: &[]
+                iterations: &[],
+                last_consumed_at: None,
             }
         )
         .err()

@@ -44,6 +44,9 @@ pub struct PrStateRecord {
     pub local_summary: Option<String>,
     #[serde(default)]
     pub exit: Option<ConsumedExit>,
+    /// When a state of this PR was last consumed (unix seconds); kept across heads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumed_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +105,7 @@ impl PrStates {
                     error_count: 0,
                     local_summary: None,
                     exit: None,
+                    consumed_at: None,
                 });
                 self.records.len() - 1
             });
@@ -220,6 +224,9 @@ pub fn consume(
     let mut states = store.load_pr_states()?;
     let outcome = states.consume(binding, state_seq, new_baseline);
     if outcome == Consumed::Consumed {
+        if let Some(record) = states.records.iter_mut().find(|r| &r.binding == binding) {
+            record.consumed_at = Some(chrono::Utc::now().timestamp());
+        }
         store.save_pr_states(&states)?;
     }
     Ok(outcome)

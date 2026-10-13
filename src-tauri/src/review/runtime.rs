@@ -47,6 +47,18 @@ const CACHE_BYTES: usize = 64 * 1024 * 1024;
 
 pub(crate) type Gate = Arc<dyn Fn() -> Result<(), Failure> + Send + Sync>;
 
+/// Run synchronous host work (blocking GitHub HTTP) from an async tool handler.
+/// A blocking client must not run on a runtime worker: reqwest panics there in
+/// debug builds (the call never returns) and stalls a worker in release builds.
+pub(super) fn off_runtime<R>(work: impl FnOnce() -> R) -> R {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(work)
+        }
+        _ => work(),
+    }
+}
+
 pub(crate) trait Task: Send + 'static {
     type Output: Send;
     fn prompt(&self, selection: &Selection, context: &ReviewContext) -> String;
@@ -708,11 +720,13 @@ impl<T: Transport + Send + Sync + 'static> ToolHandler for ReadTools<T> {
     ) -> Result<ToolResult, github_copilot_sdk::Error> {
         // HTTP is synchronous but runs only in the dedicated review runtime, never the UI.
         Ok(
-            match self.execute_call(
-                &invocation.tool_name,
-                invocation.arguments,
-                Some(&invocation.tool_call_id),
-            ) {
+            match off_runtime(|| {
+                self.execute_call(
+                    &invocation.tool_name,
+                    invocation.arguments,
+                    Some(&invocation.tool_call_id),
+                )
+            }) {
                 Ok(value) => ToolResult::Text(value.to_string()),
                 Err(error) => ToolResult::Expanded(
                     ToolResultExpanded::new(&error.message, "failure").with_error(error.message),

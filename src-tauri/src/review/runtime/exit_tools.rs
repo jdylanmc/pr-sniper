@@ -127,7 +127,9 @@ impl ToolHandler for ExitTools {
                 query_bytes: Some(invocation.arguments.to_string().len()),
             });
         }
-        let (result, failed) = self.handle(&invocation.tool_name, &invocation.arguments);
+        // The exit gate re-reads the PR over blocking HTTP.
+        let (result, failed) =
+            super::off_runtime(|| self.handle(&invocation.tool_name, &invocation.arguments));
         if let Some(trace) = &self.diagnostics {
             trace.emit(DiagnosticEvent::ToolFinished {
                 call,
