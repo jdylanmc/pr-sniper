@@ -7,7 +7,7 @@ use crate::{
     review::{ReviewOutput, RunMode},
 };
 
-fn exit_run(store: &Store, exit: ExitOutcome, include_self: bool) {
+pub(super) fn exit_run(store: &Store, exit: ExitOutcome, include_self: bool) {
     let mut settings = store.load_settings().unwrap();
     let assignment = &mut settings.repositories[0].assignments[0];
     assignment.tools = Some(
@@ -73,7 +73,7 @@ fn setup(
     (root, store, item)
 }
 
-fn approve_exit(merge: bool) -> ExitOutcome {
+pub(super) fn approve_exit(merge: bool) -> ExitOutcome {
     if merge {
         ExitOutcome::ApproveAndMerge {
             comment: "Reviewed the diff. Ship it.".into(),
@@ -85,7 +85,7 @@ fn approve_exit(merge: bool) -> ExitOutcome {
     }
 }
 
-fn adopted(store: &Store, item: &str, observation: Observation) -> FinalReview {
+pub(super) fn adopted(store: &Store, item: &str, observation: Observation) -> FinalReview {
     synchronize(store, item, Ok(observation), NOW + 10).unwrap();
     packet::adopt(store, item).unwrap();
     let mut finals = store.load_actions().unwrap().finals;

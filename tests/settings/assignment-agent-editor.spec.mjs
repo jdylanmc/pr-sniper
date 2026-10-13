@@ -722,13 +722,31 @@ const openTools = async (assignment) => {
   return assignment;
 };
 
+test("unset tools show the role default and stay unset on save", async ({
+  page,
+  store,
+}, testInfo) => {
+  await seed(page, store);
+  const assignment = await openAssignment(page);
+  await expect(assignment.locator("[data-tool-summary]")).toHaveText("8");
+  await openTools(assignment);
+  for (const name of ["Changes", "Search", "Report", "Panic"])
+    await expect(toolSwitch(assignment, name)).toBeChecked();
+  await page.screenshot({ path: testInfo.outputPath("tools-default.png") });
+  await assignmentBack(page, assignment);
+  await saveAssignment(page, assignment);
+  const saved = (await store("snapshot")).settings.repositories[0]
+    .assignments[0];
+  expect(saved.tools).toBeUndefined();
+});
+
 test("tools drill-in follows role and grants, saves ids, and shows the count", async ({
   page,
   store,
 }, testInfo) => {
   await seed(page, store);
   const assignment = await openAssignment(page);
-  await expect(assignment.locator("[data-tool-summary]")).toHaveText("0");
+  await expect(assignment.locator("[data-tool-summary]")).toHaveText("8");
 
   await primarySwitch(assignment).check();
   await withPermissions(page, assignment, async () => {
@@ -740,10 +758,19 @@ test("tools drill-in follows role and grants, saves ids, and shows the count", a
   await openTools(assignment);
   await expect(toolSwitch(assignment, "Report")).toBeHidden();
   for (const name of ["Comment", "Ready", "Approve", "Merge", "Panic"])
-    await expect(toolSwitch(assignment, name)).toBeVisible();
-  await toolSwitch(assignment, "Changes").check();
-  await toolSwitch(assignment, "Comment").check();
-  await toolSwitch(assignment, "Merge").check();
+    await expect(toolSwitch(assignment, name)).toBeChecked();
+  await expect(assignment.locator("[data-tool-summary]")).toHaveText("11");
+  for (const name of [
+    "Source",
+    "Thread",
+    "Checks",
+    "Tree",
+    "Search",
+    "Ready",
+    "Approve",
+    "Panic",
+  ])
+    await toolSwitch(assignment, name).uncheck();
   await page.screenshot({ path: testInfo.outputPath("tools-primary.png") });
   await assignmentBack(page, assignment);
   await expect(assignment.locator("[data-tool-summary]")).toHaveText("3");

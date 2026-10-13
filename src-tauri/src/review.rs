@@ -1,7 +1,6 @@
 pub(crate) mod diagnostics;
 pub(crate) mod host;
 pub(crate) mod packet_run;
-pub(crate) mod rereview;
 pub(crate) mod runtime;
 pub(crate) mod teammates;
 pub(crate) mod tools;
@@ -14,7 +13,6 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -77,23 +75,6 @@ impl Selection {
                 (None, None) => true,
                 _ => false,
             }
-    }
-
-    /// Stable id of the review lens (the fields a lens change discards a batch for).
-    pub fn lens_hash(&self) -> String {
-        use sha2::{Digest, Sha256};
-        let lens = serde_json::json!([
-            self.agent,
-            self.doctrine,
-            self.preset,
-            self.policy.prompt,
-            self.policy.adapter
-        ]);
-        Sha256::digest(lens.to_string().as_bytes())
-            .iter()
-            .take(8)
-            .map(|byte| format!("{byte:02x}"))
-            .collect()
     }
 
     pub fn resolve(
@@ -265,6 +246,10 @@ pub fn restore(store: &Store) -> Result<(), String> {
     let mut reviews = store.load_reviews()?;
     let mut changed = false;
     for review in &mut reviews {
+        if retire_legacy(review) {
+            changed = true;
+            continue;
+        }
         if review.operation.state == OperationState::Running {
             if review.operation.interruption.is_some() {
                 review.operation.requeue_intentional(0);
@@ -283,6 +268,30 @@ pub fn restore(store: &Store) -> Result<(), String> {
         store.save_reviews(&reviews)?;
     }
     Ok(())
+}
+
+/// The legacy review path is removed: unfinished legacy work is cancelled, never run.
+pub(crate) const LEGACY_RETIRED: &str = "Legacy review retired.";
+
+/// Cancel an unfinished legacy run in place. True when changed.
+pub(crate) fn retire_legacy(run: &mut ReviewRun) -> bool {
+    if run.mode != RunMode::Legacy
+        || !matches!(
+            run.operation.state,
+            OperationState::Queued | OperationState::Running | OperationState::Interrupted
+        )
+    {
+        return false;
+    }
+    run.operation.state = OperationState::Failed;
+    run.operation.failure = Some(OperationFailure::Permanent);
+    run.operation.next_attempt_at = None;
+    run.operation.ai_attempt = None;
+    run.operation.interruption = None;
+    run.operation.resume_at = None;
+    run.phase = "Cancelled".into();
+    run.error = Some(LEGACY_RETIRED.into());
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -333,7 +342,7 @@ pub struct ReviewOutput {
     pub held_findings: Vec<Finding>,
     #[serde(default)]
     pub feedback_assessments: Vec<crate::feedback::Assessment>,
-    // Exit-mode runs leave the legacy fields empty; legacy validation still requires them.
+    // Legacy fields: read from old records only; packet runs leave them empty.
     #[serde(default)]
     pub synopsis: String,
     #[serde(default)]
@@ -371,24 +380,14 @@ impl ReviewOutput {
     }
 }
 
-/// How a run reviews: the legacy JSON decision, or the packet with terminal exits.
+/// How a run reviews. Every new run is `Packet`. `Legacy` (the removed JSON
+/// decision) is the default only so old records load; it is never executed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunMode {
     #[default]
     Legacy,
     Packet,
-}
-
-impl RunMode {
-    /// Packet mode is selected by the assignment having a tool set.
-    pub fn for_assignment(assignment: &crate::storage::Assignment) -> Self {
-        if assignment.tools.is_some() {
-            Self::Packet
-        } else {
-            Self::Legacy
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -419,94 +418,6 @@ pub struct ReviewResult<O = ReviewOutput> {
 pub struct ReadCoverage {
     pub read: u32,
     pub changed: u32,
-}
-
-pub(crate) fn json_body(text: &str) -> &str {
-    let text = text.trim();
-    text.strip_prefix("```json\n")
-        .or_else(|| text.strip_prefix("```\n"))
-        .and_then(|body| body.strip_suffix("\n```"))
-        .unwrap_or(text)
-}
-
-pub fn validate_output(text: &str, paths: &[String]) -> Result<ReviewOutput, Failure> {
-    let schema_error = || {
-        Failure::permanent(
-            "Copilot's final response does not match the required review JSON schema.",
-        )
-    };
-    // The output fields default for exit-mode runs; the model must still send the legacy four.
-    let raw: Value = serde_json::from_str(json_body(text)).map_err(|_| schema_error())?;
-    if ["synopsis", "files", "findings", "decision"]
-        .iter()
-        .any(|key| raw.get(key).is_none())
-    {
-        return Err(schema_error());
-    }
-    let mut output: ReviewOutput = serde_json::from_value(raw).map_err(|_| schema_error())?;
-    if output.feedback_conflict
-        || !output.held_findings.is_empty()
-        || output.exit.is_some()
-        || output.report.is_some()
-    {
-        return Err(Failure::permanent(
-            "Model output cannot set host-owned feedback dispositions.",
-        ));
-    }
-    let synopsis = output.synopsis.trim();
-    let sentences = synopsis
-        .char_indices()
-        .filter(|(i, c)| {
-            matches!(c, '.' | '!' | '?')
-                && synopsis[i + c.len_utf8()..]
-                    .chars()
-                    .next()
-                    .is_none_or(char::is_whitespace)
-        })
-        .count();
-    if synopsis.is_empty()
-        || synopsis.contains(['\n', '\r'])
-        || sentences != 1
-        || !synopsis.ends_with(['.', '!', '?'])
-    {
-        return Err(Failure::permanent(
-            "Review synopsis must be exactly one sentence.",
-        ));
-    }
-    let expected: BTreeSet<_> = paths.iter().collect();
-    let actual: BTreeSet<_> = output.files.iter().map(|f| &f.path).collect();
-    if expected.len() != paths.len()
-        || actual.len() != output.files.len()
-        || actual != expected
-        || output.files.iter().any(|f| f.explanation.trim().is_empty())
-    {
-        return Err(Failure::permanent(
-            "Review output does not cover every changed file exactly once.",
-        ));
-    }
-    let order: BTreeSet<_> = output.files.iter().filter_map(|f| f.order).collect();
-    if order == (1..=paths.len()).collect() {
-        output.files.sort_by_key(|f| f.order);
-    } else {
-        output
-            .files
-            .sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
-    }
-    for (index, file) in output.files.iter_mut().enumerate() {
-        file.order = Some(index + 1);
-    }
-    if output.findings.iter().any(|f| {
-        !expected.contains(&f.path)
-            || !matches!(f.side.as_str(), "base" | "head")
-            || f.line == 0
-            || f.confidence > 100
-            || f.title.trim().is_empty()
-            || f.explanation.trim().is_empty()
-    }) || (output.decision == Decision::MachineSignOff && !output.findings.is_empty())
-    {
-        return Err(Failure::permanent("Review findings contain invalid locations, severity, confidence, or an inconsistent machine decision."));
-    }
-    Ok(output)
 }
 
 #[derive(Debug, Clone)]
@@ -701,7 +612,6 @@ impl From<ConnectionError> for Failure {
 /// The SDK frames JSON events over RPC; the same normalized stream can be replayed from JSONL.
 #[derive(Default)]
 pub struct Events {
-    message: Option<String>,
     idle: bool,
     usage_seen: bool,
     input_tokens: u64,
@@ -712,21 +622,6 @@ pub struct Events {
 impl Events {
     pub fn push(&mut self, kind: &str, data: &Value) -> Result<(), Failure> {
         match kind {
-            "assistant.message" => {
-                if data
-                    .get("toolRequests")
-                    .is_none_or(|v| v.is_null() || v.as_array().is_some_and(Vec::is_empty))
-                {
-                    self.message = Some(
-                        data["content"]
-                            .as_str()
-                            .ok_or_else(|| {
-                                Failure::permanent("Copilot emitted a malformed assistant message.")
-                            })?
-                            .into(),
-                    );
-                }
-            }
             "assistant.usage" => {
                 let count = |name: &str| -> Result<u64, Failure> {
                     let n = data[name].as_f64().ok_or_else(|| {
@@ -756,18 +651,6 @@ impl Events {
         Ok(())
     }
 
-    pub fn finish(
-        self,
-        paths: &[String],
-        session_id: String,
-        model: String,
-        runtime_version: String,
-    ) -> Result<ReviewResult, Failure> {
-        self.finish_with(session_id, model, runtime_version, |text| {
-            validate_output(text, paths)
-        })
-    }
-
     /// Packet-mode completion: the host-held exit slot decides; any final message is ignored.
     /// Idle without an exit is agent-quality (retryable), never a schema failure.
     pub fn finish_exit<O>(
@@ -789,33 +672,6 @@ impl Events {
         Ok(ReviewResult {
             reviewed_base_sha: None,
             output: build(exit)?,
-            session_id,
-            model,
-            runtime_version,
-            intelligence: None,
-            input_tokens: self.input_tokens,
-            output_tokens: self.output_tokens,
-            tool_calls: self.tool_calls,
-            byte_coverage: false,
-            coverage: None,
-        })
-    }
-
-    pub fn finish_with<O>(
-        self,
-        session_id: String,
-        model: String,
-        runtime_version: String,
-        validate: impl FnOnce(&str) -> Result<O, Failure>,
-    ) -> Result<ReviewResult<O>, Failure> {
-        if !self.idle || !self.usage_seen {
-            return Err(Failure::permanent(
-                "Copilot ended without completion and usage evidence.",
-            ));
-        }
-        Ok(ReviewResult {
-            reviewed_base_sha: None,
-            output: validate(self.message.as_deref().ok_or_else(Failure::schema)?)?,
             session_id,
             model,
             runtime_version,

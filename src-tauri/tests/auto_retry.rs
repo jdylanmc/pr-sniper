@@ -229,7 +229,7 @@ fn parked_review(failure: OperationFailure, state: OperationState) -> ReviewRun 
     operation.failure = Some(failure);
     operation.next_attempt_at = None;
     ReviewRun {
-        mode: Default::default(),
+        mode: pr_sniper_lib::review::RunMode::Packet,
         packet: None,
         feedback_context: None,
         key: review::key(&job, ASSIGNMENT),

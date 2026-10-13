@@ -88,21 +88,13 @@ export function renderFollowUps(
   const expanded = new Set<string>();
   const pending = new Set<string>();
   let signature = "";
-  async function act(
-    candidate: FollowUpCandidate,
-    publish: boolean,
-    cancel: boolean,
-  ) {
+  async function act(candidate: FollowUpCandidate, cancel: boolean) {
     const id = candidate.run.id;
     if (pending.has(id)) return;
     pending.add(id);
     try {
       if (cancel) await invoke("cancel_follow_up", { id });
-      else
-        await invoke("start_follow_up", {
-          id,
-          publish,
-        });
+      else await invoke("start_follow_up", { id });
     } catch (error) {
       showError(typeof error === "string" ? error : "Failed");
     } finally {
@@ -299,33 +291,23 @@ export function renderFollowUps(
         button.disabled = pending.has(run.id);
         button.onclick = () => {
           button.disabled = true;
-          void act(candidate, false, true);
+          void act(candidate, true);
         };
         row.append(button);
       } else if (
         !terminal &&
+        publishing &&
         (!candidate.blocked || run.publication) &&
-        (publishing || run.analysis || run.cancelled || candidate.human_gate) &&
-        (!publishing ||
-          candidate.automatic_publication ||
-          run.uncertain ||
-          run.receipt)
+        (candidate.automatic_publication || run.uncertain || run.receipt)
       ) {
         const button = document.createElement("button");
-        button.textContent = publishing
-          ? run.publication
-            ? "Reconcile / retry reply"
-            : "Publish reply"
-          : candidate.human_gate
-            ? "Retry after human decision"
-            : "Retry follow-up";
-        const update = () => {
-          button.disabled = pending.has(run.id) || (!!publishing && working);
-        };
-        update();
+        button.textContent = run.publication
+          ? "Reconcile / retry reply"
+          : "Publish reply";
+        button.disabled = pending.has(run.id) || working;
         button.onclick = () => {
           button.disabled = true;
-          void act(candidate, !!publishing, false);
+          void act(candidate, false);
         };
         row.append(button);
       }

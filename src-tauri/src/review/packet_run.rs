@@ -37,7 +37,7 @@ fn gate_input(run: &ReviewRun, facts: Facts) -> Result<GateInput, Failure> {
         .ok_or_else(|| Failure::permanent("The assignment is no longer configured."))?;
     let actions = assignment.actions.clone().unwrap_or_default();
     Ok(GateInput {
-        tools: assignment.tools.clone().unwrap_or_default(),
+        tools: config.repository.assignment_tools(assignment),
         primary: config.authority.primary,
         grants: Grants {
             comment: config.authority.comment,

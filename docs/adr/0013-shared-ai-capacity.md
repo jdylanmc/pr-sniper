@@ -2,7 +2,7 @@
 
 ## Context
 
-Normal reviews, owned-thread analysis, primary-final reviews, replies, and mentions all spend AI slots. Per-kind pools starve or overrun the machine.
+Normal reviews, owned-thread analysis, primary-final reviews, replies, and mentions all spend AI slots. (Since [ADR 0021](0021-review-packet.md) only packet review runs exist; the other kinds are history.) Per-kind pools starve or overrun the machine.
 
 ## Decision
 

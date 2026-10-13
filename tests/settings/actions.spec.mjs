@@ -26,8 +26,17 @@ async function actionFixture(store, observe = true, intelligence) {
     approve: true,
     merge: true,
   };
+  // The primary's packet approve exit: the only evidence that authorizes actions.
   const review = fixture.review(9);
   review.trust_confirmed = false;
+  review.mode = "packet";
+  review.result.output = {
+    ...review.result.output,
+    exit: {
+      exit: "approve_and_merge",
+      comment: "Reviewed the diff. Ship it.",
+    },
+  };
   review.job.work = {
     id: review.key,
     item_id: "action-iteration",
@@ -66,6 +75,20 @@ async function actionFixture(store, observe = true, intelligence) {
         observed_at: 100,
       },
     ],
+    pr_states: {
+      records: [
+        {
+          binding: {
+            provider: "github",
+            configuration_id: repository.id,
+            account_id: "22",
+            repository_id: "100",
+            pull_request_id: "9",
+          },
+          iteration_id: "iteration-1",
+        },
+      ],
+    },
     monitoring: {
       activations: {
         [repository.id]: {
@@ -166,6 +189,14 @@ test("retired global and repository publication flags cannot change assignment r
   store,
 }) => {
   const fixture = await actionFixture(store, false);
+  // A comments exit is the only result that publishes.
+  fixture.review.result.output.exit = {
+    exit: "comments",
+    new_comments: [{ path: "z-first.rs", line: 1, body: "Use a constant." }],
+    reply_comments: [],
+    resolve_own_threads: [],
+  };
+  await store("seed_queue_state", fixture.state);
   for (const publish of [false, true]) {
     for (const global of [false, true]) {
       for (const override of [undefined, false, true]) {
@@ -495,9 +526,9 @@ for (const destination of ["panel", "legacy queue"]) {
       }),
     ).toBeDisabled();
     await expect(
-      page.getByRole("button", {
-        name: /^(Approve|Merge|Start \/ retry final)/,
-      }),
+      page
+        .locator("button:not(.activity-toggle)")
+        .filter({ hasText: /^(Approve|Merge)/ }),
     ).toHaveCount(0);
     const snapshot = await store("monitoring_snapshot");
     expect(snapshot.items[0].action_status).toMatchObject({
@@ -573,196 +604,6 @@ test("retained panel detail reports refresh failure and allows a real native ret
   expect(snapshot.items[0].state).toBe("failed");
   expect(snapshot.items[0].action_status.effects).toEqual([]);
   expect(snapshot.items[0].action_status.final_review).toBeNull();
-});
-
-test("panel primary-final route exposes only that final and returns to its exact Reviewed row", async ({
-  page,
-  store,
-}) => {
-  const fixture = await actionFixture(store);
-  const final = fixture.actions.finals[0];
-  final.execution.result = structuredClone(fixture.review.result);
-  final.execution.result.output.files.push({
-    path: "final-only.rs",
-    order: 3,
-    explanation: "Retained final guide evidence.",
-  });
-  final.execution.operation.state = "completed";
-  final.execution.operation.attempt_count = 1;
-  final.execution.phase = "Primary final full review complete";
-  fixture.state.actions = fixture.actions;
-  await store("seed_queue_state", fixture.state);
-  const before = await store("monitoring_snapshot");
-  await page.addInitScript(() => {
-    const original = window.__TAURI_INTERNALS__.invoke;
-    window.__finalDestination = null;
-    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
-      if (command === "open_queue_destination") {
-        window.__finalDestination = await original("queue_destination", args);
-        return;
-      }
-      return original(command, args);
-    };
-  });
-  await page.goto("/");
-  await page
-    .getByRole("navigation", { name: "Application destinations" })
-    .getByRole("button", { name: "Reviewed", exact: true })
-    .click();
-  const row = page
-    .locator('[data-panel-view="reviewed"] article')
-    .filter({ hasText: "Primary final review" });
-  await row.getByRole("button", { name: "Open job", exact: true }).click();
-  await expect(
-    kv(page.locator('[data-action-group="Agent"]'), "State"),
-  ).toHaveText("completed");
-  await expect(page.locator("[data-work-context]")).toContainText(
-    "Primary final review",
-  );
-  await expect(page.locator("[data-work-context]")).toContainText(
-    "Iteration 1 (iteration-1)",
-  );
-  await expect(page.locator("[data-work-context]")).toContainText(
-    "Captured rolePrimary Agent",
-  );
-  await expect(page.locator("[data-work-context]")).toContainText(
-    "Primary final review",
-  );
-  await expect(page.locator(".work-configuration")).toContainText(
-    "Review correctness.",
-  );
-  await captureInspector(page, "primary-final-done");
-  await page.getByText("Files (3)", { exact: true }).click();
-  await expect(page.locator("[data-item-evidence] ol li")).toHaveText([
-    "z-first.rs: Read this first.",
-    "a-second.rs: Then read this.",
-    "final-only.rs: Retained final guide evidence.",
-  ]);
-  await page.getByRole("link", { name: "final-only.rs", exact: true }).click();
-  await expect
-    .poll(() => page.evaluate(() => window.__finalDestination))
-    .toBe(
-      `https://github.com/example/repo/pull/9/files#diff-${createHash("sha256").update("final-only.rs").digest("hex")}`,
-    );
-  await expect(page.locator("#agent-reviews article")).toHaveCount(0);
-  await expect(page.locator("#thread-follow-ups article")).toHaveCount(0);
-  await page.getByRole("button", { name: "Back", exact: true }).click();
-  await expect(
-    row.getByRole("button", { name: "Open job", exact: true }),
-  ).toBeFocused();
-  expect((await store("monitoring_snapshot")).items[0].action_status).toEqual(
-    before.items[0].action_status,
-  );
-});
-
-test("primary final inspector distinguishes waiting, active, stopping, failed and superseded from normal clearance", async ({
-  page,
-  store,
-}) => {
-  const fixture = await actionFixture(store);
-  const final = fixture.actions.finals[0];
-  final.execution.manual_start = true;
-  fixture.state.actions = fixture.actions;
-  await nativeCapacity(page, []);
-  for (const [state, label] of [
-    ["queued", "Waiting"],
-    ["running", "Running"],
-    ["stopping", "Stopping"],
-    ["failed", "Failed"],
-    ["superseded", "Superseded"],
-  ]) {
-    final.execution.operation.state =
-      state === "stopping"
-        ? "running"
-        : state === "superseded"
-          ? "failed"
-          : state;
-    final.execution.operation.attempt_count = state === "queued" ? 0 : 2;
-    final.execution.operation.next_attempt_at = 1_800_000_000;
-    final.execution.job.waiting =
-      state === "superseded" ? "superseded" : "human_start";
-    await store("seed_queue_state", fixture.state);
-    await page.goto("/");
-    await page.evaluate(
-      ({ id, state }) => {
-        window.__activeIds = ["running", "stopping"].includes(state)
-          ? [id]
-          : [];
-        window.__stoppingIds = state === "stopping" ? [id] : [];
-      },
-      { id: final.id, state },
-    );
-    await page.evaluate(
-      (id) =>
-        window.__TAURI_INTERNALS__.invoke("panel_navigate", {
-          route: {
-            tab: "running",
-            detail: { type: "job", kind: "primary_final", id },
-          },
-        }),
-      final.id,
-    );
-    await expect(page.locator(".job-status strong")).toHaveText(label);
-    await expect(page.locator(".job-hero .work-spin")).toHaveCount(
-      state === "running" ? 1 : 0,
-    );
-    await expect(page.locator(".job-facts")).toContainText(
-      "Primary final review",
-    );
-    await expect(page.locator(".job-facts")).not.toContainText("Review count");
-    await expect(page.locator("#agent-reviews article")).toHaveCount(0);
-    if (state === "running" || state === "failed")
-      await captureInspector(page, `primary-final-${state}`);
-  }
-});
-
-test("current normal clearance hands off personally and exposes a distinct durable final request", async ({
-  page,
-  store,
-}) => {
-  const fixture = await actionFixture(store);
-  expect(fixture.actions.finals).toHaveLength(1);
-  expect(fixture.actions.effects).toHaveLength(0);
-  await page.goto("/?view=queue");
-  await expect(page.locator("#handoff-queue")).toContainText(
-    "Ready for your final review",
-  );
-  await expect(
-    kv(page.locator("#handoff-queue"), "Personal review"),
-  ).toHaveText("Required");
-  await expect(
-    kv(page.locator('#handoff-queue [data-action-group="Agent"]'), "State"),
-  ).toHaveText("queued");
-  await expect(page.getByRole("checkbox", { name: /trust/i })).toHaveCount(0);
-  expect(fixture.actions.finals[0].execution.trust_confirmed).toBe(false);
-  await expect(
-    page.getByRole("button", { name: /Start .*final full review/ }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByRole("button", { name: "Cancel queued final review" }),
-  ).toBeEnabled();
-  expect(
-    (await store("automation_snapshot")).work.find(
-      (work) => work.key.id === fixture.actions.finals[0].id,
-    ),
-  ).toMatchObject({
-    state: "blocked",
-    reason: "Waiting for final-review retry backoff.",
-  });
-  const snapshot = await store("monitoring_snapshot");
-  expect(snapshot.reviews).toHaveLength(1);
-  expect(snapshot.publications).toHaveLength(1);
-  expect(snapshot.publications[0]).toMatchObject({
-    local_only: true,
-    publication: null,
-  });
-  expect(
-    snapshot.items[0].action_status.final_review.execution.operation
-      .operation_type,
-  ).toBe("primary_final_review");
-  await expect(
-    page.getByRole("button", { name: /^(Approve|Merge)$/ }),
-  ).toHaveCount(0);
 });
 
 test("approval receipt leaves the Queue for Reviewed yet keeps personal review required, whereas confirmed merge is terminal without a human-review claim", async ({
@@ -1035,7 +876,7 @@ test("panel detail shows terse Activity rows, expandable facts and no evidence p
   const kinds = await activity
     .locator("[data-activity]")
     .evaluateAll((rows) => rows.map((row) => row.dataset.activity));
-  expect(kinds).toEqual(["review", "findings", "final", "retried", "approve"]);
+  expect(kinds).toEqual(["review", "exit", "final", "retried", "approve"]);
   const approved = activity.locator('[data-activity="approve"]');
   await expect(approved.locator(".activity-verb")).toHaveText("Approved");
   await expect(approved.locator(".activity-value")).toHaveText(

@@ -9,7 +9,7 @@ Agents are reused across repos. Permissions must not travel with them. Approve a
 - Grants live on the repo assignment, not the Agent.
 - Publish Comment: any assignment. Reply, Approve, Merge: primary only. Primary selection grants nothing.
 - Approval control is a 3-way pill: off | Approve | & Merge. Merge includes approval and follows its confirmed receipt.
-- Approve/merge need a distinct full final review by the primary, after clearance and fresh evidence. Findings or human judgment stop actions.
+- ~~Approve/merge need a distinct full final review by the primary, after clearance and fresh evidence.~~ Superseded by [ADR 0021](0021-review-packet.md): the primary's approve exit is that review.
 - One acting-account vote. Approve alone never merges.
 - Missing, partial, or unsupported evidence blocks. Limits fail closed: 100 threads/comments, 100 check contexts.
 - HAS_HOOKS, merge queue, unavailable rules, absent green CI: no direct-merge fallback. Admin bypass never used.

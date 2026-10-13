@@ -1,6 +1,6 @@
 # Review packet
 
-Status: **accepted**. Packet, tools, gates and exits are built (`src-tauri/src/packet*`, `exits*`, `review/packet_run.rs`). Teammate barrier built (`review/teammates.rs`, `capacity.rs`). Not yet wired: approve and merge effects, reply and resolve execution, heartbeat, consume and baseline. Decision: [ADR 0021](adr/0021-review-packet.md). Discovery: [#172](https://github.com/jdylanmc/pr-sniper/issues/172).
+Status: **accepted, built**. Every run is packet mode; the legacy JSON review, primary final review, once-per-lens re-review and Reply/Mention analysis are removed. Live sandbox run: [pr-sniper-review-packet-live-run.md](agent/discovery/pr-sniper-review-packet-live-run.md). Decision: [ADR 0021](adr/0021-review-packet.md). Discovery: [#172](https://github.com/jdylanmc/pr-sniper/issues/172).
 
 Unit of work = a **PR state**. Packet is built when the queue item is consumed. Agent ends on one **exit**. Host is the only writer.
 
@@ -161,11 +161,11 @@ Teammate failure shows in Needs attention: cause and which teammate failed, one 
 
 ## Settings
 
-- Assignment: **Tools** drill-in, one switch per tool (icon, short name). Absent = no packet tools yet; behavior unchanged. Stored as `tools` ids (`PACKET_TOOLS`, Rust `storage.rs`, mirrored `src/policy.ts`).
+- Assignment: **Tools** drill-in, one switch per tool (icon, short name). Absent = role default, shown checked: investigation tools + granted exits + `ready_for_human` + `panic_exit` (primary); investigation tools + `submit_report` + `panic_exit` (teammate). `Repository::assignment_tools`, `default_tools` (Rust), `defaultTools` (`src/policy.ts`). Toggling a row saves an explicit list. Stored as `tools` ids (`PACKET_TOOLS`, Rust `storage.rs`, mirrored `src/policy.ts`).
 - Readiness: unknown or duplicate id invalid. `leave_comments`, `ready_for_human`, `approve_*` primary only. `submit_report` teammate only. `panic_exit` any. `leave_comments` needs Publish Comment. `approve_pull_request` needs Approve or Approve & Merge. `approve_and_merge` needs Approve & Merge.
 - Repository: **Review drafts** switch (`review_drafts`, default off).
 - Approve & Merge: **Include self** (`actions.include_self`, default off; GitHub acceptance unverified). Shown only on Approve & Merge.
-- Old files load unchanged. Unset fields are not written. Packet mode runs for assignments with `tools` set (`RunMode::Packet`); others stay on the legacy JSON decision until the old path is removed.
+- Old files load unchanged. Unset fields are not written. Every new run is `RunMode::Packet`. `RunMode::Legacy` (missing `mode`) is history: unfinished legacy runs, legacy finals and unanalyzed follow-ups are cancelled on startup (`retire_legacy`, `actions::restore`, `follow_up::restore`); finished ones stay readable. Legacy results never publish.
 
 ## Packet pull tools
 
@@ -189,7 +189,7 @@ Delivery: one pull request. Build packet mode end to end, verify it in the sandb
 3. Composition (teammates, `submit_report`, barrier, Teammate reports) and exits replace the JSON `decision`.
 4. Own-thread resolution. Per-comment revision stamps.
 5. Per-assignment tool set. Packet view. Reviewed Clean.
-6. Sandbox verification, then remove the old path.
+6. Sandbox verification, then remove the old path. Done.
 
 ## Open questions
 

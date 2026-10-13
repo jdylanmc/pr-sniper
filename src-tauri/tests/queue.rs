@@ -40,7 +40,7 @@ fn review(number: u64) -> ReviewRun {
     let mut operation = JobOperation::review(&job, 100);
     operation.state = OperationState::Completed;
     ReviewRun {
-        mode: Default::default(),
+        mode: pr_sniper_lib::review::RunMode::Packet,
         packet: None,
         feedback_context: None,
         key: review::key(&job, ASSIGNMENT),
@@ -335,40 +335,6 @@ fn legacy_run_records_load_as_legacy_with_no_packet_and_round_trip() {
 }
 
 #[test]
-fn publication_is_a_separate_fact_and_the_author_is_not_the_operator() {
-    let root = tempfile::tempdir().unwrap();
-    let store = Store::new(root.path().into());
-    let mut run = review(1);
-    seed(&store, &[run.clone()], &[]);
-    assert_eq!(state(&store), State::AwaitingPublication);
-    let snapshot = serde_json::to_value(queue::snapshot(&store, vec![]).unwrap()).unwrap();
-    assert_eq!(snapshot["publications"][0]["local_only"], false);
-    assert_eq!(
-        snapshot["publications"][0]["publication"],
-        serde_json::Value::Null
-    );
-    let mut receipt = published(&run);
-    store.save_publications(&[receipt.clone()]).unwrap();
-    assert_eq!(state(&store), State::MachineSignedOff);
-    run.result.as_mut().unwrap().output.decision = Decision::HumanInputRequired;
-    receipt.review = run.clone();
-    store.save_reviews(&[run.clone()]).unwrap();
-    store.save_publications(&[receipt.clone()]).unwrap();
-    assert_eq!(state(&store), State::WaitingForAuthor);
-    receipt.batch.as_mut().unwrap().unmappable.push(0);
-    store.save_publications(&[receipt]).unwrap();
-    assert_eq!(state(&store), State::WaitingForHuman);
-    store.save_publications(&[]).unwrap();
-    let mut configuration = settings();
-    configuration.repositories[0].assignments[0].comment = false;
-    store.save_settings(&configuration).unwrap();
-    assert_eq!(state(&store), State::WaitingForHuman);
-    run.result.as_mut().unwrap().output.decision = Decision::MachineSignOff;
-    store.save_reviews(&[run]).unwrap();
-    assert_eq!(state(&store), State::MachineSignedOff);
-}
-
-#[test]
 fn local_sign_off_never_hides_uncertain_rejected_or_unverified_publication() {
     let root = tempfile::tempdir().unwrap();
     let store = Store::new(root.path().into());
@@ -601,16 +567,13 @@ fn complete_guide_order_is_preserved_and_missing_storage_is_not_success() {
     let paths: Vec<_> = (0..301).map(|n| format!("source-{n}.rs")).collect();
     let files: Vec<_> = paths
         .iter()
+        .rev()
         .enumerate()
-        .map(|(index, path)| json!({"path":path,"order":301-index,"explanation":"Read it."}))
+        .map(|(index, path)| json!({"path":path,"order":index + 1,"explanation":"Read it."}))
         .collect();
-    let output = review::validate_output(
-        &json!({
-            "synopsis":"Read every file.","decision":"machine_sign_off","findings":[],"files":files
-        })
-        .to_string(),
-        &paths,
-    )
+    let output: review::ReviewOutput = serde_json::from_value(json!({
+        "synopsis":"Read every file.","decision":"machine_sign_off","findings":[],"files":files
+    }))
     .unwrap();
     run.result.as_mut().unwrap().output = output.clone();
     seed(&store, &[run.clone()], &[published(&run)]);

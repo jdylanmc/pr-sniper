@@ -36,7 +36,7 @@ import {
   primaryAssignmentId,
   repositoryProviderContext,
 } from "./repositories";
-import { doctrineTitles } from "./policy";
+import { defaultTools, doctrineTitles } from "./policy";
 import {
   type Settings,
   type DoctrineCatalog,
@@ -3385,6 +3385,8 @@ export async function mountSettings(
       permissions: "Permissions",
       tools: "Tools",
     };
+    // Unset tools show the role default until a row is toggled.
+    let toolsExplicit = !!existing?.tools;
     // Tools follow role and grants: out-of-role rows hide, ungranted rows clear.
     const syncTools = () => {
       const isPrimaryNow =
@@ -3399,6 +3401,11 @@ export async function mountSettings(
         approve_pull_request: action !== "none",
         approve_and_merge: action === "merge",
       };
+      const defaults = defaultTools(isPrimaryNow, {
+        comment: !!granted.leave_comments,
+        approve: !!granted.approve_pull_request,
+        merge: !!granted.approve_and_merge,
+      });
       let count = 0;
       for (const row of modal.querySelectorAll<HTMLElement>(
         "[data-tool-row]",
@@ -3406,6 +3413,7 @@ export async function mountSettings(
         const id = row.dataset.toolRow as PacketTool;
         const scope = toolRows[id].scope;
         const input = row.querySelector<HTMLInputElement>("input")!;
+        if (!toolsExplicit) input.checked = defaults.includes(id);
         row.hidden =
           (scope === "primary" && !isPrimaryNow) ||
           (scope === "secondary" && isPrimaryNow);
@@ -3538,7 +3546,11 @@ export async function mountSettings(
         },
       );
     const primary = modal.querySelector<HTMLInputElement>("[name=primary]")!;
-    modal.addEventListener("change", () => refreshSelection());
+    modal.addEventListener("change", (event) => {
+      if ((event.target as HTMLInputElement).name === "tool")
+        toolsExplicit = true;
+      refreshSelection();
+    });
     primary.onchange = () => {
       modal.querySelector<HTMLElement>("[data-primary-permissions]")!.hidden =
         !primary.checked;
@@ -3585,7 +3597,7 @@ export async function mountSettings(
         const tools = [
           ...modal.querySelectorAll<HTMLInputElement>("[name=tool]:checked"),
         ].map((input) => input.value as PacketTool);
-        if (tools.length) value.tools = tools;
+        if (toolsExplicit && tools.length) value.tools = tools;
         const next = clone(repository);
         if (existing)
           next.assignments = (next.assignments ?? []).map((a) =>

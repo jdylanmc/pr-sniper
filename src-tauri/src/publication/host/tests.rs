@@ -39,7 +39,7 @@ fn fixture() -> (tempfile::TempDir, Store, ReviewRun) {
     let mut operation = JobOperation::review(&job, 100);
     operation.state = OperationState::Completed;
     let review = ReviewRun {
-        mode: Default::default(),
+        mode: crate::review::RunMode::Packet,
         packet: None,
         feedback_context: None,
         key: crate::review::key(&job,&assignment_id),
@@ -48,7 +48,7 @@ fn fixture() -> (tempfile::TempDir, Store, ReviewRun) {
         trust_confirmed:true, phase:"Complete".into(), error:None,
         result:Some(serde_json::from_value(json!({
             "reviewed_base_sha":"b".repeat(40),
-            "output":{"synopsis":"No changes need attention.","files":[],"findings":[],"decision":"machine_sign_off"},
+            "output":{"exit":{"exit":"comments","new_comments":[{"path":"source.rs","line":1,"body":"Use a constant."}],"reply_comments":[],"resolve_own_threads":[]}},
             "session_id":"session","model":"model","runtime_version":"fixture","input_tokens":1,"output_tokens":1,"tool_calls":0
         })).unwrap()),
     };
@@ -223,7 +223,7 @@ fn nested_gate_storage_failures_keep_host_warning_after_successful_item_save() {
                 &ReviewContext {
                     pull: pull(&run.review),
                     base_revision: "b".repeat(40),
-                    files: vec![],
+                    files: changed_files(),
                     head: BTreeMap::new(),
                     base: BTreeMap::new(),
                 },
@@ -301,7 +301,7 @@ fn recovered_storage_write_failure_still_requires_host_warning() {
                 &ReviewContext {
                     pull: pull(&run.review),
                     base_revision: "b".repeat(40),
-                    files: vec![],
+                    files: changed_files(),
                     head: BTreeMap::new(),
                     base: BTreeMap::new(),
                 },
@@ -562,6 +562,16 @@ fn retained_origin_controls_launch_conflicts_even_if_ordinary_evidence_differs()
     }
 }
 
+/// One changed file whose head line 1 is in the diff, for the exit's comment.
+fn changed_files() -> Vec<crate::github::review::ReviewFile> {
+    vec![crate::github::review::ReviewFile {
+        path: "source.rs".into(),
+        previous_path: None,
+        status: "modified".into(),
+        patch: Some("@@ -1 +1 @@\n-old\n+new".into()),
+    }]
+}
+
 fn pull(review: &ReviewRun) -> PullRequest {
     PullRequest {
         mentioned: false,
@@ -585,16 +595,16 @@ fn pull(review: &ReviewRun) -> PullRequest {
     }
 }
 
+/// A publication frozen before the restart, comment-free like a retained legacy batch:
+/// recovery resumes it from its frozen batch, never by preparing a new one.
 fn retained_publication(review: ReviewRun, remote_id: &str) -> Publication {
-    let context = ReviewContext {
-        pull: pull(&review),
-        base_revision: "b".repeat(40),
-        files: vec![],
-        head: BTreeMap::new(),
-        base: BTreeMap::new(),
-    };
     let mut run = Publication::new(review, true, false, 100).unwrap();
-    run.batch = Some(Batch::prepare(&run, &context).unwrap());
+    run.batch = Some(Batch {
+        commit_id: run.review.job.head_sha.clone(),
+        body: format!("Automated review by PR Sniper.\n\n{}", run.marker()),
+        comments: vec![],
+        unmappable: vec![],
+    });
     run.accept(Receipt {
         review_id: remote_id.into(),
         state: RemoteState::Pending,

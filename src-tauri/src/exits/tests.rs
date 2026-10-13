@@ -114,17 +114,3 @@ fn outcomes_serialize_stably_and_old_output_still_loads() {
         serde_json::from_value(serde_json::to_value(&exit).unwrap()).unwrap();
     assert_eq!(back, exit);
 }
-
-#[test]
-fn a_model_cannot_inject_an_exit_through_the_legacy_json_path() {
-    let paths = vec!["a.rs".to_string()];
-    let text = json!({
-        "synopsis":"One.","files":[{"path":"a.rs","explanation":"e","order":1}],
-        "findings":[],"decision":"human_input_required",
-        "exit":{"exit":"ready_for_human","summary":"s"}
-    })
-    .to_string();
-    assert!(crate::review::validate_output(&text, &paths).is_err());
-    let missing = json!({"synopsis":"One.","files":[],"findings":[]}).to_string();
-    assert!(crate::review::validate_output(&missing, &[]).is_err());
-}

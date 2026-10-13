@@ -60,7 +60,7 @@ export interface Assignment {
     merge: boolean;
     include_self?: boolean;
   };
-  /** Absent = no packet tools yet. */
+  /** Absent = the role default (`defaultTools`). */
   tools?: PacketTool[];
 }
 
@@ -80,6 +80,22 @@ export const PACKET_TOOLS = [
   "submit_report",
 ] as const;
 export type PacketTool = (typeof PACKET_TOOLS)[number];
+
+/** Role default when `tools` is unset. Mirrors `default_tools` in storage.rs. */
+export function defaultTools(
+  primary: boolean,
+  grants: { comment: boolean; approve: boolean; merge: boolean },
+): PacketTool[] {
+  const tools: PacketTool[] = [...PACKET_TOOLS.slice(0, 6)];
+  if (primary) {
+    if (grants.comment) tools.push("leave_comments");
+    tools.push("ready_for_human");
+    if (grants.approve) tools.push("approve_pull_request");
+    if (grants.merge) tools.push("approve_and_merge");
+  } else tools.push("submit_report");
+  tools.push("panic_exit");
+  return tools;
+}
 
 export const doctrineTitles = (agent: Agent): string[] =>
   agent.doctrines ?? (agent.doctrine ? [agent.doctrine] : []);

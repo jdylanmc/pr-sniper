@@ -11,7 +11,7 @@ use crate::{
     monitoring::{self, PollTicket},
     now_seconds,
     publication::WriteFailure,
-    review::{runtime, Selection},
+    review::Selection,
     Host,
 };
 use std::sync::{
@@ -211,14 +211,10 @@ pub(crate) fn admit_scan(
     mut observations: Scan,
     now: i64,
 ) -> Result<(), String> {
-    let settings = store.load_settings()?;
     let queue = store.load_queue_state()?;
-    let jobs = &queue.jobs;
     let mut ledger = store.load_feedback()?;
     let publications = store.load_publications()?;
     // Capture history as context, with one durable observation cursor per PR.
-    // Pending intents are saved before execution; permission activation never
-    // replays this baseline or changes the original feedback provenance.
     for observation in &observations.feedback {
         let job = &observation.origin.review.job;
         merge_thread_observation(
@@ -272,194 +268,23 @@ pub(crate) fn admit_scan(
     store.save_feedback(&ledger)?;
     crate::retention::admit_observations(store, observations.retained, now)?;
     ledger = store.load_feedback()?;
-    let mut runs = store.load_follow_ups()?;
-    let before = runs.len();
-    admit_thread_intents(
-        store,
-        &queue.tracked,
-        &mut ledger,
-        observations.threads,
-        now,
-    )?;
+    observe_threads(&queue.tracked, &mut ledger, observations.threads);
     for (binding, comments) in observations.mentions {
-        let tracked = if queue
+        let tracked = queue
             .tracked
             .iter()
-            .any(|tracked| binding.matches_tracked(tracked))
-        {
-            Some(binding.tracked(&queue.tracked)?)
-        } else {
-            None
-        };
+            .any(|tracked| binding.matches_tracked(tracked));
         let index = conversation_cursor(&mut ledger, &binding);
-        let initialized = ledger.conversation_cursors[index].comments_initialized;
         ledger.conversation_cursors[index].comments_initialized = true;
-        if tracked.is_some() {
+        if tracked {
             ledger.conversation_cursors[index].discussion = comments.clone();
         }
+        // Comments are read in the review packet; no follow-up is admitted.
         for comment in comments {
-            let newly_observed = ledger.conversation_cursors[index]
+            ledger.conversation_cursors[index]
                 .comments
-                .insert(comment.id.clone());
-            if tracked.is_none()
-                || !initialized
-                || !newly_observed
-                || !comment.eligible_other_user(&binding.account_id)
-            {
-                continue;
-            }
-            let key = binding.key(&comment.id);
-            if ledger.mentions.iter().any(|m| m.key == key)
-                || crate::retention::known_key(store, &key)?
-            {
-                continue;
-            }
-            let existing = runs.iter().find(|run| run.key == key);
-            let (work_id, enqueue_order, enqueued_at) = if let Some(run) = existing {
-                (
-                    run.id.clone(),
-                    run.enqueue_order
-                        .ok_or("Retained mention order is unavailable.")?,
-                    run.enqueued_at
-                        .ok_or("Retained mention enqueue time is unavailable.")?,
-                )
-            } else {
-                (
-                    uuid::Uuid::new_v4().to_string(),
-                    store.allocate_enqueue_order()?,
-                    now,
-                )
-            };
-            let item_id = if let Some(run) = existing {
-                crate::queue::item_id(&run.context.job)
-            } else {
-                let tracked = binding.tracked(&queue.tracked)?;
-                if tracked.lifecycle != github::metadata::Lifecycle::Open {
-                    continue;
-                }
-                tracked.item_id.clone()
-            };
-            ledger.mentions.push(crate::feedback::Mention {
-                item_id: Some(item_id),
-                key,
-                work_id,
-                enqueue_order,
-                enqueued_at,
-                binding: binding.clone(),
-                comment,
-                follow_up_id: None,
-                blocked: Some("Comment observed; primary assessment admission is pending.".into()),
-            });
+                .insert(comment.id);
         }
-    }
-    // Commit observation identity/order before materializing any mention execution or linkage.
-    store.save_feedback(&ledger)?;
-    materialize_thread_intents(store, ticket, &settings, jobs, &mut ledger, &mut runs)?;
-    // Recover saved intent even when this poll does not rediscover the remote comment.
-    for mention in ledger.mentions.iter_mut().filter(|m| {
-        m.binding.configuration_id == ticket.repository_id
-            && m.binding.account_id == ticket.provider_account_id
-            && m.binding.repository_id == ticket.provider_repository_id
-    }) {
-        let item_id = match mention.association(&queue.tracked, jobs, &runs) {
-            Ok(id) => id,
-            Err(reason) => {
-                mention.blocked = Some(reason.into());
-                continue;
-            }
-        };
-        mention.item_id = Some(item_id.clone());
-        let binding = &mention.binding;
-        if let Some(run) = runs
-            .iter()
-            .find(|r| r.key == mention.key || r.id == mention.work_id)
-        {
-            mention.follow_up_id = Some(run.id.clone());
-            mention.blocked = None;
-            continue;
-        }
-        let route = (|| -> Result<FollowUp, String> {
-            let tracked = binding.tracked(&queue.tracked)?;
-            if tracked.item_id != item_id || tracked.lifecycle != github::metadata::Lifecycle::Open
-            {
-                return Err("Mention belongs to a superseded or terminal iteration; retained without replay.".into());
-            }
-            let repository = settings
-                .repositories
-                .iter()
-                .find(|r| r.id == binding.configuration_id)
-                .ok_or("Repository removed.")?;
-            let primary = repository
-                .primary_assignment_id()
-                .ok_or("No primary assigned; mention retained without fallback.")?;
-            let assigned = repository
-                .assignments
-                .iter()
-                .find(|a| a.id == primary)
-                .ok_or("Primary assignment unavailable.")?;
-            if packet_assignment(assigned) {
-                return Err(PACKET_HANDLES_COMMENTS.into());
-            }
-            if !ticket
-                .assignments
-                .iter()
-                .any(|a| a.assignment_id == primary && a.agent_id == assigned.agent_id)
-            {
-                return Err(
-                    "Primary was not captured by this scan; waiting for the next global scan."
-                        .into(),
-                );
-            }
-            let job = jobs
-                .iter()
-                .rev()
-                .find(|j| {
-                    binding.matches(j)
-                        && item_id == crate::queue::item_id(j)
-                        && j.assignment_id.as_deref() == Some(primary)
-                        && monitoring::review_policy(&settings, j, None).is_ok()
-                })
-                .ok_or("The primary's current iteration is unavailable.")?;
-            let selection = Selection::resolve(&settings, job, primary)?;
-            let feedback = crate::feedback::conversation_contexts(store, job, &selection.agent.id)
-                .map_err(|e| e.message)?;
-            let mut run = FollowUp::mention(
-                mention.comment.clone(),
-                ConversationContext {
-                    assignment_id: primary.into(),
-                    job: job.clone(),
-                    selection,
-                    trust_confirmed: false,
-                    feedback,
-                    feedback_checked: true,
-                },
-            );
-            run.id = mention.work_id.clone();
-            run.discussion = ledger
-                .conversation_cursors
-                .iter()
-                .find(|cursor| cursor.binding.key("") == binding.key(""))
-                .map(|cursor| cursor.discussion.clone())
-                .unwrap_or_default();
-            Ok(run)
-        })();
-        match route {
-            Ok(run) => {
-                mention.item_id = Some(crate::queue::item_id(&run.context.job));
-                let id = run.id.clone();
-                if super::admit_run(&mut runs, run)? {
-                    let work = runs.last_mut().ok_or("Mention admission disappeared.")?;
-                    work.enqueue_order = Some(mention.enqueue_order);
-                    work.enqueued_at = Some(mention.enqueued_at);
-                }
-                mention.follow_up_id = Some(id);
-                mention.blocked = None;
-            }
-            Err(reason) => mention.blocked = Some(reason),
-        }
-    }
-    if runs.len() != before {
-        store.save_follow_ups(&runs)?;
     }
     store.save_feedback(&ledger)?;
     Ok(())
@@ -498,57 +323,13 @@ fn merge_thread_observation(
     Ok(())
 }
 
-fn primary_context(
-    store: &Store,
-    settings: &crate::storage::Settings,
-    jobs: &[monitoring::QueueJob],
-    binding: &crate::feedback::MentionBinding,
-    item_id: &str,
-) -> Result<ConversationContext, String> {
-    let repository = settings
-        .repositories
-        .iter()
-        .find(|r| r.id == binding.configuration_id)
-        .ok_or("Repository removed.")?;
-    let primary = repository
-        .primary_assignment_id()
-        .ok_or("No primary assigned; conversation retained locally without fallback.")?;
-    if repository
-        .assignments
-        .iter()
-        .any(|a| a.id == primary && packet_assignment(a))
-    {
-        return Err(PACKET_HANDLES_COMMENTS.into());
-    }
-    let job = jobs
-        .iter()
-        .rev()
-        .find(|job| {
-            binding.matches(job)
-                && crate::queue::item_id(job) == item_id
-                && job.assignment_id.as_deref() == Some(primary)
-                && monitoring::review_policy(settings, job, None).is_ok()
-        })
-        .ok_or("The current primary's admitted iteration is unavailable.")?;
-    let selection = Selection::resolve(settings, job, primary)?;
-    Ok(ConversationContext {
-        assignment_id: primary.into(),
-        job: job.clone(),
-        feedback: crate::feedback::conversation_contexts(store, job, &selection.agent.id)
-            .map_err(|e| e.message)?,
-        selection,
-        trust_confirmed: false,
-        feedback_checked: true,
-    })
-}
-
-fn admit_thread_intents(
-    store: &Store,
+/// Cursor bookkeeping for owned-feedback and closure reads. Comments are read in
+/// the review packet; no Reply follow-up is admitted.
+fn observe_threads(
     tracked: &[monitoring::TrackedPullRequest],
     ledger: &mut crate::feedback::Ledger,
     observations: Vec<(crate::feedback::MentionBinding, Vec<Thread>)>,
-    now: i64,
-) -> Result<(), String> {
+) {
     for (binding, threads) in observations {
         let Ok(pr) = binding.tracked(tracked) else {
             continue;
@@ -557,7 +338,6 @@ fn admit_thread_intents(
             continue;
         }
         let index = conversation_cursor(ledger, &binding);
-        let initialized = ledger.conversation_cursors[index].threads_initialized;
         ledger.conversation_cursors[index].threads_initialized = true;
         for thread in threads {
             if thread.resolved {
@@ -570,118 +350,13 @@ fn admit_thread_intents(
                 thread.id.clone(),
                 external.map(|comment| comment.id.clone()),
             );
-            let key = external.map(|comment| {
-                serde_json::json!([
-                    "thread",
-                    "github",
-                    binding.account_id,
-                    binding.configuration_id,
-                    binding.repository_id,
-                    binding.pull_request_id,
-                    thread.id,
-                    comment.id
-                ])
-                .to_string()
-            });
-            // Record every historical external identity, not just the current
-            // last comment, so deletion cannot replay an older conversation.
-            let mut fresh = false;
             for comment in &thread.comments {
-                let observed = serde_json::json!([thread.id, comment.id]).to_string();
-                let added = ledger.conversation_cursors[index].threads.insert(observed);
-                if external.is_some_and(|external| external.id == comment.id) {
-                    fresh = added;
-                }
+                ledger.conversation_cursors[index]
+                    .threads
+                    .insert(serde_json::json!([thread.id, comment.id]).to_string());
             }
-            // One malformed thread must never fail the whole repository scan: its
-            // comments are already recorded as seen, so it cannot replay.
-            let Some(root) = thread.tolerant_root() else {
-                let _ = store.record(crate::storage::DiagnosticEvent::ThreadSkipped);
-                continue;
-            };
-            let closed = ledger.records.iter().any(|record| {
-                record.context.root_id == root.id
-                    && binding.matches(&record.job)
-                    && record.context.closed
-            });
-            let Some(key) = key else {
-                continue;
-            };
-            if !initialized
-                || !fresh
-                || ledger.conversation_cursors[index]
-                    .closed_threads
-                    .contains(&thread.id)
-                || closed
-                || ledger
-                    .pending_threads
-                    .iter()
-                    .any(|intent| intent.key == key)
-                || crate::retention::known_key(store, &key)?
-            {
-                continue;
-            }
-            ledger.pending_threads.push(crate::feedback::PendingThread {
-                binding: binding.clone(),
-                item_id: pr.item_id.clone(),
-                thread,
-                key,
-                work_id: uuid::Uuid::new_v4().to_string(),
-                enqueue_order: store.allocate_enqueue_order()?,
-                enqueued_at: now,
-                follow_up_id: None,
-                blocked: Some("Primary assessment pending.".into()),
-            });
         }
     }
-    Ok(())
-}
-
-fn materialize_thread_intents(
-    store: &Store,
-    ticket: &PollTicket,
-    settings: &crate::storage::Settings,
-    jobs: &[monitoring::QueueJob],
-    ledger: &mut crate::feedback::Ledger,
-    runs: &mut Vec<FollowUp>,
-) -> Result<(), String> {
-    for intent in ledger.pending_threads.iter_mut().filter(|intent| {
-        intent.binding.configuration_id == ticket.repository_id
-            && intent.binding.account_id == ticket.provider_account_id
-            && intent.binding.repository_id == ticket.provider_repository_id
-    }) {
-        if let Some(run) = runs.iter().find(|run| run.key == intent.key) {
-            if run.id != intent.work_id
-                || crate::queue::item_id(&run.context.job) != intent.item_id
-                || !intent.binding.matches(&run.context.job)
-                || run.enqueue_order != Some(intent.enqueue_order)
-                || run.enqueued_at != Some(intent.enqueued_at)
-            {
-                return Err("Discussion execution conflicts with its durable intent; no replacement was created.".into());
-            }
-            intent.follow_up_id = Some(run.id.clone());
-            intent.blocked = None;
-            continue;
-        }
-        if intent.follow_up_id.is_some() {
-            intent.blocked = Some("Discussion execution history is unavailable; reconcile the original intent instead of replaying it.".into());
-            continue;
-        }
-        let route = primary_context(store, settings, jobs, &intent.binding, &intent.item_id)
-            .and_then(|context| FollowUp::general_thread(intent.thread.clone(), context));
-        match route {
-            Ok(mut run) => {
-                run.id = intent.work_id.clone();
-                run.enqueue_order = Some(intent.enqueue_order);
-                run.enqueued_at = Some(intent.enqueued_at);
-                intent.follow_up_id = Some(run.id.clone());
-                super::admit_stored(store, runs, run)?;
-                intent.blocked = None;
-            }
-            Err(reason) => intent.blocked = Some(reason),
-        }
-    }
-    Ok(())
 }
 
 #[derive(Serialize)]
@@ -718,27 +393,7 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
     Ok(runs
         .iter()
         .map(|saved_run| {
-            let mut pending = saved_run.clone();
-            if !pending.cancelled && pending.result.is_none() && pending.publication.is_none()
-                && pending.analysis_history.is_empty()
-                && pending.history.iter().all(|operation| operation.attempt_count == 0)
-                && pending.analysis.as_ref().is_none_or(|operation| operation.attempt_count == 0 && operation.state != OperationState::Running)
-            {
-                let job = &pending.context.job;
-                let binding = crate::feedback::MentionBinding {
-                    configuration_id: job.configuration_id.clone(), account_id: job.account_id.clone(),
-                    account_login: String::new(), repository_id: job.repository_id.clone(),
-                    repository_name: job.repository_name.clone(), pull_request_id: job.pull_request_id.clone(), number: job.number,
-                };
-                if let Ok(context) = primary_context(store, &settings, &jobs, &binding, &crate::queue::item_id(job)) {
-                    if context.assignment_id != pending.context.assignment_id
-                        || context.selection.agent != pending.context.selection.agent
-                        || context.job != pending.context.job {
-                        if let Some(operation) = pending.analysis.take() { pending.retain_analysis_attempt(operation); }
-                        pending.context = context;
-                    }
-                }
-            }
+            let pending = saved_run.clone();
             let run = &pending;
             let policy = jobs
                 .iter()
@@ -834,7 +489,7 @@ impl Coordinator {
                     ) && op.next_attempt_at.is_some_and(|n| n <= now)
                 };
                 if run.publication.as_ref().is_some_and(due) {
-                    return Some((run.id.clone(), true));
+                    return Some(run.id.clone());
                 }
                 if candidate.blocked.is_some() || run.cancelled {
                     return None;
@@ -843,31 +498,22 @@ impl Coordinator {
                     && run.publication.is_none()
                     && candidate.automatic_publication
                 {
-                    return Some((run.id.clone(), true));
+                    return Some(run.id.clone());
                 }
                 None
             })
         };
-        if let Some((id, publish)) = next {
-            Self::launch(app, &id, publish, false)?;
+        if let Some(id) = next {
+            Self::launch(app, &id, false)?;
         }
         Ok(())
     }
 
-    fn launch(app: &tauri::AppHandle, id: &str, publish: bool, manual: bool) -> Result<(), String> {
+    /// Publish an already-analyzed legacy reply. Analysis itself is retired.
+    fn launch(app: &tauri::AppHandle, id: &str, manual: bool) -> Result<(), String> {
         let host = app.state::<Host>();
         if host.quitting.load(Ordering::SeqCst) {
             return Err("PR Sniper is quitting.".into());
-        }
-        if !publish {
-            {
-                let store = host
-                    .store
-                    .lock()
-                    .map_err(|_| "Thread storage unavailable.")?;
-                request_analysis(&store, id, manual, now_seconds()?)?;
-            }
-            return crate::capacity::Coordinator::pump(app);
         }
         let mut active = host
             .follow_ups
@@ -895,52 +541,50 @@ impl Coordinator {
                 .ok_or("Thread follow-up disappeared.")?;
             let mut run = candidate.run;
             let now = now_seconds()?;
-            if publish {
-                if run.captured_local_response() {
-                    return Err("This response completed locally without a Reply Comment grant. Historical local responses are not replayed; a new comment creates new work.".into());
+            if run.captured_local_response() {
+                return Err("This response completed locally without a Reply Comment grant. Historical local responses are not replayed; a new comment creates new work.".into());
+            }
+            if !candidate.automatic_publication && !run.uncertain && run.receipt.is_none() {
+                return Err("Reply Comment permission is off. This response remains local; manual confirmation cannot grant a capability.".into());
+            }
+            if run
+                .result
+                .as_ref()
+                .is_none_or(|r| r.output.decision != ReplyDecision::Reply)
+            {
+                return Err("This follow-up has no validated reply.".into());
+            }
+            if run
+                .publication
+                .as_ref()
+                .is_some_and(|p| p.state == OperationState::Completed)
+            {
+                return Err("The reply was already published.".into());
+            }
+            if run.publication.is_none() || manual {
+                if !candidate.automatic_publication && !manual {
+                    return Err("Explicit reply publication confirmation is required.".into());
                 }
-                if !candidate.automatic_publication && !run.uncertain && run.receipt.is_none() {
-                    return Err("Reply Comment permission is off. This response remains local; manual confirmation cannot grant a capability.".into());
+                if let Some(previous) = run.publication.take() {
+                    run.history.push(previous);
                 }
-                if run
-                    .result
-                    .as_ref()
-                    .is_none_or(|r| r.output.decision != ReplyDecision::Reply)
-                {
-                    return Err("This follow-up has no validated reply.".into());
+                let mut operation = run.operation(
+                    if run.kind() == crate::capacity::Kind::Mention {
+                        "mention_reply"
+                    } else {
+                        "thread_reply"
+                    },
+                    now,
+                );
+                operation.confirmed_receipt = run.receipt.clone();
+                if run.uncertain {
+                    operation.attempted_mutation = Some("thread_reply".into());
                 }
-                if run
-                    .publication
-                    .as_ref()
-                    .is_some_and(|p| p.state == OperationState::Completed)
-                {
-                    return Err("The reply was already published.".into());
-                }
-                if run.publication.is_none() || manual {
-                    if !candidate.automatic_publication && !manual {
-                        return Err("Explicit reply publication confirmation is required.".into());
-                    }
-                    if let Some(previous) = run.publication.take() {
-                        run.history.push(previous);
-                    }
-                    let mut operation = run.operation(
-                        if run.kind() == crate::capacity::Kind::Mention {
-                            "mention_reply"
-                        } else {
-                            "thread_reply"
-                        },
-                        now,
-                    );
-                    operation.confirmed_receipt = run.receipt.clone();
-                    if run.uncertain {
-                        operation.attempted_mutation = Some("thread_reply".into());
-                    }
-                    run.publication = Some(operation);
-                    run.automatic_publication = candidate.automatic_publication;
-                    run.confirmed = manual;
-                    if run.body.is_none() {
-                        run.body = Some(run.reply_body().map_err(|e| e.message)?);
-                    }
+                run.publication = Some(operation);
+                run.automatic_publication = candidate.automatic_publication;
+                run.confirmed = manual;
+                if run.body.is_none() {
+                    run.body = Some(run.reply_body().map_err(|e| e.message)?);
                 }
             }
             if manual {
@@ -964,25 +608,21 @@ impl Coordinator {
         drop(active);
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            if publish {
-                let worker = app.clone();
-                let outcome = tauri::async_runtime::spawn_blocking(move || {
-                    let mut native = Native {
-                        app: worker,
-                        generation,
-                        cancelled,
-                        cancelled_read: Arc::new(AtomicBool::new(false)),
-                    };
-                    super::publish(&mut native, &mut run)
-                })
-                .await;
-                match outcome {
-                    Ok(Err(error)) => crate::report(&app, error.message),
-                    Err(_) => {
-                        crate::report(&app, "Thread publication worker could not finish.".into())
-                    }
-                    _ => {}
-                }
+            let worker = app.clone();
+            let outcome = tauri::async_runtime::spawn_blocking(move || {
+                let mut native = Native {
+                    app: worker,
+                    generation,
+                    cancelled,
+                    cancelled_read: Arc::new(AtomicBool::new(false)),
+                };
+                super::publish(&mut native, &mut run)
+            })
+            .await;
+            match outcome {
+                Ok(Err(error)) => crate::report(&app, error.message),
+                Err(_) => crate::report(&app, "Thread publication worker could not finish.".into()),
+                _ => {}
             }
             if let Err(error) = app.state::<Host>().mutations.release(&mutation_owner) {
                 crate::report(&app, error);
@@ -994,183 +634,6 @@ impl Coordinator {
         });
         Ok(())
     }
-}
-
-pub(crate) fn prepare_analysis(
-    store: &Store,
-    run: &mut FollowUp,
-    blocked: Option<String>,
-    human_gate: bool,
-    manual: bool,
-    now: i64,
-) -> Result<(), String> {
-    if run.result.is_some() || run.publication.is_some() {
-        return Err(
-            "This follow-up was already analyzed; a later external comment creates new work."
-                .into(),
-        );
-    }
-    if let Some(error) = blocked {
-        return Err(error);
-    }
-    if human_gate && !manual && !run.manual_start {
-        return Err("A prior comment needs human judgment before retrying this follow-up.".into());
-    }
-    if run
-        .analysis
-        .as_ref()
-        .is_some_and(|op| op.state == OperationState::Running)
-    {
-        return Err("This analysis is running or stopping; wait for teardown.".into());
-    }
-    if run.analysis.is_none() || manual {
-        let settings = store.load_settings()?;
-        let jobs = store.load_queue()?;
-        let job = jobs
-            .iter()
-            .find(|j| run.matches_job(j))
-            .ok_or("The reviewed revision is no longer available.")?;
-        let selection = Selection::resolve(&settings, job, &run.context.assignment_id)?;
-        if let Some(previous) = run.analysis.take() {
-            run.retain_analysis_attempt(previous);
-        }
-        if !run.same_analysis_execution(&selection) {
-            run.context.selection = selection;
-        }
-        if run.context.feedback_checked {
-            run.context.feedback =
-                crate::feedback::conversation_contexts(store, job, &run.context.selection.agent.id)
-                    .map_err(|e| e.message)?;
-        }
-        run.analysis = Some(run.operation(
-            if run.kind() == crate::capacity::Kind::Mention {
-                "mention_analysis"
-            } else {
-                "thread_analysis"
-            },
-            now,
-        ));
-        run.manual_start = manual;
-    }
-    run.manual_start |= manual;
-    Ok(())
-}
-
-pub(crate) fn request_analysis(
-    store: &Store,
-    id: &str,
-    manual: bool,
-    now: i64,
-) -> Result<FollowUp, String> {
-    let candidate = candidates(store)?
-        .into_iter()
-        .find(|c| c.run.id == id)
-        .ok_or("Thread follow-up disappeared.")?;
-    let mut run = candidate.run;
-    prepare_analysis(
-        store,
-        &mut run,
-        candidate.blocked,
-        candidate.human_gate,
-        manual,
-        now,
-    )?;
-    if manual {
-        run.cancelled = false;
-    }
-    run.error = None;
-    save_to_store(store, &run)?;
-    Ok(run)
-}
-
-pub(crate) fn prepare_dispatch(store: &Store, id: &str, now: i64) -> Result<FollowUp, String> {
-    let mut run = request_analysis(store, id, false, now)?;
-    let result = run
-        .analysis
-        .as_mut()
-        .ok_or("Reply analysis missing.")?
-        .begin_ai_attempt(now);
-    if let Err(error) = result {
-        run.error = Some(error.clone());
-        save_to_store(store, &run)?;
-        return Err(error);
-    }
-    run.phase = Phase::Analyzing;
-    save_to_store(store, &run)?;
-    Ok(run)
-}
-
-pub(crate) fn launch_analysis_worker(
-    app: &tauri::AppHandle,
-    mut run: FollowUp,
-    cancelled: Arc<AtomicBool>,
-) {
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let operation_id = run
-            .analysis
-            .as_ref()
-            .expect("dispatched analysis")
-            .id
-            .clone();
-        let key = crate::capacity::WorkId {
-            kind: run.kind(),
-            id: run.id.clone(),
-        };
-        let outcome = async {
-            let generation = app
-                .state::<Host>()
-                .github_generations
-                .lock()
-                .map_err(|_| Failure::permanent("GitHub coordination unavailable."))?
-                .get(&run.context.job.account_id)
-                .copied()
-                .unwrap_or(0);
-            let mut native = Native {
-                app: app.clone(),
-                generation,
-                cancelled,
-                cancelled_read: Arc::new(AtomicBool::new(false)),
-            };
-            analyze(&mut native, &mut run).await
-        }
-        .await;
-        if let Err(error) = outcome {
-            crate::report(&app, error.message);
-        }
-        let host = app.state::<Host>();
-        let saved = host
-            .store
-            .lock()
-            .map_err(|_| "Thread storage unavailable.".to_string())
-            .and_then(|store| finish_analysis_worker(&store, &host.ai, &key, &operation_id));
-        if let Err(error) = saved {
-            crate::report(&app, error);
-            if let Err(error) = host.ai.persistence_failed(&operation_id) {
-                crate::report(&app, error);
-            }
-        } else if let Err(error) = crate::capacity::Coordinator::pump(&app) {
-            crate::report(&app, error);
-        }
-    });
-}
-
-fn finish_analysis_worker(
-    store: &Store,
-    capacity: &crate::capacity::Coordinator,
-    key: &crate::capacity::WorkId,
-    operation_id: &str,
-) -> Result<(), String> {
-    let saved = store
-        .load_follow_ups()?
-        .into_iter()
-        .find(|r| r.id == key.id)
-        .and_then(|r| r.analysis)
-        .is_some_and(|op| op.id != operation_id || op.state != OperationState::Running);
-    if !saved {
-        return Err("Analysis outcome could not be persisted; capacity remains reserved.".into());
-    }
-    capacity.release(key, operation_id)
 }
 
 fn save_to_store(store: &Store, run: &FollowUp) -> Result<(), String> {
@@ -1354,17 +817,6 @@ impl Environment for Native {
     }
     fn save(&mut self, run: &mut FollowUp) -> Result<(), Failure> {
         let host = self.app.state::<Host>();
-        let accepting_analysis = run.publication.is_none()
-            && run.result.is_some()
-            && run
-                .analysis
-                .as_ref()
-                .is_some_and(|op| op.state == OperationState::Completed);
-        if accepting_analysis {
-            return self
-                .analysis_completion(run)
-                .and_then(|completion| completion.result);
-        }
         let store = host
             .store
             .lock()
@@ -1644,385 +1096,9 @@ impl Native {
     }
 }
 
-fn analysis_checkpoint(
-    environment: &mut impl Environment,
-    run: &FollowUp,
-) -> Result<Observation, Failure> {
-    let observation = environment.observe(run)?;
-    if let Some(reason) = environment.gate(run, &observation)? {
-        return Err(analysis_gate_failure(reason));
-    }
-    Ok(observation)
-}
-
-async fn analyze(native: &mut Native, run: &mut FollowUp) -> Result<(), Failure> {
-    let diagnostics = crate::review::diagnostics::native(
-        &native.app,
-        &run.context.job,
-        run.analysis.as_ref().unwrap(),
-        &run.context.selection.agent.model,
-    );
-    diagnostics.emit(crate::storage::diagnostics::Event::Phase {
-        phase: crate::storage::diagnostics::Phase::PreparingContext,
-    });
-    run.phase = Phase::Analyzing;
-    native.save(run)?;
-    let result = async {
-        let mut worker = native.clone();
-        let snapshot = run.clone();
-        let (context, client, observation) = tauri::async_runtime::spawn_blocking(move || {
-            let observation = worker.observe(&snapshot)?;
-            worker.local(&snapshot)?;
-            snapshot.validate_observed_trigger(&observation)?;
-            let mut current = snapshot.clone();
-            if let Observation::Mention { replies, .. } = &observation {
-                current.discussion = replies.clone();
-            }
-            if current.manual_start {
-                if let Observation::Owned(thread) = &observation {
-                    *current.thread_mut().map_err(Failure::permanent)? = thread.clone();
-                }
-            }
-            if let Some(reason) = worker.gate(&current, &observation)? {
-                return Err(analysis_gate_failure(reason));
-            }
-            let client = worker.read_client(&current)?;
-            let context = client
-                .review_context(
-                    &RemoteRepository {
-                        id: current.context.job.repository_id.clone(),
-                        name: current.context.job.repository_name.clone(),
-                    },
-                    current.context.job.number,
-                    &current.context.job.head_sha,
-                )
-                .map_err(|e| worker.read_failure(e))?;
-            if current
-                .context
-                .job
-                .observed_base_sha
-                .as_ref()
-                .is_some_and(|base| base != &context.pull.base_sha)
-            {
-                return Err(Failure::permanent(
-                    "The reviewed base changed; wait for a new review.",
-                ));
-            }
-            Ok((context, Arc::new(client), observation))
-        })
-        .await
-        .map_err(|_| Failure::permanent("Follow-up preparation failed."))??;
-        match observation {
-            Observation::Owned(thread) => *run.thread_mut().map_err(Failure::permanent)? = thread,
-            Observation::Mention { replies, .. } => run.discussion = replies,
-        }
-        let expected_base = context.pull.base_sha.clone();
-        run.context.job.observed_base_sha = Some(expected_base.clone());
-        native.save(run)?;
-        let local_native = native.clone();
-        let local_run = run.clone();
-        let before_native = native.clone();
-        let before_run = run.clone();
-        let request = runtime::Request {
-            exits: None,
-            diagnostics: Some(diagnostics.clone()),
-            task: ReplyTask {
-                conversation: run.input(),
-                trigger_id: run.trigger_id.clone(),
-                feedback: run.context.feedback.clone(),
-                owner_agent_id: run.assessment_owner().into(),
-            },
-            context,
-            client,
-            repository_name: run.context.job.repository_name.clone(),
-            selection: run.context.selection.clone(),
-            local_gate: Arc::new(move || local_native.local(&local_run)),
-            before_send: Arc::new(move || {
-                let mut native = before_native.clone();
-                analysis_checkpoint(&mut native, &before_run).map(|_| ())
-            }),
-        };
-        let remaining = run
-            .analysis
-            .as_ref()
-            .unwrap()
-            .retry_deadline
-            .saturating_sub(native.now()?);
-        if remaining <= 0 {
-            return Err(Failure::timeout());
-        }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(remaining as u64);
-        let integration = native.app.state::<Host>().copilot.clone();
-        let mut result = integration
-            .review(request, native.cancelled.clone(), deadline)
-            .await?;
-        diagnostics.emit(crate::storage::diagnostics::Event::Phase {
-            phase: crate::storage::diagnostics::Phase::CheckingFinalEligibility,
-        });
-        let mut final_native = native.clone();
-        let mut final_run = run.clone();
-        final_run.result = Some(result.clone());
-        tauri::async_runtime::spawn_blocking(move || {
-            analysis_checkpoint(&mut final_native, &final_run).map(|_| ())
-        })
-        .await
-        .map_err(|_| Failure::permanent("Final follow-up verification failed."))??;
-        result.reviewed_base_sha = Some(expected_base);
-        Ok::<_, Failure>(result)
-    }
-    .await;
-    diagnostics.finish(
-        crate::storage::diagnostics::CompletionStage::Attempt,
-        result.as_ref().err(),
-    );
-    let saved = match result {
-        Ok(result) => {
-            run.phase = match result.output.decision {
-                ReplyDecision::Reply => Phase::WaitingPublication,
-                ReplyDecision::Quiet => Phase::Quiet,
-                ReplyDecision::HumanInputRequired => Phase::HumanInputRequired,
-            };
-            run.result = Some(result);
-            let operation = run.analysis.as_mut().unwrap();
-            operation.state = OperationState::Completed;
-            operation.next_attempt_at = None;
-            operation.failure = None;
-            native.analysis_completion(run)
-        }
-        Err(error) => {
-            let host = native.app.state::<Host>();
-            let store = host
-                .store
-                .lock()
-                .map_err(|_| Failure::permanent("Thread storage unavailable."))?;
-            analysis_completion(&store, run, Err(error), false, native.now()?)
-        }
-    };
-    record_analysis_completion(saved, &diagnostics)
-}
-
-struct AnalysisCompletion {
-    result: Result<(), Failure>,
-    operation: crate::monitoring::JobOperation,
-}
-
-impl Native {
-    fn analysis_completion(&self, run: &mut FollowUp) -> Result<AnalysisCompletion, Failure> {
-        let host = self.app.state::<Host>();
-        let generations = host
-            .github_generations
-            .lock()
-            .map_err(|_| Failure::permanent("GitHub coordination unavailable."))?;
-        let auth = host
-            .github_auth
-            .lock()
-            .map_err(|_| Failure::permanent("GitHub account unavailable."))?;
-        let store = host
-            .store
-            .lock()
-            .map_err(|_| Failure::permanent("Thread storage unavailable."))?;
-        let allowed = !host.quitting.load(Ordering::SeqCst)
-            && !self.cancelled.load(Ordering::SeqCst)
-            && generations
-                .get(&run.context.job.account_id)
-                .copied()
-                .unwrap_or(0)
-                == self.generation
-            && auth
-                .account_session_allowed(&run.context.job.account_id)
-                .is_ok();
-        let result = run
-            .result
-            .take()
-            .ok_or_else(|| Failure::permanent("Analysis result unavailable."))?;
-        analysis_completion(&store, run, Ok(result), allowed, self.now()?)
-    }
-}
-
-fn record_analysis_completion(
-    completion: Result<AnalysisCompletion, Failure>,
-    diagnostics: &crate::review::diagnostics::Trace,
-) -> Result<(), Failure> {
-    let completion = completion?;
-    diagnostics.emit(crate::review::diagnostics::retry_event(
-        &completion.operation,
-    ));
-    completion.result
-}
-
-#[cfg(test)]
-pub(crate) fn complete_analysis(
-    store: &Store,
-    run: &mut FollowUp,
-    outcome: Result<crate::review::ReviewResult<ReplyOutput>, Failure>,
-    account_allowed: bool,
-    now: i64,
-) -> Result<(), Failure> {
-    analysis_completion(store, run, outcome, account_allowed, now)
-        .and_then(|completion| completion.result)
-}
-
-fn save_analysis_outcome(
-    store: &Store,
-    run: &FollowUp,
-    result: Result<(), Failure>,
-) -> Result<AnalysisCompletion, Failure> {
-    let operation = run
-        .analysis
-        .as_ref()
-        .ok_or_else(|| Failure::permanent("Analysis operation missing."))?;
-    save_to_store(store, run).map_err(Failure::permanent)?;
-    Ok(AnalysisCompletion {
-        result,
-        operation: operation.clone(),
-    })
-}
-
-fn analysis_completion(
-    store: &Store,
-    run: &mut FollowUp,
-    outcome: Result<crate::review::ReviewResult<ReplyOutput>, Failure>,
-    account_allowed: bool,
-    now: i64,
-) -> Result<AnalysisCompletion, Failure> {
-    let current = store
-        .load_follow_ups()
-        .map_err(Failure::permanent)?
-        .into_iter()
-        .find(|r| r.id == run.id)
-        .ok_or_else(|| Failure::permanent("Thread follow-up disappeared."))?;
-    if current.analysis.as_ref().map(|o| &o.id) != run.analysis.as_ref().map(|o| &o.id) {
-        return Err(Failure::permanent(
-            "A newer analysis attempt owns this follow-up.",
-        ));
-    }
-    if current.has_provider_work() || run.has_provider_work() {
-        return match outcome {
-            Err(error) => Err(error),
-            Ok(_) => Err(Failure::permanent(
-                "Provider reply work cannot be overwritten by an analysis result.",
-            )),
-        };
-    }
-    if outcome.is_ok()
-        && (current.result.is_some()
-            || current.error.is_some()
-            || current.analysis.as_ref().is_some_and(|operation| {
-                matches!(
-                    operation.state,
-                    OperationState::Completed
-                        | OperationState::Failed
-                        | OperationState::ManualRetry
-                )
-            }))
-    {
-        return Err(Failure::permanent(
-            "An existing analysis outcome cannot be replaced by another successful result.",
-        ));
-    }
-    run.analysis = current.analysis;
-    if !current.cancelled
-        && run
-            .analysis
-            .as_mut()
-            .is_some_and(|op| crate::capacity::interrupted(op, outcome.as_ref().err(), now))
-    {
-        run.result = None;
-        run.error = None;
-        run.phase = Phase::WaitingStart;
-        return save_analysis_outcome(store, run, Ok(()));
-    }
-    if !current.cancelled {
-        let ai_account = run
-            .context
-            .selection
-            .agent
-            .ai_account
-            .as_ref()
-            .map(|account| account.account_id.clone());
-        if let Some(operation) = run.analysis.as_mut() {
-            if crate::backpressure::defer(
-                store,
-                operation,
-                outcome.as_ref().err(),
-                ai_account.as_deref(),
-                now,
-            )
-            .map_err(Failure::permanent)?
-            {
-                run.result = None;
-                run.error = None;
-                run.phase = Phase::WaitingStart;
-                return save_analysis_outcome(store, run, Ok(()));
-            }
-        }
-    }
-    let outcome = outcome.and_then(|result| {
-        let mut checked = run.clone();
-        checked.result = Some(result.clone());
-        crate::feedback::owned_reply_assessment(&checked)?;
-        super::validate_analysis_commit(store, &checked, account_allowed)?;
-        Ok(result)
-    });
-    match outcome {
-        Ok(result) => {
-            crate::backpressure::run_succeeded(
-                store,
-                &run.context.job.account_id,
-                run.context
-                    .selection
-                    .agent
-                    .ai_account
-                    .as_ref()
-                    .map(|account| account.account_id.as_str()),
-            );
-            run.phase = match result.output.decision {
-                ReplyDecision::Reply => Phase::WaitingPublication,
-                ReplyDecision::Quiet => Phase::Quiet,
-                ReplyDecision::HumanInputRequired => Phase::HumanInputRequired,
-            };
-            run.result = Some(result);
-            let op = run
-                .analysis
-                .as_mut()
-                .ok_or_else(|| Failure::permanent("Analysis operation missing."))?;
-            op.state = OperationState::Completed;
-            op.next_attempt_at = None;
-            op.failure = None;
-            op.ai_attempt = None;
-            op.interruption = None;
-            run.error = None;
-            save_analysis_outcome(store, run, Ok(()))
-        }
-        Err(error) => {
-            run.cancelled |= current.cancelled;
-            run.result = None;
-            run.phase = Phase::Stopped;
-            run.error = Some(error.message.clone());
-            run.analysis
-                .as_mut()
-                .ok_or_else(|| Failure::permanent("Analysis operation missing."))?
-                .fail(&error.monitoring(), now);
-            save_analysis_outcome(store, run, Err(error))
-        }
-    }
-}
-
-fn analysis_gate_failure(reason: String) -> Failure {
-    if reason == Failure::cancelled().message {
-        Failure::cancelled()
-    } else {
-        Failure::permanent(reason)
-    }
-}
-
 #[tauri::command]
-pub(crate) async fn start_follow_up(
-    app: tauri::AppHandle,
-    id: String,
-    publish: bool,
-) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || Coordinator::launch(&app, &id, publish, true))
+pub(crate) async fn start_follow_up(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || Coordinator::launch(&app, &id, true))
         .await
         .map_err(|_| "Follow-up action could not finish.".to_string())?
 }
@@ -2086,8 +1162,3 @@ fn cancel_in_store(
     }
     store.save_follow_ups(&runs)
 }
-
-#[cfg(test)]
-mod conversation_tests;
-#[cfg(test)]
-mod tests;

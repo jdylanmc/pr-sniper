@@ -140,26 +140,17 @@ pub(crate) fn request(
             return Err("This Agent already reviewed this revision.".into())
         }
         Some(run)
-            if matches!(
-                run.operation.state,
-                OperationState::Queued | OperationState::Interrupted
-            ) =>
+            if run.mode == super::RunMode::Packet
+                && matches!(
+                    run.operation.state,
+                    OperationState::Queued | OperationState::Interrupted
+                ) =>
         {
             run
         }
         Some(_) if !manual => return Err("Manual retry is required.".into()),
         _ => ReviewRun {
-            mode: selection
-                .configuration
-                .as_ref()
-                .and_then(|c| {
-                    c.repository
-                        .assignments
-                        .iter()
-                        .find(|a| a.id == candidate.assignment_id)
-                })
-                .map(super::RunMode::for_assignment)
-                .unwrap_or_default(),
+            mode: super::RunMode::Packet,
             packet: None,
             feedback_context: None,
             key: candidate.key,
@@ -293,20 +284,6 @@ pub(crate) fn complete(
         .iter_mut()
         .find(|r| r.operation.id == id)
         .ok_or("Review operation disappeared.")?;
-    let outcome = outcome.and_then(|result| {
-        if let Some(contexts) = current
-            .feedback_context
-            .as_ref()
-            .filter(|_| current.mode == super::RunMode::Legacy)
-        {
-            crate::feedback::validate_review(
-                &result.output,
-                contexts,
-                &current.selection.agent.id,
-            )?;
-        }
-        Ok(result)
-    });
     if current.operation.state != OperationState::Running {
         return Ok(());
     }
@@ -407,11 +384,7 @@ fn local_gate(app: &tauri::AppHandle, run: &ReviewRun) -> Result<(), Failure> {
         .store
         .lock()
         .map_err(|_| Failure::permanent("Review storage is unavailable."))?;
-    if run.operation.operation_type == "primary_final_review" {
-        crate::actions::host::validate_execution(&store, run)
-    } else {
-        super::validate_execution_selection(&store, run)
-    }
+    super::validate_execution_selection(&store, run)
 }
 
 fn remote_gate(
@@ -419,9 +392,6 @@ fn remote_gate(
     run: &ReviewRun,
 ) -> Result<crate::github::metadata::PullRequest, Failure> {
     local_gate(app, run)?;
-    if run.operation.operation_type == "primary_final_review" {
-        crate::actions::host::remote_gate(app, run)?;
-    }
     let host = app.state::<Host>();
     let (_, client) = crate::github_session(&host, &run.job.account_id).map_err(Failure::from)?;
     let repo = RemoteRepository {
@@ -534,22 +504,20 @@ async fn execute_attempt(
         };
         // Packet runs read the PR fresh at consume time. A head that moved since the
         // work was queued is superseded (free); any other change is simply the new state.
-        let snapshot = if preparation_run.mode == super::RunMode::Packet {
-            let snapshot = client
-                .pr_snapshot(&repo, preparation_run.job.number)
-                .map_err(Failure::from)?;
-            if snapshot.state != "OPEN" {
-                return Err(Failure::superseded("The PR is no longer open."));
-            }
-            if snapshot.head != preparation_run.job.head_sha {
-                return Err(Failure::superseded(
-                    "The PR head moved since the work was queued.",
-                ));
-            }
-            Some(snapshot)
-        } else {
-            None
-        };
+        if preparation_run.mode != super::RunMode::Packet {
+            return Err(Failure::permanent(super::LEGACY_RETIRED));
+        }
+        let snapshot = client
+            .pr_snapshot(&repo, preparation_run.job.number)
+            .map_err(Failure::from)?;
+        if snapshot.state != "OPEN" {
+            return Err(Failure::superseded("The PR is no longer open."));
+        }
+        if snapshot.head != preparation_run.job.head_sha {
+            return Err(Failure::superseded(
+                "The PR head moved since the work was queued.",
+            ));
+        }
         let context = client
             .review_context(
                 &repo,
@@ -566,7 +534,7 @@ async fn execute_attempt(
                 }
             })?;
         let client = Arc::new(client);
-        let packet = if let Some(snapshot) = &snapshot {
+        let packet = {
             let write_capability = client
                 .connect(&repo.name, Some(&preparation_run.job.account_id))
                 .map_err(Failure::from)?
@@ -589,12 +557,12 @@ async fn execute_attempt(
                         .and_then(|r| r.consumed_at),
                 )
             };
-            Some(super::packet_run::prepare(
+            super::packet_run::prepare(
                 &client,
                 &repo,
                 &preparation_run,
                 &context,
-                snapshot,
+                &snapshot,
                 super::packet_run::Caller {
                     acting_login: &identity.login,
                     write_capability,
@@ -602,9 +570,7 @@ async fn execute_attempt(
                     iterations: &iterations,
                     last_consumed_at,
                 },
-            )?)
-        } else {
-            None
+            )?
         };
         Ok::<_, Failure>((context, client, packet))
     });
@@ -622,28 +588,17 @@ async fn execute_attempt(
             .store
             .lock()
             .map_err(|_| Failure::permanent("Review storage unavailable."))?;
-        if run.operation.operation_type == "primary_final_review" {
-            crate::actions::host::phase(
-                &store,
-                &run,
-                "Verifying restricted runtime for primary final full review",
-            )
-            .map_err(Failure::permanent)?;
-        } else {
-            let mut reviews = store.load_reviews().map_err(Failure::permanent)?;
-            let current = reviews
-                .iter_mut()
-                .find(|r| r.operation.id == run.operation.id)
-                .ok_or_else(|| Failure::permanent("Review operation disappeared."))?;
-            if current.operation.state != OperationState::Running {
-                return Err(Failure::permanent("Review is no longer running."));
-            }
-            current.phase = "Verifying restricted Copilot runtime and reviewing".into();
-            if let Some(prepared) = &packet {
-                current.packet = Some(prepared.packet.record.clone());
-            }
-            store.save_reviews(&reviews).map_err(Failure::permanent)?;
+        let mut reviews = store.load_reviews().map_err(Failure::permanent)?;
+        let current = reviews
+            .iter_mut()
+            .find(|r| r.operation.id == run.operation.id)
+            .ok_or_else(|| Failure::permanent("Review operation disappeared."))?;
+        if current.operation.state != OperationState::Running {
+            return Err(Failure::permanent("Review is no longer running."));
         }
+        current.phase = "Verifying restricted Copilot runtime and reviewing".into();
+        current.packet = Some(packet.packet.record.clone());
+        store.save_reviews(&reviews).map_err(Failure::permanent)?;
     }
     let remote_app = app.clone();
     let remote_run = run.clone();
@@ -659,58 +614,22 @@ async fn execute_attempt(
         Ok(())
     });
     let integration = app.state::<Host>().copilot.clone();
-    let read_hash = packet
-        .as_ref()
-        .and_then(|p| p.packet.record.state_hash.clone());
+    let read_hash = packet.packet.record.state_hash.clone();
     let client_after = client.clone();
-    let mut result = match packet {
-        Some(prepared) => {
-            let request = runtime::Request {
-                exits: Some(prepared.setup),
-                diagnostics: Some(diagnostics.clone()),
-                task: runtime::ExitReview {
-                    packet_text: prepared.packet.text,
-                },
-                context,
-                client,
-                repository_name: run.job.repository_name.clone(),
-                selection: run.selection.clone(),
-                before_send,
-                local_gate: gate.clone(),
-            };
-            integration.review(request, cancelled, deadline).await?
-        }
-        None => {
-            let request = runtime::Request {
-                exits: None,
-                diagnostics: Some(diagnostics.clone()),
-                task: runtime::FullReview {
-                    feedback: run.feedback_context.clone().unwrap_or_default(),
-                    owner_agent_id: run.selection.agent.id.clone(),
-                    final_context: if run.operation.operation_type == "primary_final_review" {
-                        let host = app.state::<Host>();
-                        let store = host
-                            .store
-                            .lock()
-                            .map_err(|_| Failure::permanent("Final storage unavailable."))?;
-                        Some(
-                            crate::actions::host::prompt_context(&store, &run.key)
-                                .map_err(Failure::permanent)?,
-                        )
-                    } else {
-                        None
-                    },
-                },
-                context,
-                client,
-                repository_name: run.job.repository_name.clone(),
-                selection: run.selection.clone(),
-                before_send,
-                local_gate: gate.clone(),
-            };
-            integration.review(request, cancelled, deadline).await?
-        }
+    let request = runtime::Request {
+        exits: packet.setup,
+        diagnostics: Some(diagnostics.clone()),
+        task: runtime::ExitReview {
+            packet_text: packet.packet.text,
+        },
+        context,
+        client,
+        repository_name: run.job.repository_name.clone(),
+        selection: run.selection.clone(),
+        before_send,
+        local_gate: gate.clone(),
     };
+    let mut result = integration.review(request, cancelled, deadline).await?;
     diagnostics.emit(crate::storage::diagnostics::Event::Phase {
         phase: crate::storage::diagnostics::Phase::CheckingFinalEligibility,
     });

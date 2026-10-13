@@ -12,50 +12,7 @@ pub(super) fn peer_approval() -> ProviderReview {
 }
 
 pub(super) fn prepare_final(store: &Store, item: &str, observation: &Observation) -> FinalReview {
-    let mut settings = store.load_settings().unwrap();
-    settings.repositories[0].assignments[0].comment = false;
-    store.save_settings(&settings).unwrap();
-    synchronize(store, item, Ok(observation.clone()), NOW + 10).unwrap();
-    let id = store.load_actions().unwrap().finals[0].id.clone();
-    let execution = host::prepare_dispatch(store, &id, NOW + 11).unwrap();
-    host::complete(store, &execution, Ok(output()), NOW + 12).unwrap();
-    store.load_actions().unwrap().finals.remove(0)
-}
-
-#[test]
-fn fixwave_peer_approval_allows_author_merge_through_real_provider_without_own_vote() {
-    for author in ["11", "22"] {
-        let (_root, store, item) = fixture(1, true, true);
-        let mut current = observed();
-        current.author_id = author.into();
-        current.reviews.push(peer_approval());
-        let run = prepare_final(&store, &item, &current);
-        assert!(ready(&store, &run, &current, Action::Merge).is_ok());
-        if author == "22" {
-            assert!(ready(&store, &run, &current, Action::Approve).is_err());
-        }
-        let mut environment = env(&store);
-        environment.wire.0.lock().unwrap().observation = current.clone();
-        let client = GithubClient::new(environment.wire.clone());
-        let connected = client.connect("example/repo", Some("22")).unwrap();
-        let mut fetched = client.action_observation(&connected.repository, 1).unwrap();
-        fetched.write_capability = connected.capabilities.comment == CommentCapability::Available;
-        assert_eq!(fetched.reviews, current.reviews);
-        synchronize(&store, &item, Ok(fetched), NOW + 19).unwrap();
-        let effect = host::prepare_next_effect(&store, &item, NOW + 20)
-            .unwrap()
-            .unwrap();
-        assert_eq!(effect.action, Action::Merge);
-        host::execute_action(&mut environment, &effect).unwrap();
-        let ledger = store.load_actions().unwrap();
-        assert!(ledger
-            .effects
-            .iter()
-            .all(|effect| effect.action == Action::Merge));
-        assert_eq!(environment.wire.0.lock().unwrap().writes.len(), 1);
-        assert_eq!(ledger.effects[0].state, EffectState::Confirmed);
-        assert!(ledger.effects[0].receipt.is_some());
-    }
+    packet_final(store, item, observation)
 }
 
 #[test]

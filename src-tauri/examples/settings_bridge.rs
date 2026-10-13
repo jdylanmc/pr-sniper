@@ -474,18 +474,9 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             let observation = serde_json::from_value(request.args["observation"].clone())
                 .map_err(|_| "Invalid action-observation fixture.")?;
             pr_sniper_lib::actions::synchronize(store, item, Ok(observation), 1_800_000_100)?;
+            pr_sniper_lib::actions::adopt_packet(store, item)?;
             serde_json::to_value(store.load_actions()?)
                 .map_err(|_| "Cannot encode action state.".into())
-        }
-        "start_final_review" => {
-            pr_sniper_lib::actions::request_final(
-                store,
-                request.args["id"]
-                    .as_str()
-                    .ok_or("Final identity required.")?,
-                1_800_000_110,
-            )?;
-            Ok(Value::Null)
         }
         "retry_packet_state" => {
             pr_sniper_lib::exits::consume::retry_parked(
