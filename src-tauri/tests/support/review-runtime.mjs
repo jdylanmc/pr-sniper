@@ -20,6 +20,42 @@ const frame = (value) => {
 };
 const respond = (id, result) => frame({ jsonrpc: "2.0", id, result });
 let sessionId;
+const exitScenarios = [
+  "exit-ready", "exit-comments", "exit-denied-then-ok", "exit-none", "exit-double",
+  "exit-malformed-forever", "exit-catalog-mismatch", "panic", "report-ok", "report-too-long",
+];
+const isExit = exitScenarios.includes(scenario);
+const longNano = Array.from({ length: 120 }, () => "word").join(" ");
+const okReport = {
+  findings: [{ file: "source.rs", line: 1, nano: "unwrap may panic", full: "Full detail.", fix: "Use ?." }],
+};
+const badReport = { findings: [{ ...okReport.findings[0], nano: longNano }] };
+const firstExit = {
+  "exit-ready": ["ready_for_human", { summary: "No findings." }],
+  "exit-comments": ["leave_comments", { new_comments: [{ path: "source.rs", line: 1, body: "Use a constant." }] }],
+  "exit-denied-then-ok": ["leave_comments", { new_comments: [{ path: "source.rs", line: 1, body: "Use a constant." }] }],
+  "exit-catalog-mismatch": ["ready_for_human", { summary: "No findings." }],
+  panic: ["panic_exit", { reason: "tool broken", detail: "read_changes failed twice." }],
+  "report-ok": ["submit_report", okReport],
+  "report-too-long": ["submit_report", badReport],
+  "exit-malformed-forever": ["submit_report", badReport],
+};
+let exitCount = 0;
+let exitEnded = false;
+const toolCall = (name, args) => {
+  const id = `exit-${++exitCount}`;
+  event("tool.execution_start", { toolName: name });
+  event("external_tool.requested", {
+    sessionId, requestId: id, toolCallId: id, toolName: name, arguments: args,
+  });
+};
+// A successful terminal tool ends the turn with no final assistant message.
+const endTurn = () => {
+  if (exitEnded) return;
+  exitEnded = true;
+  event("assistant.usage", { inputTokens: 20, outputTokens: 10 });
+  event("session.idle", {});
+};
 const event = (type, data) =>
   frame({
     jsonrpc: "2.0",
@@ -115,6 +151,7 @@ process.stdin.on("data", (chunk) => {
           } });
           break;
         }
+        globalThis.toolNames = (request.params.tools ?? []).map((t) => t.name);
         globalThis.intelligence = {
           reasoningEffort: request.params.reasoningEffort,
           contextTier: request.params.contextTier,
@@ -147,13 +184,34 @@ process.stdin.on("data", (chunk) => {
       case "session.tools.getCurrentMetadata":
         respond(request.id, {
           tools: [
-            ...["read_changes", "read_source", "search_paths"],
-            ...(scenario === "extra-tool" ? ["bash"] : []),
+            ...(isExit
+              ? globalThis.toolNames
+              : ["read_changes", "read_source", "search_paths"]),
+            ...(scenario === "extra-tool" || scenario === "exit-catalog-mismatch"
+              ? ["bash"]
+              : []),
           ].map((name) => ({ name, description: name })),
         });
         break;
       case "session.send":
         respond(request.id, { messageId: randomUUID() });
+        if (isExit) {
+          setTimeout(() => {
+            if (scenario === "exit-none") {
+              event("assistant.usage", { inputTokens: 20, outputTokens: 10 });
+              event("assistant.message", { content: "Done, nothing to exit with." });
+              event("session.idle", {});
+            } else if (scenario === "exit-double") {
+              toolCall("ready_for_human", { summary: "First exit." });
+              toolCall("leave_comments", {
+                new_comments: [{ path: "source.rs", line: 1, body: "Second exit." }],
+              });
+            } else {
+              toolCall(...firstExit[scenario]);
+            }
+          }, 10);
+          break;
+        }
         if (["final-full-review", "read-source-only", "tool-invalid-path"].includes(scenario)) {
           const toolName = scenario === "read-source-only" ? "read_source" : "read_changes";
           event("tool.execution_start", { toolName });
@@ -214,6 +272,20 @@ process.stdin.on("data", (chunk) => {
       case "session.tools.handlePendingToolCall":
         receipt({ method: "fixture.finalRead", result: request.params.result });
         respond(request.id, {});
+        if (isExit) {
+          const failed = JSON.stringify(request.params.result ?? null).includes('"failure"');
+          receipt({ method: "fixture.exit", requestId: request.params.requestId, failed });
+          if (!failed) {
+            endTurn();
+          } else if (scenario === "exit-denied-then-ok") {
+            toolCall("ready_for_human", { summary: "Comments refused; handing over." });
+          } else if (scenario === "report-too-long") {
+            toolCall("submit_report", okReport);
+          } else if (scenario === "exit-malformed-forever") {
+            toolCall("submit_report", badReport);
+          }
+          break;
+        }
         if (["read-source-only", "tool-invalid-path"].includes(scenario)) {
           event("assistant.usage", { inputTokens: 20, outputTokens: 10 });
           // The tool call (served or rejected) does not decide the review.

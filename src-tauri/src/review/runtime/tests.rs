@@ -13,6 +13,8 @@ use crate::{
 use base64::{engine::general_purpose::STANDARD, Engine};
 use std::{collections::BTreeMap, path::Path, sync::atomic::AtomicBool, time::Instant};
 
+const TOOLS: [&str; 3] = crate::review::tools::LEGACY_TOOLS;
+
 struct Synthetic;
 impl Transport for Synthetic {
     fn get(&self, path: &str) -> Result<Response, ConnectionError> {
@@ -88,6 +90,7 @@ fn context(changed: bool) -> ReviewContext {
 }
 fn request(changed: bool) -> Request<Synthetic> {
     Request {
+        exits: None,
         diagnostics: None,
         task: FullReview::default(),
         context: context(changed),
@@ -727,7 +730,7 @@ async fn bundled_runtime_intelligence_offline() {
                 // Same production session configuration and readback gate; only the provider
                 // is an offline rejecting loopback endpoint. Never send a prompt.
                 let session = client
-                    .create_session(config(&selection, tools).with_provider(provider.clone()))
+                    .create_session(config(&selection, tools, None).with_provider(provider.clone()))
                     .await
                     .map_err(|_| "Pinned runtime rejected production configuration.".to_string())?;
                 let actual = verified_intelligence(&session, &selection)
@@ -785,7 +788,7 @@ fn tools_read_immutable_content_and_reject_arbitrary_paths_or_execution() {
     assert!(tools
         .execute("bash", json!({"command":"touch /tmp/forbidden"}))
         .is_err());
-    let config = config(&selection(), tools);
+    let config = config(&selection(), tools, None);
     assert_eq!(
         config.available_tools.unwrap(),
         TOOLS.map(|s| format!("custom:{s}"))
@@ -902,6 +905,7 @@ async fn follow_up_decisions_use_the_same_restricted_session_and_usage_contract(
             let mut base = request(false);
             base.selection.agent.intelligence = Some(explicit_intelligence());
             let request = Request {
+                exits: None,
                 diagnostics: base.diagnostics,
                 context: base.context,
                 client: base.client,
@@ -1149,6 +1153,7 @@ async fn failure_during_abort(reply: bool, signal: &str, scenario: &str) {
                 &identity,
                 &operation,
                 Request {
+                    exits: None,
                     context: base.context,
                     diagnostics: base.diagnostics,
                     client: base.client,
@@ -1326,4 +1331,294 @@ fn live_restricted_review() {
     assert!(result.tool_calls > 0);
     println!("Restricted live review complete: runtime={}, files={}, read_tools={}, input_tokens={}, output_tokens={}",
         result.runtime_version,result.output.files.len(),result.tool_calls,result.input_tokens,result.output_tokens);
+}
+
+mod exits {
+    use super::*;
+    use crate::exits::{Exit, ExitCall, ExitOutcome};
+    use crate::monitoring::OperationFailure;
+    use crate::packet::ToolFacts;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    const ALL_EXITS: [Exit; 5] = [
+        Exit::LeaveComments,
+        Exit::ReadyForHuman,
+        Exit::ApprovePullRequest,
+        Exit::PanicExit,
+        Exit::SubmitReport,
+    ];
+
+    fn exit_request(offered: &[Exit], gate: ExitGate) -> Request<Synthetic, ExitReview> {
+        let granted = ["read_changes".to_string(), "get_thread".to_string()];
+        Request {
+            exits: Some(ExitSetup {
+                tool_set: tools::tool_set(&granted, offered),
+                offered: offered.to_vec(),
+                facts: Arc::new(ToolFacts::default()),
+                gate,
+            }),
+            task: ExitReview {
+                packet_text: "packet".into(),
+            },
+            diagnostics: None,
+            context: context(true),
+            client: Arc::new(GithubClient::new(Synthetic)),
+            repository_name: "example/repo".into(),
+            selection: selection(),
+            before_send: Arc::new(|| Ok(())),
+            local_gate: Arc::new(|| Ok(())),
+        }
+    }
+
+    fn open_gate() -> ExitGate {
+        Arc::new(|_: &ExitCall| Ok(()))
+    }
+
+    async fn run_exit(
+        scenario: &str,
+        gate: ExitGate,
+    ) -> (
+        Result<ReviewResult<crate::review::ReviewOutput>, Failure>,
+        tempfile::TempDir,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let result = execute(
+            options(root.path(), scenario),
+            &Identity {
+                id: "33".into(),
+                login: "review-account".into(),
+            },
+            &operation(8),
+            exit_request(&ALL_EXITS, gate),
+        )
+        .await;
+        stopped(root.path());
+        (result, root)
+    }
+
+    fn failures(root: &Path) -> Vec<bool> {
+        receipt(root)
+            .iter()
+            .filter(|r| r["method"] == "fixture.exit")
+            .map(|r| r["failed"].as_bool().unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn ready_for_human_ends_the_turn_with_no_final_message() {
+        let (result, root) = run_exit("exit-ready", open_gate()).await;
+        let result = result.unwrap();
+        assert_eq!(
+            result.output.exit,
+            Some(ExitOutcome::ReadyForHuman {
+                summary: "No findings.".into()
+            })
+        );
+        assert!(result.output.files.is_empty() && result.output.findings.is_empty());
+        assert_eq!(result.input_tokens, 20);
+        assert_eq!(failures(root.path()), vec![false]);
+    }
+
+    #[tokio::test]
+    async fn leave_comments_stores_the_validated_payload() {
+        let (result, _root) = run_exit("exit-comments", open_gate()).await;
+        match result.unwrap().output.exit {
+            Some(ExitOutcome::Comments { new_comments, .. }) => {
+                assert_eq!(new_comments.len(), 1);
+                assert_eq!(new_comments[0].path, "source.rs");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_denied_exit_keeps_the_loop_running_and_the_agent_picks_another() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let gate: ExitGate = Arc::new(move |call| {
+            seen.fetch_add(1, AtomicOrdering::SeqCst);
+            match call {
+                ExitCall::LeaveComments { .. } => Err(Refusal::Denied("CI is red.".into())),
+                _ => Ok(()),
+            }
+        });
+        let (result, root) = run_exit("exit-denied-then-ok", gate).await;
+        assert!(matches!(
+            result.unwrap().output.exit,
+            Some(ExitOutcome::ReadyForHuman { .. })
+        ));
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 2);
+        assert_eq!(failures(root.path()), vec![true, false]);
+    }
+
+    #[tokio::test]
+    async fn idle_without_an_exit_is_a_retryable_agent_quality_failure() {
+        let (result, _root) = run_exit("exit-none", open_gate()).await;
+        let error = result.unwrap_err();
+        assert_eq!(error.kind, OperationFailure::Provider);
+        assert!(error.kind.transient());
+    }
+
+    #[tokio::test]
+    async fn parallel_exit_calls_store_exactly_one_exit() {
+        let (result, _root) = run_exit("exit-double", open_gate()).await;
+        assert!(result.unwrap().output.exit.is_some());
+    }
+
+    #[tokio::test]
+    async fn panic_exit_is_a_typed_parking_failure() {
+        let (result, _root) = run_exit("panic", open_gate()).await;
+        let error = result.unwrap_err();
+        assert_eq!(error.kind, OperationFailure::Panic);
+        assert!(!error.kind.transient() && error.kind.resumable());
+    }
+
+    #[tokio::test]
+    async fn a_moved_state_at_exit_time_supersedes_the_run() {
+        let gate: ExitGate = Arc::new(|_| Err(Refusal::Moved("PR state moved.".into())));
+        let (result, _root) = run_exit("exit-ready", gate).await;
+        assert_eq!(result.unwrap_err().kind, OperationFailure::Superseded);
+    }
+
+    #[tokio::test]
+    async fn teammate_report_is_stored_and_an_over_limit_one_is_retried_not_truncated() {
+        let (result, root) = run_exit("report-ok", open_gate()).await;
+        let output = result.unwrap().output;
+        assert_eq!(output.exit, Some(ExitOutcome::SubmitReport));
+        assert_eq!(output.report.unwrap().findings[0].nano, "unwrap may panic");
+        assert_eq!(failures(root.path()), vec![false]);
+        let (result, root) = run_exit("report-too-long", open_gate()).await;
+        assert_eq!(
+            result.unwrap().output.report.unwrap().findings[0].nano,
+            "unwrap may panic"
+        );
+        assert_eq!(failures(root.path()), vec![true, false]);
+    }
+
+    #[tokio::test]
+    async fn repeated_malformed_exit_calls_are_a_permanent_contract_violation() {
+        let (result, _root) = run_exit("exit-malformed-forever", open_gate()).await;
+        let error = result.unwrap_err();
+        assert_eq!(error.kind, OperationFailure::Permanent);
+        assert!(error.message.contains("repeatedly"));
+    }
+
+    #[tokio::test]
+    async fn the_catalog_must_equal_the_per_run_tool_set() {
+        let (result, _root) = run_exit("exit-catalog-mismatch", open_gate()).await;
+        assert!(result.unwrap_err().message.contains("unexpected tools"));
+    }
+
+    #[tokio::test]
+    async fn the_session_exposes_only_the_per_run_tool_set_with_terminal_exits() {
+        let (result, root) = run_exit("exit-ready", open_gate()).await;
+        result.unwrap();
+        let created = receipt(root.path())
+            .into_iter()
+            .find(|r| r["method"] == "session.create")
+            .unwrap();
+        let names: Vec<_> = created["config"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "read_changes",
+                "get_thread",
+                "leave_comments",
+                "ready_for_human",
+                "approve_pull_request",
+                "panic_exit",
+                "submit_report"
+            ]
+        );
+        assert!(!names.contains(&"approve_and_merge".to_string()));
+        let terminal: Vec<_> = created["config"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|t| t["isTerminal"] == true)
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(terminal.len(), 5, "{terminal:?}");
+        assert!(!terminal.contains(&"read_changes".to_string()));
+    }
+
+    #[test]
+    fn pull_tools_page_and_never_cut() {
+        use crate::packet::{CheckFact, CommentFact, Conversation, ThreadFact};
+        let facts = Arc::new(ToolFacts {
+            description: Some("d".repeat(70_000)),
+            conversation: Conversation {
+                threads: vec![ThreadFact {
+                    id: "T1".into(),
+                    path: None,
+                    line: None,
+                    resolved: false,
+                    outdated: false,
+                    mine: false,
+                    new_since_last_review: false,
+                    targeted_revision: None,
+                    comments: vec![CommentFact {
+                        id: "7".into(),
+                        author: "a".into(),
+                        body: "thread body".into(),
+                    }],
+                }],
+                comments: vec![],
+            },
+            checks: (0..2_000)
+                .map(|n| CheckFact {
+                    name: format!("check-{n}"),
+                    status: "COMPLETED".into(),
+                    conclusion: "SUCCESS".into(),
+                })
+                .collect(),
+        });
+        let tools = text_tools("line one\nneedle here\n".into(), None).with_facts(facts);
+        let listed = tools.execute("get_thread", json!({})).unwrap();
+        assert_eq!(listed["threads"][0]["id"], "T1");
+        let thread = tools
+            .execute("get_thread", json!({"thread_id":"T1"}))
+            .unwrap();
+        assert!(thread["content"].as_str().unwrap().contains("thread body"));
+        assert!(tools
+            .execute("get_thread", json!({"thread_id":"nope"}))
+            .is_err());
+        let description = tools
+            .execute("get_thread", json!({"thread_id":"description"}))
+            .unwrap();
+        assert_eq!(description["complete"], false);
+        assert!(description["next_offset"].as_u64().is_some());
+        let mut offset = 0;
+        let mut seen = 0;
+        loop {
+            let page = tools
+                .execute("get_checks", json!({"offset":offset}))
+                .unwrap();
+            assert!(page.to_string().len() <= MAX_TOOL_BYTES);
+            seen += page["checks"].as_array().unwrap().len();
+            match page["next_offset"].as_u64() {
+                Some(next) => offset = next as usize,
+                None => break,
+            }
+        }
+        assert_eq!(seen, 2_000);
+        let tree = tools
+            .execute("list_tree", json!({"prefix":"source"}))
+            .unwrap();
+        assert_eq!(tree["paths"], json!(["source.rs"]));
+        assert!(tools
+            .execute("list_tree", json!({"side":"nowhere"}))
+            .is_err());
+        let found = tools
+            .execute("search_code", json!({"query":"needle"}))
+            .unwrap();
+        assert_eq!(found["matches"][0]["line"], 2);
+        assert_eq!(found["matches"][0]["truncated"], false);
+        assert!(tools.execute("search_code", json!({"query":""})).is_err());
+    }
 }

@@ -253,6 +253,8 @@ fn durable_review_uses_shared_retry_budget_and_restores_without_new_identity() {
     let store = Store::new(root.path().into());
     let job = job();
     let mut run = ReviewRun {
+        mode: Default::default(),
+        packet: None,
         feedback_context: None,
         key: review::key(&job, "assignment"),
         assignment_id: "assignment".into(),

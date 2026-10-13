@@ -277,6 +277,19 @@ fn review_state(
         None => return State::Queued,
         Some(_) => {}
     }
+    if let Some(exit) = &result.output.exit {
+        use crate::exits::ExitOutcome;
+        match exit {
+            ExitOutcome::ReadyForHuman { .. } => return State::MachineSignedOff,
+            ExitOutcome::Approve { .. } | ExitOutcome::ApproveAndMerge { .. } => {
+                return State::WaitingForHuman
+            }
+            ExitOutcome::Comments { new_comments, .. } if new_comments.is_empty() => {
+                return State::WaitingForHuman
+            }
+            _ => {}
+        }
+    }
     let assignment = settings
         .repositories
         .iter()

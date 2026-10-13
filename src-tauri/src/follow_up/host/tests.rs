@@ -52,6 +52,8 @@ fn fixture() -> (tempfile::TempDir, Store, FollowUp) {
     .unwrap();
     store.save_queue(std::slice::from_ref(&job)).unwrap();
     let mut review = ReviewRun {
+        mode: Default::default(),
+        packet: None,
         feedback_context: None,
         key: crate::review::key(&job, ASSIGNMENT),
         assignment_id: ASSIGNMENT.into(),

@@ -61,8 +61,20 @@ The repository assignment responsible for eligible conversation assessments and 
 _Avoid_: Global primary, thread owner as responder
 
 **Tools** (assignment):
-Packet tool ids an assignment may use: investigation tools plus exits. Absent = no packet tools. Effect exits primary only; `submit_report` teammate only; exits need their grant. Set by switches in the assignment's Tools list. Config only until the exit runtime lands.
+Packet tool ids an assignment may use: investigation tools plus exits. Absent = no packet tools, legacy JSON review. Set = packet mode. Effect exits primary only; `submit_report` teammate only; exits need their grant. Set by switches in the assignment's Tools list.
 _Avoid_: Skills, plugins
+
+**Packet**:
+The one text an agent is given per run, built by the host from fresh PR state: Meta, fixed Rules, PR, Conversation, Files manifest, Teammate reports (primary), Directive, Exits. Untrusted content is fenced; nothing is cut without a marker. Same state, same text, same `packet_hash`. Stored content-free as the run's packet record. See [Review packet](docs/review-packet.md).
+_Avoid_: Prompt
+
+**Exit**:
+The one terminal tool call that ends an agent run: `leave_comments`, `ready_for_human`, `approve_pull_request`, `approve_and_merge`, `panic_exit`, or a teammate's `submit_report`. Offered or denied by the gates at packet build, re-checked at exit. The host is the only writer; the agent never writes.
+_Avoid_: Decision, verdict
+
+**Teammate**:
+A non-primary assignment of a repository. Runs first, ends with `submit_report`, never has an effect exit. Its report is untrusted data for the primary.
+_Avoid_: Secondary agent, peer
 
 **Review drafts** (repository):
 Repository switch, default off. On: draft pull requests are reviewed too.

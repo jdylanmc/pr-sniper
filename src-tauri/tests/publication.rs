@@ -72,6 +72,8 @@ fn review() -> ReviewRun {
     let mut operation = JobOperation::review(&job, 100);
     operation.state = OperationState::Completed;
     ReviewRun {
+        mode: Default::default(),
+        packet: None,
         feedback_context: None,
         key: pr_sniper_lib::review::key(&job, "assignment"),
         selection: Selection::resolve(&settings(), &job, "assignment").unwrap(),
@@ -1321,4 +1323,105 @@ fn restart_reobserves_legacy_parked_publications_once_and_leaves_the_rest() {
         assert!(get(id).operation.parked(), "{id}");
         assert!(get(id).error.is_some());
     }
+}
+
+fn exit_publication(comments: Vec<pr_sniper_lib::exits::NewComment>) -> Publication {
+    let mut review = review();
+    let output = &mut review.result.as_mut().unwrap().output;
+    output.findings.clear();
+    output.exit = Some(pr_sniper_lib::exits::ExitOutcome::Comments {
+        new_comments: comments,
+        reply_comments: vec![],
+        resolve_own_threads: vec![],
+    });
+    Publication::new(review, false, true, 100).unwrap()
+}
+
+fn comment(path: &str, line: u64, side: Option<&str>) -> pr_sniper_lib::exits::NewComment {
+    pr_sniper_lib::exits::NewComment {
+        path: path.into(),
+        line,
+        side: side.map(String::from),
+        body: format!("Comment on {path}:{line}."),
+    }
+}
+
+#[test]
+fn an_exit_batch_maps_lines_to_diff_positions_and_publishes_through_the_normal_pipeline() {
+    let mut fixture = Fixture::new();
+    let run = exit_publication(vec![
+        comment("source.rs", 1, None),
+        comment("source.rs", 1, Some("base")),
+    ]);
+    let batch = Batch::prepare(&run, &context(pull())).unwrap();
+    assert_eq!(batch.comments.len(), 2);
+    assert_eq!(batch.comments[0].side, "RIGHT");
+    assert_eq!(batch.comments[1].side, "LEFT");
+    assert_eq!(batch.comments[0].diff_position, Some(2));
+    assert_eq!(batch.comments[1].diff_position, Some(1));
+    assert!(batch.unmappable.is_empty());
+    assert!(batch.comments[0].body.contains("pr-sniper:comment:"));
+    assert_ne!(batch.comments[0].body, batch.comments[1].body);
+    let mut run = exit_publication(vec![comment("source.rs", 1, None)]);
+    fixture.run(&mut run).unwrap();
+    assert_eq!(run.phase, Phase::Published);
+    assert_eq!(fixture.visible(), 1);
+    assert_eq!(fixture.writes(), 2);
+    assert_eq!(run.receipts.last().unwrap().comment_ids.len(), 1);
+}
+
+#[test]
+fn an_unmappable_exit_line_tosses_the_whole_batch_and_writes_nothing() {
+    let mut fixture = Fixture::new();
+    let mut run = exit_publication(vec![
+        comment("source.rs", 1, None),
+        comment("source.rs", 99, None),
+    ]);
+    let error = Batch::prepare(&run, &context(pull())).unwrap_err();
+    assert_eq!(error.kind, OperationFailure::Provider);
+    assert!(error.kind.transient());
+    assert!(fixture.run(&mut run).is_err());
+    assert_eq!(fixture.writes(), 0);
+    assert_eq!(fixture.visible(), 0);
+    for bad in [
+        comment("missing.rs", 1, None),
+        comment("source.rs", 2, Some("base")),
+    ] {
+        let run = exit_publication(vec![bad]);
+        assert!(Batch::prepare(&run, &context(pull())).is_err());
+    }
+}
+
+#[test]
+fn exits_without_new_comments_or_with_a_stale_diff_never_build_a_batch() {
+    let run = exit_publication(vec![]);
+    assert!(Batch::prepare(&run, &context(pull())).is_err());
+    let mut run = exit_publication(vec![comment("source.rs", 1, None)]);
+    run.review.result.as_mut().unwrap().reviewed_base_sha = Some("c".repeat(40));
+    assert!(Batch::prepare(&run, &context(pull())).is_err());
+    let mut run = exit_publication(vec![comment("source.rs", 1, None)]);
+    run.review.result.as_mut().unwrap().output.exit =
+        Some(pr_sniper_lib::exits::ExitOutcome::ReadyForHuman {
+            summary: "s".into(),
+        });
+    assert!(Batch::prepare(&run, &context(pull())).is_err());
+}
+
+#[test]
+fn only_legacy_runs_and_exits_with_new_comments_publish() {
+    let legacy = review().result.unwrap();
+    assert!(publication::writes_comments(&legacy));
+    let with = exit_publication(vec![comment("source.rs", 1, None)]);
+    assert!(publication::writes_comments(
+        with.review.result.as_ref().unwrap()
+    ));
+    let without = exit_publication(vec![]);
+    assert!(!publication::writes_comments(
+        without.review.result.as_ref().unwrap()
+    ));
+    let mut ready = review().result.unwrap();
+    ready.output.exit = Some(pr_sniper_lib::exits::ExitOutcome::ReadyForHuman {
+        summary: "s".into(),
+    });
+    assert!(!publication::writes_comments(&ready));
 }

@@ -45,6 +45,8 @@ fn origin() -> Publication {
     let mut op = JobOperation::review(&job, 100);
     op.state = OperationState::Completed;
     let review=ReviewRun {
+        mode: Default::default(),
+        packet: None,
         feedback_context: None,
         key:pr_sniper_lib::review::key(&job,ASSIGNMENT),selection:Selection::resolve(&settings(),&job,ASSIGNMENT).unwrap(),
         job,assignment_id:ASSIGNMENT.into(),operation:op,manual_start:true,trust_confirmed:true,phase:"Complete".into(),error:None,

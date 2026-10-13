@@ -304,7 +304,10 @@ pub fn validate_observation(basis: &Basis, observation: &Observation) -> Result<
     {
         return Err("Provider identity or head/base differs from the cleared iteration.".into());
     }
-    if let Some(reason) = observation.common_blocker() {
+    if let Some(reason) = observation
+        .common_blocker()
+        .or_else(|| observation.discussion_blocker())
+    {
         return Err(reason);
     }
     if basis.feedback.iter().any(|c| {
@@ -526,6 +529,8 @@ pub fn synchronize(
                         phase: "Waiting for primary final full review".into(),
                         error: None,
                         result: None,
+                        mode: crate::review::RunMode::Legacy,
+                        packet: None,
                     };
                     ledger.finals.push(FinalReview {
                         id,

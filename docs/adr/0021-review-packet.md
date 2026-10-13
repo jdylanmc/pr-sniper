@@ -1,6 +1,6 @@
 # Hand each agent one review packet and let it end on one exit
 
-Status: proposed. Discovery: [#172](https://github.com/jdylanmc/pr-sniper/issues/172). Spec: [Review packet](../review-packet.md).
+Status: accepted. Packet, tools, gates and exits implemented; approve and merge effects, reply and resolve execution, barrier and heartbeat follow in the same PR. Discovery: [#172](https://github.com/jdylanmc/pr-sniper/issues/172). Spec: [Review packet](../review-packet.md).
 
 ## Context
 
@@ -30,6 +30,10 @@ Today the agent prompt is one JSON string built in `src-tauri/src/review/runtime
 - **Rate limits are backpressure, not errors.** The queue delays dispatch for the affected provider and account (Retry-After, else capped exponential backoff with jitter), never counts a failure, never parks and never shows in Needs attention.
 - **Coverage is recorded, never enforced.** The host records which files, parts and bytes it served; it never rejects or retries a review for unread bytes. The agent decides what to read.
 - Packet stored with the run, minus file content, with `packet_hash`.
+- **Exits are SDK terminal tools, host-owned** (proven in the real runtime). A successful call ends the turn with no final message. A failed call (gate denial, bad args) keeps the loop running so the agent picks another exit. One shared slot: first valid call wins. Args over limit or malformed are errors the agent retries; three rejected calls are a permanent contract violation. Idle with no exit is a retryable provider failure.
+- **Exit-time gate** re-reads the PR. State moved: run superseded, tossed. Gate denial: short directive error. `panic_exit` is a typed `Panic` failure: parks at once, resumes on the cooldown schedule.
+- **Approve gate relaxed.** Others' unresolved threads and changes requested block merge only. CI red or conflicts block both. CI pending: approve ok. Required reviews unmet: merge denied. Draft: neither. GitHub refuses self-approval, so approve is denied on the acting account's own PRs; merge there needs Include self. Our approval already on the head: idempotent success.
+- **Mode.** An assignment with `tools` runs in packet mode (`ReviewRun.mode`); others keep the legacy JSON decision until the old path is removed.
 
 ## Consequences
 

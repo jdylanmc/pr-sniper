@@ -34,6 +34,8 @@ fn fixture() -> (tempfile::TempDir, Store, ReviewRun) {
     .unwrap();
     store.save_queue(std::slice::from_ref(&job)).unwrap();
     let run = ReviewRun {
+        mode: Default::default(),
+        packet: None,
         feedback_context: None,
         key: key(&job, &assignment_id),
         assignment_id: assignment_id.clone(),

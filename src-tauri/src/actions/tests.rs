@@ -192,6 +192,8 @@ fn fixture(count: usize, approve: bool, merge: bool) -> (tempfile::TempDir, Stor
             let mut operation = JobOperation::review(job, NOW + 2);
             operation.state = OperationState::Completed;
             ReviewRun {
+                mode: Default::default(),
+                packet: None,
                 feedback_context: None,
                 key: crate::review::key(job, assignment),
                 assignment_id: assignment.clone(),
@@ -209,6 +211,153 @@ fn fixture(count: usize, approve: bool, merge: bool) -> (tempfile::TempDir, Stor
     store.save_reviews(&peers).unwrap();
     (root, store, item)
 }
+#[test]
+fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_time() {
+    use crate::{
+        exits::{Exit, ExitCall},
+        github::{
+            metadata::{Lifecycle, PullRequest},
+            review::{ReviewContext, ReviewFile},
+        },
+        review::{packet_run, runtime::Refusal, RunMode},
+    };
+    let (_root, store, _item) = fixture(1, true, true);
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].assignments[0].tools = Some(
+        [
+            "read_changes",
+            "leave_comments",
+            "ready_for_human",
+            "approve_pull_request",
+            "approve_and_merge",
+            "panic_exit",
+        ]
+        .map(String::from)
+        .to_vec(),
+    );
+    settings.repositories[0].assignments[0].comment = true;
+    store.save_settings(&settings).unwrap();
+    let job = store.load_queue().unwrap().remove(0);
+    let assignment = settings.repositories[0].assignments[0].id.clone();
+    let selection = Selection::resolve(&settings, &job, &assignment).unwrap();
+    let mode = RunMode::for_assignment(&settings.repositories[0].assignments[0]);
+    assert_eq!(mode, RunMode::Packet);
+    let run = ReviewRun {
+        mode,
+        packet: None,
+        feedback_context: None,
+        key: crate::review::key(&job, &assignment),
+        assignment_id: assignment,
+        operation: JobOperation::review(&job, NOW),
+        job: job.clone(),
+        selection,
+        manual_start: false,
+        trust_confirmed: false,
+        phase: String::new(),
+        error: None,
+        result: None,
+    };
+    let env = env(&store);
+    let client = Arc::new(GithubClient::new(env.wire.clone()));
+    let repo = RemoteRepository {
+        id: "100".into(),
+        name: "example/repo".into(),
+    };
+    let context = ReviewContext {
+        pull: PullRequest {
+            mentioned: false,
+            id: "9".into(),
+            number: 1,
+            title: "Change".into(),
+            author: None,
+            requested_reviewers: vec![],
+            requested_teams: vec![],
+            state: Lifecycle::Open,
+            draft: false,
+            head_sha: "a".repeat(40),
+            base_sha: "b".repeat(40),
+            head_repository_id: Some("100".into()),
+            base_repository_id: "100".into(),
+            updated_at: "2026-09-30T00:00:00Z".into(),
+            files: vec![],
+        },
+        base_revision: "b".repeat(40),
+        files: vec![ReviewFile {
+            path: "src/lib.rs".into(),
+            previous_path: None,
+            status: "modified".into(),
+            patch: Some("@@ -1 +1 @@\n-old\n+new".into()),
+        }],
+        head: BTreeMap::new(),
+        base: BTreeMap::new(),
+    };
+    let prepared = packet_run::prepare(&client, &repo, &run, &context, "actor", true).unwrap();
+    assert_eq!(
+        prepared.setup.offered,
+        [
+            Exit::LeaveComments,
+            Exit::ReadyForHuman,
+            Exit::ApprovePullRequest,
+            Exit::ApproveAndMerge,
+            Exit::PanicExit
+        ],
+        "{:?}",
+        prepared.packet.record.exits_denied
+    );
+    assert_eq!(
+        prepared.setup.tool_set,
+        [
+            "read_changes",
+            "leave_comments",
+            "ready_for_human",
+            "approve_pull_request",
+            "approve_and_merge",
+            "panic_exit"
+        ]
+    );
+    assert!(prepared.packet.text.contains("role: primary"));
+    assert!(prepared
+        .packet
+        .text
+        .contains("- src/lib.rs [modified] kind=text parts: patch=21"));
+    assert_eq!(
+        prepared.packet.record.state_id,
+        format!("{}:{}", "a".repeat(40), "b".repeat(40))
+    );
+    assert!(!serde_json::to_string(&prepared.packet.record)
+        .unwrap()
+        .contains("src/lib.rs"));
+    let approve = ExitCall::ApprovePullRequest {
+        comment: "ok".into(),
+    };
+    assert_eq!((prepared.setup.gate)(&approve), Ok(()));
+    // CI turns red between packet and exit: that exit is denied, the run continues.
+    env.wire.0.lock().unwrap().observation.checks = Some("FAILURE".into());
+    assert!(matches!(
+        (prepared.setup.gate)(&approve),
+        Err(Refusal::Denied(reason)) if reason.contains("CI is red")
+    ));
+    assert_eq!(
+        (prepared.setup.gate)(&ExitCall::ReadyForHuman {
+            summary: "s".into()
+        }),
+        Ok(())
+    );
+    // The head moves: the whole run is tossed.
+    env.wire.0.lock().unwrap().observation.head = "d".repeat(40);
+    assert!(matches!(
+        (prepared.setup.gate)(&approve),
+        Err(Refusal::Moved(_))
+    ));
+    assert_eq!(
+        packet_run::prepare(&client, &repo, &run, &context, "actor", true)
+            .err()
+            .unwrap()
+            .kind,
+        monitoring::OperationFailure::Superseded
+    );
+}
+
 fn observed() -> Observation {
     Observation {
         write_capability: true,
