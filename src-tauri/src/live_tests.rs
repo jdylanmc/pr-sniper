@@ -828,7 +828,10 @@ fn assert_own_writes_do_not_retrigger(live: &Live, number: u64) {
 #[ignore = "live: PR_SNIPER_LIVE=1, owner-authorized sandbox only"]
 fn live_pr2_teammate_primary_publish_consume_and_reply() {
     let Some(live) = live("pr2") else { return };
-    let number = 2;
+    let number = std::env::var("PR_SNIPER_LIVE_PR")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(2);
     let (change, seq, _) = live.heartbeat(number, true);
     assert!(matches!(change, Change::Pending(_)));
     let keys = live.enqueue(
@@ -843,7 +846,11 @@ fn live_pr2_teammate_primary_publish_consume_and_reply() {
     let report = teammate_run.result.as_ref().unwrap().output.report.clone();
     let report = report.expect("teammate report stored");
     assert_eq!(teammate.exit, "submit_report");
-    assert!(!report.findings.is_empty());
+    // Earlier runs left open threads on PR #2: points already raised are not repeated.
+    let existing = review_comments(number);
+    if existing.is_empty() {
+        assert!(!report.findings.is_empty());
+    }
     for f in &report.findings {
         println!("LIVE finding {}:{} {}", f.file, f.line, excerpt(&f.nano));
     }
@@ -855,6 +862,10 @@ fn live_pr2_teammate_primary_publish_consume_and_reply() {
         "teammate section"
     );
     let review_run = primary.outcome.clone().expect("primary completed");
+    if !existing.is_empty() {
+        no_repeat(&live, number, &existing, &review_run, &primary.exit);
+        return;
+    }
     let Some(ExitOutcome::Comments { new_comments, .. }) =
         review_run.result.as_ref().unwrap().output.exit.clone()
     else {
@@ -899,6 +910,8 @@ fn live_pr2_teammate_primary_publish_consume_and_reply() {
         "-f",
         "body=Disagree: index 0 is a header row on purpose, so range(1, ...) is intended. Please confirm or drop this.",
     ]);
+    // GitHub's PR record settles after a new comment; a read that races it is RevisionChanged.
+    std::thread::sleep(std::time::Duration::from_secs(10));
     let (change, seq, _) = live.heartbeat(number, false);
     assert!(
         matches!(change, Change::Pending(_)),
@@ -942,6 +955,38 @@ fn live_pr2_teammate_primary_publish_consume_and_reply() {
             }
         }
         other => println!("LIVE second exit (no writes): {other:?}"),
+    }
+}
+
+/// Schema 2 rule: a point already in an open thread is not posted again as a new comment.
+fn no_repeat(live: &Live, number: u64, existing: &[Value], run: &ReviewRun, exit: &str) {
+    println!("LIVE primary on PR with open threads: exit={exit}");
+    let Some(ExitOutcome::Comments { new_comments, .. }) =
+        run.result.as_ref().unwrap().output.exit.clone()
+    else {
+        assert!(exit == "ready_for_human", "unexpected exit {exit}");
+        return;
+    };
+    let taken: std::collections::BTreeSet<(String, u64)> = existing
+        .iter()
+        .filter(|c| c["in_reply_to_id"].is_null())
+        .filter_map(|c| Some((c["path"].as_str()?.to_string(), c["line"].as_u64()?)))
+        .collect();
+    for c in &new_comments {
+        println!("LIVE new {}:{} {}", c.path, c.line, excerpt(&c.body));
+        assert!(
+            !taken.contains(&(c.path.clone(), c.line)),
+            "repeated a point on an open thread at {}:{}",
+            c.path,
+            c.line
+        );
+    }
+    let before = review_comments(number).len();
+    let (_, write) = effects(live, run);
+    if write.is_some_and(|w| w.phase == exit_writes::Phase::Tossed) {
+        assert_eq!(review_comments(number).len(), before);
+    } else {
+        assert_own_writes_do_not_retrigger(live, number);
     }
 }
 

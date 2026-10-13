@@ -14,32 +14,32 @@ PR_SNIPER_LIVE=1 PR_SNIPER_LIVE_MODEL=gpt-5.4-mini PR_SNIPER_LIVE_STORE=<dir> \
 
 ## Real code driven
 
-| Step | Production code |
-| --- | --- |
-| GitHub over HTTPS | `GithubClient<HttpTransport>` from a token pair |
-| State read, hash | `pr_snapshot`, `normalize().hash()` |
-| Heartbeat | `PrStates::observe` (new iteration, pending, baseline) |
-| Feedback poll | `owned_threads_at` + `Ledger::observe` |
-| Queue, dispatch | `review::host::request`, `prepare_dispatch` (temp `Store`) |
-| Packet | `packet_run::prepare` (`Caller`, teammates via `teammates::entries`) |
-| Agent | `review::runtime::run` (bundled Copilot runtime, token mode, real tools, terminal exits, exit gate) |
-| Completion | `review::host::complete` (`honour_local` for `ready_for_human`) |
-| Comments | `publication::execute` -> `Batch::prepare` -> `prepare_exit`, `mutate_publication`, `reconcile_publication` |
-| Replies | `exit_writes::run` (preflight, `reply_to_review_thread`) |
-| Consume | `exits::consume::consume_after` / `settle` |
+| Step              | Production code                                                                                             |
+| ----------------- | ----------------------------------------------------------------------------------------------------------- |
+| GitHub over HTTPS | `GithubClient<HttpTransport>` from a token pair                                                             |
+| State read, hash  | `pr_snapshot`, `normalize().hash()`                                                                         |
+| Heartbeat         | `PrStates::observe` (new iteration, pending, baseline)                                                      |
+| Feedback poll     | `owned_threads_at` + `Ledger::observe`                                                                      |
+| Queue, dispatch   | `review::host::request`, `prepare_dispatch` (temp `Store`)                                                  |
+| Packet            | `packet_run::prepare` (`Caller`, teammates via `teammates::entries`)                                        |
+| Agent             | `review::runtime::run` (bundled Copilot runtime, token mode, real tools, terminal exits, exit gate)         |
+| Completion        | `review::host::complete` (`honour_local` for `ready_for_human`)                                             |
+| Comments          | `publication::execute` -> `Batch::prepare` -> `prepare_exit`, `mutate_publication`, `reconcile_publication` |
+| Replies           | `exit_writes::run` (preflight, `reply_to_review_thread`)                                                    |
+| Consume           | `exits::consume::consume_after` / `settle`                                                                  |
 
 Replaced by thin test environments (same client calls): tauri `Host` locks, account generations, monitoring activation, backpressure pacing, `before_send` remote gate (allow).
 
 ## Results (final runs, `gpt-5.4-mini`)
 
-| Run | Exit | Tools | Packet | Tokens in/out | Time |
-| --- | --- | --- | --- | --- | --- |
-| a teammate #2 | `submit_report`, 2 findings | read_changes, read_source x2 | 2240 B | 4350/1852 | 25 s |
-| b primary #2 | `leave_comments`, 2 new | read_changes, read_source x2 | 3659 B | 3926/438 | 21 s |
-| e teammate #2 | `submit_report` | read_changes x3 | 3377 B | 3592/863 | 23 s |
-| e primary #2 | `leave_comments`, 2 replies | read_changes, read_source | 4846 B | 7016/780 | 22 s |
-| c primary #3 | `ready_for_human` | read_changes x2, get_checks | 2440 B | 7266/1006 | 18 s |
-| d primary #1 | `ready_for_human` | read_changes | 2473 B | 3056/191 | 13 s |
+| Run           | Exit                        | Tools                        | Packet | Tokens in/out | Time |
+| ------------- | --------------------------- | ---------------------------- | ------ | ------------- | ---- |
+| a teammate #2 | `submit_report`, 2 findings | read_changes, read_source x2 | 2240 B | 4350/1852     | 25 s |
+| b primary #2  | `leave_comments`, 2 new     | read_changes, read_source x2 | 3659 B | 3926/438      | 21 s |
+| e teammate #2 | `submit_report`             | read_changes x3              | 3377 B | 3592/863      | 23 s |
+| e primary #2  | `leave_comments`, 2 replies | read_changes, read_source    | 4846 B | 7016/780      | 22 s |
+| c primary #3  | `ready_for_human`           | read_changes x2, get_checks  | 2440 B | 7266/1006     | 18 s |
+| d primary #1  | `ready_for_human`           | read_changes                 | 2473 B | 3056/191      | 13 s |
 
 Proven:
 
@@ -54,13 +54,13 @@ Proven:
 
 ## Bugs found live, fixed
 
-| Bug | Effect | Fix | Test |
-| --- | --- | --- | --- |
-| Tool handlers ran blocking `reqwest` on the async runtime worker | Debug builds: first `read_source`/before/after read panicked in the worker; run hung until the 600 s timeout. Release: a worker stalls per call. Exit gate (HTTP) same | `runtime::off_runtime` (`block_in_place` on the multi-thread review runtime) around `ReadTools` and `ExitTools` calls | `tool_handlers_run_blocking_http_off_the_async_worker` |
-| Self-authorship denial masked CI red and conflicts | Packet on a red self-authored PR said only "self-approval"; agent never learned CI was red | Gate order: conflicts, CI red before self-authorship (approve and merge) | `self_authorship_never_masks_an_actionable_pr_state_reason` |
-| Thread `path`/`line` never filled | Packet showed `thread ... at -`; agent could not place threads | Observation query reads `path line originalLine`; `reads::conversation` fills root location | `actions::tests` packet fixture asserts `at src/lib.rs:3` |
-| `new_since_last_review` always `false` | Human replies after a review looked old | `PrStateRecord.consumed_at` set on consume; `reads::stamp_new_since` compares comment `updatedAt`; `Caller.last_consumed_at` | packet fixture + `consuming_records_when_and_a_new_head_keeps_it` |
-| Unknown thread id accepted at exit | Model mangled one id (`...9rtc6...` for `...9wc6...`); preflight failed with `IncompleteRead`, whole exit tossed after the run | Exit gate denies replies/resolves naming a thread not on the PR; agent retries in the loop | packet fixture: `mapped-typo` denied |
+| Bug                                                              | Effect                                                                                                                                                                 | Fix                                                                                                                          | Test                                                              |
+| ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| Tool handlers ran blocking `reqwest` on the async runtime worker | Debug builds: first `read_source`/before/after read panicked in the worker; run hung until the 600 s timeout. Release: a worker stalls per call. Exit gate (HTTP) same | `runtime::off_runtime` (`block_in_place` on the multi-thread review runtime) around `ReadTools` and `ExitTools` calls        | `tool_handlers_run_blocking_http_off_the_async_worker`            |
+| Self-authorship denial masked CI red and conflicts               | Packet on a red self-authored PR said only "self-approval"; agent never learned CI was red                                                                             | Gate order: conflicts, CI red before self-authorship (approve and merge)                                                     | `self_authorship_never_masks_an_actionable_pr_state_reason`       |
+| Thread `path`/`line` never filled                                | Packet showed `thread ... at -`; agent could not place threads                                                                                                         | Observation query reads `path line originalLine`; `reads::conversation` fills root location                                  | `actions::tests` packet fixture asserts `at src/lib.rs:3`         |
+| `new_since_last_review` always `false`                           | Human replies after a review looked old                                                                                                                                | `PrStateRecord.consumed_at` set on consume; `reads::stamp_new_since` compares comment `updatedAt`; `Caller.last_consumed_at` | packet fixture + `consuming_records_when_and_a_new_head_keeps_it` |
+| Unknown thread id accepted at exit                               | Model mangled one id (`...9rtc6...` for `...9wc6...`); preflight failed with `IncompleteRead`, whole exit tossed after the run                                         | Exit gate denies replies/resolves naming a thread not on the PR; agent retries in the loop                                   | packet fixture: `mapped-typo` denied                              |
 
 ## Not proven live
 
@@ -83,3 +83,17 @@ Proven:
 - PRs #1-#3 open, unmerged, no approvals.
 - PR #2: final run comments stay as evidence (2 roots, 1 human-like reply, 2 agent replies). Earlier development runs' comments deleted; their empty `COMMENTED` review shells remain (GitHub cannot delete submitted reviews).
 - Harness note: an early harness published comments for an exit whose replies were tossed; production holds that batch (`holds_publication`). Harness now checks the hold; those comments were deleted.
+
+## Schema 2 rules (after the observations above)
+
+Rules changed: comment only real defects on the line (no "what I read", no praise, no summary); a point already in an open thread is not repeated; reply only to new comments; resolve own thread once fixed; CI red: comment the fix if known. Teammates skip points already in an open thread. Model `gpt-5.4-mini`. Harness: `PR_SNIPER_LIVE_PR=<n>` picks the PR.
+
+| PR                                    | Run                | Result                                                                                                                                                   |
+| ------------------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #2 (open threads from earlier runs)   | teammate + primary | Teammate: no repeat findings. Primary: `ready_for_human`. No new comment.                                                                                |
+| #3 (CI red)                           | primary            | `ready_for_human`. Packet has check status only, no CI log: agent cannot know the fix.                                                                   |
+| #4 (fresh: even-count median, `eval`) | teammate + primary | 2 findings; primary posted 2 inline comments on `stats.py:4`, `:12`. No meta comment. Own writes: heartbeat `None`.                                      |
+| #5 (fresh: `split(" ")`, dict key)    | full flow          | 2 comments posted; human reply; second primary replied 2x (before "reply only to new comments"); both replies `Done`; heartbeat `None` after each write. |
+| #5 (human question "OK to drop?")     | primary            | `ready_for_human` (fresh harness store: no consumed state, so every comment counts as new).                                                              |
+
+Gap: CI logs are not in the packet or tools; the CI-red "comment the fix" rule only works when the diff makes the cause visible.

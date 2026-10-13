@@ -22,7 +22,7 @@ fn input() -> PacketInput {
             (Exit::ReadyForHuman, Offer::Offered),
             (
                 Exit::ApprovePullRequest,
-                Offer::Denied("CI is red. Do not approve. Say so with the fix.".into()),
+                Offer::Denied("CI is red. Do not approve. Comment the fix if you know it.".into()),
             ),
             (Exit::PanicExit, Offer::Offered),
         ],

@@ -186,7 +186,7 @@ fn approve_denial(input: &GateInput) -> Option<String> {
         // PR-state reasons first: they tell the agent what to comment.
         "Merge conflicts. Do not approve. Say so with resolution advice.".into()
     } else if f.ci == Ci::Red {
-        "CI is red. Do not approve. Say so with the fix.".into()
+        "CI is red. Do not approve. Comment the fix if you know it.".into()
     } else if f.author_is_acting {
         // GitHub refuses self-approval: "Can not approve your own pull request".
         "Acting account authored this PR. GitHub refuses self-approval.".into()
