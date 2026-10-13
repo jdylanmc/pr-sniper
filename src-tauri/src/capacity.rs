@@ -1,4 +1,5 @@
 use crate::{
+    backpressure::{Backpressure, Scope},
     follow_up::{self, FollowUp},
     monitoring::{JobOperation, OperationState},
     review::{self, ReviewRun},
@@ -50,6 +51,9 @@ pub struct Work {
     pub state: &'static str,
     pub reason: Option<String>,
     pub failure: Option<crate::monitoring::FailureClass>,
+    /// Rate-limit backpressure: runnable work that waits until this time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delayed_until: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -108,6 +112,31 @@ impl Dispatch {
     }
 }
 
+/// Accounts whose rate limits can delay a piece of AI work: the GitHub
+/// account it reads and writes through, and the Agent's Copilot account.
+fn scopes(github_account: &str, selection: Option<&review::Selection>) -> Vec<Scope> {
+    let mut scopes = vec![Scope::github(github_account)];
+    if let Some(account) = selection.and_then(|s| s.agent.ai_account.as_ref()) {
+        scopes.push(Scope::copilot(&account.account_id));
+    }
+    scopes
+}
+
+/// When runnable work may next start: the later of its own rate-limit wait
+/// and any gate on its provider accounts.
+pub(crate) fn pacing(
+    gates: &Backpressure,
+    scopes: &[Scope],
+    operation: Option<&JobOperation>,
+    now: i64,
+) -> Option<i64> {
+    let own = operation
+        .filter(|op| op.state != OperationState::Running)
+        .and_then(|op| op.backpressure_until)
+        .filter(|until| *until > now);
+    own.max(gates.until_any(scopes, now))
+}
+
 fn due(operation: &JobOperation, now: i64) -> bool {
     matches!(
         operation.state,
@@ -142,6 +171,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                     .unwrap_or_else(|| "Primary discussion assessment unavailable.".into()),
             ),
             failure: None,
+            delayed_until: None,
         });
     }
     for mention in store.load_feedback()?.mentions.into_iter().filter(|m| {
@@ -163,8 +193,10 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                     .unwrap_or_else(|| "Mention routing is unavailable.".into()),
             ),
             failure: None,
+            delayed_until: None,
         });
     }
+    let gates = store.load_backpressure()?;
     for candidate in review::host::candidates(store)? {
         if candidate
             .run
@@ -197,6 +229,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                 }
                 Some(run)
                     if run.operation.state != OperationState::Running
+                        && run.operation.backpressure_until.is_none()
                         && !due(&run.operation, now) =>
                 {
                     Some("Waiting for retry backoff.".into())
@@ -204,6 +237,22 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                 _ => None,
             };
         }
+        let scopes = scopes(
+            &candidate.job.account_id,
+            candidate
+                .run
+                .as_ref()
+                .map(|run| &run.selection)
+                .or(candidate.planned_selection.as_ref()),
+        );
+        let delayed_until = reason.is_none().then(|| {
+            pacing(
+                &gates,
+                &scopes,
+                candidate.run.as_ref().map(|run| &run.operation),
+                now,
+            )
+        });
         result.push(Work {
             key: WorkId {
                 kind: Kind::Normal,
@@ -225,6 +274,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                 .run
                 .as_ref()
                 .and_then(|run| run.operation.failure_class()),
+            delayed_until: delayed_until.flatten(),
         });
     }
     for candidate in follow_ups {
@@ -249,16 +299,20 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                 )
             } else if candidate.human_gate && !run.manual_start {
                 Some("A prior comment needs human judgment before retrying this follow-up.".into())
-            } else if run
-                .analysis
-                .as_ref()
-                .is_some_and(|op| op.state != OperationState::Running && !due(op, now))
-            {
+            } else if run.analysis.as_ref().is_some_and(|op| {
+                op.state != OperationState::Running
+                    && op.backpressure_until.is_none()
+                    && !due(op, now)
+            }) {
                 Some("Waiting for retry backoff.".into())
             } else {
                 None
             };
         }
+        let scopes = scopes(&run.context.job.account_id, Some(&run.context.selection));
+        let delayed_until = reason
+            .is_none()
+            .then(|| pacing(&gates, &scopes, run.analysis.as_ref(), now));
         result.push(Work {
             key: WorkId {
                 kind: run.kind(),
@@ -276,6 +330,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                 .as_ref()
                 .and_then(|op| op.failure_class())
                 .or_else(|| run.publication.as_ref().and_then(|op| op.failure_class())),
+            delayed_until: delayed_until.flatten(),
         });
     }
     result.sort_by(|a, b| (a.enqueue_order, &a.key).cmp(&(b.enqueue_order, &b.key)));
@@ -292,7 +347,8 @@ impl Coordinator {
         work: &Work,
         prepare: impl FnOnce(Arc<AtomicBool>) -> Result<(String, T), String>,
     ) -> Result<Option<T>, String> {
-        if store.load_automation()?.paused || work.reason.is_some() {
+        if store.load_automation()?.paused || work.reason.is_some() || work.delayed_until.is_some()
+        {
             return Ok(None);
         }
         let capacity = store.load_settings()?.capacity;
@@ -336,6 +392,7 @@ impl Coordinator {
                         .map(|r| format!("{r:?}; waiting for worker teardown."))
                 }),
                 failure: None,
+                delayed_until: None,
             };
             if let Some(old) = work.iter_mut().find(|w| w.key == entry.key) {
                 *old = entry;

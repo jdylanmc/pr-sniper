@@ -423,7 +423,9 @@ pub fn execute(
         publication
             .operation
             .fail(&error.monitoring(), environment.now()?);
-        publication.error = Some(error.message.clone());
+        // A rate limit that did not execute is a wait, not an error to show.
+        publication.error =
+            (!error.rate_limited() || publication.uncertain).then(|| error.message.clone());
         if publication.uncertain {
             publication.phase = Phase::Unresolved;
         }
@@ -714,5 +716,6 @@ fn unresolved() -> Failure {
         message: "GitHub mutation outcome is unresolved. Reconcile the original review; no replacement batch will be created.".into(),
         kind: OperationFailure::Network,
         retry_after_seconds: None,
+        origin: crate::backpressure::Origin::Github,
     }
 }

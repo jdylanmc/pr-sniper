@@ -655,6 +655,7 @@ fn future_final_and_mention_adapters_reserve_the_same_pool_as_normal_and_reply_w
             state: "waiting",
             reason: None,
             failure: None,
+            delayed_until: None,
         };
         let run = coordinator
             .reserve(&store, &work, |_| {
@@ -691,6 +692,7 @@ fn future_final_and_mention_adapters_reserve_the_same_pool_as_normal_and_reply_w
         state: "waiting",
         reason: None,
         failure: None,
+        delayed_until: None,
     };
     assert!(coordinator
         .reserve::<()>(&store, &more, |_| panic!("No fifth slot"))
@@ -811,4 +813,158 @@ fn pause_gates_real_poll_admission_and_corrupt_pause_storage_never_enables_work(
     assert!(monitor.prepare_checks(&store, 101, true).is_err());
     assert!(publication_gate(&store).is_err());
     assert!(store.load_reviews().unwrap().is_empty());
+}
+
+fn rate_limit(origin: crate::backpressure::Origin, retry_after: Option<i64>) -> Failure {
+    Failure {
+        cancelled: false,
+        kind: OperationFailure::RateLimited,
+        message: "Rate limited".into(),
+        retry_after_seconds: retry_after,
+        origin,
+    }
+}
+
+#[test]
+fn a_rate_limit_delays_the_account_without_a_failure_and_other_accounts_keep_flowing() {
+    use crate::backpressure::{Origin, Scope};
+    let (_root, store) = fixture(3, 4, true);
+    let coordinator = Coordinator::default();
+    let mut workers = dispatch(&coordinator, &store, 100);
+    assert_eq!(workers.len(), 3);
+    let limited = workers.remove(0);
+    for other in workers {
+        finish(&coordinator, &store, other, None, 101);
+    }
+    finish(
+        &coordinator,
+        &store,
+        limited,
+        Some(rate_limit(Origin::Github, Some(3_600))),
+        102,
+    );
+    let run = store
+        .load_reviews()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.operation.state == OperationState::Queued)
+        .unwrap();
+    // Never a failure: no attempt spent, nothing parked, no error text.
+    assert_eq!(run.operation.attempt_count, 0);
+    assert_eq!(run.operation.failure, None);
+    assert_eq!(run.operation.next_attempt_at, Some(3_702));
+    assert_eq!(run.error, None);
+    assert_eq!(run.operation.failure_class(), None);
+    let gates = store.load_backpressure().unwrap();
+    assert_eq!(gates.gates.len(), 1);
+    assert!(matches!(&gates.gates[0].scope, Scope::Github { .. }));
+    // Delayed, not blocked: waiting, with no reason, and nothing dispatches.
+    let snapshot = coordinator.snapshot(&store, 200).unwrap();
+    let work = snapshot.work.iter().find(|w| w.key.id == run.key).unwrap();
+    assert_eq!(
+        (work.state, work.reason.as_deref(), work.delayed_until),
+        ("waiting", None, Some(3_702))
+    );
+    assert_eq!((snapshot.waiting, snapshot.blocked), (1, 0));
+    assert!(dispatch(&coordinator, &store, 3_000).is_empty());
+    // A restart honors the persisted gate.
+    let restarted = Coordinator::default();
+    assert!(dispatch(&restarted, &store, 3_500).is_empty());
+    let resumed = dispatch(&restarted, &store, 3_702);
+    assert_eq!(resumed.len(), 1);
+}
+
+#[test]
+fn a_gated_account_holds_back_work_that_has_not_failed_yet_while_others_run() {
+    use crate::backpressure::{record, Scope};
+    let (_root, store) = fixture(3, 4, true);
+    // Account 101 is the first fixture repository's GitHub account.
+    record(&store, Scope::github("101"), Some(600), "seed", 100).unwrap();
+    let coordinator = Coordinator::default();
+    let workers = dispatch(&coordinator, &store, 100);
+    assert_eq!(workers.len(), 2);
+    let snapshot = coordinator.snapshot(&store, 100).unwrap();
+    assert_eq!(
+        snapshot
+            .work
+            .iter()
+            .filter(|w| w.delayed_until == Some(700))
+            .count(),
+        1
+    );
+    assert!(store
+        .load_reviews()
+        .unwrap()
+        .iter()
+        .all(|r| r.operation.attempt_count == 1));
+}
+
+#[test]
+fn a_copilot_rate_limit_gates_only_agents_on_that_ai_account() {
+    use crate::backpressure::{Origin, Scope};
+    let (_root, store) = fixture(2, 4, true);
+    let coordinator = Coordinator::default();
+    let mut workers = dispatch(&coordinator, &store, 100);
+    finish(
+        &coordinator,
+        &store,
+        workers.remove(0),
+        Some(rate_limit(Origin::Copilot, None)),
+        101,
+    );
+    let gates = store.load_backpressure().unwrap();
+    assert_eq!(gates.gates.len(), 1);
+    assert_eq!(gates.gates[0].scope, Scope::copilot("201"));
+    let run = store
+        .load_reviews()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.operation.state == OperationState::Queued)
+        .unwrap();
+    assert_eq!(run.operation.attempt_count, 0);
+    assert_eq!(run.operation.failure, None);
+    // Exponential backoff from 30s; a success on that account clears the gate.
+    let until = gates.gates[0].until;
+    assert!((131..=134).contains(&until), "{until}");
+    assert!(dispatch(&coordinator, &store, until - 1).is_empty());
+    let retry = dispatch(&coordinator, &store, until);
+    assert_eq!(retry.len(), 1);
+    finish(
+        &coordinator,
+        &store,
+        retry.into_iter().next().unwrap(),
+        None,
+        until + 1,
+    );
+    assert!(store.load_backpressure().unwrap().gates.is_empty());
+}
+
+#[test]
+fn repeated_rate_limits_never_park_or_reach_needs_attention() {
+    use crate::backpressure::Origin;
+    let (_root, store) = fixture(1, 4, true);
+    let coordinator = Coordinator::default();
+    let mut now = 100;
+    for _ in 0..8 {
+        let work = dispatch(&coordinator, &store, now).remove(0);
+        finish(
+            &coordinator,
+            &store,
+            work,
+            Some(rate_limit(Origin::Copilot, None)),
+            now + 1,
+        );
+        let run = store.load_reviews().unwrap().remove(0);
+        assert_eq!(run.operation.state, OperationState::Queued);
+        assert_eq!(run.operation.attempt_count, 0);
+        assert!(!run.operation.parked());
+        let snapshot = coordinator.snapshot(&store, now + 2).unwrap();
+        assert_eq!(snapshot.blocked, 0);
+        assert!(snapshot.work.iter().all(|w| w.failure.is_none()));
+        now = run.operation.next_attempt_at.unwrap();
+    }
+    // The wait is capped at 15 minutes however many limits stack up.
+    let gates = store.load_backpressure().unwrap();
+    assert!(gates.gates[0].until - 100 < 8 * 901);
+    assert!(gates.gates[0].step >= 5);
 }

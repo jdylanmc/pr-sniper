@@ -28,6 +28,7 @@ fn attempt_record(id: &str, event: Event) -> Record {
     }
 }
 
+// Records written before coverage became informational must still load.
 fn failure_record(id: &str) -> Record {
     attempt_record(
         id,

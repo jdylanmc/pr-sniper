@@ -83,7 +83,7 @@ The single five-field cron plus explicit IANA time zone (default `*/15 * * * *`,
 _Avoid_: Polling interval, assignment timer, per-Agent poll
 
 **Check Now**:
-Manual global scan. Coalesces to one pending scan. Never bypasses Retry-After or an existing **Retry budget**.
+Manual global scan. Coalesces to one pending scan. Never bypasses **Backpressure** or an existing **Retry budget**.
 
 **Pause Automation**:
 Persisted global gate, separate from repository enablement and grants. Blocks new polling, AI admission and provider writes. Active workers are signalled and keep their slot, **stopping**, until teardown ends. Partial AI output is discarded. An already-sent remote request is not undone; intents and receipts are kept.
@@ -126,10 +126,10 @@ The only three tools Copilot gets in a review: batch changed-file reads, exact s
 _Avoid_: Sandbox, agent tools
 
 **Validated review result**:
-One-sentence synopsis, ordered guide for every changed file, structured findings, machine decision, runtime metadata. Every changed file must be read; missing, duplicate or invalid file entry fails validation. Head, base, lifecycle and inputs are rechecked before invoke; stale results are rejected. Stays local until publication gate admits.
+One-sentence synopsis, ordered guide for every changed file, structured findings, machine decision, runtime metadata, informational **Read coverage**. Missing, duplicate or invalid file entry fails validation; unread files do not. Head, base, lifecycle and inputs are rechecked before invoke; stale results are rejected. Stays local until publication gate admits.
 
 **Final Review**:
-Separate full constrained review by the **Primary Agent**. Runs only when Approve or Merge is granted, after **Action Clearance** and fresh provider observations. Reads every changed file; sees peer results, owned feedback and bounded human discussion. Own history; never replaces normal review history. Findings or human judgment stop actions with no same-Iteration AI retry for a different answer.
+Separate full constrained review by the **Primary Agent**. Runs only when Approve or Merge is granted, after **Action Clearance** and fresh provider observations. Reads what it needs; sees peer results, owned feedback and bounded human discussion. Own history; never replaces normal review history. Findings or human judgment stop actions with no same-Iteration AI retry for a different answer.
 _Avoid_: Approval review, second pass
 
 **Action Clearance**:
@@ -137,6 +137,14 @@ Gate before any provider action. Every current assignment has its own completed 
 _Avoid_: Auto-merge approval
 
 ### Failure and retry
+
+**Backpressure**:
+A rate limit (GitHub 403/429, Copilot/model 429) is a signal to wait, not a failure. No attempt spent, no failure count, no Park, never Needs attention. The provider account is gated in `backpressure.json` until Retry-After/reset, else 30s x2^n (cap 15 min, deterministic jitter); a success clears it. Queue shows a quiet clock row with the local resume time.
+_Avoid_: Rate-limit failure
+
+**Read coverage**:
+Recorded count of changed files the agent read in full ("N of M files read"). Informational only: never rejects, fails or retries a review.
+_Avoid_: Coverage gate
 
 **Retry budget**:
 Persisted per operation: attempt count, retry deadline, state. Survives restart and resume without reset. Transient failures auto-retry with backoff; 3 failed attempts then **Park**. The AI review window starts when the worker starts, not at enqueue. Credentials, permission and permanent failures park at once. Parked retry starts a new operation, keeping history. Cooldown cycles (30m, 1h, 2h, 4h, 8h; `resume_cycle`, `resume_at`) grant each resumable failure a fresh budget, up to five.
@@ -147,7 +155,7 @@ Cause label on a failed item: Credentials, Permission, Network, Failed. Decides 
 _Avoid_: Error type
 
 **Parked failure**:
-Operation that exhausted its **Retry budget** or failed non-transiently. Listed in Queue under **Needs Attention**, never in Running. Auto-resumes: network, provider, timeout, rate-limit and permission failures after a cooldown (five cycles, then a human); credentials when the account connects again. Permanent failures wait for the user.
+Operation that exhausted its **Retry budget** or failed non-transiently. Listed in Queue under **Needs Attention**, never in Running. Auto-resumes: network, provider, timeout and permission failures after a cooldown (five cycles, then a human); credentials when the account connects again. Permanent failures wait for the user.
 _Avoid_: Blocked, dead job
 
 **Stopping slot**:

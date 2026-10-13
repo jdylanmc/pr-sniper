@@ -538,6 +538,12 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             pr_sniper_lib::capacity::Coordinator::default().snapshot(store, 1_800_000_000)?,
         )
         .map_err(|_| "Cannot encode automation state.".into()),
+        "seed_backpressure" => {
+            let state = serde_json::from_value(request.args)
+                .map_err(|_| "Invalid backpressure fixture.".to_string())?;
+            store.save_backpressure(&state)?;
+            Ok(Value::Null)
+        }
         "set_automation_paused" => {
             store.save_automation(&pr_sniper_lib::capacity::Automation {
                 paused: request.args["paused"]

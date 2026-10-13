@@ -1,5 +1,6 @@
 pub mod actions;
 pub mod admission;
+pub mod backpressure;
 pub mod capacity;
 mod copilot;
 mod doctrine_seeds;
@@ -5277,7 +5278,7 @@ mod github_auth_tests {
                     .unwrap()
                     .remove(0)
             };
-            let failure = finish_monitored_ticket(
+            let outcome = finish_monitored_ticket(
                 &generations,
                 &auth,
                 &store,
@@ -5285,9 +5286,14 @@ mod github_auth_tests {
                 failed_ticket,
                 Err(error),
                 due + 1,
-            )
-            .unwrap_err();
-            assert!(!failure.requires_host_report());
+            );
+            let rate_limited = error == ConnectionError::RateLimited;
+            if rate_limited {
+                // A rate limit is a wait, not a failure.
+                outcome.unwrap();
+            } else {
+                assert!(!outcome.unwrap_err().requires_host_report());
+            }
             assert_eq!(
                 store.lock().unwrap().load_queue().unwrap()[0].waiting,
                 WAITING_AI_CAPACITY
@@ -5296,7 +5302,7 @@ mod github_auth_tests {
             let expected_failure = format!("{error:?}");
             assert_eq!(
                 health.last_failure.as_deref(),
-                Some(expected_failure.as_str())
+                (!rate_limited).then_some(expected_failure.as_str())
             );
             let next_due = health.next_run;
 

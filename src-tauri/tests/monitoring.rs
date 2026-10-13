@@ -1806,8 +1806,11 @@ fn publication_revision_recheck_is_durable_scoped_and_preserves_poll_backoff() {
             Err(ConnectionError::RateLimitedAfter(30)),
             now + 3,
         )
-        .unwrap_err();
+        .unwrap();
     let queued = monitor.snapshot()[0].operation.clone().unwrap();
+    assert_eq!(queued.attempt_count, 0);
+    assert_eq!(queued.failure, None);
+    assert_eq!(monitor.snapshot()[0].last_failure, None);
     monitor
         .request_revision_check(&store, &job, now + 4)
         .unwrap();
@@ -1821,7 +1824,7 @@ fn publication_revision_recheck_is_durable_scoped_and_preserves_poll_backoff() {
     let operation = monitor.snapshot()[0].operation.clone().unwrap();
     assert_eq!(operation.id, queued.id);
     assert_eq!(operation.retry_deadline, queued.retry_deadline);
-    assert_eq!(operation.attempt_count, 2);
+    assert_eq!(operation.attempt_count, 1);
     monitor
         .finish(
             &store,
@@ -1874,7 +1877,7 @@ fn check_now_preserves_an_existing_retry_budget() {
 }
 
 #[test]
-fn provider_retry_after_takes_precedence_and_cannot_cross_the_deadline() {
+fn provider_retry_after_is_honored_beyond_the_deadline_without_parking() {
     let (_root, store) = store();
     let mut monitor = Monitor::restore(&store).unwrap();
     let mut tickets = monitor.prepare_checks(&store, 1_800_000_000, true).unwrap();
@@ -1885,12 +1888,47 @@ fn provider_retry_after_takes_precedence_and_cannot_cross_the_deadline() {
             Err(ConnectionError::RateLimitedAfter(900)),
             1_800_000_001,
         )
-        .unwrap_err();
+        .unwrap();
     let health = &monitor.snapshot()[0];
     let operation = health.operation.as_ref().unwrap();
-    assert_eq!(operation.state, OperationState::ManualRetry);
-    assert_eq!(operation.failure, Some(OperationFailure::RateLimited));
-    assert_eq!(operation.next_attempt_at, None);
+    assert_eq!(operation.state, OperationState::Queued);
+    assert_eq!(operation.failure, None);
+    assert_eq!(operation.attempt_count, 0);
+    assert_eq!(operation.next_attempt_at, Some(1_800_000_901));
+    assert_eq!(health.last_failure, None);
+    assert_eq!(health.next_run, 1_800_000_901);
+    assert!(operation.retry_deadline > 1_800_000_901);
+    let gates = store.load_backpressure().unwrap();
+    assert_eq!(gates.gates.len(), 1);
+    assert_eq!(gates.gates[0].until, 1_800_000_901);
+    // A restart honors the persisted wait; other repositories on the account wait too.
+    let mut monitor = Monitor::restore(&store).unwrap();
+    assert!(monitor
+        .prepare_checks(&store, 1_800_000_900, true)
+        .unwrap()
+        .is_empty());
+    let mut retry = monitor
+        .prepare_checks(&store, 1_800_000_901, false)
+        .unwrap();
+    assert_eq!(retry.len(), 1);
+    assert_eq!(
+        monitor.snapshot()[0]
+            .operation
+            .as_ref()
+            .unwrap()
+            .attempt_count,
+        1
+    );
+    monitor
+        .finish(
+            &store,
+            retry.remove(0),
+            Ok(poll_result(Vec::new(), "current-login")),
+            1_800_000_902,
+        )
+        .unwrap();
+    // A success clears the account's gate.
+    assert!(store.load_backpressure().unwrap().gates.is_empty());
 }
 
 #[test]

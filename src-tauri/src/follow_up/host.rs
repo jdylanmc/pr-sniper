@@ -1505,7 +1505,7 @@ impl Environment for Native {
             failure: Failure::permanent("Reply body unavailable."),
             uncertain: false,
         })?;
-        match &run.target {
+        let mut result = match &run.target {
             ConversationTarget::Owned(_) | ConversationTarget::Retained(_) => {
                 prepared.0.reply_to_thread(
                     &self.origin(run).map_err(|failure| WriteFailure {
@@ -1548,7 +1548,25 @@ impl Environment for Native {
                     .id,
                 body,
             ),
+        };
+        if let Err(error) = &mut result {
+            if let (Ok(now), Ok(store)) = (
+                self.now(),
+                self.app.state::<Host>().store.lock().map_err(|_| ()),
+            ) {
+                crate::backpressure::pace_write(
+                    &store,
+                    &mut error.failure,
+                    error.uncertain,
+                    &run.context.job.account_id,
+                    run.publication
+                        .as_ref()
+                        .map_or(run.id.as_str(), |op| op.id.as_str()),
+                    now,
+                );
+            }
         }
+        result
     }
 }
 
@@ -1903,6 +1921,31 @@ fn analysis_completion(
         run.phase = Phase::WaitingStart;
         return save_analysis_outcome(store, run, Ok(()));
     }
+    if !current.cancelled {
+        let ai_account = run
+            .context
+            .selection
+            .agent
+            .ai_account
+            .as_ref()
+            .map(|account| account.account_id.clone());
+        if let Some(operation) = run.analysis.as_mut() {
+            if crate::backpressure::defer(
+                store,
+                operation,
+                outcome.as_ref().err(),
+                ai_account.as_deref(),
+                now,
+            )
+            .map_err(Failure::permanent)?
+            {
+                run.result = None;
+                run.error = None;
+                run.phase = Phase::WaitingStart;
+                return save_analysis_outcome(store, run, Ok(()));
+            }
+        }
+    }
     let outcome = outcome.and_then(|result| {
         let mut checked = run.clone();
         checked.result = Some(result.clone());
@@ -1912,6 +1955,16 @@ fn analysis_completion(
     });
     match outcome {
         Ok(result) => {
+            crate::backpressure::run_succeeded(
+                store,
+                &run.context.job.account_id,
+                run.context
+                    .selection
+                    .agent
+                    .ai_account
+                    .as_ref()
+                    .map(|account| account.account_id.as_str()),
+            );
             run.phase = match result.output.decision {
                 ReplyDecision::Reply => Phase::WaitingPublication,
                 ReplyDecision::Quiet => Phase::Quiet,

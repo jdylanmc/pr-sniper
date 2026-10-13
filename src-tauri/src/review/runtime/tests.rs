@@ -149,29 +149,41 @@ fn stopped(root: &Path) {
 }
 
 #[tokio::test]
-async fn incomplete_attempt_is_reconstructable_from_diagnostics() {
-    let root = tempfile::tempdir().unwrap();
-    let store = crate::storage::Store::new(root.path().join("profile"));
-    let mut request = request(true);
-    request.diagnostics = Some(diagnostic_trace(root.path().join("profile")));
-    let error = execute(
-        options(root.path(), "success"),
-        &Identity {
-            id: "33".into(),
-            login: "review-account".into(),
-        },
-        &operation(8),
-        request,
-    )
-    .await
-    .unwrap_err();
-    assert!(error
-        .message
-        .contains("did not read every byte of every changed file"));
-    stopped(root.path());
-    let records = serde_json::to_string(&store.diagnostics().unwrap()).unwrap();
-    assert!(records.contains("incomplete_coverage"), "{records}");
-    assert!(records.contains("source.rs"), "{records}");
+async fn unread_files_are_recorded_as_coverage_and_never_fail_the_attempt() {
+    for (scenario, read) in [("read-none", 0), ("final-full-review", 1)] {
+        let root = tempfile::tempdir().unwrap();
+        let store = crate::storage::Store::new(root.path().join("profile"));
+        let mut request = request(true);
+        request.diagnostics = Some(diagnostic_trace(root.path().join("profile")));
+        let result = execute(
+            options(root.path(), scenario),
+            &Identity {
+                id: "33".into(),
+                login: "review-account".into(),
+            },
+            &operation(8),
+            request,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            result.coverage,
+            Some(crate::review::ReadCoverage { read, changed: 1 }),
+            "{scenario}"
+        );
+        assert_eq!(result.byte_coverage, read == 1, "{scenario}");
+        stopped(root.path());
+        let records = serde_json::to_string(&store.diagnostics().unwrap()).unwrap();
+        assert!(!records.contains("incomplete_coverage"), "{records}");
+        assert!(records.contains("source.rs"), "{records}");
+        let finished = diagnostic_records(root.path())
+            .into_iter()
+            .find(|r| r["event"]["kind"] == "finished")
+            .unwrap();
+        assert!(finished["event"]["failure"].is_null(), "{scenario}");
+        assert_eq!(finished["event"]["coverage"]["covered"]["count"], read);
+        assert_eq!(finished["event"]["coverage"]["changed"]["count"], 1);
+    }
 }
 
 fn diagnostic_trace(path: std::path::PathBuf) -> Arc<crate::review::diagnostics::Trace> {
@@ -210,11 +222,11 @@ fn diagnostic_records(root: &Path) -> Vec<Value> {
 #[tokio::test]
 async fn diagnostic_fake_sessions_distinguish_failure_causes_without_content() {
     for (scenario, changed, expected) in [
-        ("success", true, "incomplete_coverage"),
-        ("malformed", false, "invalid_output"),
-        ("runtime-error", false, "runtime_execution"),
-        ("read-source-only", true, "incomplete_coverage"),
-        ("tool-invalid-path", true, "incomplete_coverage"),
+        ("read-none", true, None),
+        ("malformed", false, Some("invalid_output")),
+        ("runtime-error", false, Some("runtime_execution")),
+        ("read-source-only", true, None),
+        ("tool-invalid-path", true, None),
     ] {
         let root = tempfile::tempdir().unwrap();
         let mut request = request(changed);
@@ -229,14 +241,14 @@ async fn diagnostic_fake_sessions_distinguish_failure_causes_without_content() {
             request,
         )
         .await;
-        assert!(result.is_err(), "{scenario}");
+        assert_eq!(result.is_err(), expected.is_some(), "{scenario}");
         stopped(root.path());
         let records = diagnostic_records(root.path());
         let finished = records
             .iter()
             .find(|r| r["event"]["kind"] == "finished")
             .unwrap();
-        assert_eq!(finished["event"]["failure"], expected, "{scenario}");
+        assert_eq!(finished["event"]["failure"], json!(expected), "{scenario}");
         assert_eq!(finished["attempt"]["runtime_version"], "synthetic");
         assert!(finished["attempt"]["session_id"].is_string());
         assert!(finished["elapsed_ms"].as_u64().is_some());
@@ -504,7 +516,7 @@ fn bad_offsets_are_rejected_and_search_is_paged_losslessly() {
 }
 
 #[test]
-fn coverage_requires_every_byte_of_every_part() {
+fn the_read_ledger_records_a_file_only_when_every_part_was_fully_served() {
     let text = "line of source\n".repeat(5_000);
     let tools = text_tools(text.clone(), Some("@@ patch @@\n".repeat(100)));
     let read = |part: &str, offset: usize, max: usize| {
@@ -547,7 +559,7 @@ fn coverage_requires_every_byte_of_every_part() {
 }
 
 #[test]
-fn partial_reads_do_not_cover_even_when_every_part_was_started() {
+fn partial_reads_are_not_recorded_as_read_even_when_every_part_was_started() {
     let tools = text_tools("x".repeat(100_000), Some("p".repeat(100)));
     for part in ["patch", "before", "after"] {
         let value = tools

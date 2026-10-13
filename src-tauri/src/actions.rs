@@ -357,33 +357,62 @@ pub fn synchronize(
         }
         Ok(value)
     });
+    let previous_failures = ledger
+        .observations
+        .iter()
+        .find(|o| o.item_id == item_id)
+        .map(|o| o.failures)
+        .unwrap_or(0);
+    let account = identity.map(|(account, _, _)| account.as_str());
+    // A rate limit is a wait: no failure counted, no error stored.
+    let paced = match (&observation, account) {
+        (Err(error), Some(account)) if error.rate_limited() => Some(
+            crate::backpressure::record(
+                store,
+                crate::backpressure::Scope::of(error.origin, account, None),
+                error.retry_after_seconds,
+                item_id,
+                now,
+            )
+            .unwrap_or_else(|_| {
+                now.saturating_add(crate::backpressure::delay_seconds(
+                    item_id,
+                    0,
+                    error.retry_after_seconds,
+                ))
+            }),
+        ),
+        _ => None,
+    };
+    if let (Ok(_), Some(account)) = (&observation, account) {
+        let _ = crate::backpressure::succeeded(store, &crate::backpressure::Scope::github(account));
+    }
     let observed = Observed {
-        failures: if observation.is_err() {
-            ledger
-                .observations
-                .iter()
-                .find(|o| o.item_id == item_id)
-                .map(|o| o.failures)
-                .unwrap_or(0)
-                .saturating_add(1)
-        } else {
-            0
+        failures: match (&observation, paced) {
+            (Ok(_), _) => 0,
+            (Err(_), Some(_)) => previous_failures,
+            (Err(_), None) => previous_failures.saturating_add(1),
         },
-        retry_at: observation.as_ref().err().and_then(|error| {
-            let failures = ledger
-                .observations
-                .iter()
-                .find(|o| o.item_id == item_id)
-                .map(|o| o.failures)
-                .unwrap_or(0);
-            (error.kind != monitoring::OperationFailure::Permanent && failures < 3).then(|| {
-                now.saturating_add(error.retry_after_seconds.unwrap_or(5 * (1_i64 << failures)))
+        retry_at: paced.or_else(|| {
+            observation.as_ref().err().and_then(|error| {
+                (error.kind != monitoring::OperationFailure::Permanent && previous_failures < 3)
+                    .then(|| {
+                        now.saturating_add(
+                            error
+                                .retry_after_seconds
+                                .unwrap_or(5 * (1_i64 << previous_failures)),
+                        )
+                    })
             })
         }),
         item_id: item_id.into(),
         at: now,
         observation: observation.as_ref().ok().cloned(),
-        error: observation.as_ref().err().map(|e| e.message.clone()),
+        error: observation
+            .as_ref()
+            .err()
+            .filter(|_| paced.is_none())
+            .map(|e| e.message.clone()),
     };
     if let Some(previous) = ledger
         .observations

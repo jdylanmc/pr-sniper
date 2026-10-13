@@ -1077,11 +1077,15 @@ fn deadlines_rate_limits_and_retry_identity_survive_restart() {
     fixture.run(&mut run).unwrap_err();
     let id = run.operation.id.clone();
     assert!(!run.uncertain);
+    // A rate limit is a wait: no attempt spent, no failure recorded.
     assert_eq!(run.operation.next_attempt_at, Some(117));
+    assert_eq!(run.operation.state, OperationState::Queued);
+    assert_eq!(run.operation.attempt_count, 0);
+    assert_eq!(run.operation.failure, None);
     run = fixture.resume();
     fixture.run(&mut run).unwrap();
     assert_eq!(run.operation.id, id);
-    assert_eq!(run.operation.attempt_count, 2);
+    assert_eq!(run.operation.attempt_count, 1);
     assert_eq!(fixture.visible(), 1);
 
     let mut expired = publication();

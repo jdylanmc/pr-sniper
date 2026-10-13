@@ -9,6 +9,7 @@ if (process.env.TEST_STARTUP_DELAY_MS) {
 }
 
 const scenario = process.env.REVIEW_SCENARIO;
+const guide = { path: "source.rs", explanation: "Reviewed from the change.", order: 1 };
 const receipt = (value) =>
   appendFileSync(process.env.TEST_RECEIPT, `${JSON.stringify(value)}\n`);
 const frame = (value) => {
@@ -201,7 +202,8 @@ process.stdin.on("data", (chunk) => {
                   })
                 : JSON.stringify({
                     synopsis: "The empty synthetic change has no findings.",
-                    files: [],
+                    // No gate on reads: this review answers without reading anything.
+                    files: scenario === "read-none" ? [guide] : [],
                     findings: [],
                     decision: "machine_sign_off",
                   }),
@@ -214,7 +216,15 @@ process.stdin.on("data", (chunk) => {
         respond(request.id, {});
         if (["read-source-only", "tool-invalid-path"].includes(scenario)) {
           event("assistant.usage", { inputTokens: 20, outputTokens: 10 });
-          event("assistant.message", { content: "{}" });
+          // The tool call (served or rejected) does not decide the review.
+          event("assistant.message", {
+            content: JSON.stringify({
+              synopsis: "The synthetic source was partly read.",
+              files: [guide],
+              findings: [],
+              decision: "machine_sign_off",
+            }),
+          });
           event("session.idle", {});
           break;
         }

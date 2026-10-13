@@ -655,7 +655,23 @@ impl Environment for Native {
                     uncertain: false,
                 })?;
         }
-        client.mutate_publication(run, mutation)
+        let mut result = client.mutate_publication(run, mutation);
+        if let Err(error) = &mut result {
+            if let (Ok(now), Ok(store)) = (
+                self.now(),
+                self.app.state::<Host>().store.lock().map_err(|_| ()),
+            ) {
+                crate::backpressure::pace_write(
+                    &store,
+                    &mut error.failure,
+                    error.uncertain,
+                    &run.review.job.account_id,
+                    &run.operation.id,
+                    now,
+                );
+            }
+        }
+        result
     }
 
     fn requeue(&mut self, run: &Publication) -> Result<(), Failure> {

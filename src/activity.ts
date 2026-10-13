@@ -31,6 +31,11 @@ interface Row {
 }
 
 const state = (value: string) => value.replaceAll("_", " ");
+// Informational count of files read; never a gate.
+const coverageFacts = (
+  coverage: { read: number; changed: number } | null | undefined,
+): KeyValue[] =>
+  coverage ? [["Read", `${coverage.read} of ${coverage.changed}`]] : [];
 const short = (value: string | null | undefined) => (value ?? "").slice(0, 7);
 
 export function activityRows(
@@ -72,6 +77,7 @@ export function activityRows(
           ],
           ["Tokens", `${result.input_tokens} / ${result.output_tokens}`],
           ["Tools", String(result.tool_calls)],
+          ...coverageFacts(result.coverage),
           ["Session", result.session_id, true],
           ["Decision", state(result.output.decision)],
           ["Revision", short(head)],
@@ -186,6 +192,7 @@ export function activityRows(
           result ? `${result.input_tokens} / ${result.output_tokens}` : "",
         ],
         ["Tools", result ? String(result.tool_calls) : ""],
+        ...coverageFacts(result?.coverage),
         ["Session", result?.session_id ?? "", true],
         ["Files", result ? String(result.output.files.length) : ""],
         ["Order", String(final.enqueue_order)],

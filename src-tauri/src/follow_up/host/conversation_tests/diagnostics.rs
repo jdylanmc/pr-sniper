@@ -52,6 +52,7 @@ fn diagnostics_failed_analysis_preserves_committed_backoff_and_original_error() 
         kind: crate::monitoring::OperationFailure::Network,
         message: "Synthetic network analysis failure".into(),
         retry_after_seconds: Some(60),
+        origin: crate::backpressure::Origin::Github,
     };
     let saved = analysis_completion(&store, &mut run, Err(failure), false, NOW + 21);
     let returned = record_analysis_completion(saved, &trace).unwrap_err();

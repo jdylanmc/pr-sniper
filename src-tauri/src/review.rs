@@ -345,9 +345,19 @@ pub struct ReviewResult<O = ReviewOutput> {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub tool_calls: u64,
-    /// The host served every byte of every changed file before accepting this result.
+    /// Legacy record: true when the host served every byte of every changed file.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub byte_coverage: bool,
+    /// Informational count of changed files read in full; never a gate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<ReadCoverage>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReadCoverage {
+    pub read: u32,
+    pub changed: u32,
 }
 
 pub(crate) fn json_body(text: &str) -> &str {
@@ -431,9 +441,16 @@ pub struct Failure {
     pub kind: OperationFailure,
     pub message: String,
     pub retry_after_seconds: Option<i64>,
+    /// Provider that signalled a rate limit; meaningful only for `RateLimited`.
+    pub origin: crate::backpressure::Origin,
 }
 
 impl Failure {
+    /// A rate limit is backpressure, never a failure.
+    pub fn rate_limited(&self) -> bool {
+        !self.cancelled && self.kind == OperationFailure::RateLimited
+    }
+
     pub fn cancelled() -> Self {
         Self {
             cancelled: true,
@@ -446,6 +463,7 @@ impl Failure {
             kind: OperationFailure::Permanent,
             message: message.into(),
             retry_after_seconds: None,
+            origin: crate::backpressure::Origin::Github,
         }
     }
     /// Agent-quality rejections are transient: a fresh attempt may succeed.
@@ -461,6 +479,7 @@ impl Failure {
             kind: OperationFailure::Timeout,
             message: "Copilot review timed out.".into(),
             retry_after_seconds: None,
+            origin: crate::backpressure::Origin::Copilot,
         }
     }
     pub fn schema() -> Self {
@@ -490,6 +509,7 @@ impl Failure {
                 kind,
                 message,
                 retry_after_seconds: None,
+                origin: crate::backpressure::Origin::Copilot,
             }
         }
     }
@@ -505,7 +525,7 @@ impl Failure {
             }
             _ => OperationFailure::Permanent,
         };
-        Self { cancelled: false, kind, message: "Copilot runtime request failed; check account, model, and runtime availability before retrying.".into(), retry_after_seconds: None }
+        Self { cancelled: false, kind, message: "Copilot runtime request failed; check account, model, and runtime availability before retrying.".into(), retry_after_seconds: None, origin: crate::backpressure::Origin::Copilot }
     }
     fn event(data: &Value) -> Self {
         let kind = match data["statusCode"].as_u64() {
@@ -527,9 +547,17 @@ impl Failure {
             kind,
             message: "Copilot reported an execution failure; no review result was accepted.".into(),
             retry_after_seconds,
+            origin: crate::backpressure::Origin::Copilot,
         }
     }
     pub fn monitoring(&self) -> MonitoringError {
+        if self.rate_limited() {
+            return MonitoringError::Backpressure {
+                origin: self.origin,
+                message: self.message.clone(),
+                retry_after_seconds: self.retry_after_seconds,
+            };
+        }
         MonitoringError::Recoverable {
             code: "review_failed".into(),
             message: self.message.clone(),
@@ -552,6 +580,18 @@ impl From<ConnectionError> for Failure {
                 kind: failure,
                 message,
                 retry_after_seconds,
+                origin: crate::backpressure::Origin::Github,
+            },
+            MonitoringError::Backpressure {
+                origin,
+                message,
+                retry_after_seconds,
+            } => Self {
+                cancelled: false,
+                kind: OperationFailure::RateLimited,
+                message,
+                retry_after_seconds,
+                origin,
             },
             MonitoringError::Storage(message) => Self::permanent(message),
         }
@@ -651,6 +691,7 @@ impl Events {
             output_tokens: self.output_tokens,
             tool_calls: self.tool_calls,
             byte_coverage: false,
+            coverage: None,
         })
     }
 }

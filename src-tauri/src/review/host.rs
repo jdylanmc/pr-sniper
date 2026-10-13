@@ -298,9 +298,34 @@ pub(crate) fn complete(
         current.result = None;
         current.phase = "Waiting after intentional interruption".into();
         current.error = None;
+    } else if crate::backpressure::defer(
+        store,
+        &mut current.operation,
+        outcome.as_ref().err(),
+        current
+            .selection
+            .agent
+            .ai_account
+            .as_ref()
+            .map(|account| account.account_id.as_str()),
+        now,
+    )? {
+        current.result = None;
+        current.phase = "Waiting for rate limit".into();
+        current.error = None;
     } else {
         match outcome {
             Ok(result) => {
+                crate::backpressure::run_succeeded(
+                    store,
+                    &current.operation.account_id,
+                    current
+                        .selection
+                        .agent
+                        .ai_account
+                        .as_ref()
+                        .map(|account| account.account_id.as_str()),
+                );
                 current.operation.ai_attempt = None;
                 current.operation.state = OperationState::Completed;
                 current.operation.failure = None;

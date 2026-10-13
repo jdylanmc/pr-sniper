@@ -1285,6 +1285,7 @@ pub fn publish(env: &mut impl Environment, run: &mut FollowUp) -> Result<(), Fai
                 kind: OperationFailure::Network,
                 message: "Reply outcome is unresolved; no replacement reply will be posted.".into(),
                 retry_after_seconds: None,
+                origin: crate::backpressure::Origin::Github,
             });
         }
         let gate = env.gate(run, &current)?;
@@ -1341,7 +1342,8 @@ pub fn publish(env: &mut impl Environment, run: &mut FollowUp) -> Result<(), Fai
         } else {
             Phase::Stopped
         };
-        run.error = Some(error.message.clone());
+        // A rate limit that did not execute is a wait, not an error to show.
+        run.error = (!error.rate_limited() || run.uncertain).then(|| error.message.clone());
         env.save(run)?;
         return Err(error);
     }

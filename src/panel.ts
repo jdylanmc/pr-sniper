@@ -58,6 +58,7 @@ interface Row {
   state: string;
   reason?: string | null;
   failure?: FailureClass | null;
+  delayed_until?: number | null;
   work?: WorkPresentation;
   subject?: string;
   reference?: string;
@@ -65,6 +66,7 @@ interface Row {
 
 const stateIcons: Record<string, string> = {
   Queued: "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
+  Waiting: "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
   Failed: "m9 9 6 6m0-6-6 6M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
   Credentials: "m9 9 6 6m0-6-6 6M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
   Permission: "m9 9 6 6m0-6-6 6M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
@@ -609,7 +611,9 @@ export async function mountPanel(app: HTMLElement) {
                   ? "Superseded"
                   : ["failed", "manual_retry"].includes(row.work?.state ?? "")
                     ? "Failed"
-                    : "Queued";
+                    : row.delayed_until
+                      ? "Waiting"
+                      : "Queued";
         button.className = "work-row";
         button.dataset.display = displayState.toLowerCase();
         button.setAttribute(
@@ -634,7 +638,13 @@ export async function mountPanel(app: HTMLElement) {
         copy.className = "work-copy";
         const state = document.createElement("span");
         state.className = "work-state";
-        state.textContent = displayState;
+        // Backpressure is a quiet wait: a clock and the local resume time.
+        state.textContent = row.delayed_until
+          ? new Date(row.delayed_until * 1000).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            })
+          : displayState;
         if (row.failure) {
           const subject = document.createElement("strong");
           subject.className = "work-subject";
@@ -728,6 +738,7 @@ export async function mountPanel(app: HTMLElement) {
               `Saved ${work.key.kind} job ${work.key.id}`,
             state: work.state,
             failure: work.failure,
+            delayed_until: work.delayed_until,
             reason:
               work.reason ??
               (automation?.paused && work.state === "waiting"

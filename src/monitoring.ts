@@ -181,6 +181,7 @@ export interface ReviewCandidate {
       input_tokens: number;
       output_tokens: number;
       tool_calls: number;
+      coverage?: { read: number; changed: number } | null;
     } | null;
   } | null;
 }

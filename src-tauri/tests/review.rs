@@ -292,9 +292,14 @@ fn durable_review_uses_shared_retry_budget_and_restores_without_new_identity() {
         kind: OperationFailure::RateLimited,
         message: "Rate limited".into(),
         retry_after_seconds: Some(900),
+        origin: pr_sniper_lib::backpressure::Origin::Copilot,
     };
+    // Beyond the retry window a rate limit still only waits: no park, no budget.
     operation.fail(&failure.monitoring(), 100);
-    assert_eq!(operation.state, OperationState::ManualRetry);
+    assert_eq!(operation.state, OperationState::Queued);
+    assert_eq!(operation.attempt_count, 0);
+    assert_eq!(operation.failure, None);
+    assert_eq!(operation.next_attempt_at, Some(1000));
     let mut boundary = JobOperation::review(&restored.job, 100);
     boundary.begin_attempt(1000).unwrap();
     assert_eq!(boundary.initial_attempt_at, 1000);
@@ -324,6 +329,7 @@ fn runtime_errors_preserve_retry_classification_without_provider_messages() {
             )
             .unwrap_err();
         assert_eq!(error.kind, expected);
+        assert_eq!(error.rate_limited(), status == 429);
         assert_eq!(error.retry_after_seconds, Some(60));
         assert!(!error.message.contains("secret-provider"));
     }

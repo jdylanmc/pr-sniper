@@ -8,7 +8,8 @@ Reference for scheduled detection, admission rules, the read-only GitHub connect
 - **Check Now** (tray menu) runs an immediate scan. **Pause automation** halts polling.
 - Schedule suspends when no repo is schedulable; resumes at the next occurrence.
 - Poll operation persists before the read. Restart keeps it. Interruption past its deadline needs **Retry**.
-- Retry: transient failures back off, 3 failed attempts, then park. Window 15 min. Credential/permission failures park immediately. Parked home: Queue > **Needs attention** ([review-queue.md](review-queue.md)).
+- Retry: transient failures back off, 3 failed attempts, then park. Window 15 min. Credential/permission failures park immediately.
+- Rate limit (403/429): not a failure. The poll waits until Retry-After/reset, else 30s x2^n (cap 15m); no attempt spent, no failure shown. Other repos on the same account wait too (`backpressure.json`, survives restart). A successful read clears it. Parked home: Queue > **Needs attention** ([review-queue.md](review-queue.md)).
 - Schedule health keeps pending/success/failure per account/repo read. Surfaced in Status.
 - Detection never clones, executes repo code, mutates GitHub or publishes.
 
@@ -34,7 +35,7 @@ Per repository, set in the repo editor.
 - Connect in Settings > Accounts > Git Repository via the PR Sniper GitHub OAuth App; scope `repo` ([ADR-0003](adr/0003-github-browser-oauth.md)). Confirm identity. Select acting account + repo, Save.
 - Verify in the repo editor. Uses saved bindings, not rename drafts. Retargeting a repo invalidates the connection. Copilot credentials never set the acting identity.
 - Verify reads: `/user`, repo metadata, a real PR read. Read success is not comment capability. Fine-grained tokens: comment capability stays unverified. No mutation probe.
-- Failures (auth, permission, rate limit, timeout, network, provider) are visible. No auto retry, no auto-enable.
+- Failures (auth, permission, rate limit, timeout, network, provider) are visible. No auto retry, no auto-enable. (Account connection flows only; queue and polling rate limits are backpressure, above.)
 - HTTPS credential sits only in a sensitive authorization header. Redirects disabled. Diagnostics get fixed success/failure events only; never bodies, tokens or output.
 
 ## PR metadata read

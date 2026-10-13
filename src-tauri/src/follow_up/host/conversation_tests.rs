@@ -384,6 +384,7 @@ fn output_for(
         output_tokens: 1,
         tool_calls: 1,
         byte_coverage: false,
+        coverage: None,
     }
 }
 
@@ -496,6 +497,7 @@ fn review_and_publish(store: &Store, output: Value, now: i64) -> Publication {
             output_tokens: 1,
             tool_calls: 1,
             byte_coverage: false,
+            coverage: None,
         }),
         now + 1,
     )

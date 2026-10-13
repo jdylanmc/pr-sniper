@@ -129,6 +129,12 @@ export function renderActions(
       result ? `${result.input_tokens} / ${result.output_tokens}` : "",
     ],
     ["Tools", result ? String(result.tool_calls) : ""],
+    [
+      "Read",
+      result?.coverage
+        ? `${result.coverage.read} of ${result.coverage.changed}`
+        : "",
+    ],
     ["Session", result?.session_id ?? "", true],
     ["State", execution ? label(execution.operation.state) : ""],
     ["Attempts", execution ? String(execution.operation.attempt_count) : ""],

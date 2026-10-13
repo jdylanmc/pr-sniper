@@ -51,6 +51,8 @@ pub enum OperationState {
 #[serde(rename_all = "snake_case")]
 pub enum OperationFailure {
     Timeout,
+    /// Legacy: rate limits are backpressure now. Read from old records and
+    /// carried in memory as the signal; never stored on a new operation.
     RateLimited,
     Network,
     Provider,
@@ -110,6 +112,9 @@ pub struct JobOperation {
     /// When a parked failure earns its next automatic attempt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_at: Option<i64>,
+    /// Rate-limit delay: the work waits, it did not fail and spent no attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backpressure_until: Option<i64>,
     pub id: String,
     pub provider: String,
     pub account_id: String,
@@ -576,6 +581,12 @@ pub enum MonitoringError {
         failure: OperationFailure,
         retry_after_seconds: Option<i64>,
     },
+    /// A rate limit: wait, never fail. Typed by the provider that signalled it.
+    Backpressure {
+        origin: crate::backpressure::Origin,
+        message: String,
+        retry_after_seconds: Option<i64>,
+    },
     Storage(String),
 }
 
@@ -587,13 +598,16 @@ impl MonitoringError {
 
     pub fn message(&self) -> &str {
         match self {
-            Self::Recoverable { message, .. } | Self::Storage(message) => message,
+            Self::Recoverable { message, .. }
+            | Self::Backpressure { message, .. }
+            | Self::Storage(message) => message,
         }
     }
 
     fn health_failure(&self) -> &str {
         match self {
             Self::Recoverable { code, .. } => code,
+            Self::Backpressure { .. } => "backpressure",
             Self::Storage(_) => "storage",
         }
     }
@@ -1161,7 +1175,8 @@ impl Monitor {
         }
         let mut queue = store.load_queue_state()?;
         queue.recover_evidence(store)?;
-        let tickets = self.begin(&configured, &queue, now, check_now);
+        let gates = store.load_backpressure()?;
+        let tickets = self.begin(&configured, &queue, &gates, now, check_now);
         if self.state != previous {
             if let Err(error) = store.save_monitoring_state(&self.state) {
                 self.state = previous;
@@ -1363,7 +1378,7 @@ impl Monitor {
         }) {
             return Err(GateError::Policy("Monitoring needs correction or manual retry before the new revision can be queued.".into()));
         }
-        // A publication recheck must not bypass a poll's existing retry budget or Retry-After.
+        // A publication recheck must not bypass a poll's existing retry budget or backpressure wait.
         if health.operation.as_ref().is_none_or(|operation| {
             !matches!(
                 operation.state,
@@ -1940,6 +1955,7 @@ impl Monitor {
         &mut self,
         configured: &[ConfiguredSchedule],
         queue: &QueueState,
+        gates: &crate::backpressure::Backpressure,
         now: i64,
         check_now: bool,
     ) -> Vec<PollTicket> {
@@ -2024,6 +2040,9 @@ impl Monitor {
                     .as_ref()
                     .is_some_and(|scan| scan.pending.contains(&configuration.health_key))
                 || retry_waiting
+                || gates
+                    .until(&crate::backpressure::Scope::github(account_id), now)
+                    .is_some()
                 || checking_repositories.contains(repository_id)
             {
                 continue;
@@ -2184,6 +2203,34 @@ impl Monitor {
             Err(error) => Err(MonitoringError::Storage(error)),
         };
         self.leases.remove(&ticket.provider_repository_id);
+        let github = crate::backpressure::Scope::github(&ticket.provider_account_id);
+        let mut paced_until = None;
+        match &outcome {
+            Ok(_) => {
+                // Gate bookkeeping never fails a poll that succeeded.
+                let _ = crate::backpressure::succeeded(store, &github);
+            }
+            Err(MonitoringError::Backpressure {
+                retry_after_seconds,
+                ..
+            }) => {
+                let seed = self
+                    .state
+                    .health
+                    .get(&ticket.health_key)
+                    .and_then(|health| health.operation.as_ref())
+                    .map_or(ticket.health_key.as_str(), |operation| {
+                        operation.id.as_str()
+                    });
+                paced_until = Some(
+                    crate::backpressure::record(store, github, *retry_after_seconds, seed, now)
+                        .unwrap_or_else(|_| {
+                            now + crate::backpressure::delay_seconds(seed, 0, *retry_after_seconds)
+                        }),
+                );
+            }
+            Err(_) => {}
+        }
         self.synchronize_health(&configured, accounts, now);
         let current = configured
             .iter()
@@ -2203,6 +2250,15 @@ impl Monitor {
                             operation.next_attempt_at = None;
                             operation.failure = None;
                         }
+                    }
+                    Err(MonitoringError::Backpressure { .. }) => {
+                        // A rate limit is a wait: no failure, no attempt spent.
+                        let until = paced_until.unwrap_or(now);
+                        if let Some(operation) = health.operation.as_mut() {
+                            operation.defer_until(until, now);
+                        }
+                        health.next_run = until;
+                        health.schedule_available = true;
                     }
                     Err(error) => {
                         health.last_failure = Some(error.health_failure().into());
@@ -2253,7 +2309,10 @@ impl Monitor {
         store
             .save_monitoring_state(&self.state)
             .map_err(MonitoringError::Storage)?;
-        outcome.map(|_| ())
+        match outcome {
+            Err(MonitoringError::Backpressure { .. }) => Ok(()),
+            outcome => outcome.map(|_| ()),
+        }
     }
 
     pub fn manual_retry_operation(
@@ -2959,6 +3018,7 @@ fn start_poll_operation(
             operation.state = OperationState::Running;
             operation.attempt_count += 1;
             operation.next_attempt_at = None;
+            operation.backpressure_until = None;
             return;
         }
     }
@@ -2967,6 +3027,7 @@ fn start_poll_operation(
         interruption: None,
         resume_cycle: 0,
         resume_at: None,
+        backpressure_until: None,
         id: uuid::Uuid::new_v4().to_string(),
         provider: "github".into(),
         account_id: configuration
@@ -3021,20 +3082,52 @@ impl JobOperation {
     }
 
     pub fn requeue_intentional(&mut self, now: i64) {
+        self.restore_budget();
+        self.state = OperationState::Queued;
+        self.next_attempt_at = Some(now);
+        self.backpressure_until = None;
+    }
+
+    fn restore_budget(&mut self) {
         if let Some(budget) = self.ai_attempt.take() {
             self.attempt_count = budget.attempt_count;
             self.initial_attempt_at = budget.initial_attempt_at;
             self.retry_deadline = budget.retry_deadline;
             self.failure = budget.failure;
         }
+    }
+
+    /// A rate limit is a wait, not a failure: the attempt is handed back, no
+    /// failure is recorded and the retry window moves past the wait.
+    pub fn defer_until(&mut self, until: i64, now: i64) {
+        if self.ai_attempt.is_some() {
+            self.restore_budget();
+        } else if self.state == OperationState::Running {
+            self.attempt_count = self.attempt_count.saturating_sub(1);
+        }
+        self.interruption = None;
         self.state = OperationState::Queued;
-        self.next_attempt_at = Some(now);
+        let until = until.max(now);
+        self.next_attempt_at = Some(until);
+        self.backpressure_until = Some(until);
+        self.retry_deadline = self
+            .retry_deadline
+            .max(until.saturating_add(RETRY_WINDOW_SECONDS));
     }
 
     /// Transient failures back off and retry until `MAX_FAILED_ATTEMPTS`, then
     /// park as `ManualRetry`; terminal, credential and permission failures
     /// park at once as `Failed`. `failure` keeps the classified cause.
     pub fn fail(&mut self, error: &MonitoringError, now: i64) {
+        if let MonitoringError::Backpressure {
+            retry_after_seconds,
+            ..
+        } = error
+        {
+            let delay = crate::backpressure::delay_seconds(&self.id, 0, *retry_after_seconds);
+            self.defer_until(now.saturating_add(delay), now);
+            return;
+        }
         self.fail_attempt(error, now);
         if self.parked() {
             self.schedule_resume(now);
@@ -3051,6 +3144,7 @@ impl JobOperation {
         self.failure = None;
         self.resume_cycle = 0;
         self.resume_at = None;
+        self.backpressure_until = None;
         self.ai_attempt = None;
         self.interruption = None;
     }
@@ -3086,12 +3180,14 @@ impl JobOperation {
         self.next_attempt_at = Some(now);
         self.failure = None;
         self.resume_at = None;
+        self.backpressure_until = None;
         self.ai_attempt = None;
         self.interruption = None;
         true
     }
 
     fn fail_attempt(&mut self, error: &MonitoringError, now: i64) {
+        self.backpressure_until = None;
         self.ai_attempt = None;
         self.interruption = None;
         let failure = retryable_failure(error);
@@ -3168,6 +3264,7 @@ impl JobOperation {
         self.attempt_count += 1;
         self.state = OperationState::Running;
         self.next_attempt_at = None;
+        self.backpressure_until = None;
         Ok(())
     }
 
@@ -3177,6 +3274,7 @@ impl JobOperation {
             interruption: None,
             resume_cycle: 0,
             resume_at: None,
+            backpressure_until: None,
             id: uuid::Uuid::new_v4().to_string(),
             provider: job.provider.clone(),
             account_id: job.account_id.clone(),
@@ -3205,7 +3303,9 @@ impl JobOperation {
 fn retryable_failure(error: &MonitoringError) -> OperationFailure {
     match error {
         MonitoringError::Recoverable { failure, .. } => failure.clone(),
-        MonitoringError::Storage(_) => OperationFailure::Permanent,
+        MonitoringError::Backpressure { .. } | MonitoringError::Storage(_) => {
+            OperationFailure::Permanent
+        }
     }
 }
 
@@ -3250,12 +3350,33 @@ pub(crate) fn actionable(job: &QueueJob) -> bool {
 }
 
 pub(crate) fn check_error(error: ConnectionError) -> MonitoringError {
+    let rate_limit = match error {
+        ConnectionError::RateLimited => Some(None),
+        ConnectionError::RateLimitedAfter(retry_after_seconds) => Some(Some(retry_after_seconds)),
+        ConnectionError::RateLimitedWithContext {
+            missing_repo_scope: false,
+            retry_after_seconds,
+            reset_at,
+            ..
+        } => Some(match (retry_after_seconds, reset_at) {
+            (Some(delay), _) => Some(delay),
+            (None, Some(reset)) => match crate::now_seconds() {
+                Ok(now) => Some(reset.saturating_sub(now).max(0)),
+                Err(error) => return MonitoringError::Storage(error),
+            },
+            _ => None,
+        }),
+        _ => None,
+    };
+    if let Some(retry_after_seconds) = rate_limit {
+        return MonitoringError::Backpressure {
+            origin: crate::backpressure::Origin::Github,
+            message: format!("Repository check was rate limited: {error:?}"),
+            retry_after_seconds,
+        };
+    }
     let (failure, retry_after_seconds) = match error {
         ConnectionError::Timeout => (OperationFailure::Timeout, None),
-        ConnectionError::RateLimited => (OperationFailure::RateLimited, None),
-        ConnectionError::RateLimitedAfter(retry_after_seconds) => {
-            (OperationFailure::RateLimited, Some(retry_after_seconds))
-        }
         ConnectionError::SignedOut
         | ConnectionError::WrongIdentity
         | ConnectionError::MissingScope
@@ -3270,21 +3391,6 @@ pub(crate) fn check_error(error: ConnectionError) -> MonitoringError {
         | ConnectionError::RepositoryUnavailable
         | ConnectionError::OrganizationPolicyDenied
         | ConnectionError::ProviderRejectedStatus(403) => (OperationFailure::Permission, None),
-        ConnectionError::RateLimitedWithContext {
-            retry_after_seconds,
-            reset_at,
-            ..
-        } => {
-            let delay = match (retry_after_seconds, reset_at) {
-                (Some(delay), _) => Some(delay),
-                (None, Some(reset)) => match crate::now_seconds() {
-                    Ok(now) => Some(reset.saturating_sub(now).max(0)),
-                    Err(error) => return MonitoringError::Storage(error),
-                },
-                _ => None,
-            };
-            (OperationFailure::RateLimited, delay)
-        }
         ConnectionError::Network => (OperationFailure::Network, None),
         ConnectionError::ProviderFailure => (OperationFailure::Provider, None),
         ConnectionError::ProviderFailureAfter(retry_after_seconds) => {
@@ -3721,8 +3827,8 @@ mod read_diagnostic_tests {
         });
         assert!(matches!(
             error,
-            MonitoringError::Recoverable {
-                failure: OperationFailure::RateLimited,
+            MonitoringError::Backpressure {
+                origin: crate::backpressure::Origin::Github,
                 retry_after_seconds: Some(60),
                 ..
             }
@@ -3739,12 +3845,73 @@ mod read_diagnostic_tests {
         });
         assert!(matches!(
             error,
-            MonitoringError::Recoverable {
-                failure: OperationFailure::RateLimited,
+            MonitoringError::Backpressure {
                 retry_after_seconds: Some(0),
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn missing_scope_rate_limit_stays_a_credential_failure() {
+        let error = check_error(ConnectionError::RateLimitedWithContext {
+            retry_after_seconds: Some(60),
+            reset_at: None,
+            organization_access_incomplete: false,
+            missing_repo_scope: true,
+        });
+        assert!(matches!(
+            error,
+            MonitoringError::Recoverable {
+                failure: OperationFailure::Credentials,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_rate_limit_hands_the_attempt_back_and_never_fails() {
+        let error = check_error(ConnectionError::RateLimitedAfter(3_600));
+        let mut operation = running_operation();
+        operation.fail(&error, 1_000);
+        assert_eq!(operation.state, OperationState::Queued);
+        assert_eq!(operation.attempt_count, 0);
+        assert_eq!(operation.failure, None);
+        assert_eq!(operation.next_attempt_at, Some(4_600));
+        assert_eq!(operation.backpressure_until, Some(4_600));
+        assert!(operation.retry_deadline > 4_600);
+        assert!(!operation.parked());
+        assert_eq!(operation.failure_class(), None);
+        operation.begin_attempt(4_600).unwrap();
+        assert_eq!(operation.attempt_count, 1);
+        assert_eq!(operation.backpressure_until, None);
+    }
+
+    #[test]
+    fn repeated_rate_limits_never_spend_the_budget() {
+        let mut operation = running_operation();
+        for round in 0..10 {
+            operation.fail(&check_error(ConnectionError::RateLimited), round * 2_000);
+            assert_eq!(operation.attempt_count, 0);
+            assert_eq!(operation.state, OperationState::Queued);
+            operation.begin_attempt(round * 2_000 + 1_500).unwrap();
+        }
+    }
+
+    fn running_operation() -> JobOperation {
+        let mut operation = JobOperation::review(&queue_job(), 0);
+        operation.begin_attempt(0).unwrap();
+        operation
+    }
+
+    fn queue_job() -> QueueJob {
+        serde_json::from_value(serde_json::json!({
+            "provider":"github","account_id":"22","account_login":"a","repository_id":"100",
+            "repository_name":"o/r","pull_request_id":"9","number":1,"title":"t","head_sha":"h",
+            "trigger_policy":"all","author_id":null,"author_login":null,"watched_author":false,
+            "requested_reviewer":false,"waiting":"ready","detected_at":0
+        }))
+        .unwrap()
     }
 }
 

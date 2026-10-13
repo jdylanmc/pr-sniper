@@ -1651,11 +1651,17 @@ fn provider_rules_rate_limits_preserve_action_observation_failure_and_backoff() 
             synchronize(&store, &item, Err(failure), NOW + 21).unwrap();
             let ledger = store.load_actions().unwrap();
             assert!(ledger.observations[0].observation.is_none());
-            assert!(ledger.observations[0].error.is_some());
-            assert_eq!(
-                ledger.observations[0].retry_at,
-                Some(NOW + 21 + delay.unwrap_or(5))
-            );
+            // A rate limit is a wait: no stored error, no failure counted.
+            assert!(ledger.observations[0].error.is_none());
+            assert_eq!(ledger.observations[0].failures, 0);
+            let retry_at = ledger.observations[0].retry_at.unwrap();
+            match delay {
+                Some(delay) => assert_eq!(retry_at, NOW + 21 + delay),
+                None => assert!((NOW + 21 + 30..=NOW + 21 + 33).contains(&retry_at)),
+            }
+            let gates = store.load_backpressure().unwrap();
+            assert_eq!(gates.gates.len(), 1);
+            assert_eq!(gates.gates[0].until, retry_at);
             assert_eq!(ledger.finals, vec![final_review.clone()]);
             assert!(ledger.effects.is_empty());
             assert_eq!(store.load_settings().unwrap(), settings);
@@ -1708,6 +1714,8 @@ fn provider_rules_reset_only_rate_limit_preserves_reported_retry_interval() {
     synchronize(&store, &item, Err(failure), NOW + 21).unwrap();
     let ledger = store.load_actions().unwrap();
     assert_eq!(ledger.observations[0].retry_at, Some(NOW + 21 + delay));
+    assert_eq!(ledger.observations[0].failures, 0);
+    assert!(ledger.observations[0].error.is_none());
     assert!(ledger.observations[0].observation.is_none());
     assert_eq!(ledger.finals, vec![final_review.clone()]);
     validate_local(&store, &final_review).unwrap();
@@ -1923,6 +1931,12 @@ fn observation_retry_after_and_original_mutation_ownership_survive_retry_request
         kind: monitoring::OperationFailure::RateLimited,
         message: "Provider read rate limited.".into(),
         retry_after_seconds: Some(60),
+        origin: crate::backpressure::Origin::Github,
+    };
+    let network = Failure {
+        kind: monitoring::OperationFailure::Network,
+        message: "Provider read unreachable.".into(),
+        ..error.clone()
     };
     synchronize(&store, &item, Err(error.clone()), NOW + 21).unwrap();
     assert_eq!(
@@ -1930,8 +1944,9 @@ fn observation_retry_after_and_original_mutation_ownership_survive_retry_request
         Some(NOW + 81)
     );
     assert!(request_observation_retry(&store, &item, NOW + 22).is_err());
-    for i in 1..=3 {
-        synchronize(&store, &item, Err(error.clone()), NOW + 21 + i * 60).unwrap();
+    // Rate limits never spend the budget; real failures still do.
+    for i in 1..=4 {
+        synchronize(&store, &item, Err(network.clone()), NOW + 21 + i * 60).unwrap();
     }
     assert_eq!(store.load_actions().unwrap().observations[0].retry_at, None);
     request_observation_retry(&store, &item, NOW + 300).unwrap();
