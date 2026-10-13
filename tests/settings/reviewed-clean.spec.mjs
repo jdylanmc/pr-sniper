@@ -146,11 +146,13 @@ test("Reviewed shows 50 rows, appends 50 per Show more, keeps Clean all last and
   store,
 }, testInfo) => {
   await page.setViewportSize({ width: 408, height: 744 });
+  // 132-review fixture: the first snapshot render is slow on CI runners.
+  test.slow();
   const { merged } = await seedMany(store, 127);
   await page.goto("/");
   await tab(page, "Reviewed").click();
   const rows = reviewed(page).locator("[data-job-id]");
-  await expect(rows).toHaveCount(50);
+  await expect(rows).toHaveCount(50, { timeout: 20_000 });
   const total = 132;
   const more = reviewed(page).getByRole("button", { name: "Show 50 more" });
   await expect(more).toHaveText(`+${total - 50}`);
