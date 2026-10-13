@@ -533,6 +533,13 @@ async fn execute_attempt(
                 .capabilities
                 .comment
                 == crate::github::provider::CommentCapability::Available;
+            let teammates = {
+                let store = host
+                    .store
+                    .lock()
+                    .map_err(|_| Failure::permanent("Review storage unavailable."))?;
+                super::teammates::entries(&store, &preparation_run)?
+            };
             Some(super::packet_run::prepare(
                 &client,
                 &repo,
@@ -540,6 +547,7 @@ async fn execute_attempt(
                 &context,
                 &identity.login,
                 write_capability,
+                teammates,
             )?)
         } else {
             None

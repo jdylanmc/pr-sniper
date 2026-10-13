@@ -59,6 +59,7 @@ pub(crate) fn prepare<T>(
     context: &ReviewContext,
     acting_login: &str,
     write_capability: bool,
+    teammates: Vec<crate::packet::TeammateEntry>,
 ) -> Result<Prepared, Failure>
 where
     T: Transport + QueryTransport + Send + Sync + 'static,
@@ -143,7 +144,7 @@ where
             preset: run.selection.preset.clone(),
             signature: agent.signature.clone(),
         },
-        teammates: vec![],
+        teammates: if base.primary { teammates } else { vec![] },
         conversation: conversation.clone(),
     };
     let packet = packet::build(&input);

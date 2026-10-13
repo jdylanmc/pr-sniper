@@ -54,6 +54,9 @@ pub struct Work {
     /// Rate-limit backpressure: runnable work that waits until this time.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delayed_until: Option<i64>,
+    /// Typed cause when `reason` holds the work back behind another run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked_by: Option<review::teammates::BlockedBy>,
 }
 
 #[derive(Debug, Serialize)]
@@ -172,6 +175,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
             ),
             failure: None,
             delayed_until: None,
+            blocked_by: None,
         });
     }
     for mention in store.load_feedback()?.mentions.into_iter().filter(|m| {
@@ -194,10 +198,30 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
             ),
             failure: None,
             delayed_until: None,
+            blocked_by: None,
         });
     }
     let gates = store.load_backpressure()?;
-    for candidate in review::host::candidates(store)? {
+    let reviews = review::host::candidates(store)?;
+    let repositories = store.load_settings()?.repositories;
+    let barriers: BTreeMap<String, review::teammates::TeammateRef> = reviews
+        .iter()
+        .filter(|c| {
+            c.run
+                .as_ref()
+                .is_none_or(|r| r.operation.state != OperationState::Completed)
+        })
+        .filter_map(|c| {
+            let repository = repositories
+                .iter()
+                .find(|r| r.id == c.job.configuration_id)?;
+            Some((
+                c.key.clone(),
+                review::teammates::blocker(repository, &reviews, c)?,
+            ))
+        })
+        .collect();
+    for candidate in reviews {
         if candidate
             .run
             .as_ref()
@@ -205,6 +229,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
         {
             continue;
         }
+        let mut blocked_by = None;
         let mut reason = candidate.blocked;
         if reason.is_none() {
             if let Some(selection) = &candidate.planned_selection {
@@ -236,6 +261,17 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                 }
                 _ => None,
             };
+        }
+        if reason.is_none()
+            && candidate
+                .run
+                .as_ref()
+                .is_none_or(|run| run.operation.state != OperationState::Running)
+        {
+            if let Some(teammate) = barriers.get(&candidate.key) {
+                reason = Some(review::teammates::WAITING_FOR_TEAMMATES.into());
+                blocked_by = Some(review::teammates::BlockedBy::Teammate(teammate.clone()));
+            }
         }
         let scopes = scopes(
             &candidate.job.account_id,
@@ -275,6 +311,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                 .as_ref()
                 .and_then(|run| run.operation.failure_class()),
             delayed_until: delayed_until.flatten(),
+            blocked_by,
         });
     }
     for candidate in follow_ups {
@@ -331,6 +368,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                 .and_then(|op| op.failure_class())
                 .or_else(|| run.publication.as_ref().and_then(|op| op.failure_class())),
             delayed_until: delayed_until.flatten(),
+            blocked_by: None,
         });
     }
     result.sort_by(|a, b| (a.enqueue_order, &a.key).cmp(&(b.enqueue_order, &b.key)));
@@ -393,6 +431,7 @@ impl Coordinator {
                 }),
                 failure: None,
                 delayed_until: None,
+                blocked_by: None,
             };
             if let Some(old) = work.iter_mut().find(|w| w.key == entry.key) {
                 *old = entry;
@@ -716,3 +755,6 @@ pub(crate) fn automation_snapshot(app: tauri::AppHandle) -> Result<Snapshot, Str
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+#[cfg(test)]
+mod barrier_tests;

@@ -292,7 +292,8 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
         head: BTreeMap::new(),
         base: BTreeMap::new(),
     };
-    let prepared = packet_run::prepare(&client, &repo, &run, &context, "actor", true).unwrap();
+    let prepared =
+        packet_run::prepare(&client, &repo, &run, &context, "actor", true, vec![]).unwrap();
     assert_eq!(
         prepared.setup.offered,
         [
@@ -351,7 +352,7 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
         Err(Refusal::Moved(_))
     ));
     assert_eq!(
-        packet_run::prepare(&client, &repo, &run, &context, "actor", true)
+        packet_run::prepare(&client, &repo, &run, &context, "actor", true, vec![])
             .err()
             .unwrap()
             .kind,

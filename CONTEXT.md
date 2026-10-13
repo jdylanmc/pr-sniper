@@ -57,7 +57,7 @@ Shared, editable plain-text review principle selected per Agent. Referenced Doct
 _Avoid_: Skill, prompt snippet
 
 **Primary Agent**:
-The repository assignment responsible for eligible conversation assessments and the final full review before permitted provider actions. A sole assignment is primary automatically; multiple assignments have at most one explicit primary. No primary means no reply, approve or merge; normal reviews and permitted initial comments continue. Selecting primary grants no capabilities and does not change original feedback ownership.
+The repository assignment responsible for eligible conversation assessments and the final full review before permitted provider actions. Runs last, after every teammate report for the same PR state; its packet has the Teammate reports section. A sole assignment is primary automatically; multiple assignments have at most one explicit primary. No primary means no reply, approve or merge; normal reviews and permitted initial comments continue. Selecting primary grants no capabilities and does not change original feedback ownership.
 _Avoid_: Global primary, thread owner as responder
 
 **Tools** (assignment):
@@ -73,7 +73,7 @@ The one terminal tool call that ends an agent run: `leave_comments`, `ready_for_
 _Avoid_: Decision, verdict
 
 **Teammate**:
-A non-primary assignment of a repository. Runs first, ends with `submit_report`, never has an effect exit. Its report is untrusted data for the primary.
+A non-primary assignment of a repository. Runs first, ends with `submit_report`, never has an effect exit. Its report is untrusted data for the primary. Teammate fail = whole PR-state run set fail: primary blocked (`BlockedBy::Teammate`) until every teammate has a report for same state. Good reports kept on retry. State move re-runs all.
 _Avoid_: Secondary agent, peer
 
 **Review drafts** (repository):

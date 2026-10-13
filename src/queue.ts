@@ -72,6 +72,16 @@ export interface QueueItem {
     | "closed"
     | "merged";
   failure_class?: FailureClass | null;
+  // A parked teammate holds the primary back; the cause is typed.
+  failed_teammate?: {
+    assignment_id: string;
+    agent_name: string;
+    cause: TeammateCause;
+  } | null;
+  // The primary waits for this teammate's report.
+  blocked_by?: {
+    teammate: { assignment_id: string; agent_name: string };
+  } | null;
   failure_cause?: "publication_failed" | "publication_unresolved" | null;
   resume_at?: number | null;
   summary: string;
@@ -95,6 +105,66 @@ const labels: Record<QueueItem["state"], string> = {
   closed: "Closed on GitHub",
   merged: "Merged on GitHub",
 };
+
+export type TeammateCause =
+  | "timeout"
+  | "rate_limited"
+  | "network"
+  | "provider"
+  | "permanent"
+  | "superseded"
+  | "credentials"
+  | "permission"
+  | "panic";
+export const teammateCauses: Record<TeammateCause, string> = {
+  timeout: "Timeout",
+  rate_limited: "Rate limit",
+  network: "Network",
+  provider: "Provider",
+  permanent: "Permanent",
+  superseded: "Superseded",
+  credentials: "Credentials",
+  permission: "Permission",
+  panic: "Panic",
+};
+const teammatePath =
+  "M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm7 1a2.5 2.5 0 1 0 0-5M3 19c0-3 2.7-5 6-5s6 2 6 5M17 14c2.3.2 4 1.7 4 4";
+// Agent name plus a typed cause (parked) or a clock (waiting): icons, no prose.
+export function teammateChip(
+  agentName: string,
+  cause: TeammateCause | null,
+): HTMLElement {
+  const chip = document.createElement("span");
+  chip.className = "queue-teammate";
+  chip.dataset.queueTeammate = agentName;
+  chip.dataset.teammateState = cause ? "failed" : "waiting";
+  if (cause) chip.dataset.teammateCause = cause;
+  chip.innerHTML = `<svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${teammatePath}"/></svg>`;
+  const name = document.createElement("span");
+  name.textContent = agentName;
+  chip.append(name);
+  if (cause) {
+    const label = document.createElement("strong");
+    label.textContent = teammateCauses[cause] ?? cause;
+    chip.append(label);
+  } else {
+    chip.insertAdjacentHTML(
+      "beforeend",
+      `<svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18"/></svg>`,
+    );
+  }
+  return chip;
+}
+function itemTeammateChip(item: QueueItem) {
+  if (item.failed_teammate)
+    return teammateChip(
+      item.failed_teammate.agent_name,
+      item.failed_teammate.cause,
+    );
+  if (item.blocked_by)
+    return teammateChip(item.blocked_by.teammate.agent_name, null);
+  return null;
+}
 
 const credentials = (item: QueueItem) =>
   item.state === "failed" && item.failure_class === "credentials";
@@ -321,6 +391,8 @@ export function renderQueue(
         reference.className = "queue-reference";
         reference.textContent = `${item.job.repository_name} #${item.job.number}`;
         row.append(top, heading, reference);
+        const teammate = itemTeammateChip(item);
+        if (teammate) row.append(teammate);
         const receipts =
           item.action_status?.effects.filter((effect) => effect.receipt) ?? [];
         for (const effect of receipts) {
@@ -346,7 +418,11 @@ export function renderQueue(
             : "PR evidence";
         footer.append(avatar, author, trigger);
         row.append(footer);
-      } else row.append(state, heading, context);
+      } else {
+        row.append(state, heading, context);
+        const teammate = itemTeammateChip(item);
+        if (teammate) row.append(teammate);
+      }
       if (!options.compact) renderItemEvidence(row, item, showError, refresh);
       for (const warning of options.compact ? [] : item.warnings) {
         const text = document.createElement("p");

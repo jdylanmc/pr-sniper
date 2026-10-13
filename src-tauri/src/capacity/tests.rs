@@ -658,6 +658,7 @@ fn future_final_and_mention_adapters_reserve_the_same_pool_as_normal_and_reply_w
             reason: None,
             failure: None,
             delayed_until: None,
+            blocked_by: None,
         };
         let run = coordinator
             .reserve(&store, &work, |_| {
@@ -695,6 +696,7 @@ fn future_final_and_mention_adapters_reserve_the_same_pool_as_normal_and_reply_w
         reason: None,
         failure: None,
         delayed_until: None,
+        blocked_by: None,
     };
     assert!(coordinator
         .reserve::<()>(&store, &more, |_| panic!("No fifth slot"))

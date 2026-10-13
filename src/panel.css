@@ -1712,3 +1712,23 @@ body:has(.panel-shell) {
   width: 14px;
   height: 14px;
 }
+.panel-shell .queue-teammate {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: #eef2f6;
+  color: var(--panel-muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+.panel-shell .queue-teammate[data-teammate-state="failed"] {
+  background: #fde9e5;
+  color: #a53221;
+}
+.panel-shell .queue-teammate .panel-icon {
+  width: 11px;
+  height: 11px;
+}

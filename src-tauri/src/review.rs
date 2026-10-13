@@ -3,6 +3,7 @@ pub(crate) mod host;
 pub(crate) mod packet_run;
 pub(crate) mod rereview;
 pub(crate) mod runtime;
+pub(crate) mod teammates;
 pub(crate) mod tools;
 
 use crate::{

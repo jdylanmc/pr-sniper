@@ -789,6 +789,7 @@ fn live_reservation_fences_cleanup_even_after_a_completed_local_result() {
         reason: None,
         failure: None,
         delayed_until: None,
+        blocked_by: None,
     };
     let flag = coordinator
         .reserve(&store, &work, |flag| {
@@ -1064,6 +1065,7 @@ fn a_new_local_attempt_cannot_hide_the_old_worker_reservation_from_cleanup() {
         reason: None,
         failure: None,
         delayed_until: None,
+        blocked_by: None,
     };
     coordinator
         .reserve(&store, &work, |_| Ok((old_operation.clone(), ())))

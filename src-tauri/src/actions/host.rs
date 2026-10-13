@@ -116,6 +116,7 @@ pub(crate) fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
             reason,
             failure: run.execution.operation.failure_class(),
             delayed_until,
+            blocked_by: None,
         });
     }
     Ok(result)

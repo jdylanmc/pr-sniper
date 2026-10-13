@@ -1,6 +1,6 @@
 # Review packet
 
-Status: **accepted**. Packet, tools, gates and exits are built (`src-tauri/src/packet*`, `exits*`, `review/packet_run.rs`). Not yet wired: approve and merge effects, reply and resolve execution, teammate barrier, heartbeat, consume and baseline. Decision: [ADR 0021](adr/0021-review-packet.md). Discovery: [#172](https://github.com/jdylanmc/pr-sniper/issues/172).
+Status: **accepted**. Packet, tools, gates and exits are built (`src-tauri/src/packet*`, `exits*`, `review/packet_run.rs`). Teammate barrier built (`review/teammates.rs`, `capacity.rs`). Not yet wired: approve and merge effects, reply and resolve execution, heartbeat, consume and baseline. Decision: [ADR 0021](adr/0021-review-packet.md). Discovery: [#172](https://github.com/jdylanmc/pr-sniper/issues/172).
 
 Unit of work = a **PR state**. Packet is built when the queue item is consumed. Agent ends on one **exit**. Host is the only writer.
 

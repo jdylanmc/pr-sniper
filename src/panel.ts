@@ -16,7 +16,7 @@ import { renderMonitoring, type MonitoringSnapshot } from "./monitoring";
 import type { AutomationSnapshot, FailureClass } from "./automation";
 import crosshair from "./crosshair.svg";
 import sniperArt from "./sniper-mark.png";
-import { humanQueue } from "./queue";
+import { humanQueue, teammateChip } from "./queue";
 import { retryCommands, runRecoveries } from "./queue-detail";
 import {
   workPresentation,
@@ -59,6 +59,7 @@ interface Row {
   reason?: string | null;
   failure?: FailureClass | null;
   delayed_until?: number | null;
+  teammate?: string | null;
   work?: WorkPresentation;
   subject?: string;
   reference?: string;
@@ -702,6 +703,8 @@ export async function mountPanel(app: HTMLElement) {
             (row.kind === "item" ? "PR" : purposes[row.kind]);
           reference.append(purpose);
           copy.append(top, subject, reference);
+          if (row.teammate && tab === "running")
+            copy.append(teammateChip(row.teammate, null));
         }
         if (row.reason) button.title += `. ${row.reason}`;
         const chevron = document.createElement("span");
@@ -779,6 +782,7 @@ export async function mountPanel(app: HTMLElement) {
             state: work.state,
             failure: work.failure,
             delayed_until: work.delayed_until,
+            teammate: work.blocked_by?.teammate.agent_name ?? null,
             reason:
               work.reason ??
               (automation?.paused && work.state === "waiting"

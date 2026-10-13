@@ -376,7 +376,7 @@ function renderFailureFacts(
       entry.repository_id === item.job.configuration_id &&
       entry.provider_account_id === item.job.account_id,
   );
-  const code = operation?.failure ?? cause;
+  const code = item.failed_teammate?.cause ?? operation?.failure ?? cause;
   const klass = classLabels[item.failure_class ?? "other"];
   const rows: [string, string | HTMLElement][] = [
     ["Cause", code ? `${klass} / ${code}` : klass],
@@ -408,7 +408,9 @@ function renderFailureFacts(
       item.failure_class === "credentials" ? "On reconnect" : "Manual";
   }
   rows.push(["Next retry", next]);
-  if (review) rows.push(["Agent", review.run?.selection.agent.name ?? ""]);
+  if (item.failed_teammate)
+    rows.push(["Teammate", item.failed_teammate.agent_name]);
+  else if (review) rows.push(["Agent", review.run?.selection.agent.name ?? ""]);
   rows.push(["Revision", item.job.head_sha.slice(0, 7)]);
   rows.push(["Account", item.job.account_login]);
   const list = document.createElement("dl");

@@ -73,6 +73,10 @@ pub struct Item {
     pub failure_class: Option<monitoring::FailureClass>,
     // Typed publication cause of a failed item: `publication_failed` or `publication_unresolved`.
     pub failure_cause: Option<&'static str>,
+    // A parked teammate holds this PR's primary back; its typed cause rides along.
+    pub failed_teammate: Option<review::teammates::FailedTeammate>,
+    // The primary is waiting on this teammate's report for the current state.
+    pub blocked_by: Option<review::teammates::BlockedBy>,
     // Earliest automatic resume of a parked failure; absent once it waits for a human.
     pub resume_at: Option<i64>,
     pub summary: &'static str,
@@ -280,7 +284,9 @@ fn review_state(
     if let Some(exit) = &result.output.exit {
         use crate::exits::ExitOutcome;
         match exit {
-            ExitOutcome::ReadyForHuman { .. } => return State::MachineSignedOff,
+            ExitOutcome::ReadyForHuman { .. } | ExitOutcome::SubmitReport => {
+                return State::MachineSignedOff
+            }
             ExitOutcome::Approve { .. } | ExitOutcome::ApproveAndMerge { .. } => {
                 return State::WaitingForHuman
             }
@@ -722,6 +728,37 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             monitoring::WAITING_MERGED => State::Merged,
             _ => states.into_iter().min().unwrap_or(State::Queued),
         };
+        let repository = settings
+            .repositories
+            .iter()
+            .find(|r| r.id == job.configuration_id);
+        let primary_id = repository.and_then(|r| r.primary_assignment_id());
+        let failed_teammate = reviews
+            .iter()
+            .filter(|r| primary_id.is_some_and(|id| id != r.assignment_id))
+            .filter(|r| r.run.as_ref().is_some_and(|run| failed(&run.operation)))
+            .find_map(|r| {
+                Some(review::teammates::FailedTeammate {
+                    assignment_id: r.assignment_id.clone(),
+                    agent_name: r.agent_name.clone(),
+                    cause: r
+                        .run
+                        .as_ref()?
+                        .operation
+                        .failure
+                        .clone()
+                        .unwrap_or(monitoring::OperationFailure::Provider),
+                })
+            });
+        let blocked_by = (state != State::Failed || failed_teammate.is_some())
+            .then(|| {
+                let primary = reviews
+                    .iter()
+                    .find(|r| primary_id == Some(r.assignment_id.as_str()))?;
+                review::teammates::blocker(repository?, &reviews, primary)
+                    .map(review::teammates::BlockedBy::Teammate)
+            })
+            .flatten();
         let failure_cause = if state == State::Failed {
             publication_cause(&snapshot.publications, &id, current)
         } else {
@@ -746,11 +783,14 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             },
             failure_cause,
             failure_class: (state == State::Failed).then(|| {
-                failures
-                    .into_iter()
-                    .min()
+                failed_teammate
+                    .as_ref()
+                    .map(|teammate| teammate.cause.class())
+                    .or_else(|| failures.into_iter().min())
                     .unwrap_or(monitoring::FailureClass::Other)
             }),
+            failed_teammate,
+            blocked_by,
             summary: state.summary(),
             review_keys: reviews.iter().map(|r| r.key.clone()).collect(),
             follow_up_ids: follow_ups.iter().map(|f| f.run.id.clone()).collect(),
