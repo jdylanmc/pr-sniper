@@ -182,13 +182,14 @@ fn approve_denial(input: &GateInput) -> Option<String> {
         "PR is closed or merged.".into()
     } else if f.draft {
         "PR is draft. Do not approve.".into()
-    } else if f.author_is_acting {
-        // GitHub refuses self-approval: "Can not approve your own pull request".
-        "Acting account authored this PR. GitHub refuses self-approval.".into()
     } else if f.conflicts {
+        // PR-state reasons first: they tell the agent what to comment.
         "Merge conflicts. Do not approve. Say so with resolution advice.".into()
     } else if f.ci == Ci::Red {
         "CI is red. Do not approve. Say so with the fix.".into()
+    } else if f.author_is_acting {
+        // GitHub refuses self-approval: "Can not approve your own pull request".
+        "Acting account authored this PR. GitHub refuses self-approval.".into()
     } else {
         return f.approve_blocker.clone();
     })
@@ -199,13 +200,10 @@ fn merge_denial(input: &GateInput) -> Option<String> {
     if !input.grants.merge {
         return Some("No Approve & Merge grant.".into());
     }
-    if f.author_is_acting {
-        // Approval cannot be posted on an own PR; merge alone needs Include self.
-        if !input.grants.include_self {
-            return Some("Acting account authored this PR. Include self is off.".into());
+    if !f.author_is_acting {
+        if let Some(reason) = approve_denial(input) {
+            return Some(reason);
         }
-    } else if let Some(reason) = approve_denial(input) {
-        return Some(reason);
     }
     Some(if !f.open {
         "PR is closed or merged.".into()
@@ -215,6 +213,9 @@ fn merge_denial(input: &GateInput) -> Option<String> {
         "Merge conflicts. Do not merge.".into()
     } else if f.ci == Ci::Red {
         "CI is red. Do not merge.".into()
+    } else if f.author_is_acting && !input.grants.include_self {
+        // Approval cannot be posted on an own PR; merge alone needs Include self.
+        "Acting account authored this PR. Include self is off.".into()
     } else if f.ci == Ci::Pending {
         "CI is pending. Cannot merge yet.".into()
     } else if f.ci == Ci::Unknown {

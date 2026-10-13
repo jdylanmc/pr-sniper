@@ -573,7 +573,7 @@ async fn execute_attempt(
                 .capabilities
                 .comment
                 == crate::github::provider::CommentCapability::Available;
-            let (teammates, iterations) = {
+            let (teammates, iterations, last_consumed_at) = {
                 let store = host
                     .store
                     .lock()
@@ -582,6 +582,11 @@ async fn execute_attempt(
                     super::teammates::entries(&store, &preparation_run)?,
                     crate::exit_writes::known_iterations(&store, &preparation_run.job)
                         .unwrap_or_default(),
+                    store
+                        .load_pr_states()
+                        .map_err(Failure::permanent)?
+                        .get(&crate::retention::Binding::job(&preparation_run.job))
+                        .and_then(|r| r.consumed_at),
                 )
             };
             Some(super::packet_run::prepare(
@@ -595,6 +600,7 @@ async fn execute_attempt(
                     write_capability,
                     teammates,
                     iterations: &iterations,
+                    last_consumed_at,
                 },
             )?)
         } else {

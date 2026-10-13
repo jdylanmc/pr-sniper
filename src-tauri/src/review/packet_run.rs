@@ -58,6 +58,8 @@ pub(crate) struct Caller<'a> {
     pub teammates: Vec<crate::packet::TeammateEntry>,
     /// The PR's known (head, local iteration) pairs, for targeted revisions.
     pub iterations: &'a [(String, u64)],
+    /// When this PR's state was last consumed, for `new_since_last_review`.
+    pub last_consumed_at: Option<i64>,
 }
 
 /// Build the packet and the run's tool set from state read right now.
@@ -79,6 +81,7 @@ where
         write_capability,
         teammates,
         iterations,
+        last_consumed_at,
     } = caller;
     let mut observation = client
         .action_observation(repo, run.job.number)
@@ -114,6 +117,7 @@ where
     let admission = run.job.work.as_ref().map(|w| &w.admission);
     let mut conversation = reads::conversation(&observation);
     reads::stamp_targeted_revisions(&mut conversation, &observation, iterations);
+    reads::stamp_new_since(&mut conversation, &observation, last_consumed_at);
     let checks = reads::checks(&observation);
     let description = Some(snapshot.body.clone());
     let state_hash = snapshot.normalize().hash();
@@ -222,6 +226,27 @@ where
             facts: Facts::from_observation(&observation),
             ..base.clone()
         };
-        gates::check_call(&input, call).map_err(Refusal::Denied)
+        gates::check_call(&input, call).map_err(Refusal::Denied)?;
+        // A reply or resolve must name a thread of this PR now. Caught here, the agent
+        // fixes the id in the loop instead of the host tossing the whole exit later.
+        if let crate::exits::ExitCall::LeaveComments {
+            reply_comments,
+            resolve_own_threads,
+            ..
+        } = call
+        {
+            let unknown = reply_comments
+                .iter()
+                .map(|r| r.thread_id.as_str())
+                .chain(resolve_own_threads.iter().map(String::as_str))
+                .any(|id| !observation.threads.iter().any(|t| t.id == id));
+            if unknown {
+                return Err(Refusal::Denied(
+                    "A reply or resolve names an unknown thread. Copy thread ids exactly from the Conversation section."
+                        .into(),
+                ));
+            }
+        }
+        Ok(())
     }))
 }

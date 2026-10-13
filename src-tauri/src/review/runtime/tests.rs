@@ -1660,3 +1660,57 @@ mod exits {
         assert!(tools.execute("search_code", json!({"query":""})).is_err());
     }
 }
+
+/// Blocking HTTP as reqwest does it in debug builds: build and drop a runtime.
+struct BlockingTransport;
+impl Transport for BlockingTransport {
+    fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+        drop(
+            tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap(),
+        );
+        Text("fn main() {}\n".into()).get(path)
+    }
+}
+
+#[test]
+fn tool_handlers_run_blocking_http_off_the_async_worker() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let tools = ReadTools::new(
+        None,
+        context(true),
+        Arc::new(GithubClient::new(BlockingTransport)),
+        "example/repo".into(),
+        Arc::new(|| Ok(())),
+    );
+    let path = tools.context.files[0].path.clone();
+    let read = runtime.block_on(async {
+        tokio::spawn(async move {
+            off_runtime(|| {
+                tools.execute(
+                    "read_source",
+                    json!({"path": path, "side": "head", "offset": 0}),
+                )
+            })
+        })
+        .await
+    });
+    assert!(read.expect("no panic on the worker").is_ok());
+    // Without leaving the worker, the same blocking call panics there.
+    let direct = runtime.block_on(async {
+        tokio::spawn(async {
+            drop(
+                tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap(),
+            )
+        })
+        .await
+    });
+    assert!(direct.is_err());
+}

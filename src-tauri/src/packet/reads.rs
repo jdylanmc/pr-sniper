@@ -32,10 +32,11 @@ pub fn conversation(observation: &Observation) -> Conversation {
                         body: str_of(&c["body"]),
                     })
                     .collect();
+                let root = thread.comments.first();
                 ThreadFact {
                     id: thread.id.clone(),
-                    path: None,
-                    line: None,
+                    path: root.and_then(|c| c["path"].as_str()).map(str::to_string),
+                    line: root.and_then(|c| c["line"].as_u64().or(c["originalLine"].as_u64())),
                     resolved: thread.resolved,
                     outdated: thread.outdated,
                     mine: comments
@@ -56,6 +57,32 @@ pub fn conversation(observation: &Observation) -> Conversation {
                 body: c.body.clone(),
             })
             .collect(),
+    }
+}
+
+/// A thread is new since the last review when any comment was written or edited after
+/// the PR's last consumed state. No consumed state yet: everything is new.
+pub fn stamp_new_since(
+    conversation: &mut Conversation,
+    observation: &Observation,
+    last_consumed_at: Option<i64>,
+) {
+    for thread in &mut conversation.threads {
+        thread.new_since_last_review = match last_consumed_at {
+            None => true,
+            Some(since) => observation
+                .threads
+                .iter()
+                .find(|t| t.id == thread.id)
+                .is_some_and(|t| {
+                    t.comments.iter().any(|c| {
+                        c["updatedAt"]
+                            .as_str()
+                            .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+                            .is_none_or(|at| at.timestamp() > since)
+                    })
+                }),
+        };
     }
 }
 
