@@ -113,8 +113,23 @@ One tracked revision of a PR. A new head SHA starts a new Iteration and supersed
 _Avoid_: Revision (as tracked unit; "revision" means the provider commit)
 
 **One-review-per-head rule**:
-Each head SHA gets one review per assigned Agent. A new revision is the only permission for another review. On the same revision an Agent only replies to new comments. Added Agent gets its missing job at next scan; completed unchanged passes never repeat. Agent context is PR description, changed files and all comments, plus prior feedback.
+Each head SHA gets one review per assigned Agent. A new revision is the only permission for another review. On the same revision an Agent only replies to new comments. Added Agent gets its missing job at next scan; completed unchanged passes never repeat. Agent context is PR description, changed files and all comments, plus prior feedback. Being replaced by **PR state** detection ([polling.md](docs/polling.md#heartbeat-pr-state)).
 _Avoid_: Re-review, manual re-run
+
+**PR state**:
+Normalized, sorted, timestamp-free view of a PR: head/base, text, lifecycle, mergeable class, review decision, approvals, CI array, comments and threads, labels. Compared by hash. Persisted per PR in `pr-state.json`.
+
+**Heartbeat**:
+The scheduled read of PR state for tracked open PRs. It only adds a PR to the queue (hash differs from baseline and pending) or removes it (merged/closed before its turn). One queue entry per PR, whatever the number of changes while queued.
+
+**Baseline**:
+Hash of the last consumed PR state, including the host's own writes, so own comments never retrigger.
+
+**Consume** / **Toss**:
+A successful exit consumes the state it read and sets the Baseline. A state that moved during the run tosses the result: error count +1, re-queue, park at 3.
+
+**Clean** (Reviewed):
+Per-PR and Clean all. Deletes persisted PR state, packet and result detail of terminal PRs only. Receipts and uncertain-write records stay.
 
 **Job**:
 One unit of AI work for one Agent on one exact Iteration. Kinds: normal, primary-final, reply, mention. Running counts jobs, not triggers: 7 Agents at capacity 4 means 4 active, 3 waiting. Carries an immutable **Execution Snapshot**.

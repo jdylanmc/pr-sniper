@@ -75,6 +75,8 @@ const stateIcons: Record<string, string> = {
   Superseded: "M7 7h10M7 12h10M7 17h6",
 };
 
+const cleanIcon = "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5";
+
 const genieIcon =
   "M10.2 6.4V4.2a1.8 1.8 0 0 1 3.6 0v2.2M9.6 7.4c1.4 1 3.4 1 4.8 0M12 8.2C9 7.4 3 8.4 3 11.4c0 2.6 4.5 3.4 7.4 1.6M12 8.2c3-.8 9 .2 9 3.2 0 2.6-4.5 3.4-7.4 1.6M10.4 13c1.2.5 2.8.5 3.2 0M7.6 14.2c.6 3.4 2.8 5.7 5.8 6.6 2.2.4 4-.3 5-1.6-1.5.5-2.9.1-3.7-1 1.2-1.5 1.7-3.1 1.6-5";
 
@@ -572,6 +574,30 @@ export async function mountPanel(app: HTMLElement) {
       tab === "running" ? "Agent work queue" : "Reviewed work",
     );
     if (rows.length) root.append(list);
+    const terminal = (row: Row) =>
+      row.kind === "item" && ["closed", "merged"].includes(row.state);
+    const clean = async (itemId?: string) => {
+      try {
+        await invoke("clean_reviewed", { itemId: itemId ?? null });
+      } catch (cause) {
+        showError(typeof cause === "string" ? cause : "Unavailable");
+      }
+      void monitor.refresh();
+    };
+    const terminalCount = tab === "reviewed" ? rows.filter(terminal).length : 0;
+    if (terminalCount) {
+      const all = document.createElement("button");
+      all.type = "button";
+      all.className = "work-retry-all work-clean-all";
+      all.setAttribute("aria-label", "Clean all");
+      all.title = "Clean all";
+      all.innerHTML = `${icon(cleanIcon)}<span>${terminalCount}</span>`;
+      all.onclick = () => {
+        all.disabled = true;
+        void clean();
+      };
+      root.prepend(all);
+    }
     if (!rows.length) {
       const empty = document.createElement("div");
       empty.className = "queue-empty";
@@ -684,6 +710,20 @@ export async function mountPanel(app: HTMLElement) {
         if (row.failure) button.append(marker, copy, state, chevron);
         else button.append(marker, copy, chevron);
         article.append(button);
+        if (terminal(row)) {
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.className = "work-clean";
+          remove.dataset.cleanItem = row.id;
+          remove.setAttribute("aria-label", "Clean");
+          remove.title = "Clean";
+          remove.innerHTML = icon(cleanIcon);
+          remove.onclick = () => {
+            remove.disabled = true;
+            void clean(row.id);
+          };
+          article.append(remove);
+        }
         const entry = document.createElement("li");
         entry.append(article);
         list.append(entry);

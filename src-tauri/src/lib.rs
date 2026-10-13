@@ -11,6 +11,7 @@ pub mod monitoring;
 pub mod notifications;
 pub mod panel;
 pub mod policy;
+pub mod pr_state;
 mod process_path;
 pub mod prompt_tokens;
 pub mod publication;
@@ -1266,7 +1267,12 @@ async fn result_detail(
     .map_err(|_| "Result detail query failed.".to_string())?
 }
 
-fn retention_maintenance(app: &tauri::AppHandle) -> Result<(), String> {
+/// Journal roll-forward runs on every tick. Deleting terminal PR detail
+/// happens only when a human asks (`clean`): Reviewed keeps those PRs until then.
+fn retention_maintenance(
+    app: &tauri::AppHandle,
+    clean: Option<&dyn Fn(&monitoring::TrackedPullRequest) -> bool>,
+) -> Result<usize, String> {
     let host = app.state::<Host>();
     // Existing launchers take these locks before Store. Nonblocking acquisition
     // avoids inversion with a worker finishing its saved outcome.
@@ -1275,12 +1281,12 @@ fn retention_maintenance(app: &tauri::AppHandle) -> Result<(), String> {
             match $mutex.try_lock() {
                 Ok(guard) => {
                     if $busy(&*guard) {
-                        return Ok(());
+                        return Ok(0);
                     } else {
                         guard
                     }
                 }
-                Err(std::sync::TryLockError::WouldBlock) => return Ok(()),
+                Err(std::sync::TryLockError::WouldBlock) => return Ok(0),
                 Err(_) => return Err("Cleanup worker coordination unavailable.".into()),
             }
         };
@@ -1296,14 +1302,28 @@ fn retention_maintenance(app: &tauri::AppHandle) -> Result<(), String> {
         .lock()
         .map_err(|_| "Cleanup storage unavailable.")?;
     if host.notifications.active.load(Ordering::SeqCst) || host.quitting.load(Ordering::SeqCst) {
-        return Ok(());
+        return Ok(0);
     }
     // Applying journals already excluded all related workers before cutover.
     retention::recover(&store)?;
-    if host.ai.settle_terminal(&store)? {
-        retention::maintain(&store, true)?;
+    match clean {
+        Some(select) if host.ai.settle_terminal(&store)? => {
+            retention::maintain_where(&store, true, select)
+        }
+        _ => Ok(0),
     }
-    Ok(())
+}
+
+#[tauri::command]
+async fn clean_reviewed(app: tauri::AppHandle, item_id: Option<String>) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let select = |scope: &monitoring::TrackedPullRequest| {
+            item_id.as_deref().is_none_or(|id| scope.item_id == id)
+        };
+        retention_maintenance(&app, Some(&select))
+    })
+    .await
+    .map_err(|_| "Cleanup could not run.".to_string())?
 }
 
 #[tauri::command]
@@ -1567,10 +1587,27 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                     &mut pull_requests,
                     &connection.identity,
                 )?;
+                // One batched read for every tracked open PR: the heartbeat
+                // diff compares these, so comments and CI count, not just head.
+                let tracked_open: std::collections::BTreeSet<_> =
+                    ticket_for_poll.tracked.iter().map(|(id, _)| id).collect();
+                let numbers: Vec<u64> = pull_requests
+                    .iter()
+                    .filter(|p| {
+                        p.state == github::metadata::Lifecycle::Open && tracked_open.contains(&p.id)
+                    })
+                    .map(|p| p.number)
+                    .collect();
+                let states = client
+                    .pr_snapshots(&connection.repository, &numbers)?
+                    .into_values()
+                    .map(|s| (s.pull_request_id.clone(), s))
+                    .collect();
                 Ok((
                     monitoring::PollResult {
                         connection,
                         pull_requests,
+                        states,
                     },
                     follow_ups,
                 ))
@@ -1604,7 +1641,7 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                 }
             };
             if continue_checks && !host.quitting.load(Ordering::SeqCst) {
-                if let Err(error) = retention_maintenance(&app) {
+                if let Err(error) = retention_maintenance(&app, None) {
                     report(&app, error);
                 }
                 if let Err(error) = start_checks(&app, false) {
@@ -4117,6 +4154,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             result_page,
             result_detail,
+            clean_reviewed,
             snapshot,
             save_preferences,
             saved_resources,
@@ -4237,11 +4275,6 @@ pub fn run() {
             actions::restore(&store).map_err(std::io::Error::other)?;
             let monitor = monitoring::Monitor::restore(&store).map_err(std::io::Error::other)?;
             let notification_restore = notifications::restore(&store);
-            let retention_restore = if notification_restore.is_ok() {
-                retention::maintain(&store, true).map(|_| ())
-            } else {
-                Ok(())
-            };
             #[cfg(target_os = "macos")]
             let executable = std::env::current_exe()?.canonicalize()?;
             #[cfg(windows)]
@@ -4272,9 +4305,6 @@ pub fn run() {
             if let Err(error) = notification_restore {
                 report(app.handle(), error);
             }
-            if let Err(error) = retention_restore {
-                report(app.handle(), error);
-            }
             record(app.handle(), DiagnosticEvent::SessionStarted);
             let scheduler_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -4287,7 +4317,7 @@ pub fn run() {
                     if let Err(error) = start_checks(&scheduler_app, false) {
                         report(&scheduler_app, error);
                     }
-                    if let Err(error) = retention_maintenance(&scheduler_app) {
+                    if let Err(error) = retention_maintenance(&scheduler_app, None) {
                         report(&scheduler_app, error);
                     }
                     if let Err(error) = auto_resume_parked(&scheduler_app) {
@@ -4667,6 +4697,7 @@ mod github_auth_tests {
 
     fn monitoring_result() -> PollResult {
         PollResult {
+            states: Default::default(),
             connection: Connection {
                 identity: identity("22", "current-login"),
                 repository: RemoteRepository {

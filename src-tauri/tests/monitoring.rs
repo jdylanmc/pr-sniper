@@ -224,6 +224,7 @@ fn poll_result_for(
     login: &str,
 ) -> PollResult {
     PollResult {
+        states: Default::default(),
         connection: Connection {
             identity: Identity {
                 id: account_id.into(),

@@ -24,6 +24,25 @@ Per repository, set in the repo editor.
 - Repository Save is atomic. It reads no backlog. A separate polling cache can recover authorization after a failed write or restart. Sync failures are visible.
 - Acting-account mention can admit a PR for primary follow-up: [provider-writes.md](provider-writes.md#mentions).
 
+## Heartbeat (PR state)
+
+Replaces head-SHA-only detection for tracked open PRs. Cadence is the global cron; there is no settle window.
+
+| Step         | Rule                                                                                                                                                     |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Read         | One batched GraphQL read per tick for tracked open PRs (`GithubClient::pr_snapshots`, 10 PRs per query). Cost about 1 point per PR; 5,000 points/h/user. |
+| Normalize    | Sorted, no timestamps, `UNKNOWN` mergeable ignored, CI as `(name, status, conclusion)` array. Hash compared, not fields.                                 |
+| Same hash    | Equal to baseline or to pending: nothing.                                                                                                                |
+| New hash     | Records `pending` and bumps `state_seq`. Head change or reopen is a new Iteration; any other change keeps the Iteration.                                 |
+| Queue        | One entry per PR. A state that moves while queued only updates `pending`. A finished pass plus a new state adds one new entry.                           |
+| Closed       | Merged or closed before its turn: leaves the queue, no run, Reviewed.                                                                                    |
+| Drafts       | Skipped unless the repository sets Review drafts.                                                                                                        |
+| Upgrade      | First read of a PR with a completed pass for its head sets the baseline. No re-review.                                                                   |
+| Consume      | A successful exit sets the baseline to the post-write state. Own comments and approvals never retrigger.                                                 |
+| Moved in run | State moved during a run: result tossed, error count +1, re-queued. Parks after 3 (the job's attempt budget).                                            |
+
+Persisted in `state/pr-state.json`. Own-write baseline and consume/toss calls: `pr_state::consume`, `pr_state::toss`.
+
 ## Lifecycle reads
 
 - Complete open listing, then explicit reads for admitted active PRs missing from it.

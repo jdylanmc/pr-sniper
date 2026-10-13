@@ -82,6 +82,20 @@ impl Store {
         }
         self.commit_operational("feedback.json", ledger)
     }
+    pub fn load_pr_states(&self) -> Result<crate::pr_state::PrStates, String> {
+        crate::retention::guard(self)?;
+        match self.read_state("pr-state.json") {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|_| "PR state is invalid; no state change can be detected.".into()),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(Default::default()),
+            Err(_) => Err("Cannot read PR state. Check local file permissions.".into()),
+        }
+    }
+
+    pub fn save_pr_states(&self, states: &crate::pr_state::PrStates) -> Result<(), String> {
+        self.commit_operational("pr-state.json", states)
+    }
+
     pub fn load_automation(&self) -> Result<crate::capacity::Automation, String> {
         match self.read_state("automation.json") {
             Ok(bytes) => serde_json::from_slice(&bytes)

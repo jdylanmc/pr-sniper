@@ -44,7 +44,8 @@ Request (cursors start `null`):
 
 ## Terminal cleanup
 
-- Only explicit provider-confirmed closure or merge admits automatic detail cleanup. Not: missing scan, disabled or deleted config, lost accounts, completed passes.
+- Cleanup is manual: Reviewed **Clean** (one PR) and **Clean all** run it. Nothing deletes terminal detail on a timer. Only terminal PRs qualify; `pr-state.json` records go with them.
+- Only explicit provider-confirmed closure or merge admits detail cleanup. Not: missing scan, disabled or deleted config, lost accounts, completed passes.
 - Maintenance first signals terminal AI workers to stop and waits for reservations to release. Excludes live publication, reply, action, notification and scan snapshots.
 - Pending reviews and uncertain writes keep recovery records. A stopped local job is not a settled provider mutation.
 - Legacy closed/merged records without authority are revalidated by a gated provider scan. Missing, rejected or failed reads keep detail. Migration never invents terminal confirmation.

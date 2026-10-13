@@ -700,8 +700,33 @@
 .panel-shell [data-work-group="failures"]:first-child {
   margin-top: 0;
 }
-.panel-shell .work-list article:has(:is(.work-retry, .queue-fix)) {
+.panel-shell .work-list article:has(:is(.work-retry, .work-clean, .queue-fix)) {
   position: relative;
+}
+.panel-shell .work-clean {
+  position: absolute;
+  top: 50%;
+  right: 30px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  transform: translateY(-50%);
+  background: #fff;
+  color: #b3261e;
+}
+.panel-shell .work-clean .panel-icon {
+  width: 16px;
+  height: 16px;
+}
+.panel-shell .work-clean:disabled {
+  opacity: 0.5;
+}
+.work-list article:has(.work-clean) .work-row {
+  padding-right: 66px;
 }
 .panel-shell .work-retry {
   position: absolute;

@@ -263,6 +263,10 @@ pub struct NormalWork {
     pub admission: Admission,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legacy_item_id: Option<String>,
+    /// PR state sequence this entry covers. The packet is built from fresh
+    /// state when the entry is consumed, so a newer state only retargets it.
+    #[serde(default)]
+    pub state_seq: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -565,6 +569,8 @@ pub struct PollTicket {
 pub struct PollResult {
     pub connection: Connection,
     pub pull_requests: Vec<PullRequest>,
+    /// Fresh provider state per tracked open pull request id.
+    pub states: BTreeMap<String, crate::github::state::PrSnapshot>,
 }
 
 #[derive(Debug, Serialize)]
@@ -631,6 +637,7 @@ struct ConfiguredSchedule {
     admission: Option<AdmissionConfig>,
     trigger_policy: Option<String>,
     assignments: Vec<ScanAssignment>,
+    review_drafts: bool,
 }
 
 #[derive(Default)]
@@ -1298,6 +1305,7 @@ impl Monitor {
             PollResult {
                 connection: resolved.connection,
                 pull_requests: vec![pull],
+                states: BTreeMap::new(),
             },
             now,
             Some(&pull_id),
@@ -2424,6 +2432,9 @@ impl Monitor {
             .filter(|p| p.reserves_revision())
             .map(|p| p.review.key)
             .collect();
+        let mut pr_states = store.load_pr_states().map_err(MonitoringError::Storage)?;
+        let previous_pr_states = pr_states.clone();
+        let snapshots = result.states;
         let mut pulls = result.pull_requests;
         pulls.sort_by_key(|p| p.number);
         let mut seen = HashSet::new();
@@ -2431,6 +2442,8 @@ impl Monitor {
             if !seen.insert(pull.id.clone()) {
                 return Err(check_error(ConnectionError::IncompleteRead));
             }
+            // Drafts wait until the repository opts in or the PR is ready.
+            let skip_draft = pull.draft && !configuration.review_drafts;
             let updated = chrono::DateTime::parse_from_rfc3339(&pull.updated_at)
                 .map_err(|_| check_error(ConnectionError::InvalidResponse))?;
             newest = Some(newest.map_or(updated, |previous| previous.max(updated)));
@@ -2469,7 +2482,7 @@ impl Monitor {
                 });
                 if legacy.is_none()
                     && (pull.state != Lifecycle::Open
-                        || pull.draft
+                        || skip_draft
                         || (explicit_pull_id != Some(pull.id.as_str())
                             && (!eligibility.admitted
                                 || !(admission_candidate
@@ -2534,9 +2547,11 @@ impl Monitor {
                 mark_activation_admitted(&mut activation, &pull);
             }
             let tracked = &mut queue.tracked[index.unwrap()];
+            let mut new_iteration = false;
             if pull.state == Lifecycle::Open
                 && (tracked.lifecycle != Lifecycle::Open || tracked.head_sha != pull.head_sha)
             {
+                new_iteration = true;
                 trigger = if tracked.lifecycle != Lifecycle::Open {
                     WorkTrigger::Reopened
                 } else {
@@ -2571,25 +2586,61 @@ impl Monitor {
                     || job.head_sha != pull.head_sha
                 {
                     job.waiting = WAITING_SUPERSEDED.into();
-                } else if pull.draft {
+                } else if skip_draft {
                     job.waiting = WAITING_INELIGIBLE.into();
                 }
             }
-            if pull.state != Lifecycle::Open || pull.draft {
+            if pull.state != Lifecycle::Open || skip_draft {
                 continue;
             }
+            let binding = crate::retention::Binding::tracked(&tracked);
+            let already_reviewed = reviews.iter().any(|r| {
+                r.operation.state == OperationState::Completed
+                    && r.job.head_sha == pull.head_sha
+                    && bound(&r.job)
+            });
+            let normalized = snapshots.get(&pull.id).map(|s| s.normalize());
+            pr_states.observe(
+                &binding,
+                crate::pr_state::Observation {
+                    iteration_id: &tracked.iteration_id,
+                    new_iteration,
+                    snapshot: normalized.as_ref(),
+                    already_reviewed,
+                    now,
+                },
+            );
+            let state_seq = pr_states.state_seq(&binding);
             for assignment in &ticket.assignments {
                 if !configuration.assignments.contains(assignment) {
                     continue;
                 }
-                let mut existing = queue.jobs.iter().position(|j| {
-                    tracked.matches(j)
-                        && j.assignment_id.as_deref() == Some(&assignment.assignment_id)
-                        && j.work.as_ref().is_some_and(|w| {
-                            w.iteration_id == tracked.iteration_id
-                                && w.agent_id == assignment.agent_id
-                        })
-                });
+                let mut existing = queue
+                    .jobs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, j)| {
+                        tracked.matches(j)
+                            && j.assignment_id.as_deref() == Some(&assignment.assignment_id)
+                            && j.work.as_ref().is_some_and(|w| {
+                                w.iteration_id == tracked.iteration_id
+                                    && w.agent_id == assignment.agent_id
+                            })
+                    })
+                    .max_by_key(|(_, j)| j.work.as_ref().map_or(0, |w| w.state_seq))
+                    .map(|(i, _)| i);
+                // A completed entry is history; a newer state gets one new
+                // entry. An unfinished entry already covers the newest state.
+                if let Some(i) = existing {
+                    let job = &queue.jobs[i];
+                    let covered = job.work.as_ref().is_some_and(|w| w.state_seq >= state_seq);
+                    let completed = reviews.iter().any(|r| {
+                        r.matches_job(job) && r.operation.state == OperationState::Completed
+                    });
+                    if completed && !covered {
+                        existing = None;
+                    }
+                }
                 let mut adopting = false;
                 if existing.is_none() && tracked.iteration == 1 {
                     existing = queue
@@ -2621,7 +2672,9 @@ impl Monitor {
                         .map(|(i, _)| i);
                     adopting = existing.is_some();
                 }
-                let work = if let Some(work) = existing.and_then(|i| queue.jobs[i].work.clone()) {
+                let work = if let Some(mut work) = existing.and_then(|i| queue.jobs[i].work.clone())
+                {
+                    work.state_seq = work.state_seq.max(state_seq);
                     work
                 } else {
                     let prior: Vec<_> = queue
@@ -2672,6 +2725,7 @@ impl Monitor {
                         trigger: trigger.clone(),
                         admission: tracked.admission.clone(),
                         legacy_item_id: legacy.map(crate::queue::item_id),
+                        state_seq,
                     }
                 };
                 let job = QueueJob {
@@ -2712,6 +2766,11 @@ impl Monitor {
             {
                 legacy.waiting = WAITING_SUPERSEDED.into();
             }
+        }
+        if pr_states != previous_pr_states {
+            store
+                .save_pr_states(&pr_states)
+                .map_err(MonitoringError::Storage)?;
         }
         if queue != previous_queue {
             store
@@ -2959,6 +3018,7 @@ fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {
                     agent_id: a.agent_id.clone(),
                 })
                 .collect(),
+            review_drafts: repository.review_drafts,
         });
     }
     configured

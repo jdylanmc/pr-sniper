@@ -21,6 +21,7 @@ PR_SNIPER_DATA_DIR="$(mktemp -d)" PR_SNIPER_KEYCHAIN_SERVICE="com.jdylanmc.pr-sn
 | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | `config/settings.json`                                                              | Non-secret saved config: repos, startup request, other saved settings                          |
 | `state/queue.json`                                                                  | Tracked lifecycle, iterations, immutable work identity + admission cause, order, pass ordinals |
+| `state/pr-state.json`                                                               | Per-PR heartbeat baseline, pending state, `state_seq`, error count, local summary              |
 | `state/queue-selection.json`                                                        | Selected queue item                                                                            |
 | `state/automation.json`                                                             | Pause + capacity gate                                                                          |
 | `state/notifications.json`                                                          | Request identities, observed transitions, send intent, outcomes                                |

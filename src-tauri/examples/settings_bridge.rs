@@ -448,6 +448,15 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
                 .map_err(|_| "Invalid result destination.")?,
         )?)
         .map_err(|_| "Cannot encode result detail.".into()),
+        "clean_reviewed" => {
+            let item = request.args["itemId"].as_str();
+            pr_sniper_lib::retention::recover(store)?;
+            Ok(json!(pr_sniper_lib::retention::maintain_where(
+                store,
+                true,
+                |scope| item.is_none_or(|id| scope.item_id == id)
+            )?))
+        }
         "fixture_retention" => {
             pr_sniper_lib::retention::recover(store)?;
             Ok(json!({"cleaned": pr_sniper_lib::retention::maintain(store, true)?}))
@@ -614,8 +623,16 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
                         .map_err(|_| "Invalid feedback fixture.")?,
                 )?;
             }
+            if let Some(states) = request.args.get("pr_states") {
+                store.save_pr_states(
+                    &serde_json::from_value(states.clone())
+                        .map_err(|_| "Invalid PR state fixture.")?,
+                )?;
+            }
             Ok(Value::Null)
         }
+        "pr_states" => serde_json::to_value(store.load_pr_states()?)
+            .map_err(|_| "Cannot encode PR state.".into()),
         "monitoring_snapshot" => serde_json::to_value(pr_sniper_lib::queue::snapshot(
             store,
             store

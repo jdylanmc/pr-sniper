@@ -25,6 +25,7 @@ fn close_pr(store: &Store, now: i64) {
             store,
             ticket,
             Ok(PollResult {
+                states: Default::default(),
                 connection: Connection {
                     identity: Identity {
                         id: "22".into(),
@@ -488,6 +489,7 @@ fn r5_failed_migration_preserves_the_tracking_proof_and_retries_before_advanceme
                 &store,
                 ticket,
                 Ok(PollResult {
+                    states: Default::default(),
                     connection: Connection {
                         identity: Identity {
                             id: "22".into(),

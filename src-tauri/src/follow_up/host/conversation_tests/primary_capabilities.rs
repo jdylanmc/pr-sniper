@@ -388,6 +388,7 @@ fn mention_admission_overrides_discovery_only_and_general_reply_grants_do_not_ad
                 &store,
                 ticket,
                 Ok(PollResult {
+                    states: Default::default(),
                     connection: Connection {
                         identity: Identity {
                             id: "22".into(),

@@ -112,6 +112,7 @@ fn pull(head: char) -> PullRequest {
 
 fn result(pulls: Vec<PullRequest>) -> PollResult {
     PollResult {
+        states: Default::default(),
         connection: Connection {
             identity: Identity {
                 id: "22".into(),

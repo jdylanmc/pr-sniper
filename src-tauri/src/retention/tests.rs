@@ -94,6 +94,7 @@ fn scan(store: &Store, monitor: &mut Monitor, pulls: Vec<PullRequest>, now: i64)
             store,
             ticket,
             Ok(PollResult {
+                states: Default::default(),
                 connection: Connection {
                     identity: Identity {
                         id: "22".into(),
@@ -377,6 +378,32 @@ fn only_provider_terminal_observation_admits_cleanup_and_active_evidence_is_unch
         assert_eq!(store.load_publications().unwrap(), vec![publication]);
         assert_eq!(store.load_follow_ups().unwrap(), vec![follow]);
     }
+}
+
+#[test]
+fn clean_selects_one_terminal_pr_and_drops_its_pr_state() {
+    let (_root, store, mut monitor) = fixture();
+    let (review, _, _) = evidence(&store);
+    let binding = Binding::job(&review.job);
+    let mut states = crate::pr_state::PrStates::default();
+    states.consume(&binding, 0, "baseline");
+    store.save_pr_states(&states).unwrap();
+    // An open PR never qualifies, selected or not.
+    assert_eq!(maintain_where(&store, true, |_| true).unwrap(), 0);
+    scan(
+        &store,
+        &mut monitor,
+        vec![pull(1, Lifecycle::Closed)],
+        NOW + 10,
+    );
+    assert_eq!(maintain_where(&store, true, |_| false).unwrap(), 0);
+    assert!(store.load_pr_states().unwrap().get(&binding).is_some());
+    assert_eq!(
+        maintain_where(&store, true, |scope| scope.number == 1).unwrap(),
+        1
+    );
+    assert!(store.load_pr_states().unwrap().get(&binding).is_none());
+    assert!(store.load_queue().unwrap().is_empty());
 }
 
 #[test]
@@ -957,6 +984,7 @@ fn primary_retained_scan(store: &Store, monitor: &mut Monitor, observed: Vec<Obs
             &accounts,
             ticket,
             Ok(PollResult {
+                states: Default::default(),
                 connection: Connection {
                     identity: Identity {
                         id: "22".into(),

@@ -62,6 +62,7 @@ fn poll(store: &Store, head: char, now: i64) -> PollTicket {
             store,
             ticket.clone(),
             Ok(PollResult {
+                states: Default::default(),
                 connection: Connection {
                     identity: Identity {
                         id: "22".into(),
@@ -955,6 +956,7 @@ fn finish_scan(store: Store, observations: Scan, now: i64) -> (Store, Result<(),
         ticket,
         Ok((
             PollResult {
+                states: Default::default(),
                 connection: Connection {
                     identity: Identity {
                         id: "22".into(),
@@ -1014,6 +1016,7 @@ fn r5_blocked_mention_moves_only_its_exact_result_once() {
             &store,
             ticket.clone(),
             Ok(PollResult {
+                states: Default::default(),
                 connection: Connection {
                     identity: Identity {
                         id: "22".into(),

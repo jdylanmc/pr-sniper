@@ -419,6 +419,11 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 if previous.waiting == monitoring::WAITING_ASSIGNMENT_REMOVED
                     && job.waiting != monitoring::WAITING_ASSIGNMENT_REMOVED
                     || previous.work.is_none() && job.work.is_some()
+                    || previous
+                        .work
+                        .as_ref()
+                        .zip(job.work.as_ref())
+                        .is_some_and(|(old, new)| new.state_seq > old.state_seq)
                 {
                     *previous = job;
                 }
@@ -427,11 +432,20 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
     }
     let mut items = Vec::new();
     for (id, job) in groups {
-        let reviews: Vec<_> = snapshot
+        let mut reviews: Vec<_> = snapshot
             .reviews
             .iter()
             .filter(|r| item_id(&r.job) == id)
             .collect();
+        // One entry per PR: an older state's result is history and must not
+        // mask the newest state's wait.
+        let newest = |r: &review::host::Candidate| r.job.work.as_ref().map_or(0, |w| w.state_seq);
+        let latest: BTreeMap<_, _> = reviews.iter().fold(BTreeMap::new(), |mut latest, r| {
+            let seq = latest.entry(r.assignment_id.clone()).or_insert(0);
+            *seq = (*seq).max(newest(r));
+            latest
+        });
+        reviews.retain(|r| newest(r) >= latest[&r.assignment_id]);
         let follow_ups: Vec<_> = snapshot
             .follow_ups
             .iter()
