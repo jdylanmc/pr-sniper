@@ -112,6 +112,7 @@ fn pull(head: char) -> PullRequest {
 
 fn result(pulls: Vec<PullRequest>) -> PollResult {
     PollResult {
+        states: Default::default(),
         connection: Connection {
             identity: Identity {
                 id: "22".into(),
@@ -411,6 +412,8 @@ fn completed(settings: &Settings, job: &QueueJob) -> ReviewRun {
     operation.begin_attempt(NOW + 1).unwrap();
     operation.state = OperationState::Completed;
     ReviewRun {
+        mode: pr_sniper_lib::review::RunMode::Packet,
+        packet: None,
         feedback_context: None,
         key: review::key(job, assignment),
         assignment_id: assignment.clone(),
@@ -1322,14 +1325,15 @@ fn provider_lifecycle_requires_explicit_fetch_and_missing_or_failed_reads_never_
 fn legacy_assignment_retry_health_collapses_without_resetting_the_operation_or_backoff() {
     let (_fixture, store, mut monitor) = configured(1);
     let ticket = monitor.prepare_checks(&store, NOW, true).unwrap().remove(0);
-    assert!(monitor
+    // A rate limit waits; it is not a failure.
+    monitor
         .finish(
             &store,
             ticket,
             Err(ConnectionError::RateLimitedAfter(60)),
-            NOW + 1
+            NOW + 1,
         )
-        .is_err());
+        .unwrap();
     let mut state = store.load_monitoring_state().unwrap();
     let mut health = state.health.remove(REPO).unwrap();
     let operation = health.operation.clone().unwrap();
@@ -1364,7 +1368,7 @@ fn legacy_assignment_retry_health_collapses_without_resetting_the_operation_or_b
     let active = monitor.snapshot()[0].operation.clone().unwrap();
     assert_eq!(active.id, operation.id);
     assert_eq!(active.retry_deadline, operation.retry_deadline);
-    assert_eq!(active.attempt_count, 2);
+    assert_eq!(active.attempt_count, 1);
 }
 
 #[test]

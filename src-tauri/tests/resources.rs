@@ -547,6 +547,7 @@ fn primary_and_action_choices_are_scoped_independent_and_safe_on_upgrade() {
     repository.primary_assignment_id = Some(original.id.clone());
     assert!(!repository.assignment_authority(&original).approve);
     repository.assignments[0].actions = Some(pr_sniper_lib::storage::ActionPermissions {
+        include_self: false,
         reply: false,
         approve: true,
         merge: true,
@@ -645,6 +646,8 @@ fn snapshots_and_completed_evidence_do_not_change_after_edits_or_restart() {
         Some("22")
     );
     let mut run = ReviewRun {
+        mode: pr_sniper_lib::review::RunMode::Packet,
+        packet: None,
         feedback_context: None,
         key: review::key(&job, ASSIGNMENT),
         assignment_id: ASSIGNMENT.into(),

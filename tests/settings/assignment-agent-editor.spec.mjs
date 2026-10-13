@@ -10,6 +10,7 @@ import {
   pickAgent,
   openPermissions,
   assignmentBack,
+  saveAssignment,
 } from "./navigation.mjs";
 
 const secondId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -712,4 +713,143 @@ test("late account responses cannot change another editor or steal focus after B
     "Connected",
   );
   await expect(agent.locator("[name=ai-account] option")).toHaveCount(2);
+});
+
+const toolSwitch = (assignment, name) =>
+  assignment.getByRole("switch", { name, exact: true });
+const openTools = async (assignment) => {
+  await assignment.locator("[data-open-tools]").click();
+  return assignment;
+};
+
+test("unset tools show the role default and stay unset on save", async ({
+  page,
+  store,
+}, testInfo) => {
+  await seed(page, store);
+  const assignment = await openAssignment(page);
+  await expect(assignment.locator("[data-tool-summary]")).toHaveText("8");
+  await openTools(assignment);
+  for (const name of ["Changes", "Search", "Report", "Panic"])
+    await expect(toolSwitch(assignment, name)).toBeChecked();
+  await page.screenshot({ path: testInfo.outputPath("tools-default.png") });
+  await assignmentBack(page, assignment);
+  await saveAssignment(page, assignment);
+  const saved = (await store("snapshot")).settings.repositories[0]
+    .assignments[0];
+  expect(saved.tools).toBeUndefined();
+});
+
+test("tools drill-in follows role and grants, saves ids, and shows the count", async ({
+  page,
+  store,
+}, testInfo) => {
+  await seed(page, store);
+  const assignment = await openAssignment(page);
+  await expect(assignment.locator("[data-tool-summary]")).toHaveText("8");
+
+  await primarySwitch(assignment).check();
+  await withPermissions(page, assignment, async () => {
+    await permissionSwitch(assignment, "Publish Comment").check();
+    await approval(assignment, "Approve & Merge").check();
+    await expect(permissionSwitch(assignment, "Include self")).toBeVisible();
+    await permissionSwitch(assignment, "Include self").check();
+  });
+  await openTools(assignment);
+  await expect(toolSwitch(assignment, "Report")).toBeHidden();
+  for (const name of ["Comment", "Ready", "Approve", "Merge", "Panic"])
+    await expect(toolSwitch(assignment, name)).toBeChecked();
+  await expect(assignment.locator("[data-tool-summary]")).toHaveText("11");
+  for (const name of [
+    "Source",
+    "Thread",
+    "Checks",
+    "Tree",
+    "Search",
+    "Ready",
+    "Approve",
+    "Panic",
+  ])
+    await toolSwitch(assignment, name).uncheck();
+  await page.screenshot({ path: testInfo.outputPath("tools-primary.png") });
+  await assignmentBack(page, assignment);
+  await expect(assignment.locator("[data-tool-summary]")).toHaveText("3");
+
+  await withPermissions(page, assignment, async () => {
+    await approval(assignment, "Neither").check();
+    await expect(permissionSwitch(assignment, "Include self")).toBeHidden();
+  });
+  await openTools(assignment);
+  await expect(toolSwitch(assignment, "Merge")).toBeDisabled();
+  await expect(toolSwitch(assignment, "Merge")).not.toBeChecked();
+  await assignmentBack(page, assignment);
+  await expect(assignment.locator("[data-tool-summary]")).toHaveText("2");
+  await withPermissions(page, assignment, async () => {
+    await approval(assignment, "Approve & Merge").check();
+    await permissionSwitch(assignment, "Include self").check();
+  });
+  await openTools(assignment);
+  await toolSwitch(assignment, "Merge").check();
+  await assignmentBack(page, assignment);
+  await saveAssignment(page, assignment);
+  const saved = (await store("snapshot")).settings.repositories[0]
+    .assignments[0];
+  expect(saved.tools).toEqual([
+    "read_changes",
+    "leave_comments",
+    "approve_and_merge",
+  ]);
+  expect(saved.actions).toMatchObject({ merge: true, include_self: true });
+
+  const reopened = await openAssignment(page);
+  await expect(reopened.locator("[data-tool-summary]")).toHaveText("3");
+  await primarySwitch(reopened).uncheck();
+  await openTools(reopened);
+  await expect(toolSwitch(reopened, "Report")).toBeVisible();
+  await expect(toolSwitch(reopened, "Comment")).toBeHidden();
+  await expect(toolSwitch(reopened, "Merge")).toBeHidden();
+  await toolSwitch(reopened, "Report").check();
+  await page.screenshot({ path: testInfo.outputPath("tools-secondary.png") });
+  await assignmentBack(page, reopened);
+  await saveAssignment(page, reopened);
+  const second = (await store("snapshot")).settings.repositories[0]
+    .assignments[0];
+  expect(second.tools).toEqual(["read_changes", "submit_report"]);
+  expect(second.actions).toEqual({
+    reply: false,
+    approve: false,
+    merge: false,
+  });
+  const repository = await repositorySettings(page, "fixture/assignment");
+  await expect(repository.locator(".assignment-row").first()).toContainText(
+    "2 Tools",
+  );
+});
+
+test("Review drafts switch persists only when on", async ({ page, store }) => {
+  await seed(page, store);
+  const repository = await repositorySettings(page, "fixture/assignment");
+  const drafts = repository.getByRole("switch", {
+    name: "Review drafts",
+    exact: true,
+  });
+  await expect(drafts).not.toBeChecked();
+  await drafts.check();
+  await button(repository, "Save repository").click();
+  await page.evaluate(() => window.__settingsIdle());
+  expect((await store("snapshot")).settings.repositories[0].review_drafts).toBe(
+    true,
+  );
+  const again = await repositorySettings(page, "fixture/assignment");
+  await expect(
+    again.getByRole("switch", { name: "Review drafts", exact: true }),
+  ).toBeChecked();
+  await again
+    .getByRole("switch", { name: "Review drafts", exact: true })
+    .uncheck();
+  await button(again, "Save repository").click();
+  await page.evaluate(() => window.__settingsIdle());
+  expect(
+    (await store("snapshot")).settings.repositories[0].review_drafts,
+  ).toBeUndefined();
 });

@@ -361,7 +361,8 @@ test("normal inspector distinguishes waiting, running, stopping, failed, superse
 }) => {
   const fixture = await workFixture(store);
   await nativeCapacity(page, []);
-  const run = fixture.state.reviews[0];
+  // A teammate: the primary waits behind the teammate barrier.
+  const run = fixture.state.reviews[1];
   for (const [state, label] of [
     ["queued", "Waiting"],
     ["running", "Running"],
@@ -376,7 +377,7 @@ test("normal inspector distinguishes waiting, running, stopping, failed, superse
         ? "failed"
         : state;
     run.operation.attempt_count = state === "queued" ? 0 : 2;
-    fixture.state.jobs[0].waiting =
+    fixture.state.jobs[1].waiting =
       state === "superseded" ? "superseded" : "human_start";
     await store("seed_queue_state", fixture.state);
     await page.goto("/");

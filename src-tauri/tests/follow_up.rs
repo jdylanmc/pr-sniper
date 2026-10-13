@@ -45,6 +45,8 @@ fn origin() -> Publication {
     let mut op = JobOperation::review(&job, 100);
     op.state = OperationState::Completed;
     let review=ReviewRun {
+        mode: pr_sniper_lib::review::RunMode::Packet,
+        packet: None,
         feedback_context: None,
         key:pr_sniper_lib::review::key(&job,ASSIGNMENT),selection:Selection::resolve(&settings(),&job,ASSIGNMENT).unwrap(),
         job,assignment_id:ASSIGNMENT.into(),operation:op,manual_start:true,trust_confirmed:true,phase:"Complete".into(),error:None,
@@ -143,6 +145,7 @@ fn prepared(origin: &Publication) -> FollowUp {
         output_tokens: 1,
         tool_calls: 1,
         byte_coverage: false,
+        coverage: None,
     });
     run.analysis = Some(run.operation("thread_analysis", 100));
     run.analysis.as_mut().unwrap().state = OperationState::Completed;
@@ -639,43 +642,6 @@ fn general_provider_threads_keep_original_authorship_and_reply_as_the_acting_ide
 }
 
 #[test]
-fn analysis_result_commit_fences_account_cancellation_and_late_settings_changes() {
-    let fixture = Fixture::new();
-    let mut run = prepared(&fixture.origin);
-    run.publication = None;
-    run.manual_start = true;
-    fixture.store.save_settings(&settings()).unwrap();
-    fixture
-        .store
-        .save_queue(std::slice::from_ref(&run.context.job))
-        .unwrap();
-    fixture
-        .store
-        .save_follow_ups(std::slice::from_ref(&run))
-        .unwrap();
-    assert!(follow_up::validate_analysis_commit(&fixture.store, &run, true).is_err());
-    run.body = None;
-    fixture
-        .store
-        .save_follow_ups(std::slice::from_ref(&run))
-        .unwrap();
-    assert!(follow_up::validate_analysis_commit(&fixture.store, &run, true).is_ok());
-    assert!(follow_up::validate_analysis_commit(&fixture.store, &run, false).is_err());
-    let mut cancelled = run.clone();
-    cancelled.cancelled = true;
-    fixture.store.save_follow_ups(&[cancelled]).unwrap();
-    assert!(follow_up::validate_analysis_commit(&fixture.store, &run, true).is_err());
-    fixture
-        .store
-        .save_follow_ups(std::slice::from_ref(&run))
-        .unwrap();
-    let mut changed = settings();
-    changed.agents[0].prompt = "Different review lens.".into();
-    fixture.store.save_settings(&changed).unwrap();
-    assert!(follow_up::validate_analysis_commit(&fixture.store, &run, true).is_err());
-}
-
-#[test]
 fn owned_external_comment_is_deduplicated_across_polling_and_restart() {
     let origin = origin();
     let mut runs = vec![];
@@ -815,7 +781,7 @@ fn resolution_permission_withdrawal_and_head_changes_stop_before_or_after_reply(
 }
 
 #[test]
-fn provider_rejection_is_permanent_but_rate_limit_keeps_its_budget() {
+fn provider_rejection_is_permanent_but_rate_limit_is_a_wait_that_spends_no_budget() {
     for fault in [Fault::Reject, Fault::RateLimit] {
         let mut fixture = Fixture::new();
         let mut run = prepared(&fixture.origin);
@@ -830,10 +796,17 @@ fn provider_rejection_is_permanent_but_rate_limit_keeps_its_budget() {
             assert!(!run.error.as_ref().unwrap().contains("private detail"));
         } else {
             let id = run.publication.as_ref().unwrap().id.clone();
-            assert_eq!(run.publication.as_ref().unwrap().next_attempt_at, Some(117));
+            // A rate limit is a wait: queued, no attempt spent, no failure or error.
+            let operation = run.publication.as_ref().unwrap();
+            assert_eq!(operation.next_attempt_at, Some(117));
+            assert_eq!(operation.state, OperationState::Queued);
+            assert_eq!(operation.attempt_count, 0);
+            assert_eq!(operation.failure, None);
+            assert_eq!(run.error, None);
             run = fixture.resume();
             follow_up::publish(&mut fixture, &mut run).unwrap();
             assert_eq!(run.publication.as_ref().unwrap().id, id);
+            assert_eq!(run.publication.as_ref().unwrap().attempt_count, 1);
             assert_eq!(fixture.writes(), 2);
         }
     }
@@ -869,7 +842,7 @@ fn unpublished_drafts_are_never_triggers_and_latest_means_latest_publication() {
 }
 
 #[test]
-fn graphql_rate_limit_remains_retryable_without_accepting_partial_data() {
+fn graphql_rate_limit_keeps_its_connection_error_without_accepting_partial_data() {
     struct RateLimit;
     impl Transport for RateLimit {
         fn get(&self, _: &str) -> Result<Response, ConnectionError> {

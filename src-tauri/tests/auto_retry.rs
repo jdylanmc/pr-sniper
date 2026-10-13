@@ -1,4 +1,5 @@
 use pr_sniper_lib::{
+    backpressure::Origin,
     capacity,
     github::ConnectionError,
     monitoring::{
@@ -42,6 +43,7 @@ fn failure(kind: OperationFailure, retry_after_seconds: Option<i64>) -> Failure 
         kind,
         message: "Failed".into(),
         retry_after_seconds,
+        origin: Origin::Github,
     }
 }
 
@@ -57,7 +59,6 @@ fn attempt(operation: &mut JobOperation, error: &Failure) -> i64 {
 fn transient_failures_back_off_and_park_on_the_third_failure() {
     for kind in [
         OperationFailure::Timeout,
-        OperationFailure::RateLimited,
         OperationFailure::Network,
         OperationFailure::Provider,
     ] {
@@ -82,23 +83,34 @@ fn transient_failures_back_off_and_park_on_the_third_failure() {
 }
 
 #[test]
-fn retry_after_is_honored_inside_the_retry_window_and_parks_beyond_it() {
-    let mut operation = JobOperation::review(&job(), 1_000);
-    operation.begin_attempt(1_000).unwrap();
-    operation.fail(
-        &failure(OperationFailure::RateLimited, Some(600)).monitoring(),
-        1_000,
-    );
-    assert_eq!(operation.state, OperationState::Queued);
-    assert_eq!(operation.next_attempt_at, Some(1_600));
-    assert!(operation.begin_attempt(1_599).is_err());
-    operation.begin_attempt(1_600).unwrap();
-    operation.fail(
-        &failure(OperationFailure::RateLimited, Some(3_600)).monitoring(),
-        1_600,
-    );
-    assert_eq!(operation.state, OperationState::ManualRetry);
-    assert_eq!(operation.failure_class(), Some(FailureClass::Network));
+fn rate_limits_are_backpressure_that_never_spend_attempts_or_park() {
+    for (origin, retry_after) in [
+        (Origin::Github, Some(600)),
+        (Origin::Github, Some(3_600)),
+        (Origin::Copilot, None),
+        (Origin::Copilot, Some(5)),
+    ] {
+        let mut operation = JobOperation::review(&job(), 1_000);
+        let mut now = 1_000;
+        for _ in 0..10 {
+            operation.begin_attempt(now).unwrap();
+            let mut error = failure(OperationFailure::RateLimited, retry_after);
+            error.origin = origin;
+            operation.fail(&error.monitoring(), now);
+            assert_eq!(operation.state, OperationState::Queued);
+            assert_eq!(operation.attempt_count, 0);
+            assert_eq!(operation.failure, None);
+            assert_eq!(operation.failure_class(), None);
+            assert!(!operation.parked());
+            let until = operation.next_attempt_at.unwrap();
+            assert_eq!(operation.backpressure_until, Some(until));
+            if let Some(stated) = retry_after {
+                assert_eq!(until, now + stated);
+            }
+            assert!(operation.begin_attempt(until - 1).is_err());
+            now = until;
+        }
+    }
 }
 
 #[test]
@@ -217,6 +229,8 @@ fn parked_review(failure: OperationFailure, state: OperationState) -> ReviewRun 
     operation.failure = Some(failure);
     operation.next_attempt_at = None;
     ReviewRun {
+        mode: pr_sniper_lib::review::RunMode::Packet,
+        packet: None,
         feedback_context: None,
         key: review::key(&job, ASSIGNMENT),
         selection: Selection::resolve(&settings(), &job, ASSIGNMENT).unwrap(),
@@ -333,7 +347,6 @@ fn cooldown_cycles_escalate_30m_1h_2h_4h_8h_then_wait_for_a_human() {
 fn only_resumable_failures_get_a_cooldown_and_explicit_retry_resets_the_cycle() {
     for (kind, resumes) in [
         (OperationFailure::Timeout, true),
-        (OperationFailure::RateLimited, true),
         (OperationFailure::Provider, true),
         (OperationFailure::Permission, true),
         (OperationFailure::Permanent, false),
@@ -356,20 +369,18 @@ fn only_resumable_failures_get_a_cooldown_and_explicit_retry_resets_the_cycle() 
 }
 
 #[test]
-fn did_not_read_every_changed_file_is_retryable_provider_class() {
-    let failure = Failure::provider(
-        "Copilot did not read every changed file; no review result was accepted.",
-    );
-    assert_eq!(failure.kind, OperationFailure::Provider);
-    let mut operation = JobOperation::review(&job(), 1_000);
-    let now = operation.next_attempt_at.unwrap();
-    operation.begin_attempt(now).unwrap();
-    operation.fail(&failure.monitoring(), now);
-    assert_eq!(operation.state, OperationState::Queued);
-    assert!(operation.next_attempt_at.is_some());
-    park(&mut operation, OperationFailure::Provider);
-    assert_eq!(operation.state, OperationState::ManualRetry);
-    assert!(operation.resume_at.is_some());
+fn legacy_parked_rate_limits_still_load_and_resume_through_the_cooldown() {
+    let mut legacy = serde_json::to_value(JobOperation::review(&job(), 1_000)).unwrap();
+    legacy["state"] = json!("manual_retry");
+    legacy["failure"] = json!("rate_limited");
+    legacy["attempt_count"] = json!(3);
+    legacy["next_attempt_at"] = json!(null);
+    legacy["resume_at"] = json!(2_800);
+    let mut operation: JobOperation = serde_json::from_value(legacy).unwrap();
+    assert!(operation.parked());
+    assert_eq!(operation.backpressure_until, None);
+    assert!(operation.auto_resume(false, 2_800));
+    assert_eq!(operation.attempt_count, 0);
 }
 
 fn accounts(connected: bool) -> std::collections::BTreeMap<String, AccountAvailability> {

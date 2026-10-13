@@ -54,7 +54,47 @@ export interface Assignment {
   schedule: Schedule;
   comment: boolean;
   approve: boolean;
-  actions?: { reply?: boolean; approve: boolean; merge: boolean };
+  actions?: {
+    reply?: boolean;
+    approve: boolean;
+    merge: boolean;
+    include_self?: boolean;
+  };
+  /** Absent = the role default (`defaultTools`). */
+  tools?: PacketTool[];
+}
+
+/** Mirrors `PACKET_TOOLS` in src-tauri/src/storage.rs (checked by a Rust test). */
+export const PACKET_TOOLS = [
+  "read_changes",
+  "read_source",
+  "get_thread",
+  "get_checks",
+  "list_tree",
+  "search_code",
+  "leave_comments",
+  "ready_for_human",
+  "approve_pull_request",
+  "approve_and_merge",
+  "panic_exit",
+  "submit_report",
+] as const;
+export type PacketTool = (typeof PACKET_TOOLS)[number];
+
+/** Role default when `tools` is unset. Mirrors `default_tools` in storage.rs. */
+export function defaultTools(
+  primary: boolean,
+  grants: { comment: boolean; approve: boolean; merge: boolean },
+): PacketTool[] {
+  const tools: PacketTool[] = [...PACKET_TOOLS.slice(0, 6)];
+  if (primary) {
+    if (grants.comment) tools.push("leave_comments");
+    tools.push("ready_for_human");
+    if (grants.approve) tools.push("approve_pull_request");
+    if (grants.merge) tools.push("approve_and_merge");
+  } else tools.push("submit_report");
+  tools.push("panic_exit");
+  return tools;
 }
 
 export const doctrineTitles = (agent: Agent): string[] =>

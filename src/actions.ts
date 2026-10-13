@@ -2,7 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { keyValues, type KeyValue } from "./key-values";
 import { renderConfiguration } from "./work-presentation";
 import type { Job, ReviewCandidate } from "./monitoring";
-import { openDestination } from "./queue";
 
 export interface ActionStatus {
   item_id: string;
@@ -129,15 +128,19 @@ export function renderActions(
       result ? `${result.input_tokens} / ${result.output_tokens}` : "",
     ],
     ["Tools", result ? String(result.tool_calls) : ""],
+    [
+      "Read",
+      result?.coverage
+        ? `${result.coverage.read} of ${result.coverage.changed}`
+        : "",
+    ],
     ["Session", result?.session_id ?? "", true],
     ["State", execution ? label(execution.operation.state) : ""],
     ["Attempts", execution ? String(execution.operation.attempt_count) : ""],
     ["Order", final ? String(final.enqueue_order) : ""],
   ]);
   group(section, "Result", [
-    ["Decision", result ? label(result.output.decision) : ""],
-    ["Files", result ? String(result.output.files.length) : ""],
-    ["Findings", result ? String(result.output.findings.length) : ""],
+    ["Exit", result?.output.exit ? label(result.output.exit.exit) : ""],
     [
       "Personal review",
       status.personal_review.startsWith("Required")
@@ -208,27 +211,6 @@ export function renderActions(
           : "Planned configuration",
         execution.selection,
       );
-    if (result) {
-      const guide = document.createElement("details");
-      const summary = document.createElement("summary");
-      const files = result.output.files;
-      summary.textContent = `Files (${files.length})`;
-      const list = document.createElement("ol");
-      for (const file of [...files].sort((a, b) => a.order - b.order)) {
-        const entry = document.createElement("li");
-        const link = document.createElement("a");
-        link.href = "#";
-        link.textContent = file.path;
-        link.onclick = (event) => {
-          event.preventDefault();
-          void openDestination(status.item_id, file.path, showError);
-        };
-        entry.append(link, `: ${file.explanation}`);
-        list.append(entry);
-      }
-      guide.append(summary, list);
-      section.append(guide);
-    }
     const details = document.createElement("details");
     const title = document.createElement("summary");
     title.textContent = "JSON";
@@ -236,29 +218,6 @@ export function renderActions(
     body.textContent = JSON.stringify(final, null, 2);
     details.append(title, body);
     section.append(details);
-    if (execution.operation.state !== "completed") {
-      const running = execution.operation.state === "running";
-      const queued = ["queued", "interrupted"].includes(
-        execution.operation.state,
-      );
-      const button = document.createElement("button");
-      button.textContent = running
-        ? "Cancel final review"
-        : queued && !final.cancelled
-          ? "Cancel queued final review"
-          : "Retry final full review";
-      button.onclick = () =>
-        void act(
-          running || (queued && !final.cancelled)
-            ? "cancel_final_review"
-            : "start_final_review",
-          {
-            id: final.id,
-          },
-          button,
-        );
-      section.append(button);
-    }
   }
   for (const effect of status.effects) {
     const evidence = document.createElement("details");

@@ -9,6 +9,7 @@ Index of everything under `docs/`. Start with the [main README](../README.md); a
 | [panel-and-tray.md](panel-and-tray.md)     | Tray menu, retained panel, navigation state, Queue/Running/Reviewed tabs         |
 | [settings.md](settings.md)                 | Settings UI: accounts, repos, assignments, Agents, Doctrines, Preferences, Genie |
 | [review-queue.md](review-queue.md)         | Queue states, retry/park, local Agent reviews, notifications (macOS)             |
+| [review-packet.md](review-packet.md)       | Proposed: the one packet each agent run receives                                 |
 | [polling.md](polling.md)                   | Schedule, admission filters, lifecycle reads, GitHub connection and PR reads     |
 | [provider-writes.md](provider-writes.md)   | Publication, thread/mention replies, Approve and Merge mechanics                 |
 | [active-results.md](active-results.md)     | `result_page` / `result_detail` API, summary index, terminal cleanup             |
@@ -52,6 +53,7 @@ Index of everything under `docs/`. Start with the [main README](../README.md); a
 | [0018](adr/0018-retained-hidden-panel.md)                           | Retained hidden tray panel                              |
 | [0019](adr/0019-bounded-content-free-diagnostics.md)                | Bounded, content-free diagnostics                       |
 | [0020](adr/0020-constrained-host-owned-review-tools.md)             | Three host-owned review tools, not a sandbox            |
+| [0021](adr/0021-review-packet.md)                                   | Hand each agent one versioned review packet             |
 
 ## Specs and design
 

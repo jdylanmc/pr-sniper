@@ -35,6 +35,8 @@ export interface Repository {
   assignments?: Assignment[];
   primary_assignment_id?: string;
   review_preset?: string;
+  /** Include draft pull requests in review. Absent = off. */
+  review_drafts?: boolean;
 }
 
 // This identifies the intake context, not repository access or PR admission.

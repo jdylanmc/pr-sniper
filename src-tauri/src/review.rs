@@ -1,7 +1,9 @@
 pub(crate) mod diagnostics;
 pub(crate) mod host;
-pub(crate) mod rereview;
+pub(crate) mod packet_run;
 pub(crate) mod runtime;
+pub(crate) mod teammates;
+pub(crate) mod tools;
 
 use crate::{
     github::ConnectionError,
@@ -11,7 +13,6 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -74,23 +75,6 @@ impl Selection {
                 (None, None) => true,
                 _ => false,
             }
-    }
-
-    /// Stable id of the review lens (the fields a lens change discards a batch for).
-    pub fn lens_hash(&self) -> String {
-        use sha2::{Digest, Sha256};
-        let lens = serde_json::json!([
-            self.agent,
-            self.doctrine,
-            self.preset,
-            self.policy.prompt,
-            self.policy.adapter
-        ]);
-        Sha256::digest(lens.to_string().as_bytes())
-            .iter()
-            .take(8)
-            .map(|byte| format!("{byte:02x}"))
-            .collect()
     }
 
     pub fn resolve(
@@ -218,6 +202,11 @@ pub struct ReviewRun {
     pub phase: String,
     pub error: Option<String>,
     pub result: Option<ReviewResult>,
+    #[serde(default)]
+    pub mode: RunMode,
+    /// Content-free record of the packet this run was given (Packet mode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub packet: Option<crate::packet::PacketRecord>,
 }
 
 impl ReviewRun {
@@ -257,6 +246,10 @@ pub fn restore(store: &Store) -> Result<(), String> {
     let mut reviews = store.load_reviews()?;
     let mut changed = false;
     for review in &mut reviews {
+        if retire_legacy(review) {
+            changed = true;
+            continue;
+        }
         if review.operation.state == OperationState::Running {
             if review.operation.interruption.is_some() {
                 review.operation.requeue_intentional(0);
@@ -277,6 +270,30 @@ pub fn restore(store: &Store) -> Result<(), String> {
     Ok(())
 }
 
+/// The legacy review path is removed: unfinished legacy work is cancelled, never run.
+pub(crate) const LEGACY_RETIRED: &str = "Legacy review retired.";
+
+/// Cancel an unfinished legacy run in place. True when changed.
+pub(crate) fn retire_legacy(run: &mut ReviewRun) -> bool {
+    if run.mode != RunMode::Legacy
+        || !matches!(
+            run.operation.state,
+            OperationState::Queued | OperationState::Running | OperationState::Interrupted
+        )
+    {
+        return false;
+    }
+    run.operation.state = OperationState::Failed;
+    run.operation.failure = Some(OperationFailure::Permanent);
+    run.operation.next_attempt_at = None;
+    run.operation.ai_attempt = None;
+    run.operation.interruption = None;
+    run.operation.resume_at = None;
+    run.phase = "Cancelled".into();
+    run.error = Some(LEGACY_RETIRED.into());
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileGuide {
@@ -285,10 +302,11 @@ pub struct FileGuide {
     pub order: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Decision {
     MachineSignOff,
+    #[default]
     HumanInputRequired,
 }
 
@@ -324,10 +342,52 @@ pub struct ReviewOutput {
     pub held_findings: Vec<Finding>,
     #[serde(default)]
     pub feedback_assessments: Vec<crate::feedback::Assessment>,
+    // Legacy fields: read from old records only; packet runs leave them empty.
+    #[serde(default)]
     pub synopsis: String,
+    #[serde(default)]
     pub files: Vec<FileGuide>,
+    #[serde(default)]
     pub findings: Vec<Finding>,
+    #[serde(default)]
     pub decision: Decision,
+    /// The one exit a Packet-mode run ended on. Host-owned, never model output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<crate::exits::ExitOutcome>,
+    /// A teammate's stored report (`submit_report`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<crate::exits::TeammateReport>,
+}
+
+impl ReviewOutput {
+    /// Output of a Packet-mode run: legacy fields stay empty, the exit decides.
+    pub fn from_exit(
+        outcome: crate::exits::ExitOutcome,
+        report: Option<crate::exits::TeammateReport>,
+    ) -> Self {
+        Self {
+            feedback_conflict: false,
+            held_findings: vec![],
+            feedback_assessments: vec![],
+            synopsis: String::new(),
+            files: vec![],
+            findings: vec![],
+            // Never MachineSignOff: legacy clearance and action paths must not read an exit run.
+            decision: Decision::HumanInputRequired,
+            exit: Some(outcome),
+            report,
+        }
+    }
+}
+
+/// How a run reviews. Every new run is `Packet`. `Legacy` (the removed JSON
+/// decision) is the default only so old records load; it is never executed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunMode {
+    #[default]
+    Legacy,
+    Packet,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -345,84 +405,19 @@ pub struct ReviewResult<O = ReviewOutput> {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub tool_calls: u64,
-    /// The host served every byte of every changed file before accepting this result.
+    /// Legacy record: true when the host served every byte of every changed file.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub byte_coverage: bool,
+    /// Informational count of changed files read in full; never a gate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<ReadCoverage>,
 }
 
-pub(crate) fn json_body(text: &str) -> &str {
-    let text = text.trim();
-    text.strip_prefix("```json\n")
-        .or_else(|| text.strip_prefix("```\n"))
-        .and_then(|body| body.strip_suffix("\n```"))
-        .unwrap_or(text)
-}
-
-pub fn validate_output(text: &str, paths: &[String]) -> Result<ReviewOutput, Failure> {
-    let mut output: ReviewOutput = serde_json::from_str(json_body(text)).map_err(|_| {
-        Failure::permanent(
-            "Copilot's final response does not match the required review JSON schema.",
-        )
-    })?;
-    if output.feedback_conflict || !output.held_findings.is_empty() {
-        return Err(Failure::permanent(
-            "Model output cannot set host-owned feedback dispositions.",
-        ));
-    }
-    let synopsis = output.synopsis.trim();
-    let sentences = synopsis
-        .char_indices()
-        .filter(|(i, c)| {
-            matches!(c, '.' | '!' | '?')
-                && synopsis[i + c.len_utf8()..]
-                    .chars()
-                    .next()
-                    .is_none_or(char::is_whitespace)
-        })
-        .count();
-    if synopsis.is_empty()
-        || synopsis.contains(['\n', '\r'])
-        || sentences != 1
-        || !synopsis.ends_with(['.', '!', '?'])
-    {
-        return Err(Failure::permanent(
-            "Review synopsis must be exactly one sentence.",
-        ));
-    }
-    let expected: BTreeSet<_> = paths.iter().collect();
-    let actual: BTreeSet<_> = output.files.iter().map(|f| &f.path).collect();
-    if expected.len() != paths.len()
-        || actual.len() != output.files.len()
-        || actual != expected
-        || output.files.iter().any(|f| f.explanation.trim().is_empty())
-    {
-        return Err(Failure::permanent(
-            "Review output does not cover every changed file exactly once.",
-        ));
-    }
-    let order: BTreeSet<_> = output.files.iter().filter_map(|f| f.order).collect();
-    if order == (1..=paths.len()).collect() {
-        output.files.sort_by_key(|f| f.order);
-    } else {
-        output
-            .files
-            .sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
-    }
-    for (index, file) in output.files.iter_mut().enumerate() {
-        file.order = Some(index + 1);
-    }
-    if output.findings.iter().any(|f| {
-        !expected.contains(&f.path)
-            || !matches!(f.side.as_str(), "base" | "head")
-            || f.line == 0
-            || f.confidence > 100
-            || f.title.trim().is_empty()
-            || f.explanation.trim().is_empty()
-    }) || (output.decision == Decision::MachineSignOff && !output.findings.is_empty())
-    {
-        return Err(Failure::permanent("Review findings contain invalid locations, severity, confidence, or an inconsistent machine decision."));
-    }
-    Ok(output)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReadCoverage {
+    pub read: u32,
+    pub changed: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -431,9 +426,16 @@ pub struct Failure {
     pub kind: OperationFailure,
     pub message: String,
     pub retry_after_seconds: Option<i64>,
+    /// Provider that signalled a rate limit; meaningful only for `RateLimited`.
+    pub origin: crate::backpressure::Origin,
 }
 
 impl Failure {
+    /// A rate limit is backpressure, never a failure.
+    pub fn rate_limited(&self) -> bool {
+        !self.cancelled && self.kind == OperationFailure::RateLimited
+    }
+
     pub fn cancelled() -> Self {
         Self {
             cancelled: true,
@@ -446,6 +448,7 @@ impl Failure {
             kind: OperationFailure::Permanent,
             message: message.into(),
             retry_after_seconds: None,
+            origin: crate::backpressure::Origin::Github,
         }
     }
     /// Agent-quality rejections are transient: a fresh attempt may succeed.
@@ -461,10 +464,37 @@ impl Failure {
             kind: OperationFailure::Timeout,
             message: "Copilot review timed out.".into(),
             retry_after_seconds: None,
+            origin: crate::backpressure::Origin::Copilot,
         }
     }
     pub fn schema() -> Self {
         Self::permanent("Copilot returned invalid or incomplete review output.")
+    }
+    /// The agent chose `panic_exit`. Typed, parks at once, resumes on cooldown.
+    pub fn panic(reason: &str) -> Self {
+        Self {
+            kind: OperationFailure::Panic,
+            origin: crate::backpressure::Origin::Copilot,
+            ..Self::permanent(format!("Agent panic exit: {reason}"))
+        }
+    }
+    /// Repeated malformed or over-limit exit calls. Permanent, human needed.
+    pub fn contract(message: impl Into<String>) -> Self {
+        Self::permanent(message)
+    }
+    /// The PR state moved under the run: tossed, not a failure of the agent.
+    pub fn superseded(message: &str) -> Self {
+        Self {
+            kind: OperationFailure::Superseded,
+            ..Self::permanent(message)
+        }
+    }
+    /// A result or write discarded because the PR state moved: retried through the budget.
+    pub fn tossed(message: &str) -> Self {
+        Self {
+            kind: OperationFailure::Tossed,
+            ..Self::permanent(message)
+        }
     }
     pub fn operation(message: String) -> Self {
         if message == "Copilot operation cancelled." {
@@ -490,6 +520,7 @@ impl Failure {
                 kind,
                 message,
                 retry_after_seconds: None,
+                origin: crate::backpressure::Origin::Copilot,
             }
         }
     }
@@ -505,7 +536,7 @@ impl Failure {
             }
             _ => OperationFailure::Permanent,
         };
-        Self { cancelled: false, kind, message: "Copilot runtime request failed; check account, model, and runtime availability before retrying.".into(), retry_after_seconds: None }
+        Self { cancelled: false, kind, message: "Copilot runtime request failed; check account, model, and runtime availability before retrying.".into(), retry_after_seconds: None, origin: crate::backpressure::Origin::Copilot }
     }
     fn event(data: &Value) -> Self {
         let kind = match data["statusCode"].as_u64() {
@@ -527,9 +558,17 @@ impl Failure {
             kind,
             message: "Copilot reported an execution failure; no review result was accepted.".into(),
             retry_after_seconds,
+            origin: crate::backpressure::Origin::Copilot,
         }
     }
     pub fn monitoring(&self) -> MonitoringError {
+        if self.rate_limited() {
+            return MonitoringError::Backpressure {
+                origin: self.origin,
+                message: self.message.clone(),
+                retry_after_seconds: self.retry_after_seconds,
+            };
+        }
         MonitoringError::Recoverable {
             code: "review_failed".into(),
             message: self.message.clone(),
@@ -552,6 +591,18 @@ impl From<ConnectionError> for Failure {
                 kind: failure,
                 message,
                 retry_after_seconds,
+                origin: crate::backpressure::Origin::Github,
+            },
+            MonitoringError::Backpressure {
+                origin,
+                message,
+                retry_after_seconds,
+            } => Self {
+                cancelled: false,
+                kind: OperationFailure::RateLimited,
+                message,
+                retry_after_seconds,
+                origin,
             },
             MonitoringError::Storage(message) => Self::permanent(message),
         }
@@ -561,7 +612,6 @@ impl From<ConnectionError> for Failure {
 /// The SDK frames JSON events over RPC; the same normalized stream can be replayed from JSONL.
 #[derive(Default)]
 pub struct Events {
-    message: Option<String>,
     idle: bool,
     usage_seen: bool,
     input_tokens: u64,
@@ -572,21 +622,6 @@ pub struct Events {
 impl Events {
     pub fn push(&mut self, kind: &str, data: &Value) -> Result<(), Failure> {
         match kind {
-            "assistant.message" => {
-                if data
-                    .get("toolRequests")
-                    .is_none_or(|v| v.is_null() || v.as_array().is_some_and(Vec::is_empty))
-                {
-                    self.message = Some(
-                        data["content"]
-                            .as_str()
-                            .ok_or_else(|| {
-                                Failure::permanent("Copilot emitted a malformed assistant message.")
-                            })?
-                            .into(),
-                    );
-                }
-            }
             "assistant.usage" => {
                 let count = |name: &str| -> Result<u64, Failure> {
                     let n = data[name].as_f64().ok_or_else(|| {
@@ -616,33 +651,27 @@ impl Events {
         Ok(())
     }
 
-    pub fn finish(
+    /// Packet-mode completion: the host-held exit slot decides; any final message is ignored.
+    /// Idle without an exit is agent-quality (retryable), never a schema failure.
+    pub fn finish_exit<O>(
         self,
-        paths: &[String],
+        exit: Option<crate::exits::ExitCall>,
         session_id: String,
         model: String,
         runtime_version: String,
-    ) -> Result<ReviewResult, Failure> {
-        self.finish_with(session_id, model, runtime_version, |text| {
-            validate_output(text, paths)
-        })
-    }
-
-    pub fn finish_with<O>(
-        self,
-        session_id: String,
-        model: String,
-        runtime_version: String,
-        validate: impl FnOnce(&str) -> Result<O, Failure>,
+        build: impl FnOnce(crate::exits::ExitCall) -> Result<O, Failure>,
     ) -> Result<ReviewResult<O>, Failure> {
         if !self.idle || !self.usage_seen {
             return Err(Failure::permanent(
                 "Copilot ended without completion and usage evidence.",
             ));
         }
+        let exit = exit.ok_or_else(|| {
+            Failure::provider("Agent ended without calling an exit. No review result was accepted.")
+        })?;
         Ok(ReviewResult {
             reviewed_base_sha: None,
-            output: validate(self.message.as_deref().ok_or_else(Failure::schema)?)?,
+            output: build(exit)?,
             session_id,
             model,
             runtime_version,
@@ -651,6 +680,7 @@ impl Events {
             output_tokens: self.output_tokens,
             tool_calls: self.tool_calls,
             byte_coverage: false,
+            coverage: None,
         })
     }
 }

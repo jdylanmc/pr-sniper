@@ -1,9 +1,14 @@
 use pr_sniper_lib::{
+    exit_writes,
     follow_up::{self, FollowUp},
     github::{metadata::Lifecycle, ConnectionError},
-    monitoring::{AccountAvailability, JobOperation, Monitor, OperationState, QueueJob},
+    monitoring::{
+        AccountAvailability, JobOperation, Monitor, OperationFailure, OperationState, QueueJob,
+    },
+    pr_state::PrStates,
     publication::{self, Batch, Publication, Receipt, RemoteState},
     queue::{self, State},
+    retention::Binding,
     review::{self, Decision, ReviewRun, Selection},
     storage::{Settings, Store},
 };
@@ -35,6 +40,8 @@ fn review(number: u64) -> ReviewRun {
     let mut operation = JobOperation::review(&job, 100);
     operation.state = OperationState::Completed;
     ReviewRun {
+        mode: pr_sniper_lib::review::RunMode::Packet,
+        packet: None,
         feedback_context: None,
         key: review::key(&job, ASSIGNMENT),
         selection: Selection::resolve(&settings(), &job, ASSIGNMENT).unwrap(),
@@ -81,38 +88,250 @@ fn state(store: &Store) -> State {
     queue::snapshot(store, vec![]).unwrap().items[0].state
 }
 
+fn with_exit(exit: pr_sniper_lib::exits::ExitOutcome) -> ReviewRun {
+    let mut run = review(1);
+    let output = &mut run.result.as_mut().unwrap().output;
+    output.decision = Decision::HumanInputRequired;
+    output.exit = Some(exit);
+    run
+}
+
 #[test]
-fn publication_is_a_separate_fact_and_the_author_is_not_the_operator() {
+fn packet_exits_decide_queue_state_without_a_publication_unless_they_write_comments() {
+    use pr_sniper_lib::exits::{ExitOutcome, NewComment};
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let ready = with_exit(ExitOutcome::ReadyForHuman {
+        summary: "Looks fine.".into(),
+    });
+    seed(&store, &[ready], &[]);
+    assert_eq!(state(&store), State::MachineSignedOff);
+    let snapshot = serde_json::to_value(queue::snapshot(&store, vec![]).unwrap()).unwrap();
+    assert_eq!(snapshot["publications"][0]["local_only"], true);
+
+    let comments = with_exit(ExitOutcome::Comments {
+        new_comments: vec![NewComment {
+            path: "a.rs".into(),
+            line: 1,
+            side: None,
+            body: "Fix.".into(),
+        }],
+        reply_comments: vec![],
+        resolve_own_threads: vec![],
+    });
+    seed(&store, &[comments], &[]);
+    assert_eq!(state(&store), State::AwaitingPublication);
+
+    let replies_only = with_exit(ExitOutcome::Comments {
+        new_comments: vec![],
+        reply_comments: vec![pr_sniper_lib::exits::ReplyComment {
+            thread_id: "T".into(),
+            body: "Agreed.".into(),
+        }],
+        resolve_own_threads: vec![],
+    });
+    seed(&store, &[replies_only], &[]);
+    assert_eq!(state(&store), State::AwaitingPublication);
+
+    for exit in [
+        ExitOutcome::Approve {
+            comment: "LGTM".into(),
+        },
+        ExitOutcome::ApproveAndMerge {
+            comment: "LGTM".into(),
+        },
+    ] {
+        seed(&store, &[with_exit(exit)], &[]);
+        assert_eq!(state(&store), State::MachineSignedOff);
+        let item = &queue::snapshot(&store, vec![]).unwrap().items[0];
+        assert_eq!(item.progress, Some(queue::Progress::Approving));
+    }
+}
+
+fn replies_only() -> ReviewRun {
+    with_exit(pr_sniper_lib::exits::ExitOutcome::Comments {
+        new_comments: vec![],
+        reply_comments: vec![pr_sniper_lib::exits::ReplyComment {
+            thread_id: "T".into(),
+            body: "Agreed.".into(),
+        }],
+        resolve_own_threads: vec!["R".into()],
+    })
+}
+
+fn with_write(store: &Store, run: &ReviewRun, change: impl Fn(&mut exit_writes::ExitWrite)) {
+    let mut write = exit_writes::plan(run, 100).unwrap();
+    change(&mut write);
+    let mut ledger = store.load_feedback().unwrap();
+    ledger.exit_writes = vec![write];
+    store.save_feedback(&ledger).unwrap();
+}
+
+fn tosses(store: &Store, run: &ReviewRun, count: u8) {
+    let mut states = PrStates::default();
+    states.observe(
+        &Binding::job(&run.job),
+        pr_sniper_lib::pr_state::Observation {
+            iteration_id: "i",
+            new_iteration: true,
+            snapshot: None,
+            already_reviewed: false,
+            now: 1,
+        },
+    );
+    for _ in 0..count {
+        states.toss(&Binding::job(&run.job));
+    }
+    store.save_pr_states(&states).unwrap();
+}
+
+fn item(store: &Store) -> queue::Item {
+    queue::snapshot(store, vec![]).unwrap().items.remove(0)
+}
+
+#[test]
+fn a_reply_only_exit_publishes_then_leaves_the_queue_once_consumed() {
+    use exit_writes::Phase;
+    use pr_sniper_lib::exits::Exit;
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let run = replies_only();
+    seed(&store, std::slice::from_ref(&run), &[]);
+    // Not admitted yet, planned, verified, confirmed but not consumed: publishing.
+    let admitted = item(&store);
+    assert_eq!(admitted.state, State::AwaitingPublication);
+    assert_eq!(admitted.progress, Some(queue::Progress::Publishing));
+    assert_eq!(admitted.exit, Some(Exit::LeaveComments));
+    for phase in [Phase::Planned, Phase::Verified, Phase::Completed] {
+        with_write(&store, &run, |w| w.phase = phase);
+        let publishing = item(&store);
+        assert_eq!(publishing.state, State::AwaitingPublication, "{phase:?}");
+        assert_eq!(publishing.progress, Some(queue::Progress::Publishing));
+    }
+    with_write(&store, &run, |w| {
+        w.phase = Phase::Completed;
+        w.consumed = true;
+    });
+    let done = item(&store);
+    assert_eq!(done.state, State::WaitingForAuthor);
+    assert_eq!(done.progress, None);
+    let snapshot = serde_json::to_value(queue::snapshot(&store, vec![]).unwrap()).unwrap();
+    assert_eq!(snapshot["exit_writes"][0]["phase"], "completed");
+    assert_eq!(snapshot["items"][0]["exit"], "leave_comments");
+}
+
+#[test]
+fn a_tossed_exit_write_is_requeued_until_the_budget_parks_it_as_tossed() {
+    use exit_writes::Phase;
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let run = replies_only();
+    seed(&store, std::slice::from_ref(&run), &[]);
+    tosses(&store, &run, 0);
+    with_write(&store, &run, |w| w.phase = Phase::Tossed);
+    // The toss counts and queues a new run of the same review.
+    let write = store.load_feedback().unwrap().exit_writes.remove(0);
+    exit_writes::requeue(&store, &write, 200).unwrap();
+    assert_eq!(store.load_reviews().unwrap().len(), 2);
+    let requeued = item(&store);
+    assert_eq!(requeued.state, State::Queued);
+    assert_eq!(requeued.failure_cause, None);
+    // Only the newest run of a key re-queues.
+    exit_writes::requeue(&store, &write, 201).unwrap();
+    assert_eq!(store.load_reviews().unwrap().len(), 2);
+
+    // Budget spent: one Needs attention row, typed `tossed`, no automatic retry.
+    seed(&store, std::slice::from_ref(&run), &[]);
+    tosses(&store, &run, 3);
+    with_write(&store, &run, |w| w.phase = Phase::Tossed);
+    let parked = queue::snapshot(&store, vec![]).unwrap();
+    assert_eq!(parked.items.len(), 1);
+    assert_eq!(parked.items[0].state, State::Failed);
+    assert_eq!(parked.items[0].failure_cause, Some(queue::CAUSE_TOSSED));
+    assert_eq!(parked.items[0].resume_at, None);
+    // Under budget but not yet re-queued: shown as queued again.
+    tosses(&store, &run, 1);
+    assert_eq!(item(&store).state, State::Queued);
+}
+
+#[test]
+fn an_exit_write_that_failed_after_an_effect_needs_attention_typed() {
+    use exit_writes::Phase;
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let run = replies_only();
+    seed(&store, std::slice::from_ref(&run), &[]);
+    with_write(&store, &run, |w| {
+        w.phase = Phase::Failed;
+        w.steps[0].state = exit_writes::StepState::Done;
+        w.operation.state = OperationState::ManualRetry;
+        w.operation.failure = Some(OperationFailure::Permanent);
+    });
+    let failed = item(&store);
+    assert_eq!(failed.state, State::Failed);
+    assert_eq!(failed.failure_cause, Some(queue::CAUSE_EXIT_FAILED));
+    assert_eq!(
+        failed.failure_class,
+        Some(pr_sniper_lib::monitoring::FailureClass::Other)
+    );
+    assert_eq!(failed.progress, None);
+}
+
+#[test]
+fn a_review_tossed_through_its_budget_parks_typed_tossed() {
     let root = tempfile::tempdir().unwrap();
     let store = Store::new(root.path().into());
     let mut run = review(1);
-    seed(&store, &[run.clone()], &[]);
-    assert_eq!(state(&store), State::AwaitingPublication);
-    let snapshot = serde_json::to_value(queue::snapshot(&store, vec![]).unwrap()).unwrap();
-    assert_eq!(snapshot["publications"][0]["local_only"], false);
-    assert_eq!(
-        snapshot["publications"][0]["publication"],
-        serde_json::Value::Null
+    run.result = None;
+    run.operation.state = OperationState::Running;
+    run.operation.fail(
+        &review::Failure::tossed("PR state moved.").monitoring(),
+        1_000,
     );
-    let mut receipt = published(&run);
-    store.save_publications(&[receipt.clone()]).unwrap();
-    assert_eq!(state(&store), State::MachineSignedOff);
-    run.result.as_mut().unwrap().output.decision = Decision::HumanInputRequired;
-    receipt.review = run.clone();
-    store.save_reviews(&[run.clone()]).unwrap();
-    store.save_publications(&[receipt.clone()]).unwrap();
-    assert_eq!(state(&store), State::WaitingForAuthor);
-    receipt.batch.as_mut().unwrap().unmappable.push(0);
-    store.save_publications(&[receipt]).unwrap();
-    assert_eq!(state(&store), State::WaitingForHuman);
-    store.save_publications(&[]).unwrap();
-    let mut configuration = settings();
-    configuration.repositories[0].assignments[0].comment = false;
-    store.save_settings(&configuration).unwrap();
-    assert_eq!(state(&store), State::WaitingForHuman);
-    run.result.as_mut().unwrap().output.decision = Decision::MachineSignOff;
-    store.save_reviews(&[run]).unwrap();
-    assert_eq!(state(&store), State::MachineSignedOff);
+    run.operation.state = OperationState::ManualRetry;
+    seed(&store, &[run], &[]);
+    let parked = item(&store);
+    assert_eq!(parked.state, State::Failed);
+    assert_eq!(parked.failure_cause, Some(queue::CAUSE_TOSSED));
+}
+
+#[test]
+fn a_panic_exit_parks_at_once_typed_and_resumes_on_the_cooldown_schedule() {
+    let mut run = review(1);
+    run.result = None;
+    run.operation.state = OperationState::Running;
+    run.operation
+        .fail(&review::Failure::panic("tool broken").monitoring(), 1_000);
+    assert_eq!(run.operation.state, OperationState::Failed);
+    assert_eq!(
+        run.operation.failure,
+        Some(pr_sniper_lib::monitoring::OperationFailure::Panic)
+    );
+    assert!(run.operation.resume_at.is_some());
+    run.error = Some("Agent panic exit: tool broken".into());
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    seed(&store, &[run], &[]);
+    assert_eq!(state(&store), State::Failed);
+    let parked = item(&store);
+    assert_eq!(parked.failure_cause, Some(queue::CAUSE_PANIC));
+    assert_eq!(parked.exit, Some(pr_sniper_lib::exits::Exit::PanicExit));
+    assert!(parked.resume_at.is_some(), "the cooldown clock");
+}
+
+#[test]
+fn legacy_run_records_load_as_legacy_with_no_packet_and_round_trip() {
+    let run = review(1);
+    let mut value = serde_json::to_value(&run).unwrap();
+    value.as_object_mut().unwrap().remove("mode");
+    value.as_object_mut().unwrap().remove("packet");
+    let loaded: ReviewRun = serde_json::from_value(value).unwrap();
+    assert_eq!(loaded.mode, review::RunMode::Legacy);
+    assert!(loaded.packet.is_none());
+    assert!(serde_json::to_value(&loaded)
+        .unwrap()
+        .get("packet")
+        .is_none());
 }
 
 #[test]
@@ -348,16 +567,13 @@ fn complete_guide_order_is_preserved_and_missing_storage_is_not_success() {
     let paths: Vec<_> = (0..301).map(|n| format!("source-{n}.rs")).collect();
     let files: Vec<_> = paths
         .iter()
+        .rev()
         .enumerate()
-        .map(|(index, path)| json!({"path":path,"order":301-index,"explanation":"Read it."}))
+        .map(|(index, path)| json!({"path":path,"order":index + 1,"explanation":"Read it."}))
         .collect();
-    let output = review::validate_output(
-        &json!({
-            "synopsis":"Read every file.","decision":"machine_sign_off","findings":[],"files":files
-        })
-        .to_string(),
-        &paths,
-    )
+    let output: review::ReviewOutput = serde_json::from_value(json!({
+        "synopsis":"Read every file.","decision":"machine_sign_off","findings":[],"files":files
+    }))
     .unwrap();
     run.result.as_mut().unwrap().output = output.clone();
     seed(&store, &[run.clone()], &[published(&run)]);

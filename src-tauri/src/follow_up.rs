@@ -11,10 +11,13 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
-pub(crate) use task::{ConversationInput, ReplyTask};
 pub use task::{Evidence, ReplyDecision, ReplyOutput};
 
 pub(crate) const SUPERSEDED_TRIGGER: &str = "A later external comment superseded this follow-up.";
+/// Reply and Mention analysis is retired: the review packet reads comments and its
+/// exits reply. No follow-up is admitted; unanalyzed records are cancelled on load,
+/// analyzed replies still publish and reconcile.
+pub(crate) const LEGACY_FOLLOW_UP_RETIRED: &str = "Legacy follow-up retired.";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -464,37 +467,6 @@ impl FollowUp {
         self.context.selection.same_execution(current)
     }
 
-    pub(crate) fn retain_analysis_attempt(&mut self, operation: JobOperation) {
-        if operation.attempt_count > 0 {
-            self.analysis_history.push(AnalysisAttempt {
-                context: self.context.clone(),
-                operation: operation.clone(),
-            });
-        }
-        self.history.push(operation);
-    }
-    pub(crate) fn input(&self) -> ConversationInput {
-        match &self.target {
-            ConversationTarget::Owned(origin) => ConversationInput::Owned {
-                thread: origin.thread.clone(),
-            },
-            ConversationTarget::Retained(origin) => ConversationInput::Owned {
-                thread: origin.thread.clone(),
-            },
-            ConversationTarget::Thread { thread } => ConversationInput::Owned {
-                thread: thread.clone(),
-            },
-            ConversationTarget::Mention { comment } if self.discussion.is_empty() => {
-                ConversationInput::Mention {
-                    comment: comment.clone(),
-                }
-            }
-            ConversationTarget::Mention { comment } => ConversationInput::General {
-                comment: comment.clone(),
-                discussion: self.discussion.clone(),
-            },
-        }
-    }
     pub fn fresh_observation(&self, observed: &Observation) -> bool {
         match (&self.target, observed) {
             (
@@ -710,38 +682,6 @@ impl FollowUp {
         }
     }
 
-    pub fn general_thread(thread: Thread, context: ConversationContext) -> Result<Self, String> {
-        if thread.resolved {
-            return Err("Resolved discussions cannot create new analysis or replies.".into());
-        }
-        let trigger = thread
-            .latest_other_user(&context.job.account_id)
-            .ok_or("No eligible other-user comment.")?;
-        let key = serde_json::json!([
-            "thread",
-            context.job.provider,
-            context.job.account_id,
-            context.job.configuration_id,
-            context.job.repository_id,
-            context.job.pull_request_id,
-            thread.id,
-            trigger.id
-        ])
-        .to_string();
-        let comment = TopComment {
-            id: trigger.id.clone(),
-            body: trigger.body.clone(),
-            author_id: trigger.author_id.clone(),
-            author_login: trigger.author_login.clone(),
-            created_at: trigger.created_at.clone(),
-            updated_at: trigger.published_at.clone(),
-        };
-        let mut run = Self::mention(comment, context);
-        run.key = key;
-        run.target = ConversationTarget::Thread { thread };
-        Ok(run)
-    }
-
     pub fn retained(
         receipt: &crate::retention::OwnedReceipt,
         thread: Thread,
@@ -854,20 +794,6 @@ impl FollowUp {
         }
 
         Ok(())
-    }
-
-    pub(crate) fn assessment_owner(&self) -> &str {
-        self.thread()
-            .ok()
-            .and_then(|thread| thread.root().ok())
-            .and_then(|root| {
-                self.context
-                    .feedback
-                    .iter()
-                    .find(|feedback| feedback.root_id == root.id)
-            })
-            .map(|feedback| feedback.owner_agent_id.as_str())
-            .unwrap_or(&self.context.selection.agent.id)
     }
 
     pub fn fresh_thread(&self, current: &Thread) -> bool {
@@ -1028,36 +954,6 @@ pub fn admit_run(runs: &mut Vec<FollowUp>, mut run: FollowUp) -> Result<bool, St
     Ok(true)
 }
 
-pub(crate) fn admit_stored(
-    store: &Store,
-    runs: &mut Vec<FollowUp>,
-    run: FollowUp,
-) -> Result<bool, String> {
-    if crate::retention::known_key(store, &run.key)? {
-        return Ok(false);
-    }
-    let previous = crate::retention::ordinal(
-        store,
-        &crate::retention::Binding::job(&run.context.job),
-        &run.context.selection.agent.id,
-        true,
-    )?;
-    if !admit_run(runs, run)? {
-        return Ok(false);
-    }
-    let latest = runs
-        .last_mut()
-        .ok_or("Admitted conversation disappeared.")?;
-    latest.reply_ordinal = Some(
-        latest.reply_ordinal.unwrap_or(0).max(
-            previous
-                .checked_add(1)
-                .ok_or("Conversation ordinal exhausted.")?,
-        ),
-    );
-    Ok(true)
-}
-
 pub fn observation_origins(
     store: &Store,
     ticket: &crate::monitoring::PollTicket,
@@ -1129,61 +1025,29 @@ pub fn polling_origins(
         .collect())
 }
 
-pub fn validate_analysis_commit(
-    store: &Store,
-    run: &FollowUp,
-    account_allowed: bool,
-) -> Result<(), Failure> {
-    if !account_allowed {
-        return Err(Failure::permanent(
-            "The GitHub connection changed before the follow-up result was saved.",
-        ));
-    }
-    let current = store
-        .load_follow_ups()
-        .map_err(Failure::permanent)?
-        .into_iter()
-        .find(|current| current.id == run.id)
-        .ok_or_else(|| Failure::permanent("Thread follow-up disappeared."))?;
-    if current.cancelled {
-        return Err(Failure::permanent("Thread follow-up was cancelled."));
-    }
-    if run.has_provider_work() || current.has_provider_work() {
-        return Err(Failure::permanent(
-            "Provider reply work cannot be overwritten by an analysis result.",
-        ));
-    }
-    let settings = store.load_settings().map_err(Failure::permanent)?;
-    let jobs = store.load_queue().map_err(Failure::permanent)?;
-    let job = jobs
-        .iter()
-        .find(|job| run.matches_job(job))
-        .ok_or_else(|| Failure::permanent("The reviewed revision is no longer available."))?;
-    let current = crate::review::Selection::resolve(
-        &settings,
-        job,
-        job.assignment_id
-            .as_deref()
-            .ok_or_else(|| Failure::permanent("Conversation assignment missing."))?,
-    )
-    .map_err(Failure::permanent)?;
-    if !run.same_analysis_execution(&current) {
-        return Err(Failure::permanent(
-            "Follow-up selection changed before result persistence.",
-        ));
-    }
-    run.authority(&settings, job).map_err(Failure::permanent)?;
-    run.validate_analysis_base(job)?;
-    if run.context.feedback_checked || matches!(run.target, ConversationTarget::Mention { .. }) {
-        run.validate_analysis_feedback(store, job)?;
-    }
-    Ok(())
-}
-
 pub fn restore(store: &Store) -> Result<(), String> {
     let mut runs = store.load_follow_ups()?;
     let mut changed = false;
     for run in &mut runs {
+        if !run.cancelled && run.result.is_none() && !run.has_provider_work() {
+            run.cancelled = true;
+            run.phase = Phase::Stopped;
+            run.error = Some(LEGACY_FOLLOW_UP_RETIRED.into());
+            if let Some(operation) = run
+                .analysis
+                .as_mut()
+                .filter(|op| op.state != OperationState::Completed)
+            {
+                operation.state = OperationState::Failed;
+                operation.failure = Some(OperationFailure::Permanent);
+                operation.next_attempt_at = None;
+                operation.ai_attempt = None;
+                operation.interruption = None;
+                operation.resume_at = None;
+            }
+            changed = true;
+            continue;
+        }
         for operation in [&mut run.analysis, &mut run.publication]
             .into_iter()
             .flatten()
@@ -1285,6 +1149,7 @@ pub fn publish(env: &mut impl Environment, run: &mut FollowUp) -> Result<(), Fai
                 kind: OperationFailure::Network,
                 message: "Reply outcome is unresolved; no replacement reply will be posted.".into(),
                 retry_after_seconds: None,
+                origin: crate::backpressure::Origin::Github,
             });
         }
         let gate = env.gate(run, &current)?;
@@ -1341,7 +1206,8 @@ pub fn publish(env: &mut impl Environment, run: &mut FollowUp) -> Result<(), Fai
         } else {
             Phase::Stopped
         };
-        run.error = Some(error.message.clone());
+        // A rate limit that did not execute is a wait, not an error to show.
+        run.error = (!error.rate_limited() || run.uncertain).then(|| error.message.clone());
         env.save(run)?;
         return Err(error);
     }

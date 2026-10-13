@@ -62,12 +62,20 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
             if conflicting_publication(&publications, review) {
                 policy = Err("Another review attempt owns this revision's publication; reconcile it instead of creating another batch.".into());
             }
+            if publication.is_none() && policy.is_ok() {
+                if let Some(reason) = crate::exit_writes::holds_publication(store, review)
+                    .unwrap_or_else(Some)
+                {
+                    policy = Err(reason);
+                }
+            }
             if latest.get(&review.key).copied() != Some(&review.operation.id) {
                 policy = Err("A newer local review attempt superseded this result.".into());
             }
             Candidate {
                 local_only: publication.is_none() && (
-                    !settings.repositories.iter().find(|r|r.id==review.job.configuration_id)
+                    review.result.as_ref().is_some_and(|r| !crate::publication::writes_comments(r))
+                    || !settings.repositories.iter().find(|r|r.id==review.job.configuration_id)
                         .is_some_and(|r|r.assignments.iter().any(|a|a.id==review.assignment_id&&a.comment))),
                 automatic: policy.as_ref().copied().unwrap_or(false),
                 blocked: policy.err(),
@@ -93,7 +101,7 @@ fn next_candidate(store: &Store, now: i64) -> Result<Option<Candidate>, String> 
                     .next_attempt_at
                     .is_some_and(|next| now >= next)
             }
-            None => candidate.blocked.is_none() && candidate.automatic,
+            None => candidate.blocked.is_none() && candidate.automatic && !candidate.local_only,
         }))
 }
 
@@ -655,7 +663,23 @@ impl Environment for Native {
                     uncertain: false,
                 })?;
         }
-        client.mutate_publication(run, mutation)
+        let mut result = client.mutate_publication(run, mutation);
+        if let Err(error) = &mut result {
+            if let (Ok(now), Ok(store)) = (
+                self.now(),
+                self.app.state::<Host>().store.lock().map_err(|_| ()),
+            ) {
+                crate::backpressure::pace_write(
+                    &store,
+                    &mut error.failure,
+                    error.uncertain,
+                    &run.review.job.account_id,
+                    &run.operation.id,
+                    now,
+                );
+            }
+        }
+        result
     }
 
     fn requeue(&mut self, run: &Publication) -> Result<(), Failure> {
@@ -677,6 +701,34 @@ impl Environment for Native {
             .request_revision_check_checked(&store, &run.review.job, self.now()?)
             .map_err(|error| self.failures.gate_error(error));
         result
+    }
+
+    fn confirmed(&mut self, run: &Publication) -> Result<(), Failure> {
+        let comments = matches!(
+            run.review.result.as_ref().and_then(|r| r.output.exit.as_ref()),
+            Some(crate::exits::ExitOutcome::Comments { new_comments, .. }) if !new_comments.is_empty()
+        );
+        // Replies or resolutions follow the batch: the exit consumes when they finish.
+        if run.review.mode != crate::review::RunMode::Packet
+            || !comments
+            || crate::exit_writes::plan(&run.review, 0).is_some()
+        {
+            return Ok(());
+        }
+        let client = self.session(run)?;
+        let repo = RemoteRepository {
+            id: run.review.job.repository_id.clone(),
+            name: run.review.job.repository_name.clone(),
+        };
+        crate::exits::consume::consume_after(
+            &self.app.state::<Host>().store,
+            &client,
+            &repo,
+            &run.review.job,
+            &run.review.operation.id,
+        )
+        .map(|_| ())
+        .map_err(Failure::permanent)
     }
 }
 

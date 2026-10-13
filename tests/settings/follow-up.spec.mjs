@@ -196,7 +196,7 @@ test("uncertain replies require reconciliation while confirmed replies cannot be
     .toEqual([
       {
         command: "start_follow_up",
-        args: { id: "follow-up-1", publish: true },
+        args: { id: "follow-up-1" },
       },
     ]);
 });

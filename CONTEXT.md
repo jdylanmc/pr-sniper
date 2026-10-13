@@ -57,11 +57,33 @@ Shared, editable plain-text review principle selected per Agent. Referenced Doct
 _Avoid_: Skill, prompt snippet
 
 **Primary Agent**:
-The repository assignment responsible for eligible conversation assessments and the final full review before permitted provider actions. A sole assignment is primary automatically; multiple assignments have at most one explicit primary. No primary means no reply, approve or merge; normal reviews and permitted initial comments continue. Selecting primary grants no capabilities and does not change original feedback ownership.
+The repository assignment responsible for eligible conversation assessments and the final full review before permitted provider actions. Runs last, after every teammate report for the same PR state; its packet has the Teammate reports section. A sole assignment is primary automatically; multiple assignments have at most one explicit primary. No primary means no reply, approve or merge; normal reviews and permitted initial comments continue. Selecting primary grants no capabilities and does not change original feedback ownership.
 _Avoid_: Global primary, thread owner as responder
 
+**Tools** (assignment):
+Packet tool ids an assignment may use: investigation tools plus exits. Every run is packet mode. Absent = role default: primary gets investigation tools, granted exits, `ready_for_human`, `panic_exit`; teammate gets investigation tools, `submit_report`, `panic_exit`. Set = validated explicit list. Effect exits primary only; `submit_report` teammate only; exits need their grant. Set by switches in the assignment's Tools list.
+_Avoid_: Skills, plugins
+
+**Packet**:
+The one text an agent is given per run, built by the host from fresh PR state: Meta, fixed Rules, PR, Conversation, Files manifest, Teammate reports (primary), Directive, Exits. Untrusted content is fenced; nothing is cut without a marker. Same state, same text, same `packet_hash`. Stored content-free as the run's packet record. See [Review packet](docs/review-packet.md).
+_Avoid_: Prompt
+
+**Exit**:
+The one terminal tool call that ends an agent run: `leave_comments`, `ready_for_human`, `approve_pull_request`, `approve_and_merge`, `panic_exit`, or a teammate's `submit_report`. Offered or denied by the gates at packet build, re-checked at exit. The host is the only writer; the agent never writes.
+_Avoid_: Decision, verdict
+
+**Teammate**:
+A non-primary assignment of a repository. Runs first, ends with `submit_report`, never has an effect exit. Its report is untrusted data for the primary. Teammate fail = whole PR-state run set fail: primary blocked (`BlockedBy::Teammate`) until every teammate has a report for same state. Good reports kept on retry. State move re-runs all.
+_Avoid_: Secondary agent, peer
+
+**Review drafts** (repository):
+Repository switch, default off. On: draft pull requests are reviewed too.
+
+**Include self** (Approve & Merge):
+Approve & Merge option, default off: the user's own PRs count. Inert until approve exits land.
+
 **Assignment Capability**:
-An explicit repository-scoped grant on an assignment: Publish Comment for any assignment; independent Reply Comment and Approve or Approve & Merge for the primary only. New assignments start with Comment, Approve and Merge off. Publish Comment off: findings stay local. Reply Comment off: analysis still runs, replies stay local, enabling later replays nothing. Merge includes approval and follows confirmed current-head approval; an existing provider vote is not fabricated as a new PR Sniper vote. Obsolete secondary action grants show disabled, never auto-promoted. Legacy start, default and override settings are inert history. These product grants never authorize development agents to publish, approve or merge.
+An explicit repository-scoped grant on an assignment: Publish Comment for any assignment; independent Reply Comment and Approve or Approve & Merge for the primary only. New assignments start with Comment, Approve and Merge off. Publish Comment off: findings stay local. Reply Comment gates exit replies and resolutions. Merge includes approval and follows confirmed current-head approval; an existing provider vote is not fabricated as a new PR Sniper vote. Obsolete secondary action grants show disabled, never auto-promoted. Legacy start, default and override settings are inert history. These product grants never authorize development agents to publish, approve or merge.
 _Avoid_: Automation override, reusable Agent permission, merge-only grant
 
 **Authorization Boundary**:
@@ -83,13 +105,13 @@ The single five-field cron plus explicit IANA time zone (default `*/15 * * * *`,
 _Avoid_: Polling interval, assignment timer, per-Agent poll
 
 **Check Now**:
-Manual global scan. Coalesces to one pending scan. Never bypasses Retry-After or an existing **Retry budget**.
+Manual global scan. Coalesces to one pending scan. Never bypasses **Backpressure** or an existing **Retry budget**.
 
 **Pause Automation**:
 Persisted global gate, separate from repository enablement and grants. Blocks new polling, AI admission and provider writes. Active workers are signalled and keep their slot, **stopping**, until teardown ends. Partial AI output is discarded. An already-sent remote request is not undone; intents and receipts are kept.
 
 **AI Capacity**:
-Machine-wide count of concurrent AI job slots, positive integer, default 4. Shared by normal, primary-final, reply and mention work in one FIFO order across retries and pauses. Limits work, not Agent count. A free slot fills at once. Reducing stops the newest excess workers. Does not raise provider-write concurrency.
+Machine-wide count of concurrent AI job slots, positive integer, default 4. Shared by all review runs (primaries and teammates) in one FIFO order across retries and pauses. Primary-final, reply and mention kinds are history only. Limits work, not Agent count. A free slot fills at once. Reducing stops the newest excess workers. Does not raise provider-write concurrency.
 _Avoid_: Concurrency limit
 
 **Saved Preferences**:
@@ -103,11 +125,26 @@ One tracked revision of a PR. A new head SHA starts a new Iteration and supersed
 _Avoid_: Revision (as tracked unit; "revision" means the provider commit)
 
 **One-review-per-head rule**:
-Each head SHA gets one review per assigned Agent. A new revision is the only permission for another review. On the same revision an Agent only replies to new comments. Added Agent gets its missing job at next scan; completed unchanged passes never repeat. Agent context is PR description, changed files and all comments, plus prior feedback.
+Each head SHA gets one review per assigned Agent. A new revision is the only permission for another review. On the same revision an Agent only replies to new comments. Added Agent gets its missing job at next scan; completed unchanged passes never repeat. Agent context is PR description, changed files and all comments, plus prior feedback. Being replaced by **PR state** detection ([polling.md](docs/polling.md#heartbeat-pr-state)).
 _Avoid_: Re-review, manual re-run
 
+**PR state**:
+Normalized, sorted, timestamp-free view of a PR: head/base, text, lifecycle, mergeable class, review decision, approvals, CI array, comments and threads, labels. Compared by hash. Persisted per PR in `pr-state.json`.
+
+**Heartbeat**:
+The scheduled read of PR state for tracked open PRs. It only adds a PR to the queue (hash differs from baseline and pending) or removes it (merged/closed before its turn). One queue entry per PR, whatever the number of changes while queued.
+
+**Baseline**:
+Hash of the last consumed PR state, including the host's own writes, so own comments never retrigger.
+
+**Consume** / **Toss**:
+A successful exit consumes the state it read and sets the Baseline. A state that moved during the run tosses the result: error count +1, re-queue, park at 3. Honoured when: `ready_for_human` completes, comments publish, approve/merge confirm. Baseline = fresh snapshot after the write. Head moved or PR closed before the run: superseded, no budget spent.
+
+**Clean** (Reviewed):
+Per-PR and Clean all. Deletes persisted PR state, packet and result detail of terminal PRs only. Receipts and uncertain-write records stay.
+
 **Job**:
-One unit of AI work for one Agent on one exact Iteration. Kinds: normal, primary-final, reply, mention. Running counts jobs, not triggers: 7 Agents at capacity 4 means 4 active, 3 waiting. Carries an immutable **Execution Snapshot**.
+One unit of AI work for one Agent on one exact Iteration. Kind: normal (packet run). Legacy kinds load as history, never run. Running counts jobs, not triggers: 7 Agents at capacity 4 means 4 active, 3 waiting. Carries an immutable **Execution Snapshot**.
 _Avoid_: Trigger, task
 
 **Execution Snapshot**:
@@ -122,14 +159,14 @@ _Avoid_: Review run
 Every try at a review, including retries. Fixed-schema bounded local **Diagnostic Attempt Record** excludes prompts, bodies, transcripts and credentials; logging failure never changes outcome.
 
 **Host-owned tools**:
-The only three tools Copilot gets in a review: batch changed-file reads, exact source reads, literal path search, over complete changed-file metadata and immutable base/head trees. No checkout, commands, builds, tests, hooks, installs or provider mutations. Runtime tool catalog must exactly equal the allowlist before inference or the review is blocked. Constrained current-user process, not an OS sandbox.
+The only tools Copilot gets in a review: the run's investigation tools (changed-file reads, source reads, threads, checks, tree, code search) and its offered exits, over immutable base/head trees. No checkout, commands, builds, tests, hooks, installs or provider mutations. Runtime tool catalog must exactly equal the allowlist before inference or the review is blocked. Constrained current-user process, not an OS sandbox.
 _Avoid_: Sandbox, agent tools
 
 **Validated review result**:
-One-sentence synopsis, ordered guide for every changed file, structured findings, machine decision, runtime metadata. Every changed file must be read; missing, duplicate or invalid file entry fails validation. Head, base, lifecycle and inputs are rechecked before invoke; stale results are rejected. Stays local until publication gate admits.
+The one exit the run ended on (or a teammate report), runtime metadata, informational **Read coverage**. Legacy results (synopsis, file guide, findings, machine decision) load as history only. Head, base, lifecycle and inputs are rechecked before invoke; stale results are rejected. Stays local until publication gate admits.
 
 **Final Review**:
-Separate full constrained review by the **Primary Agent**. Runs only when Approve or Merge is granted, after **Action Clearance** and fresh provider observations. Reads every changed file; sees peer results, owned feedback and bounded human discussion. Own history; never replaces normal review history. Findings or human judgment stop actions with no same-Iteration AI retry for a different answer.
+Record of the primary's approve exit (packet `FinalReview`) that authorizes Approve or Merge. No separate final review run. Legacy final-review records load as history, authorize nothing; unfinished ones are cancelled.
 _Avoid_: Approval review, second pass
 
 **Action Clearance**:
@@ -137,6 +174,14 @@ Gate before any provider action. Every current assignment has its own completed 
 _Avoid_: Auto-merge approval
 
 ### Failure and retry
+
+**Backpressure**:
+A rate limit (GitHub 403/429, Copilot/model 429) is a signal to wait, not a failure. No attempt spent, no failure count, no Park, never Needs attention. The provider account is gated in `backpressure.json` until Retry-After/reset, else 30s x2^n (cap 15 min, deterministic jitter); a success clears it. Queue shows a quiet clock row with the local resume time.
+_Avoid_: Rate-limit failure
+
+**Read coverage**:
+Recorded count of changed files the agent read in full ("N of M files read"). Informational only: never rejects, fails or retries a review.
+_Avoid_: Coverage gate
 
 **Retry budget**:
 Persisted per operation: attempt count, retry deadline, state. Survives restart and resume without reset. Transient failures auto-retry with backoff; 3 failed attempts then **Park**. The AI review window starts when the worker starts, not at enqueue. Credentials, permission and permanent failures park at once. Parked retry starts a new operation, keeping history. Cooldown cycles (30m, 1h, 2h, 4h, 8h; `resume_cycle`, `resume_at`) grant each resumable failure a fresh budget, up to five.
@@ -147,7 +192,7 @@ Cause label on a failed item: Credentials, Permission, Network, Failed. Decides 
 _Avoid_: Error type
 
 **Parked failure**:
-Operation that exhausted its **Retry budget** or failed non-transiently. Listed in Queue under **Needs Attention**, never in Running. Auto-resumes: network, provider, timeout, rate-limit and permission failures after a cooldown (five cycles, then a human); credentials when the account connects again. Permanent failures wait for the user.
+Operation that exhausted its **Retry budget** or failed non-transiently. Listed in Queue under **Needs Attention**, never in Running. Auto-resumes: network, provider, timeout and permission failures after a cooldown (five cycles, then a human); credentials when the account connects again. Permanent failures wait for the user.
 _Avoid_: Blocked, dead job
 
 **Stopping slot**:
@@ -212,11 +257,11 @@ Publication or reply whose result is unconfirmed. Keeps original reconciliation 
 _Avoid_: Resend
 
 **Owned Feedback**:
-Feedback rooted in a comment PR Sniper published, verified by saved review, receipts, repository/account identity, commit and exact root body. Username match is insufficient. Records original owner. Unassigning keeps unresolved feedback and blocks clearance. Missing, tampered or incomplete observation is never resolved. No Agent resolve or reopen mutation.
+Feedback rooted in a comment PR Sniper published, verified by saved review, receipts, repository/account identity, commit and exact root body. Username match is insufficient. Records original owner. Unassigning keeps unresolved feedback and blocks clearance. Missing, tampered or incomplete observation is never resolved. **Agent resolve**: a Packet-mode primary may resolve only owned threads, through its `leave_comments` exit and a host `resolveReviewThread` write; never others' threads, never reopen. Legacy follow-ups never resolved.
 _Avoid_: Own thread by author name, thread owner as responder
 
 **Feedback clearance**:
-Local reassessment of an owned concern needing rationale and verified source evidence, done by full review or primary reply analysis. Shown apart from provider closure; never resolves the GitHub thread. Closure leaves a durable **Tombstone**; a new finding on a closed concern's file is **Held locally** for human judgment, never republished.
+Local reassessment of an owned concern needing rationale and verified source evidence, recorded by legacy reviews (history). Shown apart from provider closure; a packet exit may resolve owned threads only. Closure leaves a durable **Tombstone**; a new finding on a closed concern's file is **Held locally** for human judgment, never republished.
 _Avoid_: Resolved
 
 **Conversation Trigger**:
@@ -224,7 +269,7 @@ Eligible other-user comment on an admitted open PR, assessed by the Primary Agen
 _Avoid_: Backlog
 
 **Follow-up**:
-Reply work on one external comment thread. Immutable target apart from current context. Outcomes: reply, **Quiet response** (nothing to say, never clears a concern), or human input required (no publishable body, pauses auto follow-ups for the thread). Reply posts only to a verified root, ends ` PR Sniper`, never resolves, approves or merges. Host revalidates before and after mutation.
+Legacy reply work on one external comment thread. Retired: the packet reads comments and answers through exit `reply_comments`. None admitted; unanalyzed records cancelled on startup, analyzed replies still publish and reconcile. Immutable target apart from current context. Outcomes: reply, **Quiet response** (nothing to say, never clears a concern), or human input required (no publishable body, pauses auto follow-ups for the thread). Reply posts only to a verified root, ends ` PR Sniper`, never resolves, approves or merges. Host revalidates before and after mutation.
 _Avoid_: Reply job
 
 **Acting-account mention**:

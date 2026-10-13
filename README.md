@@ -55,7 +55,7 @@ Or download the signed, notarized ZIP from [Releases](https://github.com/jdylanm
 - One review per revision. Publication revalidates the head SHA before and after.
 - GitHub and Copilot identities are separate. Connecting one never connects the other.
 - Approve and merge are opt-in, primary-agent-only, fail closed.
-- Agents get three host-owned review tools. That is a boundary, not a sandbox.
+- Agents get host-owned review tools (reads plus one exit). That is a boundary, not a sandbox.
 
 ## Docs
 

@@ -1,5 +1,5 @@
 use crate::{
-    follow_up::{self, FollowUp},
+    backpressure::{Backpressure, Scope},
     monitoring::{JobOperation, OperationState},
     review::{self, ReviewRun},
     storage::Store,
@@ -22,6 +22,8 @@ pub enum Interruption {
     Shutdown,
 }
 
+/// Only `Normal` runs. The other kinds name historical work (legacy primary final,
+/// Reply and Mention analysis) kept in old records and retention receipts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
@@ -50,6 +52,12 @@ pub struct Work {
     pub state: &'static str,
     pub reason: Option<String>,
     pub failure: Option<crate::monitoring::FailureClass>,
+    /// Rate-limit backpressure: runnable work that waits until this time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delayed_until: Option<i64>,
+    /// Typed cause when `reason` holds the work back behind another run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked_by: Option<review::teammates::BlockedBy>,
 }
 
 #[derive(Debug, Serialize)]
@@ -81,7 +89,6 @@ pub struct Coordinator {
 
 pub enum Dispatch {
     Review(Box<ReviewRun>, Arc<AtomicBool>),
-    Reply(Box<FollowUp>, Arc<AtomicBool>),
 }
 
 pub struct Batch {
@@ -93,19 +100,36 @@ impl Dispatch {
     pub fn key(&self) -> WorkId {
         match self {
             Self::Review(run, _) => WorkId {
-                kind: if run.operation.operation_type == "primary_final_review" {
-                    Kind::PrimaryFinal
-                } else {
-                    Kind::Normal
-                },
+                kind: Kind::Normal,
                 id: run.key.clone(),
-            },
-            Self::Reply(run, _) => WorkId {
-                kind: run.kind(),
-                id: run.id.clone(),
             },
         }
     }
+}
+
+/// Accounts whose rate limits can delay a piece of AI work: the GitHub
+/// account it reads and writes through, and the Agent's Copilot account.
+fn scopes(github_account: &str, selection: Option<&review::Selection>) -> Vec<Scope> {
+    let mut scopes = vec![Scope::github(github_account)];
+    if let Some(account) = selection.and_then(|s| s.agent.ai_account.as_ref()) {
+        scopes.push(Scope::copilot(&account.account_id));
+    }
+    scopes
+}
+
+/// When runnable work may next start: the later of its own rate-limit wait
+/// and any gate on its provider accounts.
+pub(crate) fn pacing(
+    gates: &Backpressure,
+    scopes: &[Scope],
+    operation: Option<&JobOperation>,
+    now: i64,
+) -> Option<i64> {
+    let own = operation
+        .filter(|op| op.state != OperationState::Running)
+        .and_then(|op| op.backpressure_until)
+        .filter(|until| *until > now);
+    own.max(gates.until_any(scopes, now))
 }
 
 fn due(operation: &JobOperation, now: i64) -> bool {
@@ -116,56 +140,28 @@ fn due(operation: &JobOperation, now: i64) -> bool {
 }
 
 pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
-    let mut result = crate::actions::host::candidates(store, now)?;
-    let follow_ups = follow_up::host::candidates(store)?;
-    for intent in store
-        .load_feedback()?
-        .pending_threads
-        .into_iter()
-        .filter(|intent| {
-            intent.follow_up_id.is_none()
-                && !follow_ups
-                    .iter()
-                    .any(|candidate| candidate.run.key == intent.key)
+    let mut result = Vec::new();
+    let gates = store.load_backpressure()?;
+    let reviews = review::host::candidates(store)?;
+    let repositories = store.load_settings()?.repositories;
+    let barriers: BTreeMap<String, review::teammates::TeammateRef> = reviews
+        .iter()
+        .filter(|c| {
+            c.run
+                .as_ref()
+                .is_none_or(|r| r.operation.state != OperationState::Completed)
         })
-    {
-        result.push(Work {
-            key: WorkId {
-                kind: Kind::Reply,
-                id: intent.work_id,
-            },
-            enqueue_order: intent.enqueue_order,
-            state: "blocked",
-            reason: Some(
-                intent
-                    .blocked
-                    .unwrap_or_else(|| "Primary discussion assessment unavailable.".into()),
-            ),
-            failure: None,
-        });
-    }
-    for mention in store.load_feedback()?.mentions.into_iter().filter(|m| {
-        m.follow_up_id.is_none()
-            && !follow_ups
+        .filter_map(|c| {
+            let repository = repositories
                 .iter()
-                .any(|f| f.run.id == m.work_id && f.run.key == m.key)
-    }) {
-        result.push(Work {
-            key: WorkId {
-                kind: Kind::Mention,
-                id: mention.work_id,
-            },
-            enqueue_order: mention.enqueue_order,
-            state: "blocked",
-            reason: Some(
-                mention
-                    .blocked
-                    .unwrap_or_else(|| "Mention routing is unavailable.".into()),
-            ),
-            failure: None,
-        });
-    }
-    for candidate in review::host::candidates(store)? {
+                .find(|r| r.id == c.job.configuration_id)?;
+            Some((
+                c.key.clone(),
+                review::teammates::blocker(repository, &reviews, c)?,
+            ))
+        })
+        .collect();
+    for candidate in reviews {
         if candidate
             .run
             .as_ref()
@@ -173,6 +169,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
         {
             continue;
         }
+        let mut blocked_by = None;
         let mut reason = candidate.blocked;
         if reason.is_none() {
             if let Some(selection) = &candidate.planned_selection {
@@ -197,6 +194,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                 }
                 Some(run)
                     if run.operation.state != OperationState::Running
+                        && run.operation.backpressure_until.is_none()
                         && !due(&run.operation, now) =>
                 {
                     Some("Waiting for retry backoff.".into())
@@ -204,6 +202,33 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                 _ => None,
             };
         }
+        if reason.is_none()
+            && candidate
+                .run
+                .as_ref()
+                .is_none_or(|run| run.operation.state != OperationState::Running)
+        {
+            if let Some(teammate) = barriers.get(&candidate.key) {
+                reason = Some(review::teammates::WAITING_FOR_TEAMMATES.into());
+                blocked_by = Some(review::teammates::BlockedBy::Teammate(teammate.clone()));
+            }
+        }
+        let scopes = scopes(
+            &candidate.job.account_id,
+            candidate
+                .run
+                .as_ref()
+                .map(|run| &run.selection)
+                .or(candidate.planned_selection.as_ref()),
+        );
+        let delayed_until = reason.is_none().then(|| {
+            pacing(
+                &gates,
+                &scopes,
+                candidate.run.as_ref().map(|run| &run.operation),
+                now,
+            )
+        });
         result.push(Work {
             key: WorkId {
                 kind: Kind::Normal,
@@ -225,57 +250,8 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                 .run
                 .as_ref()
                 .and_then(|run| run.operation.failure_class()),
-        });
-    }
-    for candidate in follow_ups {
-        let run = candidate.run;
-        if run.result.is_some() || run.publication.is_some() {
-            continue;
-        }
-        let mut reason = candidate.blocked;
-        if reason.is_none() {
-            reason = if run.cancelled {
-                Some("Follow-up cancelled; manual retry required.".into())
-            } else if run.analysis.as_ref().is_some_and(|op| {
-                matches!(
-                    op.state,
-                    OperationState::Failed | OperationState::ManualRetry
-                )
-            }) {
-                Some(
-                    run.error
-                        .clone()
-                        .unwrap_or_else(|| "Manual retry required.".into()),
-                )
-            } else if candidate.human_gate && !run.manual_start {
-                Some("A prior comment needs human judgment before retrying this follow-up.".into())
-            } else if run
-                .analysis
-                .as_ref()
-                .is_some_and(|op| op.state != OperationState::Running && !due(op, now))
-            {
-                Some("Waiting for retry backoff.".into())
-            } else {
-                None
-            };
-        }
-        result.push(Work {
-            key: WorkId {
-                kind: run.kind(),
-                id: run.id,
-            },
-            enqueue_order: run.enqueue_order.unwrap_or(0),
-            state: if reason.is_some() {
-                "blocked"
-            } else {
-                "waiting"
-            },
-            reason,
-            failure: run
-                .analysis
-                .as_ref()
-                .and_then(|op| op.failure_class())
-                .or_else(|| run.publication.as_ref().and_then(|op| op.failure_class())),
+            delayed_until: delayed_until.flatten(),
+            blocked_by,
         });
     }
     result.sort_by(|a, b| (a.enqueue_order, &a.key).cmp(&(b.enqueue_order, &b.key)));
@@ -292,7 +268,8 @@ impl Coordinator {
         work: &Work,
         prepare: impl FnOnce(Arc<AtomicBool>) -> Result<(String, T), String>,
     ) -> Result<Option<T>, String> {
-        if store.load_automation()?.paused || work.reason.is_some() {
+        if store.load_automation()?.paused || work.reason.is_some() || work.delayed_until.is_some()
+        {
             return Ok(None);
         }
         let capacity = store.load_settings()?.capacity;
@@ -336,6 +313,8 @@ impl Coordinator {
                         .map(|r| format!("{r:?}; waiting for worker teardown."))
                 }),
                 failure: None,
+                delayed_until: None,
+                blocked_by: None,
             };
             if let Some(old) = work.iter_mut().find(|w| w.key == entry.key) {
                 *old = entry;
@@ -356,7 +335,6 @@ impl Coordinator {
     }
 
     /// Called under the Host Store lock, including by deterministic worker tests.
-    /// The same reservation map must also admit future primary-final/mention work.
     pub fn dispatch(&self, store: &Store, now: i64) -> Result<Batch, String> {
         let settings = store.load_settings()?;
         let paused = store.load_automation()?.paused;
@@ -401,21 +379,8 @@ impl Coordinator {
                         let id = run.operation.id.clone();
                         (Dispatch::Review(Box::new(run), cancelled.clone()), id)
                     }
-                    Kind::Reply | Kind::Mention => {
-                        let run = follow_up::host::prepare_dispatch(store, &candidate.key.id, now)?;
-                        let id = run
-                            .analysis
-                            .as_ref()
-                            .ok_or("Reply analysis missing.")?
-                            .id
-                            .clone();
-                        (Dispatch::Reply(Box::new(run), cancelled.clone()), id)
-                    }
-                    Kind::PrimaryFinal => {
-                        let run =
-                            crate::actions::host::prepare_dispatch(store, &candidate.key.id, now)?;
-                        let id = run.operation.id.clone();
-                        (Dispatch::Review(Box::new(run), cancelled.clone()), id)
+                    Kind::PrimaryFinal | Kind::Reply | Kind::Mention => {
+                        return Err("Historical work kind cannot run.".into())
                     }
                 };
                 Ok((operation_id, dispatch))
@@ -490,27 +455,6 @@ impl Coordinator {
                     id: r.key,
                 }),
         );
-        work.extend(
-            store
-                .load_follow_ups()?
-                .into_iter()
-                .filter(|f| matches(&f.context.job))
-                .map(|f| WorkId {
-                    kind: f.kind(),
-                    id: f.id,
-                }),
-        );
-        work.extend(
-            store
-                .load_actions()?
-                .finals
-                .into_iter()
-                .filter(|f| matches(&f.basis.job))
-                .map(|f| WorkId {
-                    kind: Kind::PrimaryFinal,
-                    id: f.id,
-                }),
-        );
         let active = self.active.lock().map_err(|_| "AI capacity unavailable.")?;
         let mut settled = true;
         for reservation in active.values().filter(|r| work.contains(&r.key)) {
@@ -550,44 +494,19 @@ pub(crate) fn launch_batch(app: &tauri::AppHandle, batch: Batch) {
     }
     for dispatch in batch.dispatched {
         match dispatch {
-            Dispatch::Review(run, cancelled)
-                if run.operation.operation_type == "primary_final_review" =>
-            {
-                crate::actions::host::launch_worker(app, *run, cancelled)
-            }
             Dispatch::Review(run, cancelled) => review::host::launch_worker(app, *run, cancelled),
-            Dispatch::Reply(run, cancelled) => {
-                follow_up::host::launch_analysis_worker(app, *run, cancelled)
-            }
         }
     }
 }
 
 fn request_interruption(store: &Store, id: &str, reason: Interruption) -> Result<(), String> {
-    let mut ledger = store.load_actions()?;
-    if let Some(run) = ledger
-        .finals
-        .iter_mut()
-        .find(|f| f.execution.operation.id == id)
-    {
-        run.execution.operation.interruption = Some(reason);
-        return store.save_actions(&ledger);
-    }
     let mut reviews = store.load_reviews()?;
-    if let Some(run) = reviews.iter_mut().find(|r| r.operation.id == id) {
-        run.operation.interruption = Some(reason);
-        return store.save_reviews(&reviews);
-    }
-    let mut replies = store.load_follow_ups()?;
-    let run = replies
+    let run = reviews
         .iter_mut()
-        .find(|r| r.analysis.as_ref().is_some_and(|op| op.id == id))
+        .find(|r| r.operation.id == id)
         .ok_or("The active AI operation is missing.")?;
-    run.analysis
-        .as_mut()
-        .ok_or("Reply analysis missing.")?
-        .interruption = Some(reason);
-    store.save_follow_ups(&replies)
+    run.operation.interruption = Some(reason);
+    store.save_reviews(&reviews)
 }
 
 /// A genuine failure wins a race with pause. Only successful-but-discarded
@@ -659,3 +578,6 @@ pub(crate) fn automation_snapshot(app: tauri::AppHandle) -> Result<Snapshot, Str
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+#[cfg(test)]
+mod barrier_tests;

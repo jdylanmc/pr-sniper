@@ -71,6 +71,11 @@ pub enum ToolName {
     ReadChanges,
     ReadSource,
     SearchPaths,
+    GetThread,
+    GetChecks,
+    ListTree,
+    SearchCode,
+    Exit,
     NotPermitted,
 }
 
@@ -80,6 +85,16 @@ impl ToolName {
             "read_changes" => Self::ReadChanges,
             "read_source" => Self::ReadSource,
             "search_paths" => Self::SearchPaths,
+            "get_thread" => Self::GetThread,
+            "get_checks" => Self::GetChecks,
+            "list_tree" => Self::ListTree,
+            "search_code" => Self::SearchCode,
+            "leave_comments"
+            | "ready_for_human"
+            | "approve_pull_request"
+            | "approve_and_merge"
+            | "panic_exit"
+            | "submit_report" => Self::Exit,
             _ => Self::NotPermitted,
         }
     }
@@ -88,6 +103,7 @@ impl ToolName {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureKind {
+    /// Legacy: coverage is informational now; only old records carry this.
     IncompleteCoverage,
     ToolError,
     ResponseLimit,
@@ -103,6 +119,7 @@ pub enum FailureKind {
     Provider,
     EligibilityOrConfiguration,
     Superseded,
+    Panic,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

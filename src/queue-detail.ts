@@ -7,6 +7,7 @@ import {
   openDestination,
   type QueueItem,
 } from "./queue";
+import { progressPresentation } from "./exits";
 
 export type FixTarget = "ai" | "repository-account";
 
@@ -61,6 +62,9 @@ const causes: Record<string, [string, "fix" | "retry"]> = {
   publication_failed: ["Publish failed", "retry"],
   publication_unresolved: ["Unverified", "retry"],
   action_unresolved: ["Action unresolved", "retry"],
+  panic: ["Panic", "retry"],
+  tossed: ["Tossed", "retry"],
+  exit_failed: ["Write failed", "retry"],
 };
 
 const classLabels = {
@@ -158,6 +162,9 @@ export function failureLabel(cause: string, item?: QueueItem) {
   return causes[cause]?.[0] ?? (cause ? humanize(cause) : "Failed");
 }
 
+// Packet exit causes recover through their own review, never a repository poll.
+const exitCauses = ["panic", "tossed", "exit_failed"];
+
 function fixTarget(cause: string): FixTarget | undefined {
   if (causes[cause]?.[1] !== "fix") return undefined;
   return /copilot|^ai_/.test(cause) ? "ai" : "repository-account";
@@ -182,6 +189,12 @@ export function retryCommands(
     return commands;
   }
   const cause = failureCause(item, snapshot);
+  // A parked toss or a failed exit write restarts the PR's toss budget.
+  if (
+    item.failure_class !== "credentials" &&
+    ["tossed", "exit_failed"].includes(cause)
+  )
+    return [["retry_packet_state", { itemId: item.id }]];
   const operation = (snapshot.health ?? []).find(
     (entry) =>
       entry.repository_id === item.job.configuration_id &&
@@ -193,6 +206,7 @@ export function retryCommands(
     "review_failed",
     "publication_failed",
     "publication_unresolved",
+    ...exitCauses,
     "",
   ].includes(cause);
   if (monitoring && operation)
@@ -292,10 +306,15 @@ export function renderQueueStatus(
   label.className = "queue-status-label";
   label.setAttribute("role", "status");
   label.dataset.failureCause = cause;
-  label.innerHTML = icon(failed ? paths.fail : paths.ok);
+  const progress =
+    !failed && item.progress ? progressPresentation[item.progress] : null;
+  if (progress) label.dataset.progress = item.progress!;
+  label.innerHTML = icon(failed ? paths.fail : (progress?.[1] ?? paths.ok));
   label.append(
     Object.assign(document.createElement("strong"), {
-      textContent: failed ? failureLabel(cause, item) : stateLabels[item.state],
+      textContent: failed
+        ? failureLabel(cause, item)
+        : (progress?.[0] ?? stateLabels[item.state]),
     }),
   );
   const actions = document.createElement("div");
@@ -340,11 +359,19 @@ export function renderQueueStatus(
   if (!failed) {
     const synopsis = (context.snapshot.reviews ?? [])
       .filter((candidate) => item.review_keys.includes(candidate.key))
-      .map((candidate) => candidate.run?.result?.output.synopsis)
+      .map((candidate) => {
+        const output = candidate.run?.result?.output;
+        // A `ready_for_human` exit keeps its summary local: shown, never posted.
+        return (
+          output?.synopsis ||
+          (output?.exit?.exit === "ready_for_human" ? output.exit.summary : "")
+        );
+      })
       .find(Boolean);
     if (synopsis) {
       const body = document.createElement("p");
       body.className = "queue-synopsis";
+      body.dataset.queueSynopsis = "";
       body.textContent = synopsis;
       root.append(body);
     }
@@ -376,7 +403,7 @@ function renderFailureFacts(
       entry.repository_id === item.job.configuration_id &&
       entry.provider_account_id === item.job.account_id,
   );
-  const code = operation?.failure ?? cause;
+  const code = item.failed_teammate?.cause ?? operation?.failure ?? cause;
   const klass = classLabels[item.failure_class ?? "other"];
   const rows: [string, string | HTMLElement][] = [
     ["Cause", code ? `${klass} / ${code}` : klass],
@@ -408,7 +435,9 @@ function renderFailureFacts(
       item.failure_class === "credentials" ? "On reconnect" : "Manual";
   }
   rows.push(["Next retry", next]);
-  if (review) rows.push(["Agent", review.run?.selection.agent.name ?? ""]);
+  if (item.failed_teammate)
+    rows.push(["Teammate", item.failed_teammate.agent_name]);
+  else if (review) rows.push(["Agent", review.run?.selection.agent.name ?? ""]);
   rows.push(["Revision", item.job.head_sha.slice(0, 7)]);
   rows.push(["Account", item.job.account_login]);
   const list = document.createElement("dl");

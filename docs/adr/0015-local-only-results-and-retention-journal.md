@@ -20,3 +20,8 @@ Review detail grows without bound. Wrong deletion loses evidence. A database add
 - Reopen before cutover cancels cleanup. After = new iteration, no restore.
 - No purge UI. Not atomic with GitHub.
 - Guarantees cover process interruption, not power loss.
+
+## Amendment ([ADR 0021](0021-review-packet.md))
+
+- Cleanup is human-triggered: Reviewed **Clean** per PR and **Clean all**. No timer deletes terminal detail. Terminal PRs only.
+- Also deletes the PR's `pr-state.json` record. Uncertain publication and action records stay (ADR 0015 reconciliation). Ad hoc scope, owner review requested.

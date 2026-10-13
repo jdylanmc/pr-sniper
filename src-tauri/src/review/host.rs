@@ -139,16 +139,24 @@ pub(crate) fn request(
         Some(run) if run.operation.state == OperationState::Completed && !manual => {
             return Err("This Agent already reviewed this revision.".into())
         }
-        Some(run)
-            if matches!(
-                run.operation.state,
-                OperationState::Queued | OperationState::Interrupted
-            ) =>
+        Some(mut run)
+            if run.mode == super::RunMode::Packet
+                && matches!(
+                    run.operation.state,
+                    OperationState::Queued | OperationState::Interrupted
+                ) =>
         {
+            // The heartbeat raises only the queue job's seq; a reused run reads that state.
+            if let (Some(work), Some(fresh)) = (run.job.work.as_mut(), candidate.job.work.as_ref())
+            {
+                work.state_seq = work.state_seq.max(fresh.state_seq);
+            }
             run
         }
         Some(_) if !manual => return Err("Manual retry is required.".into()),
         _ => ReviewRun {
+            mode: super::RunMode::Packet,
+            packet: None,
             feedback_context: None,
             key: candidate.key,
             assignment_id: candidate.assignment_id,
@@ -281,16 +289,6 @@ pub(crate) fn complete(
         .iter_mut()
         .find(|r| r.operation.id == id)
         .ok_or("Review operation disappeared.")?;
-    let outcome = outcome.and_then(|result| {
-        if let Some(contexts) = &current.feedback_context {
-            crate::feedback::validate_review(
-                &result.output,
-                contexts,
-                &current.selection.agent.id,
-            )?;
-        }
-        Ok(result)
-    });
     if current.operation.state != OperationState::Running {
         return Ok(());
     }
@@ -298,9 +296,53 @@ pub(crate) fn complete(
         current.result = None;
         current.phase = "Waiting after intentional interruption".into();
         current.error = None;
+    } else if outcome
+        .as_ref()
+        .err()
+        .is_some_and(|e| !e.cancelled && e.kind == monitoring::OperationFailure::Superseded)
+    {
+        current.operation.requeue_superseded(now);
+        current.result = None;
+        current.phase = "Waiting for current PR state".into();
+        current.error = None;
+    } else if crate::backpressure::defer(
+        store,
+        &mut current.operation,
+        outcome.as_ref().err(),
+        current
+            .selection
+            .agent
+            .ai_account
+            .as_ref()
+            .map(|account| account.account_id.as_str()),
+        now,
+    )? {
+        current.result = None;
+        current.phase = "Waiting for rate limit".into();
+        current.error = None;
     } else {
+        let outcome = outcome.and_then(|result| {
+            match crate::exits::consume::honour_local(store, current, &result)
+                .map_err(Failure::permanent)?
+            {
+                crate::pr_state::Consumed::Consumed => Ok(result),
+                crate::pr_state::Consumed::Moved => Err(Failure::tossed(
+                    "PR state moved during the run. Result discarded.",
+                )),
+            }
+        });
         match outcome {
             Ok(result) => {
+                crate::backpressure::run_succeeded(
+                    store,
+                    &current.operation.account_id,
+                    current
+                        .selection
+                        .agent
+                        .ai_account
+                        .as_ref()
+                        .map(|account| account.account_id.as_str()),
+                );
                 current.operation.ai_attempt = None;
                 current.operation.state = OperationState::Completed;
                 current.operation.failure = None;
@@ -310,6 +352,9 @@ pub(crate) fn complete(
                 current.error = None;
             }
             Err(error) => {
+                if error.kind == monitoring::OperationFailure::Tossed {
+                    crate::pr_state::toss(store, &crate::retention::Binding::job(&current.job))?;
+                }
                 current.operation.fail(&error.monitoring(), now);
                 current.phase = "Review stopped".into();
                 current.error = Some(error.message);
@@ -344,11 +389,7 @@ fn local_gate(app: &tauri::AppHandle, run: &ReviewRun) -> Result<(), Failure> {
         .store
         .lock()
         .map_err(|_| Failure::permanent("Review storage is unavailable."))?;
-    if run.operation.operation_type == "primary_final_review" {
-        crate::actions::host::validate_execution(&store, run)
-    } else {
-        super::validate_execution_selection(&store, run)
-    }
+    super::validate_execution_selection(&store, run)
 }
 
 fn remote_gate(
@@ -356,9 +397,6 @@ fn remote_gate(
     run: &ReviewRun,
 ) -> Result<crate::github::metadata::PullRequest, Failure> {
     local_gate(app, run)?;
-    if run.operation.operation_type == "primary_final_review" {
-        crate::actions::host::remote_gate(app, run)?;
-    }
     let host = app.state::<Host>();
     let (_, client) = crate::github_session(&host, &run.job.account_id).map_err(Failure::from)?;
     let repo = RemoteRepository {
@@ -449,7 +487,7 @@ async fn execute_attempt(
         preparation_gate()?;
         remote_gate(&preparation_app, &preparation_run)?;
         let host = preparation_app.state::<Host>();
-        let (_, client) =
+        let (identity, client) =
             crate::github_session(&host, &preparation_run.job.account_id).map_err(Failure::from)?;
         let interrupted = Arc::new(AtomicBool::new(false));
         let saw_interruption = interrupted.clone();
@@ -469,6 +507,22 @@ async fn execute_attempt(
             id: preparation_run.job.repository_id.clone(),
             name: preparation_run.job.repository_name.clone(),
         };
+        // Packet runs read the PR fresh at consume time. A head that moved since the
+        // work was queued is superseded (free); any other change is simply the new state.
+        if preparation_run.mode != super::RunMode::Packet {
+            return Err(Failure::permanent(super::LEGACY_RETIRED));
+        }
+        let snapshot = client
+            .pr_snapshot(&repo, preparation_run.job.number)
+            .map_err(Failure::from)?;
+        if snapshot.state != "OPEN" {
+            return Err(Failure::superseded("The PR is no longer open."));
+        }
+        if snapshot.head != preparation_run.job.head_sha {
+            return Err(Failure::superseded(
+                "The PR head moved since the work was queued.",
+            ));
+        }
         let context = client
             .review_context(
                 &repo,
@@ -484,10 +538,49 @@ async fn execute_attempt(
                     Failure::from(error)
                 }
             })?;
-        Ok::<_, Failure>((context, Arc::new(client)))
+        let client = Arc::new(client);
+        let packet = {
+            let write_capability = client
+                .connect(&repo.name, Some(&preparation_run.job.account_id))
+                .map_err(Failure::from)?
+                .capabilities
+                .comment
+                == crate::github::provider::CommentCapability::Available;
+            let (teammates, iterations, last_consumed_at) = {
+                let store = host
+                    .store
+                    .lock()
+                    .map_err(|_| Failure::permanent("Review storage unavailable."))?;
+                (
+                    super::teammates::entries(&store, &preparation_run)?,
+                    crate::exit_writes::known_iterations(&store, &preparation_run.job)
+                        .unwrap_or_default(),
+                    store
+                        .load_pr_states()
+                        .map_err(Failure::permanent)?
+                        .get(&crate::retention::Binding::job(&preparation_run.job))
+                        .and_then(|r| r.consumed_at),
+                )
+            };
+            super::packet_run::prepare(
+                &client,
+                &repo,
+                &preparation_run,
+                &context,
+                &snapshot,
+                super::packet_run::Caller {
+                    acting_login: &identity.login,
+                    write_capability,
+                    teammates,
+                    iterations: &iterations,
+                    last_consumed_at,
+                },
+            )?
+        };
+        Ok::<_, Failure>((context, client, packet))
     });
     // Join blocking preparation before releasing its capacity/workspace ownership.
-    let (context, client) = prepared
+    let (context, client, packet) = prepared
         .await
         .map_err(|_| Failure::permanent("Review preparation could not finish."))??;
     gate()?;
@@ -500,77 +593,81 @@ async fn execute_attempt(
             .store
             .lock()
             .map_err(|_| Failure::permanent("Review storage unavailable."))?;
-        if run.operation.operation_type == "primary_final_review" {
-            crate::actions::host::phase(
-                &store,
-                &run,
-                "Verifying restricted runtime for primary final full review",
-            )
-            .map_err(Failure::permanent)?;
-        } else {
-            let mut reviews = store.load_reviews().map_err(Failure::permanent)?;
-            let current = reviews
-                .iter_mut()
-                .find(|r| r.operation.id == run.operation.id)
-                .ok_or_else(|| Failure::permanent("Review operation disappeared."))?;
-            if current.operation.state != OperationState::Running {
-                return Err(Failure::permanent("Review is no longer running."));
-            }
-            current.phase = "Verifying restricted Copilot runtime and reviewing".into();
-            store.save_reviews(&reviews).map_err(Failure::permanent)?;
+        let mut reviews = store.load_reviews().map_err(Failure::permanent)?;
+        let current = reviews
+            .iter_mut()
+            .find(|r| r.operation.id == run.operation.id)
+            .ok_or_else(|| Failure::permanent("Review operation disappeared."))?;
+        if current.operation.state != OperationState::Running {
+            return Err(Failure::permanent("Review is no longer running."));
         }
+        current.phase = "Verifying restricted Copilot runtime and reviewing".into();
+        current.packet = Some(packet.packet.record.clone());
+        store.save_reviews(&reviews).map_err(Failure::permanent)?;
     }
     let remote_app = app.clone();
     let remote_run = run.clone();
     let expected_base = context.pull.base_sha.clone();
     let send_base = expected_base.clone();
+    let before_send: runtime::Gate = Arc::new(move || {
+        let pull = remote_gate(&remote_app, &remote_run)?;
+        if pull.base_sha != send_base {
+            return Err(Failure::permanent(
+                "Pull request base changed; review context is stale.",
+            ));
+        }
+        Ok(())
+    });
+    let integration = app.state::<Host>().copilot.clone();
+    let read_hash = packet.packet.record.state_hash.clone();
+    let client_after = client.clone();
     let request = runtime::Request {
+        exits: packet.setup,
         diagnostics: Some(diagnostics.clone()),
-        task: runtime::FullReview {
-            feedback: run.feedback_context.clone().unwrap_or_default(),
-            owner_agent_id: run.selection.agent.id.clone(),
-            final_context: if run.operation.operation_type == "primary_final_review" {
-                let host = app.state::<Host>();
-                let store = host
-                    .store
-                    .lock()
-                    .map_err(|_| Failure::permanent("Final storage unavailable."))?;
-                Some(
-                    crate::actions::host::prompt_context(&store, &run.key)
-                        .map_err(Failure::permanent)?,
-                )
-            } else {
-                None
-            },
+        task: runtime::ExitReview {
+            packet_text: packet.packet.text,
         },
         context,
         client,
         repository_name: run.job.repository_name.clone(),
         selection: run.selection.clone(),
-        before_send: Arc::new(move || {
-            let pull = remote_gate(&remote_app, &remote_run)?;
-            if pull.base_sha != send_base {
-                return Err(Failure::permanent(
-                    "Pull request base changed; review context is stale.",
-                ));
-            }
-            Ok(())
-        }),
+        before_send,
         local_gate: gate.clone(),
     };
-    let integration = app.state::<Host>().copilot.clone();
     let mut result = integration.review(request, cancelled, deadline).await?;
     diagnostics.emit(crate::storage::diagnostics::Event::Phase {
         phase: crate::storage::diagnostics::Phase::CheckingFinalEligibility,
     });
     let final_app = app.clone();
-    let pull = tauri::async_runtime::spawn_blocking(move || remote_gate(&final_app, &run))
+    let final_run = run.clone();
+    let pull = tauri::async_runtime::spawn_blocking(move || remote_gate(&final_app, &final_run))
         .await
         .map_err(|_| Failure::permanent("Final eligibility check could not finish."))??;
     if pull.base_sha != expected_base {
         return Err(Failure::permanent(
             "Pull request base changed during review; result is stale.",
         ));
+    }
+    // A local-only exit writes nothing, so the state it read must still be the state.
+    if let (Some(read_hash), Some(crate::exits::ExitOutcome::ReadyForHuman { .. })) =
+        (read_hash, &result.output.exit)
+    {
+        let repo = RemoteRepository {
+            id: run.job.repository_id.clone(),
+            name: run.job.repository_name.clone(),
+        };
+        let number = run.job.number;
+        let fresh = tauri::async_runtime::spawn_blocking(move || {
+            crate::exits::consume::fresh_hash(&client_after, &repo, number)
+        })
+        .await
+        .map_err(|_| Failure::permanent("State check could not finish."))?
+        .map_err(Failure::provider)?;
+        if fresh != read_hash {
+            return Err(Failure::tossed(
+                "PR state moved during the run. Result discarded.",
+            ));
+        }
     }
     gate()?;
     result.reviewed_base_sha = Some(expected_base);
@@ -598,6 +695,29 @@ pub(crate) async fn start_review(
     })
     .await
     .map_err(|_| "Review start could not finish.".to_string())?
+}
+
+#[tauri::command]
+pub(crate) async fn retry_packet_state(
+    app: tauri::AppHandle,
+    item_id: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<Host>();
+        if host.quitting.load(Ordering::SeqCst) {
+            return Err("PR Sniper is quitting.".into());
+        }
+        {
+            let store = host
+                .store
+                .lock()
+                .map_err(|_| "Review storage unavailable.")?;
+            crate::exits::consume::retry_parked(&store, &item_id, now_seconds()?)?;
+        }
+        crate::capacity::Coordinator::pump(&app)
+    })
+    .await
+    .map_err(|_| "Retry could not finish.".to_string())?
 }
 
 #[tauri::command]

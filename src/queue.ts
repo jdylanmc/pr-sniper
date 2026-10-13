@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { renderActions, type ActionStatus } from "./actions";
 import type { FailureClass } from "./automation";
 import { renderFacts } from "./work-presentation";
+import { progressChip, type ExitName, type Progress } from "./exits";
 
 export interface NormalWork {
   id: string;
@@ -72,7 +73,26 @@ export interface QueueItem {
     | "closed"
     | "merged";
   failure_class?: FailureClass | null;
-  failure_cause?: "publication_failed" | "publication_unresolved" | null;
+  // A parked teammate holds the primary back; the cause is typed.
+  failed_teammate?: {
+    assignment_id: string;
+    agent_name: string;
+    cause: TeammateCause;
+  } | null;
+  // The primary waits for this teammate's report.
+  blocked_by?: {
+    teammate: { assignment_id: string; agent_name: string };
+  } | null;
+  failure_cause?:
+    | "publication_failed"
+    | "publication_unresolved"
+    | "panic"
+    | "tossed"
+    | "exit_failed"
+    | null;
+  // The primary's exit and the host effect it still has in flight.
+  exit?: ExitName | null;
+  progress?: Progress | null;
   resume_at?: number | null;
   summary: string;
   warnings: string[];
@@ -96,6 +116,66 @@ const labels: Record<QueueItem["state"], string> = {
   merged: "Merged on GitHub",
 };
 
+export type TeammateCause =
+  | "timeout"
+  | "rate_limited"
+  | "network"
+  | "provider"
+  | "permanent"
+  | "superseded"
+  | "credentials"
+  | "permission"
+  | "panic";
+export const teammateCauses: Record<TeammateCause, string> = {
+  timeout: "Timeout",
+  rate_limited: "Rate limit",
+  network: "Network",
+  provider: "Provider",
+  permanent: "Permanent",
+  superseded: "Superseded",
+  credentials: "Credentials",
+  permission: "Permission",
+  panic: "Panic",
+};
+const teammatePath =
+  "M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm7 1a2.5 2.5 0 1 0 0-5M3 19c0-3 2.7-5 6-5s6 2 6 5M17 14c2.3.2 4 1.7 4 4";
+// Agent name plus a typed cause (parked) or a clock (waiting): icons, no prose.
+export function teammateChip(
+  agentName: string,
+  cause: TeammateCause | null,
+): HTMLElement {
+  const chip = document.createElement("span");
+  chip.className = "queue-teammate";
+  chip.dataset.queueTeammate = agentName;
+  chip.dataset.teammateState = cause ? "failed" : "waiting";
+  if (cause) chip.dataset.teammateCause = cause;
+  chip.innerHTML = `<svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${teammatePath}"/></svg>`;
+  const name = document.createElement("span");
+  name.textContent = agentName;
+  chip.append(name);
+  if (cause) {
+    const label = document.createElement("strong");
+    label.textContent = teammateCauses[cause] ?? cause;
+    chip.append(label);
+  } else {
+    chip.insertAdjacentHTML(
+      "beforeend",
+      `<svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18"/></svg>`,
+    );
+  }
+  return chip;
+}
+function itemTeammateChip(item: QueueItem) {
+  if (item.failed_teammate)
+    return teammateChip(
+      item.failed_teammate.agent_name,
+      item.failed_teammate.cause,
+    );
+  if (item.blocked_by)
+    return teammateChip(item.blocked_by.teammate.agent_name, null);
+  return null;
+}
+
 const credentials = (item: QueueItem) =>
   item.state === "failed" && item.failure_class === "credentials";
 const failureChips: Record<FailureClass, string> = {
@@ -104,13 +184,18 @@ const failureChips: Record<FailureClass, string> = {
   network: "Network",
   other: "Failed",
 };
-// Access and network classes keep their chip; otherwise the publication cause.
+const causeChips: Record<string, string> = {
+  publication_unresolved: "Unverified",
+  publication_failed: "Publish failed",
+  panic: "Panic",
+  tossed: "Tossed",
+  exit_failed: "Write failed",
+};
+// Access and network classes keep their chip; otherwise the typed cause.
 export function failureChip(item: QueueItem) {
   const failureClass = item.failure_class ?? "other";
-  if (failureClass === "other") {
-    if (item.failure_cause === "publication_unresolved") return "Unverified";
-    if (item.failure_cause === "publication_failed") return "Publish failed";
-  }
+  if (failureClass === "other" && item.failure_cause)
+    return causeChips[item.failure_cause] ?? failureChips.other;
   return failureChips[failureClass];
 }
 // Compact duration: 45s, 12m, 3h, 2d.
@@ -321,6 +406,9 @@ export function renderQueue(
         reference.className = "queue-reference";
         reference.textContent = `${item.job.repository_name} #${item.job.number}`;
         row.append(top, heading, reference);
+        const teammate = itemTeammateChip(item);
+        if (teammate) row.append(teammate);
+        if (item.progress) row.append(progressChip(item.progress));
         const receipts =
           item.action_status?.effects.filter((effect) => effect.receipt) ?? [];
         for (const effect of receipts) {
@@ -346,7 +434,12 @@ export function renderQueue(
             : "PR evidence";
         footer.append(avatar, author, trigger);
         row.append(footer);
-      } else row.append(state, heading, context);
+      } else {
+        row.append(state, heading, context);
+        const teammate = itemTeammateChip(item);
+        if (teammate) row.append(teammate);
+        if (item.progress) row.append(progressChip(item.progress));
+      }
       if (!options.compact) renderItemEvidence(row, item, showError, refresh);
       for (const warning of options.compact ? [] : item.warnings) {
         const text = document.createElement("p");

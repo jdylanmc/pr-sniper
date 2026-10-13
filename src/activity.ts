@@ -1,8 +1,10 @@
-import type { MonitoringSnapshot } from "./monitoring";
+import type { ExitOutcome, MonitoringSnapshot } from "./monitoring";
 import { keyValues, type KeyValue } from "./key-values";
 import { compactDuration, openDestination, type QueueItem } from "./queue";
+import { exitPresentation, progressPresentation, type ExitName } from "./exits";
 
 const paths = {
+  packet: "M4 7l8-4 8 4v10l-8 4-8-4V7Zm0 0 8 4 8-4M12 11v10",
   review:
     "M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Zm10-3a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z",
   findings: "M5 21V4m0 0h11l-2 4 2 4H5",
@@ -27,10 +29,74 @@ interface Row {
   at?: number | null;
   agent?: string;
   open?: boolean;
+  exit?: ExitName;
   facts: KeyValue[];
 }
 
+const exitIds: Record<ExitOutcome["exit"], ExitName> = {
+  comments: "leave_comments",
+  ready_for_human: "ready_for_human",
+  approve: "approve_pull_request",
+  approve_and_merge: "approve_and_merge",
+  submit_report: "submit_report",
+};
+
+// The exit taken: icon, name and its counts; labels and values only.
+function exitRow(
+  item: QueueItem,
+  snapshot: MonitoringSnapshot,
+  operationId: string,
+  exit: ExitOutcome,
+  agent: string,
+): Row {
+  const id = exitIds[exit.exit];
+  const [verb, icon] = exitPresentation[id];
+  const facts: KeyValue[] = [["Exit", id]];
+  let value = "";
+  if (exit.exit === "comments") {
+    const counts: [string, number][] = [
+      ["New", exit.new_comments.length],
+      ["Replies", exit.reply_comments.length],
+      ["Resolved", exit.resolve_own_threads.length],
+    ];
+    value = counts
+      .map(([label, count]) => `${label} ${count}`)
+      .join(" \u00b7 ");
+    facts.push(
+      ...counts.map(([label, count]): KeyValue => [label, String(count)]),
+    );
+    const write = snapshot.exit_writes?.find(
+      (entry) => entry.review_operation_id === operationId,
+    );
+    if (write) {
+      const done = write.steps.filter((step) => step.state === "done").length;
+      facts.push(
+        ["Write", state(write.phase)],
+        ["Done", `${done} of ${write.steps.length}`],
+      );
+    }
+  } else if (exit.exit === "ready_for_human") {
+    value = "Local";
+    facts.push(["Summary", exit.summary]);
+  } else if (exit.exit === "approve" || exit.exit === "approve_and_merge") {
+    const merge = exit.exit === "approve_and_merge";
+    value = merge ? "Approve 1 \u00b7 Merge 1" : "Approve 1";
+    facts.push(["Approve", "1"], ["Merge", merge ? "1" : "0"]);
+  }
+  if (item.progress && item.exit === id) {
+    value = progressPresentation[item.progress][0];
+    facts.push(["Progress", value]);
+  }
+  facts.push(["Agent", agent], ["Run", operationId, true]);
+  return { kind: "exit", icon, verb, value, agent, exit: id, facts };
+}
+
 const state = (value: string) => value.replaceAll("_", " ");
+// Informational count of files read; never a gate.
+const coverageFacts = (
+  coverage: { read: number; changed: number } | null | undefined,
+): KeyValue[] =>
+  coverage ? [["Read", `${coverage.read} of ${coverage.changed}`]] : [];
 const short = (value: string | null | undefined) => (value ?? "").slice(0, 7);
 
 export function activityRows(
@@ -51,7 +117,54 @@ export function activityRows(
     const agent = run.selection.agent.name ?? candidate.agent_name;
     operations.add(run.operation.id);
     const result = run.result;
-    if (result) {
+    const packet =
+      run.mode === "packet" ||
+      !!run.packet ||
+      !!result?.output.exit ||
+      !!result?.output.report;
+    if (result && packet) {
+      // Packet runs: coverage is the read record, the exit is the outcome.
+      const coverage = result.coverage;
+      rows.push({
+        kind: "review",
+        icon: paths.review,
+        verb: "Read",
+        value: coverage ? `${coverage.read} of ${coverage.changed}` : "0",
+        at: run.operation.initial_attempt_at,
+        agent,
+        facts: [
+          ["Agent", agent],
+          ["Model", result.model],
+          [
+            "Effort",
+            run.selection.agent.intelligence?.reasoning_effort ?? "Default",
+          ],
+          ["Tokens", `${result.input_tokens} / ${result.output_tokens}`],
+          ["Tools", String(result.tool_calls)],
+          ...coverageFacts(coverage),
+          ["Session", result.session_id, true],
+          ["Revision", short(head)],
+          ["Run", run.operation.id, true],
+        ],
+      });
+      const exit = result.output.exit;
+      if (exit && exit.exit !== "submit_report")
+        rows.push(exitRow(item, snapshot, run.operation.id, exit, agent));
+      const report = result.output.report;
+      if (report)
+        rows.push({
+          kind: "report",
+          icon: exitPresentation.submit_report[1],
+          verb: "Report",
+          value: `${report.findings.length} findings`,
+          agent,
+          exit: "submit_report",
+          facts: report.findings.map((finding): KeyValue => [
+            `${finding.file}:${finding.line}`,
+            finding.nano,
+          ]),
+        });
+    } else if (result) {
       const findings = result.output.findings;
       const high = findings.filter((finding) =>
         ["high", "critical"].includes(finding.severity.toLowerCase()),
@@ -72,6 +185,7 @@ export function activityRows(
           ],
           ["Tokens", `${result.input_tokens} / ${result.output_tokens}`],
           ["Tools", String(result.tool_calls)],
+          ...coverageFacts(result.coverage),
           ["Session", result.session_id, true],
           ["Decision", state(result.output.decision)],
           ["Revision", short(head)],
@@ -95,6 +209,43 @@ export function activityRows(
         ],
       });
     }
+    if (
+      ["failed", "manual_retry"].includes(run.operation.state) &&
+      run.operation.failure === "panic"
+    )
+      rows.push({
+        kind: "exit",
+        icon: exitPresentation.panic_exit[1],
+        verb: exitPresentation.panic_exit[0],
+        value: run.operation.resume_at
+          ? compactDuration(run.operation.resume_at - Date.now() / 1000)
+          : "Manual",
+        at: run.operation.initial_attempt_at,
+        agent,
+        exit: "panic_exit",
+        facts: [
+          ["Exit", "panic_exit"],
+          ["Agent", agent],
+          ["Attempts", String(run.operation.attempt_count)],
+          ["Run", run.operation.id, true],
+        ],
+      });
+    if (run.packet)
+      rows.push({
+        kind: "packet",
+        icon: paths.packet,
+        verb: "Packet",
+        value: `v${run.packet.schema}`,
+        agent,
+        facts: [
+          ["State", run.packet.state_id, true],
+          ["Schema", String(run.packet.schema)],
+          ["Tools", String(run.packet.tool_set.length)],
+          ["Offered", String(run.packet.exits_offered.length)],
+          ["Denied", String(run.packet.exits_denied.length)],
+          ["Hash", run.packet.hash.slice(0, 16), true],
+        ],
+      });
     if (run.operation.attempt_count > 1)
       rows.push({
         kind: "retried",
@@ -186,6 +337,7 @@ export function activityRows(
           result ? `${result.input_tokens} / ${result.output_tokens}` : "",
         ],
         ["Tools", result ? String(result.tool_calls) : ""],
+        ...coverageFacts(result?.coverage),
         ["Session", result?.session_id ?? "", true],
         ["Files", result ? String(result.output.files.length) : ""],
         ["Order", String(final.enqueue_order)],
@@ -261,6 +413,7 @@ export function renderActivity(
   for (const row of rows) {
     const entry = document.createElement("li");
     entry.dataset.activity = row.kind;
+    if (row.exit) entry.dataset.exit = row.exit;
     const head = document.createElement("div");
     head.className = "activity-head";
     const toggle = document.createElement("button");

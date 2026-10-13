@@ -7,7 +7,7 @@ use crate::{
     review::{Failure, ReviewRun, Selection},
     storage::{Settings, Store},
 };
-pub use plan::{Batch, InlineComment};
+pub use plan::{writes_comments, Batch, InlineComment};
 use serde::{Deserialize, Serialize};
 
 pub(crate) enum GateError {
@@ -400,6 +400,10 @@ pub trait Environment {
         mutation: Mutation,
     ) -> Result<Receipt, WriteFailure>;
     fn requeue(&mut self, publication: &Publication) -> Result<(), Failure>;
+    /// The batch is confirmed on the provider: a Packet-mode run consumes its state here.
+    fn confirmed(&mut self, _: &Publication) -> Result<(), Failure> {
+        Ok(())
+    }
 }
 
 pub fn execute(
@@ -423,7 +427,9 @@ pub fn execute(
         publication
             .operation
             .fail(&error.monitoring(), environment.now()?);
-        publication.error = Some(error.message.clone());
+        // A rate limit that did not execute is a wait, not an error to show.
+        publication.error =
+            (!error.rate_limited() || publication.uncertain).then(|| error.message.clone());
         if publication.uncertain {
             publication.phase = Phase::Unresolved;
         }
@@ -702,6 +708,10 @@ fn complete(env: &mut impl Environment, run: &mut Publication, gate: Gate) -> Re
     run.operation.next_attempt_at = None;
     run.operation.failure = None;
     env.save(run)?;
+    if run.error.is_none() {
+        // The comments are out; a baseline that cannot be read now only costs a re-review.
+        let _ = env.confirmed(run);
+    }
     if gate.requeue {
         env.requeue(run)?;
     }
@@ -714,5 +724,6 @@ fn unresolved() -> Failure {
         message: "GitHub mutation outcome is unresolved. Reconcile the original review; no replacement batch will be created.".into(),
         kind: OperationFailure::Network,
         retry_after_seconds: None,
+        origin: crate::backpressure::Origin::Github,
     }
 }

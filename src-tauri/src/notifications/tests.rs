@@ -409,8 +409,13 @@ fn only_operator_attention_maps_to_alerts_and_routine_author_waits_do_not() {
             reviews: vec![],
             publications: vec![],
             follow_ups: vec![],
+            exit_writes: vec![],
+            pr_states: Default::default(),
             items: vec![queue::Item {
                 action_status: None,
+                exit: None,
+                exit_run_id: None,
+                progress: None,
                 feedback: vec![],
                 aliases: vec![],
                 id: queue::item_id(&job()),
@@ -418,6 +423,8 @@ fn only_operator_attention_maps_to_alerts_and_routine_author_waits_do_not() {
                 state,
                 failure_class: None,
                 failure_cause: None,
+                failed_teammate: None,
+                blocked_by: None,
                 resume_at: None,
                 summary: "",
                 review_keys: vec![],
@@ -452,6 +459,8 @@ fn authentication_or_schedule_failure_without_a_pr_opens_settings() {
         reviews: vec![],
         publications: vec![],
         follow_ups: vec![],
+        exit_writes: vec![],
+        pr_states: Default::default(),
         items: vec![],
     };
     let frames = frames(&snapshot);

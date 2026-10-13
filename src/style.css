@@ -219,3 +219,21 @@ pre {
     color: #ffdbd5;
   }
 }
+.queue-teammate {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.queue-teammate .panel-icon {
+  width: 14px;
+  height: 14px;
+}
+.queue-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.queue-progress .panel-icon {
+  width: 14px;
+  height: 14px;
+}

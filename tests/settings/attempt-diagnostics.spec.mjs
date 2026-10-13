@@ -52,12 +52,12 @@ for (const surface of ["panel", "standalone"]) {
       paths: ["src/<img src=x onerror=alert(1)>.rs"],
       omitted: 0,
     };
-    const record = {
+    const finished = (id, failure, covered) => ({
       timestamp_secs: 1000,
       event: "attempt",
       attempt: {
         attempt: {
-          id: "attempt-153",
+          id,
           operation_id: "operation-153",
           work_id: "work-153",
           number: 153,
@@ -72,11 +72,11 @@ for (const surface of ["panel", "standalone"]) {
         event: {
           kind: "finished",
           stage: "runtime",
-          failure: "incomplete_coverage",
+          failure,
           coverage: {
             changed: paths,
-            covered: { count: 0, paths: [], omitted: 0 },
-            missing: paths,
+            covered: covered ? paths : { count: 0, paths: [], omitted: 0 },
+            missing: covered ? { count: 0, paths: [], omitted: 0 } : paths,
             responsible_tool: "read_changes",
           },
           stop_reason: "not_exposed",
@@ -84,10 +84,15 @@ for (const surface of ["panel", "standalone"]) {
           summarized_events: 4,
         },
       },
-    };
+    });
+    // New attempts record coverage without a failure; the old failure record still loads.
+    const records = [
+      finished("attempt-153", null, true),
+      finished("attempt-old", "incomplete_coverage", false),
+    ];
     await writeFile(
       join(dataRoot, "state", "attempts.jsonl"),
-      JSON.stringify(record) + "\n",
+      records.map((record) => JSON.stringify(record)).join("\n") + "\n",
     );
     await writeFile(
       join(dataRoot, "state", "diagnostics.jsonl"),
@@ -102,6 +107,8 @@ for (const surface of ["panel", "standalone"]) {
     await expect(log).toContainText("attempt-153");
     await expect(log).toContainText("1970-01-01T00:16:39.000Z  window_opened");
     await expect(log).toContainText("incomplete_coverage");
+    await expect(log).toContainText("1 of 1 files read");
+    await expect(log).toContainText("0 of 1 files read");
     await expect(log).toContainText("not_exposed");
     await expect(log).toContainText("1234");
     await expect(log).toContainText(paths.paths[0]);

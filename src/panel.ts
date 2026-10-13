@@ -16,7 +16,7 @@ import { renderMonitoring, type MonitoringSnapshot } from "./monitoring";
 import type { AutomationSnapshot, FailureClass } from "./automation";
 import crosshair from "./crosshair.svg";
 import sniperArt from "./sniper-mark.png";
-import { humanQueue } from "./queue";
+import { humanQueue, teammateChip } from "./queue";
 import { retryCommands, runRecoveries } from "./queue-detail";
 import {
   workPresentation,
@@ -58,6 +58,8 @@ interface Row {
   state: string;
   reason?: string | null;
   failure?: FailureClass | null;
+  delayed_until?: number | null;
+  teammate?: string | null;
   work?: WorkPresentation;
   subject?: string;
   reference?: string;
@@ -65,6 +67,7 @@ interface Row {
 
 const stateIcons: Record<string, string> = {
   Queued: "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
+  Waiting: "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
   Failed: "m9 9 6 6m0-6-6 6M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
   Credentials: "m9 9 6 6m0-6-6 6M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
   Permission: "m9 9 6 6m0-6-6 6M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
@@ -72,6 +75,8 @@ const stateIcons: Record<string, string> = {
   Stopping: "M9 9v6m6-6v6M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
   Superseded: "M7 7h10M7 12h10M7 17h6",
 };
+
+const cleanIcon = "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5";
 
 const genieIcon =
   "M10.2 6.4V4.2a1.8 1.8 0 0 1 3.6 0v2.2M9.6 7.4c1.4 1 3.4 1 4.8 0M12 8.2C9 7.4 3 8.4 3 11.4c0 2.6 4.5 3.4 7.4 1.6M12 8.2c3-.8 9 .2 9 3.2 0 2.6-4.5 3.4-7.4 1.6M10.4 13c1.2.5 2.8.5 3.2 0M7.6 14.2c.6 3.4 2.8 5.7 5.8 6.6 2.2.4 4-.3 5-1.6-1.5.5-2.9.1-3.7-1 1.2-1.5 1.7-3.1 1.6-5";
@@ -570,6 +575,30 @@ export async function mountPanel(app: HTMLElement) {
       tab === "running" ? "Agent work queue" : "Reviewed work",
     );
     if (rows.length) root.append(list);
+    const terminal = (row: Row) =>
+      row.kind === "item" && ["closed", "merged"].includes(row.state);
+    const clean = async (itemId?: string) => {
+      try {
+        await invoke("clean_reviewed", { itemId: itemId ?? null });
+      } catch (cause) {
+        showError(typeof cause === "string" ? cause : "Unavailable");
+      }
+      void monitor.refresh();
+    };
+    const terminalCount = tab === "reviewed" ? rows.filter(terminal).length : 0;
+    if (terminalCount) {
+      const all = document.createElement("button");
+      all.type = "button";
+      all.className = "work-retry-all work-clean-all";
+      all.setAttribute("aria-label", "Clean all");
+      all.title = "Clean all";
+      all.innerHTML = `${icon(cleanIcon)}<span>${terminalCount}</span>`;
+      all.onclick = () => {
+        all.disabled = true;
+        void clean();
+      };
+      root.prepend(all);
+    }
     if (!rows.length) {
       const empty = document.createElement("div");
       empty.className = "queue-empty";
@@ -609,7 +638,9 @@ export async function mountPanel(app: HTMLElement) {
                   ? "Superseded"
                   : ["failed", "manual_retry"].includes(row.work?.state ?? "")
                     ? "Failed"
-                    : "Queued";
+                    : row.delayed_until
+                      ? "Waiting"
+                      : "Queued";
         button.className = "work-row";
         button.dataset.display = displayState.toLowerCase();
         button.setAttribute(
@@ -634,7 +665,13 @@ export async function mountPanel(app: HTMLElement) {
         copy.className = "work-copy";
         const state = document.createElement("span");
         state.className = "work-state";
-        state.textContent = displayState;
+        // Backpressure is a quiet wait: a clock and the local resume time.
+        state.textContent = row.delayed_until
+          ? new Date(row.delayed_until * 1000).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            })
+          : displayState;
         if (row.failure) {
           const subject = document.createElement("strong");
           subject.className = "work-subject";
@@ -666,6 +703,8 @@ export async function mountPanel(app: HTMLElement) {
             (row.kind === "item" ? "PR" : purposes[row.kind]);
           reference.append(purpose);
           copy.append(top, subject, reference);
+          if (row.teammate && tab === "running")
+            copy.append(teammateChip(row.teammate, null));
         }
         if (row.reason) button.title += `. ${row.reason}`;
         const chevron = document.createElement("span");
@@ -674,6 +713,20 @@ export async function mountPanel(app: HTMLElement) {
         if (row.failure) button.append(marker, copy, state, chevron);
         else button.append(marker, copy, chevron);
         article.append(button);
+        if (terminal(row)) {
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.className = "work-clean";
+          remove.dataset.cleanItem = row.id;
+          remove.setAttribute("aria-label", "Clean");
+          remove.title = "Clean";
+          remove.innerHTML = icon(cleanIcon);
+          remove.onclick = () => {
+            remove.disabled = true;
+            void clean(row.id);
+          };
+          article.append(remove);
+        }
         const entry = document.createElement("li");
         entry.append(article);
         list.append(entry);
@@ -728,6 +781,8 @@ export async function mountPanel(app: HTMLElement) {
               `Saved ${work.key.kind} job ${work.key.id}`,
             state: work.state,
             failure: work.failure,
+            delayed_until: work.delayed_until,
+            teammate: work.blocked_by?.teammate.agent_name ?? null,
             reason:
               work.reason ??
               (automation?.paused && work.state === "waiting"

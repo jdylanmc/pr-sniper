@@ -65,7 +65,7 @@ async function parkedReview(store, patch) {
   });
   run.result = null;
   run.error =
-    "Copilot did not read every changed file; no review result was accepted.";
+    "Copilot reported an execution failure; no review result was accepted.";
   fixture.state.publications = fixture.state.publications.filter(
     (p) => p.review.job.number !== 1,
   );
@@ -99,11 +99,8 @@ test("failed detail lists terse facts, the raw error and the retry hint", async 
   await expect(row("Revision")).toHaveText(/^[0-9a-f]{7}$/);
   await expect(row("Account")).not.toHaveText("");
   const error = page.locator("[data-queue-error]");
-  await expect(error).toContainText("did not read every changed file");
-  await expect(error).toHaveAttribute(
-    "title",
-    /did not read every changed file/,
-  );
+  await expect(error).toContainText("reported an execution failure");
+  await expect(error).toHaveAttribute("title", /reported an execution failure/);
   await expect(page.locator("[data-queue-details]")).not.toHaveAttribute(
     "open",
   );

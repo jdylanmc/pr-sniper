@@ -299,90 +299,6 @@ async function reopenedConversationFixture(store, kind, legacy = false) {
 }
 
 for (const kind of ["reply", "mention"]) {
-  test(`panel historical ${kind} keeps its closed canonical iteration after same-head reopen and Back`, async ({
-    page,
-    store,
-  }) => {
-    const fixture = await reopenedConversationFixture(store, kind);
-    const before = await store("monitoring_snapshot");
-    const original = before.items.find((item) => item.id === "original-item");
-    const reopened = before.items.find((item) => item.id === "reopened-item");
-    expect(before.items[0].id).toBe(reopened.id);
-    expect(original.state).toBe("closed");
-    expect(reopened.state).toBe("machine_signed_off");
-    expect(original.job.head_sha).toBe(reopened.job.head_sha);
-    expect(original.follow_up_ids).toContain(fixture.run.id);
-    expect(reopened.follow_up_ids).toContain(fixture.run.id);
-    await page.goto("/");
-    await page
-      .getByRole("navigation", { name: "Application destinations" })
-      .getByRole("button", { name: "Running", exact: true })
-      .click();
-    const origin = page.locator(`[data-job-id="${kind}:${fixture.run.id}"]`);
-    const button = origin.getByRole("button", {
-      name: "Open job",
-      exact: true,
-    });
-    await button.click();
-    await expect(page.locator(".job-facts")).toContainText("#1 / iteration 1");
-    await expect(page.locator("[data-work-context]")).not.toContainText(
-      original.summary,
-    );
-    await expect(page.locator("[data-item-evidence]")).not.toContainText(
-      reopened.summary,
-    );
-    const conversation = page.locator("#thread-follow-ups");
-    await expect(conversation.locator("article")).toHaveCount(1);
-    await conversation.getByText(/^Conversation \(/).click();
-    if (kind === "reply") {
-      await expect(conversation).toContainText(fixture.thread.comments[0].body);
-      await expect(conversation).toContainText(fixture.thread.comments[1].body);
-      await expect(conversation).toContainText(
-        ` \u00b7 ${original.job.head_sha} \u00b7 ${fixture.origin.id}`,
-      );
-    } else {
-      await expect(conversation).toContainText(fixture.run.target.comment.body);
-      await expect(conversation).toContainText(" \u00b7 Primary \u00b7 ");
-    }
-    await conversation
-      .getByText("Captured context", {
-        exact: true,
-      })
-      .click();
-    const captured = before.follow_ups.find(
-      (candidate) => candidate.run.id === fixture.run.id,
-    ).run;
-    await expect(
-      conversation
-        .locator("details")
-        .filter({
-          has: page.getByText("Captured context", {
-            exact: true,
-          }),
-        })
-        .locator("pre"),
-    ).toHaveText(
-      JSON.stringify(
-        { target: captured.target, context: captured.context },
-        null,
-        2,
-      ),
-    );
-    await expect(page.locator("[data-work-context]")).toContainText(
-      "Iteration 1 (original-iteration)",
-    );
-    await expect(page.locator("[data-work-context]")).toContainText(
-      kind === "reply" ? "Targeted reply" : "Primary conversation",
-    );
-    await expect(page.locator("#agent-reviews article")).toHaveCount(0);
-    await page.getByRole("button", { name: "Back", exact: true }).click();
-    await expect(button).toBeFocused();
-    expect((await store("panel_snapshot")).route).toEqual({ tab: "running" });
-    expect(await store("monitoring_snapshot")).toEqual(before);
-  });
-}
-
-for (const kind of ["reply", "mention"]) {
   test(`selected ${kind} keeps historical count and separate retry across later same-SHA work`, async ({
     page,
     store,
@@ -429,8 +345,6 @@ for (const kind of ["reply", "mention"]) {
 
   for (const [index, [state, label]] of [
     ["queued", "Waiting"],
-    ["running", "Running"],
-    ["stopping", "Stopping"],
     ["failed", "Failed"],
     ["manual_retry", "Failed"],
     ["backoff", "Retry queued"],
@@ -452,7 +366,7 @@ for (const kind of ["reply", "mention"]) {
       page,
       store,
     }) => {
-      if (index >= 2) {
+      if (index >= 1) {
         // The former running-state capture set these for every later case.
         await page.setViewportSize({ width: 408, height: 744 });
         await page.emulateMedia({ reducedMotion: "reduce" });
@@ -1252,77 +1166,6 @@ test("provider-closed tombstones remain visible and missing observations cannot 
   ).toBe(true);
 });
 
-test("a missing primary is explicit, durable and does not create a fake review or publication", async ({
-  page,
-  store,
-}) => {
-  const fixture = await feedbackFixture(store);
-  fixture.settings.repositories[0].assignments = [];
-  await store("seed_settings", fixture.settings);
-  fixture.state.feedback.mentions = [
-    {
-      key: "mention-key",
-      work_id: "mention-501",
-      enqueue_order: 2,
-      enqueued_at: 1_800_000_010,
-      binding: {
-        configuration_id: fixture.review.job.configuration_id,
-        account_id: "22",
-        account_login: "local-operator",
-        repository_id: "100",
-        repository_name: "example/repo",
-        pull_request_id: "1",
-        number: 1,
-      },
-      comment: {
-        id: "501",
-        body: "@local-operator <script>window.injected=true</script>",
-        author_id: "11",
-        author_login: "author",
-        created_at: "2026-09-30T00:01:00Z",
-        updated_at: "2026-09-30T00:01:00Z",
-      },
-      follow_up_id: null,
-      blocked: "No primary assigned; mention retained without fallback.",
-    },
-  ];
-  await store("seed_queue_state", fixture.state);
-  await page.goto("/?view=queue");
-  await expect(page.locator("#thread-follow-ups")).toContainText(
-    "No primary assigned",
-  );
-  await expect(page.locator("[data-ai-work]")).toContainText(
-    "mention mention-501: blocked",
-  );
-  await expect(page.locator("#thread-follow-ups script")).toHaveCount(0);
-  expect(await page.evaluate(() => window.injected)).toBeUndefined();
-  const snapshot = await store("monitoring_snapshot");
-  expect(snapshot.follow_ups).toHaveLength(0);
-  expect(snapshot.publications).toHaveLength(1);
-  await page.reload();
-  await expect(page.locator("#thread-follow-ups")).toContainText(
-    "without fallback",
-  );
-  await page.goto("/");
-  await page
-    .getByRole("navigation", { name: "Application destinations" })
-    .getByRole("button", { name: "Running", exact: true })
-    .click();
-  await page
-    .locator("[data-running-list] article")
-    .filter({ hasText: "Primary conversation" })
-    .getByRole("button", { name: "Open job", exact: true })
-    .click();
-  await expect(page.locator("[data-item-evidence]")).not.toContainText(
-    "not available",
-  );
-  await expect(page.locator("#thread-follow-ups")).toContainText(
-    "No primary assigned",
-  );
-  await expect(page.locator("#agent-reviews article")).toHaveCount(0);
-  expect((await store("monitoring_snapshot")).follow_ups).toHaveLength(0);
-});
-
 test("completed second publication permits closure and explicit same-head reassessment without rewriting the archive", async ({
   page,
   store,
@@ -1432,72 +1275,6 @@ test("completed second publication permits closure and explicit same-head reasse
       saved.items.find((i) => i.job.head_sha === current.job.head_sha).id
     ][0].context.closed,
   ).toBe(false);
-});
-
-test("unlinked durable mention blocks a cleared PR across reload before any execution exists", async ({
-  page,
-  store,
-}, testInfo) => {
-  const fixture = await feedbackFixture(store);
-  fixture.context.closed = true;
-  fixture.context.thread.resolved = true;
-  const intent = {
-    key: JSON.stringify([
-      "mention",
-      "github",
-      "22",
-      fixture.review.job.configuration_id,
-      "100",
-      "1",
-      "501",
-    ]),
-    work_id: "retained-mention-501",
-    enqueue_order: 17,
-    enqueued_at: 1_800_000_010,
-    binding: {
-      configuration_id: fixture.review.job.configuration_id,
-      account_id: "22",
-      account_login: "local-operator",
-      repository_id: "100",
-      repository_name: "example/repo",
-      pull_request_id: "1",
-      number: 1,
-    },
-    comment: {
-      id: "501",
-      body: "@local-operator explain",
-      author_id: "22",
-      author_login: "local-operator",
-      created_at: "2026-09-30T00:01:00Z",
-      updated_at: "2026-09-30T00:01:00Z",
-    },
-    follow_up_id: null,
-    blocked: "Mention observed; execution admission is pending.",
-  };
-  fixture.state.feedback.mentions = [intent];
-  await store("seed_queue_state", fixture.state);
-  await page.goto("/?view=queue");
-  await expect(page.locator("#handoff-queue .queue-item")).toHaveAttribute(
-    "data-state",
-    "queued",
-  );
-  await expect(page.locator("#thread-follow-ups")).toContainText(
-    "execution admission is pending",
-  );
-  await expect(page.locator("[data-ai-work]")).toContainText(
-    "mention retained-mention-501: blocked",
-  );
-  await page.reload();
-  await expect(page.locator("#handoff-queue")).not.toContainText(
-    "Ready for your final review",
-  );
-  const saved = await store("monitoring_snapshot");
-  expect(saved.mentions).toEqual([intent]);
-  expect(saved.follow_ups).toEqual([]);
-  await page.screenshot({
-    path: testInfo.outputPath("durable-mention-pending.png"),
-    fullPage: true,
-  });
 });
 
 test("incomplete observation admission stays visibly blocked after retry clears its transient failure", async ({

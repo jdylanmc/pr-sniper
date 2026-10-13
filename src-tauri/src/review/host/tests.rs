@@ -34,6 +34,8 @@ fn fixture() -> (tempfile::TempDir, Store, ReviewRun) {
     .unwrap();
     store.save_queue(std::slice::from_ref(&job)).unwrap();
     let run = ReviewRun {
+        mode: Default::default(),
+        packet: None,
         feedback_context: None,
         key: key(&job, &assignment_id),
         assignment_id: assignment_id.clone(),
@@ -202,4 +204,238 @@ fn retry_replaces_only_same_operation_and_preserves_prior_operation_history() {
     replace_run(&mut records, &update);
     assert_eq!(records.len(), 2);
     assert_eq!(records[0].operation.id, run.operation.id);
+}
+
+fn packet_result(exit: serde_json::Value) -> crate::review::ReviewResult {
+    serde_json::from_value(json!({"reviewed_base_sha":"b".repeat(40),"output":{"exit":exit},
+        "session_id":"s","model":"m","runtime_version":"v","input_tokens":1,"output_tokens":1,"tool_calls":1}))
+    .unwrap()
+}
+
+/// A dispatched Packet-mode run whose packet record carries the state hash it read.
+fn running_packet(store: &Store, template: &ReviewRun, now: i64) -> ReviewRun {
+    request(store, &template.key, true, now).unwrap();
+    prepare_dispatch(store, &template.key, now).unwrap();
+    let mut reviews = store.load_reviews().unwrap();
+    let run = &mut reviews[0];
+    run.mode = crate::review::RunMode::Packet;
+    run.packet = Some(crate::packet::PacketRecord {
+        state_id: "0:hash".into(),
+        hash: "h".into(),
+        schema: 1,
+        tool_set: vec![],
+        exits_offered: vec![],
+        exits_denied: vec![],
+        state_hash: Some("hash-read".into()),
+        state_marks: None,
+    });
+    let saved = run.clone();
+    store.save_reviews(&reviews).unwrap();
+    saved
+}
+
+#[test]
+fn superseded_never_spends_the_retry_budget_or_parks() {
+    let (_root, store, template) = fixture();
+    let mut now = 100;
+    for _ in 0..6 {
+        let run = running_packet(&store, &template, now);
+        complete(
+            &store,
+            &run.operation.id,
+            Err(Failure::superseded("The PR head moved.")),
+            now + 1,
+        )
+        .unwrap();
+        let op = store.load_reviews().unwrap().remove(0).operation;
+        assert_eq!(op.state, OperationState::Queued);
+        assert_eq!(op.attempt_count, 0);
+        assert!(op.failure.is_none());
+        assert!(op.next_attempt_at.unwrap() > now + 1);
+        now = op.next_attempt_at.unwrap();
+    }
+}
+
+#[test]
+fn ready_for_human_consumes_the_state_it_read_and_keeps_the_summary_local() {
+    let (_root, store, template) = fixture();
+    let run = running_packet(&store, &template, 100);
+    complete(
+        &store,
+        &run.operation.id,
+        Ok(packet_result(
+            json!({"exit":"ready_for_human","summary":"Nothing to post."}),
+        )),
+        101,
+    )
+    .unwrap();
+    let saved = store.load_reviews().unwrap().remove(0);
+    assert_eq!(saved.operation.state, OperationState::Completed);
+    let record = store
+        .load_pr_states()
+        .unwrap()
+        .get(&crate::retention::Binding::job(&run.job))
+        .cloned()
+        .unwrap();
+    assert_eq!(record.baseline_hash.as_deref(), Some("hash-read"));
+    assert_eq!(record.local_summary.as_deref(), Some("Nothing to post."));
+    assert_eq!(record.exit.unwrap().baseline_hash, "hash-read");
+}
+
+#[test]
+fn a_state_that_moved_during_the_run_tosses_and_requeues_until_it_parks_at_three() {
+    let (_root, store, template) = fixture();
+    let binding = crate::retention::Binding::job(&template.job);
+    let mut states = store.load_pr_states().unwrap();
+    states.observe(
+        &binding,
+        crate::pr_state::Observation {
+            iteration_id: "i",
+            new_iteration: true,
+            snapshot: None,
+            already_reviewed: false,
+            now: 1,
+        },
+    );
+    store.save_pr_states(&states).unwrap();
+    let mut now = 100;
+    for toss in 1..=3_u8 {
+        let run = running_packet(&store, &template, now);
+        complete(
+            &store,
+            &run.operation.id,
+            Ok(packet_result(
+                json!({"exit":"ready_for_human","summary":"Stale."}),
+            )),
+            now + 1,
+        )
+        .unwrap();
+        let saved = store.load_reviews().unwrap().remove(0);
+        assert!(saved.result.is_none(), "a tossed result is never stored");
+        let record = store
+            .load_pr_states()
+            .unwrap()
+            .get(&binding)
+            .cloned()
+            .unwrap();
+        assert_eq!(record.error_count, toss);
+        assert!(record.exit.is_none() && record.local_summary.is_none());
+        if toss < 3 {
+            assert_eq!(saved.operation.state, OperationState::Queued);
+            now = saved.operation.next_attempt_at.unwrap();
+        } else {
+            assert_eq!(saved.operation.state, OperationState::ManualRetry);
+        }
+    }
+}
+
+#[test]
+fn an_exit_time_toss_counts_and_a_failed_run_never_consumes() {
+    let (_root, store, template) = fixture();
+    let binding = crate::retention::Binding::job(&template.job);
+    let mut states = store.load_pr_states().unwrap();
+    states.observe(
+        &binding,
+        crate::pr_state::Observation {
+            iteration_id: "i",
+            new_iteration: true,
+            snapshot: None,
+            already_reviewed: false,
+            now: 1,
+        },
+    );
+    store.save_pr_states(&states).unwrap();
+    let run = running_packet(&store, &template, 100);
+    complete(
+        &store,
+        &run.operation.id,
+        Err(Failure::tossed("PR state moved.")),
+        101,
+    )
+    .unwrap();
+    let binding = crate::retention::Binding::job(&run.job);
+    let states = store.load_pr_states().unwrap();
+    assert_eq!(states.get(&binding).unwrap().error_count, 1);
+    assert!(states.get(&binding).unwrap().baseline_hash.is_none());
+}
+
+/// Fixture whose queue job carries normal work at `state_seq` 1 and a PR state at seq 1.
+fn packet_work_fixture() -> (tempfile::TempDir, Store, ReviewRun) {
+    let (root, store, mut template) = fixture();
+    let mut job = template.job.clone();
+    job.work = Some(
+        serde_json::from_value(
+            json!({"id":"normal-1","item_id":"item-1","iteration_id":"i",
+            "iteration":1,"agent_id":template.selection.agent.id,"enqueue_order":1,"pass_ordinal":1,
+            "trigger":"admission","state_seq":1,
+            "admission":{"watched_author":true,"all_authors":false,"requested_reviewer":false}}),
+        )
+        .unwrap(),
+    );
+    store.save_queue(std::slice::from_ref(&job)).unwrap();
+    template.key = key(&job, &template.assignment_id);
+    template.job = job;
+    let mut states = store.load_pr_states().unwrap();
+    bump_state(&mut states, &template.job);
+    store.save_pr_states(&states).unwrap();
+    (root, store, template)
+}
+
+fn bump_state(states: &mut crate::pr_state::PrStates, job: &QueueJob) {
+    states.observe(
+        &crate::retention::Binding::job(job),
+        crate::pr_state::Observation {
+            iteration_id: "i",
+            new_iteration: true,
+            snapshot: None,
+            already_reviewed: false,
+            now: 1,
+        },
+    );
+}
+
+#[test]
+fn a_reused_run_reads_the_heartbeat_state_seq_so_its_exit_consumes() {
+    let (_root, store, template) = packet_work_fixture();
+    let first = running_packet(&store, &template, 100);
+    assert_eq!(crate::exits::consume::state_seq(&first.job), 1);
+    // Heartbeat: the PR moved to seq 2 while the run was in flight.
+    let mut states = store.load_pr_states().unwrap();
+    bump_state(&mut states, &template.job);
+    store.save_pr_states(&states).unwrap();
+    let mut queue = store.load_queue().unwrap();
+    queue[0].work.as_mut().unwrap().state_seq = 2;
+    store.save_queue(&queue).unwrap();
+    complete(
+        &store,
+        &first.operation.id,
+        Err(Failure::tossed("PR state moved.")),
+        101,
+    )
+    .unwrap();
+    let requeued = store.load_reviews().unwrap().remove(0);
+    assert_eq!(requeued.operation.state, OperationState::Queued);
+    let now = requeued.operation.next_attempt_at.unwrap();
+    // The retry reads the fresh state (seq 2) and its exit consumes it.
+    let retry = running_packet(&store, &template, now);
+    assert_eq!(crate::exits::consume::state_seq(&retry.job), 2);
+    complete(
+        &store,
+        &retry.operation.id,
+        Ok(packet_result(
+            json!({"exit":"ready_for_human","summary":"Fresh."}),
+        )),
+        now + 1,
+    )
+    .unwrap();
+    let saved = store.load_reviews().unwrap().remove(0);
+    assert_eq!(saved.operation.state, OperationState::Completed);
+    let record = store
+        .load_pr_states()
+        .unwrap()
+        .get(&crate::retention::Binding::job(&template.job))
+        .cloned()
+        .unwrap();
+    assert_eq!(record.exit.unwrap().state_seq, 2);
+    assert!(record.pending.is_none(), "no state left unreviewed");
 }

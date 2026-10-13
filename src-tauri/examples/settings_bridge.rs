@@ -448,6 +448,15 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
                 .map_err(|_| "Invalid result destination.")?,
         )?)
         .map_err(|_| "Cannot encode result detail.".into()),
+        "clean_reviewed" => {
+            let item = request.args["itemId"].as_str();
+            pr_sniper_lib::retention::recover(store)?;
+            Ok(json!(pr_sniper_lib::retention::maintain_where(
+                store,
+                true,
+                |scope| item.is_none_or(|id| scope.item_id == id)
+            )?))
+        }
         "fixture_retention" => {
             pr_sniper_lib::retention::recover(store)?;
             Ok(json!({"cleaned": pr_sniper_lib::retention::maintain(store, true)?}))
@@ -465,15 +474,16 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             let observation = serde_json::from_value(request.args["observation"].clone())
                 .map_err(|_| "Invalid action-observation fixture.")?;
             pr_sniper_lib::actions::synchronize(store, item, Ok(observation), 1_800_000_100)?;
+            pr_sniper_lib::actions::adopt_packet(store, item)?;
             serde_json::to_value(store.load_actions()?)
                 .map_err(|_| "Cannot encode action state.".into())
         }
-        "start_final_review" => {
-            pr_sniper_lib::actions::request_final(
+        "retry_packet_state" => {
+            pr_sniper_lib::exits::consume::retry_parked(
                 store,
-                request.args["id"]
+                request.args["itemId"]
                     .as_str()
-                    .ok_or("Final identity required.")?,
+                    .ok_or("Item identity required.")?,
                 1_800_000_110,
             )?;
             Ok(Value::Null)
@@ -538,6 +548,12 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             pr_sniper_lib::capacity::Coordinator::default().snapshot(store, 1_800_000_000)?,
         )
         .map_err(|_| "Cannot encode automation state.".into()),
+        "seed_backpressure" => {
+            let state = serde_json::from_value(request.args)
+                .map_err(|_| "Invalid backpressure fixture.".to_string())?;
+            store.save_backpressure(&state)?;
+            Ok(Value::Null)
+        }
         "set_automation_paused" => {
             store.save_automation(&pr_sniper_lib::capacity::Automation {
                 paused: request.args["paused"]
@@ -608,8 +624,16 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
                         .map_err(|_| "Invalid feedback fixture.")?,
                 )?;
             }
+            if let Some(states) = request.args.get("pr_states") {
+                store.save_pr_states(
+                    &serde_json::from_value(states.clone())
+                        .map_err(|_| "Invalid PR state fixture.")?,
+                )?;
+            }
             Ok(Value::Null)
         }
+        "pr_states" => serde_json::to_value(store.load_pr_states()?)
+            .map_err(|_| "Cannot encode PR state.".into()),
         "monitoring_snapshot" => serde_json::to_value(pr_sniper_lib::queue::snapshot(
             store,
             store

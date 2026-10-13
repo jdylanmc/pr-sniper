@@ -1,4 +1,5 @@
 pub(crate) mod host;
+mod packet;
 
 use crate::{
     feedback,
@@ -8,8 +9,8 @@ use crate::{
     review::{Failure, ReviewRun, Selection},
     storage::{ActionPermissions, Repository, Store},
 };
+pub use packet::{adopt as adopt_packet, PacketApproval, Ready};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,34 +30,6 @@ pub struct Basis {
     pub trust_confirmed: bool,
 }
 
-impl Basis {
-    fn same_execution(&self, other: &Self) -> bool {
-        // Preserve the full action basis; retired automation preferences are inert.
-        let mut current = self.clone();
-        current.selection.policy.automatic_agent_start =
-            other.selection.policy.automatic_agent_start;
-        current.selection.policy.automatic_comment_publication =
-            other.selection.policy.automatic_comment_publication;
-        if let (Some(left), Some(right)) = (
-            current.selection.configuration.as_mut(),
-            other.selection.configuration.as_ref(),
-        ) {
-            left.repository.overrides.automatic_agent_start =
-                right.repository.overrides.automatic_agent_start;
-            left.repository.overrides.automatic_comment_publication =
-                right.repository.overrides.automatic_comment_publication;
-        }
-        current.repository.overrides.automatic_agent_start =
-            other.repository.overrides.automatic_agent_start;
-        current.repository.overrides.automatic_comment_publication =
-            other.repository.overrides.automatic_comment_publication;
-        if monitoring::actionable(&current.job) && monitoring::actionable(&other.job) {
-            current.job.waiting = other.job.waiting.clone();
-        }
-        current == *other
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FinalReview {
@@ -68,6 +41,9 @@ pub struct FinalReview {
     pub cancelled: bool,
     #[serde(default)]
     pub attempts: Vec<ReviewRun>,
+    /// Set when a Packet-mode approve exit created this record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub packet: Option<PacketApproval>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,107 +128,6 @@ pub struct Status {
     pub blockers: Vec<String>,
 }
 
-pub fn basis(store: &Store, item_id: &str) -> Result<Basis, String> {
-    let settings = store.load_settings()?;
-    let snapshot = queue::normal_snapshot(store, vec![])?;
-    let item = snapshot
-        .items
-        .iter()
-        .find(|i| i.id == item_id)
-        .ok_or("Current PR iteration unavailable.")?;
-    if item.state != State::MachineSignedOff {
-        return Err("All current normal passes and outstanding concerns must be clear before final review or action.".into());
-    }
-    let tracked = snapshot
-        .tracked
-        .iter()
-        .find(|p| p.item_id == item_id && p.lifecycle == crate::github::metadata::Lifecycle::Open)
-        .ok_or("This is not the currently tracked open iteration.")?;
-    let repository = settings
-        .repositories
-        .iter()
-        .find(|r| r.id == item.job.configuration_id)
-        .ok_or("Repository removed.")?
-        .clone();
-    let activation_version = store
-        .load_monitoring_state()?
-        .activations
-        .get(&repository.id)
-        .ok_or("Monitoring scope is not active.")?
-        .version
-        .clone();
-    let primary = repository
-        .primary_assignment_id()
-        .ok_or("No primary assigned; automatic approval and merge are unavailable.")?;
-    let mut peers = Vec::new();
-    for assignment in &repository.assignments {
-        let candidate = snapshot
-            .reviews
-            .iter()
-            .find(|r| {
-                r.assignment_id == assignment.id
-                    && queue::item_id(&r.job) == item_id
-                    && r.job.work.as_ref().is_some_and(|w| {
-                        w.agent_id == assignment.agent_id && w.iteration_id == tracked.iteration_id
-                    })
-            })
-            .ok_or("A current assignment is awaiting its normal pass at the next global scan.")?;
-        let run = candidate
-            .run
-            .as_ref()
-            .filter(|r| r.operation.state == OperationState::Completed && r.result.is_some())
-            .ok_or("A current assignment has not completed its normal pass.")?;
-        if run.selection.agent.id != assignment.agent_id {
-            return Err(
-                "An assignment changed its Agent; old evidence cannot authorize an action.".into(),
-            );
-        }
-        peers.push(run.clone());
-    }
-    let selected = peers
-        .iter()
-        .find(|r| r.assignment_id == primary)
-        .ok_or("The primary normal pass is missing.")?;
-    let job = snapshot
-        .jobs
-        .iter()
-        .find(|j| selected.matches_job(j))
-        .ok_or("Primary job unavailable.")?
-        .clone();
-    let selection = Selection::resolve(&settings, &job, primary)?;
-    let authority = repository
-        .assignments
-        .iter()
-        .find(|a| a.id == primary)
-        .map(|a| repository.assignment_authority(a))
-        .ok_or("Primary unavailable.")?;
-    let permissions = ActionPermissions {
-        reply: authority.reply,
-        approve: authority.approve,
-        merge: authority.merge,
-    };
-    let feedback = feedback::contexts(store, &job, &selection.agent.id).map_err(|e| e.message)?;
-    let trust_confirmed = selected.trust_confirmed;
-    let conversations = store
-        .load_follow_ups()?
-        .into_iter()
-        .filter(|r| feedback::same_pr(&r.context.job, &job))
-        .collect();
-    Ok(Basis {
-        activation_version,
-        item_id: item_id.into(),
-        iteration_id: tracked.iteration_id.clone(),
-        repository,
-        job,
-        selection,
-        peers,
-        feedback,
-        conversations,
-        permissions,
-        trust_confirmed,
-    })
-}
-
 fn context(observation: &Observation, effects: &[Effect]) -> serde_json::Value {
     let reviews: Vec<_> = observation
         .reviews
@@ -277,47 +152,6 @@ fn context(observation: &Observation, effects: &[Effect]) -> serde_json::Value {
 
 pub fn observation_matches(run: &FinalReview, current: &Observation, effects: &[Effect]) -> bool {
     context(&run.observation, effects) == context(current, effects)
-}
-
-fn fingerprint(
-    basis: &Basis,
-    observation: &Observation,
-    effects: &[Effect],
-) -> Result<String, String> {
-    let bytes = serde_json::to_vec(&(basis, context(observation, effects)))
-        .map_err(|_| "Cannot encode final-review identity.")?;
-    if bytes.len() > 2 * 1024 * 1024 {
-        return Err(
-            "Final review context exceeds the supported bound; evidence was not truncated.".into(),
-        );
-    }
-    Ok(format!("final-{:x}", Sha256::digest(bytes)))
-}
-
-pub fn validate_observation(basis: &Basis, observation: &Observation) -> Result<(), String> {
-    if observation.account_id != basis.job.account_id
-        || observation.repository_id != basis.job.repository_id
-        || observation.pull_request_id != basis.job.pull_request_id
-        || observation.head != basis.job.head_sha
-        || basis.job.observed_base_sha.as_deref() != Some(&observation.base)
-    {
-        return Err("Provider identity or head/base differs from the cleared iteration.".into());
-    }
-    if let Some(reason) = observation.common_blocker() {
-        return Err(reason);
-    }
-    if basis.feedback.iter().any(|c| {
-        !c.closed
-            && c.thread.as_ref().is_some_and(|t| {
-                observation
-                    .threads
-                    .iter()
-                    .any(|current| current.id == t.id && current.resolved)
-            })
-    }) {
-        return Err("Owned discussion closure needs the full verified thread observation at the next repository scan before final review.".into());
-    }
-    Ok(())
 }
 
 pub fn synchronize(
@@ -357,33 +191,62 @@ pub fn synchronize(
         }
         Ok(value)
     });
+    let previous_failures = ledger
+        .observations
+        .iter()
+        .find(|o| o.item_id == item_id)
+        .map(|o| o.failures)
+        .unwrap_or(0);
+    let account = identity.map(|(account, _, _)| account.as_str());
+    // A rate limit is a wait: no failure counted, no error stored.
+    let paced = match (&observation, account) {
+        (Err(error), Some(account)) if error.rate_limited() => Some(
+            crate::backpressure::record(
+                store,
+                crate::backpressure::Scope::of(error.origin, account, None),
+                error.retry_after_seconds,
+                item_id,
+                now,
+            )
+            .unwrap_or_else(|_| {
+                now.saturating_add(crate::backpressure::delay_seconds(
+                    item_id,
+                    0,
+                    error.retry_after_seconds,
+                ))
+            }),
+        ),
+        _ => None,
+    };
+    if let (Ok(_), Some(account)) = (&observation, account) {
+        let _ = crate::backpressure::succeeded(store, &crate::backpressure::Scope::github(account));
+    }
     let observed = Observed {
-        failures: if observation.is_err() {
-            ledger
-                .observations
-                .iter()
-                .find(|o| o.item_id == item_id)
-                .map(|o| o.failures)
-                .unwrap_or(0)
-                .saturating_add(1)
-        } else {
-            0
+        failures: match (&observation, paced) {
+            (Ok(_), _) => 0,
+            (Err(_), Some(_)) => previous_failures,
+            (Err(_), None) => previous_failures.saturating_add(1),
         },
-        retry_at: observation.as_ref().err().and_then(|error| {
-            let failures = ledger
-                .observations
-                .iter()
-                .find(|o| o.item_id == item_id)
-                .map(|o| o.failures)
-                .unwrap_or(0);
-            (error.kind != monitoring::OperationFailure::Permanent && failures < 3).then(|| {
-                now.saturating_add(error.retry_after_seconds.unwrap_or(5 * (1_i64 << failures)))
+        retry_at: paced.or_else(|| {
+            observation.as_ref().err().and_then(|error| {
+                (error.kind != monitoring::OperationFailure::Permanent && previous_failures < 3)
+                    .then(|| {
+                        now.saturating_add(
+                            error
+                                .retry_after_seconds
+                                .unwrap_or(5 * (1_i64 << previous_failures)),
+                        )
+                    })
             })
         }),
         item_id: item_id.into(),
         at: now,
         observation: observation.as_ref().ok().cloned(),
-        error: observation.as_ref().err().map(|e| e.message.clone()),
+        error: observation
+            .as_ref()
+            .err()
+            .filter(|_| paced.is_none())
+            .map(|e| e.message.clone()),
     };
     if let Some(previous) = ledger
         .observations
@@ -436,79 +299,6 @@ pub fn synchronize(
                 effect.error = None;
             }
         }
-        if let Ok(basis) = basis(store, item_id) {
-            let scope = monitoring::Monitor::restore_readonly(store.load_monitoring_state()?)
-                .activation_status(&store.load_settings()?, &basis.job.configuration_id)
-                .active;
-            let needs_action = (basis.permissions.approve
-                && !ledger
-                    .effects
-                    .iter()
-                    .any(|e| e.item_id == item_id && e.action == Action::Approve))
-                || (basis.permissions.merge
-                    && !ledger
-                        .effects
-                        .iter()
-                        .any(|e| e.item_id == item_id && e.action == Action::Merge));
-            let human_final = ledger.finals.iter().any(|f| {
-                f.basis.item_id == item_id
-                    && f.execution.result.as_ref().is_some_and(|r| {
-                        r.output.decision != crate::review::Decision::MachineSignOff
-                            || r.output.feedback_conflict
-                            || !r.output.findings.is_empty()
-                            || !r.output.held_findings.is_empty()
-                    })
-            });
-            if !ledger
-                .effects
-                .iter()
-                .any(|e| same_scope(e, &basis.job) && e.state == EffectState::Uncertain)
-                && !human_final
-                && scope
-                && needs_action
-                && validate_observation(&basis, &observation).is_ok()
-                && (basis.permissions.merge || observation.blocker(Action::Approve).is_none())
-            {
-                let id = fingerprint(&basis, &observation, &ledger.effects)?;
-                if !ledger.finals.iter().any(|f| {
-                    f.id == id
-                        || (f.basis.same_execution(&basis)
-                            && observation_matches(f, &observation, &ledger.effects))
-                }) {
-                    let operation = {
-                        let mut o = JobOperation::review(&basis.job, now);
-                        o.operation_type = "primary_final_review".into();
-                        o
-                    };
-                    let execution = ReviewRun {
-                        feedback_context: Some(basis.feedback.clone()),
-                        key: id.clone(),
-                        assignment_id: basis
-                            .job
-                            .assignment_id
-                            .clone()
-                            .ok_or("Primary assignment unavailable.")?,
-                        job: basis.job.clone(),
-                        selection: basis.selection.clone(),
-                        operation,
-                        manual_start: false,
-                        trust_confirmed: basis.trust_confirmed,
-                        phase: "Waiting for primary final full review".into(),
-                        error: None,
-                        result: None,
-                    };
-                    ledger.finals.push(FinalReview {
-                        id,
-                        enqueue_order: store.allocate_enqueue_order()?,
-                        basis,
-                        observation,
-                        execution,
-                        cancelled: false,
-                        attempts: Vec::new(),
-                    });
-                }
-            }
-        }
     }
     store.save_actions(&ledger)?;
     if let Some(observation) = terminal {
@@ -517,26 +307,14 @@ pub fn synchronize(
     Ok(())
 }
 
+/// Legacy finals (no packet approval) are historical: they authorize nothing.
+pub(crate) const LEGACY_FINAL_RETIRED: &str = "Legacy final review retired.";
+
 pub fn validate_local(store: &Store, run: &FinalReview) -> Result<(), String> {
-    if run.cancelled {
-        return Err("Final review was cancelled.".into());
+    match run.packet {
+        Some(_) => packet::validate_local(store, run),
+        None => Err(LEGACY_FINAL_RETIRED.into()),
     }
-    if !basis(store, &run.basis.item_id)?.same_execution(&run.basis) {
-        return Err(
-            "Current review, feedback, assignment or permissions changed after the final snapshot."
-                .into(),
-        );
-    }
-    let monitor = store.load_monitoring_state()?;
-    let settings = store.load_settings()?;
-    let monitor = monitoring::Monitor::restore_readonly(monitor);
-    if !monitor
-        .activation_status(&settings, &run.basis.job.configuration_id)
-        .active
-    {
-        return Err("Monitoring scope is not active.".into());
-    }
-    Ok(())
 }
 
 pub fn ready(
@@ -545,78 +323,13 @@ pub fn ready(
     observation: &Observation,
     action: Action,
 ) -> Result<(), String> {
-    validate_local(store, run)?;
-    validate_observation(&run.basis, observation)?;
-    if store.load_actions()?.effects.iter().any(|e| {
-        e.final_id == run.id
-            && e.action != action
-            && e.state == EffectState::Confirmed
-            && e.error.is_some()
-    }) {
-        return Err("The preceding confirmed action still needs post-action verification before another action.".into());
+    if run.packet.is_none() {
+        return Err(LEGACY_FINAL_RETIRED.into());
     }
-    if store.load_actions()?.effects.iter().any(|e| {
-        same_scope(e, &run.basis.job)
-            && e.state == EffectState::Uncertain
-            && !(e.final_id == run.id
-                && e.action == action
-                && e.operation.state == OperationState::Running)
-    }) {
-        return Err("Another provider action has an unresolved outcome.".into());
+    match packet::ready(store, run, observation, action)? {
+        Ready::Go => Ok(()),
+        Ready::AlreadyApproved => Err(packet::ALREADY_APPROVED.into()),
     }
-    if !observation_matches(run, observation, &store.load_actions()?.effects) {
-        return Err("Provider review/discussion state changed after the final review.".into());
-    }
-    if action == Action::Approve {
-        let existing = observation.reviews.iter().rev().find(|r| {
-            r.actor_id == observation.account_id
-                && matches!(
-                    r.state.as_str(),
-                    "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED"
-                )
-        });
-        if let Some(review) =
-            existing.filter(|r| r.state == "APPROVED" && r.head == observation.head)
-        {
-            if !store.load_actions()?.effects.iter().any(|e| {
-                e.receipt
-                    .as_ref()
-                    .is_some_and(|r| r.action == Action::Approve && r.id == review.id)
-            }) {
-                return Err("The acting account already has an approval on this head; another automated vote is unnecessary.".into());
-            }
-        }
-    }
-    let result = run
-        .execution
-        .result
-        .as_ref()
-        .filter(|_| run.execution.operation.state == OperationState::Completed)
-        .ok_or("The primary final full review has not completed.")?;
-    if result.reviewed_base_sha.as_deref() != Some(&observation.base)
-        || result.output.decision != crate::review::Decision::MachineSignOff
-        || !result.output.findings.is_empty()
-        || !result.output.held_findings.is_empty()
-        || result.output.feedback_conflict
-    {
-        return Err("The primary final review requires human input or found new concerns.".into());
-    }
-    if !match action {
-        Action::Approve => run.basis.permissions.approve,
-        Action::Merge => run.basis.permissions.merge,
-    } {
-        return Err("This provider action is not opted in.".into());
-    }
-    if action == Action::Merge && provider_approval(observation).is_none() {
-        return Err(
-            "Merge requires confirmed current-revision provider approval before transmission."
-                .into(),
-        );
-    }
-    if let Some(reason) = observation.blocker(action) {
-        return Err(reason);
-    }
-    Ok(())
 }
 
 pub(crate) fn provider_approval(
@@ -673,7 +386,10 @@ pub fn prepare_effect(
     }
     .into();
     let effect=Effect{cancelled:false,reconcile_attempts:0,reconcile_requested:false,id:id.clone(),final_id:run.id.clone(),item_id:run.basis.item_id.clone(),action,operation,
-        observation:current.clone(),body:format!("Automated primary final review by PR Sniper.\n\nThis is the acting account's automated vote, not personal review.\n\n<!-- pr-sniper:action:{id} -->\n\nPR Sniper"),
+        observation:current.clone(),body:match &run.packet {
+            Some(approval) => packet::approval_body(approval, &id),
+            None => format!("Automated primary final review by PR Sniper.\n\nThis is the acting account's automated vote, not personal review.\n\n<!-- pr-sniper:action:{id} -->\n\nPR Sniper"),
+        },
         state:EffectState::Prepared,error:None,receipt:None};
     ledger.effects.push(effect.clone());
     store.save_actions(&ledger)?;
@@ -988,6 +704,7 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
         };
         let primary = repository.primary_assignment_id();
         let permissions = ActionPermissions {
+            include_self: false,
             reply: repository
                 .assignments
                 .iter()
@@ -1005,7 +722,7 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
             .finals
             .iter()
             .rev()
-            .find(|f| f.basis.item_id == item.id)
+            .find(|f| f.basis.item_id == item.id && f.packet.is_some())
             .cloned();
         let effects: Vec<_> = ledger
             .effects
@@ -1016,15 +733,6 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
         let mut blockers = Vec::new();
         let mut final_valid = false;
         let observed = ledger.observations.iter().find(|o| o.item_id == item.id);
-        if final_review.is_none() && (permissions.approve || permissions.merge) {
-            if let Some(observation) = observed.and_then(|o| o.observation.as_ref()) {
-                if let Err(reason) =
-                    basis(store, &item.id).and_then(|b| validate_observation(&b, observation))
-                {
-                    blockers.push(reason);
-                }
-            }
-        }
         if let Some(error) = observed.and_then(|o| o.error.clone()) {
             blockers.push(error);
             if item.state == State::MachineSignedOff
@@ -1058,6 +766,14 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
                 item.state = State::Merged;
                 item.summary="GitHub confirms this PR merged. Provider receipts identify any confirmed PR Sniper action; personal review is not inferred.";
             } else if item.state == State::MachineSignedOff {
+                // Others' threads never block a packet approve exit (AC-017).
+                let packet_approve = matches!(
+                    item.exit,
+                    Some(
+                        crate::exits::Exit::ApprovePullRequest
+                            | crate::exits::Exit::ApproveAndMerge
+                    )
+                );
                 if observation.head != item.job.head_sha
                     || item.job.observed_base_sha.as_deref() != Some(&observation.base)
                 {
@@ -1066,7 +782,7 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
                 } else if observation.draft {
                     item.state = State::Queued;
                     item.summary = "The PR is draft; automatic approval and merge are blocked.";
-                } else if observation.discussion_blocker().is_some() {
+                } else if !packet_approve && observation.discussion_blocker().is_some() {
                     item.state = State::WaitingForHuman;
                     item.summary="Provider review or discussion concerns remain outstanding; no whole-cycle clearance is asserted.";
                 }
@@ -1120,16 +836,6 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
                     }
                 }
             }
-            if item.state == State::MachineSignedOff
-                && run.execution.result.as_ref().is_some_and(|r| {
-                    r.output.decision != crate::review::Decision::MachineSignOff
-                        || r.output.feedback_conflict
-                        || !r.output.held_findings.is_empty()
-                })
-            {
-                item.state = State::WaitingForHuman;
-                item.summary="The primary final review found concerns or needs human judgment. Automated actions are blocked.";
-            }
         }
         if effects
             .iter()
@@ -1147,6 +853,46 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
             item.state = State::Failed;
             item.summary="A provider action outcome is unresolved. Reconcile its original intent; no replacement request is authorized.";
             blockers.push("An action on this PR has an unresolved provider outcome, possibly from an earlier iteration.".into());
+        }
+        // The packet final of the item's own exit run: its progress, or a parked toss
+        // (a toss under budget re-queued a newer run, so it no longer matches).
+        if let Some((run, approval)) = final_review.as_ref().and_then(|f| {
+            let packet = f.packet.as_ref()?;
+            (!f.cancelled && Some(&packet.run_id) == item.exit_run_id.as_ref())
+                .then_some((f, packet))
+        }) {
+            let own = |e: &&Effect| e.final_id == run.id;
+            let tossed = effects
+                .iter()
+                .filter(own)
+                .any(|e| matches!(e.state, EffectState::Rejected | EffectState::Stale));
+            let approved = !run.basis.permissions.approve
+                || effects
+                    .iter()
+                    .filter(own)
+                    .any(|e| e.action == Action::Approve && e.state == EffectState::Confirmed);
+            if approval.settled && tossed && !matches!(item.state, State::Merged | State::Closed) {
+                item.state = State::Failed;
+                item.failure_class = Some(monitoring::FailureClass::Other);
+                item.failure_cause = Some(queue::CAUSE_TOSSED);
+                item.summary = State::Failed.summary();
+            } else if item.progress.is_some() {
+                item.progress = if approval.settled || (approved && !run.basis.permissions.merge) {
+                    None
+                } else if approved {
+                    Some(queue::Progress::Merging)
+                } else {
+                    Some(queue::Progress::Approving)
+                };
+            }
+        }
+        if item.state != State::MachineSignedOff
+            && matches!(
+                item.progress,
+                Some(queue::Progress::Approving | queue::Progress::Merging)
+            )
+        {
+            item.progress = None;
         }
         let machine_clear = item.state == State::MachineSignedOff;
         // A confirmed approval of the current head ends the handoff; a new head or
@@ -1195,6 +941,21 @@ pub fn restore(store: &Store) -> Result<(), String> {
     let mut ledger = store.load_actions()?;
     let before = ledger.clone();
     for run in &mut ledger.finals {
+        if run.packet.is_none()
+            && !run.cancelled
+            && run.execution.operation.state != OperationState::Completed
+        {
+            run.cancelled = true;
+            run.execution.operation.state = OperationState::Failed;
+            run.execution.operation.failure = Some(monitoring::OperationFailure::Permanent);
+            run.execution.operation.next_attempt_at = None;
+            run.execution.operation.ai_attempt = None;
+            run.execution.operation.interruption = None;
+            run.execution.operation.resume_at = None;
+            run.execution.phase = "Cancelled".into();
+            run.execution.error = Some(LEGACY_FINAL_RETIRED.into());
+            continue;
+        }
         if run.execution.operation.state == OperationState::Running {
             if run.execution.operation.interruption.is_some() {
                 run.execution.operation.requeue_intentional(0);
@@ -1208,33 +969,6 @@ pub fn restore(store: &Store) -> Result<(), String> {
         store.save_actions(&ledger)?;
     }
     Ok(())
-}
-
-pub fn request_final(store: &Store, id: &str, now: i64) -> Result<(), String> {
-    let mut ledger = store.load_actions()?;
-    let run = ledger
-        .finals
-        .iter_mut()
-        .find(|f| f.id == id)
-        .ok_or("Final review unavailable.")?;
-    run.cancelled = false;
-    validate_local(store, run)?;
-    if run.execution.operation.state == OperationState::Running {
-        return Err("Final review is still running or stopping.".into());
-    }
-    if run.execution.operation.state == OperationState::Completed {
-        return Err("This final review is complete; changed state creates new evidence.".into());
-    }
-    if matches!(
-        run.execution.operation.state,
-        OperationState::Failed | OperationState::ManualRetry
-    ) {
-        run.attempts.push(run.execution.clone());
-        run.execution.operation = JobOperation::review(&run.basis.job, now);
-        run.execution.operation.operation_type = "primary_final_review".into();
-    }
-    run.execution.manual_start = true;
-    store.save_actions(&ledger)
 }
 
 pub fn request_observation_retry(store: &Store, item_id: &str, now: i64) -> Result<(), String> {
@@ -1270,30 +1004,31 @@ fn observation_pending(
                 || e.needs_reconciliation()
                     && (e.reconcile_requested
                         || e.reconcile_attempts < 3 && now < e.operation.retry_deadline))
-    }) || item.state == State::MachineSignedOff
-        && settings
-            .repositories
-            .iter()
-            .find(|r| r.id == item.job.configuration_id)
-            .is_some_and(|r| {
-                r.assignments.iter().any(|a| {
-                    let p = r.assignment_authority(a);
-                    p.approve
-                        && !ledger
-                            .effects
-                            .iter()
-                            .any(|e| e.item_id == item.id && e.action == Action::Approve)
-                        || p.merge
+    }) || packet::open(ledger, &item.id)
+        || item.state == State::MachineSignedOff
+            && settings
+                .repositories
+                .iter()
+                .find(|r| r.id == item.job.configuration_id)
+                .is_some_and(|r| {
+                    r.assignments.iter().any(|a| {
+                        let p = r.assignment_authority(a);
+                        p.approve
                             && !ledger
                                 .effects
                                 .iter()
-                                .any(|e| e.item_id == item.id && e.action == Action::Merge)
+                                .any(|e| e.item_id == item.id && e.action == Action::Approve)
+                            || p.merge
+                                && !ledger
+                                    .effects
+                                    .iter()
+                                    .any(|e| e.item_id == item.id && e.action == Action::Merge)
+                    })
                 })
-            })
-        && !ledger
-            .effects
-            .iter()
-            .any(|e| same_scope(e, &item.job) && e.state == EffectState::Uncertain)
+            && !ledger
+                .effects
+                .iter()
+                .any(|e| same_scope(e, &item.job) && e.state == EffectState::Uncertain)
 }
 
 fn observation_retry_blocker(

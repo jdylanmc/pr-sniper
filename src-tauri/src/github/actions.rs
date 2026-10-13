@@ -94,11 +94,17 @@ impl Observation {
                 "The acting account lacks verified repository write/review authority.".into(),
             );
         }
-        self.discussion_blocker()
+        self.pending_review_blocker()
     }
+    fn pending_review_blocker(&self) -> Option<String> {
+        self.reviews.iter().any(|r| r.state == "PENDING").then(|| {
+            "An account review is still pending; it will not be submitted or replaced by automation.".into()
+        })
+    }
+    /// Others' threads and requested changes block merge, never approval.
     pub fn discussion_blocker(&self) -> Option<String> {
-        if self.reviews.iter().any(|r| r.state == "PENDING") {
-            return Some("An account review is still pending; it will not be submitted or replaced by automation.".into());
+        if let Some(reason) = self.pending_review_blocker() {
+            return Some(reason);
         }
         if self.threads.iter().any(|t| !t.resolved) {
             return Some(
@@ -128,6 +134,7 @@ impl Observation {
                 Some("GitHub does not allow the PR author to approve their own PR.".into())
             }
             Action::Approve => None,
+            Action::Merge if self.discussion_blocker().is_some() => self.discussion_blocker(),
             Action::Merge if self.in_merge_queue => {
                 Some("This PR is in a provider merge queue; direct merge is unavailable.".into())
             }
@@ -241,7 +248,7 @@ impl<T: QueryTransport> GithubClient<T> {
               }}}}}
               reviewThreads(first:100) { totalCount pageInfo { hasNextPage } nodes {
                 id isResolved isOutdated resolvedBy { login }
-                comments(first:100) { totalCount pageInfo { hasNextPage } nodes { fullDatabaseId body updatedAt author { login } } }
+                comments(first:100) { totalCount pageInfo { hasNextPage } nodes { fullDatabaseId body updatedAt path line originalLine author { login } originalCommit { oid } } }
               }}
             }
           }

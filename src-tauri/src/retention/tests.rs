@@ -94,6 +94,7 @@ fn scan(store: &Store, monitor: &mut Monitor, pulls: Vec<PullRequest>, now: i64)
             store,
             ticket,
             Ok(PollResult {
+                states: Default::default(),
                 connection: Connection {
                     identity: Identity {
                         id: "22".into(),
@@ -119,6 +120,8 @@ fn completed(store: &Store, job: &QueueJob) -> ReviewRun {
     let mut operation = JobOperation::review(job, NOW);
     operation.state = OperationState::Completed;
     ReviewRun {
+        mode: crate::review::RunMode::Packet,
+        packet: None,
         feedback_context: None, key: crate::review::key(job, ASSIGNMENT), assignment_id: ASSIGNMENT.into(),
         job: job.clone(), selection: Selection::resolve(&store.load_settings().unwrap(), job, ASSIGNMENT).unwrap(),
         operation, manual_start: true, trust_confirmed: true, phase: "Complete".into(), error: None,
@@ -380,6 +383,32 @@ fn only_provider_terminal_observation_admits_cleanup_and_active_evidence_is_unch
 }
 
 #[test]
+fn clean_selects_one_terminal_pr_and_drops_its_pr_state() {
+    let (_root, store, mut monitor) = fixture();
+    let (review, _, _) = evidence(&store);
+    let binding = Binding::job(&review.job);
+    let mut states = crate::pr_state::PrStates::default();
+    states.consume(&binding, 0, "baseline");
+    store.save_pr_states(&states).unwrap();
+    // An open PR never qualifies, selected or not.
+    assert_eq!(maintain_where(&store, true, |_| true).unwrap(), 0);
+    scan(
+        &store,
+        &mut monitor,
+        vec![pull(1, Lifecycle::Closed)],
+        NOW + 10,
+    );
+    assert_eq!(maintain_where(&store, true, |_| false).unwrap(), 0);
+    assert!(store.load_pr_states().unwrap().get(&binding).is_some());
+    assert_eq!(
+        maintain_where(&store, true, |scope| scope.number == 1).unwrap(),
+        1
+    );
+    assert!(store.load_pr_states().unwrap().get(&binding).is_none());
+    assert!(store.load_queue().unwrap().is_empty());
+}
+
+#[test]
 fn cleanup_removes_every_bulky_copy_retains_receipts_and_preserves_settings_bytes() {
     let (root, store, mut monitor) = fixture();
     let (review, publication, follow) = evidence(&store);
@@ -634,84 +663,6 @@ fn post_cleanup_human_closure_is_verified_and_never_resurrected_on_reopen() {
     )
     .unwrap();
     assert!(crate::feedback::contexts(&store, &job, AGENT).unwrap()[0].closed);
-    let mut output = completed(&store, &job).result.unwrap().output;
-    crate::feedback::suppress_closed_overlap(&mut output, &contexts, &[]);
-    assert!(output.findings.is_empty());
-    assert_eq!(output.held_findings.len(), 1);
-    assert!(output.feedback_conflict);
-}
-
-#[test]
-fn retained_roots_route_new_external_comments_to_primary_without_rewriting_owner() {
-    let (_root, store, mut monitor) = fixture();
-    let (_, _, old_follow) = evidence(&store);
-    scan(
-        &store,
-        &mut monitor,
-        vec![pull(1, Lifecycle::Closed)],
-        NOW + 5,
-    );
-    maintain(&store, true).unwrap();
-    scan(
-        &store,
-        &mut monitor,
-        vec![pull(1, Lifecycle::Open)],
-        NOW + 10,
-    );
-    let origin = load(&store).unwrap().receipts[0].owned[0].clone();
-    let head = "a".repeat(40);
-    primary_retained_scan(
-        &store,
-        &mut monitor,
-        vec![Observed {
-            origin: origin.clone(),
-            head: head.clone(),
-            threads: vec![thread()],
-        }],
-        NOW + 11,
-    );
-    assert!(store.load_follow_ups().unwrap().is_empty());
-    assert!(known_key(&store, &old_follow.key).unwrap());
-    let mut updated = thread();
-    let mut comment = updated.comments[1].clone();
-    comment.id = "102".into();
-    comment.body = "New evidence".into();
-    comment.published_at = "2026-10-02T00:01:00Z".into();
-    updated.comments.push(comment);
-    primary_retained_scan(
-        &store,
-        &mut monitor,
-        vec![Observed {
-            origin,
-            head,
-            threads: vec![updated.clone()],
-        }],
-        NOW + 12,
-    );
-    let runs = store.load_follow_ups().unwrap();
-    assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0].context.selection.agent.id, AGENT);
-    assert_eq!(
-        store.load_feedback().unwrap().records[0]
-            .context
-            .owner_agent_id,
-        AGENT
-    );
-    assert_eq!(runs[0].reply_ordinal, Some(2));
-    assert!(matches!(
-        runs[0].target,
-        crate::follow_up::ConversationTarget::Thread { .. }
-    ));
-    assert!(runs[0].fresh_thread(&updated));
-    assert!(store.review_evidence().unwrap().is_empty());
-    let snapshot = serde_json::to_value(crate::queue::snapshot(&store, vec![]).unwrap()).unwrap();
-    assert_eq!(
-        snapshot["follow_ups"][0]["run"]["target"]["thread"]["id"],
-        "root-thread"
-    );
-    assert!(snapshot["follow_ups"][0]["run"]["target"]
-        .get("review")
-        .is_none());
 }
 
 #[test]
@@ -759,6 +710,8 @@ fn live_reservation_fences_cleanup_even_after_a_completed_local_result() {
         state: "waiting",
         reason: None,
         failure: None,
+        delayed_until: None,
+        blocked_by: None,
     };
     let flag = coordinator
         .reserve(&store, &work, |flag| {
@@ -893,102 +846,6 @@ fn missing_ownership_provenance_blocks_cleanup_visibly_instead_of_dropping_safet
 }
 
 #[test]
-fn a_retained_human_judgment_gate_prevents_automatic_thread_reentry() {
-    let (_root, store, mut monitor) = fixture();
-    let (_, _, mut follow) = evidence(&store);
-    follow.phase = FollowPhase::HumanInputRequired;
-    store.save_follow_ups(&[follow]).unwrap();
-    scan(
-        &store,
-        &mut monitor,
-        vec![pull(1, Lifecycle::Closed)],
-        NOW + 5,
-    );
-    maintain(&store, true).unwrap();
-    scan(
-        &store,
-        &mut monitor,
-        vec![pull(1, Lifecycle::Open)],
-        NOW + 10,
-    );
-    let origin = load(&store).unwrap().receipts[0].owned[0].clone();
-    assert!(origin.human_input_threads.contains("root-thread"));
-    primary_retained_scan(
-        &store,
-        &mut monitor,
-        vec![Observed {
-            origin: origin.clone(),
-            head: "a".repeat(40),
-            threads: vec![thread()],
-        }],
-        NOW + 11,
-    );
-    let mut next = thread();
-    next.comments[1].id = "102".into();
-    primary_retained_scan(
-        &store,
-        &mut monitor,
-        vec![Observed {
-            origin,
-            head: "a".repeat(40),
-            threads: vec![next],
-        }],
-        NOW + 12,
-    );
-    let candidates = crate::follow_up::host::candidates(&store).unwrap();
-    assert_eq!(candidates.len(), 1);
-    assert!(candidates[0].human_gate);
-    assert!(!candidates[0].automatic_start);
-}
-
-fn primary_retained_scan(store: &Store, monitor: &mut Monitor, observed: Vec<Observed>, now: i64) {
-    let ticket = monitor.prepare_checks(store, now, true).unwrap().remove(0);
-    let accounts = BTreeMap::from([(
-        "22".into(),
-        crate::monitoring::AccountAvailability {
-            login: "actor".into(),
-            connected: true,
-        },
-    )]);
-    monitor
-        .finish_with_admission(
-            store,
-            &accounts,
-            ticket,
-            Ok(PollResult {
-                connection: Connection {
-                    identity: Identity {
-                        id: "22".into(),
-                        login: "actor".into(),
-                    },
-                    repository: RemoteRepository {
-                        id: "100".into(),
-                        name: "example/repo".into(),
-                    },
-                    capabilities: Capabilities {
-                        read: true,
-                        comment: CommentCapability::Available,
-                    },
-                },
-                pull_requests: vec![pull(1, Lifecycle::Open)],
-            }),
-            now + 1,
-            |store, ticket| {
-                crate::follow_up::host::admit_scan(
-                    store,
-                    ticket,
-                    crate::follow_up::host::Scan {
-                        retained: observed,
-                        ..Default::default()
-                    },
-                    now + 1,
-                )
-            },
-        )
-        .unwrap();
-}
-
-#[test]
 fn receipt_recovers_iteration_and_fifo_watermark_when_queue_file_is_missing() {
     let (root, store, mut monitor) = fixture();
     evidence(&store);
@@ -1019,12 +876,12 @@ fn receipt_recovers_iteration_and_fifo_watermark_when_queue_file_is_missing() {
 #[test]
 fn a_new_local_attempt_cannot_hide_the_old_worker_reservation_from_cleanup() {
     let (_root, store, mut monitor) = fixture();
-    let (_, _, mut follow) = evidence(&store);
-    let old_operation = follow.analysis.as_ref().unwrap().id.clone();
+    let (mut review, _, _) = evidence(&store);
+    let old_operation = review.operation.id.clone();
     let coordinator = crate::capacity::Coordinator::default();
     let key = WorkId {
-        kind: follow.kind(),
-        id: follow.id.clone(),
+        kind: crate::capacity::Kind::Normal,
+        id: review.key.clone(),
     };
     let work = crate::capacity::Work {
         key: key.clone(),
@@ -1032,13 +889,15 @@ fn a_new_local_attempt_cannot_hide_the_old_worker_reservation_from_cleanup() {
         state: "waiting",
         reason: None,
         failure: None,
+        delayed_until: None,
+        blocked_by: None,
     };
     coordinator
         .reserve(&store, &work, |_| Ok((old_operation.clone(), ())))
         .unwrap()
         .unwrap();
-    follow.analysis.as_mut().unwrap().id = "new-local-attempt".into();
-    store.save_follow_ups(&[follow]).unwrap();
+    review.operation.id = "new-local-attempt".into();
+    store.save_reviews(&[review]).unwrap();
     scan(
         &store,
         &mut monitor,

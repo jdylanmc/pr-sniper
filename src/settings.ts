@@ -21,7 +21,13 @@ import {
   type CopilotAuth,
   type CopilotModel,
 } from "./copilot";
-import type { Agent, Doctrine, Assignment, WatchedIdentity } from "./policy";
+import type {
+  Agent,
+  Doctrine,
+  Assignment,
+  PacketTool,
+  WatchedIdentity,
+} from "./policy";
 import {
   type Admission,
   type AdmissionKind,
@@ -30,7 +36,7 @@ import {
   primaryAssignmentId,
   repositoryProviderContext,
 } from "./repositories";
-import { doctrineTitles } from "./policy";
+import { defaultTools, doctrineTitles } from "./policy";
 import {
   type Settings,
   type DoctrineCatalog,
@@ -166,6 +172,62 @@ const iconPaths = {
   folder: '<path d="M3 6h7l2 2h9v12H3zM3 6V4h7l2 2"/>',
   genie:
     '<path d="M10.2 6.4V4.2a1.8 1.8 0 0 1 3.6 0v2.2M9.6 7.4c1.4 1 3.4 1 4.8 0M12 8.2C9 7.4 3 8.4 3 11.4c0 2.6 4.5 3.4 7.4 1.6M12 8.2c3-.8 9 .2 9 3.2 0 2.6-4.5 3.4-7.4 1.6M10.4 13c1.2.5 2.8.5 3.2 0M7.6 14.2c.6 3.4 2.8 5.7 5.8 6.6 2.2.4 4-.3 5-1.6-1.5.5-2.9.1-3.7-1 1.2-1.5 1.7-3.1 1.6-5"/>',
+};
+/** Icon + short name per packet tool; `scope` limits it to one assignment role. */
+const toolRows: Record<
+  PacketTool,
+  { name: string; path: string; scope?: "primary" | "secondary" }
+> = {
+  read_changes: {
+    name: "Changes",
+    path: '<path d="M12 5v10M7 10h10M7 19h10"/>',
+  },
+  read_source: {
+    name: "Source",
+    path: '<path d="m8 8-4 4 4 4M16 8l4 4-4 4M13 5l-2 14"/>',
+  },
+  get_thread: { name: "Thread", path: '<path d="M4 5h16v11H9l-5 4z"/>' },
+  get_checks: {
+    name: "Checks",
+    path: '<circle cx="12" cy="12" r="8"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',
+  },
+  list_tree: {
+    name: "Tree",
+    path: '<path d="M5 4v16M5 7h6M5 13h6M5 19h6M11 4h8v6h-8zM11 16h8v4h-8z"/>',
+  },
+  search_code: {
+    name: "Search",
+    path: '<circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/>',
+  },
+  leave_comments: {
+    name: "Comment",
+    scope: "primary",
+    path: '<path d="M4 5h16v11H9l-5 4zM8 9h8M8 12h5"/>',
+  },
+  ready_for_human: {
+    name: "Ready",
+    scope: "primary",
+    path: '<circle cx="12" cy="8" r="3.2"/><path d="M5 20a7 7 0 0 1 14 0"/>',
+  },
+  approve_pull_request: {
+    name: "Approve",
+    scope: "primary",
+    path: '<path d="m5 12 5 5 9-10"/>',
+  },
+  approve_and_merge: {
+    name: "Merge",
+    scope: "primary",
+    path: '<circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="12" r="2.4"/><path d="M6 8.4v7.2M8.4 6c5 0 7 2 7.2 4"/>',
+  },
+  panic_exit: {
+    name: "Panic",
+    path: '<path d="M12 4 3 20h18zM12 10v4M12 17h.01"/>',
+  },
+  submit_report: {
+    name: "Report",
+    scope: "secondary",
+    path: '<path d="M7 4h10v16H7zM10 9h4M10 13h4"/>',
+  },
 };
 const icon = (key: keyof typeof iconPaths) =>
   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${iconPaths[key]}</svg>`;
@@ -2646,7 +2708,7 @@ export async function mountSettings(
     const modal = dialog(
       repository.name,
       `<section class="repository-identity"><h3>${escape(repository.name)}</h3><p>${escape(repository.provider === "github" ? `GitHub / ${githubAccounts.find((account) => account.account_id === repository.provider_account_id)?.login ?? (repository.provider_account_id ? "Unavailable" : "No account")}` : "Azure DevOps")}</p></section>
-        <section class="repository-group"><label class="repository-check"><input type="checkbox" role="switch" aria-label="Monitor ${escape(repository.name)}" data-repository-enabled ${repository.enabled || (pendingSetup.has(repository.id) && !setupMonitoringOff.has(repository.id)) ? "checked" : ""} /><span>Monitor this repository</span></label><p data-repository-monitoring-state role="status"></p><p data-repository-monitoring-detail></p></section>
+        <section class="repository-group"><label class="repository-check"><input type="checkbox" role="switch" aria-label="Monitor ${escape(repository.name)}" data-repository-enabled ${repository.enabled || (pendingSetup.has(repository.id) && !setupMonitoringOff.has(repository.id)) ? "checked" : ""} /><span>Monitor this repository</span></label><p data-repository-monitoring-state role="status"></p><p data-repository-monitoring-detail></p><label class="repository-check"><input type="checkbox" role="switch" aria-label="Review drafts" data-review-drafts ${repository.review_drafts ? "checked" : ""} /><span>Review drafts</span></label></section>
         <section class="repository-group admission-group"><label class="repository-check" data-admission-all><input type="checkbox" role="switch" aria-label="All pull requests" data-admission-all-input /><span>All pull requests</span></label><button type="button" class="doctrine-row" data-open-filters><span>Filtered pull requests</span><span class="doctrine-summary" data-filter-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button></section>
         <div class="admission-view" data-admission-view hidden></div>
         <section class="repository-group"><div class="section-actions"><h2>Agents on this repository</h2><button class="primary" data-assign-agent>Assign agent</button></div>
@@ -2743,6 +2805,14 @@ export async function mountSettings(
     };
     updateMonitoring();
     void refreshRepositoryAutomation(updateMonitoring);
+    modal.querySelector<HTMLInputElement>("[data-review-drafts]")!.onchange = (
+      event,
+    ) => {
+      if ((event.target as HTMLInputElement).checked)
+        repository.review_drafts = true;
+      else delete repository.review_drafts;
+      changed();
+    };
     monitoring.onchange = async () => {
       if (pendingSetup.has(repository.id)) {
         repository.enabled = false;
@@ -2981,7 +3051,7 @@ export async function mountSettings(
         const row = document.createElement("div");
         row.className = "assignment-row";
         const primary = primaryAssignmentId(repository) === assignment.id;
-        row.innerHTML = `<div><strong>${escape(agent?.name ?? "Deleted agent")}</strong><p>${primary ? `Primary${assignments.length === 1 ? " (automatic)" : ""} \u00b7 ` : "Secondary \u00b7 "}${assignment.comment ? "Publish Comment" : "Initial findings local"}${primary && assignment.actions?.reply ? " \u00b7 Reply Comment" : ""}${primary && assignment.actions?.merge ? " \u00b7 Approve & Merge" : primary && assignment.actions?.approve ? " \u00b7 Approve" : ""}</p><p>${escape(agent?.model ?? "Unavailable")}</p></div><button data-edit aria-label="Edit assignment">Edit</button><button data-remove aria-label="Remove assignment" title="Remove">${icon("trash")}</button>`;
+        row.innerHTML = `<div><strong>${escape(agent?.name ?? "Deleted agent")}</strong><p>${primary ? `Primary${assignments.length === 1 ? " (automatic)" : ""} \u00b7 ` : "Secondary \u00b7 "}${assignment.comment ? "Publish Comment" : "Initial findings local"}${primary && assignment.actions?.reply ? " \u00b7 Reply Comment" : ""}${primary && assignment.actions?.merge ? " \u00b7 Approve & Merge" : primary && assignment.actions?.approve ? " \u00b7 Approve" : ""}${assignment.tools?.length ? ` \u00b7 ${assignment.tools.length} Tools` : ""}</p><p>${escape(agent?.model ?? "Unavailable")}</p></div><button data-edit aria-label="Edit assignment">Edit</button><button data-remove aria-label="Remove assignment" title="Remove">${icon("trash")}</button>`;
         for (const action of ["edit", "remove"])
           row.querySelector<HTMLElement>(`[data-${action}]`)!.dataset.focusKey =
             `assignment:${assignment.id}:${action}`;
@@ -3274,12 +3344,15 @@ export async function mountSettings(
       `<form><input type="hidden" name="agent" value="${escape(existing?.agent_id ?? "")}" />
         <section class="repository-group" data-assign-main><button type="button" class="doctrine-row" data-open-agent aria-label="Choose Agent"><span>Agent</span><span class="doctrine-summary" data-agent-summary></span>${chevron}</button>
         <label class="repository-check"><input type="checkbox" role="switch" name="primary" aria-label="Primary" ${isPrimary ? "checked" : ""} ${sole ? "disabled" : ""} /><span>Primary</span></label>
-        <button type="button" class="doctrine-row" data-open-permissions aria-label="Permissions"><span>Permissions</span><span class="doctrine-summary" data-permission-summary></span>${chevron}</button></section>
+        <button type="button" class="doctrine-row" data-open-permissions aria-label="Permissions"><span>Permissions</span><span class="doctrine-summary" data-permission-summary></span>${chevron}</button>
+        <button type="button" class="doctrine-row" data-open-tools aria-label="Tools"><span>Tools</span><span class="doctrine-summary" data-tool-summary></span>${chevron}</button></section>
         <section class="repository-group" data-assign-agents hidden><div data-agent-choices role="radiogroup" aria-label="Agent"></div><div class="resource-actions"><button type="button" data-create-agent>Create new Agent</button></div></section>
         <section class="repository-group" data-assign-permissions hidden>
         <label class="repository-check"><input type="checkbox" role="switch" name="comment" aria-label="Publish Comment" ${existing?.comment ? "checked" : ""} /><span>Publish Comment</span></label>
         <div data-primary-permissions ${isPrimary ? "" : "hidden"}><label class="repository-check"><input type="checkbox" role="switch" name="reply" aria-label="Reply Comment" ${isPrimary && existing?.actions?.reply ? "checked" : ""} /><span>Reply Comment</span></label>
-        <div class="permission-row-line"><span>Approval</span><div class="permission-choices" role="radiogroup" aria-label="Approval and merge" data-value="${isPrimary && existing?.actions?.merge ? "merge" : isPrimary && existing?.actions?.approve ? "approve" : "none"}"><label class="segment"><input type="radio" name="action" value="none" aria-label="Neither" ${!isPrimary || (!existing?.actions?.approve && !existing?.actions?.merge) ? "checked" : ""} /><span>off</span></label><label class="segment"><input type="radio" name="action" value="approve" aria-label="Approve" ${isPrimary && existing?.actions?.approve && !existing?.actions?.merge ? "checked" : ""} /><span>Approve</span></label><label class="segment"><input type="radio" name="action" value="merge" aria-label="Approve &amp; Merge" ${isPrimary && existing?.actions?.merge ? "checked" : ""} /><span>&amp; Merge</span></label></div></div></div></section>
+        <div class="permission-row-line"><span>Approval</span><div class="permission-choices" role="radiogroup" aria-label="Approval and merge" data-value="${isPrimary && existing?.actions?.merge ? "merge" : isPrimary && existing?.actions?.approve ? "approve" : "none"}"><label class="segment"><input type="radio" name="action" value="none" aria-label="Neither" ${!isPrimary || (!existing?.actions?.approve && !existing?.actions?.merge) ? "checked" : ""} /><span>off</span></label><label class="segment"><input type="radio" name="action" value="approve" aria-label="Approve" ${isPrimary && existing?.actions?.approve && !existing?.actions?.merge ? "checked" : ""} /><span>Approve</span></label><label class="segment"><input type="radio" name="action" value="merge" aria-label="Approve &amp; Merge" ${isPrimary && existing?.actions?.merge ? "checked" : ""} /><span>&amp; Merge</span></label></div></div>
+        <label class="repository-check" data-include-self ${isPrimary && existing?.actions?.merge ? "" : "hidden"}><input type="checkbox" role="switch" name="include_self" aria-label="Include self" ${existing?.actions?.include_self ? "checked" : ""} /><span>Include self</span></label></div></section>
+        <section class="repository-group" data-assign-tools hidden>${(Object.keys(toolRows) as PacketTool[]).map((id) => `<label class="repository-check tool-row" data-tool-row="${id}"><input type="checkbox" role="switch" name="tool" value="${id}" aria-label="${escape(toolRows[id].name)}" ${existing?.tools?.includes(id) ? "checked" : ""} /><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${toolRows[id].path}</svg>${escape(toolRows[id].name)}</span></label>`).join("")}</section>
         <p role="alert" hidden></p><div class="resource-actions" data-assign-actions><button class="primary">${existing ? "Save assignment" : "Assign agent"}</button><button type="button" data-cancel-resource>Cancel</button></div></form>`,
       opener,
     );
@@ -3293,8 +3366,11 @@ export async function mountSettings(
     const openPermissions = modal.querySelector<HTMLButtonElement>(
       "[data-open-permissions]",
     )!;
+    const openTools =
+      modal.querySelector<HTMLButtonElement>("[data-open-tools]")!;
     const choices = modal.querySelector<HTMLElement>("[data-agent-choices]")!;
     const sections = {
+      tools: modal.querySelector<HTMLElement>("[data-assign-tools]")!,
       agent: modal.querySelector<HTMLElement>("[data-assign-agents]")!,
       permissions: modal.querySelector<HTMLElement>(
         "[data-assign-permissions]",
@@ -3304,7 +3380,57 @@ export async function mountSettings(
       modal.querySelectorAll(
         "[name=comment]:checked, [name=reply]:checked, [name=action]:checked:not([value=none])",
       ).length;
+    const viewTitles = {
+      agent: "Agent",
+      permissions: "Permissions",
+      tools: "Tools",
+    };
+    // Unset tools show the role default until a row is toggled.
+    let toolsExplicit = !!existing?.tools;
+    // Tools follow role and grants: out-of-role rows hide, ungranted rows clear.
+    const syncTools = () => {
+      const isPrimaryNow =
+        modal.querySelector<HTMLInputElement>("[name=primary]")!.checked;
+      const checked = (name: string) =>
+        modal.querySelector<HTMLInputElement>(`[name=${name}]`)!.checked;
+      const action = modal.querySelector<HTMLInputElement>(
+        "[name=action]:checked",
+      )!.value;
+      const granted: Partial<Record<PacketTool, boolean>> = {
+        leave_comments: checked("comment"),
+        approve_pull_request: action !== "none",
+        approve_and_merge: action === "merge",
+      };
+      const defaults = defaultTools(isPrimaryNow, {
+        comment: !!granted.leave_comments,
+        approve: !!granted.approve_pull_request,
+        merge: !!granted.approve_and_merge,
+      });
+      let count = 0;
+      for (const row of modal.querySelectorAll<HTMLElement>(
+        "[data-tool-row]",
+      )) {
+        const id = row.dataset.toolRow as PacketTool;
+        const scope = toolRows[id].scope;
+        const input = row.querySelector<HTMLInputElement>("input")!;
+        if (!toolsExplicit) input.checked = defaults.includes(id);
+        row.hidden =
+          (scope === "primary" && !isPrimaryNow) ||
+          (scope === "secondary" && isPrimaryNow);
+        input.disabled = granted[id] === false;
+        if (row.hidden || input.disabled) input.checked = false;
+        if (input.checked) count += 1;
+      }
+      modal.querySelector<HTMLElement>("[data-include-self]")!.hidden =
+        !isPrimaryNow || action !== "merge";
+      if (action !== "merge")
+        modal.querySelector<HTMLInputElement>("[name=include_self]")!.checked =
+          false;
+      openTools.querySelector("[data-tool-summary]")!.textContent =
+        String(count);
+    };
     const refreshSelection = (selected = agentInput.value) => {
+      syncTools();
       agentInput.value = selected;
       const agent = agents().find((agent) => agent.id === selected);
       const rows = new Map(
@@ -3355,13 +3481,11 @@ export async function mountSettings(
       for (const section of Object.values(sections)) section.hidden = true;
       modal.querySelector<HTMLElement>("[data-assign-main]")!.hidden = false;
       modal.querySelector<HTMLElement>("[data-assign-actions]")!.hidden = false;
-      dropEditor(
-        (e) =>
-          e.modal === modal &&
-          e.title === (view === "agent" ? "Agent" : "Permissions"),
-      );
+      dropEditor((e) => e.modal === modal && e.title === viewTitles[view]);
       refreshSelection();
-      (view === "agent" ? openAgent : openPermissions).focus({
+      ({ agent: openAgent, permissions: openPermissions, tools: openTools })[
+        view
+      ].focus({
         preventScroll: true,
       });
     };
@@ -3391,6 +3515,7 @@ export async function mountSettings(
     };
     openAgent.onclick = () => openView("agent", "Agent");
     openPermissions.onclick = () => openView("permissions", "Permissions");
+    openTools.onclick = () => openView("tools", "Tools");
     const agentSaved = (agent?: Agent) => {
       if (!modal.isConnected) return;
       refreshSelection(agent?.id ?? agentInput.value);
@@ -3421,7 +3546,11 @@ export async function mountSettings(
         },
       );
     const primary = modal.querySelector<HTMLInputElement>("[name=primary]")!;
-    modal.addEventListener("change", () => refreshSelection());
+    modal.addEventListener("change", (event) => {
+      if ((event.target as HTMLInputElement).name === "tool")
+        toolsExplicit = true;
+      refreshSelection();
+    });
     primary.onchange = () => {
       modal.querySelector<HTMLElement>("[data-primary-permissions]")!.hidden =
         !primary.checked;
@@ -3457,8 +3586,18 @@ export async function mountSettings(
               modal.querySelector<HTMLInputElement>("[name=reply]")!.checked,
             approve: primary.checked && action !== "none",
             merge: primary.checked && action === "merge",
+            ...(primary.checked &&
+            action === "merge" &&
+            modal.querySelector<HTMLInputElement>("[name=include_self]")!
+              .checked
+              ? { include_self: true }
+              : {}),
           },
         };
+        const tools = [
+          ...modal.querySelectorAll<HTMLInputElement>("[name=tool]:checked"),
+        ].map((input) => input.value as PacketTool);
+        if (toolsExplicit && tools.length) value.tools = tools;
         const next = clone(repository);
         if (existing)
           next.assignments = (next.assignments ?? []).map((a) =>

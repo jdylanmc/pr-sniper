@@ -1,7 +1,8 @@
 use super::Publication;
 use crate::{
+    exits::{ExitOutcome, NewComment},
     github::review::ReviewContext,
-    review::{Decision, Failure, Severity},
+    review::Failure,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -27,7 +28,13 @@ pub struct Batch {
 }
 
 impl Batch {
-    pub fn prepare(run: &Publication, context: &ReviewContext) -> Result<Self, Failure> {
+    /// Batch from a Packet-mode `leave_comments` exit. All or nothing: one unmappable
+    /// line fails the whole batch (a toss), so nothing partial is ever posted.
+    pub fn prepare_exit(
+        run: &Publication,
+        context: &ReviewContext,
+        new_comments: &[NewComment],
+    ) -> Result<Self, Failure> {
         let result = run
             .review
             .result
@@ -40,12 +47,11 @@ impl Batch {
                 "The reviewed diff is stale. Run a new review.",
             ));
         }
-        let paths: Vec<_> = context.files.iter().map(|f| f.path.clone()).collect();
-        crate::review::validate_output(
-            &serde_json::to_string(&result.output)
-                .map_err(|_| Failure::permanent("Invalid saved review."))?,
-            &paths,
-        )?;
+        if new_comments.is_empty() {
+            return Err(Failure::permanent(
+                "The exit has no new comments to publish.",
+            ));
+        }
         let locations: BTreeMap<_, _> = context
             .files
             .iter()
@@ -60,62 +66,76 @@ impl Batch {
             })
             .collect();
         let mut comments = Vec::new();
-        let mut unmappable = Vec::new();
-        for (index, finding) in result.output.findings.iter().enumerate() {
-            if !locations
-                .get(finding.path.as_str())
-                .is_some_and(|lines| lines.contains_key(&(finding.side.clone(), finding.line)))
-            {
-                unmappable.push(index);
-                continue;
-            }
-            let severity = match finding.severity {
-                Severity::Critical => "critical",
-                Severity::High => "high",
-                Severity::Medium => "medium",
-                Severity::Low => "low",
-            };
+        for (index, comment) in new_comments.iter().enumerate() {
+            let side = comment.side.as_deref().unwrap_or("head");
+            let position = locations
+                .get(comment.path.as_str())
+                .and_then(|lines| lines.get(&(side.to_string(), comment.line)))
+                .copied()
+                .ok_or_else(|| {
+                    Failure::provider(
+                        "A comment line is not in the diff; the whole batch was tossed. Retry.",
+                    )
+                })?;
             let body = format!(
-                "{}: {}\n\n{}\n\nConfidence: {}%.\n\n<!-- pr-sniper:finding:{}:{index} -->",
-                severity, finding.title, finding.explanation, finding.confidence, run.id,
+                "{}\n\n<!-- pr-sniper:comment:{}:{index} -->",
+                comment.body.trim_end(),
+                run.id
             );
             check_body(&body)?;
             comments.push(InlineComment {
-                path: finding.path.clone(),
-                line: finding.line,
-                side: if finding.side == "base" {
-                    "LEFT"
-                } else {
-                    "RIGHT"
-                }
-                .into(),
+                path: comment.path.clone(),
+                line: comment.line,
+                side: if side == "base" { "LEFT" } else { "RIGHT" }.into(),
                 body,
-                diff_position: locations
-                    .get(finding.path.as_str())
-                    .and_then(|lines| lines.get(&(finding.side.clone(), finding.line)))
-                    .copied(),
+                diff_position: Some(position),
             });
         }
-        let decision = match result.output.decision {
-            Decision::MachineSignOff => {
-                "Machine sign-off: no findings. This is not human approval."
-            }
-            Decision::HumanInputRequired => {
-                "Human input required. Inspect the findings before completing your review."
-            }
-        };
         let body = format!(
-            "Automated review by PR Sniper.\n\n{}\n\n{decision}\n\n{} inline finding(s). {} finding(s) could not be mapped and remain visible in the local Review Queue; this batch is not a complete clearance when findings are unmapped.\n\nAutomated review completed. Please perform final human review.\n\n{}\n\n\u{f05b} PR Sniper",
-            result.output.synopsis, comments.len(), unmappable.len(), run.marker(),
+            "Automated review by PR Sniper.\n\n{} inline comment(s).\n\n{}\n\n\u{f05b} PR Sniper",
+            comments.len(),
+            run.marker(),
         );
         check_body(&body)?;
         Ok(Self {
             commit_id: run.review.job.head_sha.clone(),
             body,
             comments,
-            unmappable,
+            unmappable: vec![],
         })
     }
+
+    pub fn prepare(run: &Publication, context: &ReviewContext) -> Result<Self, Failure> {
+        let result = run
+            .review
+            .result
+            .as_ref()
+            .ok_or_else(|| Failure::permanent("A complete local review is required."))?;
+        if context.pull.head_sha != run.review.job.head_sha
+            || result.reviewed_base_sha.as_deref() != Some(&context.pull.base_sha)
+        {
+            return Err(Failure::permanent(
+                "The reviewed diff is stale. Run a new review.",
+            ));
+        }
+        // The batch is built from the exit's comments. Legacy findings never publish.
+        match &result.output.exit {
+            Some(ExitOutcome::Comments { new_comments, .. }) => {
+                Self::prepare_exit(run, context, new_comments)
+            }
+            Some(_) => Err(Failure::permanent("This exit writes no review comments.")),
+            None => Err(Failure::permanent(crate::review::LEGACY_RETIRED)),
+        }
+    }
+}
+
+/// Whether a completed review has provider comments to publish: only a
+/// `leave_comments` exit with new comments. Legacy results never publish.
+pub fn writes_comments(result: &crate::review::ReviewResult) -> bool {
+    matches!(
+        &result.output.exit,
+        Some(ExitOutcome::Comments { new_comments, .. }) if !new_comments.is_empty()
+    )
 }
 
 fn check_body(body: &str) -> Result<(), Failure> {

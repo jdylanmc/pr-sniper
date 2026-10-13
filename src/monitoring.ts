@@ -102,7 +102,43 @@ export interface MonitoringSnapshot {
   reviews?: ReviewCandidate[];
   publications?: PublicationCandidate[];
   follow_ups?: FollowUpCandidate[];
+  exit_writes?: ExitWrite[];
 }
+
+// Host execution of a `leave_comments` exit's replies and resolutions.
+export interface ExitWrite {
+  id: string;
+  review_operation_id: string;
+  phase: "planned" | "verified" | "completed" | "tossed" | "failed";
+  steps: {
+    kind: "reply" | "resolve";
+    state: "planned" | "attempted" | "done";
+    receipt: string | null;
+  }[];
+  published: boolean;
+  consumed: boolean;
+  error: string | null;
+}
+
+export interface ReportFinding {
+  file: string;
+  line: number;
+  nano: string;
+  full: string;
+  fix: string;
+}
+
+export type ExitOutcome =
+  | {
+      exit: "comments";
+      new_comments: unknown[];
+      reply_comments: unknown[];
+      resolve_own_threads: string[];
+    }
+  | { exit: "ready_for_human"; summary: string }
+  | { exit: "approve"; comment: string }
+  | { exit: "approve_and_merge"; comment: string }
+  | { exit: "submit_report" };
 
 export interface PublicationCandidate {
   local_only?: boolean;
@@ -156,9 +192,21 @@ export interface ReviewCandidate {
     selection: import("./resources").ReviewSelection;
     job?: Job;
     operation: NonNullable<Health["operation"]>;
+    mode?: "legacy" | "packet";
+    // Content-free record of the packet the run was given.
+    packet?: {
+      state_id: string;
+      hash: string;
+      schema: number;
+      tool_set: string[];
+      exits_offered: string[];
+      exits_denied: unknown[];
+    } | null;
     result: {
       reviewed_base_sha?: string | null;
       output: {
+        exit?: ExitOutcome | null;
+        report?: { findings: ReportFinding[] } | null;
         feedback_conflict?: boolean;
         held_findings?: { path: string; title: string; explanation: string }[];
         synopsis: string;
@@ -181,6 +229,7 @@ export interface ReviewCandidate {
       input_tokens: number;
       output_tokens: number;
       tool_calls: number;
+      coverage?: { read: number; changed: number } | null;
     } | null;
   } | null;
 }
@@ -857,16 +906,22 @@ export function renderMonitoring(
             row.append(held);
           }
         }
+        const exit = result.output.exit;
         const decision = document.createElement("p");
         decision.className = "review-decision";
-        decision.textContent =
-          result.output.decision === "machine_sign_off"
+        decision.textContent = exit
+          ? exit.exit.replaceAll("_", " ")
+          : result.output.decision === "machine_sign_off"
             ? "Machine sign-off"
             : "Human input required";
-        const synopsis = document.createElement("p");
-        synopsis.textContent = result.output.synopsis;
-        row.append(decision, synopsis);
-        for (const finding of result.output.findings) {
+        row.append(decision);
+        // Legacy results (history only) carry a synopsis, findings and a guide.
+        if (!exit) {
+          const synopsis = document.createElement("p");
+          synopsis.textContent = result.output.synopsis;
+          row.append(synopsis);
+        }
+        for (const finding of exit ? [] : result.output.findings) {
           const item = document.createElement("details");
           const summary = document.createElement("summary");
           summary.textContent = `${finding.severity}: ${finding.title} (${finding.path}, ${finding.side} line ${finding.line}; confidence ${finding.confidence}%)`;
@@ -911,7 +966,8 @@ export function renderMonitoring(
         const usage = document.createElement("p");
         usage.className = "hint";
         usage.textContent = `Session ${result.session_id}; runtime ${result.runtime_version}; model ${result.model}; ${actualIntelligence(result.intelligence)}; tokens ${result.input_tokens} in / ${result.output_tokens} out; tool calls ${result.tool_calls}`;
-        row.append(guide, usage);
+        if (!exit) row.append(guide);
+        row.append(usage);
         const publication = publications.find(
           (p) => p.review_operation_id === run.operation.id,
         );

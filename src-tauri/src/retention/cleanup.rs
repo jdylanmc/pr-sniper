@@ -17,6 +17,7 @@ struct State {
     actions: Actions,
     feedback: crate::feedback::Ledger,
     notifications: Notifications,
+    pr_states: crate::pr_state::PrStates,
 }
 
 fn read<T: serde::de::DeserializeOwned + Default>(store: &Store, name: &str) -> Result<T, String> {
@@ -51,6 +52,7 @@ impl State {
             actions: read(store, "actions.json")?,
             feedback: read(store, "feedback.json")?,
             notifications,
+            pr_states: read(store, "pr-state.json")?,
         })
     }
 
@@ -345,6 +347,9 @@ impl State {
             .retain(|o| !receipt.items.contains(&o.item_id));
         self.feedback.records.retain(|r| !binding.matches(&r.job));
         self.feedback
+            .exit_writes
+            .retain(|w| !binding.matches(&w.job));
+        self.feedback
             .mentions
             .retain(|m| !m.binding.matches_tracked(&receipt.scope));
         self.feedback
@@ -368,9 +373,9 @@ impl State {
                 .any(|item| source == &format!("queue:{item}"))
         });
         self.queue.jobs.retain(|j| !binding.matches(j));
-        // Persist minimal conversation gates before deleting their source runs.
-        // Follow-ups precede publications because legacy decoding needs the origin.
-        // Repeating every write is intentional; the journal is the recovery fence.
+        self.pr_states.remove(&binding); // Persist minimal conversation gates before deleting their source runs.
+                                         // Follow-ups precede publications because legacy decoding needs the origin.
+                                         // Repeating every write is intentional; the journal is the recovery fence.
         store.write_state("feedback.json", &self.feedback)?;
         store.write_state("follow-ups.json", &self.follow_ups)?;
         store.write_state("publications.json", &self.publications)?;
@@ -378,6 +383,7 @@ impl State {
         store.write_state("actions.json", &self.actions)?;
         store.write_state("notifications.json", &self.notifications)?;
         store.write_state("queue.json", &self.queue)?;
+        store.write_state("pr-state.json", &self.pr_states)?;
         super::paging::discard(store, &receipt.items)
     }
 }
@@ -404,6 +410,15 @@ pub fn recover(store: &Store) -> Result<(), String> {
 /// The caller owns the Store lock and must exclude live workers/scan snapshots.
 /// A false quiescence proof never starts or advances destructive cleanup.
 pub fn maintain(store: &Store, workers_quiescent: bool) -> Result<usize, String> {
+    maintain_where(store, workers_quiescent, |_| true)
+}
+
+/// Cleans only terminal PRs that `select` accepts. Open PRs never qualify.
+pub fn maintain_where(
+    store: &Store,
+    workers_quiescent: bool,
+    select: impl Fn(&TrackedPullRequest) -> bool,
+) -> Result<usize, String> {
     if !workers_quiescent {
         return Ok(0);
     }
@@ -419,7 +434,7 @@ pub fn maintain(store: &Store, workers_quiescent: bool) -> Result<usize, String>
     let scopes = store.load_queue_state()?.tracked;
     let mut count = 0;
     for scope in scopes {
-        if !scope.terminal_observed || scope.lifecycle == Lifecycle::Open {
+        if !scope.terminal_observed || scope.lifecycle == Lifecycle::Open || !select(&scope) {
             continue;
         }
         let mut ledger = load(store)?;

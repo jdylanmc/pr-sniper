@@ -1,9 +1,9 @@
 use crate::{
-    follow_up::{ConversationTarget, FollowUp, ReplyDecision},
+    follow_up::{FollowUp, ReplyDecision},
     github::{conversation::TopComment, threads::Thread},
     monitoring::{OperationState, QueueJob, TrackedPullRequest},
     publication::{Publication, RemoteState},
-    review::{Failure, Finding, ReviewOutput},
+    review::{Failure, Finding},
     storage::Store,
 };
 use serde::{Deserialize, Serialize};
@@ -306,6 +306,9 @@ pub struct Ledger {
     pub conversation_cursors: Vec<ConversationCursor>,
     #[serde(default)]
     pub pending_threads: Vec<PendingThread>,
+    /// Replies and own-thread resolutions executed for Packet-mode exits.
+    #[serde(default)]
+    pub exit_writes: Vec<crate::exit_writes::ExitWrite>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -360,17 +363,6 @@ pub struct Assessment {
     pub disposition: Disposition,
     pub reason: String,
     pub evidence: Vec<crate::follow_up::Evidence>,
-}
-
-pub fn assessment_schema() -> serde_json::Value {
-    serde_json::json!({"type":"array","items":{"type":"object","additionalProperties":false,
-    "required":["feedback_id","disposition","reason","evidence"],"properties":{
-        "feedback_id":{"type":"string"},"disposition":{"type":"string","enum":["open","cleared","human_input_required"]},
-        "reason":{"type":"string","maxLength":2000},"evidence":{"type":"array","maxItems":8,"items":{
-            "type":"object","additionalProperties":false,"required":["path","side","line","quote"],
-            "properties":{"path":{"type":"string"},"side":{"type":"string","enum":["base","head"]},"line":{"type":"integer","minimum":1},"quote":{"type":"string","maxLength":1000}}
-        }}
-    }}})
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -647,36 +639,6 @@ pub(crate) fn validate_captured_context(
     Ok(())
 }
 
-pub fn validate_assessments(
-    values: &[Assessment],
-    contexts: &[Context],
-    agent: &str,
-    complete: bool,
-) -> Result<(), Failure> {
-    let expected: HashSet<_> = contexts
-        .iter()
-        .filter(|c| c.owner_agent_id == agent && !c.closed)
-        .map(|c| c.id.as_str())
-        .collect();
-    let mut actual = HashSet::new();
-    for assessment in values {
-        if !expected.contains(assessment.feedback_id.as_str())
-            || !actual.insert(assessment.feedback_id.as_str())
-            || assessment.reason.trim().is_empty()
-            || assessment.reason.chars().count() > 2000
-            || (assessment.disposition == Disposition::Cleared && assessment.evidence.is_empty())
-        {
-            return Err(Failure::permanent("Feedback assessments must reference unique open concerns owned by this Agent, with evidence for clearance."));
-        }
-    }
-    if complete && actual != expected {
-        return Err(Failure::permanent(
-            "Review did not reassess every earlier open owned concern.",
-        ));
-    }
-    Ok(())
-}
-
 pub fn duplicates(finding: &Finding, context: &Context) -> bool {
     finding.feedback_id.as_deref() == Some(&context.id)
         || (!context.title.is_empty()
@@ -685,50 +647,6 @@ pub fn duplicates(finding: &Finding, context: &Context) -> bool {
                 .title
                 .trim()
                 .eq_ignore_ascii_case(context.title.trim()))
-}
-
-pub fn validate_review(
-    output: &ReviewOutput,
-    contexts: &[Context],
-    agent: &str,
-) -> Result<(), Failure> {
-    validate_assessments(&output.feedback_assessments, contexts, agent, true)?;
-    if output
-        .findings
-        .iter()
-        .any(|f| f.feedback_id.is_some() || contexts.iter().any(|c| duplicates(f, c)))
-    {
-        return Err(Failure::permanent("Existing or closed concerns must not be republished as new findings. Use their feedback assessment identities."));
-    }
-    Ok(())
-}
-
-pub fn suppress_closed_overlap(
-    output: &mut ReviewOutput,
-    contexts: &[Context],
-    files: &[crate::github::review::ReviewFile],
-) {
-    // A paraphrase on the same/renamed file is not evidence of a new concern.
-    // Keep the result human-gated instead of automatically reviving a closed root.
-    let findings = std::mem::take(&mut output.findings);
-    for finding in findings {
-        if contexts.iter().any(|context| {
-            context.closed
-                && (finding.path == context.path
-                    || files.iter().any(|file| {
-                        file.path == finding.path
-                            && file.previous_path.as_deref() == Some(&context.path)
-                    }))
-        }) {
-            output.held_findings.push(finding);
-        } else {
-            output.findings.push(finding);
-        }
-    }
-    if !output.held_findings.is_empty() {
-        output.decision = crate::review::Decision::HumanInputRequired;
-        output.feedback_conflict = true;
-    }
 }
 
 pub fn publication_gate(store: &Store, review: &crate::review::ReviewRun) -> Result<(), String> {
@@ -909,48 +827,4 @@ pub fn views(store: &Store, job: &QueueJob) -> Result<Vec<View>, String> {
         }
     }
     Ok(views)
-}
-
-pub fn owned_reply_assessment(run: &FollowUp) -> Result<(), Failure> {
-    let Some(result) = &run.result else {
-        return Ok(());
-    };
-    validate_assessments(
-        &result.output.feedback_assessments,
-        &run.context.feedback,
-        run.assessment_owner(),
-        false,
-    )?;
-    if matches!(run.target, ConversationTarget::Mention { .. })
-        && !result.output.feedback_assessments.is_empty()
-    {
-        return Err(Failure::permanent(
-            "A top-level mention cannot clear another thread's concern.",
-        ));
-    }
-    if result.output.decision == ReplyDecision::HumanInputRequired
-        && result
-            .output
-            .feedback_assessments
-            .iter()
-            .any(|a| a.disposition == Disposition::Cleared)
-    {
-        return Err(Failure::permanent(
-            "Human judgment cannot be converted into automated clearance.",
-        ));
-    }
-    if let Ok(thread) = run.thread() {
-        let id = root_key(&run.context.job, &thread.root()?.id);
-        if result
-            .output
-            .feedback_assessments
-            .iter()
-            .any(|a| a.feedback_id != id)
-        {
-            return Err(Failure::permanent(
-                "A reply can reassess only its own concern.",
-            ));
-        }
-    }
-    Ok(())
 }

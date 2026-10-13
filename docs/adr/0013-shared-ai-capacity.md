@@ -2,7 +2,7 @@
 
 ## Context
 
-Normal reviews, owned-thread analysis, primary-final reviews, replies, and mentions all spend AI slots. Per-kind pools starve or overrun the machine.
+Normal reviews, owned-thread analysis, primary-final reviews, replies, and mentions all spend AI slots. (Since [ADR 0021](0021-review-packet.md) only packet review runs exist; the other kinds are history.) Per-kind pools starve or overrun the machine.
 
 ## Decision
 
@@ -10,6 +10,7 @@ Normal reviews, owned-thread analysis, primary-final reviews, replies, and menti
 - All adapters merge into one canonical FIFO and reserve through `capacity::Coordinator::reserve` (`src-tauri/src/capacity.rs`).
 - Persist work before it competes for a slot.
 - Publication and reply-publication coordinators stay serial. Separate from AI slots.
+- Backpressure: a rate limit gates a provider account (GitHub account, Copilot account) in `backpressure.json` until its reset (`src-tauri/src/backpressure.rs`). `Work.delayed_until` holds runnable work back; `reserve` skips it. Other accounts keep flowing. In-flight 429: the attempt is handed back, no budget spent. Polling skips a gated account; a rate-limited poll waits, sets no failure. A success clears the gate. Gates persist across restart. UI: quiet clock + local time, never an error.
 - Pause automation (`automation.json`) signals workers. Slots stay _stopping_ until teardown completes. Capacity reduction drains the same way.
 
 ## Consequences

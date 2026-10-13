@@ -19,6 +19,48 @@ const frame = (value) => {
 };
 const respond = (id, result) => frame({ jsonrpc: "2.0", id, result });
 let sessionId;
+const exitScenarios = [
+  "exit-ready", "exit-comments", "exit-denied-then-ok", "exit-none", "exit-double",
+  "exit-malformed-forever", "exit-catalog-mismatch", "panic", "report-ok", "report-too-long",
+  "exit-approve", "exit-merge", "exit-approve-denied-self",
+];
+const isExit = exitScenarios.includes(scenario);
+const longNano = Array.from({ length: 120 }, () => "word").join(" ");
+const okReport = {
+  findings: [{ file: "source.rs", line: 1, nano: "unwrap may panic", full: "Full detail.", fix: "Use ?." }],
+};
+const badReport = { findings: [{ ...okReport.findings[0], nano: longNano }] };
+const firstExit = {
+  "exit-ready": ["ready_for_human", { summary: "No findings." }],
+  "exit-comments": ["leave_comments", { new_comments: [{ path: "source.rs", line: 1, body: "Use a constant." }] }],
+  "exit-denied-then-ok": ["leave_comments", { new_comments: [{ path: "source.rs", line: 1, body: "Use a constant." }] }],
+  "exit-catalog-mismatch": ["ready_for_human", { summary: "No findings." }],
+  "exit-approve": ["approve_pull_request", { comment: "Reviewed. Approving." }],
+  "exit-merge": ["approve_and_merge", { comment: "Reviewed. Approving and merging." }],
+  "exit-approve-denied-self": ["approve_pull_request", { comment: "Reviewed. Approving." }],
+  panic: ["panic_exit", { reason: "tool broken", detail: "read_changes failed twice." }],
+  "report-ok": ["submit_report", okReport],
+  "report-too-long": ["submit_report", badReport],
+  "exit-malformed-forever": ["submit_report", badReport],
+};
+let exitCount = 0;
+let exitEnded = false;
+const toolCall = (name, args) => {
+  const id = `exit-${++exitCount}`;
+  event("tool.execution_start", { toolName: name });
+  event("external_tool.requested", {
+    sessionId, requestId: id, toolCallId: id, toolName: name, arguments: args,
+  });
+};
+// Scenarios without their own exit hand over once their reads are done.
+const handOver = () => toolCall("ready_for_human", { summary: "Synthetic review done." });
+// A successful terminal tool ends the turn with no final assistant message.
+const endTurn = () => {
+  if (exitEnded) return;
+  exitEnded = true;
+  event("assistant.usage", { inputTokens: 20, outputTokens: 10 });
+  event("session.idle", {});
+};
 const event = (type, data) =>
   frame({
     jsonrpc: "2.0",
@@ -114,6 +156,7 @@ process.stdin.on("data", (chunk) => {
           } });
           break;
         }
+        globalThis.toolNames = (request.params.tools ?? []).map((t) => t.name);
         globalThis.intelligence = {
           reasoningEffort: request.params.reasoningEffort,
           contextTier: request.params.contextTier,
@@ -146,14 +189,33 @@ process.stdin.on("data", (chunk) => {
       case "session.tools.getCurrentMetadata":
         respond(request.id, {
           tools: [
-            ...["read_changes", "read_source", "search_paths"],
-            ...(scenario === "extra-tool" ? ["bash"] : []),
+            ...globalThis.toolNames,
+            ...(scenario === "extra-tool" || scenario === "exit-catalog-mismatch"
+              ? ["bash"]
+              : []),
           ].map((name) => ({ name, description: name })),
         });
         break;
       case "session.send":
         respond(request.id, { messageId: randomUUID() });
-        if (["final-full-review", "read-source-only", "tool-invalid-path"].includes(scenario)) {
+        if (isExit) {
+          setTimeout(() => {
+            if (scenario === "exit-none") {
+              event("assistant.usage", { inputTokens: 20, outputTokens: 10 });
+              event("assistant.message", { content: "Done, nothing to exit with." });
+              event("session.idle", {});
+            } else if (scenario === "exit-double") {
+              toolCall("ready_for_human", { summary: "First exit." });
+              toolCall("leave_comments", {
+                new_comments: [{ path: "source.rs", line: 1, body: "Second exit." }],
+              });
+            } else {
+              toolCall(...firstExit[scenario]);
+            }
+          }, 10);
+          break;
+        }
+        if (["read-full", "read-source-only", "tool-invalid-path"].includes(scenario)) {
           const toolName = scenario === "read-source-only" ? "read_source" : "read_changes";
           event("tool.execution_start", { toolName });
           event("external_tool.requested", {
@@ -183,43 +245,42 @@ process.stdin.on("data", (chunk) => {
             });
             event("tool.execution_complete", { success: false, toolCallId: "remote-tool", error: { message: "DO NOT RECORD" } });
           }
-          event("assistant.usage", { inputTokens: 20, outputTokens: 10 });
-          event("assistant.message", {
-            content: scenario.startsWith("malformed")
-              ? "not JSON"
-              : scenario.startsWith("follow-up-")
-                ? JSON.stringify({
-                    decision:
-                      scenario === "follow-up-human"
-                        ? "human_input_required"
-                        : "quiet",
-                    body: "",
-                    new_information: "",
-                    evidence: [],
-                    reason:
-                      "A human decision is required or no new evidence exists.",
-                  })
-                : JSON.stringify({
-                    synopsis: "The empty synthetic change has no findings.",
-                    files: [],
-                    findings: [],
-                    decision: "machine_sign_off",
-                  }),
-          });
-          event("session.idle", {});
+          if (scenario.startsWith("malformed")) {
+            // No exit: the run ends without a result.
+            event("assistant.usage", { inputTokens: 20, outputTokens: 10 });
+            event("assistant.message", { content: "not JSON" });
+            event("session.idle", {});
+            return;
+          }
+          handOver();
         }, 10);
         break;
       case "session.tools.handlePendingToolCall":
         receipt({ method: "fixture.finalRead", result: request.params.result });
         respond(request.id, {});
+        if (String(request.params.requestId).startsWith("exit-")) {
+          const failed = JSON.stringify(request.params.result ?? null).includes('"failure"');
+          receipt({ method: "fixture.exit", requestId: request.params.requestId, failed });
+          if (!failed) {
+            endTurn();
+          } else if (scenario === "exit-approve-denied-self") {
+            toolCall("ready_for_human", { summary: "Own PR; handing over." });
+          } else if (scenario === "exit-denied-then-ok") {
+            toolCall("ready_for_human", { summary: "Comments refused; handing over." });
+          } else if (scenario === "report-too-long") {
+            toolCall("submit_report", okReport);
+          } else if (scenario === "exit-malformed-forever") {
+            toolCall("submit_report", badReport);
+          }
+          break;
+        }
         if (["read-source-only", "tool-invalid-path"].includes(scenario)) {
-          event("assistant.usage", { inputTokens: 20, outputTokens: 10 });
-          event("assistant.message", { content: "{}" });
-          event("session.idle", {});
+          // The tool call (served or rejected) does not decide the review.
+          handOver();
           break;
         }
         if (
-          scenario === "final-full-review" &&
+          scenario === "read-full" &&
           request.params.requestId === "final-read" &&
           JSON.stringify(request.params.result ?? null).includes("answer")
         ) {
@@ -233,28 +294,13 @@ process.stdin.on("data", (chunk) => {
           break;
         }
         if (
-          scenario !== "final-full-review" ||
+          scenario !== "read-full" ||
           request.params.requestId !== "final-read-after" ||
           !JSON.stringify(request.params.result ?? null).includes("answer")
         ) {
           event("session.error", { statusCode: 500 });
         } else {
-          event("assistant.usage", { inputTokens: 20, outputTokens: 10 });
-          event("assistant.message", {
-            content: JSON.stringify({
-              synopsis: "The synthetic source was reviewed completely.",
-              files: [
-                {
-                  path: "source.rs",
-                  explanation: "The full changed source was read.",
-                  order: 1,
-                },
-              ],
-              findings: [],
-              decision: "machine_sign_off",
-            }),
-          });
-          event("session.idle", {});
+          handOver();
         }
         break;
       case "session.abort":
