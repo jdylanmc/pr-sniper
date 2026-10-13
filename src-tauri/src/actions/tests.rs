@@ -27,6 +27,7 @@ use std::{
 
 const REPO: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const NOW: i64 = 1_800_000_000;
+mod approve_exits;
 mod diagnostics;
 mod fixwave;
 
@@ -292,8 +293,25 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
         head: BTreeMap::new(),
         base: BTreeMap::new(),
     };
+    let snapshot = crate::github::state::PrSnapshot {
+        number: 1,
+        pull_request_id: "9".into(),
+        title: "Change".into(),
+        body: "Why this change.".into(),
+        labels: vec!["bug".into()],
+        head_ref: "feature/x".into(),
+        head: "a".repeat(40),
+        base: "b".repeat(40),
+        state: "OPEN".into(),
+        mergeable: "MERGEABLE".into(),
+        ..Default::default()
+    };
     let prepared =
-        packet_run::prepare(&client, &repo, &run, &context, "actor", true, vec![]).unwrap();
+        packet_run::prepare(&client, &repo, &run, &context, &snapshot, "actor", true, vec![]).unwrap();
+    assert!(prepared.packet.text.contains("Why this change."));
+    assert!(prepared.packet.text.contains("feature/x"));
+    assert!(prepared.packet.text.contains("bug"));
+    assert!(prepared.packet.text.contains("size: +1 -1"));
     assert_eq!(
         prepared.setup.offered,
         [
@@ -322,10 +340,13 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
         .packet
         .text
         .contains("- src/lib.rs [modified] kind=text parts: patch=21"));
+    let seq = job.work.as_ref().map_or(0, |w| w.state_seq);
+    let state_hash = snapshot.normalize().hash();
     assert_eq!(
         prepared.packet.record.state_id,
-        format!("{}:{}", "a".repeat(40), "b".repeat(40))
+        format!("{seq}:{}", &state_hash[..16])
     );
+    assert_eq!(prepared.packet.record.state_hash, Some(state_hash));
     assert!(!serde_json::to_string(&prepared.packet.record)
         .unwrap()
         .contains("src/lib.rs"));
@@ -352,7 +373,7 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
         Err(Refusal::Moved(_))
     ));
     assert_eq!(
-        packet_run::prepare(&client, &repo, &run, &context, "actor", true, vec![])
+        packet_run::prepare(&client, &repo, &run, &context, &snapshot, "actor", true, vec![])
             .err()
             .unwrap()
             .kind,

@@ -23,6 +23,7 @@ let sessionId;
 const exitScenarios = [
   "exit-ready", "exit-comments", "exit-denied-then-ok", "exit-none", "exit-double",
   "exit-malformed-forever", "exit-catalog-mismatch", "panic", "report-ok", "report-too-long",
+  "exit-approve", "exit-merge", "exit-approve-denied-self",
 ];
 const isExit = exitScenarios.includes(scenario);
 const longNano = Array.from({ length: 120 }, () => "word").join(" ");
@@ -35,6 +36,9 @@ const firstExit = {
   "exit-comments": ["leave_comments", { new_comments: [{ path: "source.rs", line: 1, body: "Use a constant." }] }],
   "exit-denied-then-ok": ["leave_comments", { new_comments: [{ path: "source.rs", line: 1, body: "Use a constant." }] }],
   "exit-catalog-mismatch": ["ready_for_human", { summary: "No findings." }],
+  "exit-approve": ["approve_pull_request", { comment: "Reviewed. Approving." }],
+  "exit-merge": ["approve_and_merge", { comment: "Reviewed. Approving and merging." }],
+  "exit-approve-denied-self": ["approve_pull_request", { comment: "Reviewed. Approving." }],
   panic: ["panic_exit", { reason: "tool broken", detail: "read_changes failed twice." }],
   "report-ok": ["submit_report", okReport],
   "report-too-long": ["submit_report", badReport],
@@ -277,6 +281,8 @@ process.stdin.on("data", (chunk) => {
           receipt({ method: "fixture.exit", requestId: request.params.requestId, failed });
           if (!failed) {
             endTurn();
+          } else if (scenario === "exit-approve-denied-self") {
+            toolCall("ready_for_human", { summary: "Own PR; handing over." });
           } else if (scenario === "exit-denied-then-ok") {
             toolCall("ready_for_human", { summary: "Comments refused; handing over." });
           } else if (scenario === "report-too-long") {

@@ -1340,10 +1340,11 @@ mod exits {
     use crate::packet::ToolFacts;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
-    const ALL_EXITS: [Exit; 5] = [
+    const ALL_EXITS: [Exit; 6] = [
         Exit::LeaveComments,
         Exit::ReadyForHuman,
         Exit::ApprovePullRequest,
+        Exit::ApproveAndMerge,
         Exit::PanicExit,
         Exit::SubmitReport,
     ];
@@ -1474,10 +1475,47 @@ mod exits {
     }
 
     #[tokio::test]
-    async fn a_moved_state_at_exit_time_supersedes_the_run() {
+    async fn a_moved_state_at_exit_time_tosses_the_run_through_the_budget() {
         let gate: ExitGate = Arc::new(|_| Err(Refusal::Moved("PR state moved.".into())));
         let (result, _root) = run_exit("exit-ready", gate).await;
-        assert_eq!(result.unwrap_err().kind, OperationFailure::Superseded);
+        let error = result.unwrap_err();
+        assert_eq!(error.kind, OperationFailure::Tossed);
+        assert!(error.kind.transient());
+    }
+
+    #[tokio::test]
+    async fn approve_exits_store_the_agents_comment_for_the_host_pipeline() {
+        let (result, root) = run_exit("exit-approve", open_gate()).await;
+        assert_eq!(
+            result.unwrap().output.exit,
+            Some(ExitOutcome::Approve {
+                comment: "Reviewed. Approving.".into()
+            })
+        );
+        assert_eq!(failures(root.path()), vec![false]);
+        let (result, _root) = run_exit("exit-merge", open_gate()).await;
+        assert_eq!(
+            result.unwrap().output.exit,
+            Some(ExitOutcome::ApproveAndMerge {
+                comment: "Reviewed. Approving and merging.".into()
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn an_approve_denied_on_the_own_pr_lets_the_agent_hand_over_instead() {
+        let gate: ExitGate = Arc::new(|call| match call {
+            ExitCall::ApprovePullRequest { .. } => Err(Refusal::Denied(
+                "Acting account authored this PR. GitHub refuses self-approval.".into(),
+            )),
+            _ => Ok(()),
+        });
+        let (result, root) = run_exit("exit-approve-denied-self", gate).await;
+        assert!(matches!(
+            result.unwrap().output.exit,
+            Some(ExitOutcome::ReadyForHuman { .. })
+        ));
+        assert_eq!(failures(root.path()), vec![true, false]);
     }
 
     #[tokio::test]
@@ -1531,11 +1569,11 @@ mod exits {
                 "leave_comments",
                 "ready_for_human",
                 "approve_pull_request",
+                "approve_and_merge",
                 "panic_exit",
                 "submit_report"
             ]
         );
-        assert!(!names.contains(&"approve_and_merge".to_string()));
         let terminal: Vec<_> = created["config"]["tools"]
             .as_array()
             .unwrap()
@@ -1543,7 +1581,7 @@ mod exits {
             .filter(|t| t["isTerminal"] == true)
             .map(|t| t["name"].as_str().unwrap().to_string())
             .collect();
-        assert_eq!(terminal.len(), 5, "{terminal:?}");
+        assert_eq!(terminal.len(), 6, "{terminal:?}");
         assert!(!terminal.contains(&"read_changes".to_string()));
     }
 

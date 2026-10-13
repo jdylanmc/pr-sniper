@@ -695,6 +695,29 @@ impl Environment for Native {
             .map_err(|error| self.failures.gate_error(error));
         result
     }
+
+    fn confirmed(&mut self, run: &Publication) -> Result<(), Failure> {
+        let comments = matches!(
+            run.review.result.as_ref().and_then(|r| r.output.exit.as_ref()),
+            Some(crate::exits::ExitOutcome::Comments { new_comments, .. }) if !new_comments.is_empty()
+        );
+        if run.review.mode != crate::review::RunMode::Packet || !comments {
+            return Ok(());
+        }
+        let client = self.session(run)?;
+        let repo = RemoteRepository {
+            id: run.review.job.repository_id.clone(),
+            name: run.review.job.repository_name.clone(),
+        };
+        crate::exits::consume::consume_after(
+            &self.app.state::<Host>().store,
+            &client,
+            &repo,
+            &run.review.job,
+        )
+        .map(|_| ())
+        .map_err(Failure::permanent)
+    }
 }
 
 #[tauri::command]

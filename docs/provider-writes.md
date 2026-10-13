@@ -50,8 +50,9 @@ Reference for every GitHub write PR Sniper can make: comment publication, thread
 - Packet-mode runs write only through their exit; the host applies it. Gates (`exits::gates::offered`) decide what is offered; the exit-time check re-reads the PR.
 - `leave_comments.new_comments`: one auto-created publication via `Batch::prepare_exit` (same ledger, pending review, reconcile as above). Every line must map to the diff; one unmappable line tosses the whole batch, nothing is posted. Needs Publish Comment.
 - `leave_comments.reply_comments`, `resolve_own_threads`: validated and stored; execution not wired yet.
-- `ready_for_human`: no GitHub write. Local summary, queue shows Ready for you.
-- `approve_pull_request`, `approve_and_merge`: payload, gate and stored outcome only; effects not wired yet. Approval comment required. GitHub refuses self-approval; merge on own PRs needs Include self. Approve ignores others' threads and changes requested; merge does not.
+- `ready_for_human`: no GitHub write. Local summary (`pr-state.json`), queue shows Ready for you. Consumed at run completion only if the PR state still equals the one read.
+- Consume: successful exit sets Baseline from a fresh post-write snapshot (`exits::consume_after`); own writes never retrigger. Moved: Toss, error count +1, new attempt through the retry budget, park at 3. Failed, panicked or tossed runs never consume.
+- `approve_pull_request`, `approve_and_merge`: host records a packet `FinalReview` (exit run = evidence, no findings), the action pump approves with the agent's comment as the review body, then merges. Effective grant = assignment grant AND the exit. Our approval already on the head: success, no write. CI red or conflicts deny both; CI pending denies merge; unmet required reviews deny merge. Confirmed write consumes the state; rejected write tosses and re-queues (park at 3). Approval comment required. GitHub refuses self-approval; merge on own PRs needs Include self. Approve ignores others' threads and changes requested; merge does not.
 - `panic_exit`: no write. Typed failure, parks at once, cooldown auto-resume.
 
 ## Approve and Merge

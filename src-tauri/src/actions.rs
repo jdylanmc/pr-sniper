@@ -1,4 +1,5 @@
 pub(crate) mod host;
+mod packet;
 
 use crate::{
     feedback,
@@ -8,6 +9,7 @@ use crate::{
     review::{Failure, ReviewRun, Selection},
     storage::{ActionPermissions, Repository, Store},
 };
+pub use packet::{PacketApproval, Ready};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -68,6 +70,9 @@ pub struct FinalReview {
     pub cancelled: bool,
     #[serde(default)]
     pub attempts: Vec<ReviewRun>,
+    /// Set when a Packet-mode approve exit created this record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub packet: Option<PacketApproval>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -497,6 +502,11 @@ pub fn synchronize(
                 .iter()
                 .any(|e| same_scope(e, &basis.job) && e.state == EffectState::Uncertain)
                 && !human_final
+                && !basis
+                    .repository
+                    .assignments
+                    .iter()
+                    .any(|a| Some(&a.id) == basis.job.assignment_id.as_ref() && a.tools.is_some())
                 && scope
                 && needs_action
                 && validate_observation(&basis, &observation).is_ok()
@@ -540,6 +550,7 @@ pub fn synchronize(
                         execution,
                         cancelled: false,
                         attempts: Vec::new(),
+                        packet: None,
                     });
                 }
             }
@@ -553,6 +564,9 @@ pub fn synchronize(
 }
 
 pub fn validate_local(store: &Store, run: &FinalReview) -> Result<(), String> {
+    if run.packet.is_some() {
+        return packet::validate_local(store, run);
+    }
     if run.cancelled {
         return Err("Final review was cancelled.".into());
     }
@@ -580,6 +594,12 @@ pub fn ready(
     observation: &Observation,
     action: Action,
 ) -> Result<(), String> {
+    if run.packet.is_some() {
+        return match packet::ready(store, run, observation, action)? {
+            Ready::Go => Ok(()),
+            Ready::AlreadyApproved => Err(packet::ALREADY_APPROVED.into()),
+        };
+    }
     validate_local(store, run)?;
     validate_observation(&run.basis, observation)?;
     if store.load_actions()?.effects.iter().any(|e| {
@@ -708,7 +728,10 @@ pub fn prepare_effect(
     }
     .into();
     let effect=Effect{cancelled:false,reconcile_attempts:0,reconcile_requested:false,id:id.clone(),final_id:run.id.clone(),item_id:run.basis.item_id.clone(),action,operation,
-        observation:current.clone(),body:format!("Automated primary final review by PR Sniper.\n\nThis is the acting account's automated vote, not personal review.\n\n<!-- pr-sniper:action:{id} -->\n\nPR Sniper"),
+        observation:current.clone(),body:match &run.packet {
+            Some(approval) => packet::approval_body(approval, &id),
+            None => format!("Automated primary final review by PR Sniper.\n\nThis is the acting account's automated vote, not personal review.\n\n<!-- pr-sniper:action:{id} -->\n\nPR Sniper"),
+        },
         state:EffectState::Prepared,error:None,receipt:None};
     ledger.effects.push(effect.clone());
     store.save_actions(&ledger)?;
@@ -1306,30 +1329,31 @@ fn observation_pending(
                 || e.needs_reconciliation()
                     && (e.reconcile_requested
                         || e.reconcile_attempts < 3 && now < e.operation.retry_deadline))
-    }) || item.state == State::MachineSignedOff
-        && settings
-            .repositories
-            .iter()
-            .find(|r| r.id == item.job.configuration_id)
-            .is_some_and(|r| {
-                r.assignments.iter().any(|a| {
-                    let p = r.assignment_authority(a);
-                    p.approve
-                        && !ledger
-                            .effects
-                            .iter()
-                            .any(|e| e.item_id == item.id && e.action == Action::Approve)
-                        || p.merge
+    }) || packet::open(ledger, &item.id)
+        || item.state == State::MachineSignedOff
+            && settings
+                .repositories
+                .iter()
+                .find(|r| r.id == item.job.configuration_id)
+                .is_some_and(|r| {
+                    r.assignments.iter().any(|a| {
+                        let p = r.assignment_authority(a);
+                        p.approve
                             && !ledger
                                 .effects
                                 .iter()
-                                .any(|e| e.item_id == item.id && e.action == Action::Merge)
+                                .any(|e| e.item_id == item.id && e.action == Action::Approve)
+                            || p.merge
+                                && !ledger
+                                    .effects
+                                    .iter()
+                                    .any(|e| e.item_id == item.id && e.action == Action::Merge)
+                    })
                 })
-            })
-        && !ledger
-            .effects
-            .iter()
-            .any(|e| same_scope(e, &item.job) && e.state == EffectState::Uncertain)
+            && !ledger
+                .effects
+                .iter()
+                .any(|e| same_scope(e, &item.job) && e.state == EffectState::Uncertain)
 }
 
 fn observation_retry_blocker(

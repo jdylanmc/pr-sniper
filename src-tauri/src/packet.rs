@@ -152,6 +152,9 @@ pub struct PacketRecord {
     pub exits_offered: Vec<Exit>,
     #[serde(default)]
     pub exits_denied: Vec<ExitDenial>,
+    /// Hash of the PR state the packet was built from; what an honoured exit baselines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_hash: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -190,6 +193,7 @@ pub fn build(input: &PacketInput) -> Packet {
                 Offer::Offered => None,
             })
             .collect(),
+        state_hash: None,
     };
     Packet { text, hash, record }
 }

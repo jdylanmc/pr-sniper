@@ -97,7 +97,7 @@ impl ExitTools {
                 return match refusal {
                     Refusal::Denied(reason) => (error(&reason), true),
                     Refusal::Moved(reason) => {
-                        self.state.fail(Failure::superseded(&reason));
+                        self.state.fail(Failure::tossed(&reason));
                         (error(&reason), true)
                     }
                 };

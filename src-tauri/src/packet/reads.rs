@@ -5,7 +5,7 @@ use super::{
     file_kind, AuthorRelation, CheckFact, CommentFact, Conversation, FileEntry, PrFacts,
     ThreadFact, ToolFacts,
 };
-use crate::github::{actions::Observation, review::ReviewContext};
+use crate::github::{actions::Observation, review::ReviewContext, state::PrSnapshot};
 use serde_json::Value;
 
 pub const OWN_MARKER: &str = "<!-- pr-sniper:";
@@ -107,11 +107,28 @@ pub fn files(context: &ReviewContext) -> Vec<FileEntry> {
         .collect()
 }
 
-/// `description` is not in the provider reads yet; callers pass it when they have it.
+/// Additions and deletions counted from the changed files' patches.
+fn patch_size(context: &ReviewContext) -> Option<(u64, u64)> {
+    let mut totals = (0_u64, 0_u64);
+    let mut any = false;
+    for patch in context.files.iter().filter_map(|f| f.patch.as_deref()) {
+        any = true;
+        for line in patch.lines() {
+            match line.as_bytes().first() {
+                Some(b'+') => totals.0 += 1,
+                Some(b'-') => totals.1 += 1,
+                _ => {}
+            }
+        }
+    }
+    any.then_some(totals)
+}
+
+/// Description, labels and branch come from the fresh PR snapshot.
 pub fn pr_facts(
     context: &ReviewContext,
     observation: &Observation,
-    description: Option<String>,
+    snapshot: &PrSnapshot,
     acting_login: &str,
 ) -> PrFacts {
     let pull = &context.pull;
@@ -122,7 +139,7 @@ pub fn pr_facts(
         .unwrap_or_default();
     PrFacts {
         title: pull.title.clone(),
-        description,
+        description: Some(snapshot.body.clone()),
         author_relation: if author.eq_ignore_ascii_case(acting_login) {
             AuthorRelation::Owner
         } else if author.ends_with("[bot]") {
@@ -134,11 +151,15 @@ pub fn pr_facts(
         state: observation.state.clone(),
         draft: observation.draft,
         base_ref: observation.base_name.clone(),
-        head_ref: "-".into(),
+        head_ref: if snapshot.head_ref.is_empty() {
+            "-".into()
+        } else {
+            snapshot.head_ref.clone()
+        },
         base_sha: pull.base_sha.clone(),
         head_sha: pull.head_sha.clone(),
-        labels: vec![],
-        size: None,
+        labels: snapshot.labels.clone(),
+        size: patch_size(context),
         checks: checks(observation),
         mergeable: format!("{}/{}", observation.mergeable, observation.merge_state),
         review_decision: observation.review_decision.clone(),

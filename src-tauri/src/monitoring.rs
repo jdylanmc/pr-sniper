@@ -30,6 +30,7 @@ pub const WAITING_MERGED: &str = "merged";
 pub const WAITING_ASSIGNMENT_REMOVED: &str = "assignment_removed";
 pub const CONFIGURATION_SAVE_REQUIRED: &str = "repository_configuration_required";
 const RETRY_WINDOW_SECONDS: i64 = 15 * 60;
+const SUPERSEDED_RETRY_SECONDS: i64 = 30;
 // A job iteration parks after this many failed attempts.
 pub(crate) const MAX_FAILED_ATTEMPTS: u8 = 3;
 // A parked failure earns a fresh attempt budget after each cooldown, bounding
@@ -58,6 +59,8 @@ pub enum OperationFailure {
     Provider,
     Permanent,
     Superseded,
+    /// A write or exit was discarded because the PR state moved: counts against the budget.
+    Tossed,
     Credentials,
     Permission,
     /// The agent called `panic_exit`: parks at once, resumes on the cooldown schedule.
@@ -79,7 +82,7 @@ impl OperationFailure {
             Self::Credentials => FailureClass::Credentials,
             Self::Permission => FailureClass::Permission,
             Self::Timeout | Self::RateLimited | Self::Network => FailureClass::Network,
-            Self::Provider | Self::Permanent | Self::Superseded | Self::Panic => {
+            Self::Provider | Self::Permanent | Self::Superseded | Self::Tossed | Self::Panic => {
                 FailureClass::Other
             }
         }
@@ -88,7 +91,7 @@ impl OperationFailure {
     pub fn transient(&self) -> bool {
         matches!(
             self,
-            Self::Timeout | Self::RateLimited | Self::Network | Self::Provider
+            Self::Timeout | Self::RateLimited | Self::Network | Self::Provider | Self::Tossed
         )
     }
 
@@ -3150,6 +3153,20 @@ impl JobOperation {
         self.state = OperationState::Queued;
         self.next_attempt_at = Some(now);
         self.backpressure_until = None;
+    }
+
+    /// The state moved before the run could read it: not a failure, no attempt spent.
+    /// Retried shortly; the next heartbeat retargets or retires the work.
+    pub fn requeue_superseded(&mut self, now: i64) {
+        if self.ai_attempt.is_some() {
+            self.restore_budget();
+        } else if self.state == OperationState::Running {
+            self.attempt_count = self.attempt_count.saturating_sub(1);
+        }
+        self.interruption = None;
+        self.backpressure_until = None;
+        self.state = OperationState::Queued;
+        self.next_attempt_at = Some(now.saturating_add(SUPERSEDED_RETRY_SECONDS));
     }
 
     fn restore_budget(&mut self) {

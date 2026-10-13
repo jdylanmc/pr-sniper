@@ -314,6 +314,15 @@ pub(crate) fn complete(
         current.result = None;
         current.phase = "Waiting after intentional interruption".into();
         current.error = None;
+    } else if outcome
+        .as_ref()
+        .err()
+        .is_some_and(|e| !e.cancelled && e.kind == monitoring::OperationFailure::Superseded)
+    {
+        current.operation.requeue_superseded(now);
+        current.result = None;
+        current.phase = "Waiting for current PR state".into();
+        current.error = None;
     } else if crate::backpressure::defer(
         store,
         &mut current.operation,
@@ -330,6 +339,16 @@ pub(crate) fn complete(
         current.phase = "Waiting for rate limit".into();
         current.error = None;
     } else {
+        let outcome = outcome.and_then(|result| {
+            match crate::exits::consume::honour_local(store, current, &result)
+                .map_err(Failure::permanent)?
+            {
+                crate::pr_state::Consumed::Consumed => Ok(result),
+                crate::pr_state::Consumed::Moved => Err(Failure::tossed(
+                    "PR state moved during the run. Result discarded.",
+                )),
+            }
+        });
         match outcome {
             Ok(result) => {
                 crate::backpressure::run_succeeded(
@@ -351,6 +370,9 @@ pub(crate) fn complete(
                 current.error = None;
             }
             Err(error) => {
+                if error.kind == monitoring::OperationFailure::Tossed {
+                    crate::pr_state::toss(store, &crate::retention::Binding::job(&current.job))?;
+                }
                 current.operation.fail(&error.monitoring(), now);
                 current.phase = "Review stopped".into();
                 current.error = Some(error.message);
@@ -510,6 +532,24 @@ async fn execute_attempt(
             id: preparation_run.job.repository_id.clone(),
             name: preparation_run.job.repository_name.clone(),
         };
+        // Packet runs read the PR fresh at consume time. A head that moved since the
+        // work was queued is superseded (free); any other change is simply the new state.
+        let snapshot = if preparation_run.mode == super::RunMode::Packet {
+            let snapshot = client
+                .pr_snapshot(&repo, preparation_run.job.number)
+                .map_err(Failure::from)?;
+            if snapshot.state != "OPEN" {
+                return Err(Failure::superseded("The PR is no longer open."));
+            }
+            if snapshot.head != preparation_run.job.head_sha {
+                return Err(Failure::superseded(
+                    "The PR head moved since the work was queued.",
+                ));
+            }
+            Some(snapshot)
+        } else {
+            None
+        };
         let context = client
             .review_context(
                 &repo,
@@ -526,7 +566,7 @@ async fn execute_attempt(
                 }
             })?;
         let client = Arc::new(client);
-        let packet = if preparation_run.mode == super::RunMode::Packet {
+        let packet = if let Some(snapshot) = &snapshot {
             let write_capability = client
                 .connect(&repo.name, Some(&preparation_run.job.account_id))
                 .map_err(Failure::from)?
@@ -545,6 +585,7 @@ async fn execute_attempt(
                 &repo,
                 &preparation_run,
                 &context,
+                snapshot,
                 &identity.login,
                 write_capability,
                 teammates,
@@ -605,6 +646,10 @@ async fn execute_attempt(
         Ok(())
     });
     let integration = app.state::<Host>().copilot.clone();
+    let read_hash = packet
+        .as_ref()
+        .and_then(|p| p.packet.record.state_hash.clone());
+    let client_after = client.clone();
     let mut result = match packet {
         Some(prepared) => {
             let request = runtime::Request {
@@ -657,13 +702,35 @@ async fn execute_attempt(
         phase: crate::storage::diagnostics::Phase::CheckingFinalEligibility,
     });
     let final_app = app.clone();
-    let pull = tauri::async_runtime::spawn_blocking(move || remote_gate(&final_app, &run))
+    let final_run = run.clone();
+    let pull = tauri::async_runtime::spawn_blocking(move || remote_gate(&final_app, &final_run))
         .await
         .map_err(|_| Failure::permanent("Final eligibility check could not finish."))??;
     if pull.base_sha != expected_base {
         return Err(Failure::permanent(
             "Pull request base changed during review; result is stale.",
         ));
+    }
+    // A local-only exit writes nothing, so the state it read must still be the state.
+    if let (Some(read_hash), Some(crate::exits::ExitOutcome::ReadyForHuman { .. })) =
+        (read_hash, &result.output.exit)
+    {
+        let repo = RemoteRepository {
+            id: run.job.repository_id.clone(),
+            name: run.job.repository_name.clone(),
+        };
+        let number = run.job.number;
+        let fresh = tauri::async_runtime::spawn_blocking(move || {
+            crate::exits::consume::fresh_hash(&client_after, &repo, number)
+        })
+        .await
+        .map_err(|_| Failure::permanent("State check could not finish."))?
+        .map_err(Failure::provider)?;
+        if fresh != read_hash {
+            return Err(Failure::tossed(
+                "PR state moved during the run. Result discarded.",
+            ));
+        }
     }
     gate()?;
     result.reviewed_base_sha = Some(expected_base);
