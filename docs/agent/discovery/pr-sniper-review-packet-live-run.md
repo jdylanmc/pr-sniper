@@ -97,3 +97,7 @@ Rules changed: comment only real defects on the line (no "what I read", no prais
 | #5 (human question "OK to drop?")     | primary            | `ready_for_human` (fresh harness store: no consumed state, so every comment counts as new).                                                              |
 
 Gap: CI logs are not in the packet or tools; the CI-red "comment the fix" rule only works when the diff makes the cause visible.
+
+## Final run (after review fixes: fresh state_seq, settle_fresh consume)
+
+All 4 live tests pass. PR #6 (fresh: dict mutated while iterating): teammate 1 finding; primary posted 1 comment at `cache.py:12`; heartbeat after own writes `None`; after a human reply the second primary chose `ready_for_human` ("no new actionable defects beyond the existing open thread"). PR #1 `ready_for_human`, no write. PR #3 approve denied (CI red, self), `ready_for_human`.
