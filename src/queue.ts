@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { renderActions, type ActionStatus } from "./actions";
 import type { FailureClass } from "./automation";
 import { renderFacts } from "./work-presentation";
+import { progressChip, type ExitName, type Progress } from "./exits";
 
 export interface NormalWork {
   id: string;
@@ -82,7 +83,16 @@ export interface QueueItem {
   blocked_by?: {
     teammate: { assignment_id: string; agent_name: string };
   } | null;
-  failure_cause?: "publication_failed" | "publication_unresolved" | null;
+  failure_cause?:
+    | "publication_failed"
+    | "publication_unresolved"
+    | "panic"
+    | "tossed"
+    | "exit_failed"
+    | null;
+  // The primary's exit and the host effect it still has in flight.
+  exit?: ExitName | null;
+  progress?: Progress | null;
   resume_at?: number | null;
   summary: string;
   warnings: string[];
@@ -174,13 +184,18 @@ const failureChips: Record<FailureClass, string> = {
   network: "Network",
   other: "Failed",
 };
-// Access and network classes keep their chip; otherwise the publication cause.
+const causeChips: Record<string, string> = {
+  publication_unresolved: "Unverified",
+  publication_failed: "Publish failed",
+  panic: "Panic",
+  tossed: "Tossed",
+  exit_failed: "Write failed",
+};
+// Access and network classes keep their chip; otherwise the typed cause.
 export function failureChip(item: QueueItem) {
   const failureClass = item.failure_class ?? "other";
-  if (failureClass === "other") {
-    if (item.failure_cause === "publication_unresolved") return "Unverified";
-    if (item.failure_cause === "publication_failed") return "Publish failed";
-  }
+  if (failureClass === "other" && item.failure_cause)
+    return causeChips[item.failure_cause] ?? failureChips.other;
   return failureChips[failureClass];
 }
 // Compact duration: 45s, 12m, 3h, 2d.
@@ -393,6 +408,7 @@ export function renderQueue(
         row.append(top, heading, reference);
         const teammate = itemTeammateChip(item);
         if (teammate) row.append(teammate);
+        if (item.progress) row.append(progressChip(item.progress));
         const receipts =
           item.action_status?.effects.filter((effect) => effect.receipt) ?? [];
         for (const effect of receipts) {
@@ -422,6 +438,7 @@ export function renderQueue(
         row.append(state, heading, context);
         const teammate = itemTeammateChip(item);
         if (teammate) row.append(teammate);
+        if (item.progress) row.append(progressChip(item.progress));
       }
       if (!options.compact) renderItemEvidence(row, item, showError, refresh);
       for (const warning of options.compact ? [] : item.warnings) {

@@ -1117,6 +1117,14 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
                 item.state = State::Merged;
                 item.summary="GitHub confirms this PR merged. Provider receipts identify any confirmed PR Sniper action; personal review is not inferred.";
             } else if item.state == State::MachineSignedOff {
+                // Others' threads never block a packet approve exit (AC-017).
+                let packet_approve = matches!(
+                    item.exit,
+                    Some(
+                        crate::exits::Exit::ApprovePullRequest
+                            | crate::exits::Exit::ApproveAndMerge
+                    )
+                );
                 if observation.head != item.job.head_sha
                     || item.job.observed_base_sha.as_deref() != Some(&observation.base)
                 {
@@ -1125,7 +1133,7 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
                 } else if observation.draft {
                     item.state = State::Queued;
                     item.summary = "The PR is draft; automatic approval and merge are blocked.";
-                } else if observation.discussion_blocker().is_some() {
+                } else if !packet_approve && observation.discussion_blocker().is_some() {
                     item.state = State::WaitingForHuman;
                     item.summary="Provider review or discussion concerns remain outstanding; no whole-cycle clearance is asserted.";
                 }
@@ -1180,6 +1188,7 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
                 }
             }
             if item.state == State::MachineSignedOff
+                && run.packet.is_none()
                 && run.execution.result.as_ref().is_some_and(|r| {
                     r.output.decision != crate::review::Decision::MachineSignOff
                         || r.output.feedback_conflict
@@ -1206,6 +1215,46 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
             item.state = State::Failed;
             item.summary="A provider action outcome is unresolved. Reconcile its original intent; no replacement request is authorized.";
             blockers.push("An action on this PR has an unresolved provider outcome, possibly from an earlier iteration.".into());
+        }
+        // The packet final of the item's own exit run: its progress, or a parked toss
+        // (a toss under budget re-queued a newer run, so it no longer matches).
+        if let Some((run, approval)) = final_review.as_ref().and_then(|f| {
+            let packet = f.packet.as_ref()?;
+            (!f.cancelled && Some(&packet.run_id) == item.exit_run_id.as_ref())
+                .then_some((f, packet))
+        }) {
+            let own = |e: &&Effect| e.final_id == run.id;
+            let tossed = effects
+                .iter()
+                .filter(own)
+                .any(|e| matches!(e.state, EffectState::Rejected | EffectState::Stale));
+            let approved = !run.basis.permissions.approve
+                || effects
+                    .iter()
+                    .filter(own)
+                    .any(|e| e.action == Action::Approve && e.state == EffectState::Confirmed);
+            if approval.settled && tossed && !matches!(item.state, State::Merged | State::Closed) {
+                item.state = State::Failed;
+                item.failure_class = Some(monitoring::FailureClass::Other);
+                item.failure_cause = Some(queue::CAUSE_TOSSED);
+                item.summary = State::Failed.summary();
+            } else if item.progress.is_some() {
+                item.progress = if approval.settled || (approved && !run.basis.permissions.merge) {
+                    None
+                } else if approved {
+                    Some(queue::Progress::Merging)
+                } else {
+                    Some(queue::Progress::Approving)
+                };
+            }
+        }
+        if item.state != State::MachineSignedOff
+            && matches!(
+                item.progress,
+                Some(queue::Progress::Approving | queue::Progress::Merging)
+            )
+        {
+            item.progress = None;
         }
         let machine_clear = item.state == State::MachineSignedOff;
         // A confirmed approval of the current head ends the handoff; a new head or

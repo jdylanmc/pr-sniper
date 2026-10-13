@@ -4211,6 +4211,7 @@ pub fn run() {
             monitoring_snapshot,
             retry_monitoring_operation,
             review::host::start_review,
+            review::host::retry_packet_state,
             review::host::cancel_review,
             publication::host::publish_review,
             publication::host::cancel_publication,

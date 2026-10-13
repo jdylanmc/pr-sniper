@@ -487,6 +487,16 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             )?;
             Ok(Value::Null)
         }
+        "retry_packet_state" => {
+            pr_sniper_lib::exits::consume::retry_parked(
+                store,
+                request.args["itemId"]
+                    .as_str()
+                    .ok_or("Item identity required.")?,
+                1_800_000_110,
+            )?;
+            Ok(Value::Null)
+        }
         "retry_action_observation" => {
             pr_sniper_lib::actions::request_observation_retry(
                 store,

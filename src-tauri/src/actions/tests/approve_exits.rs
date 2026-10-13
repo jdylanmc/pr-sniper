@@ -404,3 +404,103 @@ fn consume_after_a_moved_state_tosses_instead_of_baselining() {
     assert_eq!(record.baseline_hash.as_deref(), Some("fresh"));
     assert_eq!(record.error_count, 1);
 }
+
+fn item(store: &Store, id: &str) -> crate::queue::Item {
+    crate::queue::snapshot(store, vec![])
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|i| i.id == id)
+        .unwrap()
+}
+
+#[test]
+fn approve_exits_show_approving_then_merging_then_leave_the_queue_as_merged() {
+    use crate::{exits::Exit, queue::Progress};
+    let (_root, store, id) = setup(true, true, approve_exit(true), false);
+    let before = item(&store, &id);
+    assert_eq!(before.state, State::MachineSignedOff);
+    assert_eq!(before.exit, Some(Exit::ApproveAndMerge));
+    assert_eq!(before.progress, Some(Progress::Approving));
+    adopted(&store, &id, observed());
+    assert_eq!(item(&store, &id).progress, Some(Progress::Approving));
+    let approve = host::prepare_next_effect(&store, &id, NOW + 20)
+        .unwrap()
+        .unwrap();
+    let mut env = env(&store);
+    host::execute_action(&mut env, &approve).unwrap();
+    let current = env.wire.0.lock().unwrap().observation.clone();
+    synchronize(&store, &id, Ok(current), NOW + 22).unwrap();
+    let approving = item(&store, &id);
+    // A confirmed approval leaves the Queue; the merge still shows as progress.
+    assert_eq!(approving.state, State::Approved);
+    assert_eq!(approving.progress, Some(Progress::Merging));
+    let merge = host::prepare_next_effect(&store, &id, NOW + 23)
+        .unwrap()
+        .unwrap();
+    env.now = NOW + 23;
+    host::execute_action(&mut env, &merge).unwrap();
+    let merged = item(&store, &id);
+    assert_eq!(merged.state, State::Merged);
+    assert_eq!(merged.progress, None);
+}
+
+#[test]
+fn a_confirmed_packet_approval_leaves_the_queue_as_approved() {
+    let (_root, store, id) = setup(true, false, approve_exit(false), false);
+    adopted(&store, &id, observed());
+    let effect = host::prepare_next_effect(&store, &id, NOW + 20)
+        .unwrap()
+        .unwrap();
+    let mut env = env(&store);
+    host::execute_action(&mut env, &effect).unwrap();
+    let current = env.wire.0.lock().unwrap().observation.clone();
+    synchronize(&store, &id, Ok(current), NOW + 22).unwrap();
+    let approved = item(&store, &id);
+    assert_eq!(approved.state, State::Approved);
+    assert_eq!(approved.progress, None);
+}
+
+#[test]
+fn a_parked_approve_toss_is_one_failed_row_typed_tossed_and_retry_requeues() {
+    let (_root, store, id) = setup(true, false, approve_exit(false), false);
+    adopted(&store, &id, observed());
+    let effect = host::prepare_next_effect(&store, &id, NOW + 20)
+        .unwrap()
+        .unwrap();
+    let mut env = env(&store);
+    env.wire.0.lock().unwrap().reject = true;
+    let _ = host::execute_action(&mut env, &effect);
+    let job = store.load_reviews().unwrap().remove(0).job;
+    let binding = Binding::job(&job);
+    // Two earlier tosses: this one spends the budget and parks.
+    let mut states = store.load_pr_states().unwrap();
+    states.toss(&binding);
+    states.toss(&binding);
+    store.save_pr_states(&states).unwrap();
+    packet::settle(&store, &id, &observed(), NOW + 30).unwrap();
+    assert_eq!(store.load_reviews().unwrap().len(), 1, "parked: no new run");
+    let snapshot = crate::queue::snapshot(&store, vec![]).unwrap();
+    let rows: Vec<_> = snapshot.items.iter().filter(|i| i.id == id).collect();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].state, State::Failed);
+    assert_eq!(rows[0].failure_cause, Some(crate::queue::CAUSE_TOSSED));
+    assert_eq!(rows[0].progress, None);
+
+    assert_eq!(consume::retry_parked(&store, &id, NOW + 40).unwrap(), 1);
+    let record = store
+        .load_pr_states()
+        .unwrap()
+        .get(&binding)
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        record.error_count, 0,
+        "an explicit retry restarts the budget"
+    );
+    let reviews = store.load_reviews().unwrap();
+    assert_eq!(reviews.len(), 2);
+    assert_eq!(reviews[1].operation.state, OperationState::Queued);
+    assert_eq!(item(&store, &id).state, State::Queued);
+    assert!(consume::retry_parked(&store, &id, NOW + 41).is_err());
+}

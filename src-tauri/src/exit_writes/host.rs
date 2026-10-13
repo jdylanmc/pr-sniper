@@ -60,6 +60,7 @@ pub(crate) fn pump(app: &tauri::AppHandle) -> Result<(), String> {
             app: app.clone(),
             generation,
         };
+        let tossed_before = write.phase == Phase::Tossed;
         if let Err(error) = run(&mut env, &mut write) {
             if !error.rate_limited() && error.kind == OperationFailure::Permanent {
                 crate::report(
@@ -67,6 +68,11 @@ pub(crate) fn pump(app: &tauri::AppHandle) -> Result<(), String> {
                     "An exit's replies or resolutions were not written. Open the PR's review evidence."
                         .into(),
                 );
+            }
+        }
+        if !tossed_before && write.phase == Phase::Tossed {
+            if let Err(error) = requeue_tossed(&app, &write) {
+                crate::report(&app, error);
             }
         }
         if let Err(error) = app.state::<Host>().mutations.release(&owner) {
@@ -79,6 +85,16 @@ pub(crate) fn pump(app: &tauri::AppHandle) -> Result<(), String> {
 struct Native {
     app: tauri::AppHandle,
     generation: u64,
+}
+
+/// A tossed exit counts against the PR's toss budget and re-queues its review (AC-022).
+fn requeue_tossed(app: &tauri::AppHandle, write: &ExitWrite) -> Result<(), String> {
+    let host = app.state::<Host>();
+    let store = host
+        .store
+        .lock()
+        .map_err(|_| "Exit write storage unavailable.")?;
+    requeue(&store, write, now_seconds()?)
 }
 
 fn waiting(message: &str) -> Failure {

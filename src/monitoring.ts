@@ -102,7 +102,43 @@ export interface MonitoringSnapshot {
   reviews?: ReviewCandidate[];
   publications?: PublicationCandidate[];
   follow_ups?: FollowUpCandidate[];
+  exit_writes?: ExitWrite[];
 }
+
+// Host execution of a `leave_comments` exit's replies and resolutions.
+export interface ExitWrite {
+  id: string;
+  review_operation_id: string;
+  phase: "planned" | "verified" | "completed" | "tossed" | "failed";
+  steps: {
+    kind: "reply" | "resolve";
+    state: "planned" | "attempted" | "done";
+    receipt: string | null;
+  }[];
+  published: boolean;
+  consumed: boolean;
+  error: string | null;
+}
+
+export interface ReportFinding {
+  file: string;
+  line: number;
+  nano: string;
+  full: string;
+  fix: string;
+}
+
+export type ExitOutcome =
+  | {
+      exit: "comments";
+      new_comments: unknown[];
+      reply_comments: unknown[];
+      resolve_own_threads: string[];
+    }
+  | { exit: "ready_for_human"; summary: string }
+  | { exit: "approve"; comment: string }
+  | { exit: "approve_and_merge"; comment: string }
+  | { exit: "submit_report" };
 
 export interface PublicationCandidate {
   local_only?: boolean;
@@ -156,9 +192,21 @@ export interface ReviewCandidate {
     selection: import("./resources").ReviewSelection;
     job?: Job;
     operation: NonNullable<Health["operation"]>;
+    mode?: "legacy" | "packet";
+    // Content-free record of the packet the run was given.
+    packet?: {
+      state_id: string;
+      hash: string;
+      schema: number;
+      tool_set: string[];
+      exits_offered: string[];
+      exits_denied: unknown[];
+    } | null;
     result: {
       reviewed_base_sha?: string | null;
       output: {
+        exit?: ExitOutcome | null;
+        report?: { findings: ReportFinding[] } | null;
         feedback_conflict?: boolean;
         held_findings?: { path: string; title: string; explanation: string }[];
         synopsis: string;

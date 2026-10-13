@@ -543,6 +543,30 @@ fn execute(env: &mut impl Environment, write: &mut ExitWrite, index: usize) -> R
     }
 }
 
+/// Store half of a toss: count it and queue the review again under budget. The
+/// write's run must still be its key's newest run; anything newer already re-ran.
+pub fn requeue(store: &Store, write: &ExitWrite, now: i64) -> Result<(), String> {
+    if write.phase != Phase::Tossed {
+        return Ok(());
+    }
+    let reviews = store.load_reviews()?;
+    let Some(run) = reviews
+        .iter()
+        .find(|r| r.operation.id == write.review_operation_id)
+    else {
+        return Ok(());
+    };
+    if reviews
+        .iter()
+        .rev()
+        .find(|r| r.key == run.key)
+        .is_some_and(|newest| newest.operation.id != run.operation.id)
+    {
+        return Ok(());
+    }
+    crate::exits::consume::toss_and_requeue(store, &write.job, run, now).map(|_| ())
+}
+
 /// Saved exit writes of a review, for the publication hold and the coordinator.
 pub fn for_review(store: &Store, review_operation_id: &str) -> Result<Option<ExitWrite>, String> {
     Ok(store

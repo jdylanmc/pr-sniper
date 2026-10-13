@@ -12,6 +12,23 @@ Reference for Queue states, evidence, local Agent reviews, retry/parking and not
 - Auto-resume: a parked Network/Provider/Timeout/RateLimited/Permission failure gets a fresh 3-attempt budget after a cooldown of 30m, 1h, 2h, 4h, 8h (`RESUME_COOLDOWNS_SECONDS`; `resume_cycle`, `resume_at` on the operation). After five cycles it waits for a human. Credential failures resume when the GitHub or Copilot account connects again. Explicit Retry starts a new operation (cycle 0): a poll failure retries the repository poll; a review restarts only if its own run failed with nothing published for that revision. Publication operations resume the same way (reconcile the original). Permanent failures never resume. Superseded, closed and merged work is never resumed.
 - Parked failures live in Queue > **Needs attention**: cause chip, **Fix** (credentials → Accounts) or **Retry**, **Retry all** pill. A clock + time shows the next automatic retry. Failed detail lists Cause, Attempts, Last attempt, Next retry, Agent, Revision, Account and the raw error. Running holds active + queued only.
 - Teammates: teammate fail = PR-state fail. One Needs attention row per PR, chip = agent name + typed cause (`failed_teammate`; icons, no prose); detail adds Teammate row. Primary waits (`blocked_by`, Running chip = agent name + clock) until all teammates have report for same state. Good reports reused on retry. State move re-runs all. See [ADR-0021](adr/0021-review-packet.md).
+- Packet exits (`Item.exit`, `Item.progress`, typed `failure_cause`):
+
+  | Exit / host phase                                                             | Queue                                 | Chip                        |
+  | ----------------------------------------------------------------------------- | ------------------------------------- | --------------------------- |
+  | `ready_for_human`                                                             | Ready for you                         | —                           |
+  | `approve_pull_request`, `approve_and_merge`                                   | Ready for you                         | **Approving** → **Merging** |
+  | approval confirmed / merged                                                   | Reviewed (Approved / Merged)          | —                           |
+  | `leave_comments` writes running (exit_writes Planned/Verified, batch pending) | out of Queue (`awaiting_publication`) | **Publishing**              |
+  | writes confirmed + consumed                                                   | out of Queue (`waiting_for_author`)   | —                           |
+  | write Tossed, budget left                                                     | re-queued (`queued`)                  | —                           |
+  | toss budget spent (`error_count` ≥ 3)                                         | Needs attention                       | **Tossed**, Retry           |
+  | write Failed after an effect                                                  | Needs attention                       | **Write failed**, Retry     |
+  | `panic_exit`                                                                  | Needs attention                       | **Panic** + cooldown clock  |
+
+  Retry on Tossed / Write failed: `retry_packet_state` resets `error_count`, re-queues the review. Panic Retry restarts the run.
+
+- Activity (packet runs): **Read** N of M, exit row (icon + exit, counts New / Replies / Resolved, Approve / Merge, Write phase, Progress), **Packet** row (State id, Schema, Tools, Offered, Denied, Hash), teammate **Report** rows (agent, finding count; tap = `file:line` + nano). `ready_for_human` summary shows local, never posted.
 - Stale only on new head or base. Completed reviews stay Ready despite config drift or a disabled repo. Merged/closed PRs move to Reviewed; tracked PRs of disabled repos keep a light lifecycle refresh.
 - Queue identity is derived from stored tracking, not position.
 

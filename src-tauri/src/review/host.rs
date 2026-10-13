@@ -768,6 +768,29 @@ pub(crate) async fn start_review(
 }
 
 #[tauri::command]
+pub(crate) async fn retry_packet_state(
+    app: tauri::AppHandle,
+    item_id: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<Host>();
+        if host.quitting.load(Ordering::SeqCst) {
+            return Err("PR Sniper is quitting.".into());
+        }
+        {
+            let store = host
+                .store
+                .lock()
+                .map_err(|_| "Review storage unavailable.")?;
+            crate::exits::consume::retry_parked(&store, &item_id, now_seconds()?)?;
+        }
+        crate::capacity::Coordinator::pump(&app)
+    })
+    .await
+    .map_err(|_| "Retry could not finish.".to_string())?
+}
+
+#[tauri::command]
 pub(crate) async fn cancel_review(
     app: tauri::AppHandle,
     operation_id: String,

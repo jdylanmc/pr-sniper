@@ -61,9 +61,29 @@ impl State {
     }
 }
 
+/// Host effect of the primary's exit still in flight. Typed; the UI shows an icon and label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Progress {
+    Approving,
+    Merging,
+    Publishing,
+}
+
+/// Typed causes of a failed packet exit (beside `publication_*`).
+pub const CAUSE_PANIC: &str = "panic";
+pub const CAUSE_TOSSED: &str = "tossed";
+pub const CAUSE_EXIT_FAILED: &str = "exit_failed";
+
 #[derive(Serialize)]
 pub struct Item {
     pub action_status: Option<crate::actions::Status>,
+    /// The exit the item's primary run ended on (`panic_exit` for a panic).
+    pub exit: Option<crate::exits::Exit>,
+    /// Operation id of that run; actions match their packet final to it.
+    #[serde(skip)]
+    pub(crate) exit_run_id: Option<String>,
+    pub progress: Option<Progress>,
     pub feedback: Vec<crate::feedback::View>,
     pub id: String,
     pub aliases: Vec<String>,
@@ -71,7 +91,8 @@ pub struct Item {
     pub state: State,
     // Set only for failed items; the Queue shows credential failures only.
     pub failure_class: Option<monitoring::FailureClass>,
-    // Typed publication cause of a failed item: `publication_failed` or `publication_unresolved`.
+    // Typed cause of a failed item: `publication_failed`, `publication_unresolved`,
+    // `panic`, `tossed` (parked after the toss budget) or `exit_failed`.
     pub failure_cause: Option<&'static str>,
     // A parked teammate holds this PR's primary back; its typed cause rides along.
     pub failed_teammate: Option<review::teammates::FailedTeammate>,
@@ -97,6 +118,10 @@ pub struct Snapshot {
     pub(crate) reviews: Vec<review::host::Candidate>,
     pub(crate) publications: Vec<publication::host::Candidate>,
     pub(crate) follow_ups: Vec<follow_up::host::Candidate>,
+    /// Host execution of `leave_comments` replies and resolutions.
+    pub exit_writes: Vec<crate::exit_writes::ExitWrite>,
+    #[serde(skip)]
+    pub(crate) pr_states: crate::pr_state::PrStates,
     pub items: Vec<Item>,
 }
 
@@ -135,10 +160,13 @@ pub(crate) fn normal_snapshot(
     } else {
         health
     };
+    let ledger = store.load_feedback()?;
     let mut result = Snapshot {
         feedback: BTreeMap::new(),
-        mentions: store.load_feedback()?.mentions,
-        pending_threads: store.load_feedback()?.pending_threads,
+        mentions: ledger.mentions,
+        pending_threads: ledger.pending_threads,
+        exit_writes: ledger.exit_writes,
+        pr_states: store.load_pr_states()?,
         global_scan: monitoring.global_scan,
         tracked: store.load_queue_state()?.tracked,
         health,
@@ -200,11 +228,37 @@ fn failed(operation: &monitoring::JobOperation) -> bool {
     )
 }
 
+/// Packet facts the state of a review needs beyond its own run.
+struct ExitContext<'a> {
+    exit_writes: &'a [crate::exit_writes::ExitWrite],
+    pr_states: &'a crate::pr_state::PrStates,
+}
+
+impl ExitContext<'_> {
+    fn write(&self, run: &review::ReviewRun) -> Option<&crate::exit_writes::ExitWrite> {
+        self.exit_writes
+            .iter()
+            .find(|w| w.review_operation_id == run.operation.id)
+    }
+
+    /// A tossed write whose PR spent its toss budget: no new run was queued.
+    fn parked(&self, run: &review::ReviewRun) -> bool {
+        let seq = crate::exits::consume::state_seq(&run.job);
+        self.pr_states
+            .get(&crate::retention::Binding::job(&run.job))
+            .is_some_and(|r| {
+                r.error_count >= monitoring::MAX_FAILED_ATTEMPTS
+                    && r.exit.as_ref().is_none_or(|e| e.state_seq != seq)
+            })
+    }
+}
+
 fn review_state(
     settings: &Settings,
     candidate: &review::host::Candidate,
     publications: &[publication::host::Candidate],
     feedback: &[crate::feedback::View],
+    context: &ExitContext,
 ) -> State {
     let batch = candidate.run.as_ref().and_then(|run| {
         publications
@@ -282,18 +336,30 @@ fn review_state(
         Some(_) => {}
     }
     if let Some(exit) = &result.output.exit {
+        use crate::exit_writes::Phase;
         use crate::exits::ExitOutcome;
         match exit {
-            ExitOutcome::ReadyForHuman { .. } | ExitOutcome::SubmitReport => {
-                return State::MachineSignedOff
-            }
-            ExitOutcome::Approve { .. } | ExitOutcome::ApproveAndMerge { .. } => {
-                return State::WaitingForHuman
-            }
-            ExitOutcome::Comments { new_comments, .. } if new_comments.is_empty() => {
-                return State::WaitingForHuman
-            }
-            _ => {}
+            // Approve exits are signed off; actions show Approving/Merging, then Approved/Merged.
+            ExitOutcome::ReadyForHuman { .. }
+            | ExitOutcome::SubmitReport
+            | ExitOutcome::Approve { .. }
+            | ExitOutcome::ApproveAndMerge { .. } => return State::MachineSignedOff,
+            ExitOutcome::Comments { new_comments, .. } => match context.write(run) {
+                Some(write) => match write.phase {
+                    Phase::Failed => return State::Failed,
+                    Phase::Tossed if context.parked(run) => return State::Failed,
+                    // The toss re-queues the PR.
+                    Phase::Tossed => return State::Queued,
+                    Phase::Completed if write.consumed => {
+                        if new_comments.is_empty() {
+                            return State::WaitingForAuthor;
+                        }
+                    }
+                    _ => return State::AwaitingPublication,
+                },
+                None if new_comments.is_empty() => return State::AwaitingPublication,
+                None => {}
+            },
         }
     }
     let assignment = settings
@@ -470,6 +536,10 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             .iter()
             .filter(|f| crate::feedback::same_pr(&f.run.context.job, job))
             .collect();
+        let context = ExitContext {
+            exit_writes: &snapshot.exit_writes,
+            pr_states: &snapshot.pr_states,
+        };
         let mut states: Vec<_> = reviews
             .iter()
             .filter(|r| r.job.waiting != monitoring::WAITING_ASSIGNMENT_REMOVED)
@@ -479,6 +549,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                     r,
                     &snapshot.publications,
                     snapshot.feedback.get(&id).map(Vec::as_slice).unwrap_or(&[]),
+                    &context,
                 )
             })
             .collect();
@@ -488,6 +559,13 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             reviews
                 .iter()
                 .filter_map(|r| r.run.as_ref()?.operation.failure_class()),
+        );
+        failures.extend(
+            reviews
+                .iter()
+                .filter_map(|r| context.write(r.run.as_ref()?))
+                .filter(|w| w.phase == crate::exit_writes::Phase::Failed)
+                .filter_map(|w| w.operation.failure_class()),
         );
         let resume_at = reviews
             .iter()
@@ -759,13 +837,51 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                     .map(review::teammates::BlockedBy::Teammate)
             })
             .flatten();
+        let exit_cause = reviews
+            .iter()
+            .filter_map(|r| r.run.as_ref())
+            .find_map(|run| {
+                use crate::exit_writes::Phase;
+                if failed(&run.operation) {
+                    return match run.operation.failure {
+                        Some(monitoring::OperationFailure::Panic) => Some(CAUSE_PANIC),
+                        Some(monitoring::OperationFailure::Tossed) => Some(CAUSE_TOSSED),
+                        _ => None,
+                    };
+                }
+                match context.write(run)?.phase {
+                    Phase::Failed => Some(CAUSE_EXIT_FAILED),
+                    Phase::Tossed if context.parked(run) => Some(CAUSE_TOSSED),
+                    _ => None,
+                }
+            });
         let failure_cause = if state == State::Failed {
-            publication_cause(&snapshot.publications, &id, current)
+            exit_cause.or_else(|| publication_cause(&snapshot.publications, &id, current))
         } else {
             None
         };
+        // The primary's exit leads; a teammate's report is never the item's exit.
+        let exit_run = reviews
+            .iter()
+            .filter_map(|r| Some((r, r.run.as_ref()?, run_exit(r.run.as_ref()?)?)))
+            .filter(|(_, _, exit)| *exit != crate::exits::Exit::SubmitReport)
+            .min_by_key(|(r, _, _)| primary_id != Some(r.assignment_id.as_str()));
+        let exit = exit_run.map(|(_, _, exit)| exit);
+        let progress = match (exit, state) {
+            (
+                Some(crate::exits::Exit::ApprovePullRequest | crate::exits::Exit::ApproveAndMerge),
+                State::MachineSignedOff,
+            ) => Some(Progress::Approving),
+            (Some(crate::exits::Exit::LeaveComments), State::AwaitingPublication) => {
+                Some(Progress::Publishing)
+            }
+            _ => None,
+        };
         items.push(Item {
             action_status: None,
+            exit,
+            exit_run_id: exit_run.map(|(_, run, _)| run.operation.id.clone()),
+            progress,
             feedback,
             aliases: snapshot
                 .jobs
@@ -812,6 +928,25 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             ))
     });
     items
+}
+
+/// The exit a packet run ended on; a panic leaves no outcome, only its typed failure.
+fn run_exit(run: &review::ReviewRun) -> Option<crate::exits::Exit> {
+    use crate::exits::{Exit, ExitOutcome};
+    if run.operation.failure == Some(monitoring::OperationFailure::Panic) && failed(&run.operation)
+    {
+        return Some(Exit::PanicExit);
+    }
+    if run.operation.state != OperationState::Completed {
+        return None;
+    }
+    Some(match run.result.as_ref()?.output.exit.as_ref()? {
+        ExitOutcome::Comments { .. } => Exit::LeaveComments,
+        ExitOutcome::ReadyForHuman { .. } => Exit::ReadyForHuman,
+        ExitOutcome::Approve { .. } => Exit::ApprovePullRequest,
+        ExitOutcome::ApproveAndMerge { .. } => Exit::ApproveAndMerge,
+        ExitOutcome::SubmitReport => Exit::SubmitReport,
+    })
 }
 
 fn current_job<'a>(job: &'a QueueJob, jobs: &'a [QueueJob]) -> &'a QueueJob {
