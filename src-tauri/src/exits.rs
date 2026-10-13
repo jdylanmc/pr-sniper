@@ -1,6 +1,7 @@
 //! Exits end a review run. The agent calls exactly one; the host is the only writer.
 //! Payloads are validated here, gates in [`gates`]; effects live in their own pipelines.
 
+pub mod consume;
 pub mod gates;
 
 use serde::{Deserialize, Serialize};

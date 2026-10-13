@@ -400,6 +400,10 @@ pub trait Environment {
         mutation: Mutation,
     ) -> Result<Receipt, WriteFailure>;
     fn requeue(&mut self, publication: &Publication) -> Result<(), Failure>;
+    /// The batch is confirmed on the provider: a Packet-mode run consumes its state here.
+    fn confirmed(&mut self, _: &Publication) -> Result<(), Failure> {
+        Ok(())
+    }
 }
 
 pub fn execute(
@@ -704,6 +708,10 @@ fn complete(env: &mut impl Environment, run: &mut Publication, gate: Gate) -> Re
     run.operation.next_attempt_at = None;
     run.operation.failure = None;
     env.save(run)?;
+    if run.error.is_none() {
+        // The comments are out; a baseline that cannot be read now only costs a re-review.
+        let _ = env.confirmed(run);
+    }
     if gate.requeue {
         env.requeue(run)?;
     }

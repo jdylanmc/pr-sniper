@@ -97,6 +97,7 @@ fn snapshot(body: &str) -> PrSnapshot {
         title: "Review".into(),
         body: body.into(),
         labels: vec![],
+        head_ref: "feature".into(),
         head: "a".repeat(40),
         base: "f".repeat(40),
         state: "OPEN".into(),

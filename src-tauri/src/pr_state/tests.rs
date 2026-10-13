@@ -20,6 +20,7 @@ fn snapshot() -> PrSnapshot {
         title: "t".into(),
         body: "b".into(),
         labels: vec![],
+        head_ref: "feature".into(),
         head: "h".into(),
         base: "s".into(),
         state: "OPEN".into(),

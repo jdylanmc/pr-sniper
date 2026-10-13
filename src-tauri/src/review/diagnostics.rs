@@ -231,7 +231,7 @@ fn operation_failure(failure: &OperationFailure) -> FailureKind {
         OperationFailure::RateLimited => FailureKind::RateLimited,
         OperationFailure::Provider => FailureKind::Provider,
         OperationFailure::Panic => FailureKind::Panic,
-        OperationFailure::Superseded => FailureKind::Superseded,
+        OperationFailure::Superseded | OperationFailure::Tossed => FailureKind::Superseded,
         OperationFailure::Permanent
         | OperationFailure::Credentials
         | OperationFailure::Permission => FailureKind::EligibilityOrConfiguration,

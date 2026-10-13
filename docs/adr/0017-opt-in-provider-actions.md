@@ -29,4 +29,4 @@ Agents are reused across repos. Permissions must not travel with them. Approve a
 - Approve & Merge gets an **Include self** option, default off (ad hoc decision, owner review requested). It lifts the "not the author" gate. Whether GitHub accepts an author approving their own PR is unverified; if it does not, the option has no effect and that is reported.
 - Approve gate relaxations: others' unresolved threads and others' changes requested no longer block approve; merge gates are unchanged. Not offered while a PR is a draft.
 - Evidence limits, HAS_HOOKS, merge queue and no-bypass rules stay.
-- Not yet implemented.
+- Approve and merge implemented: effective permission = grant AND the exit chosen (`approve_pull_request` never merges). Own PR: approve denied, merge only with Include self. Our approval already on the head: success, no write, state consumed. No `PrimaryFinal` work is created for packet-mode assignments; legacy records still load. Reply and resolve execution: M5c.

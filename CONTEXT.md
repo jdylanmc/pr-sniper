@@ -138,7 +138,7 @@ The scheduled read of PR state for tracked open PRs. It only adds a PR to the qu
 Hash of the last consumed PR state, including the host's own writes, so own comments never retrigger.
 
 **Consume** / **Toss**:
-A successful exit consumes the state it read and sets the Baseline. A state that moved during the run tosses the result: error count +1, re-queue, park at 3.
+A successful exit consumes the state it read and sets the Baseline. A state that moved during the run tosses the result: error count +1, re-queue, park at 3. Honoured when: `ready_for_human` completes, comments publish, approve/merge confirm. Baseline = fresh snapshot after the write. Head moved or PR closed before the run: superseded, no budget spent.
 
 **Clean** (Reviewed):
 Per-PR and Clean all. Deletes persisted PR state, packet and result detail of terminal PRs only. Receipts and uncertain-write records stay.

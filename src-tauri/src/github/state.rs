@@ -49,13 +49,16 @@ pub struct SnapshotReview {
 
 /// Raw provider read of one PR. Public so the packet builder and exits can
 /// re-read fresh state at consume time and after their own writes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrSnapshot {
     pub number: u64,
     pub pull_request_id: String,
     pub title: String,
     pub body: String,
     pub labels: Vec<String>,
+    /// Source branch name; information for the packet, never part of the state hash.
+    #[serde(default)]
+    pub head_ref: String,
     pub head: String,
     pub base: String,
     pub state: String,
@@ -198,7 +201,7 @@ impl NormalizedSnapshot {
 }
 
 const FRAGMENT: &str = r#"fragment S on PullRequest {
-  fullDatabaseId number title body state isDraft mergeable reviewDecision baseRefOid headRefOid
+  fullDatabaseId number title body state isDraft mergeable reviewDecision baseRefOid headRefOid headRefName
   labels(first:100) { nodes { name } }
   latestOpinionatedReviews(first:100) { nodes { state author { login } commit { oid } } }
   comments(last:100) { totalCount nodes { fullDatabaseId body } }
@@ -297,6 +300,7 @@ fn parse(pull: &Value) -> Result<PrSnapshot, ConnectionError> {
             .iter()
             .map(|l| string(&l["name"]))
             .collect::<Result<_, _>>()?,
+        head_ref: pull["headRefName"].as_str().unwrap_or("").to_string(),
         head: string(&pull["headRefOid"])?,
         base: string(&pull["baseRefOid"])?,
         state: string(&pull["state"])?,
@@ -394,6 +398,7 @@ mod tests {
             title: "t".into(),
             body: "b".into(),
             labels: vec!["b".into(), "a".into()],
+            head_ref: "feature".into(),
             head: "h".into(),
             base: "s".into(),
             state: "OPEN".into(),

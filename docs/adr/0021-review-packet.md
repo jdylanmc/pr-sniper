@@ -1,6 +1,6 @@
 # Hand each agent one review packet and let it end on one exit
 
-Status: accepted. Packet, tools, gates and exits implemented; approve and merge effects, reply and resolve execution, barrier and heartbeat follow in the same PR. Discovery: [#172](https://github.com/jdylanmc/pr-sniper/issues/172). Spec: [Review packet](../review-packet.md).
+Status: accepted. Packet, tools, gates, exits, consume-time fresh state, consume/toss and approve/merge effects implemented; reply and resolve execution and barrier follow in the same PR. Discovery: [#172](https://github.com/jdylanmc/pr-sniper/issues/172). Spec: [Review packet](../review-packet.md).
 
 ## Context
 

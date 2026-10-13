@@ -640,13 +640,58 @@ impl ActionEnvironment for Native {
     }
     fn post_check(&mut self, effect: &Effect) -> Result<(), Failure> {
         let observed = self.observe(effect);
-        let host = self.app.state::<Host>();
+        let checked = {
+            let host = self.app.state::<Host>();
+            let store = host
+                .store
+                .lock()
+                .map_err(|_| Failure::permanent("Action storage unavailable."))?;
+            verify_after_effect(&store, effect, observed.clone())
+        };
+        if checked.is_ok() {
+            if let Ok(current) = observed {
+                settle_native(&self.app, &effect.item_id, Some(current))
+                    .map_err(Failure::permanent)?;
+            }
+        }
+        checked
+    }
+}
+
+/// Consume the state of packet finals whose writes are confirmed: the post-write
+/// snapshot becomes the baseline, so the host's own approval never retriggers.
+fn settle_native(
+    app: &tauri::AppHandle,
+    item_id: &str,
+    observation: Option<Observation>,
+) -> Result<(), String> {
+    let host = app.state::<Host>();
+    let settles = {
         let store = host
             .store
             .lock()
-            .map_err(|_| Failure::permanent("Action storage unavailable."))?;
-        verify_after_effect(&store, effect, observed)
+            .map_err(|_| "Action storage unavailable.")?;
+        let observation = match observation {
+            Some(observation) => observation,
+            None => match store
+                .load_actions()?
+                .observations
+                .into_iter()
+                .find(|o| o.item_id == item_id)
+                .and_then(|o| o.observation)
+            {
+                Some(observation) => observation,
+                None => return Ok(()),
+            },
+        };
+        packet::settle(&store, item_id, &observation, now_seconds()?)?
+    };
+    for settle in settles {
+        let (_, client) = crate::github_session(&host, &settle.job.account_id)
+            .map_err(|_| "GitHub session unavailable.".to_string())?;
+        packet::consume_settled(&host.store, &client, &settle)?;
     }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -729,6 +774,7 @@ impl Coordinator {
             expire_prepared(&store, now_seconds()?)?;
             let snapshot = queue::normal_snapshot(&store, vec![])?;
             let ledger = store.load_actions()?;
+            let unadopted = packet::unadopted(&store, &ledger)?;
             let settings = store.load_settings()?;
             let now = now_seconds()?;
             snapshot
@@ -741,7 +787,9 @@ impl Coordinator {
                         .find(|o| o.item_id == item.id)
                         .is_none_or(|o| o.error.is_none() || o.retry_at.is_some_and(|at| at <= now))
                 })
-                .filter(|i| observation_pending(i, &settings, &ledger, now))
+                .filter(|i| {
+                    observation_pending(i, &settings, &ledger, now) || unadopted.contains(&i.id)
+                })
                 .min_by_key(|i| {
                     ledger
                         .observations
@@ -804,8 +852,12 @@ impl Coordinator {
                         .lock()
                         .map_err(|_| "Action storage unavailable.")?;
                     synchronize(&store, &target.id, observed, now_seconds()?)?;
+                    packet::adopt(&store, &target.id)?;
                     prepare_next_effect(&store, &target.id, now_seconds()?)?
                 };
+                if effect.is_none() {
+                    settle_native(&app, &target.id, None)?;
+                }
                 if let Some(effect) = effect {
                     let owner = format!("action:{}", effect.id);
                     if app.state::<Host>().mutations.acquire(&owner)? {

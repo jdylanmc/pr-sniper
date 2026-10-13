@@ -11,6 +11,7 @@ use crate::{
         actions::Observation,
         provider::{GithubClient, RemoteRepository, Transport},
         review::ReviewContext,
+        state::PrSnapshot,
         threads::QueryTransport,
     },
     packet::{self, reads, Directive, Packet, PacketInput, Role},
@@ -51,12 +52,14 @@ fn gate_input(run: &ReviewRun, facts: Facts) -> Result<GateInput, Failure> {
 }
 
 /// Build the packet and the run's tool set from state read right now.
-/// A head that moved since the job was queued is a superseded state, not a failure.
+/// A head that moved since the job was queued is a superseded state, not a failure;
+/// any other change since enqueue is simply read fresh from `snapshot`.
 pub(crate) fn prepare<T>(
     client: &Arc<GithubClient<T>>,
     repo: &RemoteRepository,
     run: &ReviewRun,
     context: &ReviewContext,
+    snapshot: &PrSnapshot,
     acting_login: &str,
     write_capability: bool,
 ) -> Result<Prepared, Failure>
@@ -97,9 +100,14 @@ where
     let admission = run.job.work.as_ref().map(|w| &w.admission);
     let conversation = reads::conversation(&observation);
     let checks = reads::checks(&observation);
-    let description = None;
+    let description = Some(snapshot.body.clone());
+    let state_hash = snapshot.normalize().hash();
     let input = PacketInput {
-        state_id: format!("{}:{}", context.pull.head_sha, context.pull.base_sha),
+        state_id: format!(
+            "{}:{}",
+            run.job.work.as_ref().map_or(0, |w| w.state_seq),
+            &state_hash[..16]
+        ),
         revision: run
             .job
             .work
@@ -125,7 +133,7 @@ where
         },
         tools: tool_set.clone(),
         exits,
-        pr: reads::pr_facts(context, &observation, description.clone(), acting_login),
+        pr: reads::pr_facts(context, &observation, snapshot, acting_login),
         files: reads::files(context),
         delta: None,
         directive: Directive {
@@ -146,7 +154,8 @@ where
         teammates: vec![],
         conversation: conversation.clone(),
     };
-    let packet = packet::build(&input);
+    let mut packet = packet::build(&input);
+    packet.record.state_hash = Some(state_hash);
     let facts = Arc::new(reads::tool_facts(description, &conversation, &checks));
     let gate = exit_gate(
         client.clone(),

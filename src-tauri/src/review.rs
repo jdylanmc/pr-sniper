@@ -577,6 +577,13 @@ impl Failure {
             ..Self::permanent(message)
         }
     }
+    /// A result or write discarded because the PR state moved: retried through the budget.
+    pub fn tossed(message: &str) -> Self {
+        Self {
+            kind: OperationFailure::Tossed,
+            ..Self::permanent(message)
+        }
+    }
     pub fn operation(message: String) -> Self {
         if message == "Copilot operation cancelled." {
             return Self::cancelled();
