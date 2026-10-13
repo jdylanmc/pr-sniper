@@ -62,6 +62,13 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
             if conflicting_publication(&publications, review) {
                 policy = Err("Another review attempt owns this revision's publication; reconcile it instead of creating another batch.".into());
             }
+            if publication.is_none() && policy.is_ok() {
+                if let Some(reason) = crate::exit_writes::holds_publication(store, review)
+                    .unwrap_or_else(Some)
+                {
+                    policy = Err(reason);
+                }
+            }
             if latest.get(&review.key).copied() != Some(&review.operation.id) {
                 policy = Err("A newer local review attempt superseded this result.".into());
             }

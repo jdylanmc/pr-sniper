@@ -397,6 +397,9 @@ pub(crate) fn admit_scan(
                 .iter()
                 .find(|a| a.id == primary)
                 .ok_or("Primary assignment unavailable.")?;
+            if packet_assignment(assigned) {
+                return Err(PACKET_HANDLES_COMMENTS.into());
+            }
             if !ticket
                 .assignments
                 .iter()
@@ -510,6 +513,13 @@ fn primary_context(
     let primary = repository
         .primary_assignment_id()
         .ok_or("No primary assigned; conversation retained locally without fallback.")?;
+    if repository
+        .assignments
+        .iter()
+        .any(|a| a.id == primary && packet_assignment(a))
+    {
+        return Err(PACKET_HANDLES_COMMENTS.into());
+    }
     let job = jobs
         .iter()
         .rev()

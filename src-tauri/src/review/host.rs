@@ -533,13 +533,22 @@ async fn execute_attempt(
                 .capabilities
                 .comment
                 == crate::github::provider::CommentCapability::Available;
-            Some(super::packet_run::prepare(
+            let iterations = host
+                .store
+                .lock()
+                .ok()
+                .and_then(|store| {
+                    crate::exit_writes::known_iterations(&store, &preparation_run.job).ok()
+                })
+                .unwrap_or_default();
+            Some(super::packet_run::prepare_with_iterations(
                 &client,
                 &repo,
                 &preparation_run,
                 &context,
                 &identity.login,
                 write_capability,
+                &iterations,
             )?)
         } else {
             None

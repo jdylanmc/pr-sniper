@@ -59,6 +59,24 @@ pub fn conversation(observation: &Observation) -> Conversation {
     }
 }
 
+/// Per-comment targeted revision (AC-041): each thread root's provider commit mapped to
+/// the local iteration with that head, else `unknown`. `known` is (head, iteration).
+pub fn stamp_targeted_revisions(
+    conversation: &mut Conversation,
+    observation: &Observation,
+    known: &[(String, u64)],
+) {
+    for thread in &mut conversation.threads {
+        let commit = observation
+            .threads
+            .iter()
+            .find(|t| t.id == thread.id)
+            .and_then(|t| t.comments.first())
+            .and_then(|c| c["originalCommit"]["oid"].as_str());
+        thread.targeted_revision = Some(crate::exit_writes::targeted_revision(commit, known));
+    }
+}
+
 pub fn checks(observation: &Observation) -> Vec<CheckFact> {
     observation
         .check_contexts

@@ -306,6 +306,9 @@ pub struct Ledger {
     pub conversation_cursors: Vec<ConversationCursor>,
     #[serde(default)]
     pub pending_threads: Vec<PendingThread>,
+    /// Replies and own-thread resolutions executed for Packet-mode exits.
+    #[serde(default)]
+    pub exit_writes: Vec<crate::exit_writes::ExitWrite>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

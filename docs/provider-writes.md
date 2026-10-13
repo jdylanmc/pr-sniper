@@ -29,11 +29,11 @@ Reference for every GitHub write PR Sniper can make: comment publication, thread
 - Trigger key: provider/account/configuration/repository/PR/thread + trigger identity. No role, no later head. Comments between polls coalesce to the latest. Own signed replies, same-account comments and signed machine output never trigger. Poll, restart or push never duplicates a job.
 - Analysis: same pinned Copilot account/model, current review lens, isolated runtime, three immutable read tools, reads what it needs. Publishable reply: bounded, substantive new information, exact verified source-line quotes. Quiet: repeats, ack-only filler, speculation, unsubstantiated answers. Fabricated citations fail visibly. Citations are not proof of every inference.
 - Human-judgment question → **human input required**: no publishable body; auto follow-ups for that thread pause.
-- Resolved, changed, superseded or stale threads stop. Replies end ` PR Sniper`; never resolve, approve or merge.
+- Resolved, changed, superseded or stale threads stop. Replies end ` PR Sniper`; never resolve, approve or merge. Legacy only: Packet-mode assignments admit no Reply or Mention follow-up; existing records drain.
 - Grant: **Reply Comment** (primary). Off: analysis still runs; responses stay local with a visible limitation. Enabling later never replays; new comments make new work.
 - UI: Review Queue > **Thread follow-ups**. **Cancel follow-up** stops inference or withdraws permission before reply; cannot remove a confirmed comment.
 - State `state/follow-ups.json`: analysis and publication each get 3 retries / 15 min; restart preserves. **Reconcile / retry reply**: same key and body, reconcile the full remote thread; never re-POST an uncertain reply.
-- Feedback `state/feedback.json`: only provider closure settles a GitHub thread. Agents never resolve or reopen. Full reviews get earlier feedback as untrusted context and must reassess their own open concerns. Findings against the same or renamed file of a closed concern are **held locally**, never discarded. Unassign keeps unresolved feedback and blocks clearance.
+- Feedback `state/feedback.json`: only provider closure settles a GitHub thread. Legacy agents never resolve or reopen; a Packet-mode exit may resolve own threads (below). Full reviews get earlier feedback as untrusted context and must reassess their own open concerns. Findings against the same or renamed file of a closed concern are **held locally**, never discarded. Unassign keeps unresolved feedback and blocks clearance.
 - Confirmed publication is immutable. Later feedback changes affect current readiness only.
 
 ## Mentions
@@ -49,10 +49,22 @@ Reference for every GitHub write PR Sniper can make: comment publication, thread
 
 - Packet-mode runs write only through their exit; the host applies it. Gates (`exits::gates::offered`) decide what is offered; the exit-time check re-reads the PR.
 - `leave_comments.new_comments`: one auto-created publication via `Batch::prepare_exit` (same ledger, pending review, reconcile as above). Every line must map to the diff; one unmappable line tosses the whole batch, nothing is posted. Needs Publish Comment.
-- `leave_comments.reply_comments`, `resolve_own_threads`: validated and stored; execution not wired yet.
+- `leave_comments.reply_comments`, `resolve_own_threads`: host-executed, ledger `exit_writes` in `state/feedback.json`. See **Replies and resolutions**. Needs Reply Comment (both).
 - `ready_for_human`: no GitHub write. Local summary, queue shows Ready for you.
 - `approve_pull_request`, `approve_and_merge`: payload, gate and stored outcome only; effects not wired yet. Approval comment required. GitHub refuses self-approval; merge on own PRs needs Include self. Approve ignores others' threads and changes requested; merge does not.
 - `panic_exit`: no write. Typed failure, parks at once, cooldown auto-resume.
+
+## Replies and resolutions (packet exit)
+
+- One exit = one ordered effect: **preflight** (read-only) → publication batch (`new_comments`) → replies → resolutions → confirmed. Publication is held until preflight passes (`exit_writes::holds_publication`).
+- Preflight verifies every item or tosses the whole exit before any effect: head unchanged, thread exists, repliable root, resolutions owned. Nothing partial. Toss = error +1, re-queue (ADR 0007, park at 3).
+- Ownership: root must verify against a saved publication proof (receipt, account, review, original commit, exact root body) of this PR. Others' threads: reply only. Already resolved own thread = done, no write.
+- Intent saved before each effect (`Attempted`). Reply body frozen at preflight: agent text, marker `<!-- pr-sniper:reply:exit-<id>-<n> -->`, revision stamp, ` PR Sniper`. Reconcile reads the thread: marker present = done. Attempted and absent = **never re-POST**; retries read only, then park `Failed`.
+- Resolve: GraphQL `resolveReviewThread` with `clientMutationId`; unconfirmed result re-reads the thread; idempotent retry.
+- Failure after the first effect = `Failed` (needs human), never silent replay. Before it = `Tossed`.
+- Revision stamp per comment: thread root `original_commit_id` mapped to a local iteration, else `unknown`.
+- Not `FollowUp`: it needs a validated analysis result, queue kind and primary-only owned targets. Own ledger, same rules. Legacy follow-ups still drain.
+- Confirmed exit calls `exit_writes::consume_after` (integration point): consume and re-baseline once, so own writes never retrigger.
 
 ## Approve and Merge
 

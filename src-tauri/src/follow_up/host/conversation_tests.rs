@@ -28,6 +28,7 @@ const NOW: i64 = 1_800_000_000;
 
 mod diagnostics;
 mod fixwave;
+mod packet_mode;
 mod primary_capabilities;
 mod retention_identity;
 

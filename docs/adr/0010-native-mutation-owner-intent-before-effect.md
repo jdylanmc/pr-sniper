@@ -25,3 +25,7 @@ Approve, merge, publish, reply are irreversible provider writes. Lost responses 
 ## Proposed change ([ADR 0021](0021-review-packet.md))
 
 Approve and merge become **exits** of the primary's run (`approve_pull_request`, `approve_and_merge`). An exit is a request: the host validates grants and gates at build and again at exit, saves intent, then writes. The host is still the only writer and the agent still holds no provider tool or credential, so the intent of "Approve/merge never exposed as Agent tools" holds. The wording is reconciled: exits are not provider tools. A teammate's `submit_report` is not a provider write at all. Intent-before-effect and reconciliation are unchanged. Not yet implemented.
+
+## Amended ([ADR 0021](0021-review-packet.md))
+
+Exit replies and own-thread resolutions run through the same rules: intent saved before each effect, marker-based reconcile of replies, never re-POST an unresolved reply, idempotent `resolveReviewThread`. One exit is one ordered effect (publication, replies, resolutions); a failed preflight tosses all of it. Ledger: `exit_writes` in `state/feedback.json`.

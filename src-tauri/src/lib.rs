@@ -4,6 +4,7 @@ pub mod backpressure;
 pub mod capacity;
 mod copilot;
 mod doctrine_seeds;
+pub mod exit_writes;
 pub mod exits;
 pub mod feedback;
 pub mod follow_up;
@@ -4329,6 +4330,9 @@ pub fn run() {
                         report(&scheduler_app, error);
                     }
                     if let Err(error) = publication::host::Coordinator::pump(&scheduler_app) {
+                        report(&scheduler_app, error);
+                    }
+                    if let Err(error) = exit_writes::host::pump(&scheduler_app) {
                         report(&scheduler_app, error);
                     }
                     if let Err(error) = follow_up::host::Coordinator::pump(&scheduler_app) {

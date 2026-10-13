@@ -52,6 +52,7 @@ fn gate_input(run: &ReviewRun, facts: Facts) -> Result<GateInput, Failure> {
 
 /// Build the packet and the run's tool set from state read right now.
 /// A head that moved since the job was queued is a superseded state, not a failure.
+#[cfg(test)]
 pub(crate) fn prepare<T>(
     client: &Arc<GithubClient<T>>,
     repo: &RemoteRepository,
@@ -59,6 +60,30 @@ pub(crate) fn prepare<T>(
     context: &ReviewContext,
     acting_login: &str,
     write_capability: bool,
+) -> Result<Prepared, Failure>
+where
+    T: Transport + QueryTransport + Send + Sync + 'static,
+{
+    prepare_with_iterations(
+        client,
+        repo,
+        run,
+        context,
+        acting_login,
+        write_capability,
+        &[],
+    )
+}
+
+/// `iterations` are the PR's known (head, local iteration) pairs, for targeted revisions.
+pub(crate) fn prepare_with_iterations<T>(
+    client: &Arc<GithubClient<T>>,
+    repo: &RemoteRepository,
+    run: &ReviewRun,
+    context: &ReviewContext,
+    acting_login: &str,
+    write_capability: bool,
+    iterations: &[(String, u64)],
 ) -> Result<Prepared, Failure>
 where
     T: Transport + QueryTransport + Send + Sync + 'static,
@@ -95,7 +120,8 @@ where
         .ok_or_else(|| Failure::permanent("Execution configuration is missing."))?;
     let agent = &run.selection.agent;
     let admission = run.job.work.as_ref().map(|w| &w.admission);
-    let conversation = reads::conversation(&observation);
+    let mut conversation = reads::conversation(&observation);
+    reads::stamp_targeted_revisions(&mut conversation, &observation, iterations);
     let checks = reads::checks(&observation);
     let description = None;
     let input = PacketInput {

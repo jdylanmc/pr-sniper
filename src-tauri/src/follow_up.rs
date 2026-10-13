@@ -15,6 +15,14 @@ pub(crate) use task::{ConversationInput, ReplyTask};
 pub use task::{Evidence, ReplyDecision, ReplyOutput};
 
 pub(crate) const SUPERSEDED_TRIGGER: &str = "A later external comment superseded this follow-up.";
+pub(crate) const PACKET_HANDLES_COMMENTS: &str =
+    "Packet-mode assignment; comments are handled in its review packet.";
+
+/// Packet-mode assignments read comments in the packet and answer with exit replies,
+/// so no legacy Reply or Mention analysis is admitted for them. Existing records drain.
+pub fn packet_assignment(assignment: &crate::storage::Assignment) -> bool {
+    crate::review::RunMode::for_assignment(assignment) == crate::review::RunMode::Packet
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

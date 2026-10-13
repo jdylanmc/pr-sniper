@@ -1,0 +1,670 @@
+#[path = "support/fake_github.rs"]
+mod fake_github;
+
+use fake_github::{self as fake, foreign_thread, owned_thread, Fault, Wire, ASSIGNMENT, HEAD};
+use pr_sniper_lib::{
+    exit_writes::{self, Dependency, Environment, ExitWrite, Outcome, Phase, StepState},
+    github::{
+        provider::GithubClient,
+        threads::{Ownership, Provenance, Thread},
+    },
+    publication::WriteFailure,
+    review::Failure,
+};
+use serde_json::{json, Value};
+
+struct Env {
+    wire: Wire,
+    proofs: Vec<Ownership>,
+    dependency: Dependency,
+    now: i64,
+    /// Every saved snapshot, newest last: a restart resumes from one of these.
+    saved: Vec<ExitWrite>,
+    confirmed: usize,
+    fail_confirm: bool,
+    known: Vec<(String, u64)>,
+    gate: Option<String>,
+}
+
+impl Env {
+    fn new(wire: &Wire) -> Self {
+        Self {
+            wire: wire.clone(),
+            proofs: vec![fake::origin().ownership().unwrap()],
+            dependency: Dependency::Confirmed,
+            now: 100,
+            saved: vec![],
+            confirmed: 0,
+            fail_confirm: false,
+            known: vec![(HEAD.into(), 1)],
+            gate: None,
+        }
+    }
+    fn client(&self) -> GithubClient<Wire> {
+        GithubClient::new(self.wire.clone())
+    }
+    fn last(&self) -> ExitWrite {
+        self.saved.last().unwrap().clone()
+    }
+}
+
+impl Environment for Env {
+    fn now(&self) -> Result<i64, Failure> {
+        Ok(self.now)
+    }
+    fn save(&mut self, write: &mut ExitWrite) -> Result<(), Failure> {
+        self.saved.push(write.clone());
+        Ok(())
+    }
+    fn gate(&mut self, _: &ExitWrite) -> Result<(), Failure> {
+        self.gate
+            .as_ref()
+            .map_or(Ok(()), |reason| Err(Failure::permanent(reason.clone())))
+    }
+    fn dependency(&mut self, _: &ExitWrite) -> Result<Dependency, Failure> {
+        Ok(self.dependency.clone())
+    }
+    fn head(&mut self, _: &ExitWrite) -> Result<String, Failure> {
+        Ok(self.wire.0.lock().unwrap().head.clone())
+    }
+    fn proofs(&mut self, _: &ExitWrite) -> Result<Vec<Ownership>, Failure> {
+        Ok(self.proofs.clone())
+    }
+    fn thread(&mut self, _: &ExitWrite, id: &str) -> Result<Option<Thread>, Failure> {
+        Ok(self.client().review_thread("100", "9", id)?)
+    }
+    fn revision(&mut self, _: &ExitWrite, commit: Option<&str>) -> String {
+        exit_writes::targeted_revision(commit, &self.known)
+    }
+    fn reply(&mut self, w: &ExitWrite, root: &str, body: &str) -> Result<String, WriteFailure> {
+        self.client()
+            .reply_to_review_thread("example/repo", w.job.number, "22", root, body)
+    }
+    fn resolve(&mut self, _: &ExitWrite, thread: &str, request: &str) -> Result<(), WriteFailure> {
+        self.client().resolve_review_thread(thread, request)
+    }
+    fn confirmed(&mut self, _: &ExitWrite) -> Result<(), Failure> {
+        if self.fail_confirm {
+            return Err(Failure::permanent("Injected consume failure."));
+        }
+        self.confirmed += 1;
+        Ok(())
+    }
+}
+
+fn write(replies: Value, resolutions: Value, new_comments: Value) -> ExitWrite {
+    let review = fake::review(new_comments, replies, resolutions, &fake::settings());
+    exit_writes::plan(&review, 100).expect("replies or resolutions planned")
+}
+
+fn wire() -> Wire {
+    Wire::new(vec![
+        owned_thread("T1", "100"),
+        foreign_thread("T2", "300"),
+        owned_thread("T3", "200"),
+    ])
+}
+
+fn reply(thread: &str, body: &str) -> Value {
+    json!({"thread_id":thread,"body":body})
+}
+
+/// Drive `run` until nothing more is due, advancing the clock past each retry time.
+fn drive(env: &mut Env, write: &mut ExitWrite) {
+    for _ in 0..12 {
+        let _ = exit_writes::run(env, write);
+        if write.terminal() {
+            return;
+        }
+        env.now = write
+            .operation
+            .next_attempt_at
+            .unwrap_or(env.now)
+            .max(env.now)
+            + 1;
+    }
+}
+
+#[test]
+fn replies_then_resolutions_run_in_order_and_confirm_once() {
+    let wire = wire();
+    let mut env = Env::new(&wire);
+    let mut w = write(
+        json!([reply("T1", "Fixed."), reply("T2", "Disagree.")]),
+        json!(["T1"]),
+        json!([]),
+    );
+    assert_eq!(
+        exit_writes::run(&mut env, &mut w).unwrap(),
+        Outcome::Progressed
+    );
+    assert_eq!(w.phase, Phase::Completed);
+    assert!(w.consumed);
+    assert_eq!(env.confirmed, 1);
+    assert_eq!(wire.log(), ["reply:100", "reply:300", "resolve:T1"]);
+    assert!(wire.thread("T1").resolved);
+    assert!(!wire.thread("T2").resolved);
+    let thread = wire.thread("T1");
+    let posted = &thread.comments.last().unwrap().body;
+    assert!(posted.starts_with("Fixed."));
+    assert!(posted.contains(&format!("<!-- pr-sniper:reply:exit-{}-0 -->", w.id)));
+    assert!(posted.contains("<!-- pr-sniper:revision:1 -->"));
+    assert!(posted.ends_with("PR Sniper"));
+    assert!(w.steps.iter().all(|s| s.state == StepState::Done));
+}
+
+#[test]
+fn replies_go_to_any_thread_but_resolution_only_to_owned() {
+    let wire = wire();
+    let mut env = Env::new(&wire);
+    let mut w = write(json!([reply("T2", "Because.")]), json!(["T2"]), json!([]));
+    let _ = exit_writes::run(&mut env, &mut w);
+    // Ownership refusal tosses the whole exit: the reply to T2 is not posted either.
+    assert_eq!(w.phase, Phase::Tossed);
+    assert!(wire.log().is_empty());
+    assert!(w.error.as_deref().unwrap().contains("own comments"));
+}
+
+#[test]
+fn tampered_or_unverifiable_roots_are_not_owned() {
+    let wire = wire();
+    wire.0.lock().unwrap().threads[0].comments[0].body = "Edited root".into();
+    let mut env = Env::new(&wire);
+    let mut w = write(json!([]), json!(["T1"]), json!([]));
+    let _ = exit_writes::run(&mut env, &mut w);
+    assert_eq!(w.phase, Phase::Tossed);
+    assert!(wire.log().is_empty());
+
+    // A thread whose root belongs to the account but a different review is not owned.
+    let wire = Wire::new(vec![{
+        let mut t = owned_thread("T1", "100");
+        t.comments[0].review_id = Some("999".into());
+        t
+    }]);
+    let mut env = Env::new(&wire);
+    let mut w = write(json!([]), json!(["T1"]), json!([]));
+    let _ = exit_writes::run(&mut env, &mut w);
+    assert_eq!(w.phase, Phase::Tossed);
+
+    // Without any saved proof nothing is owned.
+    let wire = self::wire();
+    let mut env = Env::new(&wire);
+    env.proofs.clear();
+    let mut w = write(json!([]), json!(["T1"]), json!([]));
+    let _ = exit_writes::run(&mut env, &mut w);
+    assert_eq!(w.phase, Phase::Tossed);
+    assert!(wire.log().is_empty());
+}
+
+#[test]
+fn preflight_failures_toss_before_any_effect() {
+    for (label, mutate) in [
+        (
+            "unknown thread",
+            Box::new(|_: &Wire| ()) as Box<dyn Fn(&Wire)>,
+        ),
+        (
+            "cannot reply",
+            Box::new(|w: &Wire| w.0.lock().unwrap().threads[0].can_reply = false),
+        ),
+        (
+            "head moved",
+            Box::new(|w: &Wire| w.0.lock().unwrap().head = "c".repeat(40)),
+        ),
+    ] {
+        let wire = wire();
+        mutate(&wire);
+        let mut env = Env::new(&wire);
+        let target = if label == "unknown thread" {
+            "missing"
+        } else {
+            "T1"
+        };
+        let mut w = write(
+            json!([reply("T2", "ok"), reply(target, "second")]),
+            json!([]),
+            json!([]),
+        );
+        let _ = exit_writes::run(&mut env, &mut w);
+        assert_eq!(w.phase, Phase::Tossed, "{label}");
+        assert!(wire.log().is_empty(), "{label}: nothing partial");
+        assert!(!w.effects(), "{label}");
+    }
+}
+
+#[test]
+fn oversized_reply_is_refused_not_truncated() {
+    let wire = wire();
+    let mut env = Env::new(&wire);
+    let mut w = write(
+        json!([reply("T2", &"x".repeat(65_530))]),
+        json!([]),
+        json!([]),
+    );
+    let _ = exit_writes::run(&mut env, &mut w);
+    assert_eq!(w.phase, Phase::Tossed);
+    assert!(wire.log().is_empty());
+}
+
+#[test]
+fn authorization_loss_refuses_without_writing() {
+    let wire = wire();
+    let mut env = Env::new(&wire);
+    env.gate = Some("Reply Comment permission is not granted.".into());
+    let mut w = write(json!([reply("T2", "ok")]), json!([]), json!([]));
+    let _ = exit_writes::run(&mut env, &mut w);
+    assert_eq!(w.phase, Phase::Tossed);
+    assert!(wire.log().is_empty());
+}
+
+#[test]
+fn publication_goes_first_and_preflight_precedes_it() {
+    let wire = wire();
+    let mut env = Env::new(&wire);
+    env.dependency = Dependency::Pending;
+    let mut w = write(
+        json!([reply("T2", "ok")]),
+        json!(["T1"]),
+        json!([{"path":"a.rs","line":1,"body":"new"}]),
+    );
+    assert!(w.comments_first);
+    assert_eq!(
+        exit_writes::run(&mut env, &mut w).unwrap(),
+        Outcome::Waiting
+    );
+    assert_eq!(
+        w.phase,
+        Phase::Verified,
+        "verified before publication may start"
+    );
+    assert!(
+        wire.log().is_empty(),
+        "no reply or resolution before the batch"
+    );
+    env.dependency = Dependency::Confirmed;
+    env.now += 1;
+    exit_writes::run(&mut env, &mut w).unwrap();
+    assert_eq!(w.phase, Phase::Completed);
+    assert!(w.published);
+    assert_eq!(wire.log(), ["reply:300", "resolve:T1"]);
+}
+
+#[test]
+fn a_failed_publication_tosses_the_whole_exit() {
+    let wire = wire();
+    let mut env = Env::new(&wire);
+    env.dependency = Dependency::Failed("batch discarded".into());
+    let mut w = write(
+        json!([reply("T2", "ok")]),
+        json!([]),
+        json!([{"path":"a.rs","line":1,"body":"n"}]),
+    );
+    let _ = exit_writes::run(&mut env, &mut w);
+    assert_eq!(w.phase, Phase::Tossed);
+    assert!(wire.log().is_empty());
+}
+
+#[test]
+fn a_reply_that_landed_but_errored_reconciles_without_a_duplicate() {
+    let wire = wire();
+    wire.fault("reply", Fault::After);
+    let mut env = Env::new(&wire);
+    let mut w = write(json!([reply("T2", "ok")]), json!([]), json!([]));
+    exit_writes::run(&mut env, &mut w).unwrap();
+    assert_eq!(
+        w.phase,
+        Phase::Completed,
+        "landed reply is found by its marker"
+    );
+    assert_eq!(wire.log(), ["reply:300"]);
+    assert_eq!(wire.thread("T2").comments.len(), 2);
+    assert!(w.steps[0].receipt.is_some());
+}
+
+#[test]
+fn an_unconfirmed_reply_is_never_replaced() {
+    let wire = wire();
+    wire.fault("reply", Fault::Before);
+    let mut env = Env::new(&wire);
+    let mut w = write(json!([reply("T2", "ok")]), json!([]), json!([]));
+    drive(&mut env, &mut w);
+    assert_eq!(
+        wire.log(),
+        ["reply:300"],
+        "one POST only, however many retries"
+    );
+    assert_eq!(w.phase, Phase::Failed);
+    assert!(w.uncertain);
+    assert_eq!(wire.thread("T2").comments.len(), 1);
+}
+
+#[test]
+fn restart_mid_sequence_resumes_without_duplicates() {
+    let wire = wire();
+    let mut env = Env::new(&wire);
+    let mut w = write(
+        json!([reply("T1", "one"), reply("T2", "two")]),
+        json!(["T3"]),
+        json!([]),
+    );
+    // Crash right after the first reply landed: resume from that saved snapshot.
+    wire.fault("reply", Fault::After);
+    let _ = exit_writes::run(&mut env, &mut w);
+    let snapshot = env
+        .saved
+        .iter()
+        .find(|s| s.steps[0].state == StepState::Done && s.steps[1].state == StepState::Planned)
+        .expect("first reply saved as done")
+        .clone();
+    let mut resumed = Env::new(&wire);
+    resumed.now = 200;
+    let mut again = snapshot;
+    again.operation.next_attempt_at = Some(0);
+    drive(&mut resumed, &mut again);
+    assert_eq!(again.phase, Phase::Completed);
+    let replies: Vec<_> = wire
+        .log()
+        .into_iter()
+        .filter(|l| l.starts_with("reply"))
+        .collect();
+    assert_eq!(
+        replies,
+        ["reply:100", "reply:300"],
+        "each reply posted exactly once"
+    );
+    assert_eq!(
+        wire.log()
+            .iter()
+            .filter(|l| l.starts_with("resolve"))
+            .count(),
+        1
+    );
+
+    // A restart after completion changes nothing.
+    let before = wire.log();
+    let mut done = resumed.last();
+    let mut third = Env::new(&wire);
+    exit_writes::run(&mut third, &mut done).unwrap();
+    assert_eq!(wire.log(), before);
+}
+
+#[test]
+fn crash_after_intent_before_effect_does_not_double_post() {
+    let wire = wire();
+    let mut env = Env::new(&wire);
+    let mut w = write(json!([reply("T2", "ok")]), json!([]), json!([]));
+    wire.fault("reply", Fault::Before);
+    let _ = exit_writes::run(&mut env, &mut w);
+    let attempted = env
+        .saved
+        .iter()
+        .find(|s| s.steps[0].state == StepState::Attempted)
+        .expect("intent saved before the effect")
+        .clone();
+    assert!(attempted.uncertain);
+    // The process died; the restart sees an attempted step with no marker on the thread.
+    let mut resumed = Env::new(&wire);
+    resumed.now = 10_000;
+    let mut again = attempted;
+    again.operation.next_attempt_at = Some(0);
+    let _ = exit_writes::run(&mut resumed, &mut again);
+    assert_eq!(
+        wire.log(),
+        ["reply:300"],
+        "unresolved intent never re-posts"
+    );
+}
+
+#[test]
+fn a_permanent_failure_after_an_effect_stops_without_more_writes() {
+    let wire = wire();
+    let mut env = Env::new(&wire);
+    let mut w = write(
+        json!([reply("T1", "one"), reply("T2", "two")]),
+        json!([]),
+        json!([]),
+    );
+    // The second reply is refused with a definite 4xx after the first landed.
+    let _ = exit_writes::run(&mut env, &mut w);
+    assert_eq!(w.phase, Phase::Completed);
+    let wire = self::wire();
+    let mut env = Env::new(&wire);
+    let mut w = write(json!([reply("T1", "one")]), json!(["T3"]), json!([]));
+    wire.fault("resolve", Fault::Reject);
+    drive(&mut env, &mut w);
+    assert_eq!(
+        w.phase,
+        Phase::Failed,
+        "reply already posted, so not a clean toss"
+    );
+    assert!(w.effects());
+    assert_eq!(
+        wire.log().iter().filter(|l| l.starts_with("reply")).count(),
+        1,
+        "the posted reply is never repeated"
+    );
+    assert_eq!(w.steps[0].state, StepState::Done);
+    assert_ne!(w.steps[1].state, StepState::Done);
+}
+
+#[test]
+fn a_definite_reply_rejection_before_any_effect_is_a_clean_toss() {
+    let wire = wire();
+    wire.fault("reply", Fault::Reject);
+    let mut env = Env::new(&wire);
+    let mut w = write(json!([reply("T2", "ok")]), json!([]), json!([]));
+    drive(&mut env, &mut w);
+    assert_eq!(w.phase, Phase::Tossed);
+    assert_eq!(w.steps[0].state, StepState::Planned);
+    assert_eq!(wire.thread("T2").comments.len(), 1);
+}
+
+#[test]
+fn resolution_that_landed_but_errored_is_confirmed_by_reading_the_thread() {
+    let wire = wire();
+    wire.fault("resolve", Fault::After);
+    let mut env = Env::new(&wire);
+    let mut w = write(json!([]), json!(["T1"]), json!([]));
+    exit_writes::run(&mut env, &mut w).unwrap();
+    assert_eq!(w.phase, Phase::Completed);
+    assert_eq!(wire.log(), ["resolve:T1"]);
+}
+
+#[test]
+fn an_unconfirmed_resolution_retries_the_idempotent_mutation() {
+    let wire = wire();
+    wire.fault("resolve", Fault::Before);
+    let mut env = Env::new(&wire);
+    let mut w = write(json!([]), json!(["T1"]), json!([]));
+    drive(&mut env, &mut w);
+    assert_eq!(w.phase, Phase::Completed);
+    assert_eq!(wire.log(), ["resolve:T1", "resolve:T1"]);
+    assert!(wire.thread("T1").resolved);
+}
+
+#[test]
+fn an_already_resolved_own_thread_is_done_without_a_mutation() {
+    let wire = wire();
+    wire.0.lock().unwrap().threads[0].resolved = true;
+    let mut env = Env::new(&wire);
+    let mut w = write(json!([]), json!(["T1", "T1"]), json!([]));
+    assert_eq!(w.steps.len(), 1, "duplicate resolutions collapse");
+    exit_writes::run(&mut env, &mut w).unwrap();
+    assert_eq!(w.phase, Phase::Completed);
+    assert!(wire.log().is_empty());
+}
+
+#[test]
+fn the_consume_hook_runs_once_and_retries_without_rewriting() {
+    let wire = wire();
+    let mut env = Env::new(&wire);
+    env.fail_confirm = true;
+    let mut w = write(json!([reply("T2", "ok")]), json!([]), json!([]));
+    assert!(exit_writes::run(&mut env, &mut w).is_err());
+    assert_eq!(w.phase, Phase::Completed);
+    assert!(!w.consumed);
+    env.fail_confirm = false;
+    exit_writes::run(&mut env, &mut w).unwrap();
+    assert!(w.consumed);
+    assert_eq!(env.confirmed, 1);
+    assert_eq!(wire.log(), ["reply:300"]);
+    exit_writes::run(&mut env, &mut w).unwrap();
+    assert_eq!(env.confirmed, 1);
+}
+
+#[test]
+fn resolve_mutation_confirms_the_exact_thread_and_classifies_failures() {
+    let wire = wire();
+    let client = GithubClient::new(wire.clone());
+    assert!(client.resolve_review_thread("T1", "req-1").is_ok());
+    assert!(wire.thread("T1").resolved);
+
+    // The provider echoing another thread or an unresolved one is not confirmation.
+    wire.0.lock().unwrap().resolve_override = Some(json!({"data":{"resolveReviewThread":
+        {"clientMutationId":"req-2","thread":{"id":"OTHER","isResolved":true}}}}));
+    let error = client.resolve_review_thread("T3", "req-2").unwrap_err();
+    assert!(error.uncertain);
+    wire.0.lock().unwrap().resolve_override = Some(json!({"data":{"resolveReviewThread":
+        {"clientMutationId":"req-3","thread":{"id":"T3","isResolved":false}}}}));
+    assert!(
+        client
+            .resolve_review_thread("T3", "req-3")
+            .unwrap_err()
+            .uncertain
+    );
+
+    wire.fault("resolve", Fault::Reject);
+    assert!(
+        !client
+            .resolve_review_thread("T3", "req-4")
+            .unwrap_err()
+            .uncertain
+    );
+    wire.fault("resolve", Fault::ServerError);
+    assert!(
+        client
+            .resolve_review_thread("T3", "req-5")
+            .unwrap_err()
+            .uncertain
+    );
+    wire.fault("resolve", Fault::Before);
+    assert!(
+        client
+            .resolve_review_thread("T3", "req-6")
+            .unwrap_err()
+            .uncertain
+    );
+    assert!(
+        !client
+            .resolve_review_thread("", "req-7")
+            .unwrap_err()
+            .uncertain
+    );
+}
+
+#[test]
+fn plan_ignores_exits_without_replies_or_resolutions() {
+    let none = fake::review(
+        json!([{"path":"a.rs","line":1,"body":"n"}]),
+        json!([]),
+        json!([]),
+        &fake::settings(),
+    );
+    assert!(exit_writes::plan(&none, 100).is_none());
+    let mut running = fake::review(
+        json!([]),
+        json!([reply("T1", "x")]),
+        json!([]),
+        &fake::settings(),
+    );
+    running.operation.state = pr_sniper_lib::monitoring::OperationState::Running;
+    assert!(exit_writes::plan(&running, 100).is_none());
+}
+
+#[test]
+fn targeted_revision_maps_the_comment_commit_to_a_local_iteration() {
+    let known = vec![("aaa".to_string(), 1), ("bbb".to_string(), 2)];
+    assert_eq!(exit_writes::targeted_revision(Some("bbb"), &known), "2");
+    assert_eq!(
+        exit_writes::targeted_revision(Some("ccc"), &known),
+        "unknown"
+    );
+    assert_eq!(exit_writes::targeted_revision(None, &known), "unknown");
+    let clash = vec![("aaa".to_string(), 1), ("aaa".to_string(), 3)];
+    assert_eq!(
+        exit_writes::targeted_revision(Some("aaa"), &clash),
+        "unknown"
+    );
+    let same = vec![("aaa".to_string(), 2), ("aaa".to_string(), 2)];
+    assert_eq!(exit_writes::targeted_revision(Some("aaa"), &same), "2");
+}
+
+#[test]
+fn ledger_admits_once_holds_publication_and_survives_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = pr_sniper_lib::storage::Store::new(dir.path().into());
+    let review = fake::review(
+        json!([{"path":"a.rs","line":1,"body":"n"}]),
+        json!([reply("T2", "ok")]),
+        json!([]),
+        &fake::settings(),
+    );
+    store.save_reviews(std::slice::from_ref(&review)).unwrap();
+    assert!(
+        exit_writes::holds_publication(&store, &review)
+            .unwrap()
+            .is_some(),
+        "held before the ledger has the exit"
+    );
+    assert_eq!(exit_writes::admit(&store, 100).unwrap(), 1);
+    assert_eq!(exit_writes::admit(&store, 100).unwrap(), 0, "idempotent");
+    let saved = exit_writes::for_review(&store, &review.operation.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.phase, Phase::Planned);
+    assert!(exit_writes::holds_publication(&store, &review)
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        exit_writes::next_due(&store, 100).unwrap(),
+        Some(saved.id.clone())
+    );
+
+    // Restart: a fresh store handle sees the same single record.
+    let again = pr_sniper_lib::storage::Store::new(dir.path().into());
+    assert_eq!(exit_writes::admit(&again, 200).unwrap(), 0);
+
+    let mut ledger = again.load_feedback().unwrap();
+    ledger.exit_writes[0].phase = Phase::Verified;
+    again.save_feedback(&ledger).unwrap();
+    assert!(exit_writes::holds_publication(&again, &review)
+        .unwrap()
+        .is_none());
+    ledger.exit_writes[0].phase = Phase::Tossed;
+    again.save_feedback(&ledger).unwrap();
+    assert!(exit_writes::holds_publication(&again, &review)
+        .unwrap()
+        .is_some());
+
+    // Reply-only exits have no batch to hold.
+    let reply_only = fake::review(
+        json!([]),
+        json!([reply("T2", "ok")]),
+        json!([]),
+        &fake::settings(),
+    );
+    assert!(exit_writes::holds_publication(&again, &reply_only)
+        .unwrap()
+        .is_none());
+    assert_eq!(ASSIGNMENT.len(), 36);
+}
+
+#[test]
+fn packet_mode_assignments_do_not_admit_legacy_follow_ups() {
+    let settings = fake::settings();
+    let assignment = &settings.repositories[0].assignments[0];
+    assert!(pr_sniper_lib::follow_up::packet_assignment(assignment));
+    let mut legacy = assignment.clone();
+    legacy.tools = None;
+    assert!(!pr_sniper_lib::follow_up::packet_assignment(&legacy));
+}
