@@ -72,6 +72,23 @@ where
     C: SyncHttpClient,
     F: FnOnce(&url::Url) -> Result<(), OAuthError>,
 {
+    request_device_authorization_publishing_with(http_client, purpose, |_, _| Ok(()), open_browser)
+}
+
+/// Requests a device grant, hands the user code and verification URI to
+/// `publish` and only then opens the browser, so the code is visible before
+/// the browser takes focus from the app.
+pub fn request_device_authorization_publishing_with<C, P, F>(
+    http_client: &C,
+    purpose: OAuthPurpose,
+    publish: P,
+    open_browser: F,
+) -> Result<PreparedDeviceAuthorization, OAuthError>
+where
+    C: SyncHttpClient,
+    P: FnOnce(&str, &str) -> Result<(), OAuthError>,
+    F: FnOnce(&url::Url) -> Result<(), OAuthError>,
+{
     let diagnostic_http =
         |request| diagnostic_oauth_request(http_client, request, "device_authorization");
     let response: DeviceAuthorizationResponse<EmptyExtraDeviceAuthorizationFields> =
@@ -96,6 +113,7 @@ where
         .verification_uri_complete()
         .and_then(|uri| validated_github_verification_uri(uri.secret()).ok())
         .unwrap_or_else(|| verification_uri.clone());
+    publish(response.user_code().secret(), verification_uri.as_str())?;
     open_browser(&browser_uri)?;
     eprintln!("[github-auth] stage=device_authorization outcome=browser_opened");
     Ok(PreparedDeviceAuthorization {
@@ -188,18 +206,13 @@ impl GithubOAuthHttp {
         Ok(Self { client })
     }
 
-    pub fn request_device_authorization(
+    pub fn request_authorization(
         &self,
+        purpose: OAuthPurpose,
+        publish: impl FnOnce(&str, &str) -> Result<(), OAuthError>,
         open_browser: impl FnOnce(&url::Url) -> Result<(), OAuthError>,
     ) -> Result<PreparedDeviceAuthorization, OAuthError> {
-        request_device_authorization_with(&self.client, open_browser)
-    }
-
-    pub fn request_copilot_authorization(
-        &self,
-        open_browser: impl FnOnce(&url::Url) -> Result<(), OAuthError>,
-    ) -> Result<PreparedDeviceAuthorization, OAuthError> {
-        request_device_authorization_for_with(&self.client, open_browser, OAuthPurpose::Copilot)
+        request_device_authorization_publishing_with(&self.client, purpose, publish, open_browser)
     }
 
     pub fn poll_device_authorization(

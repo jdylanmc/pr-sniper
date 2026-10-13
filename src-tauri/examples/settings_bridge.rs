@@ -554,6 +554,28 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             store.save_backpressure(&state)?;
             Ok(Value::Null)
         }
+        // Mirrors the host: a scheduler tick while the account needs
+        // reconnecting, a confirmed reconnect, then the immediate resume.
+        "fixture_reconnect_account" => {
+            use pr_sniper_lib::monitoring::{AccountAvailability, Monitor};
+            let id = request.args["accountId"]
+                .as_str()
+                .ok_or("Account identity required.")?;
+            let accounts = |connected| {
+                std::collections::BTreeMap::from([(
+                    id.to_string(),
+                    AccountAvailability {
+                        login: "fixture-github".into(),
+                        connected,
+                    },
+                )])
+            };
+            let mut monitor = Monitor::restore(store)?;
+            let before = monitor.auto_resume(store, &accounts(false), 1_800_000_000)?;
+            monitor.credentials_renewed(id);
+            let after = monitor.auto_resume(store, &accounts(true), 1_800_000_001)?;
+            Ok(json!({ "before": before, "after": after }))
+        }
         "set_automation_paused" => {
             store.save_automation(&pr_sniper_lib::capacity::Automation {
                 paused: request.args["paused"]

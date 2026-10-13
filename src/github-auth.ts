@@ -366,12 +366,11 @@ export function renderGithubAuth(
   }
 
   const refresh = () => {
+    // A parked or hidden card keeps its listeners: re-attaching it or
+    // reopening the panel must re-read native state rather than show a stale
+    // flow or account.
     if (!root.isConnected) {
       clearTimeout(refreshTimer);
-      window.removeEventListener(
-        "pr-sniper:refresh-provider-accounts",
-        refresh,
-      );
       return;
     }
     if (busy) {
@@ -403,6 +402,10 @@ export function renderGithubAuth(
     );
   };
   window.addEventListener("pr-sniper:refresh-provider-accounts", refresh);
+  window.addEventListener("focus", refresh);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") refresh();
+  });
   refresh();
 }
 

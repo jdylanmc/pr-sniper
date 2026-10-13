@@ -3784,6 +3784,15 @@ impl Monitor {
 }
 
 impl Monitor {
+    /// Treats `account_id` as newly connected on the next `auto_resume`, so
+    /// parked credentials failures resume after fresh credentials are saved
+    /// even if the account never appeared disconnected in between.
+    pub fn credentials_renewed(&mut self, account_id: &str) {
+        if let Some(seen) = self.connected_seen.as_mut() {
+            seen.remove(account_id);
+        }
+    }
+
     /// Requeues parked failures that earned another attempt: after their
     /// cooldown, or (credentials) once a relevant GitHub or Copilot account is
     /// connected again. Superseded and terminal work is never resumed.

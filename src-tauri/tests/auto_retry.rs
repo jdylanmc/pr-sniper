@@ -440,6 +440,33 @@ fn credential_failures_resume_when_the_account_connects_again_without_a_human_re
 }
 
 #[test]
+fn renewed_credentials_resume_credential_failures_while_the_account_stays_connected() {
+    let run = parked_review(OperationFailure::Credentials, OperationState::Failed);
+    let (_root, store) = store_with(&run);
+    let mut monitor = Monitor::default();
+    assert_eq!(monitor.auto_resume(&store, &accounts(true), 10).unwrap(), 1);
+    let mut again = store.load_reviews().unwrap().remove(0);
+    again.operation.state = OperationState::Failed;
+    again.operation.failure = Some(OperationFailure::Credentials);
+    store.save_reviews(&[again]).unwrap();
+    // The record never left the connected state, so no transition resumes it.
+    assert_eq!(monitor.auto_resume(&store, &accounts(true), 20).unwrap(), 0);
+    // Saving fresh credentials for the bound account resumes it without a human retry.
+    monitor.credentials_renewed("22");
+    assert_eq!(monitor.auto_resume(&store, &accounts(true), 30).unwrap(), 1);
+    let resumed = store.load_reviews().unwrap().remove(0);
+    assert_eq!(resumed.operation.state, OperationState::Queued);
+    assert_eq!(resumed.operation.failure, None);
+    // An unrelated account's renewal does not resume it.
+    let mut again = resumed;
+    again.operation.state = OperationState::Failed;
+    again.operation.failure = Some(OperationFailure::Credentials);
+    store.save_reviews(&[again]).unwrap();
+    monitor.credentials_renewed("44");
+    assert_eq!(monitor.auto_resume(&store, &accounts(true), 40).unwrap(), 0);
+}
+
+#[test]
 fn cooldown_resume_requeues_a_parked_review_and_exposes_the_hint() {
     let mut run = parked_review(OperationFailure::Network, OperationState::ManualRetry);
     run.operation.resume_at = Some(5_000);
