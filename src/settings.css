@@ -3006,17 +3006,15 @@
   padding-top: 36px;
 }
 
-/* Errors float as a dismissible toast at the top, overlapping the title band like a
-   card, so no action bar or floating pill can hide them. */
+/* Errors lead the page in flow, first under the band overlap like a card: never an
+   overlay on controls, never under an action bar or floating pill. */
 .panel-shell .settings-window #error:not([hidden]) {
-  position: fixed;
-  left: 18px;
-  right: 18px;
-  top: 112px;
-  z-index: 20;
-  margin: 0;
+  position: relative;
+  flex: none;
+  margin: 0 18px 12px;
   padding: 10px 36px 10px 14px;
   max-height: 96px;
+  overflow: auto;
   border: 0;
   border-left: 3px solid #a03134;
   border-radius: 10px;
@@ -3024,7 +3022,7 @@
   color: #7d1e12;
   font-size: 12px;
   line-height: 1.4;
-  box-shadow: 0 6px 18px rgb(36 50 71 / 25%);
+  box-shadow: 0 1px 3px rgb(36 50 71 / 12%);
   cursor: pointer;
 }
 .panel-shell .settings-window #error:not([hidden])::after {

@@ -161,6 +161,30 @@ test("provider summaries isolate failed reads and retain an available retry rout
   await expect(page.locator('[data-settings-count="github"]')).toHaveText(
     "Unavailable",
   );
+  // A shown error leads the page in flow and never covers a control.
+  const toast = page.locator("#error");
+  if (await toast.isVisible()) {
+    const box = await toast.boundingBox();
+    const covered = await page
+      .locator("#content button:visible")
+      .evaluateAll(
+        (buttons, e) =>
+          buttons
+            .map((b) => b.getBoundingClientRect())
+            .filter(
+              (r) =>
+                r.left < e.x + e.width &&
+                r.right > e.x &&
+                r.top < e.y + e.height &&
+                r.bottom > e.y,
+            ).length,
+        box,
+      );
+    expect(covered).toBe(0);
+    expect(await toast.evaluate((e) => getComputedStyle(e).position)).not.toBe(
+      "fixed",
+    );
+  }
   await row(page, "GitHub").click();
   await expect(page.locator(".github-auth-card")).toContainText("Unavailable");
   await page.evaluate(() => {
