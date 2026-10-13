@@ -287,6 +287,7 @@ fn the_same_provider_repository_persists_as_distinct_account_bindings() {
     first.provider_repository_id = Some("42".into());
     first.overrides.automatic_agent_start = Some(true);
     settings.repositories.push(Repository {
+        review_drafts: false,
         id: uuid::Uuid::new_v4().to_string(),
         provider: ProviderId::Github,
         name: "octo/example".into(),
@@ -333,6 +334,7 @@ fn azure_devops_contract_persists_without_a_live_provider_implementation() {
     let store = fixture.store();
     let mut settings = Settings::default();
     settings.repositories.push(Repository {
+        review_drafts: false,
         id: uuid::Uuid::new_v4().to_string(),
         provider: ProviderId::AzureDevops,
         name: "organization/project/repository".into(),
@@ -356,4 +358,129 @@ fn azure_devops_contract_persists_without_a_live_provider_implementation() {
         restored.repositories[0].provider_account_id.as_deref(),
         Some("entra-object-id")
     );
+}
+
+const AGENT: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const PRIMARY: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const SECOND: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
+fn packet_settings(
+    _fixture: &Fixture,
+    primary: serde_json::Value,
+    second: serde_json::Value,
+) -> Settings {
+    let helper = Fixture::new();
+    let mut settings = helper.store().add_repository("octo/example").unwrap();
+    settings.repositories[0].provider_account_id = Some("101".into());
+    settings.repositories[0].provider_repository_id = Some("42".into());
+    let mut value = serde_json::to_value(&settings).unwrap();
+    value["agents"] = serde_json::json!([{"id": AGENT, "name":"A", "model":"m", "ai_account":{"provider":"copilot","account_id":"101"}, "prompt":"p", "signature":"s"}]);
+    let schedule = serde_json::json!({"kind":"interval","minutes":5,"timezone":"UTC"});
+    let mut a = serde_json::json!({"id": PRIMARY, "agent_id": AGENT, "schedule": schedule, "comment": true});
+    let mut b = serde_json::json!({"id": SECOND, "agent_id": AGENT, "schedule": schedule, "comment": false});
+    for (target, extra) in [(&mut a, primary), (&mut b, second)] {
+        for (k, v) in extra.as_object().unwrap() {
+            target[k] = v.clone();
+        }
+    }
+    value["repositories"][0]["assignments"] = serde_json::json!([a, b]);
+    value["repositories"][0]["primary_assignment_id"] = PRIMARY.into();
+    settings = serde_json::from_value(value).unwrap();
+    settings
+}
+
+fn issues(settings: &Settings) -> Vec<String> {
+    settings.readiness().repositories[0].issues.clone()
+}
+
+#[test]
+fn packet_fields_round_trip_and_old_files_load_unchanged() {
+    let fixture = Fixture::new();
+    let mut settings = packet_settings(
+        &fixture,
+        serde_json::json!({"actions": {"approve": true, "merge": true, "include_self": true}, "tools": ["read_changes", "leave_comments", "panic_exit"]}),
+        serde_json::json!({"tools": ["submit_report"]}),
+    );
+    settings.repositories[0].review_drafts = true;
+    fixture.store().save_settings(&settings).unwrap();
+    assert_eq!(fixture.store().load_settings().unwrap(), settings);
+
+    let mut old = packet_settings(&fixture, serde_json::json!({}), serde_json::json!({}));
+    old.repositories[0].review_drafts = false;
+    let value = serde_json::to_value(&old).unwrap();
+    let repository = &value["repositories"][0];
+    assert!(repository.get("review_drafts").is_none());
+    assert!(repository["assignments"][0].get("tools").is_none());
+    assert!(repository["assignments"][0]["actions"]
+        .get("include_self")
+        .is_none());
+    let text = value.to_string();
+    let reloaded: Settings = serde_json::from_str(&text).unwrap();
+    assert!(reloaded.repositories[0].assignments[0].tools.is_none());
+    assert!(!reloaded.repositories[0].review_drafts);
+}
+
+#[test]
+fn packet_tool_readiness_follows_primary_and_grants() {
+    let fixture = Fixture::new();
+    let ok = packet_settings(
+        &fixture,
+        serde_json::json!({"actions": {"approve": true, "merge": true}, "tools": ["read_source", "leave_comments", "ready_for_human", "approve_pull_request", "approve_and_merge", "panic_exit"]}),
+        serde_json::json!({"tools": ["get_checks", "submit_report", "panic_exit"]}),
+    );
+    assert!(issues(&ok).is_empty(), "{:?}", issues(&ok));
+
+    let bad = packet_settings(
+        &fixture,
+        serde_json::json!({"tools": ["leave_comments", "approve_pull_request", "approve_and_merge", "submit_report"], "comment": false}),
+        serde_json::json!({"tools": ["leave_comments", "approve_pull_request", "ready_for_human", "panic_exit"]}),
+    );
+    let found = issues(&bad).join("\n");
+    assert!(found.contains("tool leave_comments needs Publish Comment"));
+    assert!(found.contains("tool approve_pull_request needs Approve"));
+    assert!(found.contains("tool approve_and_merge needs Approve & Merge"));
+    assert!(found.contains("tool submit_report is non-primary only"));
+    assert_eq!(found.matches("is primary-only").count(), 3);
+
+    let approve_only = packet_settings(
+        &fixture,
+        serde_json::json!({"actions": {"approve": true, "merge": false}, "tools": ["approve_pull_request", "approve_and_merge"]}),
+        serde_json::json!({}),
+    );
+    assert_eq!(issues(&approve_only).len(), 1);
+}
+
+#[test]
+fn unknown_or_duplicate_packet_tools_are_invalid() {
+    let fixture = Fixture::new();
+    let unknown = packet_settings(
+        &fixture,
+        serde_json::json!({"tools": ["nope"]}),
+        serde_json::json!({}),
+    );
+    assert!(unknown.validate().is_err());
+    assert!(fixture.store().save_settings(&unknown).is_err());
+    let dup = packet_settings(
+        &fixture,
+        serde_json::json!({"tools": ["read_changes", "read_changes"]}),
+        serde_json::json!({}),
+    );
+    assert!(issues(&dup).iter().any(|i| i.contains("is duplicated")));
+}
+
+#[test]
+fn typescript_tool_registry_mirrors_the_rust_registry() {
+    let source =
+        fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../src/policy.ts")).unwrap();
+    let block = source
+        .split("export const PACKET_TOOLS = [")
+        .nth(1)
+        .and_then(|rest| rest.split("] as const").next())
+        .unwrap();
+    let ts: Vec<&str> = block
+        .split(',')
+        .map(|item| item.trim().trim_matches('"'))
+        .filter(|item| !item.is_empty())
+        .collect();
+    assert_eq!(ts, pr_sniper_lib::storage::PACKET_TOOLS);
 }

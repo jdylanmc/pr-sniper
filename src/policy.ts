@@ -54,8 +54,32 @@ export interface Assignment {
   schedule: Schedule;
   comment: boolean;
   approve: boolean;
-  actions?: { reply?: boolean; approve: boolean; merge: boolean };
+  actions?: {
+    reply?: boolean;
+    approve: boolean;
+    merge: boolean;
+    include_self?: boolean;
+  };
+  /** Absent = no packet tools yet. */
+  tools?: PacketTool[];
 }
+
+/** Mirrors `PACKET_TOOLS` in src-tauri/src/storage.rs (checked by a Rust test). */
+export const PACKET_TOOLS = [
+  "read_changes",
+  "read_source",
+  "get_thread",
+  "get_checks",
+  "list_tree",
+  "search_code",
+  "leave_comments",
+  "ready_for_human",
+  "approve_pull_request",
+  "approve_and_merge",
+  "panic_exit",
+  "submit_report",
+] as const;
+export type PacketTool = (typeof PACKET_TOOLS)[number];
 
 export const doctrineTitles = (agent: Agent): string[] =>
   agent.doctrines ?? (agent.doctrine ? [agent.doctrine] : []);

@@ -3741,3 +3741,14 @@
 .panel-shell .shared-resource-editor .fix-cta[hidden] {
   display: none;
 }
+
+.repository-editor .tool-row > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.repository-editor .tool-row svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}

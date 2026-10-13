@@ -60,6 +60,16 @@ _Avoid_: Skill, prompt snippet
 The repository assignment responsible for eligible conversation assessments and the final full review before permitted provider actions. A sole assignment is primary automatically; multiple assignments have at most one explicit primary. No primary means no reply, approve or merge; normal reviews and permitted initial comments continue. Selecting primary grants no capabilities and does not change original feedback ownership.
 _Avoid_: Global primary, thread owner as responder
 
+**Tools** (assignment):
+Packet tool ids an assignment may use: investigation tools plus exits. Absent = no packet tools. Effect exits primary only; `submit_report` teammate only; exits need their grant. Set by switches in the assignment's Tools list. Config only until the exit runtime lands.
+_Avoid_: Skills, plugins
+
+**Review drafts** (repository):
+Repository switch, default off. On: draft pull requests are reviewed too.
+
+**Include self** (Approve & Merge):
+Approve & Merge option, default off: the user's own PRs count. Inert until approve exits land.
+
 **Assignment Capability**:
 An explicit repository-scoped grant on an assignment: Publish Comment for any assignment; independent Reply Comment and Approve or Approve & Merge for the primary only. New assignments start with Comment, Approve and Merge off. Publish Comment off: findings stay local. Reply Comment off: analysis still runs, replies stay local, enabling later replays nothing. Merge includes approval and follows confirmed current-head approval; an existing provider vote is not fabricated as a new PR Sniper vote. Obsolete secondary action grants show disabled, never auto-promoted. Legacy start, default and override settings are inert history. These product grants never authorize development agents to publish, approve or merge.
 _Avoid_: Automation override, reusable Agent permission, merge-only grant

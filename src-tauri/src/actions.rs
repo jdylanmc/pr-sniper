@@ -227,6 +227,7 @@ pub fn basis(store: &Store, item_id: &str) -> Result<Basis, String> {
         .map(|a| repository.assignment_authority(a))
         .ok_or("Primary unavailable.")?;
     let permissions = ActionPermissions {
+        include_self: false,
         reply: authority.reply,
         approve: authority.approve,
         merge: authority.merge,
@@ -1017,6 +1018,7 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
         };
         let primary = repository.primary_assignment_id();
         let permissions = ActionPermissions {
+            include_self: false,
             reply: repository
                 .assignments
                 .iter()

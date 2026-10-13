@@ -547,6 +547,7 @@ fn primary_and_action_choices_are_scoped_independent_and_safe_on_upgrade() {
     repository.primary_assignment_id = Some(original.id.clone());
     assert!(!repository.assignment_authority(&original).approve);
     repository.assignments[0].actions = Some(pr_sniper_lib::storage::ActionPermissions {
+        include_self: false,
         reply: false,
         approve: true,
         merge: true,

@@ -32,6 +32,7 @@ const HEAD_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 fn repository(enabled: bool) -> Repository {
     Repository {
+        review_drafts: false,
         id: "00000000-0000-4000-8000-000000000001".into(),
         provider: ProviderId::Github,
         name: REPOSITORY_NAME.into(),
@@ -2012,6 +2013,7 @@ fn legacy_assignment_schedules_do_not_create_timers_or_repeated_repository_reads
     });
     settings.repositories[0].assignments = vec![
         Assignment {
+            tools: None,
             id: "00000000-0000-4000-8000-000000000010".into(),
             agent_id: "00000000-0000-4000-8000-000000000020".into(),
             schedule: Schedule::Interval {
@@ -2023,6 +2025,7 @@ fn legacy_assignment_schedules_do_not_create_timers_or_repeated_repository_reads
             actions: None,
         },
         Assignment {
+            tools: None,
             id: "00000000-0000-4000-8000-000000000011".into(),
             agent_id: "00000000-0000-4000-8000-000000000021".into(),
             schedule: Schedule::Interval {
@@ -2769,6 +2772,7 @@ fn assignment_changes_preserve_one_repository_health_and_the_global_clock() {
     ];
     settings.repositories[0].assignments = vec![
         Assignment {
+            tools: None,
             id: "00000000-0000-4000-8000-000000000010".into(),
             agent_id: settings.agents[0].id.clone(),
             schedule: Schedule::Interval {
@@ -2780,6 +2784,7 @@ fn assignment_changes_preserve_one_repository_health_and_the_global_clock() {
             actions: None,
         },
         Assignment {
+            tools: None,
             id: "00000000-0000-4000-8000-000000000011".into(),
             agent_id: settings.agents[1].id.clone(),
             schedule: Schedule::Interval {
@@ -2837,6 +2842,7 @@ fn removed_inflight_schedule_keeps_exclusion_until_the_read_finishes() {
         signature: "sig".into(),
     });
     settings.repositories[0].assignments.push(Assignment {
+        tools: None,
         id: "00000000-0000-4000-8000-000000000010".into(),
         agent_id: settings.agents[0].id.clone(),
         schedule: Schedule::Interval {
@@ -2991,6 +2997,7 @@ fn one_manual_request_reads_each_account_binding_once_and_captures_all_assignmen
         .collect();
     settings.repositories[0].assignments = vec![
         Assignment {
+            tools: None,
             id: "00000000-0000-4000-8000-000000000010".into(),
             agent_id: settings.agents[0].id.clone(),
             schedule: Schedule::Interval {
@@ -3002,6 +3009,7 @@ fn one_manual_request_reads_each_account_binding_once_and_captures_all_assignmen
             actions: None,
         },
         Assignment {
+            tools: None,
             id: "00000000-0000-4000-8000-000000000011".into(),
             agent_id: settings.agents[1].id.clone(),
             schedule: Schedule::Interval {
@@ -3017,6 +3025,7 @@ fn one_manual_request_reads_each_account_binding_once_and_captures_all_assignmen
     second.id = "00000000-0000-4000-8000-000000000002".into();
     second.provider_account_id = Some("23".into());
     second.assignments.push(Assignment {
+        tools: None,
         id: "00000000-0000-4000-8000-000000000012".into(),
         agent_id: settings.agents[2].id.clone(),
         schedule: Schedule::Interval {
