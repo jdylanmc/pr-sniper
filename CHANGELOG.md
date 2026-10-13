@@ -5,75 +5,59 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+## 0.3.0 - 2026-10-13
+
+### Added
+
+- Assignment **Tools** selects host-owned investigation and terminal exits;
+  unset selections use role defaults. Add draft-PR review and opt-in
+  **Include self** for Approve & Merge.
+- Page changed files, source, threads, checks, repository paths and code-search
+  results. `read_check_log` reads available CI job logs in bounded pages,
+  including tail-first access; tool descriptions explain paging.
+- Primary comment exits support PR-level and inline comments, replies and
+  own-thread resolutions, subject to separate grants and ownership checks.
+
 ### Changed
 
-- Every review runs in packet mode. Removed: legacy JSON review, primary final review, once-per-lens re-review, Reply/Mention analysis. Unset assignment **Tools** = role default (shown checked). Old records load; unfinished legacy work is cancelled on startup.
-- Queue item detail leads with an **Activity** list: one icon row per agent action on the current head (Reviewed, Findings, Commented, Replied, Final, Retried, Approved, Merged), tap for key/value facts. Evidence sentences and the visible **Retry provider evidence** button are gone; Details groups Agent, Result and Provider rows (refresh is an icon in Provider).
+- Every review uses a fresh PR-state packet and exactly one terminal exit.
+  The host owns investigation tools and all provider writes; exit gates are
+  checked again against current state and permissions.
+- Teammates report before the primary runs on the same PR state. Teammates
+  cannot publish, reply, approve or merge; the primary receives their reports.
+- Scheduled heartbeats track head/base, PR text, lifecycle, CI and conversation
+  changes, coalescing pending work to one queue entry per PR. Successful exits
+  baseline the host's own writes instead of retriggering reviews.
+- Read coverage is recorded for diagnostics, never mandatory. Agents choose
+  what to investigate; complete all-file coverage is not an exit requirement.
+- Rate limits defer work as backpressure without spending failure attempts.
+  Transient failures retry, then park with typed causes and cooldown recovery;
+  credential failures resume after reconnect. **Retry** and **Retry all**
+  target affected polls and reviews.
+- Admission uses **All pull requests** or ordered **Filtered pull requests**
+  rules for assignment, mentions, users and paths. First enabled match wins.
+  Existing repositories migrate with monitoring off; review configuration
+  before enabling them.
+- Queue detail shows **Activity**, packet exits, tosses and failures with
+  Agent/Result/Provider facts. Confirmed current-head approval appears as
+  **Approved** in Reviewed; terminal PR detail can be cleaned while retaining
+  receipts and uncertain-write records.
+
+### Removed
+
+- Remove legacy JSON reviews, separate primary-final and Reply/Mention runs,
+  and once-per-head/lens re-review. Old records remain readable; unfinished
+  legacy work is cancelled at startup.
 
 ### Fixed
 
-- Review tools no longer truncate. The Copilot runtime cut tool results over
-  ~50 KB, so large files and lockfiles reached the Agent partial and reviews
-  ended as **Your input**. `read_changes`, `read_source` and `search_paths`
-  now page in byte chunks (`offset`, `next_offset`, `complete`), and a review
-  is accepted only after every byte of every changed file was served. Limit
-  hits fail the review as retryable. Failed-error detail wraps instead of
-  ellipsizing. Reviews already published are not redone.
-
-### Changed
-
-- PRs PR Sniper approved (confirmed receipt for the current head) leave the
-  Queue and show **Approved** in Reviewed instead of **Ready for you**. Ready
-  now means signed off without approval; a new head voids the approval.
-- A discarded, unpublished batch (review lens edited, or remote comments
-  diverged), or a finished unpublished review whose lens changed, is
-  re-reviewed automatically, once per head and lens, under the
-  current configuration, then published normally; existing discarded batches
-  are picked up on upgrade. Published, moved-head and closed PRs are left
-  alone. **Review again** no longer appears for these.
-- Publications recover on their own. A pending batch whose inline comments
-  differ from the frozen batch (edited, deleted, empty), or whose review lens
-  changed, or that was withdrawn, is deleted when it is the exact owned
-  pending review, then marked **discarded**; the item leaves Needs attention
-  and the review result decides Ready / Your input. Submitted reviews and
-  foreign pending reviews are never touched; nothing is re-created. Transient
-  publication failures auto-resume on the review cooldown table. Retry and
-  Retry all run `publish_review` (reconcile the original) for parked
-  publications and queue it when another publication is running. Chips:
-  **Publish failed**, **Unverified**, Network. Failed rows show the error
-  line. Startup re-observes publications parked by older builds once.
-- Retry and Retry all restart the repository poll and every failed review
-  of the selected PRs, once per command, so all of them enqueue (capacity
-  decides how many run at once).
-- Retry on a repository poll failure retries the poll, never the published review; errors are terse toasts; stale `conversation_admission` poll failures requeue once.
-- Repository admission is now **All pull requests** or an ordered, sortable
-  list of **Filtered pull requests** rules (assigned to me, mentioning me,
-  include/exclude users, include/exclude paths); the first enabled matching
-  rule decides. Path rules use prefix or glob patterns. Existing repositories
-  migrate once and have monitoring switched off until reviewed. The repository
-  editor replaces Reviewer requests and People you watch with these controls.
-- Failed jobs retry automatically (backoff, 3 attempts) then park. Credential,
-  permission and permanent failures park at once. Queue **Needs attention**
-  lists every parked failure with a cause chip: **Fix** for credentials,
-  **Retry** for the rest, plus **Retry all**. Running shows only active and
-  queued work.
-- Parked failures auto-resume. Network, provider, timeout, rate-limit and
-  permission failures get a fresh 3-attempt budget after 30m, 1h, 2h, 4h, 8h
-  (five cycles), then wait for a human. Credential failures resume when the
-  GitHub or Copilot account connects again. Agent-quality rejections ("did not
-  read every changed file", "execution failure") now retry. A new head
-  supersedes a parked older-head failure. Needs attention rows show a clock
-  and time to the next retry; failed detail shows a facts grid (cause,
-  attempts, last attempt, next retry, Agent, revision, account, raw error).
-- Remove the **Blocked** state. A completed review stays Ready after config
-  drift or a disabled repository; it goes Stale only on a new head or base.
-- Queue item detail leads with the failure or state and one action
-  (**Fix**, **Retry** or **Open**); all other evidence sits in a collapsed
-  **Details** disclosure.
-- Assignment editor uses Agent and Permissions drill-ins; Approval is a
-  three-way off / Approve / & Merge pill.
-- Agent editor shows **Reconnect required** with a **Fix** shortcut.
-- Remove prose from the app UI.
+- Toss moved-state results and invalid comment publications rather than consume
+  them; bounded retries park for human attention. Validate inline diff lines
+  and reconcile uncertain writes without blindly replaying provider actions.
+- GitHub reconnect shows the device code before browser focus and renews the
+  same account without losing repository bindings.
+- Reviewed pages beyond the first result set. Fix clipped scrolling, wrapping
+  error details and editor/panel layout; errors no longer overlay controls.
 
 ## 0.2.1 - 2026-10-11
 
