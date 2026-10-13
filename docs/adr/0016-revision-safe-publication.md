@@ -22,3 +22,7 @@ PR heads move. Publishing a stale review, or touching someone else's pending rev
 - History stable under later library edits.
 - Foreign pending reviews untouched.
 - Offline fixtures are not live acceptance. Live needs a disposable PR.
+
+## Amended ([ADR 0021](0021-review-packet.md))
+
+Per-comment revision stamp: the thread root's `original_commit_id` mapped to the local iteration with that head, else `unknown`. Replies carry it in a hidden marker. Replies and resolutions are not head-bound writes; the head is checked at preflight and before the first effect, not between later steps.

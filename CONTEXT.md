@@ -257,11 +257,11 @@ Publication or reply whose result is unconfirmed. Keeps original reconciliation 
 _Avoid_: Resend
 
 **Owned Feedback**:
-Feedback rooted in a comment PR Sniper published, verified by saved review, receipts, repository/account identity, commit and exact root body. Username match is insufficient. Records original owner. Unassigning keeps unresolved feedback and blocks clearance. Missing, tampered or incomplete observation is never resolved. No Agent resolve or reopen mutation.
+Feedback rooted in a comment PR Sniper published, verified by saved review, receipts, repository/account identity, commit and exact root body. Username match is insufficient. Records original owner. Unassigning keeps unresolved feedback and blocks clearance. Missing, tampered or incomplete observation is never resolved. **Agent resolve**: a Packet-mode primary may resolve only owned threads, through its `leave_comments` exit and a host `resolveReviewThread` write; never others' threads, never reopen. Legacy follow-ups never resolve.
 _Avoid_: Own thread by author name, thread owner as responder
 
 **Feedback clearance**:
-Local reassessment of an owned concern needing rationale and verified source evidence, done by full review or primary reply analysis. Shown apart from provider closure; never resolves the GitHub thread. Closure leaves a durable **Tombstone**; a new finding on a closed concern's file is **Held locally** for human judgment, never republished.
+Local reassessment of an owned concern needing rationale and verified source evidence, done by full review or primary reply analysis. Shown apart from provider closure; the legacy path never resolves the GitHub thread (a Packet-mode exit may, for owned threads only). Closure leaves a durable **Tombstone**; a new finding on a closed concern's file is **Held locally** for human judgment, never republished.
 _Avoid_: Resolved
 
 **Conversation Trigger**:
@@ -269,7 +269,7 @@ Eligible other-user comment on an admitted open PR, assessed by the Primary Agen
 _Avoid_: Backlog
 
 **Follow-up**:
-Reply work on one external comment thread. Immutable target apart from current context. Outcomes: reply, **Quiet response** (nothing to say, never clears a concern), or human input required (no publishable body, pauses auto follow-ups for the thread). Reply posts only to a verified root, ends ` PR Sniper`, never resolves, approves or merges. Host revalidates before and after mutation.
+Reply work on one external comment thread. Legacy path only: Packet-mode assignments answer through exit `reply_comments` instead and admit no Reply or Mention follow-up (existing records drain). Immutable target apart from current context. Outcomes: reply, **Quiet response** (nothing to say, never clears a concern), or human input required (no publishable body, pauses auto follow-ups for the thread). Reply posts only to a verified root, ends ` PR Sniper`, never resolves, approves or merges. Host revalidates before and after mutation.
 _Avoid_: Reply job
 
 **Acting-account mention**:

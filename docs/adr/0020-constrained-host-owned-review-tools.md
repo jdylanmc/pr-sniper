@@ -23,3 +23,7 @@ Review reads untrusted PR content. Letting the model clone or execute repo code 
 ## Amended ([ADR 0021](0021-review-packet.md))
 
 The fixed three-tool allowlist is now a per-run tool set: the assignment's granted investigation tools plus the exits the gates offer (the primary's; a teammate has `submit_report`). Registry: `src-tauri/src/review/tools.rs`; the three original definitions are byte-compatible. The runtime catalog must equal the run's tool set (`with_available_tools` plus `get_current_metadata` equality; the PreToolUse hook is a backstop), or the run is blocked. Legacy runs keep exactly the three tools. Paging stays. The byte-coverage rule above is informational. A response that cannot fit the limit is still a failure, never a partial answer.
+
+## Amended ([ADR 0021](0021-review-packet.md))
+
+Exit `reply_comments` and `resolve_own_threads` are requests like every exit. The host verifies and writes; the agent gains no provider tool. Owned-thread resolution is limited to roots proven by saved publication receipts.

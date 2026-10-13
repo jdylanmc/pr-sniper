@@ -51,6 +51,15 @@ fn gate_input(run: &ReviewRun, facts: Facts) -> Result<GateInput, Failure> {
     })
 }
 
+/// Who builds the packet, and the local facts the packet needs beyond the PR read.
+pub(crate) struct Caller<'a> {
+    pub acting_login: &'a str,
+    pub write_capability: bool,
+    pub teammates: Vec<crate::packet::TeammateEntry>,
+    /// The PR's known (head, local iteration) pairs, for targeted revisions.
+    pub iterations: &'a [(String, u64)],
+}
+
 /// Build the packet and the run's tool set from state read right now.
 /// A head that moved since the job was queued is a superseded state, not a failure;
 /// any other change since enqueue is simply read fresh from `snapshot`.
@@ -60,13 +69,17 @@ pub(crate) fn prepare<T>(
     run: &ReviewRun,
     context: &ReviewContext,
     snapshot: &PrSnapshot,
-    acting_login: &str,
-    write_capability: bool,
-    teammates: Vec<crate::packet::TeammateEntry>,
+    caller: Caller<'_>,
 ) -> Result<Prepared, Failure>
 where
     T: Transport + QueryTransport + Send + Sync + 'static,
 {
+    let Caller {
+        acting_login,
+        write_capability,
+        teammates,
+        iterations,
+    } = caller;
     let mut observation = client
         .action_observation(repo, run.job.number)
         .map_err(Failure::from)?;
@@ -99,7 +112,8 @@ where
         .ok_or_else(|| Failure::permanent("Execution configuration is missing."))?;
     let agent = &run.selection.agent;
     let admission = run.job.work.as_ref().map(|w| &w.admission);
-    let conversation = reads::conversation(&observation);
+    let mut conversation = reads::conversation(&observation);
+    reads::stamp_targeted_revisions(&mut conversation, &observation, iterations);
     let checks = reads::checks(&observation);
     let description = Some(snapshot.body.clone());
     let state_hash = snapshot.normalize().hash();

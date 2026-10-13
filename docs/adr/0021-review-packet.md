@@ -1,6 +1,6 @@
 # Hand each agent one review packet and let it end on one exit
 
-Status: accepted. Packet, tools, gates, exits, consume-time fresh state, consume/toss, approve/merge effects and teammate barrier implemented; reply and resolve execution follow in the same PR. Discovery: [#172](https://github.com/jdylanmc/pr-sniper/issues/172). Spec: [Review packet](../review-packet.md).
+Status: accepted. Packet, tools, gates, exits, consume-time fresh state, consume/toss, approve/merge effects, teammate barrier and reply/resolve execution implemented. Discovery: [#172](https://github.com/jdylanmc/pr-sniper/issues/172). Spec: [Review packet](../review-packet.md).
 
 ## Context
 
@@ -42,7 +42,7 @@ Today the agent prompt is one JSON string built in `src-tauri/src/review/runtime
 - Revisions, comments, edits and CI changes use one mechanism.
 - Larger packet per run. Reading every open PR each tick costs API calls.
 - Replaces the JSON `decision` with exits. Needs a `schema` version and a migration for stored results.
-- Agents may resolve their own threads, never others'. Reverses the earlier "agent never resolves" rule.
+- Agents may resolve their own threads, never others'. Reverses the earlier "agent never resolves" rule. Executed by the host in `exit_writes`: preflight verifies every reply and resolution (all or nothing), then publication, replies, resolutions in order, each with intent and receipt. Packet-mode assignments admit no legacy Reply or Mention follow-up; existing records drain.
 - Approve gate relaxes: others' unresolved threads and changes requested no longer block approve. Approve and merge are not offered while a PR is a draft.
 - More runs per PR state when teammates are configured: cost and latency grow with the number of teammates, and the primary waits for the slowest. A teammate failure holds the PR in Needs attention until recovered.
 - Agents are fenced from each other: reports are data for the primary, which decides and verifies.

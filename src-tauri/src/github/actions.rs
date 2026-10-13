@@ -248,7 +248,7 @@ impl<T: QueryTransport> GithubClient<T> {
               }}}}}
               reviewThreads(first:100) { totalCount pageInfo { hasNextPage } nodes {
                 id isResolved isOutdated resolvedBy { login }
-                comments(first:100) { totalCount pageInfo { hasNextPage } nodes { fullDatabaseId body updatedAt author { login } } }
+                comments(first:100) { totalCount pageInfo { hasNextPage } nodes { fullDatabaseId body updatedAt author { login } originalCommit { oid } } }
               }}
             }
           }

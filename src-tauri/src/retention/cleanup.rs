@@ -347,6 +347,9 @@ impl State {
             .retain(|o| !receipt.items.contains(&o.item_id));
         self.feedback.records.retain(|r| !binding.matches(&r.job));
         self.feedback
+            .exit_writes
+            .retain(|w| !binding.matches(&w.job));
+        self.feedback
             .mentions
             .retain(|m| !m.binding.matches_tracked(&receipt.scope));
         self.feedback

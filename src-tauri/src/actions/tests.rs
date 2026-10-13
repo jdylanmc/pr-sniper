@@ -306,8 +306,20 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
         mergeable: "MERGEABLE".into(),
         ..Default::default()
     };
-    let prepared =
-        packet_run::prepare(&client, &repo, &run, &context, &snapshot, "actor", true, vec![]).unwrap();
+    let prepared = packet_run::prepare(
+        &client,
+        &repo,
+        &run,
+        &context,
+        &snapshot,
+        packet_run::Caller {
+            acting_login: "actor",
+            write_capability: true,
+            teammates: vec![],
+            iterations: &[],
+        },
+    )
+    .unwrap();
     assert!(prepared.packet.text.contains("Why this change."));
     assert!(prepared.packet.text.contains("feature/x"));
     assert!(prepared.packet.text.contains("bug"));
@@ -350,6 +362,47 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
     assert!(!serde_json::to_string(&prepared.packet.record)
         .unwrap()
         .contains("src/lib.rs"));
+    {
+        use crate::github::actions::HumanThread;
+        let thread = |id: &str, commit: &str| HumanThread {
+            id: id.into(),
+            resolved: false,
+            outdated: false,
+            resolved_by: None,
+            comments: vec![
+                json!({"fullDatabaseId":1,"body":"c","author":{"login":"x"},"originalCommit":{"oid":commit}}),
+            ],
+        };
+        env.wire.0.lock().unwrap().observation.threads = vec![
+            thread("mapped", &"a".repeat(40)),
+            thread("elsewhere", &"c".repeat(40)),
+        ];
+        let known = vec![("a".repeat(40), 2)];
+        let stamped = packet_run::prepare(
+            &client,
+            &repo,
+            &run,
+            &context,
+            &snapshot,
+            packet_run::Caller {
+                acting_login: "actor",
+                write_capability: true,
+                teammates: vec![],
+                iterations: &known,
+            },
+        )
+        .unwrap();
+        let text = &stamped.packet.text;
+        let line = |id: &str| {
+            text.lines()
+                .find(|l| l.starts_with(&format!("thread {id} ")))
+                .unwrap()
+                .to_string()
+        };
+        assert!(line("mapped").contains("targeted_revision=2"));
+        assert!(line("elsewhere").contains("targeted_revision=unknown"));
+        env.wire.0.lock().unwrap().observation.threads.clear();
+    }
     let approve = ExitCall::ApprovePullRequest {
         comment: "ok".into(),
     };
@@ -373,10 +426,22 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
         Err(Refusal::Moved(_))
     ));
     assert_eq!(
-        packet_run::prepare(&client, &repo, &run, &context, &snapshot, "actor", true, vec![])
-            .err()
-            .unwrap()
-            .kind,
+        packet_run::prepare(
+            &client,
+            &repo,
+            &run,
+            &context,
+            &snapshot,
+            packet_run::Caller {
+                acting_login: "actor",
+                write_capability: true,
+                teammates: vec![],
+                iterations: &[]
+            }
+        )
+        .err()
+        .unwrap()
+        .kind,
         monitoring::OperationFailure::Superseded
     );
 }

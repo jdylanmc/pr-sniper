@@ -62,6 +62,13 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
             if conflicting_publication(&publications, review) {
                 policy = Err("Another review attempt owns this revision's publication; reconcile it instead of creating another batch.".into());
             }
+            if publication.is_none() && policy.is_ok() {
+                if let Some(reason) = crate::exit_writes::holds_publication(store, review)
+                    .unwrap_or_else(Some)
+                {
+                    policy = Err(reason);
+                }
+            }
             if latest.get(&review.key).copied() != Some(&review.operation.id) {
                 policy = Err("A newer local review attempt superseded this result.".into());
             }
@@ -701,7 +708,11 @@ impl Environment for Native {
             run.review.result.as_ref().and_then(|r| r.output.exit.as_ref()),
             Some(crate::exits::ExitOutcome::Comments { new_comments, .. }) if !new_comments.is_empty()
         );
-        if run.review.mode != crate::review::RunMode::Packet || !comments {
+        // Replies or resolutions follow the batch: the exit consumes when they finish.
+        if run.review.mode != crate::review::RunMode::Packet
+            || !comments
+            || crate::exit_writes::plan(&run.review, 0).is_some()
+        {
             return Ok(());
         }
         let client = self.session(run)?;

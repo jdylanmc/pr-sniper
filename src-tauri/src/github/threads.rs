@@ -155,6 +155,11 @@ impl Thread {
             .max_by_key(|comment| (&comment.published_at, &comment.id))
     }
 
+    /// Owned when any saved proof verifies the root. Agent resolution is limited to these.
+    pub fn owned_by_any(&self, proofs: &[Ownership]) -> bool {
+        proofs.iter().any(|proof| self.owned_by(proof))
+    }
+
     pub fn owned_by(&self, publication: &impl Provenance) -> bool {
         let Ok(root) = self.root() else {
             return false;
@@ -539,6 +544,80 @@ impl<T: MutationTransport> GithubClient<T> {
             failure: error.into(),
             uncertain: true,
         })
+    }
+}
+
+impl<T: MutationTransport> GithubClient<T> {
+    /// Resolves one review thread. Callers verify ownership first; this never decides it.
+    /// Resolving a resolved thread is a no-op, so an uncertain result is safe to re-verify.
+    pub fn resolve_review_thread(
+        &self,
+        thread_id: &str,
+        request_id: &str,
+    ) -> Result<(), WriteFailure> {
+        if thread_id.is_empty() || request_id.is_empty() {
+            return Err(WriteFailure {
+                failure: Failure::permanent("Invalid thread resolution request."),
+                uncertain: false,
+            });
+        }
+        let query = "mutation($input:ResolveReviewThreadInput!){resolveReviewThread(input:$input){clientMutationId thread{id isResolved}}}";
+        let response = self
+            .transport
+            .mutate(
+                "/graphql",
+                Request::Post(
+                    json!({"query":query,"variables":{"input":{"threadId":thread_id,"clientMutationId":request_id}}}),
+                ),
+            )
+            .map_err(|error| WriteFailure {
+                failure: error.into(),
+                uncertain: true,
+            })?;
+        if response.status != 200 {
+            let uncertain = !(400..500).contains(&response.status) || response.status == 408;
+            let failure = parse_response(response)
+                .err()
+                .map(Failure::from)
+                .unwrap_or_else(|| {
+                    Failure::permanent("GitHub did not confirm the thread resolution.")
+                });
+            return Err(WriteFailure { failure, uncertain });
+        }
+        let value: Value = serde_json::from_slice(&response.body).map_err(|_| WriteFailure {
+            failure: ConnectionError::InvalidResponse.into(),
+            uncertain: true,
+        })?;
+        if let Some(errors) = value
+            .get("errors")
+            .filter(|e| !e.is_null() && e.as_array().is_none_or(|a| !a.is_empty()))
+        {
+            let definite = errors.as_array().is_some_and(|errors| {
+                errors.iter().all(|error| {
+                    matches!(
+                        error["type"].as_str(),
+                        Some("FORBIDDEN" | "NOT_FOUND" | "UNPROCESSABLE")
+                    )
+                })
+            });
+            return Err(WriteFailure {
+                failure: Failure::permanent(
+                    "GitHub refused or could not confirm the thread resolution.",
+                ),
+                uncertain: !definite,
+            });
+        }
+        let data = &value["data"]["resolveReviewThread"];
+        if data["clientMutationId"].as_str() != Some(request_id)
+            || data["thread"]["id"].as_str() != Some(thread_id)
+            || data["thread"]["isResolved"] != true
+        {
+            return Err(WriteFailure {
+                failure: ConnectionError::InvalidResponse.into(),
+                uncertain: true,
+            });
+        }
+        Ok(())
     }
 }
 
