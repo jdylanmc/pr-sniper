@@ -933,6 +933,7 @@ fn live_pr2_teammate_primary_publish_consume_and_reply() {
             reply_comments,
             resolve_own_threads,
             new_comments,
+            ..
         }) => {
             println!(
                 "LIVE second exit: {} new, {} replies, {} resolves",

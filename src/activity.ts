@@ -59,6 +59,7 @@ function exitRow(
       ["Replies", exit.reply_comments.length],
       ["Resolved", exit.resolve_own_threads.length],
     ];
+    if (exit.body) counts.splice(1, 0, ["Body", 1]);
     value = counts
       .map(([label, count]) => `${label} ${count}`)
       .join(" \u00b7 ");

@@ -210,6 +210,7 @@ where
 {
     let number = run.job.number;
     let (head, target) = (context.pull.head_sha.clone(), context.pull.base_sha.clone());
+    let files = context.files.clone();
     Ok(Arc::new(move |call| {
         let mut observation: Observation = client
             .action_observation(&repo, number)
@@ -248,6 +249,47 @@ where
                 ));
             }
         }
+        if let Some(reason) = out_of_diff(&files, call) {
+            return Err(Refusal::Denied(reason));
+        }
         Ok(())
     }))
+}
+
+/// New comments on lines the run's diff cannot address, as a directive the agent
+/// can act on in the loop. Same mapping as the publication batch
+/// ([`crate::publication::DiffLines`]), so an accepted exit always maps.
+pub(crate) fn out_of_diff(
+    files: &[crate::github::review::ReviewFile],
+    call: &crate::exits::ExitCall,
+) -> Option<String> {
+    let crate::exits::ExitCall::LeaveComments { new_comments, .. } = call else {
+        return None;
+    };
+    let lines = crate::publication::DiffLines::of(files);
+    let bad: Vec<_> = new_comments
+        .iter()
+        .filter(|c| lines.position(c).is_none())
+        .map(|c| {
+            format!(
+                "{}:{} ({})",
+                c.path,
+                c.line,
+                c.side.as_deref().unwrap_or("head")
+            )
+        })
+        .collect();
+    const SHOWN: usize = 5;
+    (!bad.is_empty()).then(|| {
+        let more = bad.len().saturating_sub(SHOWN);
+        format!(
+            "{}{} not in diff. Comment on a changed line, or put it in body.",
+            bad[..bad.len().min(SHOWN)].join(", "),
+            if more > 0 {
+                format!(" (+{more} more)")
+            } else {
+                String::new()
+            }
+        )
+    })
 }

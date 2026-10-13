@@ -703,11 +703,22 @@ impl Environment for Native {
         result
     }
 
+    fn tossed(&mut self, run: &Publication) -> Result<(), Failure> {
+        let host = self.app.state::<Host>();
+        let store = host.store.lock().map_err(|_| {
+            self.failures
+                .infrastructure_error("Publication storage unavailable.")
+        })?;
+        toss_review(&store, run, self.now()?)
+            .map_err(|error| self.failures.infrastructure_error(error))
+    }
+
     fn confirmed(&mut self, run: &Publication) -> Result<(), Failure> {
-        let comments = matches!(
-            run.review.result.as_ref().and_then(|r| r.output.exit.as_ref()),
-            Some(crate::exits::ExitOutcome::Comments { new_comments, .. }) if !new_comments.is_empty()
-        );
+        let comments = run
+            .review
+            .result
+            .as_ref()
+            .is_some_and(crate::publication::writes_comments);
         // Replies or resolutions follow the batch: the exit consumes when they finish.
         if run.review.mode != crate::review::RunMode::Packet
             || !comments

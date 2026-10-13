@@ -269,6 +269,9 @@ fn review_state(
     let discarded = batch
         .and_then(|p| p.publication.as_ref())
         .is_some_and(|p| p.phase == publication::Phase::Discarded);
+    let tossed_batch = batch
+        .and_then(|p| p.publication.as_ref())
+        .is_some_and(publication::Publication::tossed);
     let publication = batch
         .and_then(|p| p.publication.as_ref())
         .filter(|p| p.phase != publication::Phase::Discarded);
@@ -344,20 +347,32 @@ fn review_state(
             | ExitOutcome::SubmitReport
             | ExitOutcome::Approve { .. }
             | ExitOutcome::ApproveAndMerge { .. } => return State::MachineSignedOff,
-            ExitOutcome::Comments { new_comments, .. } => match context.write(run) {
+            ExitOutcome::Comments {
+                new_comments, body, ..
+            } => match context.write(run) {
                 Some(write) => match write.phase {
                     Phase::Failed => return State::Failed,
                     Phase::Tossed if context.parked(run) => return State::Failed,
                     // The toss re-queues the PR.
                     Phase::Tossed => return State::Queued,
                     Phase::Completed if write.consumed => {
-                        if new_comments.is_empty() {
+                        if new_comments.is_empty() && body.is_none() {
                             return State::WaitingForAuthor;
                         }
                     }
                     _ => return State::AwaitingPublication,
                 },
-                None if new_comments.is_empty() => return State::AwaitingPublication,
+                // A content toss of the batch: re-queued, or parked when the budget is spent.
+                None if tossed_batch => {
+                    return if context.parked(run) {
+                        State::Failed
+                    } else {
+                        State::Queued
+                    };
+                }
+                None if new_comments.is_empty() && body.is_none() => {
+                    return State::AwaitingPublication
+                }
                 None => {}
             },
         }
@@ -848,6 +863,16 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                         Some(monitoring::OperationFailure::Tossed) => Some(CAUSE_TOSSED),
                         _ => None,
                     };
+                }
+                if context.parked(run)
+                    && snapshot.publications.iter().any(|p| {
+                        p.review_operation_id == run.operation.id
+                            && p.publication
+                                .as_ref()
+                                .is_some_and(publication::Publication::tossed)
+                    })
+                {
+                    return Some(CAUSE_TOSSED);
                 }
                 match context.write(run)?.phase {
                     Phase::Failed => Some(CAUSE_EXIT_FAILED),

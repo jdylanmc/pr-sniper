@@ -68,10 +68,11 @@ Rules, minimum:
 6. CI red or merge conflicts: do not approve. `leave_comments` with the fix, unless an open thread already says it.
 7. Nothing new to say and no defect: `ready_for_human`, or approve if offered.
 8. Unsure: `ready_for_human`. Broken: `panic_exit`.
+9. Merge conflicts or issues outside the diff: put them in `body`.
 
 Teammates: same read and `<untrusted>` rules; real defects only; skip points already in an open thread; one `submit_report`.
 
-Schema 2 (live run: agents re-posted points beside their own open threads, posted "what I read" comments, and chose `ready_for_human` on CI red).
+Schema 2 (live run: agents re-posted points beside their own open threads, posted "what I read" comments, and chose `ready_for_human` on CI red). Schema 3: rule 9 (live: a comment on a line outside the diff, a pre-existing conflict marker, parked the publication).
 
 Stored with the run: sections, manifest, teammate reports, `packet_hash`, `state_hash`, `state_marks` (compact packet-time state: field digest, comment ids and body digests, resolved threads; tells own writes from external change at consume). File content not duplicated. UI shows exactly what the agent saw. No tokens or credentials.
 
@@ -85,14 +86,14 @@ The agent has no shell, no `az`, no `gh`, no network, no checkout. Its hands are
 
 **Exits.** One per run. Grant-gated. Not offered when the gate already fails. Grants apply to the primary's exits only. A non-primary assignment's grants are ignored and not offered in settings.
 
-| Exit                   | Needs                                          | Does                                                                                                                                                                          |
-| ---------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `leave_comments`       | Publish Comment (new), Reply Comment (replies) | `new_comments[{path, line, side, body}]`, `reply_comments[{thread, body}]`, own-thread resolutions. Posted as one batch, stamped with revision.                               |
-| `ready_for_human`      | none                                           | Move PR to the human's queue. No comment on the provider. Stores a local summary (ad hoc decision, owner review requested).                                                   |
-| `approve_pull_request` | Approve                                        | Approve the head with an approval comment. Idempotent.                                                                                                                        |
-| `approve_and_merge`    | & Merge                                        | Approve with comment, then merge.                                                                                                                                             |
-| `panic_exit`           | none                                           | Unrecoverable. Log it, park in Needs attention, auto-retry on the cooldown schedule.                                                                                          |
-| `submit_report`        | none (teammate only)                           | Teammate's report: array of findings `{file, line, nano, full, fix}`. `nano` <= 100 words, `full` and `fix` <= 4 KB each. Not a provider write. Stored locally. Ends the run. |
+| Exit                   | Needs                                          | Does                                                                                                                                                                           |
+| ---------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `leave_comments`       | Publish Comment (new), Reply Comment (replies) | `new_comments[{path, line, side, body}]`, `body` (PR-level review body), `reply_comments[{thread, body}]`, own-thread resolutions. Posted as one batch, stamped with revision. |
+| `ready_for_human`      | none                                           | Move PR to the human's queue. No comment on the provider. Stores a local summary (ad hoc decision, owner review requested).                                                    |
+| `approve_pull_request` | Approve                                        | Approve the head with an approval comment. Idempotent.                                                                                                                         |
+| `approve_and_merge`    | & Merge                                        | Approve with comment, then merge.                                                                                                                                              |
+| `panic_exit`           | none                                           | Unrecoverable. Log it, park in Needs attention, auto-retry on the cooldown schedule.                                                                                           |
+| `submit_report`        | none (teammate only)                           | Teammate's report: array of findings `{file, line, nano, full, fix}`. `nano` <= 100 words, `full` and `fix` <= 4 KB each. Not a provider write. Stored locally. Ends the run.  |
 
 Primary only. Usual choice among the last three: `ready_for_human`, `approve_pull_request` or `approve_and_merge`.
 
@@ -103,15 +104,16 @@ Agents may resolve their own threads. They cannot close others'. They may reply 
 - Exits are SDK terminal tools: a successful call ends the turn with **no final message**. A failed call (gate denial, bad args) leaves the loop running; the agent picks another exit. Proven in the real runtime (SDK 1.0.14).
 - One shared slot. First valid call wins. Parallel or later calls get an error result ("An exit was already taken").
 - Args are validated against the schema and limits below. Over limit or malformed: error result, agent retries. Three rejected calls: permanent contract violation (park for the human).
-- Exit-time gate re-reads the PR. Head or base moved, or PR closed: run tossed as superseded (no failure). A gate denial: short directive error, agent picks another. A reply or resolve naming a thread not on the PR is denied at the call, so the agent fixes the id.
+- Exit-time gate re-reads the PR. Head or base moved, or PR closed: run tossed as superseded (no failure). A gate denial: short directive error, agent picks another. A reply or resolve naming a thread not on the PR is denied at the call, so the agent fixes the id. A new comment the run's diff cannot address (path not changed, line not in a hunk on that side; same mapping as the batch) is denied at the call: `CHANGELOG.md:151 (head) not in diff. Comment on a changed line, or put it in body.` Gate denials do not count toward the 3 rejected calls.
 - Idle without an exit: retryable provider failure. `panic_exit`: typed `OperationFailure::Panic`, parks at once, cooldown auto-resume (30m, 1h, 2h, 4h, 8h). Never consumes.
-- Host effects. `leave_comments.new_comments` become one publication through the normal pipeline (`Batch::prepare_exit`, diff positions, all or nothing: an unmappable line tosses the batch, nothing is posted). `ready_for_human` stores the exit locally; queue shows Ready for you; no comment. `submit_report` stores the report on the run. Approve and merge: payload, gate and stored outcome only; effects next. `reply_comments` and `resolve_own_threads`: validated and stored, not executed yet.
+- Host effects. `leave_comments.new_comments` and `body` become one publication through the normal pipeline (`Batch::prepare_exit`, diff positions; `body` is the review body, so a body-only exit posts one `COMMENT` review with no inline comments). All or nothing: a content failure (unmappable line, GitHub 422 on the review create) tosses the review, not the publication: publication discarded and never retried, error count +1, fresh review re-queued, park after 3 (Needs attention, Tossed). `ready_for_human` stores the exit locally; queue shows Ready for you; no comment. `submit_report` stores the report on the run. Approve and merge: payload, gate and stored outcome only; effects next. `reply_comments` and `resolve_own_threads`: validated and stored, not executed yet.
 
 ### Limits
 
 | Field                                | Limit                                         |
 | ------------------------------------ | --------------------------------------------- |
 | `new_comments`, replies, resolves    | 100 each; body 16 KB; path 1 KB               |
+| `leave_comments.body`                | 8 KB, non-empty if present                    |
 | `summary`, `detail`                  | 4 KB; `reason` 200 bytes                      |
 | approval `comment`                   | 16 KB, required                               |
 | report findings                      | 25; `nano` 100 words; `full`, `fix` 4 KB each |
@@ -124,21 +126,21 @@ Nothing is cut. Over limit means an error the agent fixes.
 
 Run twice. At packet build: failing exit is not offered, packet says why (Exits section). At exit: re-check for races. One pure function: `exits::gates::offered`. Exits outside the assignment's tool set or role are absent. GitHub refuses self-approval ("Can not approve your own pull request", verified live): approve is denied for the acting account's own PRs; merge there needs Include self. PR-state reasons (conflicts, CI red) are stated before self-authorship, so the agent learns what to comment.
 
-| Situation                                 | Result                                                                                                       |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| CI red                                    | No approve, no merge. Agent comments: CI is broken, with the fix.                                            |
-| Merge conflicts                           | No approve, no merge. Agent comments: blocked by conflicts, with resolution advice if non-trivial.           |
-| CI pending                                | Approve allowed. Merge not offered. No "wait for CI" comment. Later state change queues a merge pass.        |
-| Required reviews unmet                    | Approve allowed. `approve_and_merge` not offered. No comment.                                                |
-| Changes requested by others               | Approve allowed. Merge blocked.                                                                              |
-| Others' unresolved threads                | Approve allowed.                                                                                             |
-| Draft                                     | Repository setting **Review drafts**. On: reviewed and commented. Approve and merge not offered while draft. |
-| Acting account is author                  | Approve & Merge option **Include self**.                                                                     |
-| Our approval exists                       | Re-approve is idempotent success. State consumed.                                                            |
-| State moved while queued                  | Nothing to do. The PR refreshes at its turn; no drop and re-queue.                                           |
-| State moved during run                    | Toss the review, re-queue the PR.                                                                            |
-| Write fails, line not in diff, file moved | Toss batch. Error count +1. Re-queue. Park after 3.                                                          |
-| Signed out                                | Toss. Park as Credentials in Needs attention. Auto-resume on reconnect.                                      |
+| Situation                                 | Result                                                                                                         |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| CI red                                    | No approve, no merge. Agent comments: CI is broken, with the fix.                                              |
+| Merge conflicts                           | No approve, no merge. Agent comments: blocked by conflicts, with resolution advice if non-trivial.             |
+| CI pending                                | Approve allowed. Merge not offered. No "wait for CI" comment. Later state change queues a merge pass.          |
+| Required reviews unmet                    | Approve allowed. `approve_and_merge` not offered. No comment.                                                  |
+| Changes requested by others               | Approve allowed. Merge blocked.                                                                                |
+| Others' unresolved threads                | Approve allowed.                                                                                               |
+| Draft                                     | Repository setting **Review drafts**. On: reviewed and commented. Approve and merge not offered while draft.   |
+| Acting account is author                  | Approve & Merge option **Include self**.                                                                       |
+| Our approval exists                       | Re-approve is idempotent success. State consumed.                                                              |
+| State moved while queued                  | Nothing to do. The PR refreshes at its turn; no drop and re-queue.                                             |
+| State moved during run                    | Toss the review, re-queue the PR.                                                                              |
+| Write fails, line not in diff, file moved | Line denied at the exit call. Content failure at publish: toss review. Error count +1. Re-queue. Park after 3. |
+| Signed out                                | Toss. Park as Credentials in Needs attention. Auto-resume on reconnect.                                        |
 
 Failure buckets: A agent-correctable, B superseded, C infrastructure (retry, park), D human-needed, E not applicable.
 

@@ -82,7 +82,7 @@ pub struct ExitWrite {
     pub review_operation_id: String,
     pub job: QueueJob,
     pub assignment_id: String,
-    /// The exit also has `new_comments`: the publication batch goes first.
+    /// The exit also has `new_comments` or a review `body`: the publication batch goes first.
     pub comments_first: bool,
     pub published: bool,
     pub steps: Vec<Step>,
@@ -132,6 +132,7 @@ pub fn plan(review: &ReviewRun, now: i64) -> Option<ExitWrite> {
     }
     let Some(ExitOutcome::Comments {
         new_comments,
+        body,
         reply_comments,
         resolve_own_threads,
     }) = review.result.as_ref()?.output.exit.as_ref()
@@ -175,7 +176,7 @@ pub fn plan(review: &ReviewRun, now: i64) -> Option<ExitWrite> {
         review_operation_id: review.operation.id.clone(),
         job: review.job.clone(),
         assignment_id: review.assignment_id.clone(),
-        comments_first: !new_comments.is_empty(),
+        comments_first: !new_comments.is_empty() || body.is_some(),
         published: false,
         steps,
         phase: Phase::Planned,

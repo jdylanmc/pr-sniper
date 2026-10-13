@@ -116,6 +116,7 @@ fn packet_exits_decide_queue_state_without_a_publication_unless_they_write_comme
             side: None,
             body: "Fix.".into(),
         }],
+        body: None,
         reply_comments: vec![],
         resolve_own_threads: vec![],
     });
@@ -124,6 +125,7 @@ fn packet_exits_decide_queue_state_without_a_publication_unless_they_write_comme
 
     let replies_only = with_exit(ExitOutcome::Comments {
         new_comments: vec![],
+        body: None,
         reply_comments: vec![pr_sniper_lib::exits::ReplyComment {
             thread_id: "T".into(),
             body: "Agreed.".into(),
@@ -151,6 +153,7 @@ fn packet_exits_decide_queue_state_without_a_publication_unless_they_write_comme
 fn replies_only() -> ReviewRun {
     with_exit(pr_sniper_lib::exits::ExitOutcome::Comments {
         new_comments: vec![],
+        body: None,
         reply_comments: vec![pr_sniper_lib::exits::ReplyComment {
             thread_id: "T".into(),
             body: "Agreed.".into(),
@@ -940,5 +943,66 @@ fn transient_publication_failures_resume_on_the_cooldown_table_and_credentials_o
     assert_eq!(
         monitor.auto_resume(&store, &accounts(), i64::MAX).unwrap(),
         0
+    );
+}
+
+#[test]
+fn a_content_tossed_batch_requeues_then_parks_as_tossed() {
+    use pr_sniper_lib::exits::{ExitOutcome, NewComment};
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let run = with_exit(ExitOutcome::Comments {
+        new_comments: vec![NewComment {
+            path: "CHANGELOG.md".into(),
+            line: 151,
+            side: Some("head".into()),
+            body: "Conflict marker.".into(),
+        }],
+        body: None,
+        reply_comments: vec![],
+        resolve_own_threads: vec![],
+    });
+    let mut tossed = Publication::new(run.clone(), true, false, 100).unwrap();
+    tossed.phase = publication::Phase::Discarded;
+    tossed.operation.state = OperationState::Completed;
+    tossed.operation.failure = Some(OperationFailure::Tossed);
+    assert!(tossed.tossed());
+    seed(&store, std::slice::from_ref(&run), &[tossed.clone()]);
+    tosses(&store, &run, 1);
+    let queued = item(&store);
+    assert_eq!(queued.state, State::Queued);
+    assert_eq!(queued.failure_cause, None);
+    tosses(&store, &run, 3);
+    let parked = item(&store);
+    assert_eq!(parked.state, State::Failed);
+    assert_eq!(parked.failure_cause, Some(queue::CAUSE_TOSSED));
+    // Retry restarts the toss budget and reviews the current state, never the batch.
+    assert_eq!(
+        pr_sniper_lib::exits::consume::retry_parked(&store, &parked.id, 300).unwrap(),
+        1
+    );
+    let record = store.load_pr_states().unwrap();
+    assert_eq!(record.get(&Binding::job(&run.job)).unwrap().error_count, 0);
+    assert_eq!(store.load_publications().unwrap(), vec![tossed]);
+}
+
+#[test]
+fn a_body_only_exit_awaits_its_publication() {
+    use pr_sniper_lib::exits::ExitOutcome;
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let run = with_exit(ExitOutcome::Comments {
+        new_comments: vec![],
+        body: Some("Merge conflicts: rebase on main.".into()),
+        reply_comments: vec![],
+        resolve_own_threads: vec![],
+    });
+    seed(&store, std::slice::from_ref(&run), &[]);
+    let waiting = item(&store);
+    assert_eq!(waiting.state, State::AwaitingPublication);
+    assert_eq!(waiting.progress, Some(queue::Progress::Publishing));
+    assert!(
+        exit_writes::plan(&run, 100).is_none(),
+        "no replies: batch only"
     );
 }

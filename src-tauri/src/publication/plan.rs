@@ -1,7 +1,7 @@
 use super::Publication;
 use crate::{
     exits::{ExitOutcome, NewComment},
-    github::review::ReviewContext,
+    github::review::{ReviewContext, ReviewFile},
     review::Failure,
 };
 use serde::{Deserialize, Serialize};
@@ -28,12 +28,15 @@ pub struct Batch {
 }
 
 impl Batch {
-    /// Batch from a Packet-mode `leave_comments` exit. All or nothing: one unmappable
-    /// line fails the whole batch (a toss), so nothing partial is ever posted.
+    /// Batch from a Packet-mode `leave_comments` exit: inline comments and the
+    /// agent's PR-level `body`, one review. All or nothing: an unmappable line is a
+    /// typed content toss (`Failure::tossed`), so nothing partial is ever posted and
+    /// the same batch is never retried.
     pub fn prepare_exit(
         run: &Publication,
         context: &ReviewContext,
         new_comments: &[NewComment],
+        review_body: Option<&str>,
     ) -> Result<Self, Failure> {
         let result = run
             .review
@@ -47,36 +50,18 @@ impl Batch {
                 "The reviewed diff is stale. Run a new review.",
             ));
         }
-        if new_comments.is_empty() {
+        if new_comments.is_empty() && review_body.is_none() {
             return Err(Failure::permanent(
                 "The exit has no new comments to publish.",
             ));
         }
-        let locations: BTreeMap<_, _> = context
-            .files
-            .iter()
-            .map(|file| {
-                (
-                    file.path.as_str(),
-                    file.patch
-                        .as_deref()
-                        .and_then(diff_positions)
-                        .unwrap_or_default(),
-                )
-            })
-            .collect();
+        let locations = DiffLines::of(&context.files);
         let mut comments = Vec::new();
         for (index, comment) in new_comments.iter().enumerate() {
             let side = comment.side.as_deref().unwrap_or("head");
-            let position = locations
-                .get(comment.path.as_str())
-                .and_then(|lines| lines.get(&(side.to_string(), comment.line)))
-                .copied()
-                .ok_or_else(|| {
-                    Failure::provider(
-                        "A comment line is not in the diff; the whole batch was tossed. Retry.",
-                    )
-                })?;
+            let position = locations.position(comment).ok_or_else(|| {
+                Failure::tossed("A comment line is not in the diff; the review was tossed.")
+            })?;
             let body = format!(
                 "{}\n\n<!-- pr-sniper:comment:{}:{index} -->",
                 comment.body.trim_end(),
@@ -91,11 +76,19 @@ impl Batch {
                 diff_position: Some(position),
             });
         }
-        let body = format!(
-            "Automated review by PR Sniper.\n\n{} inline comment(s).\n\n{}\n\n\u{f05b} PR Sniper",
-            comments.len(),
-            run.marker(),
-        );
+        let body = match review_body {
+            None => format!(
+                "Automated review by PR Sniper.\n\n{} inline comment(s).\n\n{}\n\n\u{f05b} PR Sniper",
+                comments.len(),
+                run.marker(),
+            ),
+            Some(text) => format!(
+                "Automated review by PR Sniper.\n\n{}\n\n{} inline comment(s).\n\n{}\n\n\u{f05b} PR Sniper",
+                text.trim_end(),
+                comments.len(),
+                run.marker(),
+            ),
+        };
         check_body(&body)?;
         Ok(Self {
             commit_id: run.review.job.head_sha.clone(),
@@ -120,22 +113,56 @@ impl Batch {
         }
         // The batch is built from the exit's comments. Legacy findings never publish.
         match &result.output.exit {
-            Some(ExitOutcome::Comments { new_comments, .. }) => {
-                Self::prepare_exit(run, context, new_comments)
-            }
+            Some(ExitOutcome::Comments {
+                new_comments, body, ..
+            }) => Self::prepare_exit(run, context, new_comments, body.as_deref()),
             Some(_) => Err(Failure::permanent("This exit writes no review comments.")),
             None => Err(Failure::permanent(crate::review::LEGACY_RETIRED)),
         }
     }
 }
 
-/// Whether a completed review has provider comments to publish: only a
-/// `leave_comments` exit with new comments. Legacy results never publish.
+/// Whether a completed review has a provider review to publish: only a
+/// `leave_comments` exit with new comments or a body. Legacy results never publish.
 pub fn writes_comments(result: &crate::review::ReviewResult) -> bool {
     matches!(
         &result.output.exit,
-        Some(ExitOutcome::Comments { new_comments, .. }) if !new_comments.is_empty()
+        Some(ExitOutcome::Comments { new_comments, body, .. })
+            if !new_comments.is_empty() || body.is_some()
     )
+}
+
+/// Addressable lines of a PR diff: `(path) -> (side, line) -> diff position`. A
+/// path absent from the changed files, or with a missing or truncated patch, has
+/// no addressable line. A deleted file has only base lines, an added one only head.
+pub(crate) struct DiffLines<'a>(BTreeMap<&'a str, BTreeMap<(String, u64), u64>>);
+
+impl<'a> DiffLines<'a> {
+    pub(crate) fn of(files: &'a [ReviewFile]) -> Self {
+        Self(
+            files
+                .iter()
+                .map(|file| {
+                    (
+                        file.path.as_str(),
+                        file.patch
+                            .as_deref()
+                            .and_then(diff_positions)
+                            .unwrap_or_default(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    /// Diff position of a new comment (side defaults to head), if addressable.
+    pub(crate) fn position(&self, comment: &NewComment) -> Option<u64> {
+        let side = comment.side.as_deref().unwrap_or("head");
+        self.0
+            .get(comment.path.as_str())
+            .and_then(|lines| lines.get(&(side.to_string(), comment.line)))
+            .copied()
+    }
 }
 
 fn check_body(body: &str) -> Result<(), Failure> {

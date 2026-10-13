@@ -132,6 +132,7 @@ export type ExitOutcome =
   | {
       exit: "comments";
       new_comments: unknown[];
+      body?: string;
       reply_comments: unknown[];
       resolve_own_threads: string[];
     }
