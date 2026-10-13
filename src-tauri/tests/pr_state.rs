@@ -174,7 +174,7 @@ fn completed(settings: &Settings, job: &QueueJob) -> ReviewRun {
     operation.begin_attempt(NOW + 1).unwrap();
     operation.state = OperationState::Completed;
     ReviewRun {
-        mode: Default::default(),
+        mode: pr_sniper_lib::review::RunMode::Packet,
         packet: None,
         feedback_context: None,
         key: review::key(job, assignment),

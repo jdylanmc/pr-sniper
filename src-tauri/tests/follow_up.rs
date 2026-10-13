@@ -45,7 +45,7 @@ fn origin() -> Publication {
     let mut op = JobOperation::review(&job, 100);
     op.state = OperationState::Completed;
     let review=ReviewRun {
-        mode: Default::default(),
+        mode: pr_sniper_lib::review::RunMode::Packet,
         packet: None,
         feedback_context: None,
         key:pr_sniper_lib::review::key(&job,ASSIGNMENT),selection:Selection::resolve(&settings(),&job,ASSIGNMENT).unwrap(),
@@ -639,43 +639,6 @@ fn general_provider_threads_keep_original_authorship_and_reply_as_the_acting_ide
         Some("100")
     );
     assert_eq!(fixture.writes(), 1);
-}
-
-#[test]
-fn analysis_result_commit_fences_account_cancellation_and_late_settings_changes() {
-    let fixture = Fixture::new();
-    let mut run = prepared(&fixture.origin);
-    run.publication = None;
-    run.manual_start = true;
-    fixture.store.save_settings(&settings()).unwrap();
-    fixture
-        .store
-        .save_queue(std::slice::from_ref(&run.context.job))
-        .unwrap();
-    fixture
-        .store
-        .save_follow_ups(std::slice::from_ref(&run))
-        .unwrap();
-    assert!(follow_up::validate_analysis_commit(&fixture.store, &run, true).is_err());
-    run.body = None;
-    fixture
-        .store
-        .save_follow_ups(std::slice::from_ref(&run))
-        .unwrap();
-    assert!(follow_up::validate_analysis_commit(&fixture.store, &run, true).is_ok());
-    assert!(follow_up::validate_analysis_commit(&fixture.store, &run, false).is_err());
-    let mut cancelled = run.clone();
-    cancelled.cancelled = true;
-    fixture.store.save_follow_ups(&[cancelled]).unwrap();
-    assert!(follow_up::validate_analysis_commit(&fixture.store, &run, true).is_err());
-    fixture
-        .store
-        .save_follow_ups(std::slice::from_ref(&run))
-        .unwrap();
-    let mut changed = settings();
-    changed.agents[0].prompt = "Different review lens.".into();
-    fixture.store.save_settings(&changed).unwrap();
-    assert!(follow_up::validate_analysis_commit(&fixture.store, &run, true).is_err());
 }
 
 #[test]

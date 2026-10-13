@@ -1,6 +1,5 @@
 use crate::{
     backpressure::{Backpressure, Scope},
-    follow_up::{self, FollowUp},
     monitoring::{JobOperation, OperationState},
     review::{self, ReviewRun},
     storage::Store,
@@ -23,6 +22,8 @@ pub enum Interruption {
     Shutdown,
 }
 
+/// Only `Normal` runs. The other kinds name historical work (legacy primary final,
+/// Reply and Mention analysis) kept in old records and retention receipts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
@@ -88,7 +89,6 @@ pub struct Coordinator {
 
 pub enum Dispatch {
     Review(Box<ReviewRun>, Arc<AtomicBool>),
-    Reply(Box<FollowUp>, Arc<AtomicBool>),
 }
 
 pub struct Batch {
@@ -100,16 +100,8 @@ impl Dispatch {
     pub fn key(&self) -> WorkId {
         match self {
             Self::Review(run, _) => WorkId {
-                kind: if run.operation.operation_type == "primary_final_review" {
-                    Kind::PrimaryFinal
-                } else {
-                    Kind::Normal
-                },
+                kind: Kind::Normal,
                 id: run.key.clone(),
-            },
-            Self::Reply(run, _) => WorkId {
-                kind: run.kind(),
-                id: run.id.clone(),
             },
         }
     }
@@ -148,59 +140,7 @@ fn due(operation: &JobOperation, now: i64) -> bool {
 }
 
 pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
-    let mut result = crate::actions::host::candidates(store, now)?;
-    let follow_ups = follow_up::host::candidates(store)?;
-    for intent in store
-        .load_feedback()?
-        .pending_threads
-        .into_iter()
-        .filter(|intent| {
-            intent.follow_up_id.is_none()
-                && !follow_ups
-                    .iter()
-                    .any(|candidate| candidate.run.key == intent.key)
-        })
-    {
-        result.push(Work {
-            key: WorkId {
-                kind: Kind::Reply,
-                id: intent.work_id,
-            },
-            enqueue_order: intent.enqueue_order,
-            state: "blocked",
-            reason: Some(
-                intent
-                    .blocked
-                    .unwrap_or_else(|| "Primary discussion assessment unavailable.".into()),
-            ),
-            failure: None,
-            delayed_until: None,
-            blocked_by: None,
-        });
-    }
-    for mention in store.load_feedback()?.mentions.into_iter().filter(|m| {
-        m.follow_up_id.is_none()
-            && !follow_ups
-                .iter()
-                .any(|f| f.run.id == m.work_id && f.run.key == m.key)
-    }) {
-        result.push(Work {
-            key: WorkId {
-                kind: Kind::Mention,
-                id: mention.work_id,
-            },
-            enqueue_order: mention.enqueue_order,
-            state: "blocked",
-            reason: Some(
-                mention
-                    .blocked
-                    .unwrap_or_else(|| "Mention routing is unavailable.".into()),
-            ),
-            failure: None,
-            delayed_until: None,
-            blocked_by: None,
-        });
-    }
+    let mut result = Vec::new();
     let gates = store.load_backpressure()?;
     let reviews = review::host::candidates(store)?;
     let repositories = store.load_settings()?.repositories;
@@ -314,63 +254,6 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
             blocked_by,
         });
     }
-    for candidate in follow_ups {
-        let run = candidate.run;
-        if run.result.is_some() || run.publication.is_some() {
-            continue;
-        }
-        let mut reason = candidate.blocked;
-        if reason.is_none() {
-            reason = if run.cancelled {
-                Some("Follow-up cancelled; manual retry required.".into())
-            } else if run.analysis.as_ref().is_some_and(|op| {
-                matches!(
-                    op.state,
-                    OperationState::Failed | OperationState::ManualRetry
-                )
-            }) {
-                Some(
-                    run.error
-                        .clone()
-                        .unwrap_or_else(|| "Manual retry required.".into()),
-                )
-            } else if candidate.human_gate && !run.manual_start {
-                Some("A prior comment needs human judgment before retrying this follow-up.".into())
-            } else if run.analysis.as_ref().is_some_and(|op| {
-                op.state != OperationState::Running
-                    && op.backpressure_until.is_none()
-                    && !due(op, now)
-            }) {
-                Some("Waiting for retry backoff.".into())
-            } else {
-                None
-            };
-        }
-        let scopes = scopes(&run.context.job.account_id, Some(&run.context.selection));
-        let delayed_until = reason
-            .is_none()
-            .then(|| pacing(&gates, &scopes, run.analysis.as_ref(), now));
-        result.push(Work {
-            key: WorkId {
-                kind: run.kind(),
-                id: run.id,
-            },
-            enqueue_order: run.enqueue_order.unwrap_or(0),
-            state: if reason.is_some() {
-                "blocked"
-            } else {
-                "waiting"
-            },
-            reason,
-            failure: run
-                .analysis
-                .as_ref()
-                .and_then(|op| op.failure_class())
-                .or_else(|| run.publication.as_ref().and_then(|op| op.failure_class())),
-            delayed_until: delayed_until.flatten(),
-            blocked_by: None,
-        });
-    }
     result.sort_by(|a, b| (a.enqueue_order, &a.key).cmp(&(b.enqueue_order, &b.key)));
     Ok(result)
 }
@@ -452,7 +335,6 @@ impl Coordinator {
     }
 
     /// Called under the Host Store lock, including by deterministic worker tests.
-    /// The same reservation map must also admit future primary-final/mention work.
     pub fn dispatch(&self, store: &Store, now: i64) -> Result<Batch, String> {
         let settings = store.load_settings()?;
         let paused = store.load_automation()?.paused;
@@ -497,21 +379,8 @@ impl Coordinator {
                         let id = run.operation.id.clone();
                         (Dispatch::Review(Box::new(run), cancelled.clone()), id)
                     }
-                    Kind::Reply | Kind::Mention => {
-                        let run = follow_up::host::prepare_dispatch(store, &candidate.key.id, now)?;
-                        let id = run
-                            .analysis
-                            .as_ref()
-                            .ok_or("Reply analysis missing.")?
-                            .id
-                            .clone();
-                        (Dispatch::Reply(Box::new(run), cancelled.clone()), id)
-                    }
-                    Kind::PrimaryFinal => {
-                        let run =
-                            crate::actions::host::prepare_dispatch(store, &candidate.key.id, now)?;
-                        let id = run.operation.id.clone();
-                        (Dispatch::Review(Box::new(run), cancelled.clone()), id)
+                    Kind::PrimaryFinal | Kind::Reply | Kind::Mention => {
+                        return Err("Historical work kind cannot run.".into())
                     }
                 };
                 Ok((operation_id, dispatch))
@@ -586,27 +455,6 @@ impl Coordinator {
                     id: r.key,
                 }),
         );
-        work.extend(
-            store
-                .load_follow_ups()?
-                .into_iter()
-                .filter(|f| matches(&f.context.job))
-                .map(|f| WorkId {
-                    kind: f.kind(),
-                    id: f.id,
-                }),
-        );
-        work.extend(
-            store
-                .load_actions()?
-                .finals
-                .into_iter()
-                .filter(|f| matches(&f.basis.job))
-                .map(|f| WorkId {
-                    kind: Kind::PrimaryFinal,
-                    id: f.id,
-                }),
-        );
         let active = self.active.lock().map_err(|_| "AI capacity unavailable.")?;
         let mut settled = true;
         for reservation in active.values().filter(|r| work.contains(&r.key)) {
@@ -646,44 +494,19 @@ pub(crate) fn launch_batch(app: &tauri::AppHandle, batch: Batch) {
     }
     for dispatch in batch.dispatched {
         match dispatch {
-            Dispatch::Review(run, cancelled)
-                if run.operation.operation_type == "primary_final_review" =>
-            {
-                crate::actions::host::launch_worker(app, *run, cancelled)
-            }
             Dispatch::Review(run, cancelled) => review::host::launch_worker(app, *run, cancelled),
-            Dispatch::Reply(run, cancelled) => {
-                follow_up::host::launch_analysis_worker(app, *run, cancelled)
-            }
         }
     }
 }
 
 fn request_interruption(store: &Store, id: &str, reason: Interruption) -> Result<(), String> {
-    let mut ledger = store.load_actions()?;
-    if let Some(run) = ledger
-        .finals
-        .iter_mut()
-        .find(|f| f.execution.operation.id == id)
-    {
-        run.execution.operation.interruption = Some(reason);
-        return store.save_actions(&ledger);
-    }
     let mut reviews = store.load_reviews()?;
-    if let Some(run) = reviews.iter_mut().find(|r| r.operation.id == id) {
-        run.operation.interruption = Some(reason);
-        return store.save_reviews(&reviews);
-    }
-    let mut replies = store.load_follow_ups()?;
-    let run = replies
+    let run = reviews
         .iter_mut()
-        .find(|r| r.analysis.as_ref().is_some_and(|op| op.id == id))
+        .find(|r| r.operation.id == id)
         .ok_or("The active AI operation is missing.")?;
-    run.analysis
-        .as_mut()
-        .ok_or("Reply analysis missing.")?
-        .interruption = Some(reason);
-    store.save_follow_ups(&replies)
+    run.operation.interruption = Some(reason);
+    store.save_reviews(&reviews)
 }
 
 /// A genuine failure wins a race with pause. Only successful-but-discarded

@@ -198,9 +198,32 @@ pub struct Assignment {
     /// Only explicit vNext opt-ins. The legacy `approve` flag is never a grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actions: Option<ActionPermissions>,
-    /// Packet tool ids (`PACKET_TOOLS`). None = no packet tools yet.
+    /// Packet tool ids (`PACKET_TOOLS`). None = the role default (`default_tools`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,
+}
+
+/// Role default tool set: investigation tools, the granted exits, then `panic_exit`.
+/// Primary: `ready_for_human` always, `leave_comments`/`approve_*` per grant.
+/// Non-primary: `submit_report`. Mirrored by `defaultTools` in `src/settings.ts`.
+pub fn default_tools(authority: &AssignmentAuthority) -> Vec<String> {
+    let mut tools: Vec<&str> = crate::review::tools::INVESTIGATION.to_vec();
+    if authority.primary {
+        if authority.comment {
+            tools.push("leave_comments");
+        }
+        tools.push("ready_for_human");
+        if authority.approve {
+            tools.push("approve_pull_request");
+        }
+        if authority.merge {
+            tools.push("approve_and_merge");
+        }
+    } else {
+        tools.push("submit_report");
+    }
+    tools.push("panic_exit");
+    tools.into_iter().map(String::from).collect()
 }
 
 /// Investigation tools, then exits. Mirrored by `PACKET_TOOLS` in `src/settings.ts`.
@@ -845,6 +868,14 @@ impl Repository {
                     .as_ref()
                     .is_some_and(|a| a.approve || a.merge),
             merge: assigned && primary && assignment.actions.as_ref().is_some_and(|a| a.merge),
+        }
+    }
+
+    /// The tools an assignment runs with: its explicit set, else its role default.
+    pub fn assignment_tools(&self, assignment: &Assignment) -> Vec<String> {
+        match &assignment.tools {
+            Some(tools) => tools.clone(),
+            None => default_tools(&self.assignment_authority(assignment)),
         }
     }
 

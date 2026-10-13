@@ -1,7 +1,7 @@
 //! Teammate barrier: the primary of a PR state runs only after every
 //! teammate has a successful report for that same state.
 
-use super::{host::Candidate, Failure, RunMode};
+use super::{host::Candidate, Failure};
 use crate::{
     exits::TeammateReport,
     monitoring::{self, OperationState},
@@ -50,7 +50,7 @@ fn state_seq(candidate: &Candidate) -> Option<u64> {
 
 /// The primary's teammates for its state, in assignment order: each is the
 /// newest entry of that assignment on the same PR iteration. `None` when the
-/// primary has no barrier (legacy mode, sole assignment, no designated primary).
+/// primary has no barrier (sole assignment, no designated primary).
 pub(crate) fn peers<'a, C: Borrow<Candidate>>(
     repository: &Repository,
     candidates: &'a [C],
@@ -62,7 +62,6 @@ pub(crate) fn peers<'a, C: Borrow<Candidate>>(
         .iter()
         .find(|a| a.id == primary.assignment_id)?;
     if repository.primary_assignment_id() != Some(assignment.id.as_str())
-        || RunMode::for_assignment(assignment) != RunMode::Packet
         || repository.assignments.len() < 2
     {
         return None;

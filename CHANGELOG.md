@@ -7,6 +7,7 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Changed
 
+- Every review runs in packet mode. Removed: legacy JSON review, primary final review, once-per-lens re-review, Reply/Mention analysis. Unset assignment **Tools** = role default (shown checked). Old records load; unfinished legacy work is cancelled on startup.
 - Queue item detail leads with an **Activity** list: one icon row per agent action on the current head (Reviewed, Findings, Commented, Replied, Final, Retried, Approved, Merged), tap for key/value facts. Evidence sentences and the visible **Retry provider evidence** button are gone; Details groups Agent, Result and Provider rows (refresh is an icon in Provider).
 
 ### Fixed

@@ -1,29 +1,14 @@
 use pr_sniper_lib::{
+    exits::ExitCall,
     github::{
         metadata::{Lifecycle, PullRequest},
         Identity,
     },
     monitoring::{JobOperation, OperationFailure, OperationState, QueueJob},
-    review::{self, Decision, Events, Failure, ReviewRun, Selection},
+    review::{self, Events, Failure, ReviewRun, Selection},
     storage::{Settings, Store},
 };
 use serde_json::{json, Value};
-
-fn output() -> Value {
-    json!({
-        "synopsis":"The change preserves stable account identities.",
-        "files":[
-            {"path":"z.rs","explanation":"Entry point.","order":2},
-            {"path":"a.rs","explanation":"Implementation.","order":1}
-        ],
-        "findings":[],
-        "decision":"machine_sign_off"
-    })
-}
-
-fn paths() -> Vec<String> {
-    vec!["a.rs".into(), "z.rs".into()]
-}
 
 fn job() -> QueueJob {
     serde_json::from_value(json!({
@@ -79,83 +64,11 @@ fn pull() -> PullRequest {
 }
 
 #[test]
-fn strict_result_preserves_valid_order_and_falls_back_without_losing_files() {
-    let result = review::validate_output(&output().to_string(), &paths()).unwrap();
-    assert_eq!(result.files[0].path, "a.rs");
-    assert_eq!(result.decision, Decision::MachineSignOff);
-    let fenced = format!("```json\n{}\n```", output());
-    assert!(review::validate_output(&fenced, &paths()).is_ok());
-    assert!(review::validate_output(&format!("Commentary\n{fenced}"), &paths()).is_err());
-    assert!(review::validate_output(&format!("{fenced}\nTrailing commentary"), &paths()).is_err());
-    let mut reversed = output();
-    reversed["files"][0]["order"] = json!(1);
-    reversed["files"][1]["order"] = json!(2);
-    assert_eq!(
-        review::validate_output(&reversed.to_string(), &paths())
-            .unwrap()
-            .files[0]
-            .path,
-        "z.rs"
-    );
-    for order in [Value::Null, json!(0), json!(2)] {
-        let mut invalid_order = output();
-        invalid_order["files"][1]["order"] = order;
-        assert_eq!(
-            review::validate_output(&invalid_order.to_string(), &paths())
-                .unwrap()
-                .files[0]
-                .path,
-            "a.rs"
-        );
-    }
-    let mut incomplete = output();
-    incomplete["files"].as_array_mut().unwrap().pop();
-    assert!(review::validate_output(&incomplete.to_string(), &paths()).is_err());
-}
-
-#[test]
-fn malformed_partial_duplicate_and_false_signoff_results_fail() {
-    for text in ["{}", "not JSON", "```json\n{}\n```"] {
-        assert!(review::validate_output(text, &paths()).is_err());
-    }
-    for (field, value) in [
-        ("synopsis", json!("Two sentences. Not one.")),
-        ("synopsis", json!("No punctuation")),
-        ("decision", json!("approved")),
-        ("unexpected", json!(true)),
-    ] {
-        let mut bad = output();
-        bad[field] = value;
-        assert!(review::validate_output(&bad.to_string(), &paths()).is_err());
-    }
-    let mut bad = output();
-    bad["files"][1]["path"] = json!("z.rs");
-    assert!(review::validate_output(&bad.to_string(), &paths()).is_err());
-    let finding = json!({"path":"a.rs","side":"head","line":2,"severity":"high","title":"Failure","explanation":"Evidence.","confidence":90});
-    let mut with_finding = output();
-    with_finding["findings"] = json!([finding]);
-    assert!(review::validate_output(&with_finding.to_string(), &paths()).is_err());
-    with_finding["decision"] = json!("human_input_required");
-    assert!(review::validate_output(&with_finding.to_string(), &paths()).is_ok());
-    for (field, value) in [
-        ("line", json!(0)),
-        ("confidence", json!(101)),
-        ("side", json!("unknown")),
-        ("path", json!("not-changed")),
-    ] {
-        let mut bad = with_finding.clone();
-        bad["findings"][0][field] = value;
-        assert!(review::validate_output(&bad.to_string(), &paths()).is_err());
-    }
-}
-
-#[test]
-fn jsonl_normalization_requires_idle_usage_and_complete_final_output() {
+fn jsonl_normalization_requires_idle_usage_and_an_exit() {
     let lines = [
         json!({"type":"assistant.message","data":{"content":"Considering the changes.","toolRequests":[{"name":"read_changes"}]}}),
         json!({"type":"tool.execution_start","data":{"toolName":"read_changes"}}),
         json!({"type":"assistant.usage","data":{"inputTokens":100.0,"outputTokens":40.0}}),
-        json!({"type":"assistant.message","data":{"content":output().to_string(),"toolRequests":null}}),
         json!({"type":"session.idle","data":{}}),
     ];
     let jsonl = lines
@@ -170,22 +83,37 @@ fn jsonl_normalization_requires_idle_usage_and_complete_final_output() {
             .push(event["type"].as_str().unwrap(), &event["data"])
             .unwrap();
     }
+    let exit = || ExitCall::ReadyForHuman {
+        summary: "No findings.".into(),
+    };
     let result = events
-        .finish(&paths(), "session".into(), "model".into(), "runtime".into())
+        .finish_exit(
+            Some(exit()),
+            "session".into(),
+            "model".into(),
+            "runtime".into(),
+            Ok,
+        )
         .unwrap();
     assert_eq!(result.input_tokens, 100);
     assert_eq!(result.output_tokens, 40);
     assert_eq!(result.tool_calls, 1);
-    let mut partial = Events::default();
-    partial
-        .push(
-            "assistant.message",
-            &json!({"content":output().to_string()}),
-        )
-        .unwrap();
-    assert!(partial
-        .finish(&paths(), "s".into(), "m".into(), "v".into())
+    // No idle and usage evidence: no result, even with an exit.
+    assert!(Events::default()
+        .finish_exit(Some(exit()), "s".into(), "m".into(), "v".into(), Ok)
         .is_err());
+    // Idle without an exit is a retryable agent failure.
+    let mut idle = Events::default();
+    idle.push(
+        "assistant.usage",
+        &json!({"inputTokens":1,"outputTokens":1}),
+    )
+    .unwrap();
+    idle.push("session.idle", &json!({})).unwrap();
+    let error = idle
+        .finish_exit(None, "s".into(), "m".into(), "v".into(), Ok)
+        .unwrap_err();
+    assert_eq!(error.kind, OperationFailure::Provider);
     assert!(Events::default()
         .push("session.error", &json!({"message":"secret"}))
         .unwrap_err()
@@ -253,7 +181,7 @@ fn durable_review_uses_shared_retry_budget_and_restores_without_new_identity() {
     let store = Store::new(root.path().into());
     let job = job();
     let mut run = ReviewRun {
-        mode: Default::default(),
+        mode: pr_sniper_lib::review::RunMode::Packet,
         packet: None,
         feedback_context: None,
         key: review::key(&job, "assignment"),

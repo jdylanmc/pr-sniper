@@ -9,7 +9,6 @@ if (process.env.TEST_STARTUP_DELAY_MS) {
 }
 
 const scenario = process.env.REVIEW_SCENARIO;
-const guide = { path: "source.rs", explanation: "Reviewed from the change.", order: 1 };
 const receipt = (value) =>
   appendFileSync(process.env.TEST_RECEIPT, `${JSON.stringify(value)}\n`);
 const frame = (value) => {
@@ -53,6 +52,8 @@ const toolCall = (name, args) => {
     sessionId, requestId: id, toolCallId: id, toolName: name, arguments: args,
   });
 };
+// Scenarios without their own exit hand over once their reads are done.
+const handOver = () => toolCall("ready_for_human", { summary: "Synthetic review done." });
 // A successful terminal tool ends the turn with no final assistant message.
 const endTurn = () => {
   if (exitEnded) return;
@@ -188,9 +189,7 @@ process.stdin.on("data", (chunk) => {
       case "session.tools.getCurrentMetadata":
         respond(request.id, {
           tools: [
-            ...(isExit
-              ? globalThis.toolNames
-              : ["read_changes", "read_source", "search_paths"]),
+            ...globalThis.toolNames,
             ...(scenario === "extra-tool" || scenario === "exit-catalog-mismatch"
               ? ["bash"]
               : []),
@@ -216,7 +215,7 @@ process.stdin.on("data", (chunk) => {
           }, 10);
           break;
         }
-        if (["final-full-review", "read-source-only", "tool-invalid-path"].includes(scenario)) {
+        if (["read-full", "read-source-only", "tool-invalid-path"].includes(scenario)) {
           const toolName = scenario === "read-source-only" ? "read_source" : "read_changes";
           event("tool.execution_start", { toolName });
           event("external_tool.requested", {
@@ -246,37 +245,20 @@ process.stdin.on("data", (chunk) => {
             });
             event("tool.execution_complete", { success: false, toolCallId: "remote-tool", error: { message: "DO NOT RECORD" } });
           }
-          event("assistant.usage", { inputTokens: 20, outputTokens: 10 });
-          event("assistant.message", {
-            content: scenario.startsWith("malformed")
-              ? "not JSON"
-              : scenario.startsWith("follow-up-")
-                ? JSON.stringify({
-                    decision:
-                      scenario === "follow-up-human"
-                        ? "human_input_required"
-                        : "quiet",
-                    body: "",
-                    new_information: "",
-                    evidence: [],
-                    reason:
-                      "A human decision is required or no new evidence exists.",
-                  })
-                : JSON.stringify({
-                    synopsis: "The empty synthetic change has no findings.",
-                    // No gate on reads: this review answers without reading anything.
-                    files: scenario === "read-none" ? [guide] : [],
-                    findings: [],
-                    decision: "machine_sign_off",
-                  }),
-          });
-          event("session.idle", {});
+          if (scenario.startsWith("malformed")) {
+            // No exit: the run ends without a result.
+            event("assistant.usage", { inputTokens: 20, outputTokens: 10 });
+            event("assistant.message", { content: "not JSON" });
+            event("session.idle", {});
+            return;
+          }
+          handOver();
         }, 10);
         break;
       case "session.tools.handlePendingToolCall":
         receipt({ method: "fixture.finalRead", result: request.params.result });
         respond(request.id, {});
-        if (isExit) {
+        if (String(request.params.requestId).startsWith("exit-")) {
           const failed = JSON.stringify(request.params.result ?? null).includes('"failure"');
           receipt({ method: "fixture.exit", requestId: request.params.requestId, failed });
           if (!failed) {
@@ -293,21 +275,12 @@ process.stdin.on("data", (chunk) => {
           break;
         }
         if (["read-source-only", "tool-invalid-path"].includes(scenario)) {
-          event("assistant.usage", { inputTokens: 20, outputTokens: 10 });
           // The tool call (served or rejected) does not decide the review.
-          event("assistant.message", {
-            content: JSON.stringify({
-              synopsis: "The synthetic source was partly read.",
-              files: [guide],
-              findings: [],
-              decision: "machine_sign_off",
-            }),
-          });
-          event("session.idle", {});
+          handOver();
           break;
         }
         if (
-          scenario === "final-full-review" &&
+          scenario === "read-full" &&
           request.params.requestId === "final-read" &&
           JSON.stringify(request.params.result ?? null).includes("answer")
         ) {
@@ -321,28 +294,13 @@ process.stdin.on("data", (chunk) => {
           break;
         }
         if (
-          scenario !== "final-full-review" ||
+          scenario !== "read-full" ||
           request.params.requestId !== "final-read-after" ||
           !JSON.stringify(request.params.result ?? null).includes("answer")
         ) {
           event("session.error", { statusCode: 500 });
         } else {
-          event("assistant.usage", { inputTokens: 20, outputTokens: 10 });
-          event("assistant.message", {
-            content: JSON.stringify({
-              synopsis: "The synthetic source was reviewed completely.",
-              files: [
-                {
-                  path: "source.rs",
-                  explanation: "The full changed source was read.",
-                  order: 1,
-                },
-              ],
-              findings: [],
-              decision: "machine_sign_off",
-            }),
-          });
-          event("session.idle", {});
+          handOver();
         }
         break;
       case "session.abort":

@@ -6,9 +6,6 @@ use super::Failure;
 use crate::packet::ToolFacts;
 use serde_json::{json, Value};
 
-/// Tools of the legacy (JSON decision) review.
-pub const LEGACY_TOOLS: [&str; 3] = ["read_changes", "read_source", "search_paths"];
-
 /// Investigation tools a Packet-mode assignment may be granted, in registry order.
 pub const INVESTIGATION: [&str; 6] = [
     "read_changes",
@@ -32,12 +29,10 @@ impl ToolDef {
     }
 }
 
-/// The three original definitions are byte-compatible with the pre-registry tool table.
 pub fn definition(name: &str) -> Option<ToolDef> {
     let (name, description, properties, required): (&'static str, &'static str, Value, Vec<&'static str>) = match name {
         "read_changes" => ("read_changes", "Read one part (patch, before or after) of one changed file in byte chunks. Responses carry content, offset, next_offset, total_bytes and complete. Page with offset=next_offset until complete=true for any part you read.", json!({"path":{"type":"string"},"part":{"type":"string","enum":["patch","before","after"]},"offset":{"type":"integer","minimum":0},"max_bytes":{"type":"integer","minimum":1}}), vec!["path","part"]),
         "read_source" => ("read_source", "Read one source file by exact path from immutable base or head in byte chunks (content, offset, next_offset, total_bytes, complete); repeat with offset=next_offset until complete=true. Symlinks are read as text, never followed.", json!({"side":{"type":"string","enum":["base","head"]},"path":{"type":"string"},"offset":{"type":"integer","minimum":0},"max_bytes":{"type":"integer","minimum":1}}), vec!["side","path"]),
-        "search_paths" => ("search_paths", "Find all base/head repository paths containing a literal substring, paged (paths, offset, next_offset, total, complete); repeat with offset=next_offset until complete=true.", json!({"query":{"type":"string"},"offset":{"type":"integer","minimum":0}}), vec!["query"]),
         "get_thread" => ("get_thread", "Read a review thread, a top-level comment, or the PR description in full. thread_id is a thread id, a comment id or `description`; omit it to list ids (paged: threads, offset, next_offset, total, complete). Text is paged like read_source.", json!({"thread_id":{"type":"string"},"offset":{"type":"integer","minimum":0},"max_bytes":{"type":"integer","minimum":1}}), vec![]),
         "get_checks" => ("get_checks", "List the head's CI checks (name, status, conclusion), paged (checks, offset, next_offset, total, complete). No logs are available.", json!({"offset":{"type":"integer","minimum":0}}), vec![]),
         "list_tree" => ("list_tree", "List repository paths under a prefix from immutable base or head (default head), sorted and paged (paths, offset, next_offset, total, complete).", json!({"side":{"type":"string","enum":["base","head"]},"prefix":{"type":"string"},"offset":{"type":"integer","minimum":0}}), vec![]),

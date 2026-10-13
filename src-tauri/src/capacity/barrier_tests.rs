@@ -81,9 +81,7 @@ fn finish(
     now: i64,
 ) {
     let key = work.key();
-    let Dispatch::Review(run, _) = work else {
-        panic!("review expected")
-    };
+    let Dispatch::Review(run, _) = work;
     crate::review::host::complete(store, &run.operation.id, outcome, now).unwrap();
     coordinator.release(&key, &run.operation.id).unwrap();
 }
@@ -165,7 +163,6 @@ fn teammate_failure_keeps_the_primary_blocked_and_successful_reports_are_reused_
     let ok = started.next().unwrap();
     let ok_operation = match &ok {
         Dispatch::Review(run, _) => run.operation.id.clone(),
-        Dispatch::Reply(..) => unreachable!(),
     };
     finish(&coordinator, &store, ok, Ok(report_result()), 101);
     finish(
@@ -249,12 +246,14 @@ fn sole_assignment_and_unassigned_primary_have_no_barrier() {
 }
 
 #[test]
-fn legacy_primary_is_not_held_by_the_barrier() {
+fn a_primary_on_default_tools_is_held_by_the_barrier() {
     let (_root, store) = team(1, true);
     let mut settings: Settings = store.load_settings().unwrap();
-    settings.repositories[0].assignments[0].tools = None;
+    for assignment in &mut settings.repositories[0].assignments {
+        assignment.tools = None;
+    }
     store.save_settings(&settings).unwrap();
-    assert!(primary(&store).blocked_by.is_none());
+    assert!(primary(&store).blocked_by.is_some());
 }
 
 fn fail_teammate(store: &Store, coordinator: &Coordinator, failure: Failure) {

@@ -45,14 +45,15 @@ Reference for Queue states, evidence, local Agent reviews, retry/parking and not
 
 - Agent = Copilot account + returned model + prompt + ordered 0..many Doctrines, assigned per repo. **Agent reviews** lists detected revisions. Pre-review detections stay as history until the next scan.
 - ONE review per head SHA ([ADR-0008](adr/0008-one-review-per-head-sha.md)). A new revision permits another review. Same revision: Agent only replies to new comments. Agent context = description + changed files + all comments + prior feedback.
-- Discarded unpublished batch (changed lens or diverged comments), or a completed unbatched review on a commenting assignment whose lens changed: `review::rereview::enqueue_discarded` queues one fresh review of the same head under the current lens on the 5s tick (also after upgrade). Item shows Queued/Reviewing; the old result is superseded. Once per head + lens hash; never when a receipt exists, the head moved or the PR closed.
+- Every run is packet mode ([review-packet.md](review-packet.md)). Discarded batch: no automatic re-review (once-per-lens removed).
+- Legacy runs (JSON decision) load as history. Unfinished ones are cancelled on startup (`Legacy review retired.`); **Retry review** starts a packet run.
 - Requests persist before capacity wait. Unexecuted initial requests may wait over 15 min and still get a first budget.
 - **Cancel review** stops inference; **Retry review** is explicit. Changing account, Agent, prompt, Doctrine, repo or effective inputs invalidates affected in-flight work.
 - Pause: **Pause automation** (Queue or Settings) halts polling, AI and writes. `automation_snapshot` returns saved pause/capacity plus occupied, stopping, waiting work. `set_automation_paused` persists the gate and signals workers. State: `state/automation.json`.
 - Reserve path: `capacity::Coordinator::reserve` (`src-tauri/src/capacity.rs`).
 - Keychain: GitHub and Copilot tokens in separate account-addressed services. Never in config, state or diagnostics. See [ADR-0001](adr/0001-macos-foundation.md).
 - Green Copilot check = sign-in only. No seat, subscription or inference proof.
-- Review tools: three host-owned read-only tools, not an OS sandbox. Reads are paged in byte chunks and never truncated; coverage ("N of M files read") is recorded on the result, never enforced ([ADR-0020](adr/0020-constrained-host-owned-review-tools.md)). Older results may carry `byte_coverage` or an `incomplete_coverage` record; both still load.
+- Review tools: host-owned read-only investigation tools plus exits, not an OS sandbox. Reads are paged in byte chunks and never truncated; coverage ("N of M files read") is recorded on the result, never enforced ([ADR-0020](adr/0020-constrained-host-owned-review-tools.md)). Older results may carry `byte_coverage` or an `incomplete_coverage` record; both still load.
 - Rate limits: backpressure, not failure. `state/backpressure.json` gates the provider account; the row shows a clock and the local resume time ([ADR-0013](adr/0013-shared-ai-capacity.md)).
 
 ## Notifications

@@ -2,7 +2,7 @@ use super::*;
 use crate::exits::Exit;
 
 #[test]
-fn the_original_three_definitions_are_byte_compatible() {
+fn the_original_read_definitions_are_byte_compatible() {
     let schema = |name: &str| definition(name).unwrap().schema().to_string();
     assert_eq!(
         schema("read_changes"),
@@ -12,18 +12,11 @@ fn the_original_three_definitions_are_byte_compatible() {
         schema("read_source"),
         r#"{"additionalProperties":false,"properties":{"max_bytes":{"minimum":1,"type":"integer"},"offset":{"minimum":0,"type":"integer"},"path":{"type":"string"},"side":{"enum":["base","head"],"type":"string"}},"required":["side","path"],"type":"object"}"#
     );
-    assert_eq!(
-        schema("search_paths"),
-        r#"{"additionalProperties":false,"properties":{"offset":{"minimum":0,"type":"integer"},"query":{"type":"string"}},"required":["query"],"type":"object"}"#
-    );
+    assert!(definition("search_paths").is_none());
     assert!(definition("read_changes")
         .unwrap()
         .description
         .starts_with("Read one part (patch, before or after) of one changed file in byte chunks."));
-    assert_eq!(
-        LEGACY_TOOLS,
-        ["read_changes", "read_source", "search_paths"]
-    );
 }
 
 #[test]

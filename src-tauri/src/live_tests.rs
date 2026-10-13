@@ -424,7 +424,7 @@ fn execute(live: &Live, run: ReviewRun, label: &str) -> Report {
     .unwrap();
     let allow: runtime::Gate = Arc::new(|| Ok(()));
     let request = runtime::Request {
-        exits: Some(prepared.setup),
+        exits: prepared.setup,
         diagnostics: Some(trace),
         task: ExitReview {
             packet_text: prepared.packet.text,

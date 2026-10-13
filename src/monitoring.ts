@@ -906,16 +906,22 @@ export function renderMonitoring(
             row.append(held);
           }
         }
+        const exit = result.output.exit;
         const decision = document.createElement("p");
         decision.className = "review-decision";
-        decision.textContent =
-          result.output.decision === "machine_sign_off"
+        decision.textContent = exit
+          ? exit.exit.replaceAll("_", " ")
+          : result.output.decision === "machine_sign_off"
             ? "Machine sign-off"
             : "Human input required";
-        const synopsis = document.createElement("p");
-        synopsis.textContent = result.output.synopsis;
-        row.append(decision, synopsis);
-        for (const finding of result.output.findings) {
+        row.append(decision);
+        // Legacy results (history only) carry a synopsis, findings and a guide.
+        if (!exit) {
+          const synopsis = document.createElement("p");
+          synopsis.textContent = result.output.synopsis;
+          row.append(synopsis);
+        }
+        for (const finding of exit ? [] : result.output.findings) {
           const item = document.createElement("details");
           const summary = document.createElement("summary");
           summary.textContent = `${finding.severity}: ${finding.title} (${finding.path}, ${finding.side} line ${finding.line}; confidence ${finding.confidence}%)`;
@@ -960,7 +966,8 @@ export function renderMonitoring(
         const usage = document.createElement("p");
         usage.className = "hint";
         usage.textContent = `Session ${result.session_id}; runtime ${result.runtime_version}; model ${result.model}; ${actualIntelligence(result.intelligence)}; tokens ${result.input_tokens} in / ${result.output_tokens} out; tool calls ${result.tool_calls}`;
-        row.append(guide, usage);
+        if (!exit) row.append(guide);
+        row.append(usage);
         const publication = publications.find(
           (p) => p.review_operation_id === run.operation.id,
         );

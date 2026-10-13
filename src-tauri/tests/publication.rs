@@ -72,7 +72,7 @@ fn review() -> ReviewRun {
     let mut operation = JobOperation::review(&job, 100);
     operation.state = OperationState::Completed;
     ReviewRun {
-        mode: Default::default(),
+        mode: pr_sniper_lib::review::RunMode::Packet,
         packet: None,
         feedback_context: None,
         key: pr_sniper_lib::review::key(&job, "assignment"),
@@ -86,12 +86,19 @@ fn review() -> ReviewRun {
         error: None,
         result: Some(serde_json::from_value(json!({
             "reviewed_base_sha":"b".repeat(40),
-            "output":{"synopsis":"The change needs review.","files":[{"path":"source.rs","explanation":"Implementation.","order":1}],
-                "findings":[{"path":"source.rs","side":"head","line":1,"severity":"high","title":"A defect","explanation":"Evidence.","confidence":90}],
-                "decision":"human_input_required"},
+            "output":{"exit":{"exit":"comments","new_comments":[{"path":"source.rs","line":1,"body":"A defect. Evidence."}],
+                "reply_comments":[],"resolve_own_threads":[]}},
             "session_id":"session","model":"configured-model","runtime_version":"fixture",
             "input_tokens":10,"output_tokens":10,"tool_calls":1
         })).unwrap()),
+    }
+}
+
+/// The exit's new comments, for tests that reshape the batch.
+fn new_comments(run: &mut Publication) -> &mut Vec<pr_sniper_lib::exits::NewComment> {
+    match run.review.result.as_mut().unwrap().output.exit.as_mut() {
+        Some(pr_sniper_lib::exits::ExitOutcome::Comments { new_comments, .. }) => new_comments,
+        _ => panic!("comment exit expected"),
     }
 }
 
@@ -583,9 +590,9 @@ fn frozen_positions_cover_left_context_and_later_hunks_with_independent_remote_c
     ] {
         let fixture = Fixture::new();
         let mut run = publication();
-        let finding = &mut run.review.result.as_mut().unwrap().output.findings[0];
-        finding.side = side.into();
-        finding.line = line;
+        let comment = &mut new_comments(&mut run)[0];
+        comment.side = Some(side.into());
+        comment.line = line;
         let mut context = context(pull());
         context.files[0].patch = Some(patch.into());
         run.batch = Some(Batch::prepare(&run, &context).unwrap());
@@ -721,15 +728,9 @@ fn pending_comment_tampering_is_rejected_before_submission() {
         fixture.pause_after_mutation = Some(Mutation::Create);
         let mut run = publication();
         if field == "duplicate_id" {
-            let mut other = run.review.result.as_ref().unwrap().output.findings[0].clone();
-            other.title = "Another defect".into();
-            run.review
-                .result
-                .as_mut()
-                .unwrap()
-                .output
-                .findings
-                .push(other);
+            let mut other = new_comments(&mut run)[0].clone();
+            other.body = "Another defect.".into();
+            new_comments(&mut run).push(other);
         }
         fixture.run(&mut run).unwrap();
         {
@@ -930,24 +931,6 @@ fn explicit_provider_rejection_is_permanent_and_does_not_leak_response() {
 }
 
 #[test]
-fn unmappable_findings_remain_local_and_no_findings_produces_machine_signoff() {
-    let mut run = publication();
-    run.review.result.as_mut().unwrap().output.findings[0].line = 200;
-    let batch = Batch::prepare(&run, &context(pull())).unwrap();
-    assert!(batch.comments.is_empty());
-    assert_eq!(batch.unmappable, vec![0]);
-    assert_eq!(run.review.result.as_ref().unwrap().output.findings.len(), 1);
-    assert!(batch.body.contains("1 finding(s) could not be mapped"));
-    let result = run.review.result.as_mut().unwrap();
-    result.output.findings.clear();
-    result.output.decision = pr_sniper_lib::review::Decision::MachineSignOff;
-    let batch = Batch::prepare(&run, &context(pull())).unwrap();
-    assert!(batch.body.contains("Machine sign-off"));
-    assert!(batch.body.ends_with("\u{f05b} PR Sniper"));
-    assert!(!batch.body.contains("stored custom signature"));
-}
-
-#[test]
 fn confirmed_submission_can_retry_only_its_failed_post_publication_verification() {
     let mut fixture = Fixture::new();
     fixture.fail_inspection = Some(7);
@@ -1056,13 +1039,12 @@ fn provider_reviews_and_comment_receipts_exhaust_all_pages() {
         |id| json!({"id":id,"user":{"id":33},"body":"Someone else's review","state":"COMMENTED"}),
     ));
     let mut run = publication();
-    let output = &mut run.review.result.as_mut().unwrap().output;
-    let finding = output.findings[0].clone();
-    output.findings = (0..101)
+    let first = new_comments(&mut run)[0].clone();
+    *new_comments(&mut run) = (0..101)
         .map(|index| {
-            let mut finding = finding.clone();
-            finding.title = format!("Finding {index}");
-            finding
+            let mut comment = first.clone();
+            comment.body = format!("Comment {index}.");
+            comment
         })
         .collect();
     fixture.run(&mut run).unwrap();
@@ -1328,7 +1310,6 @@ fn restart_reobserves_legacy_parked_publications_once_and_leaves_the_rest() {
 fn exit_publication(comments: Vec<pr_sniper_lib::exits::NewComment>) -> Publication {
     let mut review = review();
     let output = &mut review.result.as_mut().unwrap().output;
-    output.findings.clear();
     output.exit = Some(pr_sniper_lib::exits::ExitOutcome::Comments {
         new_comments: comments,
         reply_comments: vec![],
@@ -1408,9 +1389,10 @@ fn exits_without_new_comments_or_with_a_stale_diff_never_build_a_batch() {
 }
 
 #[test]
-fn only_legacy_runs_and_exits_with_new_comments_publish() {
-    let legacy = review().result.unwrap();
-    assert!(publication::writes_comments(&legacy));
+fn only_exits_with_new_comments_publish() {
+    let mut legacy = review().result.unwrap();
+    legacy.output.exit = None;
+    assert!(!publication::writes_comments(&legacy));
     let with = exit_publication(vec![comment("source.rs", 1, None)]);
     assert!(publication::writes_comments(
         with.review.result.as_ref().unwrap()

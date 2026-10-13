@@ -658,13 +658,3 @@ fn ledger_admits_once_holds_publication_and_survives_restart() {
         .is_none());
     assert_eq!(ASSIGNMENT.len(), 36);
 }
-
-#[test]
-fn packet_mode_assignments_do_not_admit_legacy_follow_ups() {
-    let settings = fake::settings();
-    let assignment = &settings.repositories[0].assignments[0];
-    assert!(pr_sniper_lib::follow_up::packet_assignment(assignment));
-    let mut legacy = assignment.clone();
-    legacy.tools = None;
-    assert!(!pr_sniper_lib::follow_up::packet_assignment(&legacy));
-}
