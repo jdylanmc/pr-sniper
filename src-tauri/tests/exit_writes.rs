@@ -282,7 +282,7 @@ fn publication_goes_first_and_preflight_precedes_it() {
         "no reply or resolution before the batch"
     );
     env.dependency = Dependency::Confirmed;
-    env.now += 1;
+    env.now = w.operation.next_attempt_at.unwrap();
     exit_writes::run(&mut env, &mut w).unwrap();
     assert_eq!(w.phase, Phase::Completed);
     assert!(w.published);
@@ -657,4 +657,112 @@ fn ledger_admits_once_holds_publication_and_survives_restart() {
         .unwrap()
         .is_none());
     assert_eq!(ASSIGNMENT.len(), 36);
+}
+
+fn batch_write() -> ExitWrite {
+    write(
+        json!([reply("T2", "ok")]),
+        json!([]),
+        json!([{"path":"a.rs","line":1,"body":"n"}]),
+    )
+}
+
+#[test]
+fn a_parked_or_terminal_publication_fails_the_dependency() {
+    use pr_sniper_lib::{
+        monitoring::OperationState,
+        publication::{Phase as P, Publication},
+    };
+    let review = fake::review(
+        json!([{"path":"a.rs","line":1,"body":"n"}]),
+        json!([reply("T2", "ok")]),
+        json!([]),
+        &fake::settings(),
+    );
+    let id = review.operation.id.clone();
+    let publication = Publication::new(review, true, true, 100).unwrap();
+    let with = |phase: P, state: OperationState| {
+        let mut p = publication.clone();
+        p.phase = phase;
+        p.operation.state = state;
+        exit_writes::publication_dependency(&[p], &id)
+    };
+    assert_eq!(
+        with(P::Pending, OperationState::Queued),
+        Dependency::Pending
+    );
+    for parked in [OperationState::ManualRetry, OperationState::Failed] {
+        for phase in [P::Preparing, P::Pending, P::Unresolved] {
+            let label = format!("{phase:?} parked as {parked:?}");
+            assert!(
+                matches!(with(phase, parked.clone()), Dependency::Failed(_)),
+                "{label}"
+            );
+        }
+    }
+    for phase in [P::Stopped, P::StaleAfterPublication] {
+        assert!(matches!(
+            with(phase, OperationState::Completed),
+            Dependency::Failed(_)
+        ));
+    }
+}
+
+#[test]
+fn waiting_on_the_batch_backs_off_and_tosses_when_the_budget_runs_out() {
+    let wire = wire();
+    let mut env = Env::new(&wire);
+    env.dependency = Dependency::Pending;
+    let mut w = batch_write();
+    assert_eq!(
+        exit_writes::run(&mut env, &mut w).unwrap(),
+        Outcome::Waiting
+    );
+    assert!(
+        w.operation.next_attempt_at.unwrap() > env.now,
+        "a waiting write is not due again at once"
+    );
+    for _ in 0..200 {
+        if w.terminal() {
+            break;
+        }
+        env.now = w.operation.next_attempt_at.unwrap_or(env.now).max(env.now) + 1;
+        let _ = exit_writes::run(&mut env, &mut w);
+    }
+    assert_eq!(
+        w.phase,
+        Phase::Tossed,
+        "a batch that never lands tosses the exit"
+    );
+    assert!(wire.log().is_empty());
+}
+
+#[test]
+fn a_write_waiting_on_its_batch_does_not_block_other_writes() {
+    use pr_sniper_lib::storage::Store;
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let wire = wire();
+    let mut env = Env::new(&wire);
+    env.dependency = Dependency::Pending;
+    let mut waiting = batch_write();
+    exit_writes::run(&mut env, &mut waiting).unwrap();
+    let mut other = write(json!([reply("T1", "Fixed.")]), json!([]), json!([]));
+    other.review_operation_id = "other".into();
+    let mut ledger = store.load_feedback().unwrap();
+    ledger.exit_writes = vec![waiting.clone(), other.clone()];
+    store.save_feedback(&ledger).unwrap();
+    assert_eq!(
+        exit_writes::next_due(&store, env.now).unwrap().as_deref(),
+        Some(other.id.as_str())
+    );
+    // Among due writes the oldest retry time goes first.
+    let mut ledger = store.load_feedback().unwrap();
+    ledger.exit_writes[0].operation.next_attempt_at = Some(50);
+    ledger.exit_writes[1].operation.next_attempt_at = Some(40);
+    store.save_feedback(&ledger).unwrap();
+    assert_eq!(
+        exit_writes::next_due(&store, 100).unwrap().as_deref(),
+        Some(other.id.as_str())
+    );
 }

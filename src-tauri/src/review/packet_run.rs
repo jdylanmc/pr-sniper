@@ -175,6 +175,7 @@ where
     };
     let mut packet = packet::build(&input);
     packet.record.state_hash = Some(state_hash);
+    packet.record.state_marks = Some(crate::github::state::StateMarks::of(snapshot, acting_login));
     let facts = Arc::new(reads::tool_facts(description, &conversation, &checks));
     let gate = exit_gate(
         client.clone(),

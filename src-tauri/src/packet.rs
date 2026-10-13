@@ -155,6 +155,9 @@ pub struct PacketRecord {
     /// Hash of the PR state the packet was built from; what an honoured exit baselines.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_hash: Option<String>,
+    /// Compact packet-time state; tells own writes from external change at consume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_marks: Option<crate::github::state::StateMarks>,
 }
 
 #[derive(Debug, Clone)]
@@ -194,6 +197,7 @@ pub fn build(input: &PacketInput) -> Packet {
             })
             .collect(),
         state_hash: None,
+        state_marks: None,
     };
     Packet { text, hash, record }
 }

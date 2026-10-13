@@ -139,13 +139,18 @@ pub(crate) fn request(
         Some(run) if run.operation.state == OperationState::Completed && !manual => {
             return Err("This Agent already reviewed this revision.".into())
         }
-        Some(run)
+        Some(mut run)
             if run.mode == super::RunMode::Packet
                 && matches!(
                     run.operation.state,
                     OperationState::Queued | OperationState::Interrupted
                 ) =>
         {
+            // The heartbeat raises only the queue job's seq; a reused run reads that state.
+            if let (Some(work), Some(fresh)) = (run.job.work.as_mut(), candidate.job.work.as_ref())
+            {
+                work.state_seq = work.state_seq.max(fresh.state_seq);
+            }
             run
         }
         Some(_) if !manual => return Err("Manual retry is required.".into()),

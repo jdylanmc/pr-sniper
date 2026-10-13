@@ -73,7 +73,7 @@ Teammates: same read and `<untrusted>` rules; real defects only; skip points alr
 
 Schema 2 (live run: agents re-posted points beside their own open threads, posted "what I read" comments, and chose `ready_for_human` on CI red).
 
-Stored with the run: sections, manifest, teammate reports, `packet_hash`. File content not duplicated. UI shows exactly what the agent saw. No tokens or credentials.
+Stored with the run: sections, manifest, teammate reports, `packet_hash`, `state_hash`, `state_marks` (compact packet-time state: field digest, comment ids and body digests, resolved threads; tells own writes from external change at consume). File content not duplicated. UI shows exactly what the agent saw. No tokens or credentials.
 
 ## Tools
 

@@ -5,6 +5,7 @@ use super::ExitOutcome;
 use crate::{
     github::{
         provider::{GithubClient, RemoteRepository},
+        state::{OwnWrites, PrSnapshot},
         threads::QueryTransport,
     },
     monitoring::QueueJob,
@@ -38,18 +39,88 @@ pub fn consume(store: &Store, job: &QueueJob, baseline: &str) -> Result<Consumed
     pr_state::consume(store, &Binding::job(job), state_seq(job), baseline)
 }
 
-/// After a confirmed write: re-read the snapshot, baseline it, consume. A state
-/// that moved meanwhile counts one toss (the write itself stays). The read runs
-/// without the store lock; only the consume takes it.
+/// After a confirmed write: re-read the snapshot and consume (see [`settle_fresh`]).
+/// The read runs without the store lock; only the consume takes it.
 pub fn consume_after<T: QueryTransport>(
     store: &Mutex<Store>,
     client: &GithubClient<T>,
     repo: &RemoteRepository,
     job: &QueueJob,
+    review_operation_id: &str,
 ) -> Result<Consumed, String> {
-    let baseline = fresh_hash(client, repo, job.number)?;
+    let fresh = client
+        .pr_snapshot(repo, job.number)
+        .map_err(|_| "PR state unreadable after the write.".to_string())?;
     let store = store.lock().map_err(|_| "Storage unavailable.")?;
-    settle(&store, job, &baseline)
+    settle_fresh(&store, job, review_operation_id, &fresh)
+}
+
+/// Store half of [`consume_after`]. The fresh post-write snapshot differs from the
+/// packet state only by the exit's own writes: baseline it and consume the current
+/// state (a heartbeat that already saw those writes is absorbed). Any other change:
+/// consume the packet state with the packet hash as baseline, so the next heartbeat
+/// queues one review of that change. Runs without packet marks keep the plain rule.
+pub fn settle_fresh(
+    store: &Store,
+    job: &QueueJob,
+    review_operation_id: &str,
+    fresh: &PrSnapshot,
+) -> Result<Consumed, String> {
+    let fresh_hash = fresh.normalize().hash();
+    let packet = store
+        .review_evidence()?
+        .into_iter()
+        .find(|r| r.operation.id == review_operation_id)
+        .and_then(|r| r.packet);
+    let Some((marks, read_hash)) = packet.and_then(|p| Some((p.state_marks?, p.state_hash?)))
+    else {
+        return settle(store, job, &fresh_hash);
+    };
+    if marks.external(fresh, &own_writes(store, review_operation_id)?) {
+        return settle(store, job, &read_hash);
+    }
+    let binding = Binding::job(job);
+    let seq = store
+        .load_pr_states()?
+        .state_seq(&binding)
+        .max(state_seq(job));
+    let outcome = pr_state::consume(store, &binding, seq, &fresh_hash)?;
+    if outcome == Consumed::Moved {
+        pr_state::toss(store, &binding)?;
+    }
+    Ok(outcome)
+}
+
+/// Comment ids and resolved thread ids the exit of `review_operation_id` wrote.
+fn own_writes(store: &Store, review_operation_id: &str) -> Result<OwnWrites, String> {
+    use crate::exit_writes::{StepKind, StepState};
+    let mut own = OwnWrites::default();
+    for publication in store
+        .load_publications()?
+        .iter()
+        .filter(|p| p.review.operation.id == review_operation_id)
+    {
+        for receipt in &publication.receipts {
+            own.comments.extend(receipt.comment_ids.iter().cloned());
+        }
+    }
+    for write in store
+        .load_feedback()?
+        .exit_writes
+        .iter()
+        .filter(|w| w.review_operation_id == review_operation_id)
+    {
+        for step in &write.steps {
+            match (step.kind, step.state) {
+                (StepKind::Reply, _) => own.comments.extend(step.receipt.clone()),
+                (StepKind::Resolve, StepState::Attempted | StepState::Done) => {
+                    own.resolved_threads.insert(step.thread_id.clone());
+                }
+                (StepKind::Resolve, StepState::Planned) => {}
+            }
+        }
+    }
+    Ok(own)
 }
 
 /// Store half of [`consume_after`]: consume with a baseline already read after the write.
@@ -153,6 +224,47 @@ pub fn retry_parked(store: &Store, item_id: &str, now: i64) -> Result<usize, Str
         crate::review::host::request(store, key, true, now)?;
     }
     Ok(keys.len())
+}
+
+/// PRs with an exit effect still being written (comment batch, replies and
+/// resolutions, approve or merge). The heartbeat records no new state for them:
+/// their own writes are absorbed by the consume that follows.
+pub fn writing(store: &Store) -> Result<std::collections::BTreeSet<Binding>, String> {
+    use crate::{actions::EffectState, publication::Phase};
+    let mut bindings = std::collections::BTreeSet::new();
+    bindings.extend(
+        store
+            .load_publications()?
+            .iter()
+            .filter(|p| {
+                p.review.mode == RunMode::Packet
+                    && matches!(
+                        p.phase,
+                        Phase::Preparing | Phase::Pending | Phase::Unresolved
+                    )
+                    && !p.operation.parked()
+            })
+            .map(|p| Binding::job(&p.review.job)),
+    );
+    bindings.extend(
+        store
+            .load_feedback()?
+            .exit_writes
+            .iter()
+            .filter(|w| !w.terminal())
+            .map(|w| Binding::job(&w.job)),
+    );
+    let actions = store.load_actions()?;
+    bindings.extend(
+        actions
+            .effects
+            .iter()
+            .filter(|e| matches!(e.state, EffectState::Prepared | EffectState::Uncertain))
+            .filter_map(|e| actions.finals.iter().find(|f| f.id == e.final_id))
+            .filter(|f| f.packet.is_some())
+            .map(|f| Binding::job(&f.basis.job)),
+    );
+    Ok(bindings)
 }
 
 /// Exits with no provider write are honoured when the run completes: the summary

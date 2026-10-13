@@ -200,6 +200,100 @@ impl NormalizedSnapshot {
     }
 }
 
+/// Compact packet-time state: enough to tell the host's own writes from anyone
+/// else's change after an exit, without comment authors.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StateMarks {
+    /// Acting account login: its approval is an own write.
+    pub actor: String,
+    /// Digest of every non-conversation field except the review decision and own approval.
+    pub fields: String,
+    pub review_decision: Option<String>,
+    /// The acting account approved the head.
+    pub own_approval: bool,
+    /// Comment id -> body digest.
+    pub comments: BTreeMap<String, String>,
+    pub resolved_threads: Vec<String>,
+}
+
+/// Ids the host itself wrote after the packet: comments (batch and replies) and
+/// threads it resolved.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OwnWrites {
+    pub comments: std::collections::BTreeSet<String>,
+    pub resolved_threads: std::collections::BTreeSet<String>,
+}
+
+impl StateMarks {
+    pub fn of(snapshot: &PrSnapshot, actor: &str) -> Self {
+        let n = snapshot.normalize();
+        let approvals: Vec<_> = n.approvals.iter().filter(|(a, _)| a != actor).collect();
+        let fields = digest(
+            &json!([
+                n.head,
+                n.base,
+                n.text_hash,
+                n.lifecycle,
+                n.mergeable,
+                n.labels,
+                n.checks,
+                n.check_total,
+                approvals
+            ])
+            .to_string(),
+        );
+        let comments = snapshot
+            .comments
+            .iter()
+            .chain(snapshot.threads.iter().flat_map(|t| &t.comments))
+            .map(|c| (c.id.clone(), digest(&c.body)))
+            .collect();
+        Self {
+            actor: actor.into(),
+            fields,
+            review_decision: snapshot.review_decision.clone(),
+            own_approval: snapshot.reviews.iter().any(|r| {
+                r.actor == actor
+                    && r.state == "APPROVED"
+                    && r.head.as_deref() == Some(&snapshot.head)
+            }),
+            comments,
+            resolved_threads: snapshot
+                .threads
+                .iter()
+                .filter(|t| t.resolved)
+                .map(|t| t.id.clone())
+                .collect(),
+        }
+    }
+
+    /// `fresh` holds a change that is not one of `own`: a new or edited comment,
+    /// a thread resolved or reopened by someone else, or any other field.
+    pub fn external(&self, fresh: &PrSnapshot, own: &OwnWrites) -> bool {
+        let now = Self::of(fresh, &self.actor);
+        if now.fields != self.fields
+            || (now.review_decision != self.review_decision
+                && now.own_approval == self.own_approval)
+        {
+            return true;
+        }
+        if now
+            .comments
+            .iter()
+            .any(|(id, body)| match self.comments.get(id) {
+                Some(before) => before != body,
+                None => !own.comments.contains(id),
+            })
+        {
+            return true;
+        }
+        fresh.threads.iter().any(|t| {
+            t.resolved != self.resolved_threads.contains(&t.id)
+                && !own.resolved_threads.contains(&t.id)
+        })
+    }
+}
+
 const FRAGMENT: &str = r#"fragment S on PullRequest {
   fullDatabaseId number title body state isDraft mergeable reviewDecision baseRefOid headRefOid headRefName
   labels(first:100) { nodes { name } }

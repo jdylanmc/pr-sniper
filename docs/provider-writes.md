@@ -36,7 +36,7 @@ Reference for every GitHub write PR Sniper can make: comment publication, exit r
 - `leave_comments.reply_comments`, `resolve_own_threads`: host-executed, ledger `exit_writes` in `state/feedback.json`. See **Replies and resolutions**. Needs Reply Comment (both).
 - `ready_for_human`: no GitHub write. Local summary (`pr-state.json`), queue shows Ready for you. Consumed at run completion only if the PR state still equals the one read.
 - Consume: successful exit sets Baseline from a fresh post-write snapshot (`exits::consume_after`); own writes never retrigger. Moved: Toss, error count +1, new attempt through the retry budget, park at 3. Failed, panicked or tossed runs never consume.
-- `approve_pull_request`, `approve_and_merge`: host records a packet `FinalReview` (exit run = evidence, no findings), the action pump approves with the agent's comment as the review body, then merges. Effective grant = assignment grant AND the exit. Our approval already on the head: success, no write. CI red or conflicts deny both; CI pending denies merge; unmet required reviews deny merge. Confirmed write consumes the state; rejected write tosses and re-queues (park at 3). Approval comment required. GitHub refuses self-approval; merge on own PRs needs Include self. Approve ignores others' threads and changes requested; merge does not.
+- `approve_pull_request`, `approve_and_merge`: host records a packet `FinalReview` (exit run = evidence, no findings), the action pump approves with the agent's comment as the review body, then merges. Effective grant = assignment grant AND the exit. Our approval already on the head (including one an earlier exit placed): success, no write, state consumed. Approve exit on a closed PR or unassigned/inactive scope: never adopted, never observed again. CI red or conflicts deny both; CI pending denies merge; unmet required reviews deny merge. Confirmed write consumes the state; rejected write tosses and re-queues (park at 3). Approval comment required. GitHub refuses self-approval; merge on own PRs needs Include self. Approve ignores others' threads and changes requested; merge does not.
 - `panic_exit`: no write. Typed failure, parks at once, cooldown auto-resume.
 
 ## Replies and resolutions (packet exit)
@@ -49,7 +49,9 @@ Reference for every GitHub write PR Sniper can make: comment publication, exit r
 - Failure after the first effect = `Failed` (needs human), never silent replay. Before it = `Tossed`.
 - Revision stamp per comment: thread root `original_commit_id` mapped to a local iteration, else `unknown`.
 - Not `FollowUp`: own ledger, same rules. Legacy analyzed replies still drain.
-- Confirmed exit calls `exit_writes::consume_after` (integration point): consume and re-baseline once, so own writes never retrigger.
+- Confirmed exit calls `exit_writes::consume_after` (integration point): consume and re-baseline once, so own writes never retrigger; an external change in the write window keeps the packet baseline and queues one review (see [polling](polling.md)).
+- Waiting on its batch: re-check every 10 s, no attempt spent; the 15 min retry window still runs, then the exit is tossed. Batch parked, stopped, stale or discarded = exit tossed (nothing partial).
+- Pump picks the due write with the oldest retry time; a waiting write never blocks others.
 
 ## Approve and Merge
 

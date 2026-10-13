@@ -725,6 +725,7 @@ impl Environment for Native {
             &client,
             &repo,
             &run.review.job,
+            &run.review.operation.id,
         )
         .map(|_| ())
         .map_err(Failure::permanent)

@@ -28,18 +28,22 @@ Per repository, set in the repo editor.
 
 Replaces head-SHA-only detection for tracked open PRs. Cadence is the global cron; there is no settle window.
 
-| Step         | Rule                                                                                                                                                     |
-| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Read         | One batched GraphQL read per tick for tracked open PRs (`GithubClient::pr_snapshots`, 10 PRs per query). Cost about 1 point per PR; 5,000 points/h/user. |
-| Normalize    | Sorted, no timestamps, `UNKNOWN` mergeable ignored, CI as `(name, status, conclusion)` array. Hash compared, not fields.                                 |
-| Same hash    | Equal to baseline or to pending: nothing.                                                                                                                |
-| New hash     | Records `pending` and bumps `state_seq`. Head change or reopen is a new Iteration; any other change keeps the Iteration.                                 |
-| Queue        | One entry per PR. A state that moves while queued only updates `pending`. A finished pass plus a new state adds one new entry.                           |
-| Closed       | Merged or closed before its turn: leaves the queue, no run, Reviewed.                                                                                    |
-| Drafts       | Skipped unless the repository sets Review drafts.                                                                                                        |
-| Upgrade      | First read of a PR with a completed pass for its head sets the baseline. No re-review.                                                                   |
-| Consume      | A successful exit sets the baseline to the post-write state. Own comments and approvals never retrigger.                                                 |
-| Moved in run | State moved during a run: result tossed, error count +1, re-queued. Parks after 3 (the job's attempt budget).                                            |
+| Step         | Rule                                                                                                                                                                             |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Read         | One batched GraphQL read per tick for tracked open PRs (`GithubClient::pr_snapshots`, 10 PRs per query). Cost about 1 point per PR; 5,000 points/h/user.                         |
+| Normalize    | Sorted, no timestamps, `UNKNOWN` mergeable ignored, CI as `(name, status, conclusion)` array. Hash compared, not fields.                                                         |
+| Same hash    | Equal to baseline or to pending: nothing.                                                                                                                                        |
+| New hash     | Records `pending` and bumps `state_seq`. Head change or reopen is a new Iteration; any other change keeps the Iteration.                                                         |
+| Queue        | One entry per PR. A state that moves while queued only updates `pending`. A finished pass plus a new state adds one new entry.                                                   |
+| Closed       | Merged or closed before its turn: leaves the queue, no run, Reviewed.                                                                                                            |
+| Drafts       | Skipped unless the repository sets Review drafts.                                                                                                                                |
+| Upgrade      | First read of a PR with a completed pass for its head sets the baseline. No re-review.                                                                                           |
+| Consume      | A successful exit sets the baseline to the post-write state. Own comments and approvals never retrigger.                                                                         |
+| Moved in run | State moved during a run: result tossed, error count +1, re-queued. Parks after 3 (the job's attempt budget).                                                                    |
+| Own writes   | PR with an exit write in flight (packet batch posting, non-terminal exit write, approve/merge Prepared or Uncertain): no new state recorded. Head change or reopen still counts. |
+| Reused run   | A queued or interrupted run takes the queue job's current `state_seq` at dispatch, so its exit consumes the state it read.                                                       |
+
+Post-write consume (`exits::consume::settle_fresh`) compares the fresh read with the packet's `state_marks`. Only own writes (receipt comment ids, reply ids, threads we resolved, our approval): baseline = fresh, current state consumed, including a heartbeat bump that saw them. Any other change (new or edited comment, others' resolve, head, base, text, labels, CI, mergeable, review decision, others' approvals): baseline = packet hash, so the next heartbeat queues one review.
 
 Persisted in `state/pr-state.json`. Own-write baseline and consume/toss calls: `pr_state::consume`, `pr_state::toss`.
 

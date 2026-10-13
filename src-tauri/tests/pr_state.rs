@@ -407,3 +407,235 @@ fn drafts_wait_until_the_repository_opts_in() {
     scan(&mut monitor, &store, open(true), None, NOW);
     assert_eq!(store.load_queue().unwrap().len(), 1);
 }
+
+/// A completed leave_comments exit for the job's current state.
+fn comments_exit(settings: &Settings, job: &QueueJob) -> ReviewRun {
+    let mut run = completed(settings, job);
+    run.result = Some(
+        serde_json::from_value(json!({"reviewed_base_sha":"f".repeat(40),
+            "output":{"exit":{"exit":"comments",
+                "new_comments":[{"path":"source.rs","line":1,"body":"Defect."}],
+                "reply_comments":[{"thread_id":"T1","body":"Fixed."}],
+                "resolve_own_threads":[]}},
+            "session_id":"s","model":"m","runtime_version":"v",
+            "input_tokens":1,"output_tokens":1,"tool_calls":1}))
+        .unwrap(),
+    );
+    run
+}
+
+#[test]
+fn own_writes_in_flight_never_bump_the_state_and_a_later_external_change_does() {
+    let (_fixture, store, mut monitor) = configured(false);
+    scan(&mut monitor, &store, open(false), None, NOW);
+    scan(
+        &mut monitor,
+        &store,
+        open(false),
+        Some(snapshot("a")),
+        NOW + 10,
+    );
+    assert_eq!(seqs(&store), [1]);
+    let settings = store.load_settings().unwrap();
+    let job = store.load_queue().unwrap().remove(0);
+    let run = comments_exit(&settings, &job);
+    store.save_reviews(std::slice::from_ref(&run)).unwrap();
+    // Batch posting and the reply write are in flight.
+    let publication =
+        pr_sniper_lib::publication::Publication::new(run.clone(), true, true, NOW).unwrap();
+    store
+        .save_publications(std::slice::from_ref(&publication))
+        .unwrap();
+    let mut ledger = store.load_feedback().unwrap();
+    ledger.exit_writes = vec![pr_sniper_lib::exit_writes::plan(&run, NOW).unwrap()];
+    store.save_feedback(&ledger).unwrap();
+    scan(
+        &mut monitor,
+        &store,
+        open(false),
+        Some(snapshot("own post")),
+        NOW + 20,
+    );
+    assert_eq!(seqs(&store), [1], "own posts never retrigger");
+    assert_eq!(store.load_pr_states().unwrap().state_seq(&binding()), 1);
+    // The writes settle; the exit consumes the post-write state.
+    let mut ledger = store.load_feedback().unwrap();
+    ledger.exit_writes[0].phase = pr_sniper_lib::exit_writes::Phase::Completed;
+    ledger.exit_writes[0].consumed = true;
+    store.save_feedback(&ledger).unwrap();
+    let mut publications = store.load_publications().unwrap();
+    publications[0].phase = pr_sniper_lib::publication::Phase::Published;
+    publications[0].operation.state = OperationState::Completed;
+    store.save_publications(&publications).unwrap();
+    let after = snapshot("own post").normalize().hash();
+    assert_eq!(
+        pr_state::consume(&store, &binding(), 1, &after).unwrap(),
+        Consumed::Consumed
+    );
+    scan(
+        &mut monitor,
+        &store,
+        open(false),
+        Some(snapshot("own post")),
+        NOW + 30,
+    );
+    assert!(store
+        .load_pr_states()
+        .unwrap()
+        .get(&binding())
+        .unwrap()
+        .pending
+        .is_none());
+    // A human change after the writes settled is still a new state.
+    scan(
+        &mut monitor,
+        &store,
+        open(false),
+        Some(snapshot("human")),
+        NOW + 40,
+    );
+    assert_eq!(store.load_pr_states().unwrap().state_seq(&binding()), 2);
+}
+
+/// Snapshot `a` plus one thread rooted in `comment_id`.
+fn with_thread(mut s: PrSnapshot, thread: &str, comment_id: &str) -> PrSnapshot {
+    s.threads
+        .push(pr_sniper_lib::github::state::SnapshotThread {
+            id: thread.into(),
+            resolved: false,
+            outdated: false,
+            comments: vec![SnapshotComment {
+                id: comment_id.into(),
+                body: format!("comment {comment_id}"),
+                commit: None,
+            }],
+            comment_total: 1,
+        });
+    s.thread_total += 1;
+    s
+}
+
+/// A leave_comments exit that read snapshot `a` and whose batch posted comment 500.
+fn posted_exit(store: &Store, monitor: &mut Monitor) -> (QueueJob, ReviewRun) {
+    scan(monitor, store, open(false), None, NOW);
+    scan(monitor, store, open(false), Some(snapshot("a")), NOW + 10);
+    let settings = store.load_settings().unwrap();
+    let job = store.load_queue().unwrap().remove(0);
+    let mut run = comments_exit(&settings, &job);
+    run.packet = Some(pr_sniper_lib::packet::PacketRecord {
+        state_id: "1:a".into(),
+        hash: "h".into(),
+        schema: 2,
+        tool_set: vec![],
+        exits_offered: vec![],
+        exits_denied: vec![],
+        state_hash: Some(snapshot("a").normalize().hash()),
+        state_marks: Some(pr_sniper_lib::github::state::StateMarks::of(
+            &snapshot("a"),
+            "acting-account",
+        )),
+    });
+    store.save_reviews(std::slice::from_ref(&run)).unwrap();
+    let mut publication =
+        pr_sniper_lib::publication::Publication::new(run.clone(), true, true, NOW).unwrap();
+    publication.phase = pr_sniper_lib::publication::Phase::Published;
+    publication.operation.state = OperationState::Completed;
+    publication.receipts = vec![pr_sniper_lib::publication::Receipt {
+        review_id: "42".into(),
+        state: pr_sniper_lib::publication::RemoteState::Commented,
+        comment_ids: vec!["500".into()],
+    }];
+    store.save_publications(&[publication]).unwrap();
+    (job, run)
+}
+
+fn record(store: &Store) -> pr_state::PrStateRecord {
+    store
+        .load_pr_states()
+        .unwrap()
+        .get(&binding())
+        .cloned()
+        .unwrap()
+}
+
+#[test]
+fn own_writes_only_baseline_the_fresh_state_and_queue_nothing() {
+    let (_fixture, store, mut monitor) = configured(false);
+    let (job, run) = posted_exit(&store, &mut monitor);
+    let fresh = with_thread(snapshot("a"), "T9", "500");
+    assert_eq!(
+        pr_sniper_lib::exits::consume::settle_fresh(&store, &job, &run.operation.id, &fresh)
+            .unwrap(),
+        Consumed::Consumed
+    );
+    assert_eq!(record(&store).baseline_hash, Some(fresh.normalize().hash()));
+    scan(
+        &mut monitor,
+        &store,
+        open(false),
+        Some(fresh.clone()),
+        NOW + 30,
+    );
+    assert_eq!(seqs(&store), [1], "own writes never retrigger");
+}
+
+#[test]
+fn a_heartbeat_that_saw_only_own_writes_before_consume_is_absorbed() {
+    let (_fixture, store, mut monitor) = configured(false);
+    let (job, run) = posted_exit(&store, &mut monitor);
+    let fresh = with_thread(snapshot("a"), "T9", "500");
+    // Published, consume not yet run: the heartbeat records the own post.
+    scan(
+        &mut monitor,
+        &store,
+        open(false),
+        Some(fresh.clone()),
+        NOW + 20,
+    );
+    assert_eq!(record(&store).state_seq, 2);
+    assert_eq!(
+        pr_sniper_lib::exits::consume::settle_fresh(&store, &job, &run.operation.id, &fresh)
+            .unwrap(),
+        Consumed::Consumed
+    );
+    let after = record(&store);
+    assert!(after.pending.is_none());
+    assert_eq!(after.error_count, 0, "no toss");
+    assert_eq!(after.exit.unwrap().state_seq, 2);
+}
+
+#[test]
+fn an_external_change_in_the_write_window_requeues_once_after_consume() {
+    let human = with_thread(with_thread(snapshot("a"), "T9", "500"), "T10", "600");
+    let mut ci = with_thread(snapshot("a"), "T9", "500");
+    ci.checks[0].conclusion = "FAILURE".into();
+    for fresh in [human, ci] {
+        let (_fixture, store, mut monitor) = configured(false);
+        let (job, run) = posted_exit(&store, &mut monitor);
+        assert_eq!(
+            pr_sniper_lib::exits::consume::settle_fresh(&store, &job, &run.operation.id, &fresh)
+                .unwrap(),
+            Consumed::Consumed
+        );
+        assert_eq!(
+            record(&store).baseline_hash,
+            Some(snapshot("a").normalize().hash()),
+            "the packet state is the baseline"
+        );
+        scan(
+            &mut monitor,
+            &store,
+            open(false),
+            Some(fresh.clone()),
+            NOW + 30,
+        );
+        scan(
+            &mut monitor,
+            &store,
+            open(false),
+            Some(fresh.clone()),
+            NOW + 40,
+        );
+        assert_eq!(seqs(&store), [1, 2], "one review of the external change");
+    }
+}

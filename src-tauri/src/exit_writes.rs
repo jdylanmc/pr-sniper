@@ -27,6 +27,8 @@ use serde::{Deserialize, Serialize};
 
 pub const SIGNATURE: &str = "\u{f05b} PR Sniper";
 const MAX_BODY_CHARS: usize = 65_536;
+/// Delay before a write waiting on its comment batch checks again.
+const WAIT_SECONDS: i64 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -212,8 +214,15 @@ pub fn publication_dependency(
     {
         return Dependency::Confirmed;
     }
+    // Parked or stopped batches never land on their own: the exit is all or nothing.
     match p.phase {
-        PublicationPhase::Stale | PublicationPhase::Discarded => Dependency::Failed(
+        PublicationPhase::Stale
+        | PublicationPhase::Discarded
+        | PublicationPhase::Stopped
+        | PublicationPhase::StaleAfterPublication => Dependency::Failed(
+            "The comment batch was not published; the exit was discarded.".into(),
+        ),
+        _ if p.operation.parked() => Dependency::Failed(
             "The comment batch was not published; the exit was discarded.".into(),
         ),
         _ => Dependency::Pending,
@@ -288,7 +297,11 @@ pub fn run(env: &mut impl Environment, write: &mut ExitWrite) -> Result<Outcome,
     }
     match advance(env, write) {
         Ok(Outcome::Waiting) => {
-            write.operation.requeue_fresh(env.now()?);
+            // Waiting spends no attempt, only the retry window: a batch that never
+            // lands parks the write (tossed) instead of polling forever.
+            write.operation.state = OperationState::Queued;
+            write.operation.attempt_count = write.operation.attempt_count.saturating_sub(1);
+            write.operation.next_attempt_at = Some(env.now()? + WAIT_SECONDS);
             env.save(write)?;
             Ok(Outcome::Waiting)
         }
@@ -624,18 +637,19 @@ pub fn admit(store: &Store, now: i64) -> Result<usize, String> {
     Ok(added)
 }
 
-/// Next write whose retry time has come.
+/// Due write with the oldest retry time, so one write cannot hold back the rest.
 pub fn next_due(store: &Store, now: i64) -> Result<Option<String>, String> {
     Ok(store
         .load_feedback()?
         .exit_writes
         .iter()
-        .find(|w| {
+        .filter(|w| {
             !w.terminal()
                 && (w.phase == Phase::Completed
                     || w.operation.state == OperationState::Running
                     || w.operation.next_attempt_at.is_some_and(|next| now >= next))
         })
+        .min_by_key(|w| w.operation.next_attempt_at.unwrap_or(i64::MIN))
         .map(|w| w.id.clone()))
 }
 

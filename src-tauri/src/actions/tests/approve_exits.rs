@@ -34,6 +34,7 @@ pub(super) fn exit_run(store: &Store, exit: ExitOutcome, include_self: bool) {
             exits_offered: vec![],
             exits_denied: vec![],
             state_hash: Some("hash-read".into()),
+            state_marks: None,
         });
         run.result.as_mut().unwrap().output = ReviewOutput::from_exit(exit.clone(), None);
     }
@@ -503,4 +504,95 @@ fn a_parked_approve_toss_is_one_failed_row_typed_tossed_and_retry_requeues() {
     assert_eq!(reviews[1].operation.state, OperationState::Queued);
     assert_eq!(item(&store, &id).state, State::Queued);
     assert!(consume::retry_parked(&store, &id, NOW + 41).is_err());
+}
+
+#[test]
+fn a_second_approve_exit_on_an_approved_head_settles_without_another_vote() {
+    let (_root, store, item) = setup(true, false, approve_exit(false), false);
+    let mut current = observed();
+    current.checks = Some("PENDING".into());
+    adopted(&store, &item, current);
+    let effect = host::prepare_next_effect(&store, &item, NOW + 20)
+        .unwrap()
+        .unwrap();
+    let mut env = env(&store);
+    env.wire.0.lock().unwrap().observation.checks = Some("PENDING".into());
+    host::execute_action(&mut env, &effect).unwrap();
+    let approved = env.wire.0.lock().unwrap().observation.clone();
+    let settles = packet::settle(&store, &item, &approved, NOW + 21).unwrap();
+    assert_eq!(settles.len(), 1);
+    assert_eq!(
+        consume::settle(&store, &settles[0].job, "after-first").unwrap(),
+        Consumed::Consumed
+    );
+    packet::mark_settled(&store, &settles[0].final_id).unwrap();
+    // CI turns green: a new state on the same head; the agent approves again.
+    let mut green = approved.clone();
+    green.checks = Some("SUCCESS".into());
+    let mut reviews = store.load_reviews().unwrap();
+    let mut second = reviews[0].clone();
+    second.operation.id = "second-approve".into();
+    second.job.work.as_mut().unwrap().state_seq = 2;
+    reviews.push(second.clone());
+    store.save_reviews(&reviews).unwrap();
+    let binding = Binding::job(&second.job);
+    let mut states = store.load_pr_states().unwrap();
+    let record = states
+        .records
+        .iter_mut()
+        .find(|r| r.binding == binding)
+        .unwrap();
+    record.state_seq = 2;
+    record.pending = Some(crate::pr_state::Pending {
+        seq: 2,
+        hash: Some("green".into()),
+        observed_at: NOW + 22,
+    });
+    store.save_pr_states(&states).unwrap();
+    synchronize(&store, &item, Ok(green.clone()), NOW + 23).unwrap();
+    packet::adopt(&store, &item).unwrap();
+    assert_eq!(store.load_actions().unwrap().finals.len(), 2);
+    assert!(
+        host::prepare_next_effect(&store, &item, NOW + 24)
+            .unwrap()
+            .is_none(),
+        "no second vote"
+    );
+    let settles = packet::settle(&store, &item, &green, NOW + 25).unwrap();
+    assert_eq!(settles.len(), 1, "our standing approval settles the exit");
+    assert_eq!(settles[0].final_id, "final-packet-second-approve");
+    assert_eq!(
+        consume::settle(&store, &settles[0].job, "after-second").unwrap(),
+        Consumed::Consumed
+    );
+    packet::mark_settled(&store, &settles[0].final_id).unwrap();
+    assert!(!packet::open(&store.load_actions().unwrap(), &item));
+    assert_eq!(env.wire.0.lock().unwrap().writes.len(), 1);
+}
+
+#[test]
+fn an_unadoptable_approve_exit_stops_being_observed() {
+    let (_root, store, item) = setup(true, false, approve_exit(false), false);
+    let unadopted =
+        |store: &Store| packet::unadopted(store, &store.load_actions().unwrap()).unwrap();
+    assert!(unadopted(&store).contains(&item));
+    let mut closed = observed();
+    closed.state = "CLOSED".into();
+    synchronize(&store, &item, Ok(closed), NOW + 10).unwrap();
+    packet::adopt(&store, &item).unwrap();
+    assert!(store.load_actions().unwrap().finals.is_empty());
+    assert!(
+        unadopted(&store).is_empty(),
+        "a closed PR is not observed again"
+    );
+
+    // A deactivated scope cannot be adopted either.
+    let (_root, store, item) = setup(true, false, approve_exit(false), false);
+    synchronize(&store, &item, Ok(observed()), NOW + 10).unwrap();
+    let mut monitor = store.load_monitoring_state().unwrap();
+    monitor.activations.clear();
+    store.save_monitoring_state(&monitor).unwrap();
+    packet::adopt(&store, &item).unwrap();
+    assert!(store.load_actions().unwrap().finals.is_empty());
+    assert!(unadopted(&store).is_empty(), "nothing can adopt it");
 }

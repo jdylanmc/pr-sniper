@@ -2441,6 +2441,7 @@ impl Monitor {
             .collect();
         let mut pr_states = store.load_pr_states().map_err(MonitoringError::Storage)?;
         let previous_pr_states = pr_states.clone();
+        let writing = crate::exits::consume::writing(store).map_err(MonitoringError::Storage)?;
         let snapshots = result.states;
         let mut pulls = result.pull_requests;
         pulls.sort_by_key(|p| p.number);
@@ -2606,7 +2607,11 @@ impl Monitor {
                     && r.job.head_sha == pull.head_sha
                     && bound(&r.job)
             });
-            let normalized = snapshots.get(&pull.id).map(|s| s.normalize());
+            // Own exit writes in flight: the consume after them baselines that state.
+            let normalized = snapshots
+                .get(&pull.id)
+                .filter(|_| new_iteration || !writing.contains(&binding))
+                .map(|s| s.normalize());
             pr_states.observe(
                 &binding,
                 crate::pr_state::Observation {

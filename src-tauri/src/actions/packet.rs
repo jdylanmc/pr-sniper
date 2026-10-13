@@ -43,6 +43,8 @@ pub const ALREADY_APPROVED: &str = "The acting account already has an approval o
 pub struct Settle {
     pub final_id: String,
     pub job: QueueJob,
+    /// The exit run whose packet state is consumed.
+    pub run_id: String,
 }
 
 fn exit_comment(run: &ReviewRun) -> Option<(String, bool)> {
@@ -343,10 +345,13 @@ pub fn settle(
             changed = true;
             continue;
         }
+        // Any current-head approval by the acting account is an idempotent success,
+        // including one an earlier exit of ours placed (no second vote is prepared).
         let approve_done = !permissions.approve
             || effects
                 .iter()
                 .any(|e| e.action == Action::Approve && e.state == EffectState::Confirmed)
+            || Facts::from_observation(observation).already_approved
             || ready(store, run, observation, Action::Approve) == Ok(Ready::AlreadyApproved);
         let merge_done = !permissions.merge
             || effects.iter().any(|e| {
@@ -357,6 +362,7 @@ pub fn settle(
             ready_to_consume.push(Settle {
                 final_id: run.id.clone(),
                 job,
+                run_id: approval.run_id.clone(),
             });
         }
     }
@@ -385,17 +391,40 @@ pub fn mark_settled(store: &Store, final_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Items whose completed approve exit has no packet final yet.
+/// Items whose completed approve exit has no packet final yet and that [`adopt`]
+/// could still adopt: a closed PR or a removed assignment or scope is never observed again.
 pub fn unadopted(
     store: &Store,
     ledger: &Ledger,
 ) -> Result<std::collections::HashSet<String>, String> {
     let states = store.load_pr_states()?;
+    let settings = store.load_settings()?;
+    let monitor = store.load_monitoring_state()?;
+    let adoptable = |r: &ReviewRun| {
+        let item = queue::item_id(&r.job);
+        let closed = ledger
+            .observations
+            .iter()
+            .find(|o| o.item_id == item)
+            .and_then(|o| o.observation.as_ref())
+            .is_some_and(|o| o.state != "OPEN");
+        !closed
+            && r.job.work.is_some()
+            && settings
+                .repositories
+                .iter()
+                .find(|repo| repo.id == r.job.configuration_id)
+                .is_some_and(|repo| {
+                    repo.assignments.iter().any(|a| a.id == r.assignment_id)
+                        && monitor.activations.contains_key(&repo.id)
+                })
+    };
     Ok(store
         .load_reviews()?
         .iter()
         .filter(|r| {
-            r.mode == RunMode::Packet
+            adoptable(r)
+                && r.mode == RunMode::Packet
                 && r.operation.state == OperationState::Completed
                 && exit_comment(r).is_some()
                 && !ledger.finals.iter().any(|f| {
@@ -429,7 +458,7 @@ pub fn consume_settled(
         id: settle.job.repository_id.clone(),
         name: settle.job.repository_name.clone(),
     };
-    consume::consume_after(app_store, client, &repo, &settle.job)?;
+    consume::consume_after(app_store, client, &repo, &settle.job, &settle.run_id)?;
     let store = app_store.lock().map_err(|_| "Storage unavailable.")?;
     mark_settled(&store, &settle.final_id)
 }

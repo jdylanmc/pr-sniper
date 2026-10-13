@@ -579,6 +579,7 @@ impl publication::Environment for Publish<'_> {
             &self.live.client,
             &self.live.repo,
             &run.review.job,
+            &run.review.operation.id,
         )
         .map(|_| ())
         .map_err(Failure::permanent)
@@ -693,6 +694,7 @@ impl exit_writes::Environment for Writes<'_> {
             &self.live.client,
             &self.live.repo,
             &write.job,
+            &write.review_operation_id,
         )
         .map(|_| ())
         .map_err(Failure::permanent)
