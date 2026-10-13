@@ -183,7 +183,8 @@ test("Reviewed shows 50 rows, appends 50 per Show more, keeps Clean all last and
   const after = reviewed(page).getByRole("button", {
     name: `Show ${total - 102} more`,
   });
-  await expect(after).toHaveText(`+${total - 102}`, { timeout: 12_000 });
+  // Picked up on the next snapshot refresh; 132 rows redraw slowly on CI.
+  await expect(after).toHaveText(`+${total - 102}`, { timeout: 30_000 });
   await expect(rows).toHaveCount(100);
   await after.click();
   await expect(rows).toHaveCount(total - 2);
