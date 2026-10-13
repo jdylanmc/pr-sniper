@@ -504,6 +504,7 @@ test("approved shell keeps bottom destinations, authoritative pause and unavaila
   const toggle = page.locator(".panel-header [data-toggle-automation]");
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("[data-running-count]")).toHaveText("0");
+  await expect(page.locator("[data-running-count]")).toBeHidden();
   const navigation = page.getByRole("navigation", {
     name: "Application destinations",
   });

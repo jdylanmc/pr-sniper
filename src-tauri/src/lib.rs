@@ -497,9 +497,16 @@ impl GithubAuth {
                 let wrong_identity = expected_account_id
                     .as_ref()
                     .is_some_and(|expected| expected != &identity.id);
-                let duplicate_account =
-                    expected_account_id.is_none() && self.accounts.contains_key(&identity.id);
-                if wrong_identity || duplicate_account {
+                // A sign-in for a saved identity renews that account in place;
+                // only an in-flight disconnect refuses it.
+                let disconnecting = matches!(
+                    self.accounts.get(&identity.id),
+                    Some(GithubAccountState::ReconnectRequired {
+                        reason: GithubAuthFailure::DisconnectPending,
+                        ..
+                    })
+                );
+                if wrong_identity || disconnecting {
                     self.failure = Some(GithubAuthFailure::WrongIdentity);
                 } else {
                     self.pending = Some(PendingGithubAccount { identity, pair });
@@ -3641,36 +3648,53 @@ fn github_auth_state(host: State<'_, Host>) -> Result<GithubAuthView, String> {
 }
 
 #[tauri::command]
-fn start_github_browser_auth(
+async fn start_github_browser_auth(
     app: tauri::AppHandle,
     expected_account_id: Option<String>,
     select_account: Option<bool>,
 ) -> Result<GithubAuthView, String> {
-    let host = app.state::<Host>();
-    let mut auth = host
-        .github_auth
-        .lock()
-        .map_err(|_| "GitHub connection state is unavailable.")?;
-    auth.cancel_attempt();
     let _ = select_account;
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
-    let attempt_id = auth.start_attempt(expected_account_id, cancel_tx);
-    let view = auth.view();
-    drop(auth);
+    let attempt_id = {
+        let host = app.state::<Host>();
+        let mut auth = host
+            .github_auth
+            .lock()
+            .map_err(|_| "GitHub connection state is unavailable.")?;
+        auth.cancel_attempt();
+        auth.start_attempt(expected_account_id, cancel_tx)
+    };
     tauri::async_runtime::spawn(complete_github_device_auth(
         app.clone(),
         attempt_id,
         cancel_rx,
         ConnectionRole::Repository,
+        Some(ready_tx),
     ));
-    Ok(view)
+    // Answer with the device code (or the attempt's failure) so it renders
+    // before the browser takes focus and the panel hides.
+    let _ = tokio::time::timeout(DEVICE_CODE_READY_LIMIT, ready_rx).await;
+    let host = app.state::<Host>();
+    let generations = host
+        .github_generations
+        .lock()
+        .map_err(|_| "GitHub account coordination is unavailable.")?;
+    let auth = host
+        .github_auth
+        .lock()
+        .map_err(|_| "GitHub connection state is unavailable.")?;
+    Ok(auth.repository_view(&generations))
 }
+
+const DEVICE_CODE_READY_LIMIT: std::time::Duration = std::time::Duration::from_secs(15);
 
 async fn complete_github_device_auth(
     app: tauri::AppHandle,
     attempt_id: u64,
     cancel_rx: tokio::sync::oneshot::Receiver<()>,
     role: ConnectionRole,
+    ready: Option<tokio::sync::oneshot::Sender<()>>,
 ) {
     let cancelled = Arc::new(AtomicBool::new(false));
     let cancellation = Arc::clone(&cancelled);
@@ -3696,29 +3720,37 @@ async fn complete_github_device_auth(
             }
             webbrowser::open(url.as_str()).map_err(|_| github::oauth::OAuthError::BrowserOpen)
         };
-        let authorization = match role {
-            ConnectionRole::Repository => transport.request_device_authorization(open_browser),
-            ConnectionRole::Copilot => transport.request_copilot_authorization(open_browser),
-        }
-        .map_err(failure_from_oauth_error)?;
-        if cancelled.load(Ordering::SeqCst) {
-            return Err(GithubAuthFailure::Cancelled);
-        }
-        {
-            let host = work_app.state::<Host>();
+        let publish_app = work_app.clone();
+        let publish = |user_code: &str, verification_uri: &str| {
+            let host = publish_app.state::<Host>();
             let mut auth = role
                 .auth(&host)
                 .lock()
-                .map_err(|_| GithubAuthFailure::InvalidResponse)?;
+                .map_err(|_| github::oauth::OAuthError::InvalidResponse)?;
             if !auth.set_device_authorization(
                 attempt_id,
-                authorization.user_code().to_owned(),
-                authorization.verification_uri().to_owned(),
+                user_code.to_owned(),
+                verification_uri.to_owned(),
             ) {
-                return Err(GithubAuthFailure::Cancelled);
+                return Err(github::oauth::OAuthError::Cancelled);
             }
+            drop(auth);
+            if let Some(ready) = ready {
+                let _ = ready.send(());
+            }
+            eprintln!("[github-auth] stage=device_authorization outcome=ready");
+            Ok(())
+        };
+        let purpose = match role {
+            ConnectionRole::Repository => github::oauth::OAuthPurpose::Repository,
+            ConnectionRole::Copilot => github::oauth::OAuthPurpose::Copilot,
+        };
+        let authorization = transport
+            .request_authorization(purpose, publish, open_browser)
+            .map_err(failure_from_oauth_error)?;
+        if cancelled.load(Ordering::SeqCst) {
+            return Err(GithubAuthFailure::Cancelled);
         }
-        eprintln!("[github-auth] stage=device_authorization outcome=ready");
         let pair = transport
             .poll_device_authorization(authorization, &cancelled)
             .map_err(failure_from_oauth_error)?;
@@ -3749,7 +3781,10 @@ async fn complete_github_device_auth(
 }
 
 #[tauri::command]
-fn confirm_github_account(host: State<'_, Host>) -> Result<GithubAuthView, String> {
+fn confirm_github_account(
+    app: tauri::AppHandle,
+    host: State<'_, Host>,
+) -> Result<GithubAuthView, String> {
     use github::token_store::ActiveAccount;
     let mut generations = host
         .github_generations
@@ -3759,6 +3794,10 @@ fn confirm_github_account(host: State<'_, Host>) -> Result<GithubAuthView, Strin
         .github_auth
         .lock()
         .map_err(|_| "GitHub connection state is unavailable.")?;
+    let account_id = auth
+        .pending
+        .as_ref()
+        .map(|pending| pending.identity.id.clone());
     let persistence = auth.confirm_repository_with(&mut generations, |identity, pair| {
         use github::token_store::ProviderAccountId;
         let account = ActiveAccount::new(&identity.id, &identity.login).map_err(|_| ())?;
@@ -3781,7 +3820,20 @@ fn confirm_github_account(host: State<'_, Host>) -> Result<GithubAuthView, Strin
     if persistence == OAuthAccountPersistence::SavedWithLegacyCleanupPending {
         eprintln!("GitHub OAuth account connected; legacy credential cleanup remains pending.");
     }
-    Ok(auth.repository_view(&generations))
+    let view = auth.repository_view(&generations);
+    drop(auth);
+    drop(generations);
+    if let Some(account_id) = account_id {
+        // New credentials resume this account's parked credentials failures
+        // now, even when its record never left the connected state.
+        if let Ok(mut monitor) = host.monitor.lock() {
+            monitor.credentials_renewed(&account_id);
+        }
+        if let Err(error) = auto_resume_parked(&app) {
+            report(&app, error);
+        }
+    }
+    Ok(view)
 }
 
 #[tauri::command]
@@ -5546,7 +5598,7 @@ mod github_auth_tests {
     }
 
     #[test]
-    fn wrong_identity_duplicate_and_timeout_remain_typed_terminal_states() {
+    fn wrong_identity_and_timeout_remain_typed_terminal_states() {
         let mut auth = GithubAuth::new();
         auth.accounts.insert(
             "101".into(),
@@ -5559,18 +5611,144 @@ mod github_auth_tests {
         assert_eq!(auth.failure, Some(GithubAuthFailure::WrongIdentity));
         assert!(auth.pending.is_none());
 
+        auth.set_failure("101", GithubAuthFailure::DisconnectPending);
         let (cancel, _) = tokio::sync::oneshot::channel();
-        let duplicate = auth.start_attempt(None, cancel);
+        let disconnecting = auth.start_attempt(None, cancel);
         auth.finish_attempt(
-            duplicate,
-            Ok((identity("101", "existing"), pair("duplicate"))),
+            disconnecting,
+            Ok((identity("101", "existing"), pair("disconnecting"))),
         );
         assert_eq!(auth.failure, Some(GithubAuthFailure::WrongIdentity));
+        assert!(auth.pending.is_none());
 
         let (cancel, _) = tokio::sync::oneshot::channel();
         let timed_out = auth.start_attempt(None, cancel);
         auth.finish_attempt(timed_out, Err(GithubAuthFailure::Timeout));
         assert_eq!(auth.failure, Some(GithubAuthFailure::Timeout));
+    }
+
+    #[test]
+    fn same_identity_sign_in_replaces_the_saved_credential_and_clears_reconnect_in_place() {
+        use crate::github::token_store::{ActiveAccount, ProviderAccountId, RotationSafeStore};
+
+        // Generic sign-in ("Try again") and targeted Reconnect both renew the
+        // saved record for the same provider-issued ID.
+        for expected in [None, Some("101".to_string())] {
+            for existing in [
+                GithubAuthFailure::Expired,
+                GithubAuthFailure::AuthenticationChanged,
+                GithubAuthFailure::MissingScope,
+                GithubAuthFailure::Network,
+            ] {
+                let storage = FaultStore::default();
+                let store = RotationSafeStore::new(storage.clone());
+                let account_id = ProviderAccountId::github("101");
+                store
+                    .save_account(
+                        &ActiveAccount::new("101", "octocat").unwrap(),
+                        &pair("stale"),
+                        false,
+                    )
+                    .unwrap();
+                let mut generations = BTreeMap::from([("101".to_string(), 3)]);
+                let mut auth = GithubAuth::new();
+                auth.accounts.insert(
+                    "101".into(),
+                    GithubAccountState::ReconnectRequired {
+                        identity: identity("101", "octocat"),
+                        reason: existing,
+                    },
+                );
+                auth.failure = Some(GithubAuthFailure::WrongIdentity);
+
+                let (cancel, _) = tokio::sync::oneshot::channel();
+                let attempt = auth.start_attempt(expected.clone(), cancel);
+                assert!(auth.failure.is_none());
+                auth.finish_attempt(attempt, Ok((identity("101", "octocat"), pair("fresh"))));
+                assert!(auth.failure.is_none());
+                assert!(matches!(
+                    auth.view().flow,
+                    GithubFlowView::PendingAccountConfirmation { ref account_id, .. }
+                        if account_id == "101"
+                ));
+
+                auth.confirm_repository_with(&mut generations, |identity, token_pair| {
+                    let account =
+                        ActiveAccount::new(&identity.id, &identity.login).map_err(|_| ())?;
+                    store
+                        .save_account(&account, token_pair, false)
+                        .map_err(|_| ())
+                })
+                .unwrap();
+
+                let view = serde_json::to_value(auth.repository_view(&generations)).unwrap();
+                assert_eq!(view["flow"]["state"], "idle");
+                assert_eq!(view["accounts"].as_array().unwrap().len(), 1);
+                assert_eq!(view["accounts"][0]["state"], "connected");
+                assert_eq!(view["accounts"][0]["account_id"], "101");
+                assert!(view["accounts"][0].get("warning").is_none());
+                assert_eq!(view["accounts"][0]["connection_generation"], 4);
+                assert!(auth.account_session_allowed("101").is_ok());
+                assert!(auth.monitoring_accounts()["101"].connected);
+                assert_eq!(store.accounts().unwrap().len(), 1);
+                assert_eq!(
+                    store
+                        .restore_account(&account_id)
+                        .unwrap()
+                        .unwrap()
+                        .pair
+                        .access_token(),
+                    "access-fresh"
+                );
+                let serialized = view.to_string();
+                assert!(!serialized.contains("access-fresh"));
+                assert!(!serialized.contains("refresh-fresh"));
+            }
+        }
+    }
+
+    #[test]
+    fn device_code_is_published_before_the_browser_opens() {
+        let mut auth = GithubAuth::new();
+        let (cancel, _) = tokio::sync::oneshot::channel();
+        let attempt = auth.start_attempt(Some("101".into()), cancel);
+        let auth = Mutex::new(auth);
+        let http = |_request: oauth2::HttpRequest| {
+            Ok::<_, std::io::Error>(
+                oauth2::http::Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(
+                        br#"{"device_code":"secret-device-code","user_code":"WXYZ-1234","verification_uri":"https://github.com/login/device","expires_in":900,"interval":5}"#
+                            .to_vec(),
+                    )
+                    .unwrap(),
+            )
+        };
+        let mut seen_when_opened = None;
+        crate::github::oauth::request_device_authorization_publishing_with(
+            &http,
+            crate::github::oauth::OAuthPurpose::Repository,
+            |user_code, verification_uri| {
+                auth.lock().unwrap().set_device_authorization(
+                    attempt,
+                    user_code.into(),
+                    verification_uri.into(),
+                );
+                Ok(())
+            },
+            |_| {
+                seen_when_opened = Some(serde_json::to_value(auth.lock().unwrap().view()).unwrap());
+                Ok(())
+            },
+        )
+        .unwrap();
+        let flow = &seen_when_opened.unwrap()["flow"];
+        assert_eq!(flow["state"], "connecting");
+        assert_eq!(flow["expected_account_id"], "101");
+        assert_eq!(flow["user_code"], "WXYZ-1234");
+        assert_eq!(flow["verification_uri"], "https://github.com/login/device");
+        assert!(!flow.to_string().contains("secret-device-code"));
     }
 
     #[test]

@@ -728,10 +728,40 @@ test("unset tools show the role default and stay unset on save", async ({
 }, testInfo) => {
   await seed(page, store);
   const assignment = await openAssignment(page);
-  await expect(assignment.locator("[data-tool-summary]")).toHaveText("8");
+  await expect(assignment.locator("[data-tool-summary]")).toHaveText("9");
   await openTools(assignment);
-  for (const name of ["Changes", "Search", "Report", "Panic"])
+  for (const name of ["Changes", "Logs", "Search", "Report", "Panic"])
     await expect(toolSwitch(assignment, name)).toBeChecked();
+  const details = {
+    read_changes: "Read the PR diff, paged",
+    read_source: "Read any file at head or base",
+    get_thread: "Read a full review thread",
+    get_checks: "CI check names and status",
+    read_check_log: "Read a CI job log, paged",
+    list_tree: "List repository files",
+    search_code: "Search repository code",
+    leave_comments: "Post, reply, resolve own threads",
+    ready_for_human: "Hand to you with a local summary",
+    approve_pull_request: "Approve with a comment",
+    approve_and_merge: "Approve, then merge",
+    submit_report: "Send findings to the primary",
+    panic_exit: "Stop; Needs attention, auto-retry",
+  };
+  for (const [id, text] of Object.entries(details))
+    await expect(
+      assignment.locator(`[data-tool-row="${id}"] [data-tool-detail]`),
+    ).toHaveText(text);
+  // One line per description, inside the row, clear of the switch.
+  for (const id of ["read_check_log", "panic_exit", "search_code"]) {
+    const row = assignment.locator(`[data-tool-row="${id}"]`);
+    const detail = await row.locator("[data-tool-detail]").boundingBox();
+    const toggle = await row.getByRole("switch").boundingBox();
+    const box = await row.boundingBox();
+    expect(detail.height).toBeLessThan(20);
+    expect(detail.x + detail.width).toBeLessThanOrEqual(toggle.x);
+    expect(detail.y + detail.height).toBeLessThanOrEqual(box.y + box.height);
+    expect(box.height).toBeLessThan(64);
+  }
   await page.screenshot({ path: testInfo.outputPath("tools-default.png") });
   await assignmentBack(page, assignment);
   await saveAssignment(page, assignment);
@@ -746,7 +776,7 @@ test("tools drill-in follows role and grants, saves ids, and shows the count", a
 }, testInfo) => {
   await seed(page, store);
   const assignment = await openAssignment(page);
-  await expect(assignment.locator("[data-tool-summary]")).toHaveText("8");
+  await expect(assignment.locator("[data-tool-summary]")).toHaveText("9");
 
   await primarySwitch(assignment).check();
   await withPermissions(page, assignment, async () => {
@@ -759,11 +789,12 @@ test("tools drill-in follows role and grants, saves ids, and shows the count", a
   await expect(toolSwitch(assignment, "Report")).toBeHidden();
   for (const name of ["Comment", "Ready", "Approve", "Merge", "Panic"])
     await expect(toolSwitch(assignment, name)).toBeChecked();
-  await expect(assignment.locator("[data-tool-summary]")).toHaveText("11");
+  await expect(assignment.locator("[data-tool-summary]")).toHaveText("12");
   for (const name of [
     "Source",
     "Thread",
     "Checks",
+    "Logs",
     "Tree",
     "Search",
     "Ready",
@@ -824,6 +855,62 @@ test("tools drill-in follows role and grants, saves ids, and shows the count", a
   await expect(repository.locator(".assignment-row").first()).toContainText(
     "2 Tools",
   );
+});
+
+test("scrolled tools slide under the title band instead of over it", async ({
+  page,
+  store,
+}, testInfo) => {
+  await seed(page, store);
+  const assignment = await openAssignment(page);
+  await primarySwitch(assignment).check();
+  await openTools(assignment);
+  const band = page.locator(".panel-context");
+  const bandBottom = async () => {
+    const box = await band.boundingBox();
+    return box.y + box.height;
+  };
+  // At rest the drill-in's scroller starts in the band's 23px overlap.
+  const scroller = assignment.locator(".dialog-body");
+  expect((await scroller.boundingBox()).y).toBeCloseTo(
+    (await bandBottom()) - 23,
+    0,
+  );
+  await page.screenshot({ path: testInfo.outputPath("tools-top.png") });
+  await scroller.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await expect
+    .poll(() => scroller.evaluate((element) => element.style.clipPath))
+    .not.toBe("");
+  const edge = await bandBottom();
+  // No row paints or hit-tests in the overlap strip above the band edge.
+  const covered = await page.evaluate((y) => {
+    const box = document
+      .querySelector(".panel-context")
+      .getBoundingClientRect();
+    const hits = [];
+    for (let x = box.left + 20; x < box.right - 20; x += 40)
+      for (const dy of [1, 6, 12, 18, 22])
+        hits.push(
+          !document.elementFromPoint(x, y - dy)?.closest(".repository-group"),
+        );
+    return hits.every(Boolean);
+  }, edge);
+  expect(covered).toBe(true);
+  // The first row still painted starts at or below the band.
+  const firstVisible = await assignment
+    .locator("[data-tool-row]:not([hidden])")
+    .evaluateAll(
+      (rows, y) =>
+        rows
+          .map((row) => row.getBoundingClientRect())
+          .filter((box) => box.bottom > y)
+          .map((box) => box.top)[0],
+      edge,
+    );
+  expect(firstVisible).toBeLessThan(edge);
+  await page.screenshot({ path: testInfo.outputPath("tools-scrolled.png") });
 });
 
 test("Review drafts switch persists only when on", async ({ page, store }) => {

@@ -5,6 +5,15 @@ use std::collections::BTreeMap;
 
 pub trait Transport {
     fn get(&self, path: &str) -> Result<Response, ConnectionError>;
+    /// GET an absolute `https` URL a provider redirect named (a signed blob) without
+    /// credentials, keeping only the last `tail` bytes; `true` when earlier bytes were dropped.
+    fn get_unauthenticated_tail(
+        &self,
+        _url: &str,
+        _tail: usize,
+    ) -> Result<(Response, bool), ConnectionError> {
+        Err(ConnectionError::InvalidResponse)
+    }
 }
 
 pub struct Response {

@@ -173,58 +173,84 @@ const iconPaths = {
   genie:
     '<path d="M10.2 6.4V4.2a1.8 1.8 0 0 1 3.6 0v2.2M9.6 7.4c1.4 1 3.4 1 4.8 0M12 8.2C9 7.4 3 8.4 3 11.4c0 2.6 4.5 3.4 7.4 1.6M12 8.2c3-.8 9 .2 9 3.2 0 2.6-4.5 3.4-7.4 1.6M10.4 13c1.2.5 2.8.5 3.2 0M7.6 14.2c.6 3.4 2.8 5.7 5.8 6.6 2.2.4 4-.3 5-1.6-1.5.5-2.9.1-3.7-1 1.2-1.5 1.7-3.1 1.6-5"/>',
 };
-/** Icon + short name per packet tool; `scope` limits it to one assignment role. */
+/** Icon, short name and one-line description per packet tool; `scope` limits it
+ * to one assignment role. */
 const toolRows: Record<
   PacketTool,
-  { name: string; path: string; scope?: "primary" | "secondary" }
+  {
+    name: string;
+    detail: string;
+    path: string;
+    scope?: "primary" | "secondary";
+  }
 > = {
   read_changes: {
     name: "Changes",
+    detail: "Read the PR diff, paged",
     path: '<path d="M12 5v10M7 10h10M7 19h10"/>',
   },
   read_source: {
     name: "Source",
+    detail: "Read any file at head or base",
     path: '<path d="m8 8-4 4 4 4M16 8l4 4-4 4M13 5l-2 14"/>',
   },
-  get_thread: { name: "Thread", path: '<path d="M4 5h16v11H9l-5 4z"/>' },
+  get_thread: {
+    name: "Thread",
+    detail: "Read a full review thread",
+    path: '<path d="M4 5h16v11H9l-5 4z"/>',
+  },
   get_checks: {
     name: "Checks",
+    detail: "CI check names and status",
     path: '<circle cx="12" cy="12" r="8"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',
+  },
+  read_check_log: {
+    name: "Logs",
+    detail: "Read a CI job log, paged",
+    path: '<rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="m7 10 3 2.5L7 15M12 15h5"/>',
   },
   list_tree: {
     name: "Tree",
+    detail: "List repository files",
     path: '<path d="M5 4v16M5 7h6M5 13h6M5 19h6M11 4h8v6h-8zM11 16h8v4h-8z"/>',
   },
   search_code: {
     name: "Search",
+    detail: "Search repository code",
     path: '<circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/>',
   },
   leave_comments: {
     name: "Comment",
+    detail: "Post, reply, resolve own threads",
     scope: "primary",
     path: '<path d="M4 5h16v11H9l-5 4zM8 9h8M8 12h5"/>',
   },
   ready_for_human: {
     name: "Ready",
+    detail: "Hand to you with a local summary",
     scope: "primary",
     path: '<circle cx="12" cy="8" r="3.2"/><path d="M5 20a7 7 0 0 1 14 0"/>',
   },
   approve_pull_request: {
     name: "Approve",
+    detail: "Approve with a comment",
     scope: "primary",
     path: '<path d="m5 12 5 5 9-10"/>',
   },
   approve_and_merge: {
     name: "Merge",
+    detail: "Approve, then merge",
     scope: "primary",
     path: '<circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="12" r="2.4"/><path d="M6 8.4v7.2M8.4 6c5 0 7 2 7.2 4"/>',
   },
   panic_exit: {
     name: "Panic",
+    detail: "Stop; Needs attention, auto-retry",
     path: '<path d="M12 4 3 20h18zM12 10v4M12 17h.01"/>',
   },
   submit_report: {
     name: "Report",
+    detail: "Send findings to the primary",
     scope: "secondary",
     path: '<path d="M7 4h10v16H7zM10 9h4M10 13h4"/>',
   },
@@ -1036,6 +1062,68 @@ export async function mountSettings(
     }
     back.title = backTitle;
     back.innerHTML = icon("back");
+    errorsFirst(modal);
+  }
+
+  // Save/validation errors render at the top of the editor, never beside or under
+  // its Save/Cancel actions. A newly shown error scrolls into view and takes focus.
+  function errorsFirst(modal: HTMLDialogElement) {
+    const body = modal.querySelector<HTMLElement>(".dialog-body");
+    if (!body) return;
+    const saveErrors = [
+      ...body.querySelectorAll<HTMLElement>("[role=alert]"),
+    ].filter((alert) => {
+      let next = alert.nextElementSibling;
+      while (next?.matches("[role=alert]")) next = next.nextElementSibling;
+      return !!next?.classList.contains("resource-actions");
+    });
+    for (const alert of saveErrors.reverse()) {
+      alert.classList.add("editor-error");
+      alert.tabIndex = -1;
+      alert.parentElement!.prepend(alert);
+    }
+    // The latest activation in this editor was its Save.
+    let saving = false;
+    let savedAt = 0;
+    modal.addEventListener(
+      "click",
+      (event) => {
+        saving =
+          event.target instanceof Element &&
+          !!event.target.closest(".resource-actions .primary");
+        savedAt = performance.now();
+      },
+      true,
+    );
+    modal.addEventListener(
+      "submit",
+      () => {
+        saving = true;
+        savedAt = performance.now();
+      },
+      true,
+    );
+    new MutationObserver((records) => {
+      const shown = records
+        .map((record) => record.target)
+        .find(
+          (target): target is HTMLElement =>
+            target instanceof HTMLElement &&
+            saveErrors.includes(target) &&
+            !target.hidden &&
+            !!target.textContent?.trim(),
+        );
+      if (!shown || !modal.isConnected) return;
+      // Only a failed Save moves the reader; other errors leave focus where it is.
+      if (!saving || performance.now() - savedAt > 15_000) return;
+      saving = false;
+      body.scrollTop = 0;
+      shown.focus({ preventScroll: true });
+    }).observe(body, {
+      attributes: true,
+      attributeFilter: ["hidden"],
+      subtree: true,
+    });
   }
 
   function warnBeforeDiscard(modal: HTMLDialogElement, resource: string) {
@@ -3352,7 +3440,7 @@ export async function mountSettings(
         <div data-primary-permissions ${isPrimary ? "" : "hidden"}><label class="repository-check"><input type="checkbox" role="switch" name="reply" aria-label="Reply Comment" ${isPrimary && existing?.actions?.reply ? "checked" : ""} /><span>Reply Comment</span></label>
         <div class="permission-row-line"><span>Approval</span><div class="permission-choices" role="radiogroup" aria-label="Approval and merge" data-value="${isPrimary && existing?.actions?.merge ? "merge" : isPrimary && existing?.actions?.approve ? "approve" : "none"}"><label class="segment"><input type="radio" name="action" value="none" aria-label="Neither" ${!isPrimary || (!existing?.actions?.approve && !existing?.actions?.merge) ? "checked" : ""} /><span>off</span></label><label class="segment"><input type="radio" name="action" value="approve" aria-label="Approve" ${isPrimary && existing?.actions?.approve && !existing?.actions?.merge ? "checked" : ""} /><span>Approve</span></label><label class="segment"><input type="radio" name="action" value="merge" aria-label="Approve &amp; Merge" ${isPrimary && existing?.actions?.merge ? "checked" : ""} /><span>&amp; Merge</span></label></div></div>
         <label class="repository-check" data-include-self ${isPrimary && existing?.actions?.merge ? "" : "hidden"}><input type="checkbox" role="switch" name="include_self" aria-label="Include self" ${existing?.actions?.include_self ? "checked" : ""} /><span>Include self</span></label></div></section>
-        <section class="repository-group" data-assign-tools hidden>${(Object.keys(toolRows) as PacketTool[]).map((id) => `<label class="repository-check tool-row" data-tool-row="${id}"><input type="checkbox" role="switch" name="tool" value="${id}" aria-label="${escape(toolRows[id].name)}" ${existing?.tools?.includes(id) ? "checked" : ""} /><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${toolRows[id].path}</svg>${escape(toolRows[id].name)}</span></label>`).join("")}</section>
+        <section class="repository-group" data-assign-tools hidden>${(Object.keys(toolRows) as PacketTool[]).map((id) => `<label class="repository-check tool-row" data-tool-row="${id}"><input type="checkbox" role="switch" name="tool" value="${id}" aria-label="${escape(toolRows[id].name)}" ${existing?.tools?.includes(id) ? "checked" : ""} /><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${toolRows[id].path}</svg><span class="tool-copy"><span class="tool-name">${escape(toolRows[id].name)}</span><small class="tool-detail" data-tool-detail>${escape(toolRows[id].detail)}</small></span></span></label>`).join("")}</section>
         <p role="alert" hidden></p><div class="resource-actions" data-assign-actions><button class="primary">${existing ? "Save assignment" : "Assign agent"}</button><button type="button" data-cancel-resource>Cancel</button></div></form>`,
       opener,
     );

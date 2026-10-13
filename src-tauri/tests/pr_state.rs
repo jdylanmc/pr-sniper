@@ -580,6 +580,30 @@ fn own_writes_only_baseline_the_fresh_state_and_queue_nothing() {
 }
 
 #[test]
+fn an_own_review_body_never_retriggers() {
+    let (_fixture, store, mut monitor) = configured(false);
+    let (job, run) = posted_exit(&store, &mut monitor);
+    // A body-only or body + inline review is a COMMENTED review of the acting account.
+    let mut fresh = with_thread(snapshot("a"), "T9", "500");
+    fresh
+        .reviews
+        .push(pr_sniper_lib::github::state::SnapshotReview {
+            actor: "acting-account".into(),
+            state: "COMMENTED".into(),
+            head: Some(fresh.head.clone()),
+        });
+    assert_eq!(
+        pr_sniper_lib::exits::consume::settle_fresh(&store, &job, &run.operation.id, &fresh)
+            .unwrap(),
+        Consumed::Consumed
+    );
+    assert_eq!(record(&store).baseline_hash, Some(fresh.normalize().hash()));
+    scan(&mut monitor, &store, open(false), Some(fresh), NOW + 30);
+    assert_eq!(seqs(&store), [1], "own review body never retriggers");
+    assert_eq!(record(&store).error_count, 0);
+}
+
+#[test]
 fn a_heartbeat_that_saw_only_own_writes_before_consume_is_absorbed() {
     let (_fixture, store, mut monitor) = configured(false);
     let (job, run) = posted_exit(&store, &mut monitor);

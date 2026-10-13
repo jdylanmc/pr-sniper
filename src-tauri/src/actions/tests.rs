@@ -362,6 +362,7 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
         // Live: the model mangled one thread id; the gate now refuses it in the loop.
         let reply = |thread: &str| ExitCall::LeaveComments {
             new_comments: vec![],
+            body: None,
             reply_comments: vec![crate::exits::ReplyComment {
                 thread_id: thread.into(),
                 body: "b".into(),
@@ -369,6 +370,50 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
             resolve_own_threads: vec![],
         };
         assert_eq!((stamped.setup.gate)(&reply("mapped")), Ok(()));
+        // Live: a comment on CHANGELOG.md:151 outside the diff parked the publication.
+        // The gate refuses it in the loop; a body or a changed line is accepted.
+        let leave = |comments: Vec<(&str, u64, Option<&str>)>, body: Option<&str>| {
+            ExitCall::LeaveComments {
+                new_comments: comments
+                    .into_iter()
+                    .map(|(path, line, side)| crate::exits::NewComment {
+                        path: path.into(),
+                        line,
+                        side: side.map(String::from),
+                        body: "b".into(),
+                    })
+                    .collect(),
+                body: body.map(String::from),
+                reply_comments: vec![],
+                resolve_own_threads: vec![],
+            }
+        };
+        assert_eq!(
+            (stamped.setup.gate)(&leave(vec![("CHANGELOG.md", 151, Some("head"))], None)),
+            Err(Refusal::Denied(
+                "CHANGELOG.md:151 (head) not in diff. Comment on a changed line, or put it in body."
+                    .into()
+            ))
+        );
+        assert!(matches!(
+            (stamped.setup.gate)(&leave(
+                vec![("src/lib.rs", 1, None), ("src/lib.rs", 2, None), ("src/lib.rs", 1, Some("base"))],
+                Some("x")
+            )),
+            Err(Refusal::Denied(reason)) if reason.starts_with("src/lib.rs:2 (head) not in diff.")
+        ));
+        assert_eq!(
+            (stamped.setup.gate)(&leave(vec![("src/lib.rs", 1, None)], None)),
+            Ok(())
+        );
+        assert_eq!(
+            (stamped.setup.gate)(&leave(vec![("src/lib.rs", 1, Some("base"))], Some("x"))),
+            Ok(())
+        );
+        assert_eq!(
+            (stamped.setup.gate)(&leave(vec![], Some("Merge conflict in CHANGELOG.md."))),
+            Ok(())
+        );
         assert!(matches!(
             (stamped.setup.gate)(&reply("mapped-typo")),
             Err(Refusal::Denied(reason)) if reason.contains("unknown thread")

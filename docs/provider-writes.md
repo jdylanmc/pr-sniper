@@ -32,7 +32,8 @@ Reference for every GitHub write PR Sniper can make: comment publication, exit r
 ## Packet exits
 
 - Packet-mode runs write only through their exit; the host applies it. Gates (`exits::gates::offered`) decide what is offered; the exit-time check re-reads the PR.
-- `leave_comments.new_comments`: one auto-created publication via `Batch::prepare_exit` (same ledger, pending review, reconcile as above). Every line must map to the diff; one unmappable line tosses the whole batch, nothing is posted. Needs Publish Comment.
+- `leave_comments.new_comments` + `body`: one auto-created publication via `Batch::prepare_exit` (same ledger, pending review, reconcile as above). `body` (<= 8 KB) is the review body beside the intent marker and sign-off, so reconcile finds it and own-write detection absorbs it; body only = one `COMMENT` review, no inline comments. Every line must map to the diff (checked at the exit call too). Needs Publish Comment.
+- Content failure (typed `Tossed`: unmappable line, 422 on the review create) before any remote review: publication **discarded** (`failure: tossed`), never resumed, no Retry of the batch; the review is tossed (error +1), a fresh review is queued, park at 3 (Needs attention, Tossed). With replies, the exit write tosses instead. Transient failures keep the retry budget. Startup re-prepares batch-less Packet publications parked as `provider` by older builds, so typed provenance decides.
 - `leave_comments.reply_comments`, `resolve_own_threads`: host-executed, ledger `exit_writes` in `state/feedback.json`. See **Replies and resolutions**. Needs Reply Comment (both).
 - `ready_for_human`: no GitHub write. Local summary (`pr-state.json`), queue shows Ready for you. Consumed at run completion only if the PR state still equals the one read.
 - Consume: successful exit sets Baseline from a fresh post-write snapshot (`exits::consume_after`); own writes never retrigger. Moved: Toss, error count +1, new attempt through the retry budget, park at 3. Failed, panicked or tossed runs never consume.
@@ -41,7 +42,7 @@ Reference for every GitHub write PR Sniper can make: comment publication, exit r
 
 ## Replies and resolutions (packet exit)
 
-- One exit = one ordered effect: **preflight** (read-only) → publication batch (`new_comments`) → replies → resolutions → confirmed. Publication is held until preflight passes (`exit_writes::holds_publication`).
+- One exit = one ordered effect: **preflight** (read-only) → publication batch (`new_comments`, `body`) → replies → resolutions → confirmed. Publication is held until preflight passes (`exit_writes::holds_publication`).
 - Preflight verifies every item or tosses the whole exit before any effect: head unchanged, thread exists, repliable root, resolutions owned. Nothing partial. Toss = error +1, re-queue (ADR 0007, park at 3).
 - Ownership: root must verify against a saved publication proof (receipt, account, review, original commit, exact root body) of this PR. Others' threads: reply only. Already resolved own thread = done, no write.
 - Intent saved before each effect (`Attempted`). Reply body frozen at preflight: agent text, marker `<!-- pr-sniper:reply:exit-<id>-<n> -->`, revision stamp, ` PR Sniper`. Reconcile reads the thread: marker present = done. Attempted and absent = **never re-POST**; retries read only, then park `Failed`.

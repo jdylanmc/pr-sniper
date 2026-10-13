@@ -98,6 +98,7 @@ const destinations = {
 };
 const icon = (path: string) =>
   `<svg class="panel-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="${path}"/></svg>`;
+const REVIEWED_PAGE = 50;
 
 export async function mountPanel(app: HTMLElement) {
   app.className = "panel-shell";
@@ -154,6 +155,24 @@ export async function mountPanel(app: HTMLElement) {
   const heading = app.querySelector<HTMLElement>("[data-panel-heading]")!;
   const content = app.querySelector<HTMLElement>(".panel-content")!;
   const context = app.querySelector<HTMLElement>(".panel-context")!;
+  // Cards overlap the title band at rest; scrolled content slides under the band
+  // instead of drawing over it. Covers every scroller inside the content area.
+  const clipUnderBand = (scroller: HTMLElement) => {
+    // A band that scrolls with the content never needs a clip.
+    const overlap = scroller.contains(context)
+      ? 0
+      : context.getBoundingClientRect().bottom -
+        scroller.getBoundingClientRect().top;
+    const clip = Math.max(0, Math.min(scroller.scrollTop, overlap));
+    scroller.style.clipPath = clip > 0 ? `inset(${clip}px 0 0 0)` : "";
+  };
+  content.addEventListener(
+    "scroll",
+    (event) => {
+      if (event.target instanceof HTMLElement) clipUnderBand(event.target);
+    },
+    { capture: true, passive: true },
+  );
   const summary = app.querySelector<HTMLElement>("[data-panel-summary]")!;
   const back = app.querySelector<HTMLButtonElement>("[data-panel-back]")!;
   const contextGenie = app.querySelector<HTMLButtonElement>(
@@ -219,6 +238,10 @@ export async function mountPanel(app: HTMLElement) {
   let focusRevision = 0;
   let setupRead = 0;
   const positions = new Map<string, Position>();
+  // Reviewed rows drawn; grows by a page per Show more, reset when the tab reopens.
+  let reviewedLimit = REVIEWED_PAGE;
+  // Tab of the latest navigation request; the route updates only after it resolves.
+  let tabIntent: PanelTab = "queue";
   const listSignatures = new Map<PanelTab, string>();
   const key = (value: PanelRoute) => JSON.stringify(value);
   const positionKey = () =>
@@ -327,8 +350,12 @@ export async function mountPanel(app: HTMLElement) {
     onAutomation: (value) => {
       automation = value;
       app.dataset.automationUnavailable = String(!value);
-      app.querySelector<HTMLElement>("[data-running-count]")!.textContent =
-        value ? String(value.active) : "?";
+      const runningCount = app.querySelector<HTMLElement>(
+        "[data-running-count]",
+      )!;
+      runningCount.textContent = value ? String(value.active) : "?";
+      // A zero badge is noise; the count stays in the DOM for state checks.
+      runningCount.dataset.zero = String(value?.active === 0);
       app.querySelector<HTMLButtonElement>(
         '[data-panel-tab="running"]',
       )!.title = value
@@ -555,7 +582,8 @@ export async function mountPanel(app: HTMLElement) {
       : undefined;
   }
   function draw(tab: "running" | "reviewed", rows: Row[]) {
-    const signature = JSON.stringify(rows);
+    const limit = tab === "reviewed" ? reviewedLimit : rows.length;
+    const signature = JSON.stringify([rows, limit]);
     if (listSignatures.get(tab) === signature) return;
     listSignatures.set(tab, signature);
     const root =
@@ -586,6 +614,31 @@ export async function mountPanel(app: HTMLElement) {
       void monitor.refresh();
     };
     const terminalCount = tab === "reviewed" ? rows.filter(terminal).length : 0;
+    const shown = rows.slice(0, limit);
+    const hidden = rows.length - shown.length;
+    if (hidden > 0) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "work-more";
+      more.dataset.showMore = "";
+      more.setAttribute(
+        "aria-label",
+        `Show ${Math.min(hidden, REVIEWED_PAGE)} more`,
+      );
+      more.innerHTML = `${icon("m6 9 6 6 6-6")}<span>+${hidden}</span>`;
+      more.onclick = () => {
+        const first = limit;
+        reviewedLimit = limit + REVIEWED_PAGE;
+        drawLists();
+        const target =
+          root.querySelectorAll<HTMLButtonElement>(".work-row")[first];
+        if (!target) return;
+        target.focus();
+        const saved = positions.get(key(route));
+        if (saved) saved.focus = target;
+      };
+      root.append(more);
+    }
     if (terminalCount) {
       const all = document.createElement("button");
       all.type = "button";
@@ -597,7 +650,7 @@ export async function mountPanel(app: HTMLElement) {
         all.disabled = true;
         void clean();
       };
-      root.prepend(all);
+      root.append(all);
     }
     if (!rows.length) {
       const empty = document.createElement("div");
@@ -605,7 +658,7 @@ export async function mountPanel(app: HTMLElement) {
       empty.innerHTML = `${icon(destinations[tab].icon)}<span class="sr-only">${tab === "running" ? "No jobs" : "None"}</span>`;
       root.append(empty);
     }
-    for (const row of rows) {
+    for (const row of shown) {
       const article = document.createElement("article");
       article.dataset.jobId = `${row.kind}:${row.id}`;
       article.dataset.workState = row.state;
@@ -920,6 +973,9 @@ export async function mountPanel(app: HTMLElement) {
     )
       returnTo = { tab: state.route.tab };
     route = state.route;
+    if (route.tab === "reviewed" && tabIntent !== "reviewed")
+      reviewedLimit = REVIEWED_PAGE;
+    tabIntent = route.tab;
     revision = state.revision;
     lastState = state;
     if (changed) changelogOpen = false;
@@ -976,6 +1032,7 @@ export async function mountPanel(app: HTMLElement) {
     } else if (inContent(context) || inContent(summary)) {
       content.before(context, summary, error);
     }
+    clipUnderBand(content);
     drawSummary();
     for (const button of app.querySelectorAll<HTMLButtonElement>(
       "[data-panel-tab]",
@@ -1028,6 +1085,11 @@ export async function mountPanel(app: HTMLElement) {
   }
   function navigate(next: PanelRoute, opener?: HTMLElement) {
     intent++;
+    if (next.tab === "reviewed" && tabIntent !== "reviewed") {
+      reviewedLimit = REVIEWED_PAGE;
+      drawLists();
+    }
+    tabIntent = next.tab;
     // Capture activation before a queue redraw detaches the actual row button.
     remember(opener);
     navigating = navigating.then(async () => {

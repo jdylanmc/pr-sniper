@@ -582,6 +582,7 @@ pub(super) async fn start_copilot_auth(
         attempt,
         cancel_rx,
         ConnectionRole::Copilot,
+        None,
     ));
     Ok(view)
 }

@@ -12,6 +12,7 @@ fn input() -> PacketInput {
         tools: [
             "read_changes",
             "get_thread",
+            "read_check_log",
             "ready_for_human",
             "approve_pull_request",
             "panic_exit",
@@ -44,11 +45,15 @@ fn input() -> PacketInput {
                     name: "build".into(),
                     status: "COMPLETED".into(),
                     conclusion: "FAILURE".into(),
+                    id: Some("4242".into()),
+                    log: true,
                 },
                 CheckFact {
                     name: "lint".into(),
                     status: "COMPLETED".into(),
                     conclusion: "SUCCESS".into(),
+                    id: None,
+                    log: false,
                 },
             ],
             mergeable: "MERGEABLE/CLEAN".into(),
@@ -154,6 +159,19 @@ fn teammate_packet_matches_the_golden_file() {
         (Exit::SubmitReport, Offer::Offered),
     ];
     golden("teammate.txt", &build(&teammate).text);
+}
+
+#[test]
+fn ci_red_rule_points_at_logs_only_when_the_run_can_read_them() {
+    let with = build(&input()).text;
+    assert!(with.contains("6. CI red or merge conflicts: do not approve. Read the failing log (read_check_log), then leave_comments with the fix, unless an open thread already says it.\n"));
+    assert!(with.contains("- build: COMPLETED / FAILURE (log: read_check_log id=4242)\n"));
+    assert!(with.contains("- lint: COMPLETED / SUCCESS\n"));
+    let mut without = input();
+    without.tools.retain(|t| t != "read_check_log");
+    let without = build(&without).text;
+    assert!(without.contains("6. CI red or merge conflicts: do not approve. leave_comments with the fix, unless an open thread already says it.\n"));
+    assert!(!without.contains("read_check_log"));
 }
 
 #[test]

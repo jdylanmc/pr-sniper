@@ -411,17 +411,26 @@ test("tossed and failed-write details carry typed causes", async ({
   await expect(fact(facts, "Done")).toHaveText("1 of 2");
 });
 
-test("ready_for_human shows the local summary and the primary's teammate reports", async ({
-  page,
+// A primary packet run plus one teammate report on PR 25; returns its queue item.
+async function seedTeam(
   store,
-}) => {
+  {
+    leadExit = {
+      exit: "ready_for_human",
+      summary: "Small rename; behaviour unchanged.",
+    },
+    mateName = "Security reviewer",
+    findings,
+    consumedWrite = false,
+  },
+) {
   const fixture = await queueFixture(store);
   const settings = (await store("snapshot")).settings;
   const [first] = settings.agents;
   settings.agents.push({
     ...first,
     id: secondAgentId,
-    name: "Security reviewer",
+    name: mateName,
   });
   const repository = settings.repositories[0];
   const [primary] = repository.assignments;
@@ -450,10 +459,7 @@ test("ready_for_human shows the local summary and the primary's teammate reports
     },
     state_seq: 0,
   });
-  const lead = packetRun(fixture, 25, {
-    exit: "ready_for_human",
-    summary: "Small rename; behaviour unchanged.",
-  });
+  const lead = packetRun(fixture, 25, leadExit);
   lead.key = "work-primary";
   lead.job = { ...lead.job, work: work("work-primary", first.id, 1) };
   const mate = packetRun(fixture, 25, { exit: "submit_report" });
@@ -469,7 +475,35 @@ test("ready_for_human shows the local summary and the primary's teammate reports
     agent: settings.agents.find((a) => a.id === secondAgentId),
   };
   mate.operation = { ...mate.operation, id: "review-teammate" };
-  mate.result.output.report = {
+  mate.result.output.report = { findings };
+  const done = () =>
+    write(lead, "completed", {
+      consumed: true,
+      steps: write(lead, "completed").steps.map((s) => ({
+        ...s,
+        state: "done",
+        receipt: "C1",
+      })),
+    });
+  await store("seed_queue_state", {
+    jobs: [lead.job, mate.job],
+    reviews: [lead, mate],
+    publications: [],
+    follow_ups: [],
+    ...(consumedWrite && {
+      feedback: { records: [], mentions: [], exit_writes: [done()] },
+    }),
+  });
+  return (await store("monitoring_snapshot")).items.find(
+    (entry) => entry.job.number === 25,
+  );
+}
+
+test("ready_for_human shows the local summary and the primary's teammate reports", async ({
+  page,
+  store,
+}) => {
+  const item = await seedTeam(store, {
     findings: [
       {
         file: "src/auth.rs",
@@ -486,16 +520,7 @@ test("ready_for_human shows the local summary and the primary's teammate reports
         fix: "Check exp claim.",
       },
     ],
-  };
-  await store("seed_queue_state", {
-    jobs: [lead.job, mate.job],
-    reviews: [lead, mate],
-    publications: [],
-    follow_ups: [],
   });
-  const item = (await store("monitoring_snapshot")).items.find(
-    (entry) => entry.job.number === 25,
-  );
   expect(item).toMatchObject({
     state: "machine_signed_off",
     exit: "ready_for_human",
@@ -514,10 +539,10 @@ test("ready_for_human shows the local summary and the primary's teammate reports
   );
   await expect(report.locator(".activity-value")).toHaveText("2 findings");
   const facts = await expand(report);
-  await expect(fact(facts, "src/auth.rs:42")).toHaveText(
-    "token logged at debug",
-  );
-  await expect(fact(facts, "src/auth.rs:77")).toHaveText(
+  const finding = (place) =>
+    facts.locator(`[data-finding="${place}"] .activity-finding-nano`);
+  await expect(finding("src/auth.rs:42")).toHaveText("token logged at debug");
+  await expect(finding("src/auth.rs:77")).toHaveText(
     "missing expiry check on refresh path; stale token accepted after logout until process restart",
   );
   await page.evaluate(() => window.__settingsIdle());
@@ -525,4 +550,89 @@ test("ready_for_human shows the local summary and the primary's teammate reports
     path: test.info().outputPath("packet-ready-teammates.png"),
     fullPage: true,
   });
+});
+
+test("activity rows stay readable with a long agent, a long path and a long finding", async ({
+  page,
+  store,
+}) => {
+  const place =
+    "raw/meeting/2026-09-18-gang-squad-agreement-experiment-0.md:20";
+  const nano =
+    "medium: Roster names become stale when the squad agreement changes; the experiment keeps the old owners and pings the wrong people for a week.";
+  const item = await seedTeam(store, {
+    leadExit: replies,
+    mateName: "XGANG CAVEMAN YO",
+    consumedWrite: true,
+    findings: [
+      {
+        file: "raw/meeting/2026-09-18-gang-squad-agreement-experiment-0.md",
+        line: 20,
+        nano,
+        full: "Stale roster.",
+        fix: "Re-read the roster.",
+      },
+    ],
+  });
+  await openDetail(page, store, item);
+  const report = activity(page, "report");
+  const facts = await expand(report);
+  const finding = facts.locator(`[data-finding="${place}"]`);
+  await expect(finding.locator(".activity-finding-nano")).toHaveText(nano);
+  await expect(finding.locator(".activity-finding-place")).toHaveAttribute(
+    "title",
+    place,
+  );
+  await expect(finding.locator(".activity-finding-place")).toHaveText(place);
+  await expect(activity(page, "exit").locator(".activity-value")).toHaveText(
+    "New 0 \u00b7 Replies 1 \u00b7 Resolved 1",
+  );
+  await page
+    .locator("[data-queue-activity]")
+    .evaluate((list) =>
+      list
+        .querySelectorAll('.activity-toggle[aria-expanded="false"]')
+        .forEach((toggle) => toggle.click()),
+    );
+  await page.evaluate(() => window.__settingsIdle());
+  const layout = await page
+    .locator("[data-queue-activity]")
+    .evaluate((list) => {
+      const box = (element) => element.getBoundingClientRect();
+      const problems = [];
+      for (const row of list.children) {
+        const width = box(row).width;
+        for (const part of row.querySelectorAll(
+          ".activity-toggle > span, .activity-finding-place, .activity-finding-nano",
+        )) {
+          const { width: w, height: h } = box(part);
+          const line = parseFloat(getComputedStyle(part).lineHeight) || 18;
+          const name = `${row.dataset.activity} ${part.className}`;
+          // Nothing squeezed: head parts stay on one line and are never clipped
+          // except the agent's deliberate ellipsis.
+          if (part.closest(".activity-toggle")) {
+            if (h > line * 1.6) problems.push(`${name} wraps (${h}px)`);
+            if (
+              !part.classList.contains("activity-agent") &&
+              part.scrollWidth > part.clientWidth + 1
+            )
+              problems.push(`${name} clipped`);
+          } else if (w < 40) problems.push(`${name} ${w}px wide`);
+          if (
+            part.classList.contains("activity-finding-nano") &&
+            w < width * 0.6
+          )
+            problems.push(`${name} ${w}/${width}`);
+        }
+        for (const agent of row.querySelectorAll(".activity-agent"))
+          if (box(agent).width < 40)
+            problems.push(
+              `${row.dataset.activity} agent ${box(agent).width}px`,
+            );
+      }
+      return problems;
+    });
+  expect(layout).toEqual([]);
+  await report.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: test.info().outputPath("activity-long.png") });
 });

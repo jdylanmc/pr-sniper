@@ -73,7 +73,8 @@ pub fn render(input: &PacketInput, packet_id: &str, with_time: bool) -> String {
     let mut out = String::new();
     meta(&mut out, input, packet_id, with_time);
     out.push_str("\n## Rules\n");
-    for (index, rule) in rules::rules(input.role, !input.teammates.is_empty())
+    let can_read_logs = input.tools.iter().any(|t| t == "read_check_log");
+    for (index, rule) in rules::rules(input.role, !input.teammates.is_empty(), can_read_logs)
         .iter()
         .enumerate()
     {
@@ -142,11 +143,16 @@ fn pull_request(out: &mut String, input: &PacketInput) {
         pr.review_decision.as_deref().unwrap_or("none")
     );
     let _ = writeln!(out, "approvals: {}", defuse(&pr.approvals.join(", ")));
+    let can_read_logs = input.tools.iter().any(|t| t == "read_check_log");
     let _ = writeln!(out, "checks ({}):", pr.checks.len());
     for check in &pr.checks {
+        let log = match (&check.id, can_read_logs && check.log) {
+            (Some(id), true) => format!(" (log: read_check_log id={})", defuse(id)),
+            _ => String::new(),
+        };
         let _ = writeln!(
             out,
-            "- {}: {} / {}",
+            "- {}: {} / {}{log}",
             defuse(&check.name),
             defuse(&check.status),
             defuse(&check.conclusion)

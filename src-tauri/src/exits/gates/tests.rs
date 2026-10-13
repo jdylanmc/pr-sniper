@@ -236,6 +236,7 @@ fn roles_and_assignment_tools_intersect_with_the_gates() {
 fn exit_time_check_rechecks_gates_and_payload_grants() {
     let comments = ExitCall::LeaveComments {
         new_comments: vec![],
+        body: None,
         reply_comments: vec![ReplyComment {
             thread_id: "T".into(),
             body: "b".into(),

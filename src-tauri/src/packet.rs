@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Bumped with any change to the fixed text or section layout.
-pub const SCHEMA: u32 = 2;
+pub const SCHEMA: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -30,6 +30,12 @@ pub struct CheckFact {
     pub name: String,
     pub status: String,
     pub conclusion: String,
+    /// Provider check id (`get_checks` `id`); a check run's id is its Actions job id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// A GitHub Actions job: `read_check_log` can read its log.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub log: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

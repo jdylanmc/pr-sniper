@@ -1,6 +1,6 @@
 pub(crate) mod host;
 mod plan;
-pub(crate) use plan::diff_positions;
+pub(crate) use plan::{diff_positions, DiffLines};
 
 use crate::{
     monitoring::{JobOperation, OperationFailure, OperationState, QueueJob},
@@ -153,6 +153,9 @@ impl Publication {
         if !operation.parked() {
             return false;
         }
+        if self.unwritten_packet_batch() {
+            return true;
+        }
         let transient = operation
             .failure
             .as_ref()
@@ -166,6 +169,34 @@ impl Publication {
                 .receipts
                 .last()
                 .is_some_and(|r| r.state == RemoteState::Pending)
+    }
+
+    /// A Packet-mode batch parked as a provider failure before anything reached
+    /// GitHub. Older builds parked content failures (a line outside the diff) here as
+    /// retries that can never succeed; preparing again decides with typed provenance.
+    fn unwritten_packet_batch(&self) -> bool {
+        self.review.mode == crate::review::RunMode::Packet
+            && self.phase == Phase::Preparing
+            && self.batch.is_none()
+            && !self.uncertain
+            && self.receipts.is_empty()
+            && self.operation.pending_review_id.is_none()
+            && self.operation.failure == Some(OperationFailure::Provider)
+    }
+
+    /// Ended by a content toss: never resumed, never retried as the same batch.
+    pub fn tossed(&self) -> bool {
+        self.phase == Phase::Discarded && self.operation.failure == Some(OperationFailure::Tossed)
+    }
+
+    /// A content failure no retry of this batch can fix, before any remote review
+    /// exists: typed `Tossed` from preparation or a rejected create.
+    fn content_failure(&self, failure: &Failure) -> bool {
+        !failure.cancelled
+            && failure.kind == OperationFailure::Tossed
+            && !self.uncertain
+            && self.receipts.is_empty()
+            && self.operation.pending_review_id.is_none()
     }
 
     pub fn marker(&self) -> String {
@@ -367,6 +398,24 @@ pub fn restore_at(store: &Store, now: i64) -> Result<(), String> {
     Ok(())
 }
 
+/// Store half of a content toss: count it on the PR and queue a fresh review of
+/// the current state, unless the toss budget is spent (parks as Tossed). An exit
+/// with replies or resolutions tosses through its exit write instead, and a key
+/// that already re-ran has nothing to toss.
+pub fn toss_review(store: &Store, run: &Publication, now: i64) -> Result<(), String> {
+    if crate::exit_writes::plan(&run.review, 0).is_some()
+        || store
+            .load_reviews()?
+            .iter()
+            .rev()
+            .find(|r| r.key == run.review.key)
+            .is_some_and(|newest| newest.operation.id != run.review.operation.id)
+    {
+        return Ok(());
+    }
+    crate::exits::consume::toss_and_requeue(store, &run.review.job, &run.review, now).map(|_| ())
+}
+
 pub struct Gate {
     pub stop: Option<String>,
     pub stale: bool,
@@ -400,6 +449,11 @@ pub trait Environment {
         mutation: Mutation,
     ) -> Result<Receipt, WriteFailure>;
     fn requeue(&mut self, publication: &Publication) -> Result<(), Failure>;
+    /// A content failure ended the publication: toss the review and queue a fresh
+    /// one under the PR's toss budget ([`toss_review`]).
+    fn tossed(&mut self, _: &Publication) -> Result<(), Failure> {
+        Ok(())
+    }
     /// The batch is confirmed on the provider: a Packet-mode run consumes its state here.
     fn confirmed(&mut self, _: &Publication) -> Result<(), Failure> {
         Ok(())
@@ -424,6 +478,15 @@ pub fn execute(
         drive(environment, publication)
     })();
     if let Err(error) = outcome {
+        if publication.content_failure(&error) {
+            publication.phase = Phase::Discarded;
+            publication.error = None;
+            publication.operation.state = OperationState::Completed;
+            publication.operation.failure = Some(OperationFailure::Tossed);
+            publication.operation.next_attempt_at = None;
+            environment.save(publication)?;
+            return environment.tossed(publication);
+        }
         publication
             .operation
             .fail(&error.monitoring(), environment.now()?);

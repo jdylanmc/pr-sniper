@@ -14,8 +14,13 @@ use std::{collections::BTreeMap, io::Read, time::Duration};
 
 pub struct HttpTransport {
     client: Client,
+    /// Credential-free client for signed redirect targets; never sees `credential`.
+    blob: Client,
     credential: Credential,
 }
+
+/// Hard stop for a redirected blob download; the tail kept is far smaller.
+const MAX_BLOB_STREAM_BYTES: usize = 256 * 1024 * 1024;
 
 impl HttpTransport {
     pub fn new(credential: Credential) -> Result<Self, ConnectionError> {
@@ -26,7 +31,34 @@ impl HttpTransport {
             .timeout(Duration::from_secs(30))
             .build()
             .map_err(|_| ConnectionError::Network)?;
-        Ok(Self { client, credential })
+        let blob = Client::builder()
+            .user_agent("PR-Sniper/0.1")
+            .redirect(Policy::none())
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(60))
+            .build()
+            .map_err(|_| ConnectionError::Network)?;
+        Ok(Self {
+            client,
+            blob,
+            credential,
+        })
+    }
+
+    /// A redirect target request: absolute `https`, no user info, no credential header.
+    fn blob_request(&self, url: &str) -> Result<Request, ConnectionError> {
+        let url = Url::parse(url).map_err(|_| ConnectionError::InvalidResponse)?;
+        if url.scheme() != "https"
+            || url.host_str().is_none_or(str::is_empty)
+            || !url.username().is_empty()
+            || url.password().is_some()
+        {
+            return Err(ConnectionError::InvalidResponse);
+        }
+        self.blob
+            .get(url)
+            .build()
+            .map_err(|_| ConnectionError::Network)
     }
 
     pub fn from_token_pair(pair: &TokenPair) -> Result<Self, ConnectionError> {
@@ -60,6 +92,84 @@ impl Transport for HttpTransport {
     fn get(&self, path: &str) -> Result<Response, ConnectionError> {
         self.execute(self.request(path)?)
     }
+
+    fn get_unauthenticated_tail(
+        &self,
+        url: &str,
+        tail: usize,
+    ) -> Result<(Response, bool), ConnectionError> {
+        let request = self.blob_request(url)?;
+        let mut response = self.blob.execute(request).map_err(send_error)?;
+        let status = response.status().as_u16();
+        let headers = captured(response.headers())?;
+        let mut body = Vec::new();
+        let mut dropped = false;
+        let mut seen = 0_usize;
+        let mut buffer = vec![0_u8; 64 * 1024];
+        loop {
+            let read = response
+                .read(&mut buffer)
+                .map_err(|_| ConnectionError::Network)?;
+            if read == 0 {
+                break;
+            }
+            seen += read;
+            if seen > MAX_BLOB_STREAM_BYTES {
+                return Err(ConnectionError::IncompleteRead);
+            }
+            body.extend_from_slice(&buffer[..read]);
+            if body.len() > tail.saturating_mul(2) {
+                body.drain(..body.len() - tail);
+                dropped = true;
+            }
+        }
+        if body.len() > tail {
+            body.drain(..body.len() - tail);
+            dropped = true;
+        }
+        Ok((
+            Response {
+                status,
+                headers,
+                body,
+            },
+            dropped,
+        ))
+    }
+}
+
+fn send_error(error: reqwest::Error) -> ConnectionError {
+    if error.is_timeout() {
+        ConnectionError::Timeout
+    } else {
+        ConnectionError::Network
+    }
+}
+
+fn captured(
+    source: &reqwest::header::HeaderMap,
+) -> Result<BTreeMap<String, String>, ConnectionError> {
+    let mut headers = BTreeMap::new();
+    for name in [
+        "link",
+        "location",
+        "x-oauth-scopes",
+        "x-ratelimit-remaining",
+        "x-ratelimit-reset",
+        "retry-after",
+        "x-github-sso",
+    ] {
+        if let Some(value) = source.get(name) {
+            headers.insert(
+                name.to_string(),
+                value
+                    .to_str()
+                    .map_err(|_| ConnectionError::InvalidResponse)?
+                    .to_string(),
+            );
+        }
+    }
+    Ok(headers)
 }
 
 impl super::publication::MutationTransport for HttpTransport {
@@ -108,33 +218,9 @@ impl super::threads::QueryTransport for HttpTransport {
 
 impl HttpTransport {
     fn execute(&self, request: Request) -> Result<Response, ConnectionError> {
-        let response = self.client.execute(request).map_err(|error| {
-            if error.is_timeout() {
-                ConnectionError::Timeout
-            } else {
-                ConnectionError::Network
-            }
-        })?;
+        let response = self.client.execute(request).map_err(send_error)?;
         let status = response.status().as_u16();
-        let mut headers = BTreeMap::new();
-        for name in [
-            "link",
-            "x-oauth-scopes",
-            "x-ratelimit-remaining",
-            "x-ratelimit-reset",
-            "retry-after",
-            "x-github-sso",
-        ] {
-            if let Some(value) = response.headers().get(name) {
-                headers.insert(
-                    name.to_string(),
-                    value
-                        .to_str()
-                        .map_err(|_| ConnectionError::InvalidResponse)?
-                        .to_string(),
-                );
-            }
-        }
+        let headers = captured(response.headers())?;
         let mut body = Vec::new();
         response
             .take(32 * 1024 * 1024 + 1)
@@ -230,6 +316,29 @@ mod tests {
         assert!(!format!("{request:?}").contains("fixture-secret"));
         assert_eq!(request.headers()[AUTHORIZATION], "Bearer fixture-secret");
         assert!(request.body().is_none());
+    }
+
+    #[test]
+    fn redirect_target_request_never_carries_the_credential() {
+        let transport =
+            HttpTransport::new(Credential(Zeroizing::new("fixture-secret".into()))).unwrap();
+        let request = transport
+            .blob_request("https://results.example.blob.core.windows.net/log?sig=x")
+            .unwrap();
+        assert_eq!(request.method(), reqwest::Method::GET);
+        assert!(request.headers().get(AUTHORIZATION).is_none());
+        assert!(!format!("{request:?}").contains("fixture-secret"));
+        for url in [
+            "http://results.example/log",
+            "https://user:pw@results.example/log",
+            "/repos/a/b/actions/jobs/1/logs",
+            "file:///etc/passwd",
+        ] {
+            assert_eq!(
+                transport.blob_request(url).unwrap_err(),
+                ConnectionError::InvalidResponse
+            );
+        }
     }
 
     #[test]

@@ -889,6 +889,9 @@
   color: #526274;
   background: #ecf0f3;
 }
+[data-running-count][data-zero="true"] {
+  display: none;
+}
 .panel-footer {
   display: flex;
   flex-wrap: wrap;
@@ -1495,6 +1498,27 @@ body:has(.panel-shell) {
 .panel-shell .work-retry-all + .work-list {
   margin-top: 0;
 }
+/* Reviewed: list first (overlapping the band like Queue), then Show more, then Clean all. */
+.panel-shell .work-list ~ .work-clean-all {
+  margin: 12px 0 0 auto;
+}
+.panel-shell .work-more {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 12px auto 0;
+  padding: 6px 14px 6px 10px;
+  border: 1px solid #e1e6ec;
+  border-radius: 999px;
+  background: #fff;
+  color: var(--panel-ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+.panel-shell .work-more .panel-icon {
+  width: 16px;
+  height: 16px;
+}
 
 .panel-shell .queue-item {
   position: relative;
@@ -1601,8 +1625,9 @@ body:has(.panel-shell) {
   flex: 1;
   min-width: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 2px 8px;
   padding: 7px 0;
   border: 0;
   background: none;
@@ -1617,18 +1642,30 @@ body:has(.panel-shell) {
   flex: none;
   color: var(--panel-muted);
 }
+/* Label and agent first; the value stays right when it fits, else wraps below. */
 .panel-shell .activity-verb {
+  flex: none;
   font-weight: 600;
 }
 .panel-shell .activity-agent {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   color: var(--panel-muted);
   font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .panel-shell .activity-value {
-  flex: 1;
+  flex: 1 0 auto;
+  max-width: 100%;
   font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
 }
 .panel-shell .activity-time {
+  flex: none;
   color: var(--panel-muted);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
@@ -1651,6 +1688,34 @@ body:has(.panel-shell) {
 .panel-shell .activity-facts .queue-facts {
   border-top: 0;
   padding-top: 0;
+}
+.panel-shell .activity-findings {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 10px;
+  line-height: 1.5;
+}
+.panel-shell .queue-activity .activity-finding {
+  min-width: 0;
+  border-bottom: 0;
+}
+.panel-shell .activity-finding-place {
+  display: block;
+  overflow: hidden;
+  color: var(--panel-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* rtl start-ellipsis: the file name and line stay visible. */
+  direction: rtl;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.panel-shell .activity-finding-nano {
+  margin: 1px 0 0;
+  overflow-wrap: anywhere;
 }
 .panel-shell .context-list .copy-value {
   padding: 0;

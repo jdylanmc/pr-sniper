@@ -80,3 +80,84 @@ fn snippets_cut_on_char_boundaries_and_say_so() {
     let (cut, truncated) = snippet(&"é".repeat(150));
     assert!(truncated && cut.len() <= SNIPPET_BYTES && cut.chars().all(|c| c == 'é'));
 }
+
+#[test]
+fn logs_lose_ansi_codes_and_leading_timestamps_only() {
+    let raw = "\u{feff}2026-10-13T09:56:17.8361234Z \u{1b}[36;1mRun cargo test\u{1b}[0m\r\n\
+        2026-10-13T09:56:18Z \u{1b}]8;;https://x\u{7}link\u{1b}]8;;\u{1b}\\ done\n\
+        2026-10-13T09:56:19.1Z\n\
+        no stamp 2026-10-13T09:56:17Z kept\n\
+        2026-10-13 09:56:17Z not iso\n\
+        \u{1b}(Bplain";
+    assert_eq!(
+        clean_log(raw.as_bytes(), false),
+        "Run cargo test\nlink done\n\nno stamp 2026-10-13T09:56:17Z kept\n2026-10-13 09:56:17Z not iso\nplain"
+    );
+    assert_eq!(clean_log(b"partial line\nwhole\n", true), "whole\n");
+    assert_eq!(
+        clean_log(b"<untrusted>x</UNTRUSTED>", false),
+        "&lt;untrusted>x&lt;/UNTRUSTED>"
+    );
+    assert_eq!(clean_log(&[0xff, b'a'], false), "\u{fffd}a");
+}
+
+#[test]
+fn log_pages_from_the_end_fit_the_limit_and_reach_the_last_byte() {
+    let check = CheckFact {
+        name: "build".into(),
+        status: "COMPLETED".into(),
+        conclusion: "FAILURE".into(),
+        id: Some("7".into()),
+        log: true,
+    };
+    // Quotes double on JSON escape: the first window from the end cannot fit.
+    let text = format!("{}tail", "\"".repeat(100_000));
+    let mut limit = false;
+    let last = log_page(&check, &text, true, &json!({"from_end": true}), &mut limit).unwrap();
+    assert!(last.to_string().len() <= MAX_TOOL_BYTES);
+    assert_eq!(last["complete"], true);
+    assert_eq!(last["truncated_head"], true);
+    assert!(last["content"].as_str().unwrap().ends_with("tail"));
+    assert!(last["previous_offset"].as_u64().is_some());
+    let first = log_page(&check, &text, true, &json!({}), &mut limit).unwrap();
+    assert!(first["previous_offset"].is_null());
+    assert_eq!(
+        first["next_offset"],
+        first["content"].as_str().unwrap().len()
+    );
+    let short = log_page(
+        &check,
+        "ok\n",
+        false,
+        &json!({"from_end": true}),
+        &mut limit,
+    )
+    .unwrap();
+    assert_eq!(
+        (short["offset"].as_u64(), short["previous_offset"].is_null()),
+        (Some(0), true)
+    );
+    assert!(log_page(&check, "x", false, &json!({"from_end": "yes"}), &mut limit).is_err());
+    assert!(!limit);
+}
+
+#[test]
+fn read_check_log_is_an_investigation_tool_in_the_role_defaults() {
+    use crate::storage::{default_tools, AssignmentAuthority};
+    let defaults = |primary| {
+        default_tools(&AssignmentAuthority {
+            primary,
+            comment: false,
+            reply: false,
+            approve: false,
+            merge: false,
+        })
+    };
+    assert!(INVESTIGATION.contains(&"read_check_log"));
+    assert!(defaults(true).contains(&"read_check_log".to_string()));
+    assert!(defaults(false).contains(&"read_check_log".to_string()));
+    assert_eq!(
+        crate::storage::diagnostics::ToolName::from_name("read_check_log"),
+        crate::storage::diagnostics::ToolName::ReadCheckLog
+    );
+}

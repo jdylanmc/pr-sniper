@@ -336,9 +336,12 @@ impl<T: MutationTransport> GithubClient<T> {
         let status = response.status;
         let uncertain = !(400..500).contains(&status) || status == 408;
         let (value, _) = parse_response(response).map_err(|error| WriteFailure {
-            failure: if status == 422 {
-                Failure::permanent("GitHub rejected this review batch. Correct the publication issue before retrying.")
-            } else { error.into() },
+            // A rejected create payload cannot succeed on retry: a typed content toss.
+            failure: match (status, mutation) {
+                (422, Mutation::Create) => Failure::tossed("GitHub rejected the review payload; the review was tossed."),
+                (422, _) => Failure::permanent("GitHub rejected this review batch. Correct the publication issue before retrying."),
+                _ => error.into(),
+            },
             uncertain,
         })?;
         let mut receipt = validate_review(run, &value).map_err(|failure| WriteFailure {

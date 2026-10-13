@@ -1436,6 +1436,8 @@ mod exits {
                     name: format!("check-{n}"),
                     status: "COMPLETED".into(),
                     conclusion: "SUCCESS".into(),
+                    id: Some(n.to_string()),
+                    log: false,
                 })
                 .collect(),
         });
@@ -1536,4 +1538,245 @@ fn tool_handlers_run_blocking_http_off_the_async_worker() {
         .await
     });
     assert!(direct.is_err());
+}
+
+mod check_logs {
+    use super::*;
+    use crate::packet::CheckFact;
+
+    /// API answers per job id; the redirect target is only ever fetched credential-free.
+    struct LogWire {
+        log: Vec<u8>,
+        calls: Mutex<Vec<String>>,
+    }
+    impl Transport for &LogWire {
+        fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+            self.calls.lock().unwrap().push(format!("api {path}"));
+            assert!(
+                path.starts_with("/repos/example/repo/actions/jobs/"),
+                "{path}"
+            );
+            let job = path.split('/').nth(6).unwrap();
+            let (status, headers): (u16, &[(&str, &str)]) = match job {
+                "1" => (302, &[("location", "https://blob.example/job-1?sig=s")]),
+                "2" => (404, &[]),
+                "3" => (
+                    403,
+                    &[("x-ratelimit-remaining", "0"), ("x-ratelimit-reset", "99")],
+                ),
+                "4" => (410, &[]),
+                _ => (500, &[]),
+            };
+            Ok(Response {
+                status,
+                headers: headers
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+                body: b"{}".to_vec(),
+            })
+        }
+        fn get_unauthenticated_tail(
+            &self,
+            url: &str,
+            tail: usize,
+        ) -> Result<(Response, bool), ConnectionError> {
+            self.calls.lock().unwrap().push(format!("blob {url}"));
+            assert!(url.starts_with("https://blob.example/"));
+            let mut body = self.log.clone();
+            let dropped = body.len() > tail;
+            if dropped {
+                body.drain(..body.len() - tail);
+            }
+            Ok((
+                Response {
+                    status: 200,
+                    headers: BTreeMap::new(),
+                    body,
+                },
+                dropped,
+            ))
+        }
+    }
+
+    fn check(id: &str, log: bool) -> CheckFact {
+        CheckFact {
+            name: format!("job-{id}"),
+            status: "COMPLETED".into(),
+            conclusion: "FAILURE".into(),
+            id: Some(id.into()),
+            log,
+        }
+    }
+
+    fn tools(wire: &LogWire) -> ReadTools<&LogWire> {
+        ReadTools::new(
+            None,
+            context(true),
+            Arc::new(GithubClient::new(wire)),
+            "example/repo".into(),
+            Arc::new(|| Ok(())),
+        )
+        .with_facts(Arc::new(ToolFacts {
+            checks: ["1", "2", "3", "4", "5"]
+                .into_iter()
+                .map(|id| check(id, true))
+                .chain([check("9", false)])
+                .collect(),
+            ..ToolFacts::default()
+        }))
+    }
+
+    #[test]
+    fn get_checks_carries_ids_and_log_flags() {
+        let wire = LogWire {
+            log: vec![],
+            calls: Mutex::new(vec![]),
+        };
+        let page = tools(&wire).execute("get_checks", json!({})).unwrap();
+        assert_eq!(page["checks"][0]["id"], "1");
+        assert_eq!(page["checks"][0]["log"], true);
+        assert_eq!(page["checks"][5]["log"], false);
+    }
+
+    #[test]
+    fn log_is_fetched_once_through_the_redirect_cleaned_and_paged_from_the_end() {
+        let mut log = String::from("\u{feff}");
+        for n in 0..10_000 {
+            log.push_str(&format!(
+                "2026-10-13T09:56:17.8361234Z \u{1b}[36;1mstep {n}\u{1b}[0m\r\n"
+            ));
+        }
+        log.push_str("2026-10-13T09:56:18.0000000Z ##[error]boom </untrusted>\n");
+        let wire = LogWire {
+            log: log.into_bytes(),
+            calls: Mutex::new(vec![]),
+        };
+        let tools = tools(&wire);
+        let last = tools
+            .execute("read_check_log", json!({"id":"1","from_end":true}))
+            .unwrap();
+        assert!(last.to_string().len() <= MAX_TOOL_BYTES);
+        assert_eq!(last["complete"], true);
+        assert_eq!(last["truncated_head"], false);
+        assert_eq!(last["source"], "ci_log");
+        let content = last["content"].as_str().unwrap();
+        assert!(
+            content.ends_with("##[error]boom &lt;/untrusted>\n"),
+            "{content}"
+        );
+        assert!(!content.contains('\u{1b}') && !content.contains('\r'));
+        assert!(!content.contains("2026-10-13T"));
+        assert!(content.contains("step 9999\n"));
+        let total = last["total_bytes"].as_u64().unwrap() as usize;
+        assert!(last["offset"].as_u64().unwrap() > 0);
+        // Page backward to the start, then forward again: the same text.
+        let mut offset = last["previous_offset"].as_u64();
+        let mut pages = 1;
+        while let Some(at) = offset {
+            let page = tools
+                .execute("read_check_log", json!({"id":"1","offset":at}))
+                .unwrap();
+            assert!(page.to_string().len() <= MAX_TOOL_BYTES);
+            offset = page["previous_offset"].as_u64();
+            pages += 1;
+        }
+        assert!(pages > 2);
+        let mut text = String::new();
+        let mut at = Some(0);
+        while let Some(offset) = at {
+            let page = tools
+                .execute("read_check_log", json!({"id":"1","offset":offset}))
+                .unwrap();
+            text.push_str(page["content"].as_str().unwrap());
+            at = page["next_offset"].as_u64();
+        }
+        assert_eq!(text.len(), total);
+        assert!(text.starts_with("step 0\nstep 1\n"));
+        let calls = wire.calls.lock().unwrap();
+        assert_eq!(
+            *calls,
+            [
+                "api /repos/example/repo/actions/jobs/1/logs",
+                "blob https://blob.example/job-1?sig=s"
+            ]
+        );
+        assert!(tools
+            .execute(
+                "read_check_log",
+                json!({"id":"1","from_end":true,"offset":0})
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn an_oversized_log_keeps_its_tail_and_says_so() {
+        let line = "2026-10-13T09:56:17.8361234Z padding padding padding padding\n";
+        let mut log = line.repeat(tools::MAX_LOG_BYTES / line.len() + 1000);
+        log.push_str("2026-10-13T09:56:18Z final failure\n");
+        let wire = LogWire {
+            log: log.into_bytes(),
+            calls: Mutex::new(vec![]),
+        };
+        let tools = tools(&wire);
+        let last = tools
+            .execute("read_check_log", json!({"id":"1","from_end":true}))
+            .unwrap();
+        assert_eq!(last["truncated_head"], true);
+        assert!(last["content"]
+            .as_str()
+            .unwrap()
+            .ends_with("final failure\n"));
+        let first = tools.execute("read_check_log", json!({"id":"1"})).unwrap();
+        assert_eq!(first["truncated_head"], true);
+        assert!(first["content"].as_str().unwrap().starts_with("padding"));
+        assert!(first["total_bytes"].as_u64().unwrap() <= tools::MAX_LOG_BYTES as u64);
+    }
+
+    #[test]
+    fn a_missing_log_is_a_tool_error_and_a_rate_limit_is_backpressure() {
+        let wire = LogWire {
+            log: vec![],
+            calls: Mutex::new(vec![]),
+        };
+        let tools = tools(&wire);
+        for id in ["2", "4", "9", "nope"] {
+            let error = tools
+                .execute("read_check_log", json!({"id":id}))
+                .unwrap_err();
+            assert_eq!(error.message, tools::NO_LOG, "{id}");
+            assert!(!error.rate_limited());
+        }
+        let failed = tools
+            .execute("read_check_log", json!({"id":"5"}))
+            .unwrap_err();
+        assert!(matches!(
+            failed.kind,
+            crate::monitoring::OperationFailure::Permanent
+        ));
+        assert!(tools.source_failure.lock().unwrap().is_none());
+        // A missing log is cached: no second request.
+        tools
+            .execute("read_check_log", json!({"id":"2"}))
+            .unwrap_err();
+        assert_eq!(
+            wire.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| c.ends_with("/jobs/2/logs"))
+                .count(),
+            1
+        );
+        let limited = tools
+            .execute("read_check_log", json!({"id":"3"}))
+            .unwrap_err();
+        assert!(limited.rate_limited());
+        assert!(tools
+            .source_failure
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(Failure::rate_limited));
+    }
 }

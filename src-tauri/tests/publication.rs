@@ -323,6 +323,7 @@ struct Fixture {
     move_head_during_prepare: bool,
     fail_inspection: Option<usize>,
     pause_after_mutation: Option<Mutation>,
+    prepare_failure: Option<Failure>,
 }
 
 impl Fixture {
@@ -346,6 +347,7 @@ impl Fixture {
             move_head_during_prepare: false,
             fail_inspection: None,
             pause_after_mutation: None,
+            prepare_failure: None,
         }
     }
     fn run(&mut self, run: &mut Publication) -> Result<(), Failure> {
@@ -446,6 +448,9 @@ impl Environment for Fixture {
             self.pull.head_sha = "c".repeat(40);
             return Err(ConnectionError::RevisionChanged.into());
         }
+        if let Some(failure) = self.prepare_failure.take() {
+            return Err(failure);
+        }
         Batch::prepare(run, &context(self.pull.clone()))
     }
     fn reconcile(&mut self, run: &Publication) -> Result<Option<Receipt>, Failure> {
@@ -479,6 +484,9 @@ impl Environment for Fixture {
     fn requeue(&mut self, _run: &Publication) -> Result<(), Failure> {
         self.requeues += 1;
         Ok(())
+    }
+    fn tossed(&mut self, run: &Publication) -> Result<(), Failure> {
+        publication::toss_review(&self.store, run, self.now).map_err(Failure::permanent)
     }
 }
 
@@ -918,16 +926,46 @@ fn uncertain_discard_is_reconciled_and_cannot_resurrect_a_batch() {
 }
 
 #[test]
-fn explicit_provider_rejection_is_permanent_and_does_not_leak_response() {
+fn a_rejected_review_payload_tosses_the_review_not_the_publication() {
     let mut fixture = Fixture::new();
     fixture.wire.0.lock().unwrap().fault = Some((Mutation::Create, Fault::Reject));
     let mut run = publication();
-    fixture.run(&mut run).unwrap_err();
-    assert_eq!(run.operation.state, OperationState::Failed);
-    assert_eq!(run.operation.failure, Some(OperationFailure::Permanent));
+    fixture.run(&mut run).unwrap();
+    assert!(run.tossed());
+    assert_eq!(run.phase, Phase::Discarded);
+    assert_eq!(run.operation.state, OperationState::Completed);
+    assert_eq!(run.operation.failure, Some(OperationFailure::Tossed));
     assert!(!run.uncertain);
-    assert!(!run.error.unwrap().contains("private provider detail"));
+    assert_eq!(run.error, None, "no provider detail kept");
     assert_eq!(fixture.visible(), 0);
+    // Never the same batch again; a fresh review of the current state is queued.
+    assert!(run.retry(false, 200).is_err());
+    assert_eq!(fixture.store.load_reviews().unwrap().len(), 1);
+    // A rejected submit of an existing pending review stays a permanent publication failure.
+    let mut fixture = Fixture::new();
+    fixture.wire.0.lock().unwrap().fault = Some((Mutation::Submit, Fault::Reject));
+    let mut run = publication();
+    fixture.run(&mut run).unwrap_err();
+    assert_eq!(run.operation.failure, Some(OperationFailure::Permanent));
+    assert!(!run.tossed());
+    assert!(!run.error.unwrap().contains("private provider detail"));
+    assert!(fixture.store.load_reviews().unwrap().is_empty());
+}
+
+#[test]
+fn a_transient_preparation_failure_still_retries_the_same_publication() {
+    let mut fixture = Fixture::new();
+    fixture.prepare_failure = Some(ConnectionError::Timeout.into());
+    let mut run = publication();
+    fixture.run(&mut run).unwrap_err();
+    assert!(!run.tossed());
+    assert_eq!(run.phase, Phase::Preparing);
+    assert!(run.operation.failure.as_ref().unwrap().transient());
+    assert!(!run.operation.parked());
+    assert!(fixture.store.load_reviews().unwrap().is_empty(), "no toss");
+    fixture.now = run.operation.next_attempt_at.unwrap();
+    fixture.run(&mut run).unwrap();
+    assert_eq!(run.phase, Phase::Published);
 }
 
 #[test]
@@ -1308,10 +1346,18 @@ fn restart_reobserves_legacy_parked_publications_once_and_leaves_the_rest() {
 }
 
 fn exit_publication(comments: Vec<pr_sniper_lib::exits::NewComment>) -> Publication {
+    exit_publication_with_body(comments, None)
+}
+
+fn exit_publication_with_body(
+    comments: Vec<pr_sniper_lib::exits::NewComment>,
+    body: Option<&str>,
+) -> Publication {
     let mut review = review();
     let output = &mut review.result.as_mut().unwrap().output;
     output.exit = Some(pr_sniper_lib::exits::ExitOutcome::Comments {
         new_comments: comments,
+        body: body.map(String::from),
         reply_comments: vec![],
         resolve_own_threads: vec![],
     });
@@ -1359,11 +1405,21 @@ fn an_unmappable_exit_line_tosses_the_whole_batch_and_writes_nothing() {
         comment("source.rs", 99, None),
     ]);
     let error = Batch::prepare(&run, &context(pull())).unwrap_err();
-    assert_eq!(error.kind, OperationFailure::Provider);
-    assert!(error.kind.transient());
-    assert!(fixture.run(&mut run).is_err());
+    assert_eq!(
+        error.kind,
+        OperationFailure::Tossed,
+        "typed content failure"
+    );
+    fixture.run(&mut run).unwrap();
+    assert!(run.tossed());
+    assert_eq!(run.batch, None);
     assert_eq!(fixture.writes(), 0);
     assert_eq!(fixture.visible(), 0);
+    assert_eq!(
+        fixture.store.load_reviews().unwrap().len(),
+        1,
+        "review re-queued"
+    );
     for bad in [
         comment("missing.rs", 1, None),
         comment("source.rs", 2, Some("base")),
@@ -1406,4 +1462,124 @@ fn only_exits_with_new_comments_publish() {
         summary: "s".into(),
     });
     assert!(!publication::writes_comments(&ready));
+}
+
+fn posted_review(fixture: &Fixture) -> (Value, Vec<Value>) {
+    let server = fixture.wire.0.lock().unwrap();
+    let review = server.reviews[0].clone();
+    let id = review["id"].as_u64().unwrap();
+    (review, server.comments[&id].clone())
+}
+
+#[test]
+fn a_body_only_exit_publishes_one_review_with_the_body() {
+    let mut fixture = Fixture::new();
+    let mut run = exit_publication_with_body(vec![], Some("Merge conflict in CHANGELOG.md:151."));
+    assert!(publication::writes_comments(
+        run.review.result.as_ref().unwrap()
+    ));
+    fixture.run(&mut run).unwrap();
+    assert_eq!(run.phase, Phase::Published);
+    assert_eq!(fixture.visible(), 1);
+    assert_eq!(fixture.writes(), 2, "create + submit COMMENT");
+    let (review, comments) = posted_review(&fixture);
+    let body = review["body"].as_str().unwrap();
+    assert!(body.contains("Merge conflict in CHANGELOG.md:151."));
+    assert!(
+        body.contains(&run.marker()),
+        "reconcile finds the body by its marker"
+    );
+    assert!(body.ends_with("\u{f05b} PR Sniper"));
+    assert!(comments.is_empty());
+    assert_eq!(run.receipts.last().unwrap().comment_ids.len(), 0);
+}
+
+#[test]
+fn body_and_inline_comments_post_as_one_review() {
+    let mut fixture = Fixture::new();
+    let mut run = exit_publication_with_body(
+        vec![comment("source.rs", 1, None)],
+        Some("Also: resolve the conflict outside the diff."),
+    );
+    fixture.run(&mut run).unwrap();
+    assert_eq!(run.phase, Phase::Published);
+    assert_eq!(fixture.wire.0.lock().unwrap().reviews.len(), 1);
+    let (review, comments) = posted_review(&fixture);
+    assert!(review["body"]
+        .as_str()
+        .unwrap()
+        .contains("Also: resolve the conflict outside the diff."));
+    assert_eq!(comments.len(), 1);
+    assert_eq!(run.receipts.last().unwrap().comment_ids.len(), 1);
+}
+
+#[test]
+fn content_tosses_count_on_the_pr_and_park_after_three() {
+    let mut fixture = Fixture::new();
+    let run = exit_publication(vec![comment("CHANGELOG.md", 151, None)]);
+    let binding = pr_sniper_lib::retention::Binding::job(&run.review.job);
+    let mut states = pr_sniper_lib::pr_state::PrStates::default();
+    states.observe(
+        &binding,
+        pr_sniper_lib::pr_state::Observation {
+            iteration_id: "i",
+            new_iteration: true,
+            snapshot: None,
+            already_reviewed: false,
+            now: 1,
+        },
+    );
+    fixture.store.save_pr_states(&states).unwrap();
+    for (attempt, requeued) in [(1, true), (2, true), (3, false)] {
+        fixture
+            .store
+            .save_reviews(std::slice::from_ref(&run.review))
+            .unwrap();
+        let mut run = run.clone();
+        fixture.run(&mut run).unwrap();
+        assert!(run.tossed());
+        let record = fixture.store.load_pr_states().unwrap();
+        assert_eq!(record.get(&binding).unwrap().error_count, attempt);
+        assert_eq!(
+            fixture.store.load_reviews().unwrap().len(),
+            1 + usize::from(requeued),
+            "attempt {attempt}"
+        );
+    }
+}
+
+#[test]
+fn a_content_failure_parked_by_an_older_build_is_tossed_on_restart() {
+    let mut fixture = Fixture::new();
+    // As live on the owner's store: one comment outside the diff, parked as a
+    // provider retry of the same batch in its cooldown cycles.
+    let mut stuck = exit_publication(vec![comment("CHANGELOG.md", 151, Some("head"))]);
+    stuck.operation.state = OperationState::ManualRetry;
+    stuck.operation.failure = Some(OperationFailure::Provider);
+    stuck.operation.attempt_count = 3;
+    stuck.operation.resume_at = Some(9_999);
+    stuck.operation.resume_cycle = 2;
+    stuck.error =
+        Some("A comment line is not in the diff; the whole batch was tossed. Retry.".into());
+    let stored: Publication =
+        serde_json::from_value(serde_json::to_value(&stuck).unwrap()).unwrap();
+    fixture.store.save_publications(&[stored]).unwrap();
+    fixture
+        .store
+        .save_reviews(std::slice::from_ref(&stuck.review))
+        .unwrap();
+    publication::restore_at(&fixture.store, 500).unwrap();
+    let mut run = fixture.store.load_publications().unwrap().remove(0);
+    assert_eq!(run.operation.state, OperationState::Queued);
+    assert_eq!(run.operation.next_attempt_at, Some(500));
+    fixture.now = 500;
+    fixture.run(&mut run).unwrap();
+    assert!(run.tossed());
+    assert_eq!(fixture.writes(), 0);
+    let reviews = fixture.store.load_reviews().unwrap();
+    assert_eq!(reviews.len(), 2, "a fresh review of the current state");
+    assert!(reviews[1].result.is_none());
+    // Tossed is terminal: a later restart leaves it alone.
+    publication::restore_at(&fixture.store, 600).unwrap();
+    assert_eq!(fixture.store.load_publications().unwrap()[0], run);
 }

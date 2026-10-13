@@ -119,6 +119,8 @@ struct ReadTools<T: Transport> {
     read: Mutex<BTreeSet<String>>,
     spans: Mutex<BTreeMap<(String, Part), Span>>,
     blobs: Mutex<BTreeMap<(String, String), Arc<Blob>>>,
+    /// Job logs by check id, fetched on first read; `None`: no log to read.
+    logs: Mutex<BTreeMap<String, Option<Arc<CheckLog>>>>,
     gate: Gate,
     source_failure: Mutex<Option<Failure>>,
     limit_failure: Mutex<Option<Failure>>,
@@ -178,6 +180,11 @@ impl Span {
 struct Blob {
     meta: Value,
     text: Arc<str>,
+}
+
+struct CheckLog {
+    text: String,
+    truncated_head: bool,
 }
 
 fn required_parts(file: &crate::github::review::ReviewFile, context: &ReviewContext) -> Vec<Part> {
@@ -298,6 +305,7 @@ impl<T: Transport> ReadTools<T> {
             read: Mutex::new(BTreeSet::new()),
             spans: Mutex::new(BTreeMap::new()),
             blobs: Mutex::new(BTreeMap::new()),
+            logs: Mutex::new(BTreeMap::new()),
             gate,
             source_failure: Mutex::new(None),
             limit_failure: Mutex::new(None),
@@ -461,6 +469,58 @@ impl<T: Transport> ReadTools<T> {
         Ok(blob)
     }
 
+    /// A check's job log, fetched once per run. A rate limit is backpressure for the run;
+    /// any other unavailability is a tool error the agent can act on.
+    fn check_log(&self, check: &crate::packet::CheckFact) -> Result<Arc<CheckLog>, Failure> {
+        let id = check
+            .id
+            .as_deref()
+            .ok_or_else(|| Failure::permanent(tools::NO_LOG))?;
+        let cached = self
+            .logs
+            .lock()
+            .map_err(|_| Failure::permanent("Review log cache failed."))?
+            .get(id)
+            .cloned();
+        let log = match cached {
+            Some(log) => log,
+            None => {
+                let job = id
+                    .parse::<u64>()
+                    .map_err(|_| Failure::permanent(tools::NO_LOG))?;
+                (self.gate)()?;
+                let log = match self.client.job_log(&self.name, job, tools::MAX_LOG_BYTES) {
+                    Ok(log) => log.map(|log| {
+                        Arc::new(CheckLog {
+                            text: tools::clean_log(&log.bytes, log.truncated_head),
+                            truncated_head: log.truncated_head,
+                        })
+                    }),
+                    Err(error) => {
+                        let failure = Failure::from(error);
+                        if failure.rate_limited() {
+                            if let Ok(mut held) = self.source_failure.lock() {
+                                *held = Some(failure.clone());
+                            }
+                            return Err(failure);
+                        }
+                        return Err(Failure::permanent(
+                            "Log read failed. Retry once, or review without it.",
+                        ));
+                    }
+                };
+                if let Ok(mut logs) = self.logs.lock() {
+                    let held: usize = logs.values().flatten().map(|l| l.text.len()).sum();
+                    if held + log.as_ref().map_or(0, |l| l.text.len()) <= CACHE_BYTES {
+                        logs.insert(id.to_string(), log.clone());
+                    }
+                }
+                log
+            }
+        };
+        log.ok_or_else(|| Failure::permanent(tools::NO_LOG))
+    }
+
     fn execute_inner(
         &self,
         name: &str,
@@ -553,6 +613,17 @@ impl<T: Transport> ReadTools<T> {
             }
             "get_thread" => tools::get_thread(&self.facts, &args, rejected_by_limit),
             "get_checks" => tools::get_checks(&self.facts, &args, rejected_by_limit),
+            "read_check_log" => {
+                let check = tools::log_check(&self.facts, &args)?;
+                let log = self.check_log(check)?;
+                tools::log_page(
+                    check,
+                    &log.text,
+                    log.truncated_head,
+                    &args,
+                    rejected_by_limit,
+                )
+            }
             "list_tree" => {
                 let tree = match args["side"].as_str().unwrap_or("head") {
                     "head" => &self.context.head,

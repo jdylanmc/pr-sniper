@@ -18,6 +18,7 @@ Reference for Settings navigation, accounts, repositories, assignments, Agents, 
 - GitHub identity (repos, publication) is separate from Copilot identity (AI). Connecting one never signs in the other.
 - Buttons: **Add GitHub account**, **Connect Copilot account**. Device-code waiting, failure and retry states are shown. Identity is saved when browser sign-in completes. Cancel does not connect.
 - Connected row has a disconnect icon; it forgets the account.
+- **Reconnect** and sign-in again use the same device-code flow; the code is shown before the browser opens. A sign-in whose provider account ID matches a saved account renews that account's credential in place and clears **Reconnect required**; its parked credentials failures resume.
 - Connecting does not assign repos, models or automation.
 - GitHub connect uses the PR Sniper GitHub OAuth App, scope `repo` ([ADR-0003](adr/0003-github-browser-oauth.md)). Verification and PR reads: [polling.md](polling.md).
 - Disabled future providers: Claude, Codex, Grok. **Coming soon**: Azure DevOps, Bitbucket.
