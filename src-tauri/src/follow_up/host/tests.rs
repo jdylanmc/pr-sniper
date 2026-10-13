@@ -408,6 +408,7 @@ fn capability_edits_do_not_gate_analysis_and_retry_keeps_actual_prior_configurat
     let mut settings = store.load_settings().unwrap();
     settings.repositories[0].assignments[0].comment = false;
     settings.repositories[0].assignments[0].actions = Some(ActionPermissions {
+        include_self: false,
         reply: true,
         approve: true,
         merge: true,

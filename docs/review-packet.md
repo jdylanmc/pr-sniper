@@ -139,9 +139,11 @@ Teammate failure shows in Needs attention: cause and which teammate failed, one 
 
 ## Settings
 
-- Assignment: tool set. Grants only on the primary.
-- Repository: Review drafts.
-- Approve & Merge: Include self (default off; GitHub acceptance unverified).
+- Assignment: **Tools** drill-in, one switch per tool (icon, short name). Absent = no packet tools yet; behavior unchanged. Stored as `tools` ids (`PACKET_TOOLS`, Rust `storage.rs`, mirrored `src/policy.ts`).
+- Readiness: unknown or duplicate id invalid. `leave_comments`, `ready_for_human`, `approve_*` primary only. `submit_report` teammate only. `panic_exit` any. `leave_comments` needs Publish Comment. `approve_pull_request` needs Approve or Approve & Merge. `approve_and_merge` needs Approve & Merge.
+- Repository: **Review drafts** switch (`review_drafts`, default off).
+- Approve & Merge: **Include self** (`actions.include_self`, default off; GitHub acceptance unverified). Shown only on Approve & Merge.
+- Old files load unchanged. Unset fields are not written. Fields inert until the exit runtime lands.
 
 ## Phases
 

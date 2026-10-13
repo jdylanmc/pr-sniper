@@ -198,7 +198,26 @@ pub struct Assignment {
     /// Only explicit vNext opt-ins. The legacy `approve` flag is never a grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actions: Option<ActionPermissions>,
+    /// Packet tool ids (`PACKET_TOOLS`). None = no packet tools yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
 }
+
+/// Investigation tools, then exits. Mirrored by `PACKET_TOOLS` in `src/settings.ts`.
+pub const PACKET_TOOLS: [&str; 12] = [
+    "read_changes",
+    "read_source",
+    "get_thread",
+    "get_checks",
+    "list_tree",
+    "search_code",
+    "leave_comments",
+    "ready_for_human",
+    "approve_pull_request",
+    "approve_and_merge",
+    "panic_exit",
+    "submit_report",
+];
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -207,6 +226,9 @@ pub struct ActionPermissions {
     pub reply: bool,
     pub approve: bool,
     pub merge: bool,
+    /// Approve & Merge may count the user's own PRs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_self: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -349,6 +371,9 @@ pub struct Repository {
     pub assignments: Vec<Assignment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary_assignment_id: Option<String>,
+    /// Include draft pull requests in review.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub review_drafts: bool,
 }
 
 /// Committed with configuration, not with the recoverable polling cache.
@@ -455,6 +480,16 @@ impl Settings {
                             assignment.id
                         ));
                     }
+                }
+                for assignment in &repository.assignments {
+                    let Some(tools) = &assignment.tools else {
+                        continue;
+                    };
+                    issues.extend(tool_issues(
+                        assignment,
+                        repository.primary_assignment_id() == Some(assignment.id.as_str()),
+                        tools,
+                    ));
                 }
                 RepositoryReadiness {
                     repository_id: repository.id.clone(),
@@ -667,6 +702,14 @@ impl Settings {
                     return Err("The selected agent no longer exists. Choose a local agent.".into());
                 }
                 assignment.schedule.validate()?;
+                if assignment
+                    .tools
+                    .iter()
+                    .flatten()
+                    .any(|tool| !PACKET_TOOLS.contains(&tool.as_str()))
+                {
+                    return Err("Unknown packet tool.".into());
+                }
                 if repository.primary_assignment_id() != Some(assignment.id.as_str())
                     && assignment
                         .actions
@@ -703,6 +746,40 @@ impl Settings {
             .find(|repository| repository.id == id)
             .map(|repository| repository.overrides.effective(&self.defaults))
     }
+}
+
+fn tool_issues(assignment: &Assignment, primary: bool, tools: &[String]) -> Vec<String> {
+    let actions = assignment.actions.clone().unwrap_or_default();
+    let mut issues = Vec::new();
+    let mut seen = HashSet::new();
+    for tool in tools {
+        let id = tool.as_str();
+        let problem = if !PACKET_TOOLS.contains(&id) {
+            Some("is unknown")
+        } else if !seen.insert(id) {
+            Some("is duplicated")
+        } else if matches!(
+            id,
+            "leave_comments" | "approve_pull_request" | "approve_and_merge" | "ready_for_human"
+        ) && !primary
+        {
+            Some("is primary-only")
+        } else if id == "submit_report" && primary {
+            Some("is non-primary only")
+        } else if id == "leave_comments" && !assignment.comment {
+            Some("needs Publish Comment")
+        } else if id == "approve_pull_request" && !(actions.approve || actions.merge) {
+            Some("needs Approve")
+        } else if id == "approve_and_merge" && !actions.merge {
+            Some("needs Approve & Merge")
+        } else {
+            None
+        };
+        if let Some(problem) = problem {
+            issues.push(format!("Assignment {} tool {id} {problem}.", assignment.id));
+        }
+    }
+    issues
 }
 
 impl Agent {
@@ -1368,6 +1445,7 @@ impl Store {
             return Err("This GitHub repository is already configured.".into());
         }
         settings.repositories.push(Repository {
+            review_drafts: false,
             id: uuid::Uuid::new_v4().to_string(),
             provider: ProviderId::Github,
             name,

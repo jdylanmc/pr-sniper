@@ -4602,6 +4602,7 @@ mod github_auth_tests {
         let store = Store::new(root.path().to_path_buf());
         let mut settings = Settings::default();
         settings.repositories.push(Repository {
+            review_drafts: false,
             id: "00000000-0000-4000-8000-000000000001".into(),
             provider: SettingsProviderId::Github,
             name: "example/repo".into(),

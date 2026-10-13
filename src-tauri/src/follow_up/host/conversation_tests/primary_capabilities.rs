@@ -21,6 +21,7 @@ fn publish_and_reply_matrix_uses_real_store_dispatch_and_validated_task_output()
             let mut settings = store.load_settings().unwrap();
             settings.repositories[0].assignments[0].comment = publish;
             settings.repositories[0].assignments[0].actions = Some(ActionPermissions {
+                include_self: false,
                 reply,
                 approve: false,
                 merge: false,
@@ -246,6 +247,7 @@ fn obsolete_secondary_grants_are_disabled_without_promotion_or_history_and_recei
     let before_receipts = std::fs::read(root.path().join("state/publications.json")).unwrap();
     let mut legacy = store.load_settings().unwrap();
     legacy.repositories[0].assignments[1].actions = Some(ActionPermissions {
+        include_self: false,
         reply: true,
         approve: true,
         merge: true,
@@ -353,6 +355,7 @@ fn mention_admission_overrides_discovery_only_and_general_reply_grants_do_not_ad
     settings.repositories[0].overrides.reviewer_assignment = Some(false);
     settings.repositories[0].assignments[0].comment = false;
     settings.repositories[0].assignments[0].actions = Some(ActionPermissions {
+        include_self: false,
         reply: false,
         approve: false,
         merge: false,

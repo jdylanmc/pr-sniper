@@ -21,6 +21,7 @@ fn fixwave_retired_publication_flags_do_not_control_readiness_or_final_basis() {
             let mut settings = store.load_settings().unwrap();
             settings.repositories[0].assignments[0].comment = publish;
             settings.repositories[0].assignments[0].actions = Some(ActionPermissions {
+                include_self: false,
                 reply,
                 approve: true,
                 merge: false,
@@ -468,6 +469,7 @@ fn adjacent_owned_failure_survives_newer_primary_clearance() {
                 Some(settings.repositories[0].assignments[1].id.clone());
             settings.repositories[0].assignments[1].comment = false;
             settings.repositories[0].assignments[1].actions = Some(ActionPermissions {
+                include_self: false,
                 reply: true,
                 approve: false,
                 merge: false,
@@ -631,6 +633,7 @@ fn adjacent_completed_local_reply_is_not_an_impossible_confirmation_or_replayed_
             let mut settings = store.load_settings().unwrap();
             settings.repositories[0].assignments[0].comment = publish;
             settings.repositories[0].assignments[0].actions = Some(ActionPermissions {
+                include_self: false,
                 reply,
                 approve: true,
                 merge: false,

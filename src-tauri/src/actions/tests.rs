@@ -612,6 +612,7 @@ fn correction_action_read_error_opt_out_restores_personal_handoff_after_restart(
     );
     let mut settings = store.load_settings().unwrap();
     settings.repositories[0].assignments[0].actions = Some(ActionPermissions {
+        include_self: false,
         reply: false,
         approve: false,
         merge: false,
@@ -732,6 +733,7 @@ fn correction_opt_out_preserves_pending_unknown_and_unverified_receipts_for_reco
         .unwrap();
         let mut settings = store.load_settings().unwrap();
         settings.repositories[0].assignments[0].actions = Some(ActionPermissions {
+            include_self: false,
             reply: false,
             approve: false,
             merge: false,
@@ -2045,12 +2047,14 @@ fn legacy_inert_flags_and_expired_unattempted_intents_never_become_provider_gran
             .unwrap()
             .permissions,
         ActionPermissions {
+            include_self: false,
             reply: false,
             approve: false,
             merge: false
         }
     );
     settings.repositories[0].assignments[0].actions = Some(ActionPermissions {
+        include_self: false,
         reply: false,
         approve: true,
         merge: false,

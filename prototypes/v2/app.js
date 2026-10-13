@@ -955,7 +955,7 @@ function repoEditor(id) {
   const plain = (action, label, extra = "") =>
     `<button type="button" class="plain-row ${extra}" data-action="${action}" data-id="${esc(id ?? "")}" ${extra.includes("danger") && !id ? "hidden" : ""}>${label}</button>`;
   return `<div class="page-scroll" data-scroll="repo-editor"><form data-form="repo" data-id="${esc(id ?? "")}" class="editor-form repo-form">
-    <section class="group-card">${row("Monitor", `<input type="checkbox" class="switch" name="enabled" aria-label="Monitor this repository" ${checked(repo.enabled)} />`)}</section>
+    <section class="group-card">${row("Monitor", `<input type="checkbox" class="switch" name="enabled" aria-label="Monitor this repository" ${checked(repo.enabled)} />`)}${row("Review drafts", `<input type="checkbox" class="switch" name="reviewDrafts" aria-label="Review drafts" ${checked(repo.reviewDrafts)} />`)}</section>
     <section class="group-card admission-group">${row("All pull requests", `<input type="checkbox" class="switch" name="admissionAll" aria-label="All pull requests" ${checked(repo.admission.mode === "all")} />`)}<button type="button" class="kv-row kv-link" data-action="open-filters"><span>Filtered pull requests</span><span class="kv-value" data-filter-summary></span>${icon("chevron")}</button></section>
     <section class="group-card"><div class="card-title"><h2>Agents on this repository</h2><button type="button" class="pill-small" data-action="assign-agent">${icon("plus")}Assign agent</button></div>
       <select class="picker" data-picker="agents" aria-label="Assign agent" hidden></select><div data-list="agents"></div></section>
@@ -1200,6 +1200,7 @@ function captureDraft() {
           accountId: text("accountId"),
           enabled: get("enabled").checked,
           scope: get("scope").checked,
+          reviewDrafts: get("reviewDrafts").checked,
           agentIds: [...form._agents],
           admission: Demo.copy(form._admission),
           schedule: text("schedule"),
