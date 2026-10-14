@@ -52,7 +52,7 @@ import "./settings.css";
 import { createDialogs } from "./dialogs";
 import { mountNotificationSettings } from "./notifications";
 import { copyDiagnostics } from "./diagnostics";
-import { mountAutomation, type AutomationSnapshot } from "./automation";
+import type { AutomationSnapshot } from "./automation";
 
 interface ConfiguredRepository extends Repository {
   watched_authors?: WatchedIdentity[];
@@ -485,7 +485,6 @@ export async function mountSettings(
     (opener, parent) => restoreControl(opener, parent ?? content, parent),
   );
   const notificationView: Parameters<typeof mountNotificationSettings>[1] = {};
-  const automationView = {};
   const preferenceDisclosures = new Set<string>();
   const dirty = () => !!draft && !sameResource(draft, saved);
   const preferencesDirty = () =>
@@ -3813,7 +3812,6 @@ export async function mountSettings(
       <label>Time zone<input id="global-timezone" value="${escape(schedule.timezone)}" /></label>
       </div></fieldset></div>
       <div class="preferences-boundary"><h2>Immediate controls</h2></div>
-      <div class="settings-group" id="automation-settings"></div>
       <div class="settings-group" id="notification-settings"></div>
       <div class="settings-group"><fieldset aria-label="Startup"><legend>Startup</legend><label class="setting-row"><span>Open PR Sniper at login</span><input id="login" type="checkbox" role="switch" aria-describedby="login-status" disabled /></label><p id="login-status" role="status"></p><p id="login-error" role="alert" hidden></p></fieldset></div>
       <div class="settings-group"><fieldset aria-label="Diagnostics"><legend>Diagnostics</legend><button id="copy-diagnostics" class="copy-diagnostics" type="button" aria-label="Copy diagnostics" title="Copy diagnostics">${icon("copy")}<span>Copy diagnostics</span></button>
@@ -3879,11 +3877,6 @@ export async function mountSettings(
     mountNotificationSettings(
       content.querySelector<HTMLElement>("#notification-settings")!,
       notificationView,
-    );
-    mountAutomation(
-      content.querySelector<HTMLElement>("#automation-settings")!,
-      undefined,
-      { preferences: true, view: automationView },
     );
     content
       .querySelectorAll<HTMLDetailsElement>("details[id]")

@@ -2145,7 +2145,6 @@
   padding: 6px 0;
   font-size: 12px;
 }
-.preferences-view [data-automation-status],
 .preferences-view #notification-permission {
   padding: 8px 10px;
   margin: 6px 0 10px;
@@ -2158,10 +2157,6 @@
   padding: 8px 0;
   font-size: 11px;
   color: #243247;
-}
-.preferences-view [data-ai-work] {
-  padding-left: 18px;
-  font-size: 11px;
 }
 .preferences-view .preferences-readiness {
   margin-top: 10px;

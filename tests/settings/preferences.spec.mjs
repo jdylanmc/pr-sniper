@@ -9,6 +9,8 @@ import { target } from "./paths.mjs";
 test.use({ viewport: { width: 408, height: 744 } });
 
 const preferences = (page) => page.locator(".preferences-view");
+// The panel header Monitoring switch is the only pause/resume control.
+const headerAutomation = (page) => page.locator("#automation-controls");
 const save = (page) => page.locator("#save-settings");
 const tab = (page, name) =>
   page
@@ -31,7 +33,11 @@ async function ready(page, store, panel = false) {
   await expect(page.locator("#notification-enabled")).toBeEnabled();
   await expect(
     preferences(page).locator("[data-toggle-automation]"),
-  ).toBeEnabled();
+  ).toHaveCount(0);
+  if (panel)
+    await expect(
+      headerAutomation(page).locator("[data-toggle-automation]"),
+    ).toBeEnabled();
 }
 
 async function savePreferences(page) {
@@ -242,7 +248,7 @@ test("legacy interval stays explicit and the helper follows exact custom draft e
   });
 });
 
-test("failed preference and pause writes keep committed state, exact drafts and open disclosures", async ({
+test("failed preference and pause writes keep committed state and exact drafts", async ({
   page,
   store,
   dataRoot,
@@ -254,9 +260,6 @@ test("failed preference and pause writes keep committed state, exact drafts and 
   await page.locator("#global-timezone").fill("Pacific/Auckland");
   await page.locator("#global-capacity").fill("33");
   await expect(page.locator("#automatic-publication")).toHaveCount(0);
-  await preferences(page)
-    .getByText("Capacity work details", { exact: true })
-    .click();
   await mkdir(join(dataRoot, "config/settings.json.tmp"));
   await save(page).click();
   await page.evaluate(() => window.__settingsIdle());
@@ -268,23 +271,19 @@ test("failed preference and pause writes keep committed state, exact drafts and 
   );
   await expect(page.locator("#global-capacity")).toHaveValue("33");
   await expect(page.locator("#automatic-publication")).toHaveCount(0);
-  await expect(page.locator("#preferences-capacity-work")).toHaveAttribute(
-    "open",
-    "",
-  );
   expect(await readFile(join(dataRoot, "config/settings.json"))).toEqual(
     before,
   );
   await mkdir(join(dataRoot, "state/automation.json.tmp"), { recursive: true });
-  await preferences(page)
+  await headerAutomation(page)
     .getByRole("button", { name: "Pause automation" })
     .click();
   await page.evaluate(() => window.__settingsIdle());
   await expect(
-    preferences(page).locator("[data-automation-error]"),
-  ).toBeVisible();
+    headerAutomation(page).locator("[data-automation-error]"),
+  ).toHaveText(/.+/);
   await expect(
-    preferences(page).locator("[data-automation-status]"),
+    headerAutomation(page).locator("[data-automation-status]"),
   ).toContainText("Running; 0 occupied / 4");
   expect((await store("automation_snapshot")).paused).toBe(false);
   await capture(page, browserName, "rejected-writes");
@@ -325,7 +324,7 @@ test("startup, notification and pause commit independently while newer keyboard 
     /On; (macOS|Windows) authorized; banners unknown; center unknown/,
   );
   expect((await store("notification_snapshot")).enabled).toBe(true);
-  await preferences(page)
+  await headerAutomation(page)
     .getByRole("button", { name: "Pause automation" })
     .click();
   await page.evaluate(() => window.__settingsIdle());
@@ -338,7 +337,7 @@ test("startup, notification and pause commit independently while newer keyboard 
   await expect(page.locator("#global-timezone")).toHaveValue("Europe/Paris");
   await expect(page.locator("#automatic-publication")).toHaveCount(0);
   await expect(page.locator("#save-status")).toHaveText("Unsaved changes");
-  await page.locator("#automation-settings").scrollIntoViewIfNeeded();
+  await expect(page.locator("#automation-settings")).toHaveCount(0);
   await capture(page, browserName, "immediate-controls");
   await page.locator("#notification-settings").scrollIntoViewIfNeeded();
   await capture(page, browserName, "native-status");
@@ -350,7 +349,7 @@ test("startup, notification and pause commit independently while newer keyboard 
   await expect(page.locator("#login")).toBeChecked();
   await expect(page.locator("#notification-enabled")).toBeChecked();
   await expect(
-    preferences(page).locator("[data-automation-status]"),
+    headerAutomation(page).locator("[data-automation-status]"),
   ).toContainText("Paused;");
   expect(await page.evaluate(() => window.__preferenceCommands)).not.toContain(
     "save_resource",
@@ -362,7 +361,7 @@ test("startup, notification and pause commit independently while newer keyboard 
   await expect(page.locator("#login")).toBeChecked();
   await expect(page.locator("#notification-enabled")).toBeChecked();
   await expect(
-    preferences(page).locator("[data-automation-status]"),
+    headerAutomation(page).locator("[data-automation-status]"),
   ).toContainText("Paused;");
 });
 
@@ -539,47 +538,49 @@ test("a pending pause and its rejection survive an unrelated preference save wit
       return original(command, args);
     };
   });
-  await ready(page, store);
+  await ready(page, store, true);
   await page.locator("#global-capacity").fill("12");
-  await preferences(page)
+  await headerAutomation(page)
     .getByRole("button", { name: "Pause automation" })
     .click();
   await savePreferences(page);
   await expect(
-    preferences(page).locator("[data-toggle-automation]"),
+    headerAutomation(page).locator("[data-toggle-automation]"),
   ).toBeDisabled();
   await expect(
-    preferences(page).locator("[data-automation-status]"),
+    headerAutomation(page).locator("[data-automation-status]"),
   ).toContainText("Pending");
   await page.evaluate(() => window.__rejectPause());
   await expect(
-    preferences(page).locator("[data-automation-error]"),
+    headerAutomation(page).locator("[data-automation-error]"),
   ).toContainText("Synthetic native pause was rejected.");
   await expect(
-    preferences(page).locator("[data-automation-status]"),
+    headerAutomation(page).locator("[data-automation-status]"),
   ).toContainText("Running;");
+  // The panel toast mirrors the rejection; dismiss it to reach Save.
+  await page.locator("[data-panel-error]").click();
   await page.locator("#global-capacity").fill("13");
   await savePreferences(page);
   await expect(
-    preferences(page).locator("[data-automation-error]"),
+    headerAutomation(page).locator("[data-automation-error]"),
   ).toContainText("Synthetic native pause was rejected.");
   expect((await store("automation_snapshot")).paused).toBe(false);
 });
 
 for (const recovery of ["refresh", "remount"]) {
-  test(`automation read recovery by ${recovery} clears only the transient alert without a pause action`, async ({
+  test(`automation read recovery after ${recovery === "remount" ? "Settings navigation" : "refresh"} clears only the transient alert without a pause action`, async ({
     page,
     store,
   }) => {
     await automationFailures(page);
     await page.clock.install();
-    await ready(page, store);
+    await ready(page, store, true);
     const before = (await store("snapshot")).settings;
-    const root = page.locator("#automation-settings");
+    const root = headerAutomation(page);
     const button = root.locator("[data-toggle-automation]");
     const error = root.locator("[data-automation-error]");
     await page.evaluate(() => {
-      window.__automationFailures.failReads = 1;
+      window.__automationFailures.readUnavailable = true;
     });
     await page.clock.fastForward(5000);
     await page.evaluate(() => window.__settingsIdle());
@@ -587,19 +588,26 @@ for (const recovery of ["refresh", "remount"]) {
       "Unavailable",
     );
     await expect(button).toBeDisabled();
-    await expect(error).toBeVisible();
     await expect(error).toHaveText(automationReadError);
-
     if (recovery === "remount") {
+      // Settings navigation never remounts the header switch or fakes recovery.
       await section(page, "Doctrines");
       await section(page, "Preferences");
-    } else await page.clock.fastForward(5000);
+      await page.evaluate(() => window.__settingsIdle());
+      await expect(root.locator("[data-automation-status]")).toHaveText(
+        "Unavailable",
+      );
+    }
+    await page.evaluate(() => {
+      window.__automationFailures.readUnavailable = false;
+    });
+    await page.clock.fastForward(5000);
     await page.evaluate(() => window.__settingsIdle());
     await expect(root.locator("[data-automation-status]")).toHaveText(
       "Running; 0 occupied / 4 AI slots (0 stopping); 0 waiting; 0 blocked",
     );
     await expect(button).toBeEnabled();
-    await expect(button).toHaveText("Pause automation");
+    await expect(button).toHaveAccessibleName("Pause automation");
     await expect(error).toBeHidden();
     await expect(error).toHaveText("");
     await section(page, "Doctrines");
@@ -622,13 +630,13 @@ test("automation read recovery retains a rejected pause until another pause acti
 }) => {
   await automationFailures(page);
   await page.clock.install();
-  await ready(page, store);
-  const root = page.locator("#automation-settings");
+  await ready(page, store, true);
+  const root = headerAutomation(page);
   const button = root.locator("[data-toggle-automation]");
   const error = root.locator("[data-automation-error]");
   await page.evaluate(() => {
     window.__automationFailures.rejectPause = true;
-    window.__automationFailures.failReads = 1;
+    window.__automationFailures.readUnavailable = true;
   });
   await button.click();
   await page.evaluate(() => window.__settingsIdle());
@@ -636,17 +644,18 @@ test("automation read recovery retains a rejected pause until another pause acti
     "Unavailable",
   );
   await expect(button).toBeDisabled();
-  await expect(error).toBeVisible();
   await expect(error).toHaveText(
     `${automationActionError}\n${automationReadError}`,
   );
+  await page.evaluate(() => {
+    window.__automationFailures.readUnavailable = false;
+  });
   await page.clock.fastForward(5000);
   await page.evaluate(() => window.__settingsIdle());
   await expect(root.locator("[data-automation-status]")).toContainText(
     "Running; 0 occupied / 4",
   );
   await expect(button).toBeEnabled();
-  await expect(error).toBeVisible();
   await expect(error).toHaveText(automationActionError);
   await section(page, "Doctrines");
   await section(page, "Preferences");
@@ -674,8 +683,8 @@ test("automation read recovery preserves pending pause and rejection across unre
   store,
 }) => {
   await automationFailures(page);
-  await ready(page, store);
-  const root = page.locator("#automation-settings");
+  await ready(page, store, true);
+  const root = headerAutomation(page);
   const button = root.locator("[data-toggle-automation]");
   const error = root.locator("[data-automation-error]");
   await page.locator("#global-capacity").fill("31");
@@ -698,7 +707,6 @@ test("automation read recovery preserves pending pause and rejection across unre
   await newDoctrine(page, "Rejected pause", "Another separate resource.");
   await section(page, "Preferences");
   await page.evaluate(() => window.__settingsIdle());
-  await expect(error).toBeVisible();
   await expect(error).toHaveText(automationActionError);
   await expect(button).toBeEnabled();
   await expect(page.locator("#global-capacity")).toHaveValue("31");
@@ -726,19 +734,21 @@ for (const staleRead of ["success", "failure"]) {
   }) => {
     await automationFailures(page);
     await page.clock.install();
-    await ready(page, store);
-    const root = page.locator("#automation-settings");
+    await ready(page, store, true);
+    const root = headerAutomation(page);
     const button = root.locator("[data-toggle-automation]");
     const error = root.locator("[data-automation-error]");
     await page.evaluate((staleRead) => {
+      // The first read of the tick is both the failing one and the held one.
       window.__automationFailures.failReads = staleRead === "failure" ? 1 : 0;
     }, staleRead);
     const older = ipc.holdNext("automation_snapshot");
     await page.clock.fastForward(5000);
     await older.arrived;
+    await expect(button).toBeEnabled();
     await page.evaluate(() => {
       window.__automationFailures.rejectPause = true;
-      window.__automationFailures.failReads = 1;
+      window.__automationFailures.readUnavailable = true;
     });
     await button.click();
     await expect(error).toHaveText(
@@ -753,6 +763,9 @@ for (const staleRead of ["success", "failure"]) {
     await expect(error).toHaveText(
       `${automationActionError}\n${automationReadError}`,
     );
+    await page.evaluate(() => {
+      window.__automationFailures.readUnavailable = false;
+    });
     await page.clock.fastForward(5000);
     await page.evaluate(() => window.__settingsIdle());
     await expect(root.locator("[data-automation-status]")).toContainText(

@@ -29,13 +29,7 @@ export function mountAutomation(
   onSnapshot?: (state: AutomationSnapshot | undefined) => void,
   options: {
     compact?: boolean;
-    preferences?: boolean;
     onError?: (message: string) => void;
-    view?: {
-      pending?: boolean;
-      actionError?: string;
-      refresh?: () => Promise<void>;
-    };
   } = {},
 ) {
   root.innerHTML = options.compact
@@ -43,19 +37,13 @@ export function mountAutomation(
     : `<h2>Shared AI capacity</h2><p role="status" data-automation-status>Loading</p>
     <button type="button" data-toggle-automation disabled>Pause automation</button>
     <p role="alert" data-automation-error hidden></p><ol data-ai-work></ol>`;
-  if (options.preferences)
-    root.innerHTML = `<fieldset aria-label="Global pause"><legend>Global pause</legend>
-      <p role="status" data-automation-status>Loading</p>
-      <button type="button" data-toggle-automation disabled>Pause automation</button>
-      <p role="alert" data-automation-error hidden></p>
-      <details id="preferences-capacity-work"><summary>Capacity work details</summary><ol data-ai-work></ol></details></fieldset>`;
   const status = root.querySelector<HTMLElement>("[data-automation-status]")!;
   const button = root.querySelector<HTMLButtonElement>(
     "[data-toggle-automation]",
   )!;
   const error = root.querySelector<HTMLElement>("[data-automation-error]")!;
   const list = root.querySelector<HTMLOListElement>("[data-ai-work]");
-  const view = options.view ?? {};
+  const view: { pending?: boolean; actionError?: string } = {};
   let state: AutomationSnapshot | undefined;
   let revision = 0;
   async function refresh() {
@@ -112,6 +100,7 @@ export function mountAutomation(
     view.pending = true;
     revision++;
     button.disabled = true;
+    status.textContent = "Pending";
     error.hidden = true;
     view.actionError = undefined;
     try {
@@ -123,13 +112,9 @@ export function mountAutomation(
       options.onError?.(error.textContent);
     } finally {
       view.pending = false;
-      await view.refresh?.();
+      await refresh();
     }
   };
-  view.refresh = refresh;
-  error.textContent = view.actionError ?? "";
-  error.hidden = !view.actionError;
-  if (view.pending) status.textContent = "Pending";
   void refresh();
   const timer = window.setInterval(() => {
     if (!root.isConnected) window.clearInterval(timer);

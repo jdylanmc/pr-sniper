@@ -61,7 +61,7 @@ Reference for Settings navigation, accounts, repositories, assignments, Agents, 
 ## Preferences
 
 - Saved: one global cron + timezone, machine AI capacity, comment-publication defaults.
-- Immediate (native, outside Save/Reset): pause, notification opt-in, startup.
+- Immediate (native, outside Save/Reset): notification opt-in, startup. Pause lives only in the panel header **Monitoring** switch.
 - AI capacity: integer `1..4294967295`, default 4. Shared by normal, final-primary, reply and mention work. Admitted jobs drain independent of polling.
 - Cron helper shows the exact expression. No silent timezone or legacy-interval conversion. One schedule: [polling.md](polling.md).
 - Native controls keep pending/rejected ops across saves.
