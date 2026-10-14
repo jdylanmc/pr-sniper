@@ -5,6 +5,8 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+## 0.3.1 - 2026-10-14
+
 ### Fixed
 
 - Reduce panel-opening and navigation stalls with accumulated review history:
