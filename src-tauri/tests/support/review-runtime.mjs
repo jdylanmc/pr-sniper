@@ -23,7 +23,17 @@ const exitScenarios = [
   "exit-ready", "exit-comments", "exit-denied-then-ok", "exit-none", "exit-double",
   "exit-malformed-forever", "exit-catalog-mismatch", "panic", "report-ok", "report-too-long",
   "exit-approve", "exit-merge", "exit-approve-denied-self",
+  "verdict-ok", "verdict-revise-bad-then-ok",
 ];
+// Primary scenarios that call rubber_duck: [calls in parallel, args].
+const duckArgs = { kind: "line", path: "source.rs", line: 1, claim: "answer may overflow", proposed_body: "Use a checked add." };
+const duckScenarios = {
+  "duck-call": [duckArgs],
+  "duck-parallel": [duckArgs, { ...duckArgs, claim: "second claim" }],
+  "duck-invalid": [{ ...duckArgs, path: "unchanged.rs" }],
+};
+const duckCalls = duckScenarios[scenario];
+let duckResults = 0;
 const isExit = exitScenarios.includes(scenario);
 const longNano = Array.from({ length: 120 }, () => "word").join(" ");
 const okReport = {
@@ -42,6 +52,8 @@ const firstExit = {
   "report-ok": ["submit_report", okReport],
   "report-too-long": ["submit_report", badReport],
   "exit-malformed-forever": ["submit_report", badReport],
+  "verdict-ok": ["submit_verdict", { verdict: "confirmed", nano: "real overflow", evidence: [{ path: "source.rs", line: 1 }] }],
+  "verdict-revise-bad-then-ok": ["submit_verdict", { verdict: "revise", nano: "wrong body" }],
 };
 let exitCount = 0;
 let exitEnded = false;
@@ -198,6 +210,31 @@ process.stdin.on("data", (chunk) => {
         break;
       case "session.send":
         respond(request.id, { messageId: randomUUID() });
+        receipt({ method: "fixture.prompt", prompt: request.params.prompt ?? null });
+        if (duckCalls) {
+          setTimeout(() => {
+            duckCalls.forEach((args, index) => {
+              event("tool.execution_start", { toolName: "rubber_duck" });
+              event("external_tool.requested", {
+                sessionId, requestId: `duck-${index + 1}`, toolCallId: `duck-${index + 1}`,
+                toolName: "rubber_duck", arguments: args,
+              });
+            });
+          }, 10);
+          break;
+        }
+        if (scenario === "verdict-slow") break;
+        if (scenario === "verdict-none") {
+          setTimeout(() => {
+            event("assistant.usage", { inputTokens: 5, outputTokens: 2 });
+            event("session.idle", {});
+          }, 10);
+          break;
+        }
+        if (scenario === "verdict-429") {
+          setTimeout(() => event("session.error", { statusCode: 429, retryAfterSeconds: 30 }), 10);
+          break;
+        }
         if (isExit) {
           setTimeout(() => {
             if (scenario === "exit-none") {
@@ -258,6 +295,11 @@ process.stdin.on("data", (chunk) => {
       case "session.tools.handlePendingToolCall":
         receipt({ method: "fixture.finalRead", result: request.params.result });
         respond(request.id, {});
+        if (String(request.params.requestId).startsWith("duck-")) {
+          receipt({ method: "fixture.duck", requestId: request.params.requestId, result: request.params.result });
+          if (++duckResults === duckCalls.length) handOver();
+          break;
+        }
         if (String(request.params.requestId).startsWith("exit-")) {
           const failed = JSON.stringify(request.params.result ?? null).includes('"failure"');
           receipt({ method: "fixture.exit", requestId: request.params.requestId, failed });
@@ -271,6 +313,8 @@ process.stdin.on("data", (chunk) => {
             toolCall("submit_report", okReport);
           } else if (scenario === "exit-malformed-forever") {
             toolCall("submit_report", badReport);
+          } else if (scenario === "verdict-revise-bad-then-ok") {
+            toolCall("submit_verdict", { verdict: "revise", nano: "wrong line", revised_body: "Use checked_add on line 1." });
           }
           break;
         }

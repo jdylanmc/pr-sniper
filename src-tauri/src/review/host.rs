@@ -157,6 +157,7 @@ pub(crate) fn request(
         _ => ReviewRun {
             mode: super::RunMode::Packet,
             packet: None,
+            failed_duck: None,
             feedback_context: None,
             key: candidate.key,
             assignment_id: candidate.assignment_id,
@@ -204,6 +205,18 @@ pub(crate) fn prepare_dispatch(
         replace_run(&mut reviews, &run);
         store.save_reviews(&reviews)?;
         return Err(error);
+    }
+    if run
+        .selection
+        .configuration
+        .as_ref()
+        .is_some_and(|c| c.rubber_duck.is_some())
+    {
+        let window = store.load_settings()?.rubber_duck.primary_window_minutes;
+        run.operation.retry_deadline = run
+            .operation
+            .retry_deadline
+            .max(now.saturating_add(i64::from(window) * 60));
     }
     run.phase = "Preparing immutable review context".into();
     run.error = None;
@@ -343,6 +356,7 @@ pub(crate) fn complete(
                         .as_ref()
                         .map(|account| account.account_id.as_str()),
                 );
+                current.failed_duck = None;
                 current.operation.ai_attempt = None;
                 current.operation.state = OperationState::Completed;
                 current.operation.failure = None;
@@ -352,6 +366,18 @@ pub(crate) fn complete(
                 current.error = None;
             }
             Err(error) => {
+                current.failed_duck = error
+                    .duck_setup
+                    .then(|| {
+                        current
+                            .selection
+                            .configuration
+                            .as_ref()?
+                            .rubber_duck
+                            .as_ref()
+                            .map(|d| d.agent.name.clone())
+                    })
+                    .flatten();
                 if error.kind == monitoring::OperationFailure::Tossed {
                     crate::pr_state::toss(store, &crate::retention::Binding::job(&current.job))?;
                 }
@@ -618,6 +644,7 @@ async fn execute_attempt(
         }
         Ok(())
     });
+    let duck = duck_setup(&app, &run, packet.duck)?;
     let integration = app.state::<Host>().copilot.clone();
     let read_hash = packet.packet.record.state_hash.clone();
     let client_after = client.clone();
@@ -633,6 +660,7 @@ async fn execute_attempt(
         selection: run.selection.clone(),
         before_send,
         local_gate: gate.clone(),
+        duck,
     };
     let mut result = integration.review(request, cancelled, deadline).await?;
     diagnostics.emit(crate::storage::diagnostics::Event::Phase {
@@ -672,6 +700,79 @@ async fn execute_attempt(
     gate()?;
     result.reviewed_base_sha = Some(expected_base);
     Ok((result, generation))
+}
+
+/// The primary's Rubber Duck for this attempt: the job-start snapshot, current limits and
+/// the duck account's rate-limit gate. The credential is fetched with the primary's.
+fn duck_setup(
+    app: &tauri::AppHandle,
+    run: &ReviewRun,
+    prep: Option<runtime::DuckPrep>,
+) -> Result<Option<runtime::DuckSetup>, Failure> {
+    let Some(prep) = prep else {
+        return Ok(None);
+    };
+    let snapshot = run
+        .selection
+        .configuration
+        .as_ref()
+        .and_then(|c| c.rubber_duck.clone())
+        .ok_or_else(|| Failure::permanent("Rubber duck snapshot is missing.").duck_setup())?;
+    let host = app.state::<Host>();
+    let limits = host
+        .store
+        .lock()
+        .map_err(|_| Failure::permanent("Review storage unavailable."))?
+        .load_settings()
+        .map_err(Failure::permanent)?
+        .rubber_duck;
+    let scope = snapshot
+        .agent
+        .ai_account
+        .as_ref()
+        .map(|a| crate::backpressure::Scope::copilot(&a.account_id));
+    let (gate_app, gate_scope) = (app.clone(), scope.clone());
+    let gated: runtime::Gated = Arc::new(move || {
+        let Some(scope) = &gate_scope else {
+            return false;
+        };
+        let host = gate_app.state::<Host>();
+        let Ok(store) = host.store.lock() else {
+            return false;
+        };
+        let now = now_seconds().unwrap_or(0);
+        store
+            .load_backpressure()
+            .is_ok_and(|gates| gates.until(scope, now).is_some())
+    });
+    let (pace_app, seed) = (app.clone(), run.operation.id.clone());
+    let rate_limited: runtime::Pacing = Arc::new(move |retry_after| {
+        let Some(scope) = scope.clone() else {
+            return;
+        };
+        let host = pace_app.state::<Host>();
+        let recorded = host.store.lock().map(|store| {
+            let now = now_seconds().unwrap_or(0);
+            crate::backpressure::record(&store, scope, retry_after, &seed, now)
+        });
+        if let Ok(Err(error)) = recorded {
+            crate::report(&pace_app, error);
+        }
+    });
+    Ok(Some(runtime::DuckSetup {
+        prep,
+        selection: super::Selection {
+            agent: snapshot.agent,
+            policy: run.selection.policy.clone(),
+            doctrine: None,
+            preset: None,
+            configuration: None,
+        },
+        limits,
+        launch: runtime::DuckLaunch::Pending,
+        rate_limited,
+        gated,
+    }))
 }
 
 #[tauri::command]

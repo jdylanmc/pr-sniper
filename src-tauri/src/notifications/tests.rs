@@ -417,6 +417,7 @@ fn only_operator_attention_maps_to_alerts_and_routine_author_waits_do_not() {
                 failure_class: None,
                 failure_cause: None,
                 failed_teammate: None,
+                failed_duck: None,
                 blocked_by: None,
                 resume_at: None,
                 summary: "",

@@ -435,6 +435,7 @@ fn execute(live: &Live, run: ReviewRun, label: &str) -> Report {
         selection: run.selection.clone(),
         before_send: allow.clone(),
         local_gate: allow,
+        duck: None,
     };
     let result = runtime::run(&live.copilot, &live.pair, &operation, request);
     let base = snapshot.base.clone();

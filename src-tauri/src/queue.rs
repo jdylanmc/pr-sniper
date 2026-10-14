@@ -96,6 +96,8 @@ pub struct Item {
     pub failure_cause: Option<&'static str>,
     // A parked teammate holds this PR's primary back; its typed cause rides along.
     pub failed_teammate: Option<review::teammates::FailedTeammate>,
+    // The primary's Rubber Duck could not be set up: the duck Agent's name.
+    pub failed_duck: Option<String>,
     // The primary is waiting on this teammate's report for the current state.
     pub blocked_by: Option<review::teammates::BlockedBy>,
     // Earliest automatic resume of a parked failure; absent once it waits for a human.
@@ -858,6 +860,11 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                         .unwrap_or(monitoring::OperationFailure::Provider),
                 })
             });
+        let failed_duck = reviews
+            .iter()
+            .filter_map(|r| r.run.as_ref())
+            .filter(|run| failed(&run.operation))
+            .find_map(|run| run.failed_duck.clone());
         let blocked_by = (state != State::Failed || failed_teammate.is_some())
             .then(|| {
                 let primary = reviews
@@ -946,6 +953,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                     .unwrap_or(monitoring::FailureClass::Other)
             }),
             failed_teammate,
+            failed_duck,
             blocked_by,
             summary: state.summary(),
             review_keys: reviews.iter().map(|r| r.key.clone()).collect(),

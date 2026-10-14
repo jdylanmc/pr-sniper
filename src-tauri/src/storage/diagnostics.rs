@@ -76,6 +76,7 @@ pub enum ToolName {
     ReadCheckLog,
     ListTree,
     SearchCode,
+    RubberDuck,
     Exit,
     NotPermitted,
 }
@@ -91,12 +92,14 @@ impl ToolName {
             "read_check_log" => Self::ReadCheckLog,
             "list_tree" => Self::ListTree,
             "search_code" => Self::SearchCode,
+            "rubber_duck" => Self::RubberDuck,
             "leave_comments"
             | "ready_for_human"
             | "approve_pull_request"
             | "approve_and_merge"
             | "panic_exit"
-            | "submit_report" => Self::Exit,
+            | "submit_report"
+            | "submit_verdict" => Self::Exit,
             _ => Self::NotPermitted,
         }
     }

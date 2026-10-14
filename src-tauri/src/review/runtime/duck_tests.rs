@@ -1,0 +1,426 @@
+//! Rubber duck calls over the synthetic Copilot runtime: one primary process, one duck
+//! process, both the fixture. Synthetic transport, not live Copilot acceptance.
+
+use super::tests::{context, operation, options, receipt, selection, stopped, Synthetic};
+use super::*;
+use crate::{
+    packet::{AuthorRelation, Directive, PacketInput, PrFacts, Role},
+    review::duck::{DuckFailure, DuckOutcome, VerdictKind},
+    storage::DuckLimits,
+};
+use std::path::Path;
+
+fn base() -> PacketInput {
+    PacketInput {
+        state_id: "7:abcdef".into(),
+        revision: 1,
+        created_at: "2026-10-14T00:00:00Z".into(),
+        admitted_by: None,
+        acting_login: "pr-sniper-bot".into(),
+        role: Role::Primary,
+        tools: vec![],
+        exits: vec![],
+        pr: PrFacts {
+            title: "Synthetic review".into(),
+            description: None,
+            author: "octo".into(),
+            author_relation: AuthorRelation::Other,
+            state: "OPEN".into(),
+            draft: false,
+            base_ref: "main".into(),
+            head_ref: "topic".into(),
+            base_sha: "b".repeat(40),
+            head_sha: "a".repeat(40),
+            labels: vec![],
+            size: None,
+            checks: vec![],
+            mergeable: "MERGEABLE".into(),
+            review_decision: None,
+            approvals: vec![],
+        },
+        conversation: Default::default(),
+        files: vec![],
+        delta: None,
+        directive: Directive::default(),
+        teammates: vec![],
+    }
+}
+
+struct Duck {
+    setup: DuckSetup,
+    paced: Arc<Mutex<Vec<Option<i64>>>>,
+}
+
+fn duck(root: &Path, scenario: &str, limits: DuckLimits, gated: bool) -> Duck {
+    let paced = Arc::new(Mutex::new(Vec::new()));
+    let sink = paced.clone();
+    let mut duck_selection = selection();
+    duck_selection.agent.id = "duck".into();
+    duck_selection.agent.name = "Duck".into();
+    std::fs::create_dir_all(root).unwrap();
+    Duck {
+        setup: DuckSetup {
+            prep: DuckPrep {
+                base: base(),
+                primary_hash: "primaryhash".into(),
+                directive: Directive {
+                    agent_prompt: "Check one claim.".into(),
+                    ..Directive::default()
+                },
+                tools: tools::duck_tools(&["read_changes".into(), "read_source".into()]),
+                changed: vec!["source.rs".into()],
+                threads: vec![],
+            },
+            selection: duck_selection,
+            limits,
+            launch: DuckLaunch::Options {
+                identity: Identity {
+                    id: "44".into(),
+                    login: "review-account".into(),
+                },
+                options: options(root, scenario),
+            },
+            rate_limited: Arc::new(move |after| sink.lock().unwrap().push(after)),
+            gated: Arc::new(move || gated),
+        },
+        paced,
+    }
+}
+
+fn limits(max_calls: u32, call_timeout_seconds: u32) -> DuckLimits {
+    DuckLimits {
+        max_calls,
+        call_timeout_seconds,
+        primary_window_minutes: 15,
+    }
+}
+
+fn primary_request(setup: DuckSetup) -> Request<Synthetic> {
+    let granted: Vec<String> = ["read_changes", "read_source", crate::review::duck::TOOL]
+        .map(String::from)
+        .to_vec();
+    let offered = [Exit::ReadyForHuman, Exit::PanicExit];
+    Request {
+        exits: ExitSetup {
+            tool_set: tools::tool_set(&granted, true, &offered),
+            offered: offered.to_vec(),
+            facts: Arc::new(ToolFacts::default()),
+            gate: Arc::new(|_: &ExitCall| Ok(())),
+        },
+        diagnostics: None,
+        task: ExitReview {
+            packet_text: "packet".into(),
+        },
+        context: context(true),
+        client: Arc::new(GithubClient::new(Synthetic)),
+        repository_name: "example/repo".into(),
+        selection: selection(),
+        before_send: Arc::new(|| Ok(())),
+        local_gate: Arc::new(|| Ok(())),
+        duck: Some(setup),
+    }
+}
+
+fn identity() -> Identity {
+    Identity {
+        id: "33".into(),
+        login: "review-account".into(),
+    }
+}
+
+/// The primary's tool results for its `rubber_duck` calls, in call order.
+fn duck_results(root: &Path) -> Vec<String> {
+    receipt(root)
+        .into_iter()
+        .filter(|r| r["method"] == "fixture.duck")
+        .map(|r| r["result"].to_string())
+        .collect()
+}
+
+fn methods(root: &Path, method: &str) -> usize {
+    receipt(root)
+        .iter()
+        .filter(|r| r["method"] == method)
+        .count()
+}
+
+async fn review(
+    scenario: &str,
+    duck_scenario: &str,
+    limits: DuckLimits,
+    seconds: u64,
+) -> (
+    tempfile::TempDir,
+    Result<ReviewResult<crate::review::ReviewOutput>, Failure>,
+    Arc<Mutex<Vec<Option<i64>>>>,
+) {
+    let root = tempfile::tempdir().unwrap();
+    let duck = duck(&root.path().join("duck"), duck_scenario, limits, false);
+    let result = execute(
+        options(root.path(), scenario),
+        &identity(),
+        &operation(seconds),
+        primary_request(duck.setup),
+    )
+    .await;
+    (root, result, duck.paced)
+}
+
+#[tokio::test]
+async fn a_duck_call_returns_a_fenced_verdict_and_is_recorded_with_the_primary() {
+    let (root, result, _) = review("duck-call", "verdict-ok", limits(8, 180), 600).await;
+    let result = result.unwrap();
+    assert!(matches!(
+        result.output.exit,
+        Some(crate::exits::ExitOutcome::ReadyForHuman { .. })
+    ));
+    assert_eq!(result.ducks.len(), 1);
+    let call = &result.ducks[0];
+    let DuckOutcome::Verdict { verdict } = &call.outcome else {
+        panic!("{call:?}");
+    };
+    assert_eq!(verdict.verdict, VerdictKind::Confirmed);
+    assert_eq!((call.ordinal, call.agent.as_str()), (1, "Duck"));
+    assert_eq!(call.state_id, "7:abcdef");
+    assert_eq!(call.limits, limits(8, 180));
+    assert!(call.session_id.is_some() && call.packet.is_some());
+    assert_eq!((call.input_tokens, call.output_tokens), (20, 10));
+    let results = duck_results(root.path());
+    assert_eq!(results.len(), 1);
+    assert!(
+        results[0].contains(r#"<untrusted source=\"rubber_duck\">"#),
+        "{}",
+        results[0]
+    );
+    assert!(results[0].contains("confirmed"));
+    // The primary catalog offers rubber_duck; the duck's has reads and submit_verdict only.
+    let created = |root: &Path| {
+        receipt(root)
+            .into_iter()
+            .filter(|r| r["method"] == "session.create")
+            .map(|r| {
+                let mut names: Vec<String> = r["config"]["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|t| t["name"].as_str().unwrap().to_string())
+                    .collect();
+                names.sort();
+                names
+            })
+            .collect::<Vec<_>>()
+    };
+    assert!(created(root.path())[0].contains(&"rubber_duck".to_string()));
+    assert_eq!(
+        created(&root.path().join("duck")),
+        vec![vec!["read_changes", "read_source", "submit_verdict"]]
+    );
+    let prompt = receipt(&root.path().join("duck"))
+        .into_iter()
+        .find(|r| r["method"] == "fixture.prompt")
+        .unwrap()
+        .to_string();
+    assert!(prompt.contains("rubber duck packet") && prompt.contains("answer may overflow"));
+    stopped(root.path());
+    stopped(&root.path().join("duck"));
+}
+
+#[tokio::test]
+async fn parallel_calls_run_one_at_a_time_and_stop_at_the_preference_limit() {
+    let (root, result, _) = review("duck-parallel", "verdict-ok", limits(1, 180), 600).await;
+    let result = result.unwrap();
+    let outcomes: Vec<_> = result.ducks.iter().map(|c| c.outcome.clone()).collect();
+    assert_eq!(outcomes.len(), 2);
+    assert!(matches!(outcomes[0], DuckOutcome::Verdict { .. }));
+    assert_eq!(
+        outcomes[1],
+        DuckOutcome::Failure {
+            failure: DuckFailure::LimitReached
+        }
+    );
+    assert_eq!(methods(&root.path().join("duck"), "session.create"), 1);
+    assert!(duck_results(root.path())
+        .iter()
+        .any(|r| r.contains("duck_failure: limit_reached")));
+}
+
+#[tokio::test]
+async fn invalid_input_is_a_tool_error_and_spends_no_call() {
+    let (root, result, _) = review("duck-invalid", "verdict-ok", limits(8, 180), 600).await;
+    assert!(result.unwrap().ducks.is_empty());
+    assert!(duck_results(root.path())[0].contains("duck_failure: invalid_input"));
+    assert_eq!(methods(&root.path().join("duck"), "session.create"), 0);
+}
+
+#[tokio::test]
+async fn a_slow_duck_times_out_and_the_primary_still_exits() {
+    let (_root, result, _) = review("duck-call", "verdict-slow", limits(8, 1), 600).await;
+    let result = result.unwrap();
+    assert!(result.output.exit.is_some());
+    assert_eq!(
+        result.ducks[0].outcome,
+        DuckOutcome::Failure {
+            failure: DuckFailure::TimedOut
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_duck_without_an_exit_is_no_verdict_and_a_bad_verdict_is_retried_in_the_loop() {
+    let (_root, result, _) = review("duck-call", "verdict-none", limits(8, 180), 600).await;
+    assert_eq!(
+        result.unwrap().ducks[0].outcome,
+        DuckOutcome::Failure {
+            failure: DuckFailure::NoVerdict
+        }
+    );
+    let (_root, result, _) = review(
+        "duck-call",
+        "verdict-revise-bad-then-ok",
+        limits(8, 180),
+        600,
+    )
+    .await;
+    let ducks = result.unwrap().ducks;
+    let DuckOutcome::Verdict { verdict } = &ducks[0].outcome else {
+        panic!("{ducks:?}");
+    };
+    assert_eq!(verdict.verdict, VerdictKind::Revise);
+    assert!(verdict.revised_body.is_some());
+}
+
+#[tokio::test]
+async fn a_duck_rate_limit_is_typed_and_gates_the_duck_account() {
+    let (_root, result, paced) = review("duck-call", "verdict-429", limits(8, 180), 600).await;
+    assert_eq!(
+        result.unwrap().ducks[0].outcome,
+        DuckOutcome::Failure {
+            failure: DuckFailure::RateLimited
+        }
+    );
+    assert_eq!(*paced.lock().unwrap(), vec![Some(30)]);
+    // Already gated: refused at once, no session.
+    let root = tempfile::tempdir().unwrap();
+    let gated = duck(
+        &root.path().join("duck"),
+        "verdict-ok",
+        limits(8, 180),
+        true,
+    );
+    let result = execute(
+        options(root.path(), "duck-call"),
+        &identity(),
+        &operation(600),
+        primary_request(gated.setup),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        result.ducks[0].outcome,
+        DuckOutcome::Failure {
+            failure: DuckFailure::RateLimited
+        }
+    );
+    assert_eq!(methods(&root.path().join("duck"), "session.create"), 0);
+}
+
+#[tokio::test]
+async fn too_little_attempt_time_is_budget_exhausted_without_a_session() {
+    // 100 s left is inside the 120 s exit reserve.
+    let (root, result, _) = review("duck-call", "verdict-ok", limits(8, 180), 100).await;
+    assert_eq!(
+        result.unwrap().ducks[0].outcome,
+        DuckOutcome::Failure {
+            failure: DuckFailure::BudgetExhausted
+        }
+    );
+    assert_eq!(methods(&root.path().join("duck"), "session.create"), 0);
+}
+
+#[tokio::test]
+async fn duck_setup_failure_fails_the_attempt_before_any_inference() {
+    for scenario in ["wrong-account", "catalog-error"] {
+        let (root, result, _) = review("duck-call", scenario, limits(8, 180), 600).await;
+        let error = result.unwrap_err();
+        assert!(error.duck_setup, "{scenario}");
+        assert_eq!(methods(root.path(), "session.send"), 0, "{scenario}");
+        assert_eq!(methods(root.path(), "session.create"), 0, "{scenario}");
+        stopped(root.path());
+    }
+    let root = tempfile::tempdir().unwrap();
+    let mut missing = duck(
+        &root.path().join("duck"),
+        "verdict-ok",
+        limits(8, 180),
+        false,
+    );
+    missing.setup.selection.agent.ai_account = None;
+    let error = execute(
+        options(root.path(), "duck-call"),
+        &identity(),
+        &operation(600),
+        primary_request(missing.setup),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.duck_setup);
+    assert_eq!(error.kind, crate::monitoring::OperationFailure::Permanent);
+}
+
+#[tokio::test]
+async fn at_ai_capacity_one_the_duck_runs_inside_the_primarys_slot() {
+    let root = tempfile::tempdir().unwrap();
+    let store = crate::storage::Store::new(root.path().join("profile"));
+    store
+        .save_settings(&crate::storage::Settings {
+            capacity: 1,
+            ..Default::default()
+        })
+        .unwrap();
+    let coordinator = crate::capacity::Coordinator::default();
+    let work = |id: &str| crate::capacity::Work {
+        key: crate::capacity::WorkId {
+            kind: crate::capacity::Kind::Normal,
+            id: id.into(),
+        },
+        enqueue_order: 1,
+        state: "waiting",
+        reason: None,
+        failure: None,
+        delayed_until: None,
+        blocked_by: None,
+    };
+    let slot = coordinator
+        .reserve(&store, &work("primary"), |_| Ok(("op".into(), ())))
+        .unwrap();
+    assert!(slot.is_some(), "the primary holds the only slot");
+    let duck = duck(
+        &root.path().join("duck"),
+        "verdict-ok",
+        limits(8, 180),
+        false,
+    );
+    let result = tokio::time::timeout(
+        Duration::from_secs(30),
+        execute(
+            options(root.path(), "duck-call"),
+            &identity(),
+            &operation(600),
+            primary_request(duck.setup),
+        ),
+    )
+    .await
+    .expect("no deadlock")
+    .unwrap();
+    assert!(matches!(
+        result.ducks[0].outcome,
+        DuckOutcome::Verdict { .. }
+    ));
+    assert!(
+        coordinator
+            .reserve(&store, &work("other"), |_| Ok(("op2".into(), ())))
+            .unwrap()
+            .is_none(),
+        "still one slot, held by the primary alone"
+    );
+}
