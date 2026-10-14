@@ -41,7 +41,7 @@ Reference for Settings navigation, accounts, repositories, assignments, Agents, 
 
 ## Assignments
 
-- Assignment editor drill-ins: **Agent**, **Permissions**. Primary switch. **Approval** pill: `off | Approve | & Merge` (primary only).
+- Assignment editor drill-ins: **Agent**, **Rubber duck** (primary only: None + Agents, radio; may be the same Agent), **Permissions**, **Tools**. Primary switch. Choosing a duck turns on the `rubber_duck` tool, also in an explicit Tools list; None disables it. Stored as `rubber_duck` (Agent id). [ADR 0023](adr/0023-rubber-duck-verification.md). **Approval** pill: `off | Approve | & Merge` (primary only).
 - Permissions: Publish Comment (automatic initial publication), Reply Comment (primary), Approve, Merge. New assignments start with an explicit Agent choice and every grant off. Existing grants unchanged.
 - From an assignment: **Edit Agent** opens the shared Agent; **Create new Agent** works with an empty library. Save/Cancel returns to the same assignment draft. New Agent starts without permissions. Unavailable Agent refs stay explicit until replaced.
 - Grants are repository-assignment controls, never global Agent permissions. Mechanics: [provider-writes.md](provider-writes.md).
@@ -71,6 +71,7 @@ Reference for Settings navigation, accounts, repositories, assignments, Agents, 
 
 - Saved: one global cron + timezone, machine AI capacity, comment-publication defaults.
 - Immediate (native, outside Save/Reset): notification opt-in, startup. Pause lives only in the panel header **Monitoring** switch.
+- Rubber duck group: Calls `1..32` (default 8), Timeout (s) `30..600` (180), Primary window (min) `5..120` (15). Stored as `rubber_duck`; absent = defaults.
 - AI capacity: integer `1..4294967295`, default 4. Shared by normal, final-primary, reply and mention work. Admitted jobs drain independent of polling.
 - Cron helper shows the exact expression. Time zone: own row, dropdown of host IANA zones (`time_zones`, the list `Schedule::validate` accepts); host zone first. A saved zone missing from the list stays selected, marked unavailable. A brand-new profile starts in the host zone (valid `TZ`, else the `/etc/localtime` link; Windows/unknown: UTC); existing saved zones never change. No silent timezone or legacy-interval conversion. One schedule: [polling.md](polling.md).
 - Native controls keep pending/rejected ops across saves.

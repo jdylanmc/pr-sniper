@@ -1,6 +1,6 @@
 # Rubber duck plan
 
-Status: proposed with [ADR 0023](../../adr/0023-rubber-duck-verification.md). Not implemented. Phase 2 needs owner approval.
+Status: implemented on `feat/rubber-duck` with [ADR 0023](../../adr/0023-rubber-duck-verification.md) (accepted 2026-10-14). Limits are Saved Preferences; duck setup failure is a job error. No live model run yet.
 
 ## Slices
 

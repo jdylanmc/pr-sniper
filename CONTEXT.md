@@ -65,8 +65,16 @@ The repository assignment responsible for eligible conversation assessments and 
 _Avoid_: Global primary, thread owner as responder
 
 **Tools** (assignment):
-Packet tool ids an assignment may use: investigation tools plus exits. Every run is packet mode. Absent = role default: primary gets investigation tools, granted exits, `ready_for_human`, `panic_exit`; teammate gets investigation tools, `submit_report`, `panic_exit`. Set = validated explicit list. Effect exits primary only; `submit_report` teammate only; exits need their grant. Set by switches in the assignment's Tools list.
+Packet tool ids an assignment may use: investigation tools, `rubber_duck` (primary with a **Rubber Duck**) plus exits. Every run is packet mode. Absent = role default: primary gets investigation tools, `rubber_duck` when a Rubber Duck is set, granted exits, `ready_for_human`, `panic_exit`; teammate gets investigation tools, `submit_report`, `panic_exit`. Set = validated explicit list. Effect exits primary only; `submit_report` teammate only; exits need their grant. Set by switches in the assignment's Tools list.
 _Avoid_: Skills, plugins
+
+**Rubber Duck**:
+Optional Agent selected on the primary assignment (may be the primary's own Agent). Offered to the primary as host-owned tool `rubber_duck`: the primary chooses when to send one finding for checking. Each **Duck call** is a fresh, read-only session over the primary's PR state, ending on `submit_verdict`. Borrows the primary's **AI Capacity** slot; calls run one at a time, bounded by Saved Preferences (calls, timeout, primary window). Setup failure at job start is a job error (park path, `failed_duck`); a failed call is a typed tool error for the primary. Teammates have none. See [ADR 0023](docs/adr/0023-rubber-duck-verification.md).
+_Avoid_: Reviewer, gate, sub-agent
+
+**Verdict**:
+A duck call's structured answer: `confirmed`, `revise` (with `revised_body`), `rejected` or `unverifiable`, caveman rationale and evidence refs. Untrusted data for the primary, which decides. Never publishes, blocks or authorizes anything; never reused across attempts or PR states.
+_Avoid_: Approval, decision
 
 **Packet**:
 The one text an agent is given per run, built by the host from fresh PR state: Meta, fixed Rules, PR, Conversation, Files manifest, Teammate reports (primary), Directive, Voice (primary with a Voice), Exits. Untrusted content is fenced; nothing is cut without a marker. Same state, same text, same `packet_hash`. Stored content-free as the run's packet record. See [Review packet](docs/review-packet.md).
@@ -115,11 +123,11 @@ Manual global scan. Coalesces to one pending scan. Never bypasses **Backpressure
 Persisted global gate, separate from repository enablement and grants. Blocks new polling, AI admission and provider writes. Active workers are signalled and keep their slot, **stopping**, until teardown ends. Partial AI output is discarded. An already-sent remote request is not undone; intents and receipts are kept.
 
 **AI Capacity**:
-Machine-wide count of concurrent AI job slots, positive integer, default 4. Shared by all review runs (primaries and teammates) in one FIFO order across retries and pauses. Primary-final, reply and mention kinds are history only. Limits work, not Agent count. A free slot fills at once. Reducing stops the newest excess workers. Does not raise provider-write concurrency.
+Machine-wide count of concurrent AI job slots, positive integer, default 4. Shared by all review runs (primaries and teammates) in one FIFO order across retries and pauses. A **Duck call** runs inside its primary's slot, never a slot of its own. Primary-final, reply and mention kinds are history only. Limits work, not Agent count. A free slot fills at once. Reducing stops the newest excess workers. Does not raise provider-write concurrency.
 _Avoid_: Concurrency limit
 
 **Saved Preferences**:
-Global cron, time zone, **AI Capacity** and comment-publication defaults, saved with Settings. **Immediate Controls**: pause, notification opt-in and per-type switches, launch at login; apply natively, not by Save or Reset. A saved request is shown apart from actual OS registration; unknown registration is never shown as enabled.
+Global cron, time zone, **AI Capacity**, Rubber Duck limits and comment-publication defaults, saved with Settings. **Immediate Controls**: pause, notification opt-in and per-type switches, launch at login; apply natively, not by Save or Reset. A saved request is shown apart from actual OS registration; unknown registration is never shown as enabled.
 _Avoid_: Startup checkbox as effective state
 
 ### Reviews and iterations
@@ -152,7 +160,7 @@ One unit of AI work for one Agent on one exact Iteration. Kind: normal (packet r
 _Avoid_: Trigger, task
 
 **Execution Snapshot**:
-Immutable record of Agent, account, model, prompt, Doctrine bodies, primary Voice (title, body, guardrails), repository and assignment authority at job start. Evidence, never current grant, never rewritten by edits or restart. Legacy missing fields show unavailable, never rebuilt. A never-started failure keeps its planned configuration and claims no execution.
+Immutable record of Agent, account, model, prompt, Doctrine bodies, primary Voice (title, body, guardrails), primary Rubber Duck (Agent and Doctrine bodies), repository and assignment authority at job start. Evidence, never current grant, never rewritten by edits or restart. Legacy missing fields show unavailable, never rebuilt. A never-started failure keeps its planned configuration and claims no execution.
 _Avoid_: Current config, Execution Configuration
 
 **Normal Pass**:

@@ -78,7 +78,7 @@ Saved Preferences, `Settings.rubber_duck` (`DuckLimits`), serde default, user-tu
 
 - Read at attempt start; applied values stored on each duck call.
 - Primary window: when a primary with a Rubber Duck starts an attempt, its retry deadline is at least now + window. Default equals today's window: no change unless tuned.
-- Less than 60 s left in the call window: `budget_exhausted`, no session.
+- Less than min(timeout, 60 s) left before the exit reserve: `budget_exhausted`, no session.
 - One duck call active per primary run. Payer: the Rubber Duck Agent's Copilot AI Account.
 
 ### Failures
