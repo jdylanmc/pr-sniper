@@ -45,6 +45,9 @@ import {
   doctrineCatalogLabel,
   type ResourceEdit,
   acceptResource,
+  DUCK_LIMITS,
+  DUCK_RANGES,
+  type DuckLimits,
   globalPreferences,
   savedResources,
   saveResource,
@@ -148,6 +151,8 @@ const promptTokens: [string, string][] = [
   ["changed_file_count", "Number of changed files"],
   ["agent_name", "This agent's name"],
 ];
+const DUCK_PATH =
+  '<path d="M9 7.5a3.5 3.5 0 1 1 6.2 2.2L18 11l-2.6 1.1M4 13h7.5c1.6 0 3-.5 4.3-1.3.9 3.6-1.7 7.3-6.3 7.3C6 19 4 16.5 4 13z"/><circle cx="12.4" cy="7.2" r=".6"/>';
 const iconPaths = {
   back: '<path d="m14 6-6 6 6 6M8 12h12"/>',
   brain:
@@ -224,6 +229,12 @@ const toolRows: Record<
     name: "Search",
     detail: "Search repository code",
     path: '<circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/>',
+  },
+  rubber_duck: {
+    name: "Rubber duck",
+    detail: "Second Agent checks one finding",
+    scope: "primary",
+    path: DUCK_PATH,
   },
   leave_comments: {
     name: "Comment",
@@ -3379,7 +3390,7 @@ export async function mountSettings(
         const row = document.createElement("div");
         row.className = "assignment-row";
         const primary = primaryAssignmentId(repository) === assignment.id;
-        row.innerHTML = `<div><strong>${escape(agent?.name ?? "Deleted agent")}</strong><p>${primary ? `Primary${assignments.length === 1 ? " (automatic)" : ""} \u00b7 ` : "Secondary \u00b7 "}${assignment.comment ? "Publish Comment" : "Initial findings local"}${primary && assignment.actions?.reply ? " \u00b7 Reply Comment" : ""}${primary && assignment.actions?.merge ? " \u00b7 Approve & Merge" : primary && assignment.actions?.approve ? " \u00b7 Approve" : ""}${assignment.tools?.length ? ` \u00b7 ${assignment.tools.length} Tools` : ""}</p><p>${escape(agent?.model ?? "Unavailable")}</p></div><button data-edit aria-label="Edit assignment">Edit</button><button data-remove aria-label="Remove assignment" title="Remove">${icon("trash")}</button>`;
+        row.innerHTML = `<div><strong>${escape(agent?.name ?? "Deleted agent")}</strong><p>${primary ? `Primary${assignments.length === 1 ? " (automatic)" : ""} \u00b7 ` : "Secondary \u00b7 "}${assignment.comment ? "Publish Comment" : "Initial findings local"}${primary && assignment.actions?.reply ? " \u00b7 Reply Comment" : ""}${primary && assignment.actions?.merge ? " \u00b7 Approve & Merge" : primary && assignment.actions?.approve ? " \u00b7 Approve" : ""}${primary && assignment.rubber_duck ? " \u00b7 Rubber duck" : ""}${assignment.tools?.length ? ` \u00b7 ${assignment.tools.length} Tools` : ""}</p><p>${escape(agent?.model ?? "Unavailable")}</p></div><button data-edit aria-label="Edit assignment">Edit</button><button data-remove aria-label="Remove assignment" title="Remove">${icon("trash")}</button>`;
         for (const action of ["edit", "remove"])
           row.querySelector<HTMLElement>(`[data-${action}]`)!.dataset.focusKey =
             `assignment:${assignment.id}:${action}`;
@@ -3669,12 +3680,14 @@ export async function mountSettings(
     const isPrimary = sole || primaryAssignmentId(repository) === assignmentId;
     const modal = dialog(
       existing ? "Edit assignment" : "Assign agent",
-      `<form><input type="hidden" name="agent" value="${escape(existing?.agent_id ?? "")}" />
+      `<form><input type="hidden" name="agent" value="${escape(existing?.agent_id ?? "")}" /><input type="hidden" name="duck" value="${escape(isPrimary ? (existing?.rubber_duck ?? "") : "")}" />
         <section class="repository-group" data-assign-main><button type="button" class="doctrine-row" data-open-agent aria-label="Choose Agent"><span>Agent</span><span class="doctrine-summary" data-agent-summary></span>${chevron}</button>
         <label class="repository-check"><input type="checkbox" role="switch" name="primary" aria-label="Primary" ${isPrimary ? "checked" : ""} ${sole ? "disabled" : ""} /><span>Primary</span></label>
+        <button type="button" class="doctrine-row" data-open-duck aria-label="Rubber duck" ${isPrimary ? "" : "hidden"}><span>Rubber duck</span><span class="doctrine-summary" data-duck-summary></span>${chevron}</button>
         <button type="button" class="doctrine-row" data-open-permissions aria-label="Permissions"><span>Permissions</span><span class="doctrine-summary" data-permission-summary></span>${chevron}</button>
         <button type="button" class="doctrine-row" data-open-tools aria-label="Tools"><span>Tools</span><span class="doctrine-summary" data-tool-summary></span>${chevron}</button></section>
         <section class="repository-group" data-assign-agents hidden><div data-agent-choices role="radiogroup" aria-label="Agent"></div><div class="resource-actions"><button type="button" data-create-agent>Create new Agent</button></div></section>
+        <section class="repository-group" data-assign-duck hidden><div data-duck-choices role="radiogroup" aria-label="Rubber duck"></div></section>
         <section class="repository-group" data-assign-permissions hidden>
         <label class="repository-check"><input type="checkbox" role="switch" name="comment" aria-label="Publish Comment" ${existing?.comment ? "checked" : ""} /><span>Publish Comment</span></label>
         <div data-primary-permissions ${isPrimary ? "" : "hidden"}><label class="repository-check"><input type="checkbox" role="switch" name="reply" aria-label="Reply Comment" ${isPrimary && existing?.actions?.reply ? "checked" : ""} /><span>Reply Comment</span></label>
@@ -3697,7 +3710,15 @@ export async function mountSettings(
     const openTools =
       modal.querySelector<HTMLButtonElement>("[data-open-tools]")!;
     const choices = modal.querySelector<HTMLElement>("[data-agent-choices]")!;
+    const duckInput = modal.querySelector<HTMLInputElement>("[name=duck]")!;
+    const openDuck =
+      modal.querySelector<HTMLButtonElement>("[data-open-duck]")!;
+    const duckChoices = modal.querySelector<HTMLElement>(
+      "[data-duck-choices]",
+    )!;
+    let lastDuck = duckInput.value;
     const sections = {
+      duck: modal.querySelector<HTMLElement>("[data-assign-duck]")!,
       tools: modal.querySelector<HTMLElement>("[data-assign-tools]")!,
       agent: modal.querySelector<HTMLElement>("[data-assign-agents]")!,
       permissions: modal.querySelector<HTMLElement>(
@@ -3709,6 +3730,7 @@ export async function mountSettings(
         "[name=comment]:checked, [name=reply]:checked, [name=action]:checked:not([value=none])",
       ).length;
     const viewTitles = {
+      duck: "Rubber duck",
       agent: "Agent",
       permissions: "Permissions",
       tools: "Tools",
@@ -3724,16 +3746,25 @@ export async function mountSettings(
       const action = modal.querySelector<HTMLInputElement>(
         "[name=action]:checked",
       )!.value;
+      const duck = isPrimaryNow && !!duckInput.value;
       const granted: Partial<Record<PacketTool, boolean>> = {
+        rubber_duck: duck,
         leave_comments: checked("comment"),
         approve_pull_request: action !== "none",
         approve_and_merge: action === "merge",
       };
-      const defaults = defaultTools(isPrimaryNow, {
-        comment: !!granted.leave_comments,
-        approve: !!granted.approve_pull_request,
-        merge: !!granted.approve_and_merge,
-      });
+      const defaults = defaultTools(
+        isPrimaryNow,
+        {
+          comment: !!granted.leave_comments,
+          approve: !!granted.approve_pull_request,
+          merge: !!granted.approve_and_merge,
+        },
+        duck,
+      );
+      // Choosing a duck turns its tool on in an explicit list too.
+      const duckAdded = duck && duckInput.value !== lastDuck;
+      lastDuck = isPrimaryNow ? duckInput.value : "";
       let count = 0;
       for (const row of modal.querySelectorAll<HTMLElement>(
         "[data-tool-row]",
@@ -3742,6 +3773,7 @@ export async function mountSettings(
         const scope = toolRows[id].scope;
         const input = row.querySelector<HTMLInputElement>("input")!;
         if (!toolsExplicit) input.checked = defaults.includes(id);
+        else if (id === "rubber_duck" && duckAdded) input.checked = true;
         row.hidden =
           (scope === "primary" && !isPrimaryNow) ||
           (scope === "secondary" && isPrimaryNow);
@@ -3792,6 +3824,36 @@ export async function mountSettings(
         );
       openAgent.querySelector("[data-agent-summary]")!.textContent =
         selected && !agent ? "Unavailable" : (agent?.name ?? "");
+      const duckId = duckInput.value;
+      const duckAgent = agents().find((a) => a.id === duckId);
+      const duckRows = [
+        "",
+        ...agents().map((a) => `${a.id}\u0000${a.name}`),
+        ...(duckId && !duckAgent ? ["missing"] : []),
+      ].join("\n");
+      // Rows are kept across refreshes so a checked radio stays the same element.
+      if (duckChoices.dataset.rows !== duckRows) {
+        duckChoices.dataset.rows = duckRows;
+        duckChoices.innerHTML = [
+          `<label class="repository-check"><span>None</span><input type="radio" name="duck-choice" value="" aria-label="None" ${duckId ? "" : "checked"} /></label>`,
+          ...agents().map(
+            (a) =>
+              `<label class="repository-check"><span>${escape(a.name)}</span><input type="radio" name="duck-choice" value="${escape(a.id)}" aria-label="${escape(a.name)}" ${a.id === duckId ? "checked" : ""} /></label>`,
+          ),
+          ...(duckId && !duckAgent
+            ? [
+                `<label class="repository-check" data-duck-missing><span>Unavailable</span><input type="radio" name="duck-choice" checked disabled /></label>`,
+              ]
+            : []),
+        ].join("");
+      }
+      for (const radio of duckChoices.querySelectorAll<HTMLInputElement>(
+        "input[name=duck-choice]:not(:disabled)",
+      ))
+        radio.checked = radio.value === duckId;
+      openDuck.querySelector("[data-duck-summary]")!.textContent = duckId
+        ? (duckAgent?.name ?? "Unavailable")
+        : "None";
       const checkedAction = modal.querySelector<HTMLInputElement>(
         "[name=action]:checked",
       );
@@ -3811,9 +3873,14 @@ export async function mountSettings(
       modal.querySelector<HTMLElement>("[data-assign-actions]")!.hidden = false;
       dropEditor((e) => e.modal === modal && e.title === viewTitles[view]);
       refreshSelection();
-      ({ agent: openAgent, permissions: openPermissions, tools: openTools })[
-        view
-      ].focus({
+      (
+        ({
+          duck: openDuck,
+          agent: openAgent,
+          permissions: openPermissions,
+          tools: openTools,
+        }) as const
+      )[view].focus({
         preventScroll: true,
       });
     };
@@ -3844,6 +3911,13 @@ export async function mountSettings(
     openAgent.onclick = () => openView("agent", "Agent");
     openPermissions.onclick = () => openView("permissions", "Permissions");
     openTools.onclick = () => openView("tools", "Tools");
+    openDuck.onclick = () => openView("duck", "Rubber duck");
+    duckChoices.onchange = (event) => {
+      const input = event.target as HTMLInputElement;
+      if (input.name !== "duck-choice") return;
+      duckInput.value = input.value;
+      closeView();
+    };
     const agentSaved = (agent?: Agent) => {
       if (!modal.isConnected) return;
       refreshSelection(agent?.id ?? agentInput.value);
@@ -3882,6 +3956,8 @@ export async function mountSettings(
     primary.onchange = () => {
       modal.querySelector<HTMLElement>("[data-primary-permissions]")!.hidden =
         !primary.checked;
+      openDuck.hidden = !primary.checked;
+      if (!primary.checked) duckInput.value = "";
       if (!primary.checked) {
         modal.querySelector<HTMLInputElement>("[name=reply]")!.checked = false;
         modal.querySelector<HTMLInputElement>(
@@ -3926,6 +4002,11 @@ export async function mountSettings(
           ...modal.querySelectorAll<HTMLInputElement>("[name=tool]:checked"),
         ].map((input) => input.value as PacketTool);
         if (toolsExplicit && tools.length) value.tools = tools;
+        if (primary.checked && duckInput.value) {
+          if (!agents().some((agent) => agent.id === duckInput.value))
+            throw "Rubber duck unavailable";
+          value.rubber_duck = duckInput.value;
+        }
         const next = clone(repository);
         if (existing)
           next.assignments = (next.assignments ?? []).map((a) =>
@@ -4038,6 +4119,28 @@ export async function mountSettings(
       : `${saved.launch_at_login ? "On" : "Off"}; registration ${snapshot.login_registration ?? "unavailable"}${snapshot.isolated ? "; isolated" : ""}`;
   }
 
+  /** Saved Rubber Duck limits: one self-contained group. */
+  function duckPreferences() {
+    const limits = draft.rubber_duck ?? DUCK_LIMITS;
+    const field = (key: keyof DuckLimits, label: string) =>
+      `<label>${label}<input data-duck-limit="${key}" type="number" step="1" min="${DUCK_RANGES[key][0]}" max="${DUCK_RANGES[key][1]}" value="${limits[key]}" /></label>`;
+    return `<div class="settings-group preferences-duck"><fieldset aria-label="Rubber duck"><legend>Rubber duck</legend><div class="preferences-duck-limits">${field("max_calls", "Calls")}${field("call_timeout_seconds", "Timeout (s)")}${field("primary_window_minutes", "Primary window (min)")}</div></fieldset></div>`;
+  }
+
+  function mountDuckPreferences() {
+    content
+      .querySelectorAll<HTMLInputElement>("[data-duck-limit]")
+      .forEach((input) => {
+        input.oninput = () => {
+          draft.rubber_duck = {
+            ...(draft.rubber_duck ?? DUCK_LIMITS),
+            [input.dataset.duckLimit as keyof DuckLimits]: Number(input.value),
+          };
+          changed();
+        };
+      });
+  }
+
   function renderPreferences() {
     const schedule = draft.defaults.schedule;
     content.innerHTML = `<div class="preferences-view">
@@ -4048,6 +4151,7 @@ export async function mountSettings(
       <label>Schedule helper<select id="cron-helper"><option value="">Custom</option><option value="*/15 * * * *">Every 15 minutes</option><option value="0 * * * *">Every hour</option><option value="0 9 * * MON-FRI">Weekdays at 09:00</option></select></label>
       <label>Time zone<select id="global-timezone"><option value="${escape(schedule.timezone)}">${escape(schedule.timezone)}</option></select></label>
       </div></fieldset></div>
+      ${duckPreferences()}
       <div class="preferences-boundary"><h2>Immediate controls</h2></div>
       <div class="settings-group" id="notification-settings"></div>
       <div class="settings-group"><fieldset aria-label="Startup"><legend>Startup</legend><label class="setting-row"><span>Open PR Sniper at login</span><input id="login" type="checkbox" role="switch" aria-describedby="login-status" disabled /></label><p id="login-status" role="status"></p><p id="login-error" role="alert" hidden></p></fieldset></div>
@@ -4101,6 +4205,7 @@ export async function mountSettings(
         updateSchedule();
       }
     };
+    mountDuckPreferences();
     content.querySelector<HTMLInputElement>("#global-capacity")!.oninput = (
       event,
     ) => {

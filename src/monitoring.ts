@@ -203,6 +203,8 @@ export interface ReviewCandidate {
       exits_offered: string[];
       exits_denied: unknown[];
     } | null;
+    // The Rubber Duck Agent whose setup failed the last attempt.
+    failed_duck?: string | null;
     result: {
       reviewed_base_sha?: string | null;
       output: {
@@ -231,8 +233,36 @@ export interface ReviewCandidate {
       output_tokens: number;
       tool_calls: number;
       coverage?: { read: number; changed: number } | null;
+      ducks?: DuckCall[];
     } | null;
   } | null;
+}
+
+/** One Rubber Duck call, stored with the primary's result. */
+export interface DuckCall {
+  ordinal: number;
+  input: {
+    kind: "line" | "thread" | "pr";
+    path?: string;
+    line?: number;
+    end_line?: number;
+    thread_id?: string;
+    claim: string;
+  };
+  outcome:
+    | {
+        outcome: "verdict";
+        verdict: {
+          verdict: "confirmed" | "revise" | "rejected" | "unverifiable";
+          nano: string;
+        };
+      }
+    | { outcome: "failure"; failure: string };
+  agent: string;
+  model: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  duration_ms: number;
 }
 
 const time = (value: number | null) =>

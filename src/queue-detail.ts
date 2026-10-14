@@ -438,6 +438,7 @@ function renderFailureFacts(
   if (item.failed_teammate)
     rows.push(["Teammate", item.failed_teammate.agent_name]);
   else if (review) rows.push(["Agent", review.run?.selection.agent.name ?? ""]);
+  if (item.failed_duck) rows.push(["Rubber duck", item.failed_duck]);
   rows.push(["Revision", item.job.head_sha.slice(0, 7)]);
   rows.push(["Account", item.job.account_login]);
   const list = document.createElement("dl");

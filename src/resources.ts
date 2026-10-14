@@ -2,11 +2,30 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Agent, Doctrine, Policy, Voice, WatchedIdentity } from "./policy";
 import type { Repository } from "./repositories";
 
+/** Saved Preferences bounding Rubber Duck use per primary attempt. */
+export interface DuckLimits {
+  max_calls: number;
+  call_timeout_seconds: number;
+  primary_window_minutes: number;
+}
+export const DUCK_LIMITS: DuckLimits = {
+  max_calls: 8,
+  call_timeout_seconds: 180,
+  primary_window_minutes: 15,
+};
+/** Inclusive ranges; mirror `DuckLimits` in storage.rs. */
+export const DUCK_RANGES: Record<keyof DuckLimits, [number, number]> = {
+  max_calls: [1, 32],
+  call_timeout_seconds: [30, 600],
+  primary_window_minutes: [5, 120],
+};
+
 export interface Settings {
   capability_notice?: string;
   launch_at_login: boolean;
   defaults: Policy;
   capacity: number;
+  rubber_duck?: DuckLimits;
   repositories?: Repository[];
   root_folder?: string;
   doctrines?: Doctrine[];
@@ -38,6 +57,7 @@ export interface GlobalPreferences {
   root_folder: string | null;
   presets: NonNullable<Settings["presets"]>;
   default_review_preset: string | null;
+  rubber_duck: DuckLimits;
 }
 
 export type ResourceEdit =
@@ -141,6 +161,7 @@ export const globalPreferences = (settings: Settings): GlobalPreferences => ({
   root_folder: settings.root_folder ?? null,
   presets: settings.presets ?? [],
   default_review_preset: settings.default_review_preset ?? null,
+  rubber_duck: settings.rubber_duck ?? { ...DUCK_LIMITS },
 });
 
 export interface ReviewSelection {
@@ -154,6 +175,7 @@ export interface ReviewSelection {
     doctrines: Doctrine[];
     doctrine_catalog?: DoctrineCatalog;
     voice?: Voice;
+    rubber_duck?: { agent: Agent; doctrines: Doctrine[] };
   };
 }
 
@@ -171,6 +193,7 @@ export function acceptResource(
     settings.root_folder = committed.root_folder;
     settings.presets = committed.presets;
     settings.default_review_preset = committed.default_review_preset;
+    settings.rubber_duck = committed.rubber_duck;
   } else if (edit.kind === "agent") {
     const value = committed.agents?.find((a) => a.id === edit.id);
     const index = (settings.agents ??= []).findIndex((a) => a.id === edit.id);

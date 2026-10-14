@@ -1182,3 +1182,17 @@ test("voices seed once, save the guard flag and cannot disappear while used", ()
   delete legacy.voices;
   assert.equal(M.migrate(legacy).voices.length, 3);
 });
+
+test("rubber duck limits save with capacity and refuse out-of-range values", () => {
+  let state = M.update(M.seed(), "capacity", {
+    limit: 2,
+    duck: { calls: 12, timeout: 240, window: 30 },
+  });
+  assert.equal(JSON.stringify(state.duck), JSON.stringify({ calls: 12, timeout: 240, window: 30 }));
+  for (const duck of [
+    { calls: 0, timeout: 180, window: 15 },
+    { calls: 8, timeout: 601, window: 15 },
+    { calls: 8, timeout: 180, window: 4 },
+  ])
+    assert.throws(() => M.update(state, "capacity", { limit: 2, duck }));
+});

@@ -997,6 +997,19 @@
           "Enter a positive whole number of concurrent reviews.",
         );
         state.limit = payload.limit;
+        if (payload.duck) {
+          const ranges = { calls: [1, 32], timeout: [30, 600], window: [5, 120] };
+          requireValue(
+            Object.entries(ranges).every(
+              ([key, [min, max]]) =>
+                integer(payload.duck[key]) &&
+                payload.duck[key] >= min &&
+                payload.duck[key] <= max,
+            ),
+            "Rubber duck: calls 1-32, timeout 30-600 s, window 5-120 min.",
+          );
+          state.duck = { ...payload.duck };
+        }
         break;
       case "preference":
         requireValue(

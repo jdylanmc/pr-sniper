@@ -80,6 +80,8 @@ export interface QueueItem {
     agent_name: string;
     cause: TeammateCause;
   } | null;
+  // The primary's Rubber Duck could not be set up: its Agent name.
+  failed_duck?: string | null;
   // The primary waits for this teammate's report.
   blocked_by?: {
     teammate: { assignment_id: string; agent_name: string };

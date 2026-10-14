@@ -76,6 +76,8 @@ export interface Assignment {
   };
   /** Absent = the role default (`defaultTools`). */
   tools?: PacketTool[];
+  /** Rubber Duck Agent id. Honored on the primary only. */
+  rubber_duck?: string;
 }
 
 /** Mirrors `PACKET_TOOLS` in src-tauri/src/storage.rs (checked by a Rust test). */
@@ -87,6 +89,7 @@ export const PACKET_TOOLS = [
   "read_check_log",
   "list_tree",
   "search_code",
+  "rubber_duck",
   "leave_comments",
   "ready_for_human",
   "approve_pull_request",
@@ -96,14 +99,16 @@ export const PACKET_TOOLS = [
 ] as const;
 export type PacketTool = (typeof PACKET_TOOLS)[number];
 
-/** Role default when `tools` is unset. Mirrors `default_tools` in storage.rs. */
+/** Role default when `tools` is unset. Mirrors `Repository::assignment_tools` in storage.rs. */
 export function defaultTools(
   primary: boolean,
   grants: { comment: boolean; approve: boolean; merge: boolean },
+  duck = false,
 ): PacketTool[] {
   const tools: PacketTool[] = [
-    ...PACKET_TOOLS.slice(0, PACKET_TOOLS.indexOf("leave_comments")),
+    ...PACKET_TOOLS.slice(0, PACKET_TOOLS.indexOf("rubber_duck")),
   ];
+  if (primary && duck) tools.push("rubber_duck");
   if (primary) {
     if (grants.comment) tools.push("leave_comments");
     tools.push("ready_for_human");

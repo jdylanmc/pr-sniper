@@ -1367,8 +1367,10 @@ function returnToAccounts() {
 }
 
 function capacityPage() {
+  const duck = state.duck ?? { calls: 8, timeout: 180, window: 15 };
   return `<div class="page-scroll" data-scroll="capacity"><div class="feature-summary"><span class="summary-icon">${icon("activity")}</span><div><strong>${state.limit}</strong><p>maximum simultaneous reviews</p></div></div>
     <form data-form="capacity" class="editor-form"><p class="section-note">Save as many agents as you like. This controls how many review packets can run at once across all repositories.</p>${field("Concurrent reviews", `<input name="limit" type="number" min="1" step="1" value="${state.limit}" required />`)}
+    <fieldset class="duck-limits"><legend>Rubber duck</legend>${field("Calls", `<input name="duckCalls" type="number" min="1" max="32" step="1" value="${duck.calls}" required />`)}${field("Timeout (s)", `<input name="duckTimeout" type="number" min="30" max="600" step="1" value="${duck.timeout}" required />`)}${field("Primary window (min)", `<input name="duckWindow" type="number" min="5" max="120" step="1" value="${duck.window}" required />`)}</fieldset>
     <p class="inline-warning">Lowering the limit stops surplus sample reviews, discards their partial work, and puts them back in the queue.</p><button class="primary-action wide" type="submit">Save review limit</button></form></div>`;
 }
 
@@ -1774,7 +1776,17 @@ function readForm(form) {
         },
       ];
     case "capacity":
-      return ["capacity", { limit: Number(value("limit")) }];
+      return [
+        "capacity",
+        {
+          limit: Number(value("limit")),
+          duck: {
+            calls: Number(value("duckCalls")),
+            timeout: Number(value("duckTimeout")),
+            window: Number(value("duckWindow")),
+          },
+        },
+      ];
     case "preferences":
       return [
         "preferences",
