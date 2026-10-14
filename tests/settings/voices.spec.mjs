@@ -108,6 +108,27 @@ for (const width of [408, 320]) {
       .getByRole("button", { name: "Voices", exact: true })
       .click();
     await expect(page.locator(".voice-card h3")).toHaveText(seeds);
+    // One grouped list: contiguous rows inside a single shared card.
+    const grouped = await page
+      .locator(".voice-list.resource-library")
+      .evaluateAll((lists) =>
+        lists.map((list) => {
+          const card = list.getBoundingClientRect();
+          const rows = [...list.children].map((row) =>
+            row.getBoundingClientRect(),
+          );
+          return {
+            rows: rows.length,
+            inside:
+              rows[0].top >= card.top && rows.at(-1).bottom <= card.bottom,
+            gaps: rows.slice(1).map((row, i) => row.top - rows[i].bottom),
+          };
+        }),
+      );
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0].rows).toBe(3);
+    expect(grouped[0].inside).toBe(true);
+    for (const gap of grouped[0].gaps) expect(Math.abs(gap)).toBeLessThan(1);
     await expect(page.locator(".voice-card .word-count").first()).toHaveText(
       /^\d+ words \/ 0 Agents$/,
     );

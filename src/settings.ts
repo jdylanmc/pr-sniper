@@ -1403,8 +1403,6 @@ export async function mountSettings(
 
   // ------------------------------------------------------------------- Voices
 
-  const plural = (count: number, noun: string) =>
-    `${count} ${noun}${count === 1 ? "" : "s"}`;
   const voiceUsers = (voice: Voice) =>
     agents().filter((agent) => agent.voice_id === voice.id);
   const savedVoice = (id?: string) =>
@@ -1418,7 +1416,7 @@ export async function mountSettings(
     for (const voice of voices()) {
       const row = document.createElement("article");
       row.className = "voice-card resource-card";
-      row.innerHTML = `<span class="resource-symbol">${icon("voices")}</span><div class="resource-copy"><h3>${escape(voice.title)}</h3><p class="resource-preview">${escape(voice.body)}</p><p class="word-count">${plural(words(voice.body), "word")} / ${plural(voiceUsers(voice).length, "Agent")}</p></div><div class="card-actions"><button data-edit>Edit</button><button data-remove aria-label="Delete" title="Delete">${icon("trash")}</button></div>`;
+      row.innerHTML = `<span class="resource-symbol">${icon("voices")}</span><div class="resource-copy"><h3>${escape(voice.title)}</h3><p class="resource-preview">${escape(voice.body)}</p><p class="word-count">${countLabel(words(voice.body), "word", "words")} / ${countLabel(voiceUsers(voice).length, "Agent", "Agents")}</p></div><div class="card-actions"><button data-edit>Edit</button><button data-remove aria-label="Delete" title="Delete">${icon("trash")}</button></div>`;
       for (const action of ["edit", "remove"])
         row.querySelector<HTMLElement>(`[data-${action}]`)!.dataset.focusKey =
           `voice:${voice.id}:${action}`;
@@ -1467,9 +1465,9 @@ export async function mountSettings(
     const users = existing ? voiceUsers(existing) : [];
     const modal = dialog(
       existing ? `Editing ${existing.title}` : "New voice",
-      `<form><label>Title<input name="title" required maxlength="100" value="${escape(existing?.title ?? "")}" placeholder="e.g. Caveman" /></label><label>Style<textarea name="body" rows="8" required>${escape(existing?.body ?? "")}</textarea></label><p class="word-count" data-count>${plural(words(existing?.body ?? ""), "word")}</p>
+      `<form><label>Title<input name="title" required maxlength="100" value="${escape(existing?.title ?? "")}" placeholder="e.g. Caveman" /></label><label>Style<textarea name="body" rows="8" required>${escape(existing?.body ?? "")}</textarea></label><p class="word-count" data-count>${countLabel(words(existing?.body ?? ""), "word", "words")}</p>
       <label class="voice-guardrails"><input type="checkbox" name="guardrails" ${existing?.guardrails === false ? "" : "checked"} /><span>${guardrailsLabel}</span></label>
-      <p class="resource-impact">${users.length ? `Shared by ${plural(users.length, "Agent")}: ${escape(users.map((agent) => agent.name).join(", "))}` : "Unused"}</p>${resourceActions("voice", !!existing)}</form>`,
+      <p class="resource-impact">${users.length ? `Shared by ${countLabel(users.length, "Agent", "Agents")}: ${escape(users.map((agent) => agent.name).join(", "))}` : "Unused"}</p>${resourceActions("voice", !!existing)}</form>`,
       opener,
     );
     resourceEditor(
@@ -1489,7 +1487,7 @@ export async function mountSettings(
     const body = modal.querySelector<HTMLTextAreaElement>("[name=body]")!;
     const count = modal.querySelector<HTMLElement>("[data-count]")!;
     body.oninput = () => {
-      count.textContent = plural(words(body.value), "word");
+      count.textContent = countLabel(words(body.value), "word", "words");
     };
     modal.querySelector("form")!.onsubmit = async (event) => {
       event.preventDefault();

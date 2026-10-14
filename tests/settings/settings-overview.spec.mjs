@@ -198,7 +198,7 @@ test("provider summaries isolate failed reads and retain an available retry rout
   ).toBeVisible();
 });
 
-test("grouped overview uses saved counts and all five destinations return focus and scroll", async ({
+test("grouped overview uses saved counts and all six destinations return focus and scroll", async ({
   page,
   store,
 }, testInfo) => {
@@ -210,7 +210,7 @@ test("grouped overview uses saved counts and all five destinations return focus 
   await expect(page.locator("[data-panel-heading]")).toHaveText("Settings");
   for (const [group, rows] of [
     ["General", ["Accounts", "Repositories", "Preferences"]],
-    ["Review behavior", ["Agents", "Doctrines"]],
+    ["Review behavior", ["Agents", "Doctrines", "Voices"]],
   ]) {
     const nav = page.getByRole("navigation", { name: group, exact: true });
     await expect(nav.getByRole("heading", { level: 2 })).toHaveText(group);

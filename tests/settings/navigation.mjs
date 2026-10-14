@@ -412,6 +412,7 @@ export async function chooseTimeZone(page, zone) {
     element.value = zone;
     element.dispatchEvent(new Event("change", { bubbles: true }));
   }, zone);
+}
 
 /** An Agent's Doctrine references (stable ids) as library titles, in order. */
 export async function agentDoctrineTitles(store, index = 0) {
