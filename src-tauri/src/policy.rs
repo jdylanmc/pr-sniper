@@ -256,9 +256,41 @@ pub fn time_zones() -> Vec<&'static str> {
     zones
 }
 
+/// Zone for a brand-new profile, std-only: a valid IANA `TZ` value (leading
+/// `:` stripped), else the zone named by the `/etc/localtime` link target,
+/// else UTC. Every candidate must parse as `chrono_tz::Tz`, the same authority
+/// as `Schedule::validate`.
+pub fn initial_time_zone(tz: Option<&str>, localtime: Option<&std::path::Path>) -> String {
+    let valid = |zone: &str| {
+        zone.parse::<chrono_tz::Tz>()
+            .ok()
+            .map(|zone| zone.name().to_string())
+    };
+    tz.map(|value| value.strip_prefix(':').unwrap_or(value))
+        .and_then(valid)
+        .or_else(|| {
+            let target = localtime?.to_str()?;
+            let (_, zone) = target.rsplit_once("zoneinfo/")?;
+            valid(zone)
+        })
+        .unwrap_or_else(|| "UTC".into())
+}
+
+/// `initial_time_zone` for this host. Windows has no `/etc/localtime`; without
+/// a valid `TZ` it falls back to UTC.
+pub fn host_time_zone() -> String {
+    let tz = std::env::var("TZ").ok();
+    #[cfg(unix)]
+    let localtime = std::fs::read_link("/etc/localtime").ok();
+    #[cfg(not(unix))]
+    let localtime: Option<std::path::PathBuf> = None;
+    initial_time_zone(tz.as_deref(), localtime.as_deref())
+}
+
 #[cfg(test)]
 mod time_zone_tests {
-    use super::{time_zones, Schedule};
+    use super::{initial_time_zone, time_zones, Schedule};
+    use std::path::Path;
 
     #[test]
     fn time_zones_are_sorted_unique_and_each_validates() {
@@ -275,6 +307,33 @@ mod time_zone_tests {
             }
             .validate()
             .unwrap();
+        }
+    }
+
+    #[test]
+    fn initial_time_zone_prefers_valid_tz_then_the_localtime_link_then_utc() {
+        let mac = Path::new("/var/db/timezone/zoneinfo/America/New_York");
+        let linux = Path::new("/usr/share/zoneinfo/Europe/Paris");
+        let relative = Path::new("../usr/share/zoneinfo/Asia/Tokyo");
+        let cases: [(Option<&str>, Option<&Path>, &str); 11] = [
+            (Some("Asia/Tokyo"), Some(linux), "Asia/Tokyo"),
+            (Some(":Pacific/Auckland"), None, "Pacific/Auckland"),
+            (Some("Mars/Olympus_Mons"), Some(linux), "Europe/Paris"),
+            (Some(""), Some(mac), "America/New_York"),
+            (None, Some(mac), "America/New_York"),
+            (None, Some(linux), "Europe/Paris"),
+            (None, Some(relative), "Asia/Tokyo"),
+            (None, Some(Path::new("/etc/custom-localtime")), "UTC"),
+            (
+                None,
+                Some(Path::new("/usr/share/zoneinfo/Mars/Olympus_Mons")),
+                "UTC",
+            ),
+            (Some("not a zone"), None, "UTC"),
+            (None, None, "UTC"),
+        ];
+        for (tz, link, expected) in cases {
+            assert_eq!(initial_time_zone(tz, link), expected, "{tz:?} {link:?}");
         }
     }
 }

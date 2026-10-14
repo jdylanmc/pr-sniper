@@ -952,6 +952,7 @@ fn canonical_provider_repository(provider: &ProviderId, input: &str) -> Result<S
 
 pub struct Store {
     root: PathBuf,
+    initial_time_zone: String,
     #[cfg(test)]
     failed_state_write: std::sync::Mutex<Option<(String, usize)>>,
     #[cfg(test)]
@@ -962,11 +963,19 @@ impl Store {
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,
+            initial_time_zone: "UTC".into(),
             #[cfg(test)]
             failed_state_write: std::sync::Mutex::new(None),
             #[cfg(test)]
             state_reads: std::sync::Mutex::new(BTreeMap::new()),
         }
+    }
+
+    /// Schedule zone written only when this store creates a brand-new profile;
+    /// existing settings, including a saved UTC, are never changed.
+    pub fn with_initial_time_zone(mut self, zone: String) -> Self {
+        self.initial_time_zone = zone;
+        self
     }
 
     #[cfg(test)]
@@ -1366,10 +1375,16 @@ impl Store {
         let bytes = match self.read_file("config", "settings.json") {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == ErrorKind::NotFound => {
-                let settings = Settings {
+                let mut settings = Settings {
                     doctrines: crate::doctrine_seeds::doctrines(),
                     ..Settings::default()
                 };
+                match &mut settings.defaults.schedule {
+                    crate::policy::Schedule::Cron { timezone, .. }
+                    | crate::policy::Schedule::Interval { timezone, .. } => {
+                        timezone.clone_from(&self.initial_time_zone)
+                    }
+                }
                 settings.validate()?;
                 self.write_settings(&settings)?;
                 return Ok(settings);

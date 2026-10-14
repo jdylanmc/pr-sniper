@@ -4377,7 +4377,7 @@ pub fn run() {
             let github_auth =
                 GithubAuth::restore(&github_credentials, github_legacy_credentials.as_ref());
             let copilot = copilot::Integration::new(isolated)?;
-            let store = Store::new(root.clone());
+            let store = Store::new(root.clone()).with_initial_time_zone(policy::host_time_zone());
             retention::recover(&store).map_err(std::io::Error::other)?;
             review::restore(&store).map_err(std::io::Error::other)?;
             publication::restore(&store).map_err(std::io::Error::other)?;

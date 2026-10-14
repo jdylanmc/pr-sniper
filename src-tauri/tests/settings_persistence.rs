@@ -484,3 +484,21 @@ fn typescript_tool_registry_mirrors_the_rust_registry() {
         .collect();
     assert_eq!(ts, pr_sniper_lib::storage::PACKET_TOOLS);
 }
+
+#[test]
+fn only_a_brand_new_profile_takes_the_initial_time_zone() {
+    let zone = |store: &Store| match store.load_settings().unwrap().defaults.schedule {
+        pr_sniper_lib::policy::Schedule::Cron { timezone, .. }
+        | pr_sniper_lib::policy::Schedule::Interval { timezone, .. } => timezone,
+    };
+    let fresh = tempfile::tempdir().unwrap();
+    let created = Store::new(fresh.path().into()).with_initial_time_zone("Asia/Tokyo".into());
+    assert_eq!(zone(&created), "Asia/Tokyo");
+    let reopened = Store::new(fresh.path().into()).with_initial_time_zone("Europe/Paris".into());
+    assert_eq!(zone(&reopened), "Asia/Tokyo");
+
+    let existing = tempfile::tempdir().unwrap();
+    assert_eq!(zone(&Store::new(existing.path().into())), "UTC");
+    let later = Store::new(existing.path().into()).with_initial_time_zone("Asia/Tokyo".into());
+    assert_eq!(zone(&later), "UTC");
+}
