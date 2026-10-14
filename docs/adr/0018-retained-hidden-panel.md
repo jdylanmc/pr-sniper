@@ -12,6 +12,13 @@ The tray panel holds drafts, routes, scroll, focus. Destroying it on dismiss los
 - Quit is the only exit. Repeated Quit starts one shutdown.
 - Native entry points navigate retained routes. No webview reload.
 - Deferred work (positioning, Settings load) yields to newer navigation.
+- Every show recomputes placement from current displays, preferring the clicked
+  tray display; stale/missing geometry falls back to an available display.
+- The full panel fits the chosen work area, shrinking on small displays.
+- macOS reads the native status-item frame and current `NSScreen.visibleFrame`
+  in AppKit points and synchronously sets the native panel frame. It never
+  reuses a retained window's screen or converts through a primary-display height.
+- Windows uses current physical tray/display work-area coordinates.
 - Background scanning continues while hidden.
 
 ## Consequences
