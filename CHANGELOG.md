@@ -17,6 +17,11 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   smaller screens.
 - Turning notifications on no longer sends alerts for events that already
   existed or happened while off; it sends one confirmation instead.
+- A review whose PR moved to a new head, closed, merged, left draft scope or
+  whose Agent assignment changed is superseded instead of parked as a permanent
+  failure; the new revision queues on the next poll without spending an
+  attempt. Draft PRs are reviewed when Review drafts is on, and runs already
+  parked this way recover on restart.
 
 ### Removed
 
