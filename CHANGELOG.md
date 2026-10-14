@@ -5,6 +5,12 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+### Fixed
+
+- Reduce panel-opening and navigation stalls with accumulated review history:
+  load feedback evidence once per queue snapshot and read automation state
+  off the native UI thread.
+
 ## 0.3.0 - 2026-10-13
 
 ### Added

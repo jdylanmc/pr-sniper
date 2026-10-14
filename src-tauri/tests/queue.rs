@@ -88,6 +88,83 @@ fn state(store: &Store) -> State {
     queue::snapshot(store, vec![]).unwrap().items[0].state
 }
 
+#[test]
+fn accumulated_history_snapshot_preserves_all_items() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let reviews: Vec<_> = (1..=64)
+        .map(|number| {
+            let mut run = review(number);
+            run.selection.agent.prompt = "Synthetic review evidence. ".repeat(2500);
+            run
+        })
+        .collect();
+    let publications: Vec<_> = reviews.iter().map(published).collect();
+    seed(&store, &reviews, &publications);
+    let start = std::time::Instant::now();
+    let snapshot = queue::snapshot(&store, vec![]).unwrap();
+    println!("64-job accumulated-history snapshot: {:?}", start.elapsed());
+    assert_eq!(snapshot.jobs.len(), 64);
+    assert_eq!(snapshot.items.len(), 64);
+    assert!(snapshot
+        .items
+        .iter()
+        .all(|item| item.state == State::MachineSignedOff));
+}
+
+#[test]
+fn snapshot_feedback_matches_single_job_views_and_reads_fresh_evidence() {
+    use pr_sniper_lib::feedback::{self, Record};
+
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let reviews = vec![review(1), review(2)];
+    let publications: Vec<_> = reviews
+        .iter()
+        .map(|run| {
+            let mut origin = published(run);
+            origin.receipts[0].comment_ids = vec![format!("root-{}", run.job.number)];
+            origin
+        })
+        .collect();
+    seed(&store, &reviews, &publications);
+    let snapshot = queue::snapshot(&store, vec![]).unwrap();
+    for run in &reviews {
+        let projected = &snapshot.feedback[&queue::item_id(&run.job)];
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0].state, "unavailable");
+        assert_eq!(
+            serde_json::to_value(projected).unwrap(),
+            serde_json::to_value(feedback::views(&store, &run.job).unwrap()).unwrap()
+        );
+    }
+
+    let mut context = snapshot.feedback[&queue::item_id(&reviews[0].job)][0]
+        .context
+        .clone();
+    context.unavailable = None;
+    context.closed = true;
+    let mut ledger = store.load_feedback().unwrap();
+    ledger.records.push(Record {
+        context,
+        job: reviews[0].job.clone(),
+        observed_head: reviews[0].job.head_sha.clone(),
+    });
+    store.save_feedback(&ledger).unwrap();
+    let fresh = queue::snapshot(&store, vec![]).unwrap();
+    assert_eq!(
+        fresh.feedback[&queue::item_id(&reviews[0].job)][0].state,
+        "closed"
+    );
+    assert_eq!(
+        fresh.feedback[&queue::item_id(&reviews[1].job)][0].state,
+        "unavailable"
+    );
+
+    std::fs::write(root.path().join("state/reviews.json"), b"invalid").unwrap();
+    assert!(queue::snapshot(&store, vec![]).is_err());
+}
+
 fn with_exit(exit: pr_sniper_lib::exits::ExitOutcome) -> ReviewRun {
     let mut run = review(1);
     let output = &mut run.result.as_mut().unwrap().output;

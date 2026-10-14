@@ -161,8 +161,28 @@ pub(crate) fn normal_snapshot(
         health
     };
     let ledger = store.load_feedback()?;
+    let jobs = store.load_queue()?;
+    let mut feedback = BTreeMap::new();
+    if !jobs.is_empty() {
+        let reviews = store.review_evidence()?;
+        let replies = store.load_follow_ups()?;
+        let publications = store.load_publications()?;
+        for job in &jobs {
+            feedback.insert(
+                item_id(job),
+                crate::feedback::views_from_evidence(
+                    job,
+                    &settings,
+                    &ledger,
+                    &reviews,
+                    &replies,
+                    &publications,
+                ),
+            );
+        }
+    }
     let mut result = Snapshot {
-        feedback: BTreeMap::new(),
+        feedback,
         mentions: ledger.mentions,
         pending_threads: ledger.pending_threads,
         exit_writes: ledger.exit_writes,
@@ -170,17 +190,12 @@ pub(crate) fn normal_snapshot(
         global_scan: monitoring.global_scan,
         tracked: store.load_queue_state()?.tracked,
         health,
-        jobs: store.load_queue()?,
+        jobs,
         reviews: review::host::candidates(store)?,
         publications: publication::host::candidates(store)?,
         follow_ups: follow_up::host::candidates(store)?,
         items: vec![],
     };
-    for job in &result.jobs {
-        result
-            .feedback
-            .insert(item_id(job), crate::feedback::views(store, job)?);
-    }
     result.items = project(&settings, &result);
     Ok(result)
 }
@@ -1035,4 +1050,52 @@ pub fn select(store: &Store, id: Option<&str>) -> Result<(), String> {
         destination(store, id, None)?;
     }
     store.save_queue_selection(id)
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn feedback_history_reads_do_not_grow_with_queue_size() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::new(root.path().into());
+        let jobs: Vec<QueueJob> = (1..=64)
+            .map(|number| {
+                serde_json::from_value(serde_json::json!({
+                    "provider": "github", "account_id": "22", "account_login": "operator",
+                    "configuration_id": "fixture", "repository_id": "100",
+                    "repository_name": "example/repo", "pull_request_id": number.to_string(),
+                    "number": number, "title": "Change", "head_sha": "a".repeat(40),
+                    "trigger_policy": "fixture", "author_id": "11", "author_login": "author",
+                    "watched_author": true, "requested_reviewer": false,
+                    "waiting": "human_start", "detected_at": 100
+                }))
+                .unwrap()
+            })
+            .collect();
+        store.save_queue(&jobs[..1]).unwrap();
+        store.take_state_reads();
+        let single = normal_snapshot(&store, vec![]).unwrap();
+        assert_eq!(single.feedback.len(), 1);
+        let single_reads = store.take_state_reads();
+
+        store.save_queue(&jobs).unwrap();
+        store.take_state_reads();
+        let many = normal_snapshot(&store, vec![]).unwrap();
+        assert_eq!(many.feedback.len(), 64);
+        let many_reads = store.take_state_reads();
+        for name in [
+            "feedback.json",
+            "reviews.json",
+            "publications.json",
+            "follow-ups.json",
+        ] {
+            assert_eq!(
+                many_reads.get(name),
+                single_reads.get(name),
+                "{name} must be loaded a fixed number of times per snapshot"
+            );
+        }
+    }
 }

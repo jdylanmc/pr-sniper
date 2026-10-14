@@ -567,13 +567,17 @@ pub(crate) fn set_automation_paused(app: tauri::AppHandle, paused: bool) -> Resu
 }
 
 #[tauri::command]
-pub(crate) fn automation_snapshot(app: tauri::AppHandle) -> Result<Snapshot, String> {
-    let host = app.state::<crate::Host>();
-    let store = host
-        .store
-        .lock()
-        .map_err(|_| "Automation storage unavailable.")?;
-    host.ai.snapshot(&store, crate::now_seconds()?)
+pub(crate) async fn automation_snapshot(app: tauri::AppHandle) -> Result<Snapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<crate::Host>();
+        let store = host
+            .store
+            .lock()
+            .map_err(|_| "Automation storage unavailable.")?;
+        host.ai.snapshot(&store, crate::now_seconds()?)
+    })
+    .await
+    .map_err(|_| "Automation state could not be read.".to_string())?
 }
 
 #[cfg(test)]
