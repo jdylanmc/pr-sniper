@@ -1917,6 +1917,10 @@ fn a_sibling_rate_limit_never_expires_a_waiting_poll_to_permanent() {
         let waiting = operation_for(&monitor, "example/other");
         assert_eq!(waiting.state, OperationState::Queued, "at {at}");
         assert_eq!(waiting.failure, Some(OperationFailure::Network));
+        // The account wait extends the window (gate 1_800_001_801 + 15 min);
+        // the attempt budget is untouched rather than restarted.
+        assert_eq!(waiting.retry_deadline, 1_800_002_701, "at {at}");
+        assert_eq!(waiting.attempt_count, 1, "at {at}");
     }
     assert_eq!(
         monitor
