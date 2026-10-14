@@ -36,7 +36,7 @@ Reference for Queue states, evidence, local Agent reviews, retry/parking and not
 
 - Evidence: ordered changed-file guide, findings, conversations, acting account, receipts, mutation recovery. Human comments and reviews stay on GitHub.
 - Item detail: **Activity** rows under the status block (Reviewed · files, Findings, Commented · inline, Replied, Final, Retried · Nx, Approved · head, Merged); tap expands key/value facts (IDs copy on tap), GitHub arrow opens the PR. Collapsed Details: Agent / Result / Provider key/value groups. CI is not in the snapshot, so no CI row.
-- Gated start, confirm and retry controls. **Open Settings**, **Open Diagnostics**, schedule recovery stay available.
+- Gated start, confirm and retry controls. Check Now lives in the tray menu.
 - Selection persists in private `state/queue-selection.json` (isolated profiles too). Unavailable identity: missing-destination message.
 - Open-PR and file links resolve from saved native queue identity. File links open the anchor in the current PR diff (deleted/renamed ok). They are not the immutable saved review: compare the displayed reviewed head with GitHub's current revision, browser account and merge requirements.
 - One handoff per account/repo PR. Confirmed approval is not a personal review. Confirmed-merged PRs are not actionable.

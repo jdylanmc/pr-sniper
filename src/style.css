@@ -112,11 +112,6 @@ dialog[tabindex]:focus-visible {
   outline: 3px solid #d47516;
   outline-offset: 3px;
 }
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
 .eyebrow {
   margin: 0 0 4px;
   font-size: 11px;

@@ -178,15 +178,13 @@ test("publication recovery and remediation stay findable in selected evidence", 
         args: { reviewOperationId: "review-3" },
       },
     ]);
-  await page
-    .getByRole("button", { name: "Open Settings", exact: true })
-    .click();
-  await page
-    .getByRole("button", { name: "Open Diagnostics", exact: true })
-    .click();
+  for (const name of ["Open Settings", "Open Diagnostics", "Check Now"])
+    await expect(page.getByRole("button", { name, exact: true })).toHaveCount(
+      0,
+    );
   expect(
     (await page.evaluate(() => window.__queueActions)).map((a) => a.command),
-  ).toEqual(["publish_review", "open_settings", "open_diagnostics"]);
+  ).toEqual(["publish_review"]);
 });
 
 test("cold deep links select only their exact item and missing destinations never select another PR", async ({

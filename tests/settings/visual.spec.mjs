@@ -13,7 +13,7 @@ const screenshots = join(target, "visual-correction-1");
 test.use({ viewport: { width: 408, height: 744 } });
 
 for (const failUtility of [false, true]) {
-  test(`monitor polling survives detached recovery controls and delayed ${failUtility ? "failed" : "successful"} Diagnostics`, async ({
+  test(`monitor polling survives delayed ${failUtility ? "failed" : "successful"} Diagnostics`, async ({
     page,
     store,
     ipc,
@@ -31,8 +31,9 @@ for (const failUtility of [false, true]) {
       };
     }, failUtility);
     await page.goto("/");
-    await page.getByRole("button", { name: "Status", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Check Now" })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Status", exact: true }),
+    ).toHaveCount(0);
     const held = ipc.holdNext("snapshot");
     await page
       .getByRole("button", { name: "Diagnostics", exact: true })

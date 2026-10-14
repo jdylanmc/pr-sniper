@@ -43,6 +43,9 @@ merge. Filter-only edits preserve the confirmed scope boundary and head history
 while each poll uses the current effective filter; previews and in-flight checks
 remain pinned to their starting filter.
 
+The owner-approved 2026-10-14 amendment removes the Status screen and tray
+Status item (PR-001 status action). Queue, Check Now, Settings and Quit remain.
+
 ## Acceptance Criteria
 
 The human-approved macOS distribution follow-up under #12 adds Apple Silicon

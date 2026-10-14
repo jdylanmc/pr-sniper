@@ -851,92 +851,22 @@ test("unavailable stored preferences are not replaced and recovery stays reachab
   );
   await expect(page.locator("#save-settings")).toBeDisabled();
   await expect(page.locator("#global-cron")).toHaveCount(0);
-  await page.locator("[data-panel-status]").click();
-  await page.evaluate(() => window.__settingsIdle());
-  await expect(page.locator("[data-panel-heading]")).toHaveText("Status");
-  await expect(page.locator("#notification-history")).toBeVisible();
+  await expect(page.locator("[data-panel-status]")).toHaveCount(0);
   expect((await store("snapshot")).settings).toEqual(before);
 });
 
-test("Status retains notification destinations, pending recovery and exact Back focus without exposing settings in diagnostics", async ({
+test("Diagnostics never exposes settings content and Back restores the exact opener with the draft", async ({
   page,
   store,
   browserName,
 }) => {
-  await store("set_notifications_enabled", { enabled: true });
   await queueFixture(store);
-  const notices = await store("observe_notifications");
-  const failure = notices.notices.find(
-    (notice) => notice.event.category === "failure",
-  );
-  const destination = await store("notification_destination", {
-    id: failure.id,
-  });
-  const history = await store("notification_snapshot");
-  const noticeIndex = history.notices.findIndex(
-    (notice) => notice.id === failure.id,
-  );
-  await page.addInitScript(() => {
-    const original = window.__TAURI_INTERNALS__.invoke;
-    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
-      if (command === "open_notification") {
-        const destination = await original("notification_destination", args);
-        window.__openedPreferenceNotice = { id: args.id, destination };
-        if (destination.kind !== "queue_item")
-          throw "Unexpected fixture destination.";
-        return original("open_queue_item", { itemId: destination.item_id });
-      }
-      return original(command, args);
-    };
-  });
   const state = (await store("snapshot")).settings;
   state.agents[0].prompt = "SYNTHETIC_PRIVATE_PROMPT_NOT_A_CREDENTIAL";
   await store("seed_settings", state);
   await ready(page, store, true);
   await page.locator("#global-capacity").fill("19");
-  const opener = page.locator("#preferences-status");
-  await opener.focus();
-  await page.keyboard.press("Enter");
-  await page.evaluate(() => window.__settingsIdle());
-  await expect(page.locator("[data-panel-heading]")).toHaveText("Status");
-  await expect(page.locator("#schedule-health")).toBeVisible();
-  await page.locator("#notification-history summary").click();
-  // Three attention events plus the opt-in confirmation.
-  await expect(page.locator("#notification-history article")).toHaveCount(4);
-  await capture(page, browserName, "status-recovery");
-  await page.getByRole("button", { name: "Back", exact: true }).click();
-  await page.evaluate(() => window.__settingsIdle());
-  await expect(opener).toBeFocused();
-  await expect(page.locator("#global-capacity")).toHaveValue("19");
-  await opener.click();
-  await page.evaluate(() => window.__settingsIdle());
-  const noticesRoot = page.locator("#notification-history");
-  await expect(noticesRoot.locator("details")).toHaveAttribute("open", "");
-  await noticesRoot
-    .getByRole("button", { name: "Open saved destination" })
-    .nth(noticeIndex)
-    .click();
-  await page.evaluate(() => window.__settingsIdle());
-  expect(await page.evaluate(() => window.__openedPreferenceNotice)).toEqual({
-    id: failure.id,
-    destination,
-  });
-  expect((await store("panel_snapshot")).route.detail).toEqual({
-    type: "item",
-    item_id: destination.item_id,
-  });
-  await page
-    .locator("[data-queue-details]")
-    .evaluate((details) => (details.open = true));
-  await expect(
-    page.getByRole("button", { name: "Reconcile / retry publication" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Reconcile / retry publication" }),
-  ).toBeDisabled();
-  await capture(page, browserName, "pending-publication-recovery");
-  await tab(page, "Settings").click();
-  await page.evaluate(() => window.__settingsIdle());
+  await expect(page.locator("#preferences-status")).toHaveCount(0);
   await expect(page.locator("#global-capacity")).toHaveValue("19");
   await page.locator("#diagnostics").click();
   await page.evaluate(() => window.__settingsIdle());
@@ -999,8 +929,8 @@ test("compact keyboard navigation, reduced motion and hide/reopen retain the exa
       .evaluate((element) => element.scrollWidth <= element.clientWidth),
   ).toBe(true);
   await capture(page, browserName, "320x300-keyboard");
-  await page.locator("#preferences-status").focus();
-  await expect(page.locator("#preferences-status")).toBeInViewport();
+  await page.locator("#diagnostics").focus();
+  await expect(page.locator("#diagnostics")).toBeInViewport();
   await page.keyboard.press("Enter");
   await page.evaluate(() => window.__settingsIdle());
   await expect(

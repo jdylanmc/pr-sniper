@@ -49,16 +49,6 @@ const categoryLabel: Record<Category, string> = {
   final_review_cleared: "Final review cleared",
 };
 
-const phase: Record<Notice["phase"], string> = {
-  queued: "Queued",
-  submitting: "Submitting",
-  accepted_unconfirmed: "Accepted",
-  outcome_unknown: "Unknown",
-  permission_denied: "Permission denied",
-  failed: "Failed",
-  not_sent: "Not sent",
-};
-
 function permissionText(state: Snapshot) {
   const permission = state.permission;
   const os = state.platform === "windows" ? "Windows" : "macOS";
@@ -206,86 +196,4 @@ export function mountNotificationSettings(
     if (!root.isConnected) window.clearInterval(timer);
     else void refresh();
   }, 5000);
-}
-
-export function renderNotificationHistory(
-  root: HTMLElement,
-  showError: (message: string) => void,
-) {
-  let signature = "";
-  let expanded = false;
-  let loading = false;
-  return async () => {
-    if (loading || !root.isConnected) return;
-    loading = true;
-    try {
-      const state = await invoke<Snapshot>("notification_snapshot");
-      if (!root.isConnected) return;
-      const next = JSON.stringify(state);
-      if (next === signature) return;
-      signature = next;
-      root.replaceChildren();
-      root.removeAttribute("role");
-      const status = document.createElement("p");
-      status.textContent = permissionText(state);
-      root.append(status);
-      if (state.error) {
-        const error = document.createElement("p");
-        error.setAttribute("role", "alert");
-        error.textContent = state.error;
-        root.append(error);
-      }
-      const details = document.createElement("details");
-      details.open = expanded;
-      details.ontoggle = () => {
-        expanded = details.open;
-      };
-      const summary = document.createElement("summary");
-      summary.textContent = `Notification history (${state.notices.length})`;
-      details.append(summary);
-      for (const notice of state.notices) {
-        const row = document.createElement("article");
-        const title = document.createElement("h3");
-        title.textContent = notice.title;
-        const info = document.createElement("p");
-        info.textContent = `${new Date(notice.created_at * 1000).toLocaleString()}: ${phase[notice.phase]}`;
-        row.append(title, info);
-        for (const message of [notice.error, notice.navigation_error].filter(
-          Boolean,
-        )) {
-          const error = document.createElement("p");
-          error.textContent = message;
-          row.append(error);
-        }
-        if (notice.opened_at !== null) {
-          const opened = document.createElement("p");
-          opened.textContent = `Opened ${new Date(notice.opened_at * 1000).toLocaleString()}`;
-          row.append(opened);
-        }
-        const button = document.createElement("button");
-        button.type = "button";
-        button.textContent = "Open saved destination";
-        button.onclick = async () => {
-          button.disabled = true;
-          try {
-            await invoke("open_notification", { id: notice.id });
-          } catch (cause) {
-            showError(typeof cause === "string" ? cause : "Open failed");
-          } finally {
-            button.disabled = false;
-            signature = "";
-            root.setAttribute("role", "alert");
-          }
-        };
-        row.append(button);
-        details.append(row);
-      }
-      root.append(details);
-    } catch {
-      signature = "";
-      root.textContent = "Unavailable";
-    } finally {
-      loading = false;
-    }
-  };
 }

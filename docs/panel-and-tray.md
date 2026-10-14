@@ -5,8 +5,8 @@ Reference for the tray icon, the retained panel, navigation rules and the Runnin
 ## Tray
 
 - No main window at startup. Left-click the crosshair: one retained panel. Tabs: **Queue**, **Running**, **Reviewed**, **Settings**.
-- Right-click menu (`src-tauri/src/lib.rs`): **Status**, **Review Queue**, **Check Now**, **Settings**, **Diagnostics**, **Close Panel**, **Quit PR Sniper** (`CmdOrCtrl+Q`).
-- Status and Diagnostics are routes inside the panel. No new webview.
+- Right-click menu (`src-tauri/src/lib.rs`): **Review Queue**, **Check Now**, **Settings**, **Diagnostics**, **Close Panel**, **Quit PR Sniper** (`CmdOrCtrl+Q`).
+- Diagnostics is a route inside the panel. No new webview.
 - Hide the panel: outside click, `Escape`, panel Close, tray **Close Panel**. Native window close is intercepted; webview kept ([ADR-0018](adr/0018-retained-hidden-panel.md)). Background work continues.
 - **Quit PR Sniper** ends the process.
 - Launching the app again (Finder, Spotlight, Dock) opens the panel.
@@ -30,7 +30,7 @@ Reference for the tray icon, the retained panel, navigation rules and the Runnin
 
 - Navy header band, artwork, bottom nav. Cards overlap the band. 8px corners. Page title and back arrow in the band.
 - Monitoring control = machine-wide pause gate. Unknown automation state: control disabled, active-work badge cleared.
-- Version comes from native app metadata, shown beside Status/Diagnostics. Unavailable metadata is labelled; opening Status retries. Footer version opens the in-app Changelog.
+- Version comes from native app metadata, shown beside Diagnostics. Unavailable metadata is labelled; clicking it retries. Footer version opens the in-app Changelog.
 - Repository intake has no local-folder selection.
 
 ## Queue tab
@@ -57,6 +57,7 @@ Reference for the tray icon, the retained panel, navigation rules and the Runnin
 
 - Finished and merged/closed PR results. Paging: [active-results.md](active-results.md).
 
-## Status and Diagnostics
+## Diagnostics
 
-- Status: schedule health, notification history, recovery. Diagnostics: redacted. Both keep refreshing evidence while open. See [diagnostics.md](diagnostics.md).
+- Redacted. Keeps refreshing evidence while open. See [diagnostics.md](diagnostics.md).
+- No Status screen (removed 2026-10-14). Parked failures: Queue > **Needs attention**. Check Now: tray menu.

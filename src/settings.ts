@@ -3813,8 +3813,7 @@ export async function mountSettings(
       <div class="settings-group" id="automation-settings"></div>
       <div class="settings-group" id="notification-settings"></div>
       <div class="settings-group"><fieldset aria-label="Startup"><legend>Startup</legend><label class="setting-row"><span>Open PR Sniper at login</span><input id="login" type="checkbox" role="switch" aria-describedby="login-status" disabled /></label><p id="login-status" role="status"></p><p id="login-error" role="alert" hidden></p></fieldset></div>
-      <div class="settings-group"><fieldset aria-label="Status and recovery"><legend>Status and recovery</legend><button id="preferences-status" type="button">Open status and recovery</button>
-      <button id="diagnostics" type="button">Open redacted diagnostics</button>
+      <div class="settings-group"><fieldset aria-label="Diagnostics"><legend>Diagnostics</legend><button id="diagnostics" type="button">Open redacted diagnostics</button>
       <details id="preferences-readiness" class="preferences-readiness"><summary>Saved setup readiness</summary><p data-readiness role="status">Loading</p></details></fieldset></div></div>`;
     updateStartup();
     const cron = content.querySelector<HTMLInputElement>("#global-cron")!;
@@ -3931,19 +3930,6 @@ export async function mountSettings(
         if (errors.length) showError(errors.join("\n"));
       }
     };
-    content.querySelector<HTMLButtonElement>("#preferences-status")!.onclick =
-      async (event) => {
-        (event.currentTarget as HTMLButtonElement).focus({
-          preventScroll: true,
-        });
-        try {
-          await invoke("panel_navigate", {
-            route: { tab: "settings", detail: { type: "status" } },
-          });
-        } catch (cause) {
-          showError(typeof cause === "string" ? cause : "Failed");
-        }
-      };
     content.querySelector<HTMLButtonElement>("#diagnostics")!.onclick = async (
       event,
     ) => {

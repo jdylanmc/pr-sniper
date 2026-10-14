@@ -22,13 +22,13 @@ interface Snapshot {
 }
 
 const app = document.querySelector<HTMLElement>("#app")!;
-const view = new URLSearchParams(location.search).get("view") ?? "panel";
 const titles: Record<string, string> = {
   queue: "Review Queue",
   settings: "Settings",
-  status: "Status",
   diagnostics: "Diagnostics",
 };
+const requested = new URLSearchParams(location.search).get("view") ?? "panel";
+const view = Object.keys(titles).includes(requested) ? requested : "panel";
 app.innerHTML = `
   <header><img src="${crosshair}" alt="PR Sniper crosshair" /><div>
     <p class="eyebrow">PR SNIPER</p>
@@ -36,7 +36,7 @@ app.innerHTML = `
   </div></header>
   <p id="error" role="alert" hidden></p>
   <section id="content"></section>`;
-app.querySelector("h1")!.textContent = titles[view] ?? "Status";
+app.querySelector("h1")!.textContent = titles[view] ?? "PR Sniper";
 const content = app.querySelector<HTMLElement>("#content")!;
 const error = app.querySelector<HTMLElement>("#error")!;
 let loadRevision = 0;
@@ -70,12 +70,8 @@ async function load() {
           state.settings?.doctrine_reset,
         ) + diagnosticLog(entries);
       renderIntelligenceDiagnostics(content, jobs);
-    } else if (view === "queue") {
-      renderMonitoring(content, showError);
     } else {
-      content.innerHTML = `<p id="version"></p>`;
-      content.querySelector("#version")!.textContent =
-        `PR Sniper ${state.version}`;
+      renderMonitoring(content, showError);
     }
   } catch {
     if (revision !== loadRevision) return;
@@ -85,7 +81,6 @@ async function load() {
 
 if (view === "panel") void mountPanel(app);
 else if (view === "settings") void mountSettingsWithGenie(app);
-else if (view === "queue") void load();
 else void load();
 window.addEventListener("focus", () => {
   if (view === "panel" || view === "settings" || view === "queue") return;

@@ -33,7 +33,7 @@ export type WorkKind = "normal" | "reply" | "mention" | "primary_final";
 export type PanelDetail =
   | { type: "item"; item_id: string }
   | { type: "job"; kind: WorkKind; id: string }
-  | { type: "status" | "diagnostics" };
+  | { type: "diagnostics" };
 export interface PanelRoute {
   tab: PanelTab;
   detail?: PanelDetail;
@@ -131,7 +131,7 @@ export async function mountPanel(app: HTMLElement) {
           `<button type="button" data-panel-tab="${tab}" aria-label="${tab[0].toUpperCase() + tab.slice(1)}"><span class="nav-icon">${icon(destinations[tab].icon)}${tab === "running" ? '<span data-running-count aria-hidden="true">?</span>' : ""}</span><span>${tab[0].toUpperCase() + tab.slice(1)}</span></button>`,
       )
       .join("")}</nav>
-    <footer class="panel-footer"><button type="button" data-panel-status>Status</button><button type="button" data-panel-diagnostics>Diagnostics</button><button type="button" data-panel-version aria-label="Show changelog">Reading version...</button></footer>`;
+    <footer class="panel-footer"><button type="button" data-panel-diagnostics>Diagnostics</button><button type="button" data-panel-version aria-label="Show changelog">Reading version...</button></footer>`;
   const version = app.querySelector<HTMLElement>("[data-panel-version]")!;
   let versionKnown = false;
   const showVersion = (value: unknown, failure?: unknown) => {
@@ -147,10 +147,12 @@ export async function mountPanel(app: HTMLElement) {
           : `Unavailable: ${String(failure)}`;
     }
   };
-  void invoke<{ version: unknown }>("snapshot").then(
-    (state) => showVersion(state.version),
-    (cause) => showVersion(undefined, cause),
-  );
+  const readVersion = () =>
+    void invoke<{ version: unknown }>("snapshot").then(
+      (state) => showVersion(state.version),
+      (cause) => showVersion(undefined, cause),
+    );
+  readVersion();
   const error = app.querySelector<HTMLElement>("[data-panel-error]")!;
   const heading = app.querySelector<HTMLElement>("[data-panel-heading]")!;
   const content = app.querySelector<HTMLElement>(".panel-content")!;
@@ -220,7 +222,10 @@ export async function mountPanel(app: HTMLElement) {
     if (open) renderChangelog();
     if (lastState) void apply(lastState);
   }
-  version.onclick = () => setChangelog(!changelogOpen);
+  version.onclick = () => {
+    if (!versionKnown) readVersion();
+    setChangelog(!changelogOpen);
+  };
   let route: PanelRoute = { tab: "queue" };
   let revision = -1;
   let returnTo: PanelRoute = { tab: "queue" };
@@ -905,7 +910,7 @@ export async function mountPanel(app: HTMLElement) {
     }
     draw("reviewed", rows);
   }
-  async function utility(type: "status" | "diagnostics") {
+  async function utility() {
     const request = ++utilityRevision;
     views.utility.replaceChildren();
     try {
@@ -923,29 +928,22 @@ export async function mountPanel(app: HTMLElement) {
       info.textContent = `PR Sniper ${state.version}${state.isolated ? " \u00b7 Isolated" : ""}`;
       views.utility.append(info);
       const refresh = document.createElement("button");
-      refresh.textContent = `Refresh ${type}`;
-      refresh.onclick = () => void utility(type);
+      refresh.textContent = "Refresh diagnostics";
+      refresh.onclick = () => void utility();
       views.utility.append(refresh);
-      if (type === "diagnostics") {
-        const [entries, jobs] = await Promise.all([
-          invoke<Diagnostic[]>("diagnostics"),
-          invoke<MonitoringSnapshot>("monitoring_snapshot"),
-        ]);
-        if (request !== utilityRevision) return;
-        const pre = document.createElement("pre");
-        pre.textContent =
-          doctrineDiagnostics(
-            state.doctrine_catalog,
-            state.settings?.doctrine_reset,
-          ) + diagnosticLog(entries);
-        views.utility.append(pre);
-        renderIntelligenceDiagnostics(views.utility, jobs);
-      } else {
-        const tools = document.createElement("div");
-        tools.dataset.panelRecovery = "true";
-        views.utility.append(tools);
-        monitor.tools(tools);
-      }
+      const [entries, jobs] = await Promise.all([
+        invoke<Diagnostic[]>("diagnostics"),
+        invoke<MonitoringSnapshot>("monitoring_snapshot"),
+      ]);
+      if (request !== utilityRevision) return;
+      const pre = document.createElement("pre");
+      pre.textContent =
+        doctrineDiagnostics(
+          state.doctrine_catalog,
+          state.settings?.doctrine_reset,
+        ) + diagnosticLog(entries);
+      views.utility.append(pre);
+      renderIntelligenceDiagnostics(views.utility, jobs);
     } catch (cause) {
       if (request === utilityRevision)
         showError(typeof cause === "string" ? cause : "Failed");
@@ -994,13 +992,11 @@ export async function mountPanel(app: HTMLElement) {
         : sub
           ? sub.title
           : route.detail
-            ? route.detail.type === "status"
-              ? "Status"
-              : route.detail.type === "diagnostics"
-                ? "Diagnostics"
-                : route.detail.type === "job"
-                  ? "Job details"
-                  : "Saved evidence"
+            ? route.detail.type === "diagnostics"
+              ? "Diagnostics"
+              : route.detail.type === "job"
+                ? "Job details"
+                : "Saved evidence"
             : destinations[route.tab].title;
     app.dataset.tab = route.tab;
     app.dataset.settingsSub = String(!!sub);
@@ -1041,8 +1037,7 @@ export async function mountPanel(app: HTMLElement) {
         button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
     }
-    const utilityDetail =
-      route.detail?.type === "status" || route.detail?.type === "diagnostics";
+    const utilityDetail = route.detail?.type === "diagnostics";
     const visible = changelogOpen
       ? "changelog"
       : setupVisible()
@@ -1065,7 +1060,7 @@ export async function mountPanel(app: HTMLElement) {
     }
     if (visible === "monitor") monitor.detail(route.detail, state.missing);
     if (utilityDetail && (changed || !views.utility.children.length))
-      void utility(route.detail!.type as "status" | "diagnostics");
+      void utility();
     if (restore && focusAtStart === focusRevision) {
       // Commit route focus now, before a subsequent explicit focus can win.
       // Only layout positioning waits for a frame; it cannot own newer input.
@@ -1136,8 +1131,6 @@ export async function mountPanel(app: HTMLElement) {
     };
   app.querySelector<HTMLButtonElement>("[data-queue-work]")!.onclick = () =>
     void navigate({ tab: "running" });
-  app.querySelector<HTMLButtonElement>("[data-panel-status]")!.onclick = () =>
-    void navigate({ tab: route.tab, detail: { type: "status" } });
   app.querySelector<HTMLButtonElement>("[data-panel-diagnostics]")!.onclick =
     () => void navigate({ tab: route.tab, detail: { type: "diagnostics" } });
   async function hide() {

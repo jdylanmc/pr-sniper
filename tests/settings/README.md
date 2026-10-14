@@ -374,8 +374,8 @@ test-owned Store bridge and explicit synthetic native registration/authorization
 responses. It checks exact global cron/time-zone persistence, the full positive
 u32 capacity range, invalid and failed writes, legacy intervals, independent
 automatic-start/comment gates, immediate startup/notification/pause boundaries,
-pending/rejected operations across unrelated saves, missing settings, exact
-notification recovery routes, redacted diagnostics, drafts, Back focus and
+pending/rejected operations across unrelated saves, missing settings,
+redacted diagnostics, drafts, Back focus and
 hide/reopen. At 320x300, the focused input must fit fully within the scroll
 viewport, not merely intersect it. No native application, login registration,
 OS notification, provider action or desktop browser is launched by this suite.

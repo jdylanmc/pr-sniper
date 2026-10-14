@@ -27,7 +27,6 @@ pub enum Tab {
 pub enum Detail {
     Item { item_id: String },
     Job { kind: Kind, id: String },
-    Status,
     Diagnostics,
 }
 
@@ -48,14 +47,10 @@ impl Route {
             detail: Some(Detail::Item { item_id: id }),
         }
     }
-    pub fn utility(diagnostics: bool) -> Self {
+    pub fn diagnostics() -> Self {
         Self {
             tab: Tab::Settings,
-            detail: Some(if diagnostics {
-                Detail::Diagnostics
-            } else {
-                Detail::Status
-            }),
+            detail: Some(Detail::Diagnostics),
         }
     }
     pub fn validate(&self) -> Result<(), String> {
@@ -162,7 +157,7 @@ pub fn missing(store: &Store, route: &Route) -> Result<Option<String>, String> {
     let Some(detail) = &route.detail else {
         return Ok(None);
     };
-    if matches!(detail, Detail::Status | Detail::Diagnostics) {
+    if matches!(detail, Detail::Diagnostics) {
         return Ok(None);
     }
     if let Some(message) = crate::retention::cleaned(store, detail)? {

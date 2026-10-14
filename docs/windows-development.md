@@ -195,9 +195,9 @@ credentials for these checks.
    **Queue**, **Running**, **Reviewed**, **Settings** and one exact saved job
    detail; Back restores its row/scroll/focus. Retain an unsaved Settings draft
    across tabs, Escape, outside click, custom Close and native Alt+F4; each hides
-   the same HWND while the host/tray remain. Right-click retains **Status**,
+   the same HWND while the host/tray remain. Right-click retains
    **Review Queue**, **Check Now**, **Settings**, **Diagnostics** and **Quit**.
-   Status/Diagnostics are routes within that panel, not new webviews.
+   Diagnostics is a route within that panel, not a new webview.
    **Check Now** on the unconfigured profile must not cause provider actions.
    Check top/bottom/side taskbar and overflow placement at 100/125/150/200%
    scaling and a negative-coordinate secondary display: the panel fits the

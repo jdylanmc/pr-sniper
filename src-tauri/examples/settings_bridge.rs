@@ -224,7 +224,7 @@ fn panel_dispatch(
                 .map_err(|_| "Invalid panel route.")?,
         ),
         "open_settings" => Some(Route::tab(Tab::Settings)),
-        "open_diagnostics" => Some(Route::utility(true)),
+        "open_diagnostics" => Some(Route::diagnostics()),
         "open_queue_item" => Some(Route::item(
             request.args["itemId"]
                 .as_str()

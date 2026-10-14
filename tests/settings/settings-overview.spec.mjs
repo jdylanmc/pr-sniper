@@ -531,11 +531,13 @@ for (const metadata of ["native", "missing", "rejected"]) {
     navigation.release();
     await expect(page.locator(".settings-overview")).toBeVisible();
     await page.evaluate(() => window.__settingsIdle());
-    await page.locator("[data-panel-status]").focus();
-    await expect(page.locator("[data-panel-status]")).toBeFocused();
+    await expect(page.locator("[data-panel-status]")).toHaveCount(0);
+    await version.focus();
+    await expect(version).toBeFocused();
     await page.keyboard.press("Enter");
-    await expect(page.locator("[data-panel-heading]")).toHaveText("Status");
+    await expect(page.locator("[data-panel-heading]")).toHaveText("Changelog");
     await expect(version).toHaveText(`v${nativeVersion}`);
+    await page.keyboard.press("Enter");
     await page.locator("[data-panel-diagnostics]").click();
     await expect(page.locator("[data-panel-heading]")).toHaveText(
       "Diagnostics",
@@ -548,7 +550,7 @@ for (const metadata of ["native", "missing", "rejected"]) {
   });
 }
 
-test("late missing metadata cannot replace a running version already read through Status", async ({
+test("late missing metadata cannot replace a running version already re-read through the version link", async ({
   page,
   store,
   ipc,
@@ -569,7 +571,7 @@ test("late missing metadata cannot replace a running version already read throug
   try {
     await page.goto("/");
     await held.arrived;
-    await page.locator("[data-panel-status]").click();
+    await page.locator("[data-panel-version]").click();
     await expect(page.locator("[data-panel-version]")).toHaveText(
       `v${nativeVersion}`,
     );
@@ -605,7 +607,6 @@ for (const size of [
         element.style.zoom = value;
       }, zoom);
       for (const selector of [
-        "[data-panel-status]",
         "[data-panel-diagnostics]",
         "[data-panel-version]",
       ]) {

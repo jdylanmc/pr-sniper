@@ -190,7 +190,6 @@ test("a muted type creates no notices and turning it on does not replay its even
 });
 
 test("native projection ignores author waits and deduplicates every repeated poll and restart", async ({
-  page,
   store,
 }) => {
   await store("set_notifications_enabled", { enabled: true });
@@ -206,19 +205,13 @@ test("native projection ignores author waits and deduplicates every repeated pol
   expect(second.notices.map((n) => n.id)).toEqual(
     first.notices.map((n) => n.id),
   );
-  await page.goto("/?view=queue");
-  await page
-    .locator("#notification-history")
-    .getByText("Notification history (4)", { exact: true })
-    .click();
-  await expect(page.locator("#notification-history article")).toHaveCount(4);
-  await page.reload();
+  expect((await store("notification_snapshot")).notices).toHaveLength(4);
   expect(
     (await store("observe_notifications")).notices.map((n) => n.id),
   ).toEqual(first.notices.map((n) => n.id));
 });
 
-test("history distinguishes OS acceptance, uncertainty and saved destinations without acknowledgment claims", async ({
+test("persisted notice phases stay in the ledger without a rendered history surface", async ({
   page,
   store,
 }) => {
@@ -230,41 +223,23 @@ test("history distinguishes OS acceptance, uncertainty and saved destinations wi
   ledger.notices[1].phase = "outcome_unknown";
   ledger.notices[1].error = "No callback; do not repeat.";
   ledger.notices[2].phase = "permission_denied";
-  ledger.notices[2].navigation_error = "<img src=x onerror=alert(1)>";
   await store("seed_notifications", ledger);
-  await page.addInitScript(() => {
-    const original = window.__TAURI_INTERNALS__.invoke;
-    window.__notificationOpens = [];
-    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
-      if (command === "open_notification") {
-        const destination = await original("notification_destination", args);
-        window.__notificationOpens.push({ args, destination });
-        return;
-      }
-      return original(command, args);
-    };
-  });
-  await page.goto("/?view=queue");
-  const history = page.locator("#notification-history");
-  await history.getByText("Notification history (3)", { exact: true }).click();
-  await expect(history).toContainText(": Accepted");
-  await expect(history).toContainText(": Unknown");
-  await expect(history).toContainText(": Permission denied");
-  await expect(history).not.toContainText(/delivered|acknowledged|seen/i);
-  await expect(history.locator("img")).toHaveCount(0);
-  await expect(history).not.toContainText("Destination opened");
-  await history
-    .getByRole("button", { name: "Open saved destination" })
-    .first()
-    .click();
-  await expect
-    .poll(() => page.evaluate(() => window.__notificationOpens))
-    .toEqual([
-      {
-        args: { id: ledger.notices[2].id },
-        destination: ledger.notices[2].event.destination,
-      },
-    ]);
+  expect(
+    (await store("notification_snapshot")).notices.map((notice) => [
+      notice.phase,
+      notice.error,
+    ]),
+  ).toEqual([
+    ["accepted_unconfirmed", null],
+    ["outcome_unknown", "No callback; do not repeat."],
+    ["permission_denied", null],
+  ]);
+  for (const path of ["/", "/?view=queue"]) {
+    await page.goto(path);
+    await page.evaluate(() => window.__settingsIdle?.());
+    await expect(page.locator("#notification-history")).toHaveCount(0);
+    await expect(page.getByText(/Notification history/)).toHaveCount(0);
+  }
 });
 
 test("Windows aggregate permission never invents banner or center authorization", async ({
@@ -390,7 +365,7 @@ test("late native status cannot restore a notification panel after navigating aw
   await expect(page.locator("#notification-settings")).toHaveCount(0);
 });
 
-test("persisted notification history survives unavailable queue data without an invented destination", async ({
+test("persisted notification ledger survives unavailable queue data", async ({
   page,
   store,
   dataRoot,
@@ -399,12 +374,9 @@ test("persisted notification history survives unavailable queue data without an 
   await queueFixture(store);
   await store("observe_notifications");
   await writeFile(join(dataRoot, "state/queue.json"), "invalid");
+  const persisted = await store("notification_snapshot");
+  expect(persisted.error).toContain("Review queue is invalid");
+  expect(persisted.notices).toHaveLength(4);
   await page.goto("/?view=queue");
-  const history = page.locator("#notification-history");
-  await history.getByText("Notification history (4)", { exact: true }).click();
-  await expect(history.getByRole("alert")).toContainText(
-    "Review queue is invalid",
-  );
-  await expect(history.locator("article")).toHaveCount(4);
   await expect(page.locator("#error")).toHaveText("Failed");
 });

@@ -1382,11 +1382,6 @@ function preferencesPage() {
     )}</div><button class="primary-action wide" type="submit">Save preferences</button></form></div>`;
 }
 
-function statusPage() {
-  const waiting = human().length;
-  return `<div class="page-scroll" data-scroll="status"><section class="detail-section"><dl class="context-list"><dt>Monitoring</dt><dd>${state.monitoring ? "On" : "Paused"}</dd><dt>Running</dt><dd>${running().length} of ${state.limit}</dd><dt>Waiting</dt><dd>${queued().length}</dd><dt>Needs you</dt><dd>${waiting}</dd></dl></section></div>`;
-}
-
 function diagnosticsPage() {
   return `<div class="page-scroll" data-scroll="diagnostics"><section class="detail-section"><dl class="context-list"><dt>Storage</dt><dd>${storageBlocked ? "Unavailable / reset required" : "Browser localStorage"}</dd><dt>Schema</dt><dd>v${state.version}</dd><dt>Review packets</dt><dd>${state.reviews.length}</dd><dt>Network operations</dt><dd>None</dd></dl></section></div>`;
 }
@@ -1459,7 +1454,6 @@ function render(direction = 0, focus = false) {
     repo: "Repository",
     copilot: "GitHub Copilot",
     github: "GitHub",
-    status: "Status",
     diagnostics: "Diagnostics",
     changelog: "Changelog",
     "repo-browser": "Browse",
@@ -1546,9 +1540,6 @@ function render(direction = 0, focus = false) {
     case "copilot":
     case "github":
       html = accountKindPage(current.page);
-      break;
-    case "status":
-      html = statusPage();
       break;
     case "diagnostics":
       html = diagnosticsPage();

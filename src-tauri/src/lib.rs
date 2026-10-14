@@ -4063,9 +4063,66 @@ async fn read_provider_metadata(
     result
 }
 
+/// Secondary tray menu above the separator, in order: (id, label).
+const TRAY_MENU: &[(&str, &str)] = &[
+    ("queue", "Review Queue"),
+    ("check", "Check Now"),
+    ("settings", "Settings"),
+    ("diagnostics", "Diagnostics"),
+    ("close-panel", "Close Panel"),
+];
+/// Below the separator; the only exit.
+const TRAY_QUIT: (&str, &str) = ("quit", "Quit PR Sniper");
+
+/// Panel destination for a navigating tray item; other items act directly.
+fn tray_route(id: &str) -> Option<panel::Route> {
+    match id {
+        "diagnostics" => Some(panel::Route::diagnostics()),
+        "queue" => Some(panel::Route::tab(panel::Tab::Queue)),
+        "settings" => Some(panel::Route::tab(panel::Tab::Settings)),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tray_tests {
+    use super::{panel, tray_route, TRAY_MENU, TRAY_QUIT};
+
+    #[test]
+    fn tray_menu_lists_only_the_retained_entries_in_order() {
+        assert_eq!(
+            TRAY_MENU,
+            &[
+                ("queue", "Review Queue"),
+                ("check", "Check Now"),
+                ("settings", "Settings"),
+                ("diagnostics", "Diagnostics"),
+                ("close-panel", "Close Panel"),
+            ]
+        );
+        assert_eq!(TRAY_QUIT, ("quit", "Quit PR Sniper"));
+    }
+
+    #[test]
+    fn removed_status_entry_has_no_tray_route() {
+        assert!(TRAY_MENU
+            .iter()
+            .all(|(id, label)| *id != "status" && *label != "Status"));
+        assert_eq!(tray_route("status"), None);
+        assert_eq!(
+            tray_route("queue"),
+            Some(panel::Route::tab(panel::Tab::Queue))
+        );
+        assert_eq!(
+            tray_route("settings"),
+            Some(panel::Route::tab(panel::Tab::Settings))
+        );
+    }
+}
+
 #[tauri::command]
 async fn open_diagnostics(app: tauri::AppHandle) -> Result<(), String> {
-    panel::show(&app, Some(panel::Route::utility(true)))
+    panel::show(&app, Some(panel::Route::diagnostics()))
         .await
         .map(|_| ())
 }
@@ -4397,29 +4454,18 @@ pub fn run() {
                     notifications::host::Coordinator::pump(&scheduler_app);
                 }
             });
-            let status = MenuItem::with_id(app, "status", "Status", true, None::<&str>)?;
-            let queue = MenuItem::with_id(app, "queue", "Review Queue", true, None::<&str>)?;
-            let check = MenuItem::with_id(app, "check", "Check Now", true, None::<&str>)?;
-            let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
-            let diagnostics =
-                MenuItem::with_id(app, "diagnostics", "Diagnostics", true, None::<&str>)?;
-            let close_panel =
-                MenuItem::with_id(app, "close-panel", "Close Panel", true, None::<&str>)?;
-            let separator = PredefinedMenuItem::separator(app)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit PR Sniper", true, Some("CmdOrCtrl+Q"))?;
-            let menu = Menu::with_items(
+            let menu = Menu::new(app)?;
+            for (id, label) in TRAY_MENU {
+                menu.append(&MenuItem::with_id(app, *id, *label, true, None::<&str>)?)?;
+            }
+            menu.append(&PredefinedMenuItem::separator(app)?)?;
+            menu.append(&MenuItem::with_id(
                 app,
-                &[
-                    &status,
-                    &queue,
-                    &check,
-                    &settings,
-                    &diagnostics,
-                    &close_panel,
-                    &separator,
-                    &quit,
-                ],
-            )?;
+                TRAY_QUIT.0,
+                TRAY_QUIT.1,
+                true,
+                Some("CmdOrCtrl+Q"),
+            )?)?;
             TrayIconBuilder::with_id("pr-sniper")
                 .icon(tauri::image::Image::from_bytes(if cfg!(windows) {
                     include_bytes!("../icons/icon.png")
@@ -4518,12 +4564,8 @@ pub fn run() {
                         return;
                     }
 
-                    let target = match event.id.as_ref() {
-                        "status" => panel::Route::utility(false),
-                        "diagnostics" => panel::Route::utility(true),
-                        "queue" => panel::Route::tab(panel::Tab::Queue),
-                        "settings" => panel::Route::tab(panel::Tab::Settings),
-                        _ => return,
+                    let Some(target) = tray_route(event.id.as_ref()) else {
+                        return;
                     };
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {

@@ -35,6 +35,11 @@ baseline, initial selection and admitted heads while current polling uses the
 current effective filter; stale previews and in-flight reads remain pinned to
 their starting filter. This amendment changes detection admission only.
 
+On 2026-10-14 the product owner approved removing the Status screen and the
+tray Status item. This amendment withdraws PR-001's status action only.
+Scheduler health is still recorded (PR-006); parked failures surface in Queue >
+Needs attention ([ADR 0007](../../adr/0007-retry-then-park-single-inbox.md)).
+
 ## Problem and Users
 
 The primary user is a human reviewer whose pull-request workload spans repositories and teammates. Teammate authors receive machine-authored feedback through GitHub. PR Sniper detects eligible work, invokes the configured local agent, publishes validated comments, follows its own unresolved conversations, and prepares the final human handoff.
@@ -79,7 +84,7 @@ Electron remains a fallback only if later Windows or process-control evidence ex
 
 ## Product Requirements
 
-- PR-001 [AC-001]: The application shall use Tauri, present as a macOS menu-bar utility without a persistent main window, expose status, queue, settings, and quit actions, and support opt-in launch at login.
+- PR-001 [AC-001]: The application shall use Tauri, present as a macOS menu-bar utility without a persistent main window, expose queue, check, settings, and quit actions (status action withdrawn 2026-10-14), and support opt-in launch at login.
 - PR-002 [AC-001]: Closing settings or queue windows shall not stop monitoring; quitting the tray process shall stop monitoring.
 - PR-003 [AC-002]: Repository settings shall support add, edit, disable, re-enable, and remove without a hard-coded product maximum, while surfacing provider and local-resource limits.
 - PR-004 [AC-003]: Global defaults and per-repository overrides shall cover fixed interval or five-field cron schedule with explicit time zone, watched GitHub identities, reviewer-assignment trigger, agent adapter, model or named-agent selector, prompt, automatic agent start, and automatic comment publication. A reusable Agent shall explicitly select a stable AI provider/account reference (`AiAccount`) and an actual model returned for that account, independently of its repository assignments and the repository acting account. Copilot shall be represented as the provider, not a model. No example identity, first account or model shall become an implicit default or fallback; direct Claude/Codex/Grok integrations remain unavailable, without excluding Claude models supplied through Copilot.
