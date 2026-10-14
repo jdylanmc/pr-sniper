@@ -58,6 +58,7 @@ import { createDialogs } from "./dialogs";
 import { mountNotificationSettings } from "./notifications";
 import { copyDiagnostics } from "./diagnostics";
 import type { AutomationSnapshot } from "./automation";
+import { applyTheme, currentTheme, isTheme, themeOptions } from "./theme";
 
 interface ConfiguredRepository extends Repository {
   watched_authors?: WatchedIdentity[];
@@ -482,6 +483,8 @@ export async function mountSettings(
   let busy = false;
   let startupPending = false;
   let startupError = "";
+  let themePending = false;
+  let themeError = "";
   let conflict = false;
   let catalogConflict = false;
   let revision = 0;
@@ -4141,6 +4144,41 @@ export async function mountSettings(
       });
   }
 
+  function updateTheme() {
+    const select = content.querySelector<HTMLSelectElement>("#theme");
+    const error = content.querySelector<HTMLElement>("#theme-error");
+    if (!select || !error) return;
+    select.value = themePending ? currentTheme() : (saved.theme ?? "light");
+    select.disabled = themePending;
+    error.textContent = themeError;
+    error.hidden = !themeError;
+  }
+
+  // Theme is an Immediate Control: it applies and persists on change, outside Save/Reset.
+  async function saveTheme(value: string) {
+    if (themePending || !isTheme(value)) return;
+    const previous = saved.theme ?? "light";
+    themePending = true;
+    themeError = "";
+    applyTheme(value);
+    updateTheme();
+    try {
+      await invoke("save_theme", { theme: value });
+      for (const settings of [saved, draft]) {
+        // Mirror native storage, which omits the Light default.
+        if (value === "light") delete settings.theme;
+        else settings.theme = value;
+      }
+    } catch (cause) {
+      applyTheme(previous);
+      themeError = typeof cause === "string" ? cause : "Theme change failed";
+    } finally {
+      themePending = false;
+      updateTheme();
+      changed();
+    }
+  }
+
   function renderPreferences() {
     const schedule = draft.defaults.schedule;
     content.innerHTML = `<div class="preferences-view">
@@ -4153,11 +4191,15 @@ export async function mountSettings(
       </div></fieldset></div>
       ${duckPreferences()}
       <div class="preferences-boundary"><h2>Immediate controls</h2></div>
+      <div class="settings-group"><fieldset aria-label="Appearance"><legend>Appearance</legend><label class="setting-row"><span>Theme</span><select id="theme" aria-label="Theme">${themeOptions.map(([value, label]) => `<option value="${value}">${label}</option>`).join("")}</select></label><p id="theme-error" role="alert" hidden></p></fieldset></div>
       <div class="settings-group" id="notification-settings"></div>
       <div class="settings-group"><fieldset aria-label="Startup"><legend>Startup</legend><label class="setting-row"><span>Open PR Sniper at login</span><input id="login" type="checkbox" role="switch" aria-describedby="login-status" disabled /></label><p id="login-status" role="status"></p><p id="login-error" role="alert" hidden></p></fieldset></div>
       <div class="settings-group"><fieldset aria-label="Diagnostics"><legend>Diagnostics</legend><button id="copy-diagnostics" class="copy-diagnostics" type="button" aria-label="Copy diagnostics" title="Copy diagnostics">${icon("copy")}<span>Copy diagnostics</span></button>
       <details id="preferences-readiness" class="preferences-readiness"><summary>Saved setup readiness</summary><p data-readiness role="status">Loading</p></details></fieldset></div></div>`;
     updateStartup();
+    updateTheme();
+    content.querySelector<HTMLSelectElement>("#theme")!.onchange = (event) =>
+      void saveTheme((event.target as HTMLSelectElement).value);
     const cron = content.querySelector<HTMLInputElement>("#global-cron")!;
     const helper = content.querySelector<HTMLSelectElement>("#cron-helper")!;
     const syncHelper = () => {
@@ -4413,6 +4455,7 @@ export async function mountSettings(
         sameResource(saved, state.settings);
       saved = clone(state.settings);
       draft = clone(saved);
+      if (!themePending) applyTheme(saved.theme);
       conflict = false;
       if (state.error) showError(state.error);
       if (retainAccounts) {

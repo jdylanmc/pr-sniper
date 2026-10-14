@@ -70,8 +70,9 @@ Reference for Settings navigation, accounts, repositories, assignments, Agents, 
 ## Preferences
 
 - Saved: one global cron + timezone, machine AI capacity, comment-publication defaults.
-- Immediate (native, outside Save/Reset): notification opt-in, startup. Pause lives only in the panel header **Monitoring** switch.
+- Immediate (outside Save/Reset): theme, notification opt-in, startup. Pause lives only in the panel header **Monitoring** switch.
 - Rubber duck group: Calls `1..32` (default 8), Timeout (s) `30..600` (180), Primary window (min) `5..120` (15). Stored as `rubber_duck`; absent = defaults.
+- Theme: Light (default), Dark, OS. OS follows the live system appearance. Light omits the stored field.
 - AI capacity: integer `1..4294967295`, default 4. Shared by normal, final-primary, reply and mention work. Admitted jobs drain independent of polling.
 - Cron helper shows the exact expression. Time zone: own row, dropdown of host IANA zones (`time_zones`, the list `Schedule::validate` accepts); host zone first. A saved zone missing from the list stays selected, marked unavailable. A brand-new profile starts in the host zone (valid `TZ`, else the `/etc/localtime` link; Windows/unknown: UTC); existing saved zones never change. No silent timezone or legacy-interval conversion. One schedule: [polling.md](polling.md).
 - Native controls keep pending/rejected ops across saves.

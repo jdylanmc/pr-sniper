@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import crosshair from "./crosshair.svg";
+import { applyTheme } from "./theme";
+import "./theme.css";
 import "./style.css";
 import { renderMonitoring } from "./monitoring";
 import { mountSettingsWithGenie } from "./genie";
@@ -31,7 +33,11 @@ function showError(message: string) {
 async function loadQueue() {
   error.hidden = true;
   try {
-    const state = await invoke<{ error: string | null }>("snapshot");
+    const state = await invoke<{
+      error: string | null;
+      settings?: { theme?: unknown } | null;
+    }>("snapshot");
+    if (state.settings) applyTheme(state.settings.theme);
     if (state.error) showError(state.error);
     renderMonitoring(content, showError);
   } catch {

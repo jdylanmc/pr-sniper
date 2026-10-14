@@ -19,6 +19,7 @@ import "./panel.css";
 import { terseError } from "./errors";
 import { inlineMarkdown } from "./markdown";
 import { drawNow, setText, whenReleased } from "./stable-dom";
+import { applyTheme } from "./theme";
 
 export type PanelTab = "queue" | "running" | "reviewed" | "settings";
 export type WorkKind = "normal" | "reply" | "mention" | "primary_final";
@@ -138,8 +139,13 @@ export async function mountPanel(app: HTMLElement) {
     }
   };
   const readVersion = () =>
-    void invoke<{ version: unknown }>("snapshot").then(
-      (state) => showVersion(state.version),
+    void invoke<{ version: unknown; settings?: { theme?: unknown } | null }>(
+      "snapshot",
+    ).then(
+      (state) => {
+        showVersion(state.version);
+        if (state.settings) applyTheme(state.settings.theme);
+      },
       (cause) => showVersion(undefined, cause),
     );
   readVersion();

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Agent, Doctrine, Policy, Voice, WatchedIdentity } from "./policy";
 import type { Repository } from "./repositories";
+import type { Theme } from "./theme";
 
 /** Saved Preferences bounding Rubber Duck use per primary attempt. */
 export interface DuckLimits {
@@ -37,6 +38,7 @@ export interface Settings {
   voice_catalog_version?: number;
   admission_migration_version?: number;
   doctrine_reset?: { previous_count: number; removed_references: number };
+  theme?: Theme;
 }
 
 export interface DoctrineCatalog {
