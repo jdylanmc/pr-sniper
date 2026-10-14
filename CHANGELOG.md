@@ -30,12 +30,16 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   matches the other fields.
 - The in-app Changelog uses the shared page header and renders bold and code.
 - Counts use the singular for one item, such as "1 repository".
+- Repository polls no longer stay parked: an interrupted poll restarts after
+  relaunch, and a parked poll retries on the next scheduled scan or Check Now;
+  credential failures wait for reconnect.
 
 ### Removed
 
 - Settings test-notification destination and Send test notification controls.
-- The Status and Diagnostics screens and their tray items; Check Now stays in
-  the tray and failures stay in Queue › Needs attention.
+- The Status and Diagnostics screens and their tray items. Check Now stays in
+  the tray; queue-item failures stay in Queue › Needs attention, and parked
+  repository polls recover on the next scheduled scan or Check Now.
 - The Settings Global pause card; use the header Monitoring switch.
 - The duplicate Concurrent reviews Settings entry; AI capacity stays in
   Preferences.
